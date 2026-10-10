@@ -449,7 +449,42 @@ pub(crate) fn save_edits(dir: &Path, edits: &[Edit]) -> Result<(), SaveError> {
         out.insert(0, '\u{feff}');
     }
     std::fs::create_dir_all(dir).map_err(SaveError::Io)?;
-    std::fs::write(&path, out).map_err(SaveError::Io)
+    write_whole(&path, &out).map_err(SaveError::Io)
+}
+
+/// Writes a temporary file beside `path` and renames it over: a crash mid-write never leaves half
+/// a file. A linked file (from a dotfiles repository) stays linked: the file it points at is the
+/// one replaced, with its permissions. A read-only file is left alone, as a plain write would.
+fn write_whole(path: &Path, text: &str) -> io::Result<()> {
+    let target = match std::fs::canonicalize(path) {
+        Ok(target) => target,
+        // A link to a file not made yet: make it where the link points.
+        Err(_) => match std::fs::read_link(path) {
+            Ok(link) => path.with_file_name("").join(link),
+            Err(_) => path.to_path_buf(),
+        },
+    };
+    let old = std::fs::metadata(&target).ok();
+    if old.as_ref().is_some_and(|m| m.permissions().readonly()) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{FILE} is read-only"),
+        ));
+    }
+    let tmp = target.with_file_name(format!(".{FILE}.tmp"));
+    let written = (|| {
+        let mut file = std::fs::File::create(&tmp)?;
+        io::Write::write_all(&mut file, text.as_bytes())?;
+        file.sync_all()?;
+        if let Some(old) = &old {
+            std::fs::set_permissions(&tmp, old.permissions())?;
+        }
+        std::fs::rename(&tmp, &target)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// Removes `table.key`. The comment lines above a key belong to it in toml_edit: they move to
@@ -658,6 +693,73 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(d.path().join(FILE)).unwrap(),
             "theme = \"Dracula\"\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_save_replaces_the_file_in_one_step() {
+        use std::os::unix::fs::MetadataExt as _;
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "[font]\nsize = 16\n");
+        let before = std::fs::metadata(d.path().join(FILE)).unwrap().ino();
+        save_theme(d.path(), true, "One Dark").unwrap();
+        let after = std::fs::metadata(d.path().join(FILE)).unwrap().ino();
+        assert_ne!(before, after, "written beside it, then renamed over it");
+        let names: Vec<_> = std::fs::read_dir(d.path()).unwrap().collect();
+        assert_eq!(names.len(), 1, "no temporary file left: {names:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_save_keeps_a_linked_file_linked_and_its_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let dotfiles = d.path().join("dotfiles");
+        std::fs::create_dir(&dotfiles).unwrap();
+        let real = dotfiles.join(FILE);
+        std::fs::write(&real, "[font]\nsize = 16\n").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let dir = d.path().join("templum");
+        std::fs::create_dir(&dir).unwrap();
+        std::os::unix::fs::symlink(&real, dir.join(FILE)).unwrap();
+        save_theme(&dir, true, "One Dark").unwrap();
+        let link = std::fs::symlink_metadata(dir.join(FILE)).unwrap();
+        assert!(link.file_type().is_symlink(), "still a link");
+        assert!(std::fs::read_to_string(&real).unwrap().contains("One Dark"));
+        let mode = std::fs::metadata(&real).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_to_a_file_not_made_yet_makes_it() {
+        let d = tempfile::tempdir().unwrap();
+        let dotfiles = d.path().join("dotfiles");
+        std::fs::create_dir(&dotfiles).unwrap();
+        let real = dotfiles.join(FILE);
+        let dir = d.path().join("templum");
+        std::fs::create_dir(&dir).unwrap();
+        std::os::unix::fs::symlink(&real, dir.join(FILE)).unwrap();
+        save_theme(&dir, true, "One Dark").unwrap();
+        let link = std::fs::symlink_metadata(dir.join(FILE)).unwrap();
+        assert!(link.file_type().is_symlink(), "still a link");
+        assert!(std::fs::read_to_string(&real).unwrap().contains("One Dark"));
+    }
+
+    #[test]
+    fn a_read_only_file_is_left_alone() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "[font]\nsize = 16\n");
+        let path = d.path().join(FILE);
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        let err = save_theme(d.path(), true, "One Dark").unwrap_err();
+        assert_eq!(err.to_string(), "config.toml is read-only");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[font]\nsize = 16\n"
         );
     }
 
