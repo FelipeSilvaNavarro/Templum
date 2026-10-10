@@ -44,6 +44,7 @@ cargo run -p templum
 | Ctrl+0 | Cmd+0 | Zoom 100% |
 | Ctrl+Shift+1 | Cmd+Shift+1 | Fit all blocks |
 | Ctrl+, | Cmd+, | Settings |
+| Ctrl+Shift+Q, twice | Cmd+Q, twice | Quit (the first press only asks for the second) |
 
 ## Themes
 
@@ -66,6 +67,21 @@ Your choice is saved in `config.toml`, one folder up:
 light = "Catppuccin Latte"
 dark = "Catppuccin Mocha"
 ```
+
+## Settings
+
+Press **Ctrl+,** (**Cmd+,** on macOS), or the ⚙ in the title bar, to open the settings panel on the right. It has
+Appearance (light/dark mode, themes, glass and canvas opacity), Font (with a preview), Terminal (cursor and
+scrollback), Shell (for new terminals) and Shortcuts. The terminals stay usable next to it, so you see each change
+as you make it.
+
+- Every change applies at once and is saved to `config.toml` a moment later, keeping your comments. Numbers apply
+  when you press Enter or leave the field. Each section's reset button puts its settings back to the defaults by
+  removing their lines from the file.
+- To change a shortcut, click it and press the new one, with Ctrl, Alt or Super (Cmd on macOS), or an F key. Esc
+  cancels, Backspace leaves the command without a shortcut, and a shortcut another command already has is refused
+  with its name.
+- Edits you make by hand to `config.toml` show up in the panel.
 
 ## Configuration
 

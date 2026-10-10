@@ -14,10 +14,10 @@ use gpui_kit::component::{TITLE_BAR_HEIGHT, WindowExt, window_paddings};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Anchor, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler,
-    EntityInputHandler, FocusHandle, Hsla, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint, ScrollDelta,
-    ScrollWheelEvent, SharedString, Subscription, Task, UTF16Selection, Window, WindowAppearance,
-    canvas, div, fill, point, px, size,
+    EntityInputHandler, FocusHandle, Hsla, KeyBinding, KeyDownEvent, Keystroke, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint,
+    ScrollDelta, ScrollWheelEvent, SharedString, Subscription, Task, UTF16Selection, Window,
+    WindowAppearance, canvas, div, fill, point, px, size,
 };
 use templum_canvas::{
     Block, BlockId, Camera, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid,
@@ -27,7 +27,7 @@ use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOpt
 use crate::block;
 use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
 use crate::grid::{CellMetrics, hsla};
-use crate::keys::{self, Command, Keymap};
+use crate::keys::{self, Command, Keymap, Keys};
 use crate::motion;
 use crate::settings::{self, Panel};
 use crate::theme::{self, Entry, Theme};
@@ -38,8 +38,14 @@ pub(crate) const DEFAULT_COLS: u16 = 80;
 pub(crate) const DEFAULT_ROWS: u16 = 24;
 /// A press that moves less than this (screen pixels) before release is a click, not a pan.
 const CLICK_SLOP: f32 = 4.0;
+/// Pressed alone, they wait for the main key of a shortcut being recorded.
+const MODIFIER_KEYS: [&str; 8] = [
+    "shift", "control", "ctrl", "alt", "platform", "cmd", "super", "function",
+];
 /// Cursor blink half-period.
 const BLINK: Duration = Duration::from_millis(500);
+/// Quitting takes a second press of its shortcut within this long.
+const QUIT_AGAIN: Duration = Duration::from_secs(2);
 /// A settings change is written to config.toml this long after the last one.
 const SAVE_DELAY: Duration = Duration::from_millis(300);
 
@@ -112,7 +118,7 @@ pub struct Workspace {
     /// The active config.toml: the last valid one.
     pub(crate) config: Config,
     /// Its shortcuts.
-    keymap: Keymap,
+    pub(crate) keymap: Keymap,
     /// What config.toml looked like at the last read, for polling.
     config_stamp: config::Stamp,
     /// The last read failed: the next good one says so.
@@ -134,10 +140,16 @@ pub struct Workspace {
     pub(crate) fonts: Vec<SharedString>,
     /// What the user typed in the panel's text fields that can't apply yet (an unclosed quote).
     pub(crate) drafts: HashMap<&'static str, String>,
+    /// When the quit shortcut was pressed once: a second press soon after quits.
+    quit_armed: Option<Instant>,
     /// The settings panel, open or sliding out.
     pub(crate) settings: Option<Panel>,
     /// The panel's keyboard focus: Esc and the settings shortcut close it from there.
     pub(crate) settings_focus: FocusHandle,
+    /// The command whose shortcut the panel is recording: keys go there before anything else.
+    pub(crate) recording: Option<Command>,
+    /// Why the last key pressed while recording wasn't taken.
+    pub(crate) key_note: Option<String>,
     /// The block under the pointer: it shows its close button and resize grip.
     pub(crate) hovered: Option<BlockId>,
     /// The open theme picker.
@@ -275,8 +287,11 @@ impl Workspace {
             _flush: flush,
             fonts: Vec::new(),
             drafts: HashMap::new(),
+            quit_armed: None,
             settings: None,
             settings_focus: cx.focus_handle(),
+            recording: None,
+            key_note: None,
             hovered: None,
             picker: None,
             appearing: HashMap::new(),
@@ -675,6 +690,8 @@ impl Workspace {
             closing: true,
         });
         self.drafts.clear();
+        self.recording = None;
+        self.key_note = None;
         self.save_or_notify(window, cx);
         window.focus(&self.focus_handle, cx);
         cx.notify();
@@ -687,12 +704,78 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(command) = self.recording {
+            // While recording, no shortcut runs and nothing reaches a terminal.
+            cx.stop_propagation();
+            let k = &e.keystroke;
+            match k.key.as_str() {
+                "escape" => {
+                    self.recording = None;
+                    self.key_note = None;
+                }
+                "backspace" => self.set_shortcut(command, Keys::Many(Vec::new()), cx),
+                key if key.is_empty() || MODIFIER_KEYS.contains(&key) => return,
+                _ if !stands_as_shortcut(k) => {
+                    self.key_note = Some(
+                        if cfg!(target_os = "macos") {
+                            "Add Cmd, Ctrl or Option, or use an F key"
+                        } else {
+                            "Add Ctrl, Alt or Super, or use an F key"
+                        }
+                        .to_string(),
+                    );
+                }
+                _ => match self.keymap.command(k) {
+                    Some(owner) if owner != command => {
+                        self.key_note = Some(format!(
+                            "{} is already {}",
+                            keys::display(&k.unparse()),
+                            owner.title()
+                        ));
+                    }
+                    _ => self.set_shortcut(command, Keys::One(k.unparse()), cx),
+                },
+            }
+            cx.notify();
+            return;
+        }
+        if self.keymap.command(&e.keystroke) == Some(Command::Quit) {
+            self.quit(window, cx);
+            cx.stop_propagation();
+            return;
+        }
         if e.keystroke.key == "escape"
             || self.keymap.command(&e.keystroke) == Some(Command::Settings)
         {
             self.close_settings(window, cx);
             cx.stop_propagation();
         }
+    }
+
+    /// The next key press with a main key becomes `command`'s only shortcut.
+    pub(crate) fn record(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+        self.recording = Some(command);
+        self.key_note = None;
+        window.focus(&self.settings_focus, cx);
+        cx.notify();
+    }
+
+    fn set_shortcut(&mut self, command: Command, keys: Keys, cx: &mut Context<Self>) {
+        self.recording = None;
+        self.key_note = None;
+        let value: toml_edit::Value = match &keys {
+            Keys::One(one) => one.as_str().into(),
+            Keys::Many(many) => many
+                .iter()
+                .map(String::as_str)
+                .collect::<toml_edit::Array>()
+                .into(),
+        };
+        self.edit(
+            Edit::set("keys", command.name(), value),
+            |c| c.keys.set(command, Some(keys)),
+            cx,
+        );
     }
 
     pub(crate) fn focus_block(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
@@ -893,7 +976,33 @@ impl Workspace {
             Command::ThemePicker => self.toggle_theme_picker(cx),
             Command::OpenConfig => self.open_config(window, cx),
             Command::Settings => self.toggle_settings(window, cx),
+            Command::Quit => self.quit(window, cx),
         }
+    }
+
+    /// Quitting closes every terminal, and Q sits next to W (close one terminal): the first
+    /// press only says to press again. Pending settings are saved on the way out.
+    fn quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let now = Instant::now();
+        if self
+            .quit_armed
+            .take()
+            .is_some_and(|at| now.duration_since(at) < QUIT_AGAIN)
+        {
+            cx.quit();
+            return;
+        }
+        self.quit_armed = Some(now);
+        let shortcut = self
+            .keymap
+            .first(Command::Quit)
+            .map(keys::display)
+            .unwrap_or_else(|| "the quit shortcut".to_string());
+        show_notification(
+            window,
+            cx,
+            Notification::info(format!("Press {shortcut} again to quit")),
+        );
     }
 
     /// Opens config.toml in the system's editor, writing the commented template first if needed.
@@ -1057,6 +1166,18 @@ impl Workspace {
             cx.notify();
         }
     }
+}
+
+/// A shortcut needs Ctrl, Alt or Super (Cmd), or is an F key: any other key is typing, which the
+/// terminals must keep getting.
+fn stands_as_shortcut(k: &Keystroke) -> bool {
+    let m = &k.modifiers;
+    let f_key = k
+        .key
+        .strip_prefix('f')
+        .and_then(|n| n.parse::<u8>().ok())
+        .is_some_and(|n| (1..=35).contains(&n));
+    m.control || m.alt || m.platform || m.function || f_key
 }
 
 /// On macOS, Option+key types the layout's character (`@` on German, `~`...), like Terminal.app.
@@ -1264,6 +1385,10 @@ impl Render for Workspace {
             .picker
             .as_ref()
             .map(|p| theme_picker::render(self, p, cx));
+        if self.recording.is_some() && !self.settings_focus.is_focused(window) {
+            self.recording = None;
+            self.key_note = None;
+        }
         let panel = self
             .settings
             .as_ref()
@@ -2920,5 +3045,257 @@ mod tests {
         frame(handle, cx);
         ws.update(cx, |ws, _| ws.save());
         assert!(!std::fs::read_to_string(&path).unwrap().contains("program"));
+    }
+
+    use crate::keys::{Command, Keys};
+
+    /// Opens the panel (unless it is open) and starts recording `command`'s shortcut.
+    fn start_recording(
+        handle: AnyWindowHandle,
+        ws: &Entity<Workspace>,
+        command: Command,
+        cx: &mut TestAppContext,
+    ) {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            // Pressed again, the shortcut would close the panel.
+            if !ws.read(cx).settings.as_ref().is_some_and(|p| !p.closing) {
+                window.press(SETTINGS, cx);
+            }
+            window.render_frame(cx);
+            ws.update(cx, |ws, cx| ws.record(command, window, cx));
+            window.render_frame(cx);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn recording_a_free_shortcut_applies_and_saves(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        start_recording(handle, &ws, Command::NewTerminal, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.press("ctrl-alt-n", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.update(cx, |ws, _| {
+            assert_eq!(ws.recording, None);
+            let pressed = gpui_kit::Keystroke::parse("ctrl-alt-n").unwrap();
+            assert_eq!(ws.keymap.command(&pressed), Some(Command::NewTerminal));
+            assert_eq!(
+                ws.keymap.keystrokes(Command::NewTerminal).len(),
+                1,
+                "the only one"
+            );
+            ws.save();
+        });
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(text.contains("new_terminal = \"ctrl-alt-n\""), "{text}");
+    }
+
+    #[gpui_kit::test]
+    fn a_taken_shortcut_keeps_recording(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        start_recording(handle, &ws, Command::Copy, cx);
+        cx.update_window(handle, |_, window, cx| window.press(NEW, cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.recording, Some(Command::Copy));
+            let shortcut = if cfg!(target_os = "macos") {
+                "Cmd+T"
+            } else {
+                "Ctrl+Shift+T"
+            };
+            assert_eq!(
+                ws.key_note.as_deref(),
+                Some(format!("{shortcut} is already New terminal").as_str())
+            );
+            assert_eq!(ws.canvas.blocks().len(), 1, "no shortcut ran");
+            assert!(ws.config.keys.copy.is_none(), "nothing changed");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn esc_cancels_recording_and_backspace_clears(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        start_recording(handle, &ws, Command::Copy, cx);
+        cx.update_window(handle, |_, window, cx| window.press("escape", cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.recording, None);
+            assert!(ws.config.keys.copy.is_none());
+        });
+        assert!(
+            panel_open(&ws, cx),
+            "Esc cancelled the recording, not the panel"
+        );
+        start_recording(handle, &ws, Command::Copy, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.press("backspace", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.config.keys.copy, Some(Keys::Many(vec![])));
+            assert!(ws.keymap.keystrokes(Command::Copy).is_empty());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_modifier_alone_keeps_recording(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        start_recording(handle, &ws, Command::Copy, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.dispatch_event(
+                PlatformInput::KeyDown(gpui_kit::KeyDownEvent {
+                    keystroke: gpui_kit::Keystroke {
+                        modifiers: Modifiers::shift(),
+                        key: "shift".into(),
+                        key_char: None,
+                    },
+                    is_held: false,
+                    prefer_character_input: false,
+                }),
+                cx,
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.recording, Some(Command::Copy)));
+    }
+
+    #[gpui_kit::test]
+    fn a_key_without_ctrl_alt_or_super_is_refused(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        start_recording(handle, &ws, Command::NewTerminal, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.press("n", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.recording, Some(Command::NewTerminal), "still recording");
+            assert!(ws.key_note.is_some(), "and says why");
+            assert!(
+                ws.config.keys.new_terminal.is_none(),
+                "terminals keep their n"
+            );
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.press("f5", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(
+                ws.config.keys.new_terminal,
+                Some(Keys::One("f5".into())),
+                "F keys may stand alone"
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn clicking_elsewhere_in_the_panel_stops_recording(cx: &mut TestAppContext) {
+        // No config folder: the footer shows its line, a place to click.
+        let (handle, ws) = open(cx);
+        start_recording(handle, &ws, Command::Copy, cx);
+        settle_slide(handle, cx);
+        cx.update_window(handle, |_, window, cx| window.click("settings-status", cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.recording, None));
+        assert!(panel_open(&ws, cx));
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_terminal_stops_recording(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        start_recording(handle, &ws, Command::Copy, cx);
+        settle_slide(handle, cx);
+        cx.update_window(handle, |_, window, cx| {
+            let (o, r) = {
+                let ws = ws.read(cx);
+                let rect = ws.canvas.get(id).unwrap().rect;
+                (ws.origin, ws.canvas.camera.rect_to_screen(rect))
+            };
+            let at = (
+                f32::from(o.x) + r.x + 20.0,
+                f32::from(o.y) + r.y + templum_canvas::chrome::TITLE_H + 20.0,
+            );
+            click(window, cx, at, 1);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.recording, None));
+    }
+
+    #[gpui_kit::test]
+    fn closing_the_panel_stops_recording(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        start_recording(handle, &ws, Command::Copy, cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.close_settings(window, cx);
+                assert_eq!(ws.recording, None);
+            })
+        })
+        .unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    const QUIT: &str = "cmd-q";
+    #[cfg(not(target_os = "macos"))]
+    const QUIT: &str = "ctrl-shift-q";
+
+    #[gpui_kit::test]
+    fn quitting_takes_a_second_press(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(QUIT, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.quit_armed.is_some(), "the first press only warns")
+        });
+        assert_eq!(notification_count(handle, cx), 1);
+        cx.update_window(handle, |_, window, cx| window.press(QUIT, cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.quit_armed.is_none(), "the second one quits")
+        });
+        assert_eq!(notification_count(handle, cx), 1, "no second warning");
+    }
+
+    #[gpui_kit::test]
+    fn a_late_second_press_warns_again(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let long_ago = std::time::Instant::now()
+            .checked_sub(super::QUIT_AGAIN + std::time::Duration::from_millis(100))
+            .unwrap();
+        ws.update(cx, |ws, _| ws.quit_armed = Some(long_ago));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(QUIT, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.quit_armed.is_some_and(|at| at > long_ago), "armed again")
+        });
+        assert_eq!(notification_count(handle, cx), 1);
+    }
+
+    #[gpui_kit::test]
+    fn quit_works_from_the_settings_panel(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(SETTINGS, cx);
+            window.render_frame(cx);
+            window.press(QUIT, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert!(ws.quit_armed.is_some()));
     }
 }

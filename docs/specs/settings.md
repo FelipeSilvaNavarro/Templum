@@ -1,7 +1,7 @@
 # Settings panel
 
 - **Date:** 2026-10-10
-- **Status:** Draft
+- **Status:** Implemented
 - **Builds on:** [config.md](config.md) (part 1: every option in `config.toml`, applied live) and
   [design-system.md](design-system.md)
 
@@ -109,8 +109,10 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
 
 **Shortcuts**
 
-- **Rows:** one per command, 11 in the [keys](config.md#the-file) order including `settings`. Each row shows the
-  current shortcuts as gpui-kit `Kbd` keys (`Ctrl` `Shift` `T`), or "None".
+- **Rows:** one per command, 12 in the [keys](config.md#the-file) order including `settings` and `quit`. Each row
+  shows the current shortcuts as gpui-kit `Kbd` keys (`Ctrl` `Shift` `T`), or "None".
+- **Quit:** `quit` (Ctrl+Shift+Q, Cmd+Q on macOS) closes Templum on a second press within 2 s; the first shows
+  "Press Ctrl+Shift+Q again to quit". Quitting closes every terminal, and Q sits next to W (close one terminal).
 - **Recording:** clicking a row's shortcuts starts recording ("Press a shortcut…"). The next key press with a main
   key becomes the command's only shortcut.
   - Esc cancels.

@@ -16,11 +16,12 @@ pub(crate) enum Command {
     ThemePicker,
     OpenConfig,
     Settings,
+    Quit,
 }
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 11] = [
+    pub const ALL: [Command; 12] = [
         Command::NewTerminal,
         Command::CloseTerminal,
         Command::Copy,
@@ -32,6 +33,7 @@ impl Command {
         Command::ThemePicker,
         Command::OpenConfig,
         Command::Settings,
+        Command::Quit,
     ];
 
     /// Its key in [keys].
@@ -48,6 +50,25 @@ impl Command {
             Command::ThemePicker => "theme_picker",
             Command::OpenConfig => "open_config",
             Command::Settings => "settings",
+            Command::Quit => "quit",
+        }
+    }
+
+    /// As the settings panel and its messages name it.
+    pub fn title(self) -> &'static str {
+        match self {
+            Command::NewTerminal => "New terminal",
+            Command::CloseTerminal => "Close terminal",
+            Command::Copy => "Copy",
+            Command::Paste => "Paste",
+            Command::ZoomIn => "Zoom in",
+            Command::ZoomOut => "Zoom out",
+            Command::ZoomReset => "Zoom 100%",
+            Command::FitAll => "Fit all blocks",
+            Command::ThemePicker => "Theme picker",
+            Command::OpenConfig => "Edit config.toml",
+            Command::Settings => "Settings",
+            Command::Quit => "Quit Templum",
         }
     }
 
@@ -75,6 +96,8 @@ impl Command {
             (Command::OpenConfig, _) => &[],
             (Command::Settings, false) => &["ctrl-,"],
             (Command::Settings, true) => &["cmd-,"],
+            (Command::Quit, false) => &["ctrl-shift-q"],
+            (Command::Quit, true) => &["cmd-q"],
         }
     }
 }
@@ -102,10 +125,11 @@ pub(crate) struct KeysConfig {
     pub theme_picker: Option<Keys>,
     pub open_config: Option<Keys>,
     pub settings: Option<Keys>,
+    pub quit: Option<Keys>,
 }
 
 impl KeysConfig {
-    fn get(&self, command: Command) -> Option<&Keys> {
+    pub fn get(&self, command: Command) -> Option<&Keys> {
         match command {
             Command::NewTerminal => self.new_terminal.as_ref(),
             Command::CloseTerminal => self.close_terminal.as_ref(),
@@ -118,7 +142,26 @@ impl KeysConfig {
             Command::ThemePicker => self.theme_picker.as_ref(),
             Command::OpenConfig => self.open_config.as_ref(),
             Command::Settings => self.settings.as_ref(),
+            Command::Quit => self.quit.as_ref(),
         }
+    }
+
+    pub fn set(&mut self, command: Command, keys: Option<Keys>) {
+        let slot = match command {
+            Command::NewTerminal => &mut self.new_terminal,
+            Command::CloseTerminal => &mut self.close_terminal,
+            Command::Copy => &mut self.copy,
+            Command::Paste => &mut self.paste,
+            Command::ZoomIn => &mut self.zoom_in,
+            Command::ZoomOut => &mut self.zoom_out,
+            Command::ZoomReset => &mut self.zoom_reset,
+            Command::FitAll => &mut self.fit_all,
+            Command::ThemePicker => &mut self.theme_picker,
+            Command::OpenConfig => &mut self.open_config,
+            Command::Settings => &mut self.settings,
+            Command::Quit => &mut self.quit,
+        };
+        *slot = keys;
     }
 }
 
@@ -181,6 +224,15 @@ impl Keymap {
             .iter()
             .find(|b| typed.should_match(&b.target))
             .map(|b| b.command)
+    }
+
+    /// Every shortcut of `command`, in the order written.
+    pub fn keystrokes(&self, command: Command) -> Vec<Keystroke> {
+        self.bindings
+            .iter()
+            .filter(|b| b.command == command)
+            .map(|b| b.keystroke.clone())
+            .collect()
     }
 
     /// The first shortcut of `command`, as written.
@@ -248,10 +300,12 @@ mod tests {
             Some(Command::ThemePicker)
         );
         assert_eq!(linux.command(&typed("ctrl-,")), Some(Command::Settings));
+        assert_eq!(linux.command(&typed("ctrl-shift-q")), Some(Command::Quit));
         assert_eq!(linux.command(&typed("ctrl-t")), None);
         let mac = defaults(true);
         assert_eq!(mac.command(&typed("cmd-t")), Some(Command::NewTerminal));
         assert_eq!(mac.command(&typed("cmd-,")), Some(Command::Settings));
+        assert_eq!(mac.command(&typed("cmd-q")), Some(Command::Quit));
     }
 
     #[test]
@@ -328,5 +382,43 @@ mod tests {
         for macos in [false, true] {
             assert_eq!(defaults(macos).first(Command::OpenConfig), None);
         }
+    }
+
+    #[test]
+    fn a_recorded_shortcut_parses_back() {
+        for text in [
+            "ctrl-shift-t",
+            "cmd-,",
+            "alt-f4",
+            "ctrl--",
+            "ctrl-shift-1",
+            "f5",
+        ] {
+            let pressed = typed(text);
+            assert_eq!(typed(&pressed.unparse()), pressed, "{text}");
+        }
+    }
+
+    #[test]
+    fn keys_config_sets_one_command() {
+        let mut keys = KeysConfig::default();
+        keys.set(Command::Settings, Some(Keys::One("ctrl-alt-s".into())));
+        assert_eq!(
+            keys.get(Command::Settings),
+            Some(&Keys::One("ctrl-alt-s".into()))
+        );
+        assert_eq!(keys.get(Command::Copy), None);
+        keys.set(Command::Settings, None);
+        assert_eq!(keys, KeysConfig::default());
+    }
+
+    #[test]
+    fn keystrokes_lists_every_shortcut_of_a_command() {
+        let keymap = defaults(false);
+        assert_eq!(
+            keymap.keystrokes(Command::ZoomIn),
+            [typed("ctrl-="), typed("ctrl-+")]
+        );
+        assert!(keymap.keystrokes(Command::OpenConfig).is_empty());
     }
 }
