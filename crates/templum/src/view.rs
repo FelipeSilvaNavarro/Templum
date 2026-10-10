@@ -116,7 +116,12 @@ pub struct Board {
 }
 
 impl Board {
-    pub fn new(count: usize, grid: (u16, u16), window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        count: usize,
+        grid: (u16, u16),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let font = pick_font(window);
         let font_id = window.text_system().resolve_font(&font);
         let cell_w = window
@@ -137,7 +142,11 @@ impl Board {
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
         let mut board = Self {
-            cam: Camera { x: -GAP, y: -GAP, zoom_idx: ZOOM_1 },
+            cam: Camera {
+                x: -GAP,
+                y: -GAP,
+                zoom_idx: ZOOM_1,
+            },
             blocks: Vec::new(),
             focused: None,
             drag: None,
@@ -155,17 +164,31 @@ impl Board {
         let (cols, rows) = grid;
         let (w, h) = board.block_size(cols, rows);
         for i in 0..count {
-            let (x, y) = ((i % per_row) as f32 * (w + GAP), (i / per_row) as f32 * (h + GAP));
+            let (x, y) = (
+                (i % per_row) as f32 * (w + GAP),
+                (i / per_row) as f32 * (h + GAP),
+            );
             let term = Terminal::spawn(i as u64, cols, rows, board.cell_px(), board.wake.clone())
                 .expect("failed to spawn shell in a PTY");
-            board.blocks.push(Block { id: i, x, y, w, h, term, snap: Rc::default() });
+            board.blocks.push(Block {
+                id: i,
+                x,
+                y,
+                w,
+                h,
+                term,
+                snap: Rc::default(),
+            });
         }
         board.focused = board.blocks.first().map(|b| b.id);
         board
     }
 
     fn block_size(&self, cols: u16, rows: u16) -> (f32, f32) {
-        (cols as f32 * self.cell_w + 2.0 * PAD, rows as f32 * LINE_H + TITLE_H + 2.0 * PAD)
+        (
+            cols as f32 * self.cell_w + 2.0 * PAD,
+            rows as f32 * LINE_H + TITLE_H + 2.0 * PAD,
+        )
     }
 
     fn grid_size(&self, w: f32, h: f32) -> (u16, u16) {
@@ -197,9 +220,10 @@ impl Board {
         window.focus(&self.focus_handle, cx);
         let (sx, sy) = (f32::from(e.position.x), f32::from(e.position.y));
         let (wx, wy) = self.cam.to_world(sx, sy);
-        let hit = self.blocks.iter().rposition(|b| {
-            wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.y + b.h
-        });
+        let hit = self
+            .blocks
+            .iter()
+            .rposition(|b| wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.y + b.h);
         self.drag = match hit {
             None => Some(Drag::Pan { last: (sx, sy) }),
             Some(i) => {
@@ -207,9 +231,17 @@ impl Board {
                 let b = self.blocks.remove(i);
                 let id = b.id;
                 let drag = if wx > b.x + b.w - HANDLE && wy > b.y + b.h - HANDLE {
-                    Some(Drag::Resize { id, dx: b.x + b.w - wx, dy: b.y + b.h - wy })
+                    Some(Drag::Resize {
+                        id,
+                        dx: b.x + b.w - wx,
+                        dy: b.y + b.h - wy,
+                    })
                 } else if wy < b.y + TITLE_H {
-                    Some(Drag::Move { id, dx: wx - b.x, dy: wy - b.y })
+                    Some(Drag::Move {
+                        id,
+                        dx: wx - b.x,
+                        dy: wy - b.y,
+                    })
                 } else {
                     None
                 };
@@ -242,7 +274,9 @@ impl Board {
                 }
             }
             Drag::Resize { id, dx, dy } => {
-                let Some(b) = self.blocks.iter().find(|b| b.id == id) else { return };
+                let Some(b) = self.blocks.iter().find(|b| b.id == id) else {
+                    return;
+                };
                 let (w, h) = ((wx + dx - b.x).max(MIN_W), (wy + dy - b.y).max(MIN_H));
                 let (cols, rows) = self.grid_size(w, h);
                 let b = self.block_mut(id).expect("block exists");
@@ -291,7 +325,14 @@ impl Board {
         let k = &e.keystroke;
         let app_cursor = t.term.lock().mode().contains(TermMode::APP_CURSOR);
         let m = k.modifiers;
-        if let Some(bytes) = term::encode_key(&k.key, k.key_char.as_deref(), m.control, m.alt, m.shift, app_cursor) {
+        if let Some(bytes) = term::encode_key(
+            &k.key,
+            k.key_char.as_deref(),
+            m.control,
+            m.alt,
+            m.shift,
+            app_cursor,
+        ) {
             t.write(bytes);
             // Stops the platform from also feeding key_char to the text-input path.
             cx.stop_propagation();
@@ -317,7 +358,12 @@ impl Render for Board {
             .blocks
             .iter()
             .filter_map(|b| {
-                let r = [(b.x - self.cam.x) * z, (b.y - self.cam.y) * z, b.w * z, b.h * z];
+                let r = [
+                    (b.x - self.cam.x) * z,
+                    (b.y - self.cam.y) * z,
+                    b.w * z,
+                    b.h * z,
+                ];
                 let visible = r[0] < vw && r[1] < vh && r[0] + r[2] > 0.0 && r[1] + r[3] > 0.0;
                 visible.then(|| BlockFrame {
                     rect: r,
@@ -349,7 +395,13 @@ impl Render for Board {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_scroll_wheel(cx.listener(Self::on_scroll))
             .on_pinch(cx.listener(Self::on_pinch))
-            .child(canvas(|_, _, _| {}, move |bounds, _, window, cx| scene.paint(bounds, window, cx)).size_full())
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, cx| scene.paint(bounds, window, cx),
+                )
+                .size_full(),
+            )
     }
 }
 
@@ -375,7 +427,11 @@ struct Scene {
 impl Scene {
     fn paint(self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
         let started = std::time::Instant::now();
-        window.handle_input(&self.focus, ElementInputHandler::new(bounds, self.board.clone()), cx);
+        window.handle_input(
+            &self.focus,
+            ElementInputHandler::new(bounds, self.board.clone()),
+            cx,
+        );
         let z = self.zoom;
         let o = bounds.origin;
         let mut ime_cursor = None;
@@ -384,10 +440,29 @@ impl Scene {
             let r = Bounds::new(o + point(px(x), px(y)), size(px(w), px(h)));
             let radius = px(6.0 * z);
             let border = if b.focused { 0x6a9fb5 } else { 0x3a3a40 };
-            window.paint_quad(quad(r, radius, hsla(DEFAULT_BG, 1.0), px(if b.focused { 2.0 } else { 1.0 }), rgb(border), BorderStyle::Solid));
+            window.paint_quad(quad(
+                r,
+                radius,
+                hsla(DEFAULT_BG, 1.0),
+                px(if b.focused { 2.0 } else { 1.0 }),
+                rgb(border),
+                BorderStyle::Solid,
+            ));
             let title_r = Bounds::new(r.origin, size(r.size.width, px(TITLE_H * z)));
-            let top = Corners { top_left: radius, top_right: radius, bottom_left: px(0.0), bottom_right: px(0.0) };
-            window.paint_quad(quad(title_r, top, rgb(0x26262c), px(0.0), rgb(border), BorderStyle::Solid));
+            let top = Corners {
+                top_left: radius,
+                top_right: radius,
+                bottom_left: px(0.0),
+                bottom_right: px(0.0),
+            };
+            window.paint_quad(quad(
+                title_r,
+                top,
+                rgb(0x26262c),
+                px(0.0),
+                rgb(border),
+                BorderStyle::Solid,
+            ));
             let run = TextRun {
                 len: b.title.len(),
                 font: self.font.clone(),
@@ -396,15 +471,35 @@ impl Scene {
                 underline: None,
                 strikethrough: None,
             };
-            let title = window.text_system().shape_line(b.title.clone(), px(TITLE_FONT * z), &[run], None);
-            let _ = title.paint(r.origin + point(px(8.0 * z), px(0.0)), px(TITLE_H * z), TextAlign::Left, None, window, cx);
+            let title =
+                window
+                    .text_system()
+                    .shape_line(b.title.clone(), px(TITLE_FONT * z), &[run], None);
+            let _ = title.paint(
+                r.origin + point(px(8.0 * z), px(0.0)),
+                px(TITLE_H * z),
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
 
             let body = Bounds::new(
                 r.origin + point(px(PAD * z), px((TITLE_H + PAD) * z)),
                 size(px(w - 2.0 * PAD * z), px(h - (TITLE_H + 2.0 * PAD) * z)),
             );
             window.with_content_mask(Some(ContentMask { bounds: body }), |window| {
-                let cursor = paint_grid(&b.term, &b.snap, body.origin, z, &self.font, self.cell_w, b.focused, window, cx);
+                let cursor = paint_grid(
+                    &b.term,
+                    &b.snap,
+                    body.origin,
+                    z,
+                    &self.font,
+                    self.cell_w,
+                    b.focused,
+                    window,
+                    cx,
+                );
                 if b.focused {
                     ime_cursor = cursor;
                     if let (Some(c), Some(text)) = (cursor, &self.marked) {
@@ -417,9 +512,13 @@ impl Scene {
                 r.origin + point(px(w - HANDLE * z), px(h - HANDLE * z)),
                 size(px(HANDLE * z), px(HANDLE * z)),
             );
-            window.paint_quad(fill(handle, rgb(border)).corner_radii(Corners { bottom_right: radius, ..Default::default() }));
+            window.paint_quad(fill(handle, rgb(border)).corner_radii(Corners {
+                bottom_right: radius,
+                ..Default::default()
+            }));
         }
-        self.board.update(cx, |board, _| board.ime_cursor = ime_cursor);
+        self.board
+            .update(cx, |board, _| board.ime_cursor = ime_cursor);
         PAINT_US.store(started.elapsed().as_micros() as u64, Ordering::Relaxed);
     }
 }
@@ -484,8 +583,12 @@ impl Snapshot {
         };
         let content = term.renderable_content();
         let off = content.display_offset as i32;
-        self.cursor = (content.cursor.shape != CursorShape::Hidden)
-            .then(|| (content.cursor.point.line.0 + off, content.cursor.point.column.0));
+        self.cursor = (content.cursor.shape != CursorShape::Hidden).then(|| {
+            (
+                content.cursor.point.line.0 + off,
+                content.cursor.point.column.0,
+            )
+        });
         self.rows.clear();
         for item in content.display_iter {
             let row = (item.point.line.0 + off) as usize;
@@ -504,9 +607,17 @@ impl Snapshot {
             if bg != DEFAULT_BG {
                 self.rows[row].push_bg(item.point.column.0, bg);
             }
-            let alpha = if cell.flags.contains(Flags::DIM) { 0.66 } else { 1.0 };
+            let alpha = if cell.flags.contains(Flags::DIM) {
+                0.66
+            } else {
+                1.0
+            };
             // A wide char's spacer becomes a blank so later glyphs stay on their columns.
-            let c = if cell.flags.contains(Flags::WIDE_CHAR_SPACER) || cell.c < ' ' { ' ' } else { cell.c };
+            let c = if cell.flags.contains(Flags::WIDE_CHAR_SPACER) || cell.c < ' ' {
+                ' '
+            } else {
+                cell.c
+            };
             self.rows[row].push(c, hsla(fg, alpha), cell.flags.contains(Flags::BOLD));
         }
         drop(term);
@@ -535,11 +646,17 @@ fn paint_grid(
         window.request_animation_frame();
     }
     let (cw, lh) = (cell_w * z, LINE_H * z);
-    let bold = Font { weight: FontWeight::BOLD, ..font.clone() };
+    let bold = Font {
+        weight: FontWeight::BOLD,
+        ..font.clone()
+    };
     for (i, row) in snap.rows.iter().enumerate() {
         let y = origin.y + px(lh * i as f32);
         for (start, len, bg) in &row.bgs {
-            let r = Bounds::new(point(origin.x + px(cw * *start as f32), y), size(px(cw * *len as f32), px(lh)));
+            let r = Bounds::new(
+                point(origin.x + px(cw * *start as f32), y),
+                size(px(cw * *len as f32), px(lh)),
+            );
             window.paint_quad(fill(r, hsla(*bg, 1.0)));
         }
         if row.text.is_empty() {
@@ -558,13 +675,28 @@ fn paint_grid(
             })
             .collect();
         // force_width pins glyph n to column n, like a terminal grid.
-        let line = window.text_system().shape_line(row.text.clone().into(), px(FONT_SIZE * z), &runs, Some(px(cw)));
-        let _ = line.paint(point(origin.x, y), px(lh), TextAlign::Left, None, window, cx);
+        let line = window.text_system().shape_line(
+            row.text.clone().into(),
+            px(FONT_SIZE * z),
+            &runs,
+            Some(px(cw)),
+        );
+        let _ = line.paint(
+            point(origin.x, y),
+            px(lh),
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
     }
 
     let (line, col) = snap.cursor?;
     let r = Bounds::new(
-        point(origin.x + px(cw * col as f32), origin.y + px(lh * line as f32)),
+        point(
+            origin.x + px(cw * col as f32),
+            origin.y + px(lh * line as f32),
+        ),
         size(px(cw), px(lh)),
     );
     if focused {
@@ -575,22 +707,42 @@ fn paint_grid(
     Some(r)
 }
 
-fn paint_marked(text: &str, at: Bounds<Pixels>, z: f32, font: &Font, window: &mut Window, cx: &mut App) {
+fn paint_marked(
+    text: &str,
+    at: Bounds<Pixels>,
+    z: f32,
+    font: &Font,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let run = TextRun {
         len: text.len(),
         font: font.clone(),
         color: rgb(0xfeca88).into(),
         background_color: Some(rgb(0x26262c).into()),
-        underline: Some(gpui::UnderlineStyle { thickness: px(1.0), color: None, wavy: false }),
+        underline: Some(gpui::UnderlineStyle {
+            thickness: px(1.0),
+            color: None,
+            wavy: false,
+        }),
         strikethrough: None,
     };
-    let line = window.text_system().shape_line(text.to_string().into(), px(FONT_SIZE * z), &[run], None);
+    let line =
+        window
+            .text_system()
+            .shape_line(text.to_string().into(), px(FONT_SIZE * z), &[run], None);
     let _ = line.paint_background(at.origin, at.size.height, TextAlign::Left, None, window, cx);
     let _ = line.paint(at.origin, at.size.height, TextAlign::Left, None, window, cx);
 }
 
 fn hsla(c: Rgb, a: f32) -> Hsla {
-    Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a }.into()
+    Rgba {
+        r: c.r as f32 / 255.0,
+        g: c.g as f32 / 255.0,
+        b: c.b as f32 / 255.0,
+        a,
+    }
+    .into()
 }
 
 fn pick_font(window: &Window) -> Font {
@@ -615,12 +767,26 @@ fn pick_font(window: &Window) -> Font {
 /// Text input path (IME, dead keys, composed chars): GPUI calls this for any key that
 /// `on_key_down` did not consume.
 impl EntityInputHandler for Board {
-    fn text_for_range(&mut self, _: Range<usize>, _: &mut Option<Range<usize>>, _: &mut Window, _: &mut Context<Self>) -> Option<String> {
+    fn text_for_range(
+        &mut self,
+        _: Range<usize>,
+        _: &mut Option<Range<usize>>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<String> {
         None
     }
 
-    fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
-        Some(UTF16Selection { range: 0..0, reversed: false })
+    fn selected_text_range(
+        &mut self,
+        _: bool,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        Some(UTF16Selection {
+            range: 0..0,
+            reversed: false,
+        })
     }
 
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
@@ -632,7 +798,13 @@ impl EntityInputHandler for Board {
         cx.notify();
     }
 
-    fn replace_text_in_range(&mut self, _: Option<Range<usize>>, text: &str, _: &mut Window, cx: &mut Context<Self>) {
+    fn replace_text_in_range(
+        &mut self,
+        _: Option<Range<usize>>,
+        text: &str,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.marked = None;
         if let Some(t) = self.focused_term() {
             t.write(text.as_bytes().to_vec());
@@ -652,11 +824,22 @@ impl EntityInputHandler for Board {
         cx.notify();
     }
 
-    fn bounds_for_range(&mut self, _: Range<usize>, _: Bounds<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<Bounds<Pixels>> {
+    fn bounds_for_range(
+        &mut self,
+        _: Range<usize>,
+        _: Bounds<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
         self.ime_cursor
     }
 
-    fn character_index_for_point(&mut self, _: Point<Pixels>, _: &mut Window, _: &mut Context<Self>) -> Option<usize> {
+    fn character_index_for_point(
+        &mut self,
+        _: Point<Pixels>,
+        _: &mut Window,
+        _: &mut Context<Self>,
+    ) -> Option<usize> {
         None
     }
 }
@@ -667,7 +850,11 @@ mod tests {
 
     #[test]
     fn zoom_keeps_point_under_cursor() {
-        let mut cam = Camera { x: 100.0, y: -50.0, zoom_idx: ZOOM_1 };
+        let mut cam = Camera {
+            x: 100.0,
+            y: -50.0,
+            zoom_idx: ZOOM_1,
+        };
         let before = cam.to_world(300.0, 200.0);
         cam.step(3, 300.0, 200.0);
         assert_eq!(cam.zoom(), 1.5);

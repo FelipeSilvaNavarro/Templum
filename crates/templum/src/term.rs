@@ -51,15 +51,23 @@ pub struct Listener {
 
 impl EventListener for Listener {
     fn send_event(&self, event: Event) {
-        match event {
-            // Replies to queries (DSR, DA...) go straight back to the shell, off the UI thread.
-            Event::PtyWrite(text) => {
-                if let Some(pty) = self.pty.get() {
-                    let _ = pty.send(Msg::Input(Cow::Owned(text.into_bytes())));
-                }
+        // Replies to queries go straight back to the shell, off the UI thread.
+        let reply = |text: String| {
+            if let Some(pty) = self.pty.get() {
+                let _ = pty.send(Msg::Input(Cow::Owned(text.into_bytes())));
             }
+        };
+        match event {
+            Event::PtyWrite(text) => reply(text),
+            // OSC 10/11/4 queries: nvim, btop... pick dark/light themes from the answer.
+            // ponytail: answers default colors, not OSC-overridden ones (Term is locked here).
+            Event::ColorRequest(index, format) => reply(format(match index {
+                0..=255 => indexed(index as u8),
+                257 => DEFAULT_BG,
+                _ => DEFAULT_FG,
+            })),
             Event::Wakeup | Event::ChildExit(_) => self.wake.wake(),
-            // ponytail: titles, bell, clipboard, color queries ignored; wire them in the real crate.
+            // ponytail: titles, bell, clipboard, size queries ignored; wire them in the real crate.
             _ => {}
         }
     }
@@ -73,7 +81,13 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    pub fn spawn(id: u64, cols: u16, rows: u16, cell: (u16, u16), wake: Wake) -> std::io::Result<Self> {
+    pub fn spawn(
+        id: u64,
+        cols: u16,
+        rows: u16,
+        cell: (u16, u16),
+        wake: Wake,
+    ) -> std::io::Result<Self> {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
         let options = tty::Options {
             shell: Some(tty::Shell::new(shell, Vec::new())),
@@ -85,14 +99,26 @@ impl Terminal {
         };
         let pty = tty::new(&options, window_size(cols, rows, cell), id)?;
         let pty_sender = Arc::new(OnceLock::new());
-        let listener = Listener { wake, pty: pty_sender.clone() };
+        let listener = Listener {
+            wake,
+            pty: pty_sender.clone(),
+        };
         let size = TermSize::new(cols as usize, rows as usize);
-        let term = Arc::new(FairMutex::new(Term::new(Config::default(), &size, listener.clone())));
+        let term = Arc::new(FairMutex::new(Term::new(
+            Config::default(),
+            &size,
+            listener.clone(),
+        )));
         let event_loop = EventLoop::new(term.clone(), listener, pty, false, false)?;
         let pty = event_loop.channel();
         let _ = pty_sender.set(pty.clone());
         event_loop.spawn();
-        Ok(Self { term, pty, cols, rows })
+        Ok(Self {
+            term,
+            pty,
+            cols,
+            rows,
+        })
     }
 
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {
@@ -104,7 +130,9 @@ impl Terminal {
             return;
         }
         (self.cols, self.rows) = (cols, rows);
-        self.term.lock().resize(TermSize::new(cols as usize, rows as usize));
+        self.term
+            .lock()
+            .resize(TermSize::new(cols as usize, rows as usize));
         let _ = self.pty.send(Msg::Resize(window_size(cols, rows, cell)));
     }
 }
@@ -116,19 +144,36 @@ impl Drop for Terminal {
 }
 
 fn window_size(cols: u16, rows: u16, (cell_width, cell_height): (u16, u16)) -> WindowSize {
-    WindowSize { num_lines: rows, num_cols: cols, cell_width, cell_height }
+    WindowSize {
+        num_lines: rows,
+        num_cols: cols,
+        cell_width,
+        cell_height,
+    }
 }
 
 // Adapted from Alacritty (Apache-2.0): alacritty/src/config/color.rs default colors.
-pub const DEFAULT_FG: Rgb = Rgb { r: 0xd8, g: 0xd8, b: 0xd8 };
-pub const DEFAULT_BG: Rgb = Rgb { r: 0x18, g: 0x18, b: 0x18 };
+pub const DEFAULT_FG: Rgb = Rgb {
+    r: 0xd8,
+    g: 0xd8,
+    b: 0xd8,
+};
+pub const DEFAULT_BG: Rgb = Rgb {
+    r: 0x18,
+    g: 0x18,
+    b: 0x18,
+};
 const ANSI: [u32; 16] = [
     0x181818, 0xac4242, 0x90a959, 0xf4bf75, 0x6a9fb5, 0xaa759f, 0x75b5aa, 0xd8d8d8, // normal
     0x6b6b6b, 0xc55555, 0xaac474, 0xfeca88, 0x82b8c8, 0xc28cb8, 0x93d3c3, 0xf8f8f8, // bright
 ];
 
 fn hex(v: u32) -> Rgb {
-    Rgb { r: (v >> 16) as u8, g: (v >> 8) as u8, b: v as u8 }
+    Rgb {
+        r: (v >> 16) as u8,
+        g: (v >> 8) as u8,
+        b: v as u8,
+    }
 }
 
 /// xterm 256-color palette: 16 ANSI, 6x6x6 cube, 24 grays.
@@ -138,7 +183,11 @@ fn indexed(i: u8) -> Rgb {
         16..232 => {
             let i = i - 16;
             let level = |v: u8| if v == 0 { 0 } else { v * 40 + 55 };
-            Rgb { r: level(i / 36), g: level(i / 6 % 6), b: level(i % 6) }
+            Rgb {
+                r: level(i / 36),
+                g: level(i / 6 % 6),
+                b: level(i % 6),
+            }
         }
         _ => {
             let v = 8 + (i - 232) * 10;
@@ -149,7 +198,11 @@ fn indexed(i: u8) -> Rgb {
 
 fn dim(c: Rgb) -> Rgb {
     let f = |v: u8| (v as f32 * 0.66) as u8;
-    Rgb { r: f(c.r), g: f(c.g), b: f(c.b) }
+    Rgb {
+        r: f(c.r),
+        g: f(c.g),
+        b: f(c.b),
+    }
 }
 
 /// Resolves a cell color: the terminal's OSC-set palette first, then our defaults.
@@ -170,7 +223,14 @@ pub fn resolve(color: Color, colors: &Colors) -> Rgb {
 /// Bytes a key press sends to the shell. `None` means "not a terminal key": let it reach the
 /// text-input path (printable chars, IME, dead keys).
 /// ponytail: no modifier variants for arrows/F-keys (ctrl-left etc.) and no kitty protocol.
-pub fn encode_key(key: &str, key_char: Option<&str>, ctrl: bool, alt: bool, shift: bool, app_cursor: bool) -> Option<Vec<u8>> {
+pub fn encode_key(
+    key: &str,
+    key_char: Option<&str>,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    app_cursor: bool,
+) -> Option<Vec<u8>> {
     let cursor = |c: char| {
         let prefix = if app_cursor { "\x1bO" } else { "\x1b[" };
         format!("{prefix}{c}").into_bytes()
@@ -224,7 +284,10 @@ mod tests {
     fn keys_encode_like_xterm() {
         let enc = |k, c, ctrl, alt, app| encode_key(k, c, ctrl, alt, false, app);
         assert_eq!(enc("enter", None, false, false, false).unwrap(), b"\r");
-        assert_eq!(enc("backspace", None, false, false, false).unwrap(), b"\x7f");
+        assert_eq!(
+            enc("backspace", None, false, false, false).unwrap(),
+            b"\x7f"
+        );
         assert_eq!(enc("c", None, true, false, false).unwrap(), [3]);
         assert_eq!(enc("up", None, false, false, false).unwrap(), b"\x1b[A");
         assert_eq!(enc("up", None, false, false, true).unwrap(), b"\x1bOA");
@@ -239,8 +302,18 @@ mod tests {
         let c = Colors::default();
         assert_eq!(resolve(Color::Indexed(16), &c), Rgb { r: 0, g: 0, b: 0 });
         assert_eq!(resolve(Color::Indexed(196), &c), Rgb { r: 255, g: 0, b: 0 });
-        assert_eq!(resolve(Color::Indexed(255), &c), Rgb { r: 238, g: 238, b: 238 });
+        assert_eq!(
+            resolve(Color::Indexed(255), &c),
+            Rgb {
+                r: 238,
+                g: 238,
+                b: 238
+            }
+        );
         assert_eq!(resolve(Color::Named(NamedColor::Red), &c), hex(0xac4242));
-        assert_eq!(resolve(Color::Named(NamedColor::Background), &c), DEFAULT_BG);
+        assert_eq!(
+            resolve(Color::Named(NamedColor::Background), &c),
+            DEFAULT_BG
+        );
     }
 }
