@@ -16,8 +16,8 @@ use gpui_kit::{
     Anchor, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler,
     EntityInputHandler, FocusHandle, Hsla, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint, ScrollDelta,
-    ScrollWheelEvent, Subscription, Task, UTF16Selection, Window, WindowAppearance, canvas, div,
-    fill, point, px, size,
+    ScrollWheelEvent, SharedString, Subscription, Task, UTF16Selection, Window, WindowAppearance,
+    canvas, div, fill, point, px, size,
 };
 use templum_canvas::{
     Block, BlockId, Camera, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid,
@@ -130,6 +130,10 @@ pub struct Workspace {
     pub(crate) save_error: Option<String>,
     /// Write `unsaved` when the window closes or the app quits.
     _flush: Vec<Subscription>,
+    /// Installed monospaced families, measured when the settings panel opens.
+    pub(crate) fonts: Vec<SharedString>,
+    /// What the user typed in the panel's text fields that can't apply yet (an unclosed quote).
+    pub(crate) drafts: HashMap<&'static str, String>,
     /// The settings panel, open or sliding out.
     pub(crate) settings: Option<Panel>,
     /// The panel's keyboard focus: Esc and the settings shortcut close it from there.
@@ -269,6 +273,8 @@ impl Workspace {
             _save: Task::ready(()),
             save_error: None,
             _flush: flush,
+            fonts: Vec::new(),
+            drafts: HashMap::new(),
             settings: None,
             settings_focus: cx.focus_handle(),
             hovered: None,
@@ -653,6 +659,7 @@ impl Workspace {
             return;
         }
         self.themes = theme::load(self.config_dir.as_deref());
+        self.fonts = settings::monospace_families(window);
         self.settings = Some(Panel {
             since: Instant::now(),
             closing: false,
@@ -667,6 +674,7 @@ impl Workspace {
             since: Instant::now(),
             closing: true,
         });
+        self.drafts.clear();
         self.save_or_notify(window, cx);
         window.focus(&self.focus_handle, cx);
         cx.notify();
@@ -1358,9 +1366,9 @@ impl EntityInputHandler for Workspace {
 mod tests {
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
-        AnyWindowHandle, AppContext as _, Bounds, Entity, Modifiers, MouseButton, MouseDownEvent,
-        MouseUpEvent, PlatformInput, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase,
-        Window, WindowBounds, WindowOptions, point, px, size,
+        AnyWindowHandle, AppContext as _, Bounds, Context, Entity, Modifiers, MouseButton,
+        MouseDownEvent, MouseUpEvent, PlatformInput, ScrollDelta, ScrollWheelEvent, TestAppContext,
+        TouchPhase, Window, WindowBounds, WindowOptions, point, px, size,
     };
 
     use super::{Workspace, bind_keys};
@@ -2801,5 +2809,116 @@ mod tests {
             text.contains("blink = true") && text.contains("shape = \"bar\""),
             "{text}"
         );
+    }
+
+    #[gpui_kit::test]
+    fn the_default_font_removes_the_family(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        ws.update(cx, |ws, cx| {
+            crate::settings::set_family(ws, "Some Mono", cx)
+        });
+        frame(handle, cx);
+        ws.update(cx, |ws, _| ws.save());
+        let path = dir.path().join("config.toml");
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("family = \"Some Mono\"")
+        );
+        ws.update(cx, |ws, cx| crate::settings::set_family(ws, "", cx));
+        frame(handle, cx);
+        ws.update(cx, |ws, _| {
+            assert_eq!(ws.config.font.family, None);
+            ws.save();
+        });
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("family"));
+    }
+
+    #[gpui_kit::test]
+    fn an_unclosed_quote_waits_for_the_closing_one(cx: &mut TestAppContext) {
+        use crate::settings::set_args;
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        ws.update(cx, |ws, cx| set_args(ws, "--login \"a b", cx));
+        frame(handle, cx);
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.config.shell.args.is_empty(), "not applied");
+            assert_eq!(
+                crate::settings::args_text(ws),
+                "--login \"a b",
+                "kept as typed"
+            );
+            assert_eq!(crate::settings::args_error(ws), Some("Unclosed quote"));
+        });
+        ws.update(cx, |ws, cx| set_args(ws, "--login \"a b\"", cx));
+        frame(handle, cx);
+        ws.update(cx, |ws, _| {
+            assert_eq!(ws.config.shell.args, ["--login", "a b"]);
+            assert_eq!(crate::settings::args_error(ws), None);
+            ws.save();
+        });
+        let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+        assert!(text.contains("args = [\"--login\", \"a b\"]"), "{text}");
+    }
+
+    #[gpui_kit::test]
+    fn a_bare_tilde_waits_for_the_rest_of_the_path(cx: &mut TestAppContext) {
+        use crate::config::WorkingDirectory;
+        use crate::settings::{folder_text, set_folder, set_folder_kind};
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        let target = dir.path().join("work");
+        ws.update(cx, |ws, cx| set_folder_kind(ws, "folder", cx));
+        frame(handle, cx);
+        ws.update(cx, |ws, cx| set_folder(ws, "~", cx));
+        frame(handle, cx);
+        ws.read_with(cx, |ws, _| {
+            assert!(
+                matches!(ws.config.shell.working_directory, WorkingDirectory::Path(_)),
+                "\"~\" alone doesn't switch to Home"
+            );
+            assert_eq!(folder_text(ws), "~", "kept as typed");
+        });
+        let typed = target.display().to_string();
+        ws.update(cx, |ws, cx| set_folder(ws, &typed, cx));
+        frame(handle, cx);
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(
+                ws.config.shell.working_directory,
+                WorkingDirectory::Path(target.clone())
+            );
+            assert_eq!(folder_text(ws), typed);
+        });
+        // Written now, while the temporary folder still exists.
+        ws.update(cx, |ws, _| ws.save());
+    }
+
+    #[gpui_kit::test]
+    fn start_folder_and_program_choices_write_the_file(cx: &mut TestAppContext) {
+        use crate::settings::{set_folder_kind, set_program};
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        let path = dir.path().join("config.toml");
+        let mut check = |change: &dyn Fn(&mut Workspace, &mut Context<Workspace>), want: &str| {
+            ws.update(cx, |ws, cx| change(ws, cx));
+            frame(handle, cx);
+            ws.update(cx, |ws, _| ws.save());
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(text.contains(want), "want {want:?} in {text}");
+        };
+        check(
+            &|ws, cx| set_folder_kind(ws, "home", cx),
+            "working_directory = \"~\"",
+        );
+        check(
+            &|ws, cx| set_folder_kind(ws, "inherit", cx),
+            "working_directory = \"inherit\"",
+        );
+        check(&|ws, cx| set_program(ws, "fish", cx), "program = \"fish\"");
+        ws.update(cx, |ws, cx| set_program(ws, "", cx));
+        frame(handle, cx);
+        ws.update(cx, |ws, _| ws.save());
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("program"));
     }
 }

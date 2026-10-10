@@ -2,6 +2,7 @@
 //! active config and changes it through the workspace, which applies the change on the next frame
 //! and saves it shortly after.
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use gpui_kit::assets::IconName;
@@ -17,11 +18,13 @@ use gpui_kit::component::{Disableable as _, Icon, Sizable as _, TITLE_BAR_HEIGHT
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, BoxShadow, ClickEvent, Context, Entity, SharedString, Subscription,
-    TestSupportExt, Window, div, point, px,
+    TestSupportExt, Window, div, font, point, px,
 };
 
-use crate::config::{self, Blur, Config, Edit, Mode, Shape, ThemeConfig, WindowConfig};
-use crate::grid::hsla;
+use crate::config::{
+    self, Blur, Config, Edit, Mode, Shape, ThemeConfig, WindowConfig, WorkingDirectory,
+};
+use crate::grid::{self, hsla};
 use crate::motion;
 use crate::workspace::Workspace;
 
@@ -418,6 +421,363 @@ fn number(ws: &Entity<Workspace>, n: &'static Number) -> SettingField<SharedStri
     )
 }
 
+static FONT_SIZE: Number = Number {
+    table: "font",
+    key: "size",
+    min: 6.0,
+    max: 72.0,
+    step: 1.0,
+    get: |c| f64::from(c.font.size),
+    set: |c, v| c.font.size = v as f32,
+};
+
+/// Equal advances for "i" and "m": a monospaced font (GPUI doesn't say which fonts are).
+fn is_monospace(i: f32, m: f32) -> bool {
+    (i - m).abs() <= 0.01
+}
+
+/// The installed monospaced families, sorted. Measured when the panel opens: one advance pair
+/// per family.
+pub(crate) fn monospace_families(window: &Window) -> Vec<SharedString> {
+    let ts = window.text_system();
+    let installed = ts.all_font_names();
+    let candidates = if cfg!(any(target_os = "macos", target_os = "windows")) {
+        installed
+    } else {
+        safe_to_load(installed, fc_list_with_i_and_m())
+    };
+    candidates
+        .into_iter()
+        .filter(|name| {
+            let id = ts.resolve_font(&font(name.clone()));
+            // A family that doesn't load resolves to a fallback font: not this family.
+            let loaded = ts
+                .get_font_for_id(id)
+                .is_some_and(|f| f.family.as_ref() == name.as_str());
+            let advance = |c| ts.advance(id, px(14.0), c).map(|s| f32::from(s.width)).ok();
+            loaded
+                && matches!((advance('i'), advance('m')), (Some(i), Some(m)) if m > 0.0 && is_monospace(i, m))
+        })
+        .map(SharedString::from)
+        .collect()
+}
+
+/// The families that are safe to load on Linux. There GPUI's text system drops a loaded family's
+/// faces that have no "m" from the font database for good, and those are the emoji, symbol and
+/// script fonts other text falls back to. So only families fontconfig says have both "i" and "m"
+/// are loaded; without fc-list, only the built-in list.
+fn safe_to_load(installed: Vec<String>, with_i_and_m: Option<HashSet<String>>) -> Vec<String> {
+    installed
+        .into_iter()
+        .filter(|name| match &with_i_and_m {
+            Some(families) => families.contains(name),
+            None => grid::MONOSPACE.contains(&name.as_str()),
+        })
+        .collect()
+}
+
+/// Every family name of the fonts that have both "i" and "m", from fontconfig.
+fn fc_list_with_i_and_m() -> Option<HashSet<String>> {
+    let out = std::process::Command::new("fc-list")
+        .args([":charset=69 6d", "--format", "%{family}\n"])
+        .output()
+        .ok()?;
+    out.status.success().then(|| {
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .flat_map(|line| line.split(','))
+            .map(str::to_owned)
+            .collect()
+    })
+}
+
+/// `font.family`; "" is Default (the key is removed: the first installed font of the built-in list).
+pub(crate) fn set_family(ws: &mut Workspace, family: &str, cx: &mut Context<Workspace>) {
+    if family.is_empty() {
+        ws.edit(Edit::remove("font", "family"), |c| c.font.family = None, cx);
+    } else {
+        ws.edit(
+            Edit::set("font", "family", family),
+            |c| c.font.family = Some(family.to_string()),
+            cx,
+        );
+    }
+}
+
+fn font_family(ws: &Entity<Workspace>, fonts: &[SharedString]) -> SettingField<SharedString> {
+    let options = std::iter::once((
+        SharedString::default(),
+        SharedString::from("Default (built-in list)"),
+    ))
+    .chain(fonts.iter().map(|f| (f.clone(), f.clone())))
+    .collect();
+    let read = ws.clone();
+    let write = ws.clone();
+    let field = SettingField::scrollable_dropdown(
+        options,
+        move |cx| {
+            read.read(cx)
+                .config
+                .font
+                .family
+                .clone()
+                .unwrap_or_default()
+                .into()
+        },
+        move |family: SharedString, cx| write.update(cx, |ws, cx| set_family(ws, &family, cx)),
+    );
+    reset(
+        field,
+        ws,
+        "font",
+        "family",
+        |c| c.font.family.is_none(),
+        |c| c.font.family = None,
+    )
+}
+
+/// A few lines of terminal output in the chosen font, size and theme.
+fn preview(ws: &Workspace) -> SettingItem {
+    let family = ws.cell.font.family.clone();
+    let size = ws.config.font.size;
+    let p = ws.theme.palette;
+    SettingItem::render(move |_: &RenderOptions, _: &mut Window, _: &mut App| {
+        let line =
+            |parts: &[(&str, templum_terminal::Rgb)]| {
+                div().flex().children(parts.iter().map(|(text, color)| {
+                    div().text_color(hsla(*color, 1.0)).child(text.to_string())
+                }))
+            };
+        div()
+            .w_full()
+            .p(px(10.0))
+            .rounded(px(6.0))
+            .bg(hsla(p.background, 1.0))
+            .font_family(family.clone())
+            .text_size(px(size))
+            .child(line(&[("~/templum", p.ansi[4])]))
+            .child(line(&[("❯ ", p.ansi[2]), ("cargo test", p.foreground)]))
+            .child(line(&[
+                ("test result: ", p.foreground),
+                ("ok", p.ansi[2]),
+                (". 135 passed", p.foreground),
+            ]))
+    })
+}
+
+/// Splits on spaces; "…" or '…' keeps spaces (and the other quote) inside one argument.
+pub(crate) fn split_args(text: &str) -> Result<Vec<String>, &'static str> {
+    let mut args = Vec::new();
+    let mut current: Option<String> = None;
+    let mut quote: Option<char> = None;
+    for c in text.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => current.get_or_insert_default().push(c),
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                current.get_or_insert_default();
+            }
+            None if c.is_whitespace() => args.extend(current.take()),
+            None => current.get_or_insert_default().push(c),
+        }
+    }
+    if quote.is_some() {
+        return Err("Unclosed quote");
+    }
+    args.extend(current);
+    Ok(args)
+}
+
+/// The text field's form of `args`: quoted where an argument is empty or has a space or a quote.
+pub(crate) fn join_args(args: &[String]) -> String {
+    args.iter()
+        .map(|a| {
+            if !a.is_empty() && !a.contains(|c: char| c.is_whitespace() || c == '"' || c == '\'') {
+                a.clone()
+            } else if !a.contains('"') {
+                format!("\"{a}\"")
+            } else if !a.contains('\'') {
+                format!("'{a}'")
+            } else {
+                // Both quotes: "…", each " written as "'"'" (adjacent quoted parts join up).
+                format!("\"{}\"", a.replace('"', "\"'\"'\""))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// `shell.program`; empty removes the key ($SHELL, or PowerShell on Windows).
+pub(crate) fn set_program(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
+    if text.is_empty() {
+        ws.edit(
+            Edit::remove("shell", "program"),
+            |c| c.shell.program = None,
+            cx,
+        );
+    } else {
+        ws.edit(
+            Edit::set("shell", "program", text),
+            |c| c.shell.program = Some(text.to_string()),
+            cx,
+        );
+    }
+}
+
+/// `shell.args` from the text field. An unclosed quote waits (the field says so); the typed text
+/// is kept as a draft, so the field shows it rather than the config.
+pub(crate) fn set_args(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
+    ws.drafts.insert("args", text.to_string());
+    if let Ok(args) = split_args(text) {
+        let value: toml_edit::Array = args.iter().map(String::as_str).collect();
+        ws.edit(
+            Edit::set("shell", "args", value),
+            |c| c.shell.args = args,
+            cx,
+        );
+    }
+    cx.notify();
+}
+
+/// What the arguments field shows: the draft while it is what's in effect (or can't be yet),
+/// else the config's.
+pub(crate) fn args_text(ws: &Workspace) -> String {
+    match ws.drafts.get("args") {
+        Some(d) if split_args(d).map_or(true, |a| a == ws.config.shell.args) => d.clone(),
+        _ => join_args(&ws.config.shell.args),
+    }
+}
+
+pub(crate) fn args_error(ws: &Workspace) -> Option<&'static str> {
+    ws.drafts.get("args").and_then(|d| split_args(d).err())
+}
+
+/// The start folder dropdown: "inherit", "home" or "folder" (the home folder's path, to edit).
+pub(crate) fn set_folder_kind(ws: &mut Workspace, kind: &str, cx: &mut Context<Workspace>) {
+    let (value, wd) = match kind {
+        "home" => ("~".to_string(), WorkingDirectory::Home),
+        "folder" => {
+            if matches!(ws.config.shell.working_directory, WorkingDirectory::Path(_)) {
+                return;
+            }
+            let Some(home) = std::env::home_dir() else {
+                return;
+            };
+            (home.display().to_string(), WorkingDirectory::Path(home))
+        }
+        _ => ("inherit".to_string(), WorkingDirectory::Inherit),
+    };
+    ws.edit(
+        Edit::set("shell", "working_directory", value),
+        |c| c.shell.working_directory = wd,
+        cx,
+    );
+}
+
+/// The folder field. "~" and "inherit" alone would switch the dropdown to Home or Inherit and
+/// hide the field mid-typing: they wait for the rest of the path.
+pub(crate) fn set_folder(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
+    ws.drafts.insert("folder", text.to_string());
+    if matches!(text, "" | "~" | "inherit") {
+        cx.notify();
+        return;
+    }
+    let wd = WorkingDirectory::from(text.to_string());
+    ws.edit(
+        Edit::set("shell", "working_directory", text),
+        |c| c.shell.working_directory = wd,
+        cx,
+    );
+}
+
+pub(crate) fn folder_text(ws: &Workspace) -> String {
+    let current = &ws.config.shell.working_directory;
+    match ws.drafts.get("folder") {
+        Some(d)
+            if matches!(d.as_str(), "" | "~" | "inherit")
+                || WorkingDirectory::from(d.clone()) == *current =>
+        {
+            d.clone()
+        }
+        _ => match current {
+            WorkingDirectory::Path(p) => p.display().to_string(),
+            _ => String::new(),
+        },
+    }
+}
+
+/// A text field whose shown value and setter come from the workspace.
+fn text(
+    ws: &Entity<Workspace>,
+    get: fn(&Workspace) -> String,
+    set: fn(&mut Workspace, &str, &mut Context<Workspace>),
+) -> SettingField<SharedString> {
+    let read = ws.clone();
+    let write = ws.clone();
+    SettingField::input(
+        move |cx| get(read.read(cx)).into(),
+        move |value: SharedString, cx| write.update(cx, |ws, cx| set(ws, &value, cx)),
+    )
+}
+
+fn folder_kind(ws: &Entity<Workspace>) -> SettingField<SharedString> {
+    let read = ws.clone();
+    let write = ws.clone();
+    let field = SettingField::dropdown(
+        vec![
+            ("inherit".into(), "Inherit from the focused terminal".into()),
+            ("home".into(), "Home".into()),
+            ("folder".into(), "A folder…".into()),
+        ],
+        move |cx| {
+            match read.read(cx).config.shell.working_directory {
+                WorkingDirectory::Inherit => "inherit",
+                WorkingDirectory::Home => "home",
+                WorkingDirectory::Path(_) => "folder",
+            }
+            .into()
+        },
+        move |kind: SharedString, cx| write.update(cx, |ws, cx| set_folder_kind(ws, &kind, cx)),
+    );
+    reset(
+        field,
+        ws,
+        "shell",
+        "working_directory",
+        |c| c.shell.working_directory == WorkingDirectory::Inherit,
+        |c| c.shell.working_directory = WorkingDirectory::Inherit,
+    )
+}
+
+fn program(ws: &Entity<Workspace>) -> SettingField<SharedString> {
+    let field = text(
+        ws,
+        |ws| ws.config.shell.program.clone().unwrap_or_default(),
+        set_program,
+    );
+    reset(
+        field,
+        ws,
+        "shell",
+        "program",
+        |c| c.shell.program.is_none(),
+        |c| c.shell.program = None,
+    )
+}
+
+fn args(ws: &Entity<Workspace>) -> SettingField<SharedString> {
+    let field = text(ws, args_text, set_args);
+    reset(
+        field,
+        ws,
+        "shell",
+        "args",
+        |c| c.shell.args.is_empty(),
+        |c| c.shell.args.clear(),
+    )
+}
+
 /// `theme.light` or `theme.dark`: the built-in themes and the user's themes folder.
 fn theme(
     ws: &Entity<Workspace>,
@@ -572,6 +932,16 @@ pub(crate) fn pages(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<SettingPa
                     .disabled(!ws.translucent),
             ]),
         ),
+        SettingPage::new("Font").group(
+            SettingGroup::new().items([
+                SettingItem::new("Family", font_family(entity, &ws.fonts))
+                    .description("Installed monospaced fonts")
+                    .keywords(["typeface"]),
+                SettingItem::new("Size", number(entity, &FONT_SIZE))
+                    .description("Points at 100% zoom"),
+                preview(ws),
+            ]),
+        ),
         SettingPage::new("Terminal").group(
             SettingGroup::new().items([
                 SettingItem::new("Cursor", dropdown(entity, &CURSOR)),
@@ -581,6 +951,32 @@ pub(crate) fn pages(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<SettingPa
                     .keywords(["history", "lines"]),
             ]),
         ),
+        SettingPage::new("Shell")
+            .description("Applies to new terminals")
+            .group(
+                SettingGroup::new().items(
+                    [
+                        SettingItem::new("Program", program(entity)).description(
+                            "Empty: the default shell ($SHELL, or PowerShell on Windows)",
+                        ),
+                        SettingItem::new("Arguments", args(entity)).description(
+                            args_error(ws).unwrap_or(
+                                "Separated by spaces; \"…\" or '…' keeps spaces inside one",
+                            ),
+                        ),
+                        SettingItem::new("Start folder", folder_kind(entity))
+                            .keywords(["directory", "cwd"]),
+                    ]
+                    .into_iter()
+                    .chain(
+                        matches!(ws.config.shell.working_directory, WorkingDirectory::Path(_))
+                            .then(|| {
+                                SettingItem::new("Folder", text(entity, folder_text, set_folder))
+                                    .description("A path; ~/ is the home folder")
+                            }),
+                    ),
+                ),
+            ),
     ]
 }
 
@@ -609,8 +1005,8 @@ mod tests {
 
     #[test]
     fn numbers_read_back_what_they_write() {
-        for n in [&SCROLLBACK] {
-            for v in [n.min, n.step, n.max] {
+        for n in [&SCROLLBACK, &FONT_SIZE] {
+            for v in [n.min, n.min + n.step, n.max] {
                 let mut c = Config::default();
                 (n.set)(&mut c, v);
                 assert_eq!((n.get)(&c), v, "{}.{}", n.table, n.key);
@@ -635,5 +1031,57 @@ mod tests {
             let c = config::parse(&text).unwrap();
             assert_eq!((c.window.opacity * 100.0).round(), p, "{text}");
         }
+    }
+
+    #[test]
+    fn equal_advances_are_monospaced() {
+        assert!(is_monospace(8.4, 8.4));
+        assert!(is_monospace(8.4, 8.405));
+        assert!(!is_monospace(3.9, 12.6));
+    }
+
+    #[test]
+    fn args_split_on_spaces_and_keep_quoted_ones() {
+        assert_eq!(split_args("--login -i").unwrap(), ["--login", "-i"]);
+        assert_eq!(split_args("  -c  \"echo hi\" ").unwrap(), ["-c", "echo hi"]);
+        assert_eq!(split_args("-c 'say \"hi\"'").unwrap(), ["-c", "say \"hi\""]);
+        assert_eq!(split_args("\"\"").unwrap(), [""]);
+        assert!(split_args("").unwrap().is_empty());
+        assert_eq!(split_args("-c \"echo hi"), Err("Unclosed quote"));
+    }
+
+    #[test]
+    fn joined_args_split_back() {
+        let args: Vec<String> = [
+            "--login",
+            "a b",
+            "it's",
+            "say \"hi\"",
+            "",
+            "printf '%s' \"x\"",
+            "echo \"it's\"",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(split_args(&join_args(&args)).unwrap(), args);
+        assert_eq!(join_args(&["--login".into(), "-i".into()]), "--login -i");
+    }
+
+    #[test]
+    fn only_families_with_i_and_m_are_loaded_on_linux() {
+        let installed: Vec<String> = ["Fira Code", "JetBrains Mono", "Noto Color Emoji"]
+            .map(String::from)
+            .to_vec();
+        let with_i_and_m: std::collections::HashSet<String> =
+            ["Fira Code", "JetBrains Mono"].map(String::from).into();
+        assert_eq!(
+            safe_to_load(installed.clone(), Some(with_i_and_m)),
+            ["Fira Code", "JetBrains Mono"]
+        );
+        assert_eq!(
+            safe_to_load(installed, None),
+            ["JetBrains Mono"],
+            "without fc-list, the built-in list"
+        );
     }
 }
