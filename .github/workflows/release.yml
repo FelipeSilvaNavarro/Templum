@@ -1,0 +1,65 @@
+name: Release
+
+# Tag `vX.Y.Z` → installers for every platform → draft GitHub Release (published by hand after review).
+# Run it manually (workflow_dispatch) for a dry run: installers are uploaded as workflow artifacts only.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package:
+    name: package (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin, formats: dmg }
+          - { os: macos-latest, target: x86_64-apple-darwin, formats: dmg }
+          # Oldest supported Ubuntu runner: older glibc means the binaries run on more distros.
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, formats: "deb,appimage,pacman" }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, formats: "nsis,wix" }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup target add ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: ${{ matrix.target }}
+      # No prebuilt cargo-packager binaries are published, so it is built from source.
+      - run: cargo install cargo-packager --locked --version 0.11.8
+      - run: cargo build -p templum --release --locked --target ${{ matrix.target }}
+      - run: cargo packager -p templum --release --target ${{ matrix.target }} --formats ${{ matrix.formats }} --out-dir "${{ github.workspace }}/dist"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: templum-${{ matrix.target }}
+          path: |
+            dist/*.dmg
+            dist/*.exe
+            dist/*.msi
+            dist/*.deb
+            dist/*.AppImage
+            dist/*.tar.gz
+            dist/PKGBUILD
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" dist/* --draft --generate-notes --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}

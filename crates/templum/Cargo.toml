@@ -1,0 +1,19 @@
+[package]
+name = "templum"
+description = "An infinite canvas of terminals."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Installers: see .github/workflows/release.yml
+[package.metadata.packager]
+product-name = "Templum"
+identifier = "io.github.kingdaswinx.templum"
+category = "DeveloperTool"
+icons = ["icons/*.png"]
