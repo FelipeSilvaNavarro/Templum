@@ -4,7 +4,7 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use templum_terminal::{
-    Notify, Palette, Processes, Snapshot, SpawnOptions, TermOptions, Terminal, inspect,
+    Agent, Notify, Palette, Processes, Snapshot, SpawnOptions, TermOptions, Terminal, inspect,
 };
 
 #[test]
@@ -208,10 +208,126 @@ fn inspect_reads_several_terminals_at_once() {
             .map(|i| i.folder.and_then(|f| f.canonicalize().ok()))
             .collect();
         if found == want.iter().cloned().map(Some).collect::<Vec<_>>() {
+            assert!(
+                inspect(&processes).iter().all(|i| i.agent.is_none()),
+                "a shell isn't an agent"
+            );
             break;
         }
         assert!(Instant::now() < deadline, "found {found:?}, want {want:?}");
         std::thread::sleep(Duration::from_millis(50));
     }
     assert!(inspect(&[]).is_empty());
+}
+
+#[test]
+fn inspect_finds_an_agent_and_its_folder() {
+    let bin = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let claude = fake_claude(bin.path()).display().to_string();
+    #[cfg(unix)]
+    let command = (claude, vec!["30".to_string()]);
+    #[cfg(windows)]
+    let command = (claude, vec!["/K".to_string()]);
+    let term = Terminal::spawn(
+        SpawnOptions {
+            cols: 40,
+            rows: 5,
+            cell_px: (8, 16),
+            command: Some(command),
+            palette: Palette::default(),
+            options: TermOptions::default(),
+            working_directory: Some(work.path().to_path_buf()),
+        },
+        Arc::new(|| {}),
+    )
+    .expect("spawn");
+    let want = work.path().canonicalize().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let found = inspect(&[term.processes()]).pop().unwrap();
+        let folder = found.folder.as_ref().and_then(|f| f.canonicalize().ok());
+        if found.agent == Some(Agent::Claude) && folder.as_ref() == Some(&want) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "found {found:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// A harmless long-running program, copied under an agent's name into `bin`.
+fn fake_claude(bin: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(unix)]
+    let (from, to) = (
+        ["/bin/sleep", "/usr/bin/sleep"]
+            .into_iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .expect("sleep"),
+        bin.join("claude"),
+    );
+    #[cfg(windows)]
+    let (from, to) = (r"C:\Windows\System32\cmd.exe", bin.join("claude.exe"));
+    std::fs::copy(from, &to).unwrap();
+    to
+}
+
+/// The usual case: the user starts the agent from the shell, in another folder than the shell's.
+#[test]
+fn inspect_finds_an_agent_the_shell_started() {
+    let bin = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let sub = work.path().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let claude = fake_claude(bin.path());
+    #[cfg(unix)]
+    let command = ("sh".to_string(), vec!["-i".to_string()]);
+    // The outer cmd stays in `work`; the agent (a cmd copy) moves to `sub` and waits.
+    #[cfg(windows)]
+    let command = (
+        "cmd".to_string(),
+        [
+            "/K",
+            &claude.display().to_string(),
+            "/K",
+            "cd",
+            "/d",
+            &sub.display().to_string(),
+        ]
+        .map(String::from)
+        .to_vec(),
+    );
+    let term = Terminal::spawn(
+        SpawnOptions {
+            cols: 200,
+            rows: 5,
+            cell_px: (8, 16),
+            command: Some(command),
+            palette: Palette::default(),
+            options: TermOptions::default(),
+            working_directory: Some(work.path().to_path_buf()),
+        },
+        Arc::new(|| {}),
+    )
+    .expect("spawn");
+    // A job of the interactive shell, in its own folder; the shell stays in `work`.
+    #[cfg(unix)]
+    term.write(
+        format!(
+            "sh -c 'cd \"{}\" && exec \"{}\" 30'\r",
+            sub.display(),
+            claude.display()
+        )
+        .into_bytes(),
+    );
+    let want = sub.canonicalize().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let found = inspect(&[term.processes()]).pop().unwrap();
+        let folder = found.folder.as_ref().and_then(|f| f.canonicalize().ok());
+        if found.agent == Some(Agent::Claude) && folder.as_ref() == Some(&want) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "found {found:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

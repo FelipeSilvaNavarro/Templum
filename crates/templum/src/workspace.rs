@@ -451,8 +451,15 @@ impl Workspace {
                 }
                 None => None,
             };
+            // An agent resumes the folder's latest conversation: anywhere else, it's another one.
+            let in_its_folder = folder.is_some();
             let id = self.spawn_block(rect, folder, window, cx);
             failed |= id.is_none();
+            // The shell reads it once it is ready.
+            if let (Some(id), Some(agent), true) = (id, t.agent(), in_its_folder) {
+                let line = format!("{}\r", agent.resume_command());
+                self.terminals[&id].term.write(line.into_bytes());
+            }
             ids.push(id);
         }
         self.focused = saved.focused.and_then(|i| ids.get(i).copied().flatten());
@@ -4270,6 +4277,79 @@ mod tests {
             std::fs::read_to_string(crate::session::path(data.path())).unwrap(),
             text,
             "kept for the start after the setting is fixed"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_saved_agent_is_resumed_in_its_block(cx: &mut TestAppContext) {
+        use std::time::{Duration, Instant};
+        use templum_terminal::Snapshot;
+        let data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let folder = folder.path().display().to_string().replace('\\', "\\\\");
+        write_canvas(
+            data.path(),
+            &format!(
+                r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+                  {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{folder}","agent":"claude"}}]}}"#
+            ),
+        );
+        let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        let id = first_id(&ws, cx);
+        // The test shell echoes what it is typed.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let shown = ws.read_with(cx, |ws, _| {
+                let mut snap = Snapshot::default();
+                snap.refresh(ws.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.text()
+            });
+            if shown.contains("claude --continue") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "not typed: {shown:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    #[gpui_kit::test]
+    fn an_agent_whose_folder_is_gone_isnt_resumed_elsewhere(cx: &mut TestAppContext) {
+        use std::time::{Duration, Instant};
+        use templum_terminal::Snapshot;
+        let data = tempfile::tempdir().unwrap();
+        let here = tempfile::tempdir().unwrap();
+        let json = |p: &std::path::Path| p.display().to_string().replace('\\', "\\\\");
+        write_canvas(
+            data.path(),
+            &format!(
+                r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+                  {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{}","agent":"claude"}},
+                  {{"kind":"terminal","rect":{{"x":800,"y":0,"w":700,"h":450}},"folder":"{}","agent":"claude"}}]}}"#,
+                json(&data.path().join("gone")),
+                json(here.path())
+            ),
+        );
+        let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        let ids: Vec<BlockId> = ws.read_with(cx, |ws, _| {
+            ws.canvas.blocks().iter().map(|b| b.id).collect()
+        });
+        let shown = |id: BlockId, cx: &mut TestAppContext| {
+            ws.read_with(cx, |ws, _| {
+                let mut snap = Snapshot::default();
+                snap.refresh(ws.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.text()
+            })
+        };
+        // Both would be typed at once: once the second shows it, the first would too.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !shown(ids[1], cx).contains("claude --continue") {
+            assert!(Instant::now() < deadline, "the block in its folder resumes");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            !shown(ids[0], cx).contains("claude"),
+            "not in the home folder: that's another conversation"
         );
     }
 }
