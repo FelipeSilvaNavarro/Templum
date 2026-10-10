@@ -1,6 +1,8 @@
 mod bench;
 mod block;
+mod config;
 mod grid;
+mod theme;
 mod workspace;
 
 use gpui_kit::{AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
