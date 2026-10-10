@@ -3,6 +3,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -15,6 +16,7 @@ use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config, Term, TermMode, viewport_to_point};
 use alacritty_terminal::tty;
+use alacritty_terminal::vte::ansi::CursorStyle;
 
 use crate::input::{KeyInput, encode_key, paste_bytes};
 use crate::palette::{self, Palette};
@@ -111,6 +113,34 @@ impl EventListener for Listener {
 #[derive(Clone)]
 pub struct SharedTerm(pub(crate) Arc<FairMutex<Term<Listener>>>);
 
+/// Settings a running terminal can change: the history length and the default cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TermOptions {
+    /// Lines of history.
+    pub scrollback: usize,
+    /// The cursor when the program doesn't ask for another one.
+    pub cursor: CursorStyle,
+}
+
+impl Default for TermOptions {
+    fn default() -> Self {
+        Self {
+            scrollback: 10_000,
+            cursor: CursorStyle::default(),
+        }
+    }
+}
+
+impl TermOptions {
+    fn config(self) -> Config {
+        Config {
+            scrolling_history: self.scrollback,
+            default_cursor_style: self.cursor,
+            ..Config::default()
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectionKind {
     /// Drag.
@@ -122,6 +152,11 @@ pub enum SelectionKind {
 }
 
 impl SharedTerm {
+    /// Applies new options to the running terminal (alacritty trims the history if needed).
+    pub fn set_options(&self, options: TermOptions) {
+        self.0.lock().set_options(options.config());
+    }
+
     /// Starts a selection at a viewport cell (row 0 = top visible line).
     pub fn select_start(&self, row: usize, col: usize, side: Side, kind: SelectionKind) {
         let mut term = self.0.lock();
@@ -175,10 +210,19 @@ pub struct SpawnOptions {
     /// Colors reported to programs that ask (vim, neovim). Change them later with
     /// [`Terminal::set_palette`].
     pub palette: Palette,
+    /// Scrollback and default cursor; change them later with [`SharedTerm::set_options`].
+    pub options: TermOptions,
+    /// Where the shell starts; None: the home folder.
+    pub working_directory: Option<PathBuf>,
 }
 
 pub struct Terminal {
     term: SharedTerm,
+    /// The shell's process ID, when the OS gave one.
+    pid: Option<u32>,
+    /// The PTY's master side, to ask which process is in the foreground.
+    #[cfg(unix)]
+    master: Option<std::fs::File>,
     shared: Arc<Shared>,
     pty: EventLoopSender,
     cols: u16,
@@ -207,7 +251,7 @@ impl Terminal {
             ]),
             // Like other GUI terminals: a launch from Finder or the Start menu doesn't leave
             // shells in / or the install folder.
-            working_directory: std::env::home_dir(),
+            working_directory: opts.working_directory.clone().or_else(std::env::home_dir),
             // Show everything the shell printed before reporting its exit.
             drain_on_exit: true,
             ..Default::default()
@@ -215,8 +259,15 @@ impl Terminal {
         let shared = Arc::new(Shared::new(notify, size, opts.palette));
         let listener = Listener(shared.clone());
         let pty = tty::new(&options, size, 0)?;
+        // The shell's process, to ask the OS for its current folder later.
+        #[cfg(unix)]
+        let pid = Some(pty.child().id());
+        #[cfg(unix)]
+        let master = pty.file().try_clone().ok();
+        #[cfg(windows)]
+        let pid = pty.child_watcher().pid().map(|pid| pid.get());
         let term = Arc::new(FairMutex::new(Term::new(
-            Config::default(),
+            opts.options.config(),
             &TermSize::new(opts.cols as usize, opts.rows as usize),
             listener.clone(),
         )));
@@ -226,6 +277,9 @@ impl Terminal {
         event_loop.spawn();
         Ok(Self {
             term: SharedTerm(term),
+            pid,
+            #[cfg(unix)]
+            master,
             shared,
             pty,
             cols: opts.cols,
@@ -256,6 +310,28 @@ impl Terminal {
 
     pub fn exited(&self) -> bool {
         self.shared.exited.load(Ordering::Acquire)
+    }
+
+    /// The current folder of the program in the terminal's foreground: the shell the user types
+    /// into, even under macOS's `login` or in a nested shell. Falls back to the process Templum
+    /// started; None when the OS won't say (another user, already gone).
+    pub fn cwd(&self) -> Option<PathBuf> {
+        self.foreground()
+            .and_then(process_cwd)
+            .or_else(|| self.pid.and_then(process_cwd))
+    }
+
+    /// The PTY's foreground process group: its leader is the shell (or the program it runs).
+    #[cfg(unix)]
+    fn foreground(&self) -> Option<u32> {
+        let group = rustix::termios::tcgetpgrp(self.master.as_ref()?).ok()?;
+        u32::try_from(group.as_raw_nonzero().get()).ok()
+    }
+
+    /// ConPTY has no foreground process group: the shell Templum started is it.
+    #[cfg(windows)]
+    fn foreground(&self) -> Option<u32> {
+        None
     }
 
     /// The colors this terminal reports to programs that ask for them.
@@ -340,6 +416,22 @@ impl Drop for Terminal {
         // Ends the event loop, which drops the PTY and kills the shell.
         let _ = self.pty.send(Msg::Shutdown);
     }
+}
+
+/// A process's current folder, from the OS.
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        ProcessRefreshKind::new().with_cwd(UpdateKind::Always),
+    );
+    system
+        .process(pid)?
+        .cwd()
+        .filter(|cwd| !cwd.as_os_str().is_empty())
+        .map(Path::to_path_buf)
 }
 
 fn window_size(cols: u16, rows: u16, (cell_width, cell_height): (u16, u16)) -> WindowSize {
@@ -428,6 +520,17 @@ mod tests {
         );
         listener.send_event(Event::Exit);
         assert!(shared.exited.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn scrollback_option_limits_history() {
+        let (term, _) = headless(10, 2);
+        term.set_options(TermOptions {
+            scrollback: 3,
+            ..TermOptions::default()
+        });
+        feed(&term, b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\r\n");
+        assert_eq!(term.0.lock().grid().history_size(), 3);
     }
 
     #[test]

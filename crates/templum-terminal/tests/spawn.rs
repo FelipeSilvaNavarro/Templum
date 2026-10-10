@@ -3,7 +3,7 @@
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use templum_terminal::{Notify, Palette, Snapshot, SpawnOptions, Terminal};
+use templum_terminal::{Notify, Palette, Snapshot, SpawnOptions, TermOptions, Terminal};
 
 #[test]
 fn runs_a_command_and_reports_its_exit() {
@@ -29,6 +29,8 @@ fn runs_a_command_and_reports_its_exit() {
             cell_px: (8, 16),
             command: Some(command),
             palette: Palette::default(),
+            options: TermOptions::default(),
+            working_directory: None,
         },
         notify,
     )
@@ -65,6 +67,8 @@ fn shells_start_in_the_home_directory() {
             cell_px: (8, 16),
             command: Some(command),
             palette: Palette::default(),
+            options: TermOptions::default(),
+            working_directory: None,
         },
         notify,
     )
@@ -83,4 +87,83 @@ fn shells_start_in_the_home_directory() {
         "expected {home:?}, screen was: {:?}",
         snapshot.text()
     );
+}
+
+#[test]
+fn starts_in_the_given_folder_and_reports_it() {
+    // Started in the plain path (cmd.exe can't start in a canonical \\?\ path), compared
+    // canonicalized: macOS's temp folder is behind a symlink, Windows's may be a short name.
+    let dir = std::env::temp_dir();
+    // Long-lived, so the process is still there to ask.
+    #[cfg(unix)]
+    let command = (
+        "sh".to_string(),
+        vec!["-c".to_string(), "sleep 20".to_string()],
+    );
+    #[cfg(windows)]
+    let command = ("cmd".to_string(), vec!["/K".to_string()]);
+    let term = Terminal::spawn(
+        SpawnOptions {
+            cols: 40,
+            rows: 5,
+            cell_px: (8, 16),
+            command: Some(command),
+            palette: Palette::default(),
+            options: TermOptions::default(),
+            working_directory: Some(dir.clone()),
+        },
+        Arc::new(|| {}),
+    )
+    .expect("spawn");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(cwd) = term.cwd() {
+            assert_eq!(cwd.canonicalize().unwrap(), dir.canonicalize().unwrap());
+            break;
+        }
+        assert!(Instant::now() < deadline, "cwd() never answered");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// macOS's login shell runs under `login`, which stays alive as the shell's parent; nested
+/// shells (`nix develop`, `poetry shell`) look the same. The folder must follow the shell the
+/// user types into, not the process Templum started.
+#[cfg(unix)]
+#[test]
+fn cwd_follows_the_shell_in_the_foreground() {
+    let start = tempfile::tempdir().unwrap();
+    let moved = tempfile::tempdir().unwrap();
+    // `; true` keeps the outer sh alive (no exec), like login.
+    let command = (
+        "sh".to_string(),
+        vec!["-c".to_string(), "sh -i; true".to_string()],
+    );
+    let term = Terminal::spawn(
+        SpawnOptions {
+            cols: 80,
+            rows: 5,
+            cell_px: (8, 16),
+            command: Some(command),
+            palette: Palette::default(),
+            options: TermOptions::default(),
+            working_directory: Some(start.path().to_path_buf()),
+        },
+        Arc::new(|| {}),
+    )
+    .expect("spawn");
+    term.write(format!("cd '{}'\r", moved.path().display()).into_bytes());
+    let want = moved.path().canonicalize().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let cwd = term.cwd().and_then(|c| c.canonicalize().ok());
+        if cwd.as_ref() == Some(&want) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "cwd stayed {cwd:?}, want {want:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
