@@ -16,8 +16,8 @@ use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 
-/// Wakes the UI when any terminal has new output. Coalesced: at most one message is in flight
-/// until the UI calls [`Wake::clear`], so `yes` costs one redraw per frame, not one per read.
+/// Wakes the UI when any terminal has new output. Coalesced: after one wake, nothing more is sent
+/// until the UI renders and calls [`Wake::clear`], so `yes` costs one redraw per frame.
 #[derive(Clone)]
 pub struct Wake {
     pending: Arc<AtomicBool>,

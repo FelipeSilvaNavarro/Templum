@@ -74,6 +74,14 @@ fn rss_mb() -> f64 {
     (kb / 1024.0 * 10.0).round() / 10.0
 }
 
+/// CPU time (user + system) in ms of a /proc stat file; 100 ticks/s (Linux default CLK_TCK).
+fn cpu_ms(stat: &str) -> f64 {
+    let stat = std::fs::read_to_string(stat).unwrap_or_default();
+    let fields: Vec<&str> = stat.rsplit_once(") ").map(|(_, f)| f.split(' ').collect()).unwrap_or_default();
+    let ticks = |i: usize| fields.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+    (ticks(11) + ticks(12)) * 10.0
+}
+
 /// Nearest-rank percentile of sorted values.
 fn percentile(sorted: &[f64], p: f64) -> f64 {
     if sorted.is_empty() {
@@ -88,11 +96,17 @@ fn bench(window: WindowHandle<Board>, cx: &mut App) {
         // Let the shells start and the first frames settle before measuring idle memory.
         sleep(cx, 3000).await;
         let idle_rss = rss_mb();
+        // Knobs to split the cost: BENCH_NO_YES=1, BENCH_ZOOM_IDX=<step index> (pan only).
+        let no_yes = std::env::var_os("BENCH_NO_YES").is_some();
+        let fixed_zoom: Option<usize> = std::env::var("BENCH_ZOOM_IDX").ok().and_then(|v| v.parse().ok());
         let _ = window.update(cx, |board, _, cx| {
-            for b in board.blocks.iter().take(5) {
+            for b in board.blocks.iter().take(if no_yes { 0 } else { 5 }) {
                 b.term.write(&b"yes\r"[..]);
             }
             let (cx0, cy0) = board.world_center();
+            // The UI thread is the main thread, whose tid is the pid.
+            let main_stat = format!("/proc/self/task/{}/stat", std::process::id());
+            let (main_cpu0, proc_cpu0) = (cpu_ms(&main_stat), cpu_ms("/proc/self/stat"));
             let start = Instant::now();
             let mut last: Option<Instant> = None;
             let mut intervals: Vec<f64> = Vec::new();
@@ -109,9 +123,12 @@ fn bench(window: WindowHandle<Board>, cx: &mut App) {
                     intervals.sort_by(f64::total_cmp);
                     paints.sort_by(f64::total_cmp);
                     let vp = window.viewport_size();
+                    let frames = intervals.len() + 1;
+                    let main_cpu = cpu_ms(&main_stat) - main_cpu0;
+                    let proc_cpu = cpu_ms("/proc/self/stat") - proc_cpu0;
                     println!(
-                        r#"{{"frames":{},"p50_ms":{:.2},"p95_ms":{:.2},"p99_ms":{:.2},"max_ms":{:.2},"rss_mb":{},"idle_rss_mb":{},"paint_p50_ms":{:.2},"paint_p95_ms":{:.2},"viewport":[{},{}]}}"#,
-                        intervals.len() + 1,
+                        r#"{{"frames":{},"p50_ms":{:.2},"p95_ms":{:.2},"p99_ms":{:.2},"max_ms":{:.2},"rss_mb":{},"idle_rss_mb":{},"paint_p50_ms":{:.2},"paint_p95_ms":{:.2},"ui_thread_cpu_ms_per_frame":{:.2},"process_cpu_cores":{:.2},"viewport":[{},{}]}}"#,
+                        frames,
                         percentile(&intervals, 50.0),
                         percentile(&intervals, 95.0),
                         percentile(&intervals, 99.0),
@@ -120,6 +137,8 @@ fn bench(window: WindowHandle<Board>, cx: &mut App) {
                         idle_rss,
                         percentile(&paints, 50.0),
                         percentile(&paints, 95.0),
+                        main_cpu / frames as f64,
+                        proc_cpu / (now - start).as_secs_f64() / 1000.0,
                         f32::from(vp.width),
                         f32::from(vp.height),
                     );
@@ -128,7 +147,11 @@ fn bench(window: WindowHandle<Board>, cx: &mut App) {
                 }
                 let n = ZOOM_STEPS.len();
                 let k = (t / 0.25) as usize % (2 * (n - 1));
-                let zoom_idx = if k < n { k } else { 2 * (n - 1) - k };
+                let zoom_idx = match fixed_zoom {
+                    Some(idx) => idx,
+                    None if k < n => k,
+                    None => 2 * (n - 1) - k,
+                };
                 let z = ZOOM_STEPS[zoom_idx];
                 let a = t * std::f32::consts::TAU / 4.0;
                 let vp = window.viewport_size();

@@ -4,8 +4,11 @@
 //! positions, sizes and font size are multiplied by the zoom and everything is laid out again,
 //! so glyphs are rasterized at their real size.
 
+use std::cell::RefCell;
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::cell::Flags;
@@ -37,6 +40,8 @@ const HANDLE: f32 = 14.0;
 const GAP: f32 = 40.0;
 const MIN_W: f32 = 160.0;
 const MIN_H: f32 = 90.0;
+/// Longest a terminal may show old cells while its PTY thread keeps the lock busy.
+const MAX_STALE: Duration = Duration::from_millis(100);
 
 /// Duration of the last canvas paint (cell copy + shaping + quads), read by the bench.
 pub static PAINT_US: AtomicU64 = AtomicU64::new(0);
@@ -79,6 +84,7 @@ pub struct Block {
     pub w: f32,
     pub h: f32,
     pub term: Terminal,
+    snap: Rc<RefCell<Snapshot>>,
 }
 
 #[derive(Clone, Copy)]
@@ -120,10 +126,8 @@ impl Board {
             .unwrap_or(FONT_SIZE * 0.6);
 
         let (wake, mut rx) = Wake::new();
-        let clear = wake.clone();
         let wake_task = cx.spawn(async move |this, cx| {
             while rx.next().await.is_some() {
-                clear.clear();
                 if this.update(cx, |_, cx| cx.notify()).is_err() {
                     break;
                 }
@@ -154,7 +158,7 @@ impl Board {
             let (x, y) = ((i % per_row) as f32 * (w + GAP), (i / per_row) as f32 * (h + GAP));
             let term = Terminal::spawn(i as u64, cols, rows, board.cell_px(), board.wake.clone())
                 .expect("failed to spawn shell in a PTY");
-            board.blocks.push(Block { id: i, x, y, w, h, term });
+            board.blocks.push(Block { id: i, x, y, w, h, term, snap: Rc::default() });
         }
         board.focused = board.blocks.first().map(|b| b.id);
         board
@@ -297,6 +301,8 @@ impl Board {
 
 impl Render for Board {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Re-arm the PTY wakeup only once per frame: output is coalesced to frame rate.
+        self.wake.clear();
         if let Some(mut hook) = self.on_frame.take()
             && hook(self, window, cx)
         {
@@ -316,6 +322,7 @@ impl Render for Board {
                 visible.then(|| BlockFrame {
                     rect: r,
                     term: b.term.term.clone(),
+                    snap: b.snap.clone(),
                     title: format!("term {}  {}x{}", b.id, b.term.cols, b.term.rows).into(),
                     focused: self.focused == Some(b.id),
                 })
@@ -350,6 +357,7 @@ impl Render for Board {
 struct BlockFrame {
     rect: [f32; 4],
     term: std::sync::Arc<FairMutex<Term<Listener>>>,
+    snap: Rc<RefCell<Snapshot>>,
     title: SharedString,
     focused: bool,
 }
@@ -396,7 +404,7 @@ impl Scene {
                 size(px(w - 2.0 * PAD * z), px(h - (TITLE_H + 2.0 * PAD) * z)),
             );
             window.with_content_mask(Some(ContentMask { bounds: body }), |window| {
-                let cursor = paint_grid(&b.term, body.origin, z, &self.font, self.cell_w, b.focused, window, cx);
+                let cursor = paint_grid(&b.term, &b.snap, body.origin, z, &self.font, self.cell_w, b.focused, window, cx);
                 if b.focused {
                     ime_cursor = cursor;
                     if let (Some(c), Some(text)) = (cursor, &self.marked) {
@@ -455,32 +463,34 @@ impl Row {
     }
 }
 
-/// Paints the terminal grid; returns the cursor cell bounds (for the IME popup).
-#[allow(clippy::too_many_arguments)]
-fn paint_grid(
-    term: &FairMutex<Term<Listener>>,
-    origin: Point<Pixels>,
-    z: f32,
-    font: &Font,
-    cell_w: f32,
-    focused: bool,
-    window: &mut Window,
-    cx: &mut App,
-) -> Option<Bounds<Pixels>> {
-    let (cw, lh) = (cell_w * z, LINE_H * z);
-    let mut rows: Vec<Row> = Vec::new();
-    let cursor;
-    {
-        // Hold the lock only while copying cells out; shaping happens unlocked.
-        let term = term.lock();
+/// Cells copied out of the `Term`, so painting does not wait on a busy PTY thread.
+#[derive(Default)]
+pub struct Snapshot {
+    rows: Vec<Row>,
+    cursor: Option<(i32, usize)>,
+    taken: Option<Instant>,
+}
+
+impl Snapshot {
+    /// Re-reads the grid unless the PTY thread holds the lock (e.g. under `yes`), in which case
+    /// the previous frame's cells are reused; past MAX_STALE it waits for the lock.
+    /// Returns false when it kept stale cells.
+    fn refresh(&mut self, term: &FairMutex<Term<Listener>>) -> bool {
+        let stale = self.taken.is_none_or(|t| t.elapsed() > MAX_STALE);
+        let term = match term.try_lock_unfair() {
+            Some(term) => term,
+            None if stale => term.lock(),
+            None => return false,
+        };
         let content = term.renderable_content();
         let off = content.display_offset as i32;
-        cursor = (content.cursor.shape != CursorShape::Hidden)
+        self.cursor = (content.cursor.shape != CursorShape::Hidden)
             .then(|| (content.cursor.point.line.0 + off, content.cursor.point.column.0));
+        self.rows.clear();
         for item in content.display_iter {
             let row = (item.point.line.0 + off) as usize;
-            if rows.len() <= row {
-                rows.resize_with(row + 1, Row::default);
+            if self.rows.len() <= row {
+                self.rows.resize_with(row + 1, Row::default);
             }
             let cell = item.cell;
             let mut fg = term::resolve(cell.fg, content.colors);
@@ -492,23 +502,46 @@ fn paint_grid(
                 fg = bg;
             }
             if bg != DEFAULT_BG {
-                rows[row].push_bg(item.point.column.0, bg);
+                self.rows[row].push_bg(item.point.column.0, bg);
             }
             let alpha = if cell.flags.contains(Flags::DIM) { 0.66 } else { 1.0 };
             // A wide char's spacer becomes a blank so later glyphs stay on their columns.
             let c = if cell.flags.contains(Flags::WIDE_CHAR_SPACER) || cell.c < ' ' { ' ' } else { cell.c };
-            rows[row].push(c, hsla(fg, alpha), cell.flags.contains(Flags::BOLD));
+            self.rows[row].push(c, hsla(fg, alpha), cell.flags.contains(Flags::BOLD));
         }
+        drop(term);
+        self.rows.iter_mut().for_each(Row::trim);
+        self.taken = Some(Instant::now());
+        true
     }
+}
 
+/// Paints the terminal grid; returns the cursor cell bounds (for the IME popup).
+#[allow(clippy::too_many_arguments)]
+fn paint_grid(
+    term: &FairMutex<Term<Listener>>,
+    snap: &RefCell<Snapshot>,
+    origin: Point<Pixels>,
+    z: f32,
+    font: &Font,
+    cell_w: f32,
+    focused: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> Option<Bounds<Pixels>> {
+    let mut snap = snap.borrow_mut();
+    if !snap.refresh(term) {
+        // Output is still pending: try again next frame.
+        window.request_animation_frame();
+    }
+    let (cw, lh) = (cell_w * z, LINE_H * z);
     let bold = Font { weight: FontWeight::BOLD, ..font.clone() };
-    for (i, mut row) in rows.into_iter().enumerate() {
+    for (i, row) in snap.rows.iter().enumerate() {
         let y = origin.y + px(lh * i as f32);
         for (start, len, bg) in &row.bgs {
             let r = Bounds::new(point(origin.x + px(cw * *start as f32), y), size(px(cw * *len as f32), px(lh)));
             window.paint_quad(fill(r, hsla(*bg, 1.0)));
         }
-        row.trim();
         if row.text.is_empty() {
             continue;
         }
@@ -525,11 +558,11 @@ fn paint_grid(
             })
             .collect();
         // force_width pins glyph n to column n, like a terminal grid.
-        let line = window.text_system().shape_line(row.text.into(), px(FONT_SIZE * z), &runs, Some(px(cw)));
+        let line = window.text_system().shape_line(row.text.clone().into(), px(FONT_SIZE * z), &runs, Some(px(cw)));
         let _ = line.paint(point(origin.x, y), px(lh), TextAlign::Left, None, window, cx);
     }
 
-    let (line, col) = cursor?;
+    let (line, col) = snap.cursor?;
     let r = Bounds::new(
         point(origin.x + px(cw * col as f32), origin.y + px(lh * line as f32)),
         size(px(cw), px(lh)),
