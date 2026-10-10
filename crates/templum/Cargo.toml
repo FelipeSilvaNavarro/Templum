@@ -11,6 +11,15 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[dependencies]
+# Pinned exactly: upgrade only in a dedicated PR (AGENTS.md).
+gpui-kit = "=0.7.1"
+# Same GPUI snapshot gpui-kit pins, imported under the name gpui-kit uses.
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+alacritty_terminal = "=0.26.0"
+# Already in the tree via GPUI; only its unbounded channel is used, to wake the UI from PTY threads.
+futures = "0.3"
+
 # Installers: see .github/workflows/release.yml
 [package.metadata.packager]
 product-name = "Templum"
