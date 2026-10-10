@@ -1,7 +1,7 @@
 # Configuration file
 
 - **Date:** 2026-10-10
-- **Status:** Draft
+- **Status:** Implemented
 - **Builds on:** [design-system.md](design-system.md), which created `config.toml` with `[theme]` only, and
   [walking-skeleton.md](walking-skeleton.md)
 
@@ -119,7 +119,8 @@ On macOS the default shortcuts are `cmd-t`, `cmd-w`, `cmd-c`, `cmd-v`, `cmd-=` a
 - **`keys`**
   - Each action takes one shortcut or a list. Writing an action replaces its defaults; `[]` disables it.
   - Shortcuts use GPUI's keystroke syntax (`ctrl-shift-t`, `cmd-,`, `alt-f4`).
-  - `theme_picker` opens or closes the theme picker.
+  - `theme_picker` opens or closes the theme picker. While the picker is open, only `theme_picker` acts (it closes
+    the picker, like Esc); other shortcuts wait.
   - `open_config` opens `config.toml` in the system's default editor. When the file doesn't exist, it first writes
     the commented template (see [Template](#template)).
 
@@ -161,7 +162,8 @@ dotfiles repository.
 ## Errors
 
 Templum always starts and keeps running, whatever `config.toml` contains. Problems show as a gpui-kit notification
-in the window (like today's "Couldn't start a shell") and go to stderr with the `templum:` prefix.
+at the bottom right of the window, clear of the title bar's buttons (like today's "Couldn't start a shell"),
+and go to stderr with the `templum:` prefix.
 
 | Situation | Behavior |
 |---|---|
@@ -182,8 +184,10 @@ in the window (like today's "Couldn't start a shell") and go to stderr with the 
 
 - **`SpawnOptions`** gets `working_directory: Option<PathBuf>`. `None` keeps today's home folder.
 - **`Terminal::cwd() -> Option<PathBuf>`** is the shell's current folder, read through its process ID:
-  - the shell's PID is taken from the PTY when the terminal spawns (`tty::Pty::child().id()` on Unix,
-    `child_watcher().pid()` on Windows);
+  - on Unix, the process asked is the leader of the PTY's foreground process group (`tcgetpgrp` through
+    `rustix`), which is the shell the user types into even under macOS's `login` wrapper or in a nested shell; it
+    falls back to the spawned child (`tty::Pty::child().id()`);
+  - on Windows, the process asked is the spawned shell (`child_watcher().pid()`);
   - the folder comes from `sysinfo`, the same way on every OS.
 - **`Terminal::set_options(TermOptions { scrollback, cursor })`** forwards to `Term::set_options`, which applies
   both to a running terminal. `SpawnOptions` gets the same `options` for new terminals.
@@ -249,7 +253,8 @@ directly instead of waiting for the poll):
 - shortcuts do nothing while the theme picker is open;
 - a new terminal starts in the focused terminal's folder (`inherit`);
 - an invalid file keeps the previous config and shows a notification;
-- `open_config` writes the template when the file is missing.
+- `config::ensure_file` writes the template when the file is missing (GPUI's test platform can't open files, so the
+  shortcut itself is checked by hand).
 
 **Manual (Hyprland):**
 
@@ -277,6 +282,9 @@ Three pull requests, each green in CI and useful on its own:
 
 - **Reading another process's folder** on macOS and Windows goes through `sysinfo`. It can fail for a shell running
   as another user (`sudo -s`) or one that already exited; the rule is then "home folder, no warning".
+- **PowerShell doesn't move its process's folder.** `Set-Location`/`cd` only changes PowerShell's own location, so
+  `"inherit"` follows `cd` with cmd.exe but not with PowerShell, Windows's default shell; new terminals then start
+  where PowerShell started. Fixing it needs shell integration (OSC 7 or 9;9), which is out of scope.
 - **ConPTY's PID** on Windows is the shell's when it starts directly. Under a wrapper (`cmd /c` starting
   PowerShell) it would be the wrapper's folder; the default PowerShell starts directly.
 - **Fonts swapped at runtime** re-measure the cell and resize every terminal in one frame. With many terminals this
