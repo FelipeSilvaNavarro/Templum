@@ -44,6 +44,7 @@ use crate::launcher;
 use crate::menu;
 use crate::motion;
 use crate::note::{self, Note};
+use crate::prompt;
 use crate::session;
 use crate::settings::{self, Panel};
 use crate::sidebar;
@@ -1121,8 +1122,8 @@ impl Workspace {
         }
     }
 
-    /// Closes a tab; the next one (or the previous, for the last) becomes active.
-    pub(crate) fn close_tab(
+    /// Removes a tab; the next one (or the previous, for the last) becomes active.
+    fn remove_tab(
         &mut self,
         block: BlockId,
         i: usize,
@@ -1142,6 +1143,145 @@ impl Workspace {
         let next = if a > i { a - 1 } else { a };
         editor.active = (n > 0).then(|| next.min(n - 1));
         self.focus_block(block, window, cx);
+    }
+
+    /// Closes a tab. One with unsaved edits asks first: Save, Don't save, Cancel.
+    pub(crate) fn close_tab(
+        &mut self,
+        block: BlockId,
+        i: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dirty = self
+            .space
+            .editor(block)
+            .and_then(|e| e.tabs.get(i))
+            .filter(|t| t.dirty)
+            .map(editor::Tab::name);
+        let Some(name) = dirty else {
+            self.remove_tab(block, i, window, cx);
+            return;
+        };
+        let ws = cx.entity();
+        let saver = ws.clone();
+        prompt::save_or_discard(
+            format!("Save {name}?"),
+            "Its changes are lost otherwise.",
+            move |window, cx| {
+                saver.update(cx, |ws, cx| {
+                    let saved = ws.save_tab(block, i, window, cx);
+                    if saved {
+                        ws.remove_tab(block, i, window, cx);
+                    }
+                    saved
+                })
+            },
+            move |window, cx| ws.update(cx, |ws, cx| ws.remove_tab(block, i, window, cx)),
+            window,
+            cx,
+        );
+    }
+
+    /// Writes one tab's file; a failure says so and the tab stays changed.
+    pub(crate) fn save_tab(
+        &mut self,
+        block: BlockId,
+        i: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab) = self.space.editor_mut(block).and_then(|e| e.tabs.get_mut(i)) else {
+            return true;
+        };
+        let result = tab.save(cx);
+        let name = tab.name();
+        cx.notify();
+        match result {
+            Ok(()) => true,
+            Err(err) => {
+                let message = format!("Couldn't save {name}: {err}");
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::error(message));
+                false
+            }
+        }
+    }
+
+    /// The `save` command: the focused editor's active tab.
+    fn save_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(block) = self.focused_editor()
+            && let Some(i) = self.space.editor(block).and_then(|e| e.active)
+        {
+            self.save_tab(block, i, window, cx);
+        }
+    }
+
+    /// Writes every changed tab of an editor block; false when one failed.
+    pub(crate) fn save_all(
+        &mut self,
+        block: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let dirty: Vec<usize> = self
+            .space
+            .editor(block)
+            .map(|e| {
+                e.tabs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.dirty)
+                    .map(|(i, _)| i)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Every one is tried, even after a failure.
+        let mut ok = true;
+        for i in dirty {
+            ok &= self.save_tab(block, i, window, cx);
+        }
+        ok
+    }
+
+    /// Every changed tab of every workspace, on the way out; false when one failed.
+    fn save_everything(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let mut failed = None;
+        for space in std::iter::once(&mut self.space).chain(&mut self.others) {
+            for tab in space
+                .blocks
+                .values_mut()
+                .filter_map(|b| b.editor_mut())
+                .flat_map(|e| e.tabs.iter_mut())
+                .filter(|t| t.dirty)
+            {
+                if let Err(err) = tab.save(cx) {
+                    failed.get_or_insert(format!("Couldn't save {}: {err}", tab.name()));
+                }
+            }
+        }
+        cx.notify();
+        match failed {
+            Some(message) => {
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::error(message));
+                false
+            }
+            None => true,
+        }
+    }
+
+    /// The changed files' names: of one block, or of every workspace.
+    fn unsaved_names(&self, block: Option<BlockId>) -> Vec<String> {
+        std::iter::once(&self.space)
+            .chain(&self.others)
+            .flat_map(|s| s.blocks.iter())
+            .filter(|(id, _)| block.is_none_or(|b| b == **id))
+            .filter_map(|(_, b)| b.editor())
+            .flat_map(|e| e.tabs.iter())
+            .filter(|t| t.dirty)
+            .map(editor::Tab::name)
+            .collect()
     }
 
     fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1907,9 +2047,36 @@ impl Workspace {
         ))
     }
 
+    /// Closes a block. An editor with unsaved edits asks first: Save all, Don't save, Cancel.
+    pub(crate) fn close(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        let unsaved = self.unsaved_names(Some(id));
+        if unsaved.is_empty() {
+            self.remove_block(id, window, cx);
+            return;
+        }
+        let ws = cx.entity();
+        let saver = ws.clone();
+        prompt::save_or_discard(
+            "Save changes?",
+            format!("Unsaved: {}", unsaved.join(", ")),
+            move |window, cx| {
+                saver.update(cx, |ws, cx| {
+                    let saved = ws.save_all(id, window, cx);
+                    if saved {
+                        ws.remove_block(id, window, cx);
+                    }
+                    saved
+                })
+            },
+            move |window, cx| ws.update(cx, |ws, cx| ws.remove_block(id, window, cx)),
+            window,
+            cx,
+        );
+    }
+
     /// Removes a block and kills its shell (dropping the Terminal shuts it down).
     /// The block leaves the canvas at once; it stays on screen as a ghost while it fades out.
-    pub(crate) fn close(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+    fn remove_block(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         self.release_focus(id, window, cx);
         let block = self.space.canvas.get(id).copied();
         self.space.canvas.remove(id);
@@ -2857,6 +3024,7 @@ impl Workspace {
             Command::NewTerminal => self.new_terminal(window, cx),
             Command::CloseTerminal => self.close_terminal(window, cx),
             Command::CloseTab => self.close_active_tab(window, cx),
+            Command::Save => self.save_active(window, cx),
             Command::Copy => self.copy_selection(cx),
             Command::Paste => self.paste_clipboard(cx),
             Command::PreviousPrompt => self.jump_to_prompt(true, cx),
@@ -2896,7 +3064,26 @@ impl Workspace {
             .take()
             .is_some_and(|at| now.duration_since(at) < QUIT_AGAIN)
         {
-            cx.quit();
+            let unsaved = self.unsaved_names(None);
+            if unsaved.is_empty() {
+                cx.quit();
+            } else {
+                let ws = cx.entity();
+                prompt::save_or_discard(
+                    "Save changes before quitting?",
+                    format!("Unsaved: {}", unsaved.join(", ")),
+                    move |window, cx| {
+                        let saved = ws.update(cx, |ws, cx| ws.save_everything(window, cx));
+                        if saved {
+                            cx.quit();
+                        }
+                        saved
+                    },
+                    |_, cx| cx.quit(),
+                    window,
+                    cx,
+                );
+            }
             return;
         }
         self.quit_armed = Some(now);
@@ -7734,6 +7921,122 @@ mod tests {
         });
         assert_eq!(item.open, ["src/a.rs", "b.txt"]);
         assert_eq!(item.active, Some(1));
+    }
+
+    #[cfg(target_os = "macos")]
+    const SAVE: &str = "cmd-s";
+    #[cfg(not(target_os = "macos"))]
+    const SAVE: &str = "ctrl-s";
+
+    #[gpui_kit::test]
+    fn typing_marks_the_tab_changed_and_ctrl_s_writes_the_file(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\r\ntwo\r\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        cx.simulate_input(handle, "x");
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(e.active_tab().unwrap().dirty);
+            assert!(e.title().starts_with("● a.txt"), "{}", e.title());
+            window.press(SAVE, cx);
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(!e.active_tab().unwrap().dirty, "saved");
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "xone\r\ntwo\r\n",
+            "the file keeps its CRLF and its final newline"
+        );
+    }
+
+    /// Dialogs slide in over 250 ms of real time: a click mid-slide can miss its button.
+    fn no_motion(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+    }
+
+    #[gpui_kit::test]
+    fn closing_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        cx.simulate_input(handle, "x");
+        click_file(handle, 1, cx);
+        cx.simulate_input(handle, "y");
+        // Ctrl+W on a changed tab: the question; Cancel keeps it.
+        cx.update_window(handle, |_, window, cx| {
+            window.press(CLOSE_TAB, cx);
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx));
+            window.within("dialog").click("cancel", cx);
+            window.render_frame(cx);
+            assert!(!window.has_active_dialog(cx));
+            assert_eq!(ws.read(cx).space.editor(id).unwrap().tabs.len(), 2);
+        })
+        .unwrap();
+        // Save writes b.txt and closes the tab.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.focus_block(id, window, cx));
+            window.press(CLOSE_TAB, cx);
+            window.render_frame(cx);
+            window.within("dialog").click("save", cx);
+            window.render_frame(cx);
+            assert_eq!(ws.read(cx).space.editor(id).unwrap().tabs.len(), 1);
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+            "yb"
+        );
+        // Closing the block with a.txt changed: the question; Don't save closes anyway.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.close(id, window, cx));
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx));
+            assert!(ws.read(cx).space.editor(id).is_some(), "still there");
+            window.within("dialog").click("discard", cx);
+            window.render_frame(cx);
+            assert!(ws.read(cx).space.editor(id).is_none());
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "a",
+            "not written"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_failed_save_says_so_and_keeps_the_tab_changed(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "a").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        cx.simulate_input(handle, "x");
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        let before = notification_count(handle, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.press(SAVE, cx);
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(e.active_tab().unwrap().dirty);
+        })
+        .unwrap();
+        assert_eq!(notification_count(handle, cx), before + 1);
     }
 
     fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {

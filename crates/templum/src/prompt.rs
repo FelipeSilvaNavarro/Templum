@@ -3,10 +3,11 @@
 use std::rc::Rc;
 
 use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, Entity, SharedString, Window};
+use gpui_kit::{App, Context, Entity, SharedString, Window, div, px};
 
 /// A text field holding `initial`, selected. Enter or `ok` calls `apply` with the text (Enter
 /// confirms the dialog by itself); the dialog closes when it returns true.
@@ -66,5 +67,50 @@ pub(crate) fn confirm(
                 on_ok(window, cx);
                 true
             })
+    });
+}
+
+/// Save, Don't save or Cancel. `on_save` says whether it saved (the dialog stays otherwise);
+/// `on_discard` goes on without saving.
+pub(crate) fn save_or_discard(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    on_save: impl Fn(&mut Window, &mut App) -> bool + 'static,
+    on_discard: impl Fn(&mut Window, &mut App) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let (title, description) = (title.into(), description.into());
+    let (on_save, on_discard) = (Rc::new(on_save), Rc::new(on_discard));
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let (save, discard) = (on_save.clone(), on_discard.clone());
+        alert
+            .confirm()
+            .title(title.clone())
+            .description(description.clone())
+            .footer(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap(px(8.0))
+                    .child(
+                        Button::new("cancel")
+                            .label("Cancel")
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(Button::new("discard").label("Don't save").on_click(
+                        move |_, window, cx| {
+                            window.close_dialog(cx);
+                            discard(window, cx);
+                        },
+                    ))
+                    .child(Button::new("save").label("Save").primary().on_click(
+                        move |_, window, cx| {
+                            if save(window, cx) {
+                                window.close_dialog(cx);
+                            }
+                        },
+                    )),
+            )
     });
 }

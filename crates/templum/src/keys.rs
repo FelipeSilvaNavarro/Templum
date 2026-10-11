@@ -11,6 +11,7 @@ pub(crate) enum Command {
     NewEditor,
     CloseTerminal,
     CloseTab,
+    Save,
     Copy,
     Paste,
     PreviousPrompt,
@@ -31,13 +32,14 @@ pub(crate) enum Command {
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 22] = [
+    pub const ALL: [Command; 23] = [
         Command::NewTerminal,
         Command::NewKanban,
         Command::NewNote,
         Command::NewEditor,
         Command::CloseTerminal,
         Command::CloseTab,
+        Command::Save,
         Command::Copy,
         Command::Paste,
         Command::PreviousPrompt,
@@ -65,6 +67,7 @@ impl Command {
             Command::NewEditor => "new_editor",
             Command::CloseTerminal => "close_terminal",
             Command::CloseTab => "close_tab",
+            Command::Save => "save",
             Command::Copy => "copy",
             Command::Paste => "paste",
             Command::PreviousPrompt => "previous_prompt",
@@ -93,6 +96,7 @@ impl Command {
             Command::NewEditor => "New editor",
             Command::CloseTerminal => "Close terminal",
             Command::CloseTab => "Close the file's tab (in an editor)",
+            Command::Save => "Save the file (in an editor)",
             Command::Copy => "Copy",
             Command::Paste => "Paste",
             Command::PreviousPrompt => "Previous prompt",
@@ -114,7 +118,7 @@ impl Command {
 
     /// Runs only while an editor block has the focus; otherwise its key goes to the terminal.
     pub fn editor_only(self) -> bool {
-        matches!(self, Command::CloseTab)
+        matches!(self, Command::CloseTab | Command::Save)
     }
 
     /// Shift+1 is reported as "!" on some layouts: fit_all binds both.
@@ -131,6 +135,8 @@ impl Command {
             (Command::CloseTerminal, false) => &["ctrl-shift-w"],
             (Command::CloseTerminal, true) => &["cmd-w"],
             (Command::CloseTab, _) => &["ctrl-w"],
+            (Command::Save, false) => &["ctrl-s"],
+            (Command::Save, true) => &["cmd-s"],
             (Command::Copy, false) => &["ctrl-shift-c"],
             (Command::Copy, true) => &["cmd-c"],
             (Command::Paste, false) => &["ctrl-shift-v"],
@@ -181,6 +187,7 @@ pub(crate) struct KeysConfig {
     pub new_editor: Option<Keys>,
     pub close_terminal: Option<Keys>,
     pub close_tab: Option<Keys>,
+    pub save: Option<Keys>,
     pub copy: Option<Keys>,
     pub paste: Option<Keys>,
     pub previous_prompt: Option<Keys>,
@@ -208,6 +215,7 @@ impl KeysConfig {
             Command::NewEditor => self.new_editor.as_ref(),
             Command::CloseTerminal => self.close_terminal.as_ref(),
             Command::CloseTab => self.close_tab.as_ref(),
+            Command::Save => self.save.as_ref(),
             Command::Copy => self.copy.as_ref(),
             Command::Paste => self.paste.as_ref(),
             Command::PreviousPrompt => self.previous_prompt.as_ref(),
@@ -235,6 +243,7 @@ impl KeysConfig {
             Command::NewEditor => &mut self.new_editor,
             Command::CloseTerminal => &mut self.close_terminal,
             Command::CloseTab => &mut self.close_tab,
+            Command::Save => &mut self.save,
             Command::Copy => &mut self.copy,
             Command::Paste => &mut self.paste,
             Command::PreviousPrompt => &mut self.previous_prompt,
@@ -398,6 +407,7 @@ mod tests {
         );
         assert_eq!(linux.command(&typed("ctrl-,")), Some(Command::Settings));
         assert_eq!(linux.command(&typed("ctrl-shift-q")), Some(Command::Quit));
+        assert_eq!(linux.command(&typed("ctrl-s")), Some(Command::Save));
         assert_eq!(linux.command(&typed("ctrl-t")), None);
         assert_eq!(
             linux.command(&typed("ctrl-shift-e")),
@@ -408,6 +418,7 @@ mod tests {
         assert_eq!(mac.command(&typed("cmd-t")), Some(Command::NewTerminal));
         assert_eq!(mac.command(&typed("cmd-,")), Some(Command::Settings));
         assert_eq!(mac.command(&typed("cmd-q")), Some(Command::Quit));
+        assert_eq!(mac.command(&typed("cmd-s")), Some(Command::Save));
     }
 
     #[test]

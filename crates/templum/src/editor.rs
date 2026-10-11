@@ -74,7 +74,6 @@ pub(crate) fn line_ending(text: &str) -> &'static str {
     }
 }
 
-#[allow(dead_code)] // Save, which comes next, writes with it.
 /// The editor's text as the file is written: the editor works in "\n"; the file keeps its line
 /// ending, and ends with a newline only if it did.
 pub(crate) fn encode(edited: &str, crlf: bool, newline: bool) -> String {
@@ -140,7 +139,6 @@ pub(crate) fn read_dir(dir: &Path) -> Vec<Entry> {
 pub(crate) enum Content {
     /// Text; `crlf` and `newline` are how the file ends its lines and itself; `big` is over
     /// `READ_ONLY_OVER`, read-only.
-    #[allow(dead_code)] // Save, which comes next, reads `crlf` and `newline`.
     Text {
         crlf: bool,
         newline: bool,
@@ -170,6 +168,21 @@ pub(crate) struct Tab {
 }
 
 impl Tab {
+    /// Writes the editor's text to the file, whole (a temporary file renamed over it), keeping
+    /// the file's line endings. A binary tab has nothing to write.
+    pub fn save(&mut self, cx: &App) -> std::io::Result<()> {
+        let Content::Text { crlf, newline, .. } = self.content else {
+            return Ok(());
+        };
+        let text = encode(&self.editor.read(cx).value(), crlf, newline);
+        crate::config::write_whole(&self.path, &text)?;
+        self.dirty = false;
+        self.conflict = false;
+        // Recorded so the 2-second check doesn't take Templum's own write for a change.
+        self.mtime = mtime(&self.path);
+        Ok(())
+    }
+
     pub fn name(&self) -> String {
         self.path.file_name().map_or_else(
             || self.path.display().to_string(),
