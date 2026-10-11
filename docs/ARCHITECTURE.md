@@ -40,14 +40,16 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - Only blocks inside the viewport are drawn.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded;
-  far-away blocks are drawn simplified (level of detail).
+  far-away blocks are drawn simplified (level of detail). A zoom glides to its step over 150 ms through
+  zooms snapped to 0.02 (`templum-canvas`'s `CameraFlight`); the camera holds the target, the workspace's `view`
+  is what is drawn.
 - **Persistence (planned):** the workspace (camera + blocks: rect, cwd, shell, title) is saved as JSON in the
   platform data directory. On restore, fresh shells start in the saved directories.
 
 ## Look and themes
 
-- The window is translucent where the system blurs what is behind it (macOS, Windows, and KDE and Hyprland on
-  Wayland) and opaque elsewhere. Blocks are always opaque.
+- The window is opaque: a solid canvas with a dot grid fixed to the world, and blocks drawn as cards on it
+  ([specs/polish.md](specs/polish.md)).
 - A theme is a file in Alacritty's color format. `crates/templum/src/theme.rs` derives every interface color
   from the terminal colors, so any Alacritty theme works. The built-ins live in `crates/templum/themes/`, with
   their credits.
@@ -69,6 +71,12 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   a temporary file and renames it over `config.toml` (the linked file, for a symlink), so a crash never leaves half a
   file. A write that fails keeps its edits for the next try; the poll saves them before reloading a file changed by
   hand.
+- The workspace on screen is `Workspace::space`; the hidden ones (`others`) keep their terminals running, unarmed so
+  their output never wakes the UI. The sidebar (`sidebar.rs`) switches them by swapping. `session.rs` keeps their
+  order and names in `workspaces/index.json` ([specs/workspaces.md](specs/workspaces.md)).
+- A block is a terminal or a kanban block (`Space::kanbans`). Kanban boards are app-wide (`Workspace::boards`,
+  `board.rs`, saved in `boards.json` with the snapshot); `kanban.rs` draws a block's board at the zoom, with GPUI's
+  drag and drop ([specs/kanban.md](specs/kanban.md)).
 - The canvas is saved by `crates/templum/src/session.rs`: one JSON file per workspace in the data folder. Every
   5 s the workspace takes a `Layout` (rects and process ids, cheap) and a background task reads the processes
   (`templum_terminal::inspect`: folders, and whether Claude Code or Codex runs, by `agent_of`), builds the `Saved`

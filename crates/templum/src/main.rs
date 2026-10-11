@@ -1,11 +1,18 @@
+mod agents;
 mod bench;
 mod block;
+mod board;
 mod config;
 mod grid;
+mod kanban;
 mod keys;
+mod launcher;
+mod menu;
 mod motion;
+mod prompt;
 mod session;
 mod settings;
+mod sidebar;
 mod theme;
 mod theme_picker;
 mod title_bar;
@@ -13,8 +20,8 @@ mod workspace;
 
 use gpui_kit::component::TitleBar;
 use gpui_kit::{
-    AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowDecorations, WindowOptions, px,
-    size,
+    AppContext as _, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
+    WindowDecorations, WindowOptions, px, size,
 };
 use workspace::Workspace;
 
@@ -25,11 +32,6 @@ fn main() {
         .run(move |cx| {
             gpui_kit::init(cx);
             workspace::bind_keys(cx);
-            // Read here too, so the window opens with the configured background. Errors show
-            // once the workspace exists.
-            let window_config = config::load(config::dir().as_deref())
-                .map(|c| c.window)
-                .unwrap_or_default();
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                     None,
@@ -40,7 +42,7 @@ fn main() {
                     title: Some("Templum".into()),
                     ..TitleBar::title_bar_options()
                 }),
-                window_background: window_config.background(),
+                window_background: WindowBackgroundAppearance::Opaque,
                 // Linux: our title bar instead of the desktop's (elsewhere `titlebar` does it).
                 window_decorations: cfg!(target_os = "linux").then_some(WindowDecorations::Client),
                 app_id: Some("templum".into()),

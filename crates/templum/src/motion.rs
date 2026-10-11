@@ -1,5 +1,5 @@
-//! Animations: blocks opening and closing, the settings panel sliding; timing, easing, and the
-//! scale steps blocks are drawn at.
+//! Animations: blocks opening and closing, the settings panel sliding, the camera gliding; timing,
+//! easing, and the scale steps blocks are drawn at.
 
 use std::time::{Duration, Instant};
 
@@ -7,6 +7,12 @@ pub(crate) const OPEN: Duration = Duration::from_millis(280);
 pub(crate) const CLOSE: Duration = Duration::from_millis(180);
 /// The settings panel slides in or out.
 pub(crate) const SLIDE: Duration = Duration::from_millis(200);
+/// A hovered block lifts, and its hover-only controls fade in.
+pub(crate) const HOVER: Duration = Duration::from_millis(120);
+/// Switching (or previewing) a theme crossfades the canvas and the chrome.
+pub(crate) const THEME: Duration = Duration::from_millis(200);
+/// The camera glides to a new zoom (or a fit); eased with `slide`.
+pub(crate) const FLIGHT: Duration = Duration::from_millis(150);
 /// Blocks are scaled by redrawing them at zoom × scale, which rasterizes text at that size:
 /// scales snap to steps so only a few extra sizes are ever cached (like the zoom steps).
 const SCALE_STEP: f32 = 0.02;

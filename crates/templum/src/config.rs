@@ -1,19 +1,20 @@
 //! config.toml: every setting, typed and validated; polling for changes; saving edits.
 
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use gpui_kit::WindowBackgroundAppearance;
 use serde::Deserialize;
 use templum_terminal::{CursorShape, CursorStyle, TermOptions};
 
 use toml_edit::{DocumentMut, TomlError};
 
 use crate::keys::{Keymap, KeysConfig};
-use crate::theme::{self, DEFAULT_DARK, DEFAULT_LIGHT};
+use crate::theme::{DEFAULT_DARK, DEFAULT_LIGHT};
 
 pub(crate) const FILE: &str = "config.toml";
 
@@ -26,12 +27,39 @@ pub(crate) const POLL: Duration = Duration::from_millis(500);
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Config {
     pub font: Font,
-    pub window: WindowConfig,
+    /// `[window]` held the glass options, now removed: a file that still has it loads.
+    #[serde(rename = "window")]
+    pub _window: serde::de::IgnoredAny,
     pub theme: ThemeConfig,
     pub shell: Shell,
     pub cursor: Cursor,
     pub terminal: TerminalConfig,
     pub keys: KeysConfig,
+    /// `[agents.<id>]`: changes to one of Templum's AI agents (only what differs), or an agent of
+    /// the user's own.
+    pub agents: BTreeMap<String, AgentConfig>,
+}
+
+/// One AI agent's settings. For Templum's own, each missing key keeps its default; one of the
+/// user's needs a name and a command.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct AgentConfig {
+    pub name: Option<String>,
+    /// Typed into the shell to start it.
+    pub command: Option<String>,
+    /// Typed to bring it back when the canvas is restored; empty: a new session.
+    pub resume: Option<String>,
+    /// Listed in the canvas's menu.
+    pub show: Option<bool>,
+}
+
+/// Letters, digits, `-` and `_`: an agent's id is a key in the saved canvas and in this file.
+pub(crate) fn valid_agent_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -48,69 +76,6 @@ impl Default for Font {
         Self {
             family: None,
             size: 14.0,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
-#[serde(default, deny_unknown_fields)]
-pub(crate) struct WindowConfig {
-    pub blur: Blur,
-    /// The canvas's alpha when the window is translucent.
-    pub opacity: f32,
-}
-
-impl Default for WindowConfig {
-    fn default() -> Self {
-        Self {
-            blur: Blur::Auto,
-            opacity: 0.72,
-        }
-    }
-}
-
-impl WindowConfig {
-    pub fn translucent(&self) -> bool {
-        match self.blur {
-            Blur::Auto => theme::system_translucent(),
-            Blur::On => true,
-            Blur::Off => false,
-        }
-    }
-
-    pub fn background(&self) -> WindowBackgroundAppearance {
-        if self.translucent() {
-            WindowBackgroundAppearance::Blurred
-        } else {
-            WindowBackgroundAppearance::Opaque
-        }
-    }
-}
-
-/// `"auto"` (blur where the system does), `true` or `false`.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(crate) enum Blur {
-    #[default]
-    Auto,
-    On,
-    Off,
-}
-
-impl<'de> Deserialize<'de> for Blur {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Raw {
-            Flag(bool),
-            Word(String),
-        }
-        match Raw::deserialize(d)? {
-            Raw::Flag(true) => Ok(Blur::On),
-            Raw::Flag(false) => Ok(Blur::Off),
-            Raw::Word(w) if w == "auto" => Ok(Blur::Auto),
-            Raw::Word(w) => Err(serde::de::Error::custom(format!(
-                "expected \"auto\", true or false, found \"{w}\""
-            ))),
         }
     }
 }
@@ -163,7 +128,8 @@ impl Mode {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Shell {
-    /// None: $SHELL (PowerShell on Windows).
+    /// None: the default shell: $SHELL; on Windows, Git Bash, else PowerShell 7, else Windows
+    /// PowerShell (`templum_terminal::default_shell`).
     pub program: Option<String>,
     /// Used with `program` only.
     pub args: Vec<String>,
@@ -267,13 +233,6 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
         "6 and 72",
         size.to_string(),
     )?;
-    let opacity = config.window.opacity;
-    range(
-        "window.opacity",
-        (0.0..=1.0).contains(&opacity),
-        "0 and 1",
-        opacity.to_string(),
-    )?;
     let scrollback = config.terminal.scrollback;
     range(
         "terminal.scrollback",
@@ -283,6 +242,25 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
     )?;
     // Shortcuts are part of the file's validity: an invalid one keeps the last valid config.
     Keymap::new(&config.keys, cfg!(target_os = "macos"))?;
+    for (id, agent) in &config.agents {
+        if !valid_agent_id(id) {
+            return Err(format!(
+                "{FILE}: agents.{id:?}: an agent's id is letters, digits, - and _"
+            ));
+        }
+        let ours = templum_terminal::Agent::from_name(id).is_some();
+        let blank = |v: &Option<String>| v.as_deref().is_none_or(|v| v.trim().is_empty());
+        if (!ours || agent.command.is_some()) && blank(&agent.command) {
+            return Err(format!(
+                "{FILE}: agents.{id}.command is needed (what starts it)"
+            ));
+        }
+        if !ours && blank(&agent.name) {
+            return Err(format!(
+                "{FILE}: agents.{id}.name is needed (what menus show)"
+            ));
+        }
+    }
     Ok(config)
 }
 
@@ -380,23 +358,28 @@ impl fmt::Display for SaveError {
 #[derive(Clone, Debug)]
 pub(crate) struct Edit {
     pub table: &'static str,
-    pub key: &'static str,
+    /// Fixed for a setting; an agent's id under `[agents]`.
+    pub key: Cow<'static, str>,
     pub value: Option<toml_edit::Value>,
 }
 
 impl Edit {
-    pub fn set(table: &'static str, key: &'static str, value: impl Into<toml_edit::Value>) -> Self {
+    pub fn set(
+        table: &'static str,
+        key: impl Into<Cow<'static, str>>,
+        value: impl Into<toml_edit::Value>,
+    ) -> Self {
         Self {
             table,
-            key,
+            key: key.into(),
             value: Some(value.into()),
         }
     }
 
-    pub fn remove(table: &'static str, key: &'static str) -> Self {
+    pub fn remove(table: &'static str, key: impl Into<Cow<'static, str>>) -> Self {
         Self {
             table,
-            key,
+            key: key.into(),
             value: None,
         }
     }
@@ -426,18 +409,21 @@ pub(crate) fn save_edits(dir: &Path, edits: &[Edit]) -> Result<(), SaveError> {
                     .as_table_like_mut()
                     .ok_or(SaveError::NotATable(edit.table))?;
                 // A new value in place keeps the key's comment lines and its `# …` on the line.
-                match table.get_mut(edit.key).and_then(|item| item.as_value_mut()) {
+                match table
+                    .get_mut(&edit.key)
+                    .and_then(|item| item.as_value_mut())
+                {
                     Some(old) => {
                         let mut value = value.clone();
                         *value.decor_mut() = old.decor().clone();
                         *old = value;
                     }
                     None => {
-                        table.insert(edit.key, toml_edit::Item::Value(value.clone()));
+                        table.insert(&edit.key, toml_edit::Item::Value(value.clone()));
                     }
                 }
             }
-            None => remove_key(&mut doc, edit.table, edit.key)?,
+            None => remove_key(&mut doc, edit.table, &edit.key)?,
         }
     }
     // toml_edit writes LF and drops a byte-order mark: put the file's own back.
@@ -568,15 +554,13 @@ pub(crate) fn template(macos: bool) -> String {
         "## Default: the first installed font of a built-in list. For example:\n",
         "## family = \"JetBrains Mono\"\n",
         "# size = 14   # 6 to 72\n\n",
-        "[window]\n",
-        "# blur = \"auto\"   # \"auto\" | true | false\n",
-        "# opacity = 0.72   # the canvas when translucent, 0 to 1\n\n",
         "[theme]\n",
         "# mode = \"system\"   # \"system\" | \"light\" | \"dark\"\n",
         "# light = \"Catppuccin Latte\"\n",
         "# dark = \"Catppuccin Mocha\"\n\n",
         "[shell]\n",
-        "## Default: $SHELL, or PowerShell on Windows. For example:\n",
+        "## Default: $SHELL. On Windows: Git Bash, else PowerShell 7, else Windows PowerShell.\n",
+        "## For example:\n",
         "## program = \"fish\"\n",
         "## args = [\"--login\"]\n",
         "# working_directory = \"inherit\"   # \"inherit\" | \"~\" | a path\n\n",
@@ -786,8 +770,6 @@ mod tests {
         let c = parse("").unwrap();
         assert_eq!(c, Config::default());
         assert_eq!(c.font.size, 14.0);
-        assert_eq!(c.window.opacity, 0.72);
-        assert_eq!(c.window.blur, Blur::Auto);
         assert_eq!(c.theme.mode, Mode::System);
         assert_eq!(c.theme.name(false), "Catppuccin Latte");
         assert_eq!(c.theme.name(true), "Catppuccin Mocha");
@@ -803,9 +785,6 @@ mod tests {
 [font]
 family = "JetBrains Mono"
 size = 16
-[window]
-blur = false
-opacity = 0.9
 [theme]
 mode = "dark"
 light = "One Light"
@@ -824,8 +803,6 @@ scrollback = 500
         .unwrap();
         assert_eq!(c.font.family.as_deref(), Some("JetBrains Mono"));
         assert_eq!(c.font.size, 16.0);
-        assert_eq!((c.window.blur, c.window.opacity), (Blur::Off, 0.9));
-        assert!(!c.window.translucent());
         assert!(c.theme.mode.dark(false), "dark is pinned");
         assert_eq!(c.theme.name(true), "One Dark");
         assert_eq!(c.shell.program.as_deref(), Some("fish"));
@@ -843,18 +820,13 @@ scrollback = 500
     }
 
     #[test]
-    fn blur_takes_auto_true_or_false() {
+    fn a_window_table_is_ignored() {
+        // It held the glass options, now removed: a file written before still loads.
         assert_eq!(
-            parse("[window]\nblur = \"auto\"").unwrap().window.blur,
-            Blur::Auto
+            parse("[window]\nblur = false\nopacity = 0.9\n").unwrap(),
+            Config::default()
         );
-        assert_eq!(
-            parse("[window]\nblur = true").unwrap().window.blur,
-            Blur::On
-        );
-        assert!(parse("[window]\nblur = true").unwrap().window.translucent());
-        let err = parse("[window]\nblur = \"maybe\"").unwrap_err();
-        assert!(err.contains("maybe"), "{err}");
+        assert!(parse("[window]\nanything = \"else\"\n").is_ok());
     }
 
     #[test]
@@ -899,11 +871,6 @@ scrollback = 500
         let err = parse("[font]\nsize = 100").unwrap_err();
         assert!(
             err.contains("font.size") && err.contains("6 and 72"),
-            "{err}"
-        );
-        let err = parse("[window]\nopacity = 1.5").unwrap_err();
-        assert!(
-            err.contains("window.opacity") && err.contains("0 and 1"),
             "{err}"
         );
         let err = parse("[terminal]\nscrollback = 200000").unwrap_err();
@@ -1090,44 +1057,99 @@ scrollback = 500
     }
 
     #[test]
+    fn agents_change_ours_and_add_the_users() {
+        let c = parse(concat!(
+            "[agents.claude]\n",
+            "command = \"claude --model opus\"\n",
+            "[agents]\n",
+            "codex = { show = false }\n",
+            "mine = { name = \"Mine\", command = \"mine --tui\", resume = \"\" }\n",
+        ))
+        .unwrap();
+        let claude = &c.agents["claude"];
+        assert_eq!(claude.command.as_deref(), Some("claude --model opus"));
+        assert_eq!(claude.name, None, "unchanged: the default");
+        assert_eq!(c.agents["codex"].show, Some(false));
+        let mine = &c.agents["mine"];
+        assert_eq!(mine.name.as_deref(), Some("Mine"));
+        assert_eq!(
+            mine.resume.as_deref(),
+            Some(""),
+            "empty: a new session on restore"
+        );
+    }
+
+    #[test]
+    fn an_agent_of_the_users_needs_a_name_and_a_command() {
+        let err = parse("[agents.mine]\nname = \"Mine\"\n").unwrap_err();
+        assert!(err.contains("agents.mine.command"), "{err}");
+        let err = parse("[agents.mine]\ncommand = \"mine\"\n").unwrap_err();
+        assert!(err.contains("agents.mine.name"), "{err}");
+        let err = parse("[agents.claude]\ncommand = \"  \"\n").unwrap_err();
+        assert!(err.contains("agents.claude.command"), "{err}");
+        let err = parse("[agents.\"my agent\"]\nname = \"x\"\ncommand = \"x\"\n").unwrap_err();
+        assert!(err.contains("my agent"), "{err}");
+        let err = parse("[agents.claude]\nmodel = \"x\"\n").unwrap_err();
+        assert!(err.contains("model"), "unknown keys still fail: {err}");
+    }
+
+    #[test]
+    fn an_agent_is_saved_and_removed_whole() {
+        let d = tempfile::tempdir().unwrap();
+        write(d.path(), "[agents]\n# mine\ncodex = { show = false }\n");
+        let mut value = toml_edit::InlineTable::new();
+        value.insert("command", "claude --model opus".into());
+        save_edits(
+            d.path(),
+            &[Edit::set("agents", "claude".to_string(), value)],
+        )
+        .unwrap();
+        let c = load(Some(d.path())).unwrap();
+        assert_eq!(
+            c.agents["claude"].command.as_deref(),
+            Some("claude --model opus")
+        );
+        assert_eq!(c.agents["codex"].show, Some(false), "the others stay");
+        save_edits(d.path(), &[Edit::remove("agents", "claude".to_string())]).unwrap();
+        let c = load(Some(d.path())).unwrap();
+        assert!(!c.agents.contains_key("claude"), "back to the default");
+        let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
+        assert!(text.contains("# mine"), "{text}");
+    }
+
+    #[test]
     fn edits_keep_the_comments_around_a_key() {
         let d = tempfile::tempdir().unwrap();
         write(
             d.path(),
             concat!(
-                "[window]\n",
-                "# blur = \"auto\"   # \"auto\" | true | false\n",
-                "opacity = 0.6   # the canvas when translucent, 0 to 1\n",
+                "[font]\n",
+                "# family = \"JetBrains Mono\"\n",
+                "size = 16   # 6 to 72\n",
                 "\n",
                 "[theme]\n",
                 "# mode = \"system\"\n",
                 "light = \"One Light\"   # sunny\n",
             ),
         );
-        save_edits(d.path(), &[Edit::set("window", "opacity", 0.5)]).unwrap();
+        save_edits(d.path(), &[Edit::set("font", "size", 18_i64)]).unwrap();
         let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
         assert!(
             text.contains(concat!(
-                "# blur = \"auto\"   # \"auto\" | true | false\n",
-                "opacity = 0.5   # the canvas when translucent, 0 to 1\n",
+                "# family = \"JetBrains Mono\"\n",
+                "size = 18   # 6 to 72\n",
             )),
             "{text}"
         );
         save_edits(
             d.path(),
-            &[
-                Edit::remove("window", "opacity"),
-                Edit::remove("theme", "light"),
-            ],
+            &[Edit::remove("font", "size"), Edit::remove("theme", "light")],
         )
         .unwrap();
         let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
-        assert!(text.contains("# blur = \"auto\""), "{text}");
+        assert!(text.contains("# family = \"JetBrains Mono\""), "{text}");
         assert!(text.contains("# mode = \"system\""), "{text}");
-        assert!(
-            !text.contains("opacity") && !text.contains("light"),
-            "{text}"
-        );
+        assert!(!text.contains("size") && !text.contains("light"), "{text}");
         assert_eq!(load(Some(d.path())).unwrap(), Config::default());
     }
 }

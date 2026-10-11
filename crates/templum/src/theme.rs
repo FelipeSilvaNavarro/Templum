@@ -27,23 +27,58 @@ pub(crate) struct Theme {
 /// Interface colors, computed from the terminal colors with one formula for every theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Ui {
-    /// Under the blocks; drawn at window.opacity when the window is translucent.
-    pub canvas: Rgb,
+    /// Under the blocks, opaque.
+    pub canvas: Hsla,
     pub dot: Hsla,
+    /// Cards on the canvas: blocks, the settings panel, the theme picker. Opaque.
+    pub surface: Hsla,
     pub hairline: Hsla,
     /// Block titles: the focused one, the others.
     pub title: Hsla,
     pub title_dim: Hsla,
     pub hint: Hsla,
     pub hover: Hsla,
-    /// Focus ring, picker selection.
+    /// A hovered block's border.
+    pub hover_border: Hsla,
+    /// Behind a button while it is pressed.
+    pub pressed: Hsla,
+    /// A faint fill: settings cards, tabs, key pills.
+    pub card: Hsla,
+    /// Focused block border, picker selection.
     pub accent: Hsla,
+    /// The soft ring around the focused block.
+    pub ring: Hsla,
     /// Drawn over selected cells; the text keeps its color.
     pub selection: Hsla,
     pub cursor: Hsla,
     /// IME pre-edit text.
     pub marked: Hsla,
     pub shadow: Hsla,
+}
+
+/// Blends every token (in HSL channels) for the crossfade between two themes.
+impl gpui_kit::base::animation::Lerp for Ui {
+    fn lerp(&self, to: &Self, t: f32) -> Self {
+        Ui {
+            canvas: self.canvas.lerp(&to.canvas, t),
+            dot: self.dot.lerp(&to.dot, t),
+            surface: self.surface.lerp(&to.surface, t),
+            hairline: self.hairline.lerp(&to.hairline, t),
+            title: self.title.lerp(&to.title, t),
+            title_dim: self.title_dim.lerp(&to.title_dim, t),
+            hint: self.hint.lerp(&to.hint, t),
+            hover: self.hover.lerp(&to.hover, t),
+            hover_border: self.hover_border.lerp(&to.hover_border, t),
+            pressed: self.pressed.lerp(&to.pressed, t),
+            card: self.card.lerp(&to.card, t),
+            accent: self.accent.lerp(&to.accent, t),
+            ring: self.ring.lerp(&to.ring, t),
+            selection: self.selection.lerp(&to.selection, t),
+            cursor: self.cursor.lerp(&to.cursor, t),
+            marked: self.marked.lerp(&to.marked, t),
+            shadow: self.shadow.lerp(&to.shadow, t),
+        }
+    }
 }
 
 impl Theme {
@@ -53,14 +88,23 @@ impl Theme {
         let fg = palette.foreground;
         let blue = palette.ansi[4];
         let ui = Ui {
-            canvas: mix(palette.background, BLACK, if is_dark { 0.30 } else { 0.04 }),
-            dot: hsla(fg, 0.12),
+            canvas: hsla(
+                mix(palette.background, BLACK, if is_dark { 0.30 } else { 0.04 }),
+                1.0,
+            ),
+            // Strong enough to find your way by; lighter on light themes, where gray reads darker.
+            dot: hsla(fg, if is_dark { 0.30 } else { 0.22 }),
+            surface: hsla(palette.background, 1.0),
             hairline: hsla(fg, 0.10),
             title: hsla(fg, 0.60),
             title_dim: hsla(fg, 0.40),
             hint: hsla(fg, 0.40),
             hover: hsla(fg, 0.08),
+            hover_border: hsla(fg, 0.22),
+            pressed: hsla(fg, 0.14),
+            card: hsla(fg, 0.04),
             accent: hsla(blue, 1.0),
+            ring: hsla(blue, 0.40),
             selection: hsla(selection.unwrap_or(blue), 0.35),
             cursor: hsla(cursor.unwrap_or(fg), 1.0),
             marked: hsla(palette.ansi[3], 1.0),
@@ -318,8 +362,9 @@ pub(crate) fn apply_to_kit(theme: &Theme, cx: &mut App) {
     let background = hsla(theme.palette.background, 1.0);
     let foreground = hsla(theme.palette.foreground, 1.0);
     Kit::update(cx, |kit| {
-        // gpui-kit's root paints `background` under the whole window: keep it clear for the glass.
-        kit.background = gpui_kit::transparent_black();
+        // gpui-kit's root paints `background` under the whole window: the opaque canvas. The title
+        // bar is drawn on it.
+        kit.background = ui.canvas;
         kit.title_bar = gpui_kit::transparent_black();
         kit.popover = background;
         kit.foreground = foreground;
@@ -332,28 +377,6 @@ pub(crate) fn apply_to_kit(theme: &Theme, cx: &mut App) {
         kit.ring = ui.accent;
         kit.selection = ui.selection;
     });
-}
-
-/// Whether the window is drawn translucent with the desktop blurred behind it: where the
-/// system blurs (macOS, Windows, KDE and Hyprland under Wayland), never elsewhere.
-pub(crate) fn translucent(os: &str, desktop: Option<&str>, wayland: bool) -> bool {
-    match os {
-        "macos" | "windows" => true,
-        // XDG_CURRENT_DESKTOP is a colon-separated list.
-        "linux" => {
-            wayland && desktop.is_some_and(|d| d.split(':').any(|d| d == "KDE" || d == "Hyprland"))
-        }
-        _ => false,
-    }
-}
-
-pub(crate) fn system_translucent() -> bool {
-    let desktop = std::env::var("XDG_CURRENT_DESKTOP").ok();
-    translucent(
-        std::env::consts::OS,
-        desktop.as_deref(),
-        std::env::var_os("WAYLAND_DISPLAY").is_some(),
-    )
 }
 
 #[cfg(test)]
@@ -459,14 +482,24 @@ white = "#aaaaaa"
     fn derived_colors() {
         let mocha = parse("Catppuccin Mocha", MOCHA).unwrap();
         assert_eq!(mocha.ui.accent, hsla(rgb(0x89b4fa), 1.0));
-        assert_eq!(mocha.ui.canvas, rgb(0x151520));
-        assert_eq!(mocha.ui.dot, hsla(rgb(0xcdd6f4), 0.12));
+        assert_eq!(mocha.ui.canvas, hsla(rgb(0x151520), 1.0));
+        assert_eq!(mocha.ui.dot, hsla(rgb(0xcdd6f4), 0.30));
+        assert_eq!(mocha.ui.surface, hsla(rgb(0x1e1e2e), 1.0));
+        assert_eq!(mocha.ui.ring, hsla(rgb(0x89b4fa), 0.40));
+        assert_eq!(mocha.ui.hover_border, hsla(rgb(0xcdd6f4), 0.22));
+        assert_eq!(mocha.ui.pressed, hsla(rgb(0xcdd6f4), 0.14));
+        assert_eq!(mocha.ui.card, hsla(rgb(0xcdd6f4), 0.04));
         assert_eq!(mocha.ui.selection, hsla(rgb(0xf5e0dc), 0.35));
         assert_eq!(mocha.ui.cursor, hsla(rgb(0xf5e0dc), 1.0));
         assert_eq!(mocha.ui.shadow, hsla(rgb(0), 0.45));
         let latte = parse("Catppuccin Latte", LATTE).unwrap();
         assert!(!latte.is_dark);
-        assert_eq!(latte.ui.canvas, rgb(0xe5e7eb));
+        assert_eq!(latte.ui.canvas, hsla(rgb(0xe5e7eb), 1.0));
+        assert_eq!(
+            latte.ui.dot,
+            hsla(rgb(0x4c4f69), 0.22),
+            "lighter dots on light themes"
+        );
         assert_eq!(latte.ui.shadow, hsla(rgb(0), 0.15));
         let minimal = parse("Minimal", MINIMAL).unwrap();
         assert_eq!(
@@ -481,6 +514,18 @@ white = "#aaaaaa"
         );
         assert_eq!(minimal.ui.marked, hsla(rgb(0xaaaa00), 1.0));
     }
+    #[test]
+    fn ui_colors_blend_token_by_token() {
+        use gpui_kit::base::animation::Lerp as _;
+        let mocha = parse("Catppuccin Mocha", MOCHA).unwrap().ui;
+        let latte = parse("Catppuccin Latte", LATTE).unwrap().ui;
+        assert_eq!(mocha.lerp(&latte, 0.0), mocha);
+        assert_eq!(mocha.lerp(&latte, 1.0), latte);
+        let half = mocha.lerp(&latte, 0.5);
+        assert!((half.canvas.l - (mocha.canvas.l + latte.canvas.l) / 2.0).abs() < 1e-6);
+        assert!((half.dot.a - 0.26).abs() < 1e-6, "alphas blend too");
+    }
+
     #[test]
     fn all_builtins_load_in_order() {
         let all = load(None);
@@ -536,18 +581,5 @@ white = "#aaaaaa"
     fn a_missing_themes_folder_is_fine() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(load(Some(dir.path())).len(), BUILTIN.len());
-    }
-
-    #[test]
-    fn translucent_only_where_the_system_blurs() {
-        assert!(translucent("macos", None, false));
-        assert!(translucent("windows", None, false));
-        assert!(translucent("linux", Some("Hyprland"), true));
-        assert!(translucent("linux", Some("KDE"), true));
-        assert!(translucent("linux", Some("ubuntu:KDE"), true));
-        assert!(!translucent("linux", Some("KDE"), false), "X11");
-        assert!(!translucent("linux", Some("GNOME"), true));
-        assert!(!translucent("linux", None, true));
-        assert!(!translucent("freebsd", Some("KDE"), true));
     }
 }

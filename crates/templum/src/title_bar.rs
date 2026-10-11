@@ -1,29 +1,50 @@
-//! The integrated title bar, drawn on the window's glass: the title in the middle, and on the
-//! right the zoom level (click: back to 100%), the theme picker, the settings and a button for a
-//! new terminal.
+//! The integrated title bar: on the left the sidebar's button, the workspace's name in the
+//! middle, and on the right the zoom level (click: back to 100%), the theme picker, the settings
+//! and a button for a new terminal.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{Icon, TitleBar};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    ClickEvent, Context, Div, MouseButton, Stateful, TestSupportExt, div, px, transparent_black,
+    ClickEvent, Context, Div, FontWeight, MouseButton, Stateful, TestSupportExt, div, px,
+    transparent_black,
 };
 
 use crate::theme::Ui;
 use crate::workspace::Workspace;
 
 pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
-    let ui = ws.theme.ui;
-    let zoom = format!("{}%", (ws.canvas.camera.zoom() * 100.0).round());
+    let ui = ws.ui;
+    let zoom = format!("{}%", (ws.space.canvas.camera.zoom() * 100.0).round());
     TitleBar::new()
         .bg(transparent_black())
         .border_color(ui.hairline)
-        .child(div().flex_1())
+        .child(
+            div().flex_1().flex().items_center().pl(px(8.0)).child(
+                button("sidebar-button", ui)
+                    .child(
+                        Icon::new(if ws.sidebar {
+                            IconName::PanelLeftClose
+                        } else {
+                            IconName::PanelLeftOpen
+                        })
+                        .size(px(14.0))
+                        .text_color(ui.title),
+                    )
+                    .on_click(
+                        cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_sidebar(window, cx)),
+                    )
+                    .test_support(),
+            ),
+        )
         .child(
             div()
+                .id("workspace-name")
                 .text_size(px(12.0))
-                .text_color(ui.title_dim)
-                .child("Templum"),
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(ui.title)
+                .child(ws.space.name.clone())
+                .test_support(),
         )
         .child(
             div()
@@ -66,6 +87,18 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                         .test_support(),
                 )
                 .child(
+                    button("new-kanban", ui)
+                        .child(
+                            Icon::new(IconName::LayoutDashboard)
+                                .size(px(14.0))
+                                .text_color(ui.title),
+                        )
+                        .on_click(
+                            cx.listener(|ws, _: &ClickEvent, window, cx| ws.new_kanban(window, cx)),
+                        )
+                        .test_support(),
+                )
+                .child(
                     button("new-terminal", ui)
                         .child(
                             Icon::new(IconName::Plus)
@@ -88,14 +121,15 @@ fn button(id: &'static str, ui: Ui) -> Stateful<Div> {
         .flex()
         .items_center()
         .justify_center()
-        .h(px(22.0))
-        .min_w(px(26.0))
-        .px(px(6.0))
-        .rounded(px(6.0))
+        .h(px(24.0))
+        .min_w(px(28.0))
+        .px(px(8.0))
+        .rounded_full()
         .text_size(px(12.0))
         .text_color(ui.title)
         .cursor_pointer()
         .hover(move |s| s.bg(ui.hover))
+        .active(move |s| s.bg(ui.pressed))
         // The title bar moves the window on a press: keep presses on its buttons.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
 }

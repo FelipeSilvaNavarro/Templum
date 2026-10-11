@@ -2,6 +2,7 @@
 
 - **Date:** 2026-10-10
 - **Status:** Implemented
+- **Superseded in part by:** [polish.md](polish.md), which removed the glass (the window is always opaque).
 - **Builds on:** [design-system.md](design-system.md), which created `config.toml` with `[theme]` only, and
   [walking-skeleton.md](walking-skeleton.md)
 
@@ -61,7 +62,7 @@ light = "Catppuccin Latte"
 dark = "Catppuccin Mocha"
 
 [shell]
-program = "fish"                # default: $SHELL, or PowerShell on Windows
+program = "fish"                # default: $SHELL; on Windows see shells.md
 args = ["--login"]              # default: none
 working_directory = "inherit"   # "inherit" | "~" | a path
 

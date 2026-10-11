@@ -31,20 +31,35 @@ cargo run -p templum
 | Double-click empty canvas | New terminal there |
 | Drag a title bar / the bottom-right handle | Move / resize the block |
 | Drag empty canvas, or scroll over it | Pan |
+| Hold Alt (Option on macOS), then drag or scroll anywhere | Pan, even over blocks: they don't react while Alt is held |
+| Drag with the middle button, anywhere | Pan |
 | Scroll over a terminal | Scroll its history |
 | Ctrl+scroll, or pinch | Zoom |
 | Drag in a terminal (double-click: word, triple-click: line) | Select text |
+| Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal or Kanban board, where you clicked |
+| Right-click a block, card, column, board or workspace tile | Its menu (copy, paste, rename, delete, close…) |
 
 | Linux / Windows | macOS | Action |
 |---|---|---|
 | Ctrl+Shift+T | Cmd+T | New terminal |
+| Ctrl+Shift+K | Cmd+Shift+K | New kanban board block |
 | Ctrl+Shift+W | Cmd+W | Close the focused terminal |
 | Ctrl+Shift+C / V | Cmd+C / V | Copy / paste |
 | Ctrl+= / Ctrl+- | Cmd+= / Cmd+- | Zoom in / out |
 | Ctrl+0 | Cmd+0 | Zoom 100% |
 | Ctrl+Shift+1 | Cmd+Shift+1 | Fit all blocks |
 | Ctrl+, | Cmd+, | Settings |
+| Ctrl+Tab / Ctrl+Shift+Tab | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous workspace |
+| Ctrl+1 … Ctrl+9 | Cmd+1 … Cmd+9 | Workspace 1 to 9 |
+| Ctrl+Shift+N | Cmd+Shift+N | New workspace |
 | Ctrl+Shift+Q, twice | Cmd+Q, twice | Quit (the first press only asks for the second) |
+
+## Workspaces
+
+Each workspace is a whole canvas of its own, such as one per project. The sidebar on the left shows them all: click
+one to switch, **+** to add one, and right-click a tile to rename or delete it. The button at the left of the title
+bar hides or shows the sidebar. Terminals in the workspaces you aren't looking at keep running, so an agent keeps
+working while you look elsewhere; a green dot on a tile means Claude Code or Codex is running in it.
 
 ## Themes
 
@@ -71,13 +86,13 @@ dark = "Catppuccin Mocha"
 ## Settings
 
 Press **Ctrl+,** (**Cmd+,** on macOS), or the ⚙ in the title bar, to open the settings panel on the right. It has
-Appearance (light/dark mode, themes, glass and canvas opacity), Font (with a preview), Terminal (cursor and
-scrollback), Shell (for new terminals) and Shortcuts. The terminals stay usable next to it, so you see each change
+Appearance (light/dark mode and themes), Font (with a preview), Terminal (cursor and
+scrollback), Shell (for new terminals: pick one of the shells found on your computer), Agents and Shortcuts. The terminals stay usable next to it, so you see each change
 as you make it.
 
 - Every change applies at once and is saved to `config.toml` a moment later, keeping your comments. Numbers apply
-  when you press Enter or leave the field. Each section's reset button puts its settings back to the defaults by
-  removing their lines from the file.
+  when you press Enter or leave the field. A field's ↺ button puts it back to its default, and **Reset all** does
+  the whole section, by removing their lines from the file.
 - To change a shortcut, click it and press the new one, with Ctrl, Alt or Super (Cmd on macOS), or an F key. Esc
   cancels, Backspace leaves the command without a shortcut, and a shortcut another command already has is refused
   with its name. A reset that would give a shortcut to two commands is refused the same way.
@@ -85,16 +100,36 @@ as you make it.
   to have it.
 - Edits you make by hand to `config.toml` show up in the panel.
 
+## Kanban boards
+
+The board button in the title bar (or Ctrl+Shift+K) puts a kanban block on the canvas, Trello-style. Pick a board
+in it or create one: it starts with To do, Doing and Done. Drag cards between columns and columns by their titles,
+click a card to edit its title, description and colored labels, and right-click a column or a board to rename or
+delete it. Boards aren't tied to a canvas: any block, in any workspace, can show any board (the ⇅ button at the left
+of its header switches), and blocks showing the same board stay in sync. Boards are kept in `boards.json`, next to
+the `workspaces` folder.
+
 ## Your canvas is kept
 
-Templum saves the canvas as you go (every few seconds, and when it quits) and brings it back when it opens: the
-view, every terminal's place and size, and a new shell in each terminal's last folder. What was on screen doesn't
-come back. The file is `~/.local/share/templum/workspaces/default.json`
-(`~/Library/Application Support/Templum/workspaces/` on macOS, `%APPDATA%\templum\workspaces\` on Windows). If
-Templum can't read it, it keeps it as `default.json.bak` and starts fresh.
+Templum saves every workspace as you go (every few seconds, and when it quits) and brings them back when it opens:
+the view, every terminal's place and size, and a new shell in each terminal's last folder. What was on screen
+doesn't come back. The files are in `~/.local/share/templum/workspaces/`
+(`~/Library/Application Support/Templum/workspaces/` on macOS, `%APPDATA%\templum\workspaces\` on Windows): one
+per workspace, and `index.json` listing them. If Templum can't read a file, it keeps it as `.bak` and starts that
+canvas fresh.
 
-If Claude Code or Codex was open in a terminal, Templum types `claude --continue` or `codex resume --last` there,
-which continues that folder's latest conversation.
+If an AI agent was open in a terminal, Templum brings it back there: Claude Code with `claude --continue`, Codex
+with `codex resume --last`, and so on for the 20 agents it knows, continuing that folder's latest conversation (or
+a new one, for agents that can't resume by folder).
+
+## AI agents
+
+Right-click the canvas, **AI agent ▸**, and pick one: Claude Code, Codex, Gemini CLI, GitHub Copilot CLI, Cursor
+CLI, OpenCode, Amp, Kiro, Qwen Code, Grok Build, Kimi Code, Mistral Vibe, Aider, Goose, Crush, Droid, Auggie, Kilo
+Code, Cline or Pi. Templum asks which folder it runs in: one of this workspace's recent folders, a folder you choose,
+or a path you type. It opens a terminal there and starts the agent; agents you haven't installed show their install
+command instead. **Settings ▸ Agents** changes any agent's command or resume command (↺ puts it back), hides
+the ones you don't use from the menu, and adds your own agents. The full list, with how each one resumes, is in [docs/specs/agents.md](docs/specs/agents.md).
 
 ## Configuration
 
@@ -108,10 +143,6 @@ out. Uncomment a line and save, and it applies at once.
 [font]
 family = "JetBrains Mono"
 size = 14
-
-[window]
-blur = "auto"     # "auto" | true | false
-opacity = 0.72    # the canvas, 0 to 1
 
 [theme]
 mode = "system"   # "system" | "light" | "dark"
@@ -133,7 +164,9 @@ new_terminal = "ctrl-shift-t"   # one shortcut, a list, or [] to disable
 ```
 
 A mistake in the file (a typo, a value out of range) shows a notification saying where, and Templum keeps the
-last working settings. On Windows, `"inherit"` follows `cd` in cmd.exe but not in PowerShell, which doesn't move its
+last working settings. On Windows, new terminals run Git Bash when Git for Windows is installed, else PowerShell 7,
+else Windows PowerShell; Settings ▸ Shell lists every shell found (Git Bash, PowerShell 7, Windows PowerShell, WSL,
+Nushell, Command Prompt). On Windows, `"inherit"` follows `cd` in cmd.exe but not in PowerShell, which doesn't move its
 process's folder. The full list is in [docs/specs/config.md](docs/specs/config.md).
 
 ## Pre-built binaries
