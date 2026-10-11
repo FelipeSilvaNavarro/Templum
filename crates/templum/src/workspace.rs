@@ -23,8 +23,8 @@ use gpui_kit::{
     fill, point, px, size,
 };
 use templum_canvas::{
-    Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, Point, Rect,
-    Size, chrome, dot_grid, dot_size,
+    Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, HIT_PX, Point,
+    Rect, ShapeKind, Size, chrome, constrain, dot_grid, dot_size,
 };
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
@@ -153,6 +153,11 @@ enum Drag {
     Select(BlockId),
     /// Drawing with a pen, a highlighter or a shape tool.
     Ink(Drawing),
+    /// Erasing: whether anything was erased yet (for undo), and the pointer's last world point.
+    Erase {
+        erased: bool,
+        last: Point,
+    },
 }
 
 /// One canvas and everything on it: its blocks, their terminals, the focus, and what is
@@ -280,12 +285,17 @@ pub(crate) enum Tool {
     Hand,
     Pen,
     Highlighter,
+    Shape(ShapeKind),
+    Eraser,
 }
 
 impl Tool {
     /// A tool that draws: it stays on, and a layer over the blocks takes the pointer.
     pub fn draws(self) -> bool {
-        matches!(self, Tool::Pen | Tool::Highlighter)
+        matches!(
+            self,
+            Tool::Pen | Tool::Highlighter | Tool::Shape(_) | Tool::Eraser
+        )
     }
 }
 
@@ -401,6 +411,10 @@ pub struct Workspace {
     /// The drawing tools' color and width.
     pub(crate) ink_color: Color,
     pub(crate) ink_width: ink::Width,
+    /// The shape last picked: the Shapes button shows it.
+    pub(crate) last_shape: Option<ShapeKind>,
+    /// The shapes pill is open above the toolbar.
+    pub(crate) shapes_open: bool,
     /// The focused terminal's cursor blinks (painting reports it); and the blink phase.
     pub(crate) cursor_blinks: bool,
     pub(crate) blink_on: bool,
@@ -581,6 +595,8 @@ impl Workspace {
             tool: Tool::default(),
             ink_color: Color::Blue,
             ink_width: ink::Width::default(),
+            last_shape: None,
+            shapes_open: false,
             cursor_blinks: false,
             blink_on: true,
             _blink: blink,
@@ -1045,6 +1061,7 @@ impl Workspace {
     pub(crate) fn set_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
         self.tool = tool;
         self.menu = None;
+        self.shapes_open = false;
         window.focus(&self.focus_handle, cx);
         cx.notify();
     }
@@ -1057,6 +1074,41 @@ impl Workspace {
     pub(crate) fn set_ink_width(&mut self, width: ink::Width, cx: &mut Context<Self>) {
         self.ink_width = width;
         cx.notify();
+    }
+
+    /// The shapes pill above the toolbar, or closes it.
+    pub(crate) fn toggle_shapes(&mut self, cx: &mut Context<Self>) {
+        self.shapes_open = !self.shapes_open;
+        cx.notify();
+    }
+
+    pub(crate) fn pick_shape(
+        &mut self,
+        kind: ShapeKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.last_shape = Some(kind);
+        self.set_tool(Tool::Shape(kind), window, cx);
+    }
+
+    /// Removes every drawing the eraser passes over from `from` to `to` (world points); true when
+    /// any was.
+    fn erase_along(&mut self, from: Point, to: Point) -> bool {
+        let tolerance = HIT_PX / self.space.canvas.camera.zoom();
+        // Points along the way no farther apart than the eraser's reach: one move can cross a
+        // stroke without landing near it.
+        let len = (to.x - from.x).hypot(to.y - from.y);
+        let steps = (len / tolerance).ceil().max(1.0) as usize;
+        let along = |i: usize| {
+            let t = i as f32 / steps as f32;
+            Point::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t)
+        };
+        let before = self.space.ink.len();
+        self.space
+            .ink
+            .retain(|d| !(0..=steps).any(|i| d.hit(along(i), tolerance)));
+        self.space.ink.len() != before
     }
 
     /// A press on the ink layer: starts the tool's drawing at the pointer.
@@ -1077,7 +1129,19 @@ impl Workspace {
                 color: self.ink_color,
                 highlight: true,
             },
-            _ => return,
+            Tool::Shape(kind) => Drawing::Shape {
+                kind,
+                from: p,
+                to: p,
+                width: self.ink_width.units(),
+                color: self.ink_color,
+            },
+            Tool::Eraser => {
+                let erased = self.erase_along(p, p);
+                self.drag = Some(Drag::Erase { erased, last: p });
+                return;
+            }
+            Tool::Select | Tool::Hand => return,
         };
         self.drag = Some(Drag::Ink(drawing));
     }
@@ -2173,9 +2237,28 @@ impl Workspace {
             }
             Some(Drag::Ink(drawing)) => {
                 let world = self.space.canvas.camera.to_world(p);
-                let _ = shift;
-                if !drawing.push_point(world) {
-                    return;
+                match drawing {
+                    Drawing::Stroke { .. } => {
+                        if !drawing.push_point(world) {
+                            return;
+                        }
+                    }
+                    Drawing::Shape { kind, from, to, .. } => {
+                        *to = if shift {
+                            constrain(*from, world, *kind)
+                        } else {
+                            world
+                        };
+                    }
+                }
+            }
+            Some(Drag::Erase { last, .. }) => {
+                let world = self.space.canvas.camera.to_world(p);
+                let from = std::mem::replace(last, world);
+                if self.erase_along(from, world)
+                    && let Some(Drag::Erase { erased, .. }) = &mut self.drag
+                {
+                    *erased = true;
                 }
             }
             None => return,
@@ -2504,10 +2587,10 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
-        // Esc puts a tool that stays on back to Select.
+        // Esc puts a tool that stays on back to Select, and closes the shapes pill.
         if e.keystroke.key == "escape"
             && !e.keystroke.modifiers.modified()
-            && self.tool != Tool::Select
+            && (self.tool != Tool::Select || self.shapes_open)
         {
             self.set_tool(Tool::Select, window, cx);
             cx.stop_propagation();
@@ -6966,6 +7049,98 @@ mod tests {
             };
             assert_eq!((*width, *highlight), (crate::ink::HIGHLIGHTER_WIDTH, true));
         });
+    }
+
+    #[gpui_kit::test]
+    fn the_shapes_pill_picks_an_arrow_and_shift_squares_a_rectangle(cx: &mut TestAppContext) {
+        use templum_canvas::{Drawing, ShapeKind};
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-shapes", cx);
+            window.render_frame(cx);
+            window.find("ink-shapes");
+            window.click("shape-arrow", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("ink-shapes").is_none(), "closed on a pick");
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.tool, super::Tool::Shape(ShapeKind::Arrow))
+        });
+        draw(handle, &ws, cx, (20.0, 20.0), (120.0, 60.0));
+        ws.read_with(cx, |ws, _| {
+            let [Drawing::Shape { kind, from, to, .. }] = ws.space.ink.as_slice() else {
+                panic!("one shape: {:?}", ws.space.ink);
+            };
+            assert_eq!(*kind, ShapeKind::Arrow);
+            assert_eq!((to.x - from.x, to.y - from.y), (100.0, 40.0));
+        });
+        // A rectangle with Shift held is a square.
+        cx.update_window(handle, |_, window, cx| {
+            window.click("tool-shapes", cx);
+            window.render_frame(cx);
+            window.click("shape-rect", cx);
+            window.render_frame(cx);
+            let o = ws.read(cx).origin;
+            let at = |p: (f32, f32)| (f32::from(o.x) + p.0, f32::from(o.y) + p.1);
+            press_with(
+                window,
+                cx,
+                MouseButton::Left,
+                Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+                at((200.0, 20.0)),
+                at((300.0, 60.0)),
+            );
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            let Some(Drawing::Shape { kind, from, to, .. }) = ws.space.ink.last() else {
+                panic!("a shape");
+            };
+            assert_eq!(*kind, ShapeKind::Rect);
+            assert_eq!((to.x - from.x, to.y - from.y), (100.0, 100.0), "squared");
+            assert_eq!(ws.last_shape, Some(ShapeKind::Rect));
+        });
+        // With Select on, Esc closes the pill.
+        cx.update_window(handle, |_, window, cx| {
+            window.click("tool-select", cx);
+            window.click("tool-shapes", cx);
+            window.render_frame(cx);
+            window.find("ink-shapes");
+            window.press("escape", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("ink-shapes").is_none(), "Esc closes it");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_eraser_removes_the_stroke_it_passes_over(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-pen", cx);
+        })
+        .unwrap();
+        draw(handle, &ws, cx, (20.0, 20.0), (120.0, 20.0));
+        draw(handle, &ws, cx, (20.0, 200.0), (120.0, 200.0));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.ink.len(), 2));
+        cx.update_window(handle, |_, window, cx| window.click("tool-eraser", cx))
+            .unwrap();
+        // Across the first stroke, well away from the second.
+        draw(handle, &ws, cx, (70.0, 5.0), (70.0, 40.0));
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.ink.len(), 1);
+            assert_eq!(ws.space.ink[0].bounds().y.round(), 198.0);
+        });
+        // An eraser drag over nothing changes nothing (and, in Task 5, adds no undo step).
+        draw(handle, &ws, cx, (300.0, 5.0), (300.0, 40.0));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.ink.len(), 1));
     }
 
     #[gpui_kit::test]

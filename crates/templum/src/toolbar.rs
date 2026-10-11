@@ -9,7 +9,7 @@ use gpui_kit::{
     AnyElement, BoxShadow, ClickEvent, Context, Div, ElementId, MouseButton, MouseDownEvent,
     ScrollWheelEvent, SharedString, Stateful, TestSupportExt, div, point, px,
 };
-use templum_canvas::Color;
+use templum_canvas::{Color, ShapeKind};
 
 use crate::ink;
 use crate::keys::{self, Command};
@@ -122,6 +122,28 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         )
         .test_support()
         .into_any_element(),
+        button(
+            "tool-shapes",
+            ws.last_shape.map_or(IconName::Shapes, shape_icon),
+            "Shapes",
+            matches!(tool, Tool::Shape(_)),
+            ui,
+        )
+        .on_click(cx.listener(|ws, _: &ClickEvent, _, cx| ws.toggle_shapes(cx)))
+        .test_support()
+        .into_any_element(),
+        button(
+            "tool-eraser",
+            IconName::Eraser,
+            "Eraser",
+            tool == Tool::Eraser,
+            ui,
+        )
+        .on_click(
+            cx.listener(|ws, _: &ClickEvent, window, cx| ws.set_tool(Tool::Eraser, window, cx)),
+        )
+        .test_support()
+        .into_any_element(),
     ]);
     div()
         .absolute()
@@ -165,13 +187,35 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         )
 }
 
-/// The stroke options above the toolbar while a drawing tool is on: the colors, and the widths
-/// (the highlighter has one).
+/// Above the toolbar: the shapes pill while it is open, else the stroke options while a drawing
+/// tool other than the eraser is on: the colors, and the widths (the highlighter has one).
 fn options(ws: &Workspace, cx: &mut Context<Workspace>) -> Option<AnyElement> {
-    if !ws.tool.draws() {
+    let ui = ws.ui;
+    if ws.shapes_open {
+        let kinds = ShapeKind::ALL.map(|kind| {
+            button(
+                shape_id(kind),
+                shape_icon(kind),
+                shape_name(kind),
+                ws.tool == Tool::Shape(kind),
+                ui,
+            )
+            .on_click(
+                cx.listener(move |ws, _: &ClickEvent, window, cx| ws.pick_shape(kind, window, cx)),
+            )
+            .test_support()
+            .into_any_element()
+        });
+        return Some(
+            pill("ink-shapes", ui)
+                .children(kinds)
+                .test_support()
+                .into_any_element(),
+        );
+    }
+    if !ws.tool.draws() || ws.tool == Tool::Eraser {
         return None;
     }
-    let ui = ws.ui;
     let swatches = Color::ALL.map(|color| {
         let on = ws.ink_color == color;
         div()
@@ -225,22 +269,7 @@ fn options(ws: &Workspace, cx: &mut Context<Workspace>) -> Option<AnyElement> {
             .into()
     };
     Some(
-        div()
-            .id("ink-options")
-            .flex()
-            .items_center()
-            .gap(px(6.0))
-            .px(px(10.0))
-            .h(px(32.0))
-            .rounded(px(12.0))
-            .bg(ui.surface)
-            .border_1()
-            .border_color(ui.hairline)
-            // Nothing under the pill reacts to its clicks.
-            .block_mouse_except_scroll()
-            .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
-                cx.stop_propagation()
-            })
+        pill("ink-options", ui)
             .children(swatches)
             .when(!widths.is_empty(), |el| {
                 el.child(div().w(px(1.0)).h(px(18.0)).bg(ui.hairline))
@@ -249,6 +278,53 @@ fn options(ws: &Workspace, cx: &mut Context<Workspace>) -> Option<AnyElement> {
             .test_support()
             .into_any_element(),
     )
+}
+
+/// The small pill above the toolbar.
+fn pill(id: &'static str, ui: Ui) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .px(px(10.0))
+        .h(px(32.0))
+        .rounded(px(12.0))
+        .bg(ui.surface)
+        .border_1()
+        .border_color(ui.hairline)
+        // Nothing under the pill reacts to its clicks.
+        .block_mouse_except_scroll()
+        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+            cx.stop_propagation()
+        })
+}
+
+fn shape_icon(kind: ShapeKind) -> IconName {
+    match kind {
+        ShapeKind::Line => IconName::Minus,
+        ShapeKind::Arrow => IconName::ArrowUpRight,
+        ShapeKind::Rect => IconName::Square,
+        ShapeKind::Ellipse => IconName::Circle,
+    }
+}
+
+fn shape_id(kind: ShapeKind) -> &'static str {
+    match kind {
+        ShapeKind::Line => "shape-line",
+        ShapeKind::Arrow => "shape-arrow",
+        ShapeKind::Rect => "shape-rect",
+        ShapeKind::Ellipse => "shape-ellipse",
+    }
+}
+
+fn shape_name(kind: ShapeKind) -> &'static str {
+    match kind {
+        ShapeKind::Line => "Line",
+        ShapeKind::Arrow => "Arrow",
+        ShapeKind::Rect => "Rectangle",
+        ShapeKind::Ellipse => "Ellipse",
+    }
 }
 
 fn button(
