@@ -10,6 +10,7 @@ pub(crate) enum Command {
     NewNote,
     NewEditor,
     CloseTerminal,
+    CloseTab,
     Copy,
     Paste,
     PreviousPrompt,
@@ -30,12 +31,13 @@ pub(crate) enum Command {
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 21] = [
+    pub const ALL: [Command; 22] = [
         Command::NewTerminal,
         Command::NewKanban,
         Command::NewNote,
         Command::NewEditor,
         Command::CloseTerminal,
+        Command::CloseTab,
         Command::Copy,
         Command::Paste,
         Command::PreviousPrompt,
@@ -62,6 +64,7 @@ impl Command {
             Command::NewNote => "new_note",
             Command::NewEditor => "new_editor",
             Command::CloseTerminal => "close_terminal",
+            Command::CloseTab => "close_tab",
             Command::Copy => "copy",
             Command::Paste => "paste",
             Command::PreviousPrompt => "previous_prompt",
@@ -89,6 +92,7 @@ impl Command {
             Command::NewNote => "New note",
             Command::NewEditor => "New editor",
             Command::CloseTerminal => "Close terminal",
+            Command::CloseTab => "Close the file's tab (in an editor)",
             Command::Copy => "Copy",
             Command::Paste => "Paste",
             Command::PreviousPrompt => "Previous prompt",
@@ -108,6 +112,11 @@ impl Command {
         }
     }
 
+    /// Runs only while an editor block has the focus; otherwise its key goes to the terminal.
+    pub fn editor_only(self) -> bool {
+        matches!(self, Command::CloseTab)
+    }
+
     /// Shift+1 is reported as "!" on some layouts: fit_all binds both.
     pub fn defaults(self, macos: bool) -> &'static [&'static str] {
         match (self, macos) {
@@ -121,6 +130,7 @@ impl Command {
             (Command::NewEditor, true) => &["cmd-shift-e"],
             (Command::CloseTerminal, false) => &["ctrl-shift-w"],
             (Command::CloseTerminal, true) => &["cmd-w"],
+            (Command::CloseTab, _) => &["ctrl-w"],
             (Command::Copy, false) => &["ctrl-shift-c"],
             (Command::Copy, true) => &["cmd-c"],
             (Command::Paste, false) => &["ctrl-shift-v"],
@@ -170,6 +180,7 @@ pub(crate) struct KeysConfig {
     pub new_note: Option<Keys>,
     pub new_editor: Option<Keys>,
     pub close_terminal: Option<Keys>,
+    pub close_tab: Option<Keys>,
     pub copy: Option<Keys>,
     pub paste: Option<Keys>,
     pub previous_prompt: Option<Keys>,
@@ -196,6 +207,7 @@ impl KeysConfig {
             Command::NewNote => self.new_note.as_ref(),
             Command::NewEditor => self.new_editor.as_ref(),
             Command::CloseTerminal => self.close_terminal.as_ref(),
+            Command::CloseTab => self.close_tab.as_ref(),
             Command::Copy => self.copy.as_ref(),
             Command::Paste => self.paste.as_ref(),
             Command::PreviousPrompt => self.previous_prompt.as_ref(),
@@ -222,6 +234,7 @@ impl KeysConfig {
             Command::NewNote => &mut self.new_note,
             Command::NewEditor => &mut self.new_editor,
             Command::CloseTerminal => &mut self.close_terminal,
+            Command::CloseTab => &mut self.close_tab,
             Command::Copy => &mut self.copy,
             Command::Paste => &mut self.paste,
             Command::PreviousPrompt => &mut self.previous_prompt,

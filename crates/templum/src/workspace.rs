@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use gpui_kit::base::motion::{MotionStatus, Transition, transition_with_status};
 use gpui_kit::base::{TreeEvent, TreeState};
+use gpui_kit::component::input::{EditorState, Position};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::notification::{Notification, NotificationDelivery};
 use gpui_kit::component::{TITLE_BAR_HEIGHT, WindowExt, window_paddings};
@@ -153,7 +154,6 @@ impl Body {
         }
     }
 
-    #[cfg(test)]
     pub fn editor(&self) -> Option<&Editor> {
         match self {
             Body::Editor(editor) => Some(editor),
@@ -165,6 +165,32 @@ impl Body {
         match self {
             Body::Editor(editor) => Some(editor),
             _ => None,
+        }
+    }
+
+    /// Gives the keyboard to what types inside the block: a note's editor, an editor's open
+    /// file. False when nothing does.
+    pub fn focus_inner(&self, window: &mut Window, cx: &mut App) -> bool {
+        match self {
+            Body::Note(note) if !note.preview => {
+                note.focus(window, cx);
+                true
+            }
+            Body::Editor(e) => e.focus(window, cx),
+            _ => false,
+        }
+    }
+
+    /// The keyboard is inside the block.
+    pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
+        match self {
+            Body::Note(note) => note
+                .editor
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx),
+            Body::Editor(e) => e.has_focus(window, cx),
+            _ => false,
         }
     }
 }
@@ -307,7 +333,6 @@ impl Space {
         self.blocks.get_mut(&id)?.kanban_mut()
     }
 
-    #[cfg(test)]
     pub fn editor(&self, id: BlockId) -> Option<&Editor> {
         self.blocks.get(&id)?.editor()
     }
@@ -1032,6 +1057,8 @@ impl Workspace {
         let editor = self.space.editor_mut(id)?;
         editor.folder = folder.to_path_buf();
         editor.expanded.clear();
+        editor.tabs.clear();
+        editor.active = None;
         editor.refresh(cx);
         remember(&mut self.space.recent, folder.to_path_buf());
         cx.notify();
@@ -1043,6 +1070,145 @@ impl Workspace {
             editor.show_tree = !editor.show_tree;
             cx.notify();
         }
+    }
+
+    /// Opens `path` in the editor block's tab (at `line`, 1-based, when given) and gives it
+    /// the keyboard. A file that can't be opened says why.
+    pub(crate) fn open_file(
+        &mut self,
+        block: BlockId,
+        path: &Path,
+        line: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.space.editor_mut(block) else {
+            return;
+        };
+        match editor.open_tab(path, window, cx) {
+            Ok(i) => {
+                if let Some(line) = line {
+                    let at = Position {
+                        line: line.saturating_sub(1),
+                        character: 0,
+                    };
+                    editor.tabs[i]
+                        .editor
+                        .update(cx, |e, cx| e.set_cursor_position(at, window, cx));
+                }
+                self.focus_block(block, window, cx);
+            }
+            Err(message) => {
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn activate_tab(
+        &mut self,
+        block: BlockId,
+        i: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(editor) = self.space.editor_mut(block)
+            && i < editor.tabs.len()
+        {
+            editor.active = Some(i);
+            self.focus_block(block, window, cx);
+        }
+    }
+
+    /// Closes a tab; the next one (or the previous, for the last) becomes active.
+    pub(crate) fn close_tab(
+        &mut self,
+        block: BlockId,
+        i: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.release_focus(block, window, cx);
+        let Some(editor) = self.space.editor_mut(block) else {
+            return;
+        };
+        if i >= editor.tabs.len() {
+            return;
+        }
+        editor.tabs.remove(i);
+        let n = editor.tabs.len();
+        let a = editor.active.unwrap_or(0);
+        let next = if a > i { a - 1 } else { a };
+        editor.active = (n > 0).then(|| next.min(n - 1));
+        self.focus_block(block, window, cx);
+    }
+
+    fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(block) = self.focused_editor()
+            && let Some(i) = self.space.editor(block).and_then(|e| e.active)
+        {
+            self.close_tab(block, i, window, cx);
+        }
+    }
+
+    pub(crate) fn toggle_wrap(
+        &mut self,
+        block: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(editor) = self.space.editor_mut(block) {
+            editor.wrap = !editor.wrap;
+            let wrap = editor.wrap;
+            for tab in &editor.tabs {
+                tab.editor
+                    .update(cx, |e, cx| e.set_soft_wrap(wrap, window, cx));
+            }
+            cx.notify();
+        }
+    }
+
+    /// A Markdown file shows rendered, or its editor again (as a note's preview does).
+    pub(crate) fn toggle_file_preview(
+        &mut self,
+        block: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.release_focus(block, window, cx);
+        if let Some(tab) = self
+            .space
+            .editor_mut(block)
+            .and_then(|e| e.active_tab_mut())
+        {
+            tab.preview = !tab.preview;
+        }
+        self.focus_block(block, window, cx);
+    }
+
+    /// The user typed in a tab's editor: it has unsaved edits.
+    pub(crate) fn on_edit(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
+        let tab = self
+            .space
+            .blocks
+            .values_mut()
+            .filter_map(|b| b.editor_mut())
+            .flat_map(|e| e.tabs.iter_mut())
+            .find(|t| t.editor == *editor);
+        if let Some(tab) = tab
+            && !tab.dirty
+        {
+            tab.dirty = true;
+            cx.notify();
+        }
+    }
+
+    /// The focused block, when it is an editor.
+    fn focused_editor(&self) -> Option<BlockId> {
+        self.space
+            .focused
+            .filter(|id| self.space.editor(*id).is_some())
     }
 
     /// A folder of an editor's tree was expanded (read it, once) or collapsed.
@@ -1078,12 +1244,11 @@ impl Workspace {
     /// GPUI sends keys to the window's root when the focused element isn't drawn, and the
     /// shortcuts would stop working until a click.
     fn release_focus(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(Body::Note(note)) = self.space.blocks.get(&id)
-            && note
-                .editor
-                .read(cx)
-                .focus_handle(cx)
-                .contains_focused(window, cx)
+        if self
+            .space
+            .blocks
+            .get(&id)
+            .is_some_and(|b| b.has_focus(window, cx))
         {
             window.focus(&self.focus_handle, cx);
         }
@@ -1495,7 +1660,23 @@ impl Workspace {
                 }
                 session::Item::Editor(e) => {
                     let id = clamped_rect(e.rect.into(), editor::MIN).map(|rect| {
-                        let editor = Editor::new(PathBuf::from(&e.folder), e.tree, cx);
+                        let folder = PathBuf::from(&e.folder);
+                        let mut editor = Editor::new(folder.clone(), e.tree, cx);
+                        for rel in &e.open {
+                            let rel = Path::new(rel);
+                            // Only files inside the folder, as they were saved: a path that
+                            // climbs out or is absolute is not followed.
+                            let inside = rel
+                                .components()
+                                .all(|c| matches!(c, std::path::Component::Normal(_)));
+                            let path = folder.join(rel);
+                            if inside && path.is_file() {
+                                editor.open_tab(&path, window, cx).ok();
+                            }
+                        }
+                        if let Some(a) = e.active.filter(|a| *a < editor.tabs.len()) {
+                            editor.active = Some(a);
+                        }
                         self.add_block(rect, Body::Editor(editor))
                     });
                     ids.push(id);
@@ -2337,10 +2518,15 @@ impl Workspace {
         self.space.canvas.raise(id);
         self.space.focused = Some(id);
         self.space.selected_ink = None;
-        // A note's editor takes the keyboard; anything else leaves it with the workspace.
-        match self.space.blocks.get(&id) {
-            Some(Body::Note(note)) if !note.preview => note.focus(window, cx),
-            _ => window.focus(&self.focus_handle, cx),
+        // What types inside the block takes the keyboard; anything else leaves it with the
+        // workspace.
+        if !self
+            .space
+            .blocks
+            .get(&id)
+            .is_some_and(|b| b.focus_inner(window, cx))
+        {
+            window.focus(&self.focus_handle, cx);
         }
         cx.notify();
     }
@@ -2670,6 +2856,7 @@ impl Workspace {
         match command {
             Command::NewTerminal => self.new_terminal(window, cx),
             Command::CloseTerminal => self.close_terminal(window, cx),
+            Command::CloseTab => self.close_active_tab(window, cx),
             Command::Copy => self.copy_selection(cx),
             Command::Paste => self.paste_clipboard(cx),
             Command::PreviousPrompt => self.jump_to_prompt(true, cx),
@@ -2814,7 +3001,10 @@ impl Workspace {
     fn on_key_down(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // The cursor shows again on any key.
         self.blink_on = true;
-        let command = self.keymap.command(&e.keystroke);
+        let command = effective(
+            self.keymap.command(&e.keystroke),
+            self.focused_editor().is_some(),
+        );
         if self.picker.is_some() || command.is_some() {
             // While the picker is open, typing and shortcuts don't reach the terminal.
             self.command_key(e, command, window, cx);
@@ -3069,6 +3259,12 @@ pub(crate) fn remember(recent: &mut Vec<PathBuf>, folder: PathBuf) {
 }
 
 /// Ctrl+Z / Ctrl+Shift+Z (Cmd on macOS): Some(false) undoes, Some(true) redoes.
+/// The command a key press runs: one that only works in an editor is nothing without one, so
+/// the key goes on to the terminal (Ctrl+S is XOFF, Ctrl+W erases a word).
+fn effective(command: Option<Command>, in_editor: bool) -> Option<Command> {
+    command.filter(|c| in_editor || !c.editor_only())
+}
+
 fn undo_key(k: &Keystroke, macos: bool) -> Option<bool> {
     let m = &k.modifiers;
     let held = if macos {
@@ -7325,6 +7521,221 @@ mod tests {
         .unwrap();
     }
 
+    const CLOSE_TAB: &str = "ctrl-w";
+
+    /// Clicks the tree's row `ix` (a file opens, a folder expands).
+    fn click_file(handle: AnyWindowHandle, ix: usize, cx: &mut TestAppContext) {
+        cx.update_window(handle, |_, window, cx| {
+            window.click(("entry", ix), cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_file_opens_it_in_a_tab_with_its_text_and_language(cx: &mut TestAppContext) {
+        use gpui_kit::ElementId;
+        use gpui_kit::Focusable as _;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}\r\n").unwrap();
+        std::fs::write(dir.path().join("notes.md"), "# Hi\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        let n = id.0 as usize;
+        click_file(handle, 0, cx);
+        cx.update_window(handle, |_, window, cx| {
+            let ws_now = ws.read(cx);
+            let e = ws_now.space.editor(id).unwrap();
+            assert_eq!(e.tabs.len(), 1);
+            let tab = e.active_tab().unwrap();
+            assert_eq!(
+                tab.editor.read(cx).value().as_ref(),
+                "fn main() {}\n",
+                "CRLF normalized"
+            );
+            assert_eq!(tab.editor.read(cx).language_name().as_ref(), "rust");
+            assert!(matches!(
+                tab.content,
+                crate::editor::Content::Text {
+                    crlf: true,
+                    newline: true,
+                    big: false
+                }
+            ));
+            assert!(
+                tab.editor.read(cx).focus_handle(cx).is_focused(window),
+                "the file has the keyboard"
+            );
+            assert!(e.title().starts_with("main.rs — "), "{}", e.title());
+            window.find(("code", n));
+            window.find(ElementId::Name(format!("tab-{n}-0").into()));
+        })
+        .unwrap();
+        // A second file: a second tab, active; the Markdown preview toggle shows for it.
+        click_file(handle, 1, cx);
+        cx.update_window(handle, |_, window, cx| {
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert_eq!((e.tabs.len(), e.active), (2, Some(1)));
+            window.click(("md-preview", n), cx);
+            window.render_frame(cx);
+            window.find(("file-preview", n));
+            assert!(window.try_find(("code", n)).is_none());
+            // Clicking the first file's row again shows its tab, no new one.
+            window.click(("entry", 0usize), cx);
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert_eq!((e.tabs.len(), e.active), (2, Some(0)));
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn clicking_inside_an_open_file_keeps_its_editor_focused(cx: &mut TestAppContext) {
+        use gpui_kit::Focusable as _;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "text").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| window.focus(&ws.focus_handle, cx));
+            window.render_frame(cx);
+            let body = window.find(("code", id.0 as usize)).bounds();
+            click(
+                window,
+                cx,
+                (
+                    f32::from(body.origin.x) + f32::from(body.size.width) / 2.0,
+                    f32::from(body.origin.y) + f32::from(body.size.height) / 2.0,
+                ),
+                1,
+            );
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(
+                e.active_tab()
+                    .unwrap()
+                    .editor
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window),
+                "the block's mouse-down gave the keyboard back to the file"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_binary_file_and_a_big_one_are_not_edited(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), b"\x7fELF\0\x01").unwrap();
+        let lines = crate::editor::READ_ONLY_OVER as usize / 2 + 1;
+        std::fs::write(dir.path().join("big.txt"), "x\n".repeat(lines)).unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        let n = id.0 as usize;
+        click_file(handle, 0, cx);
+        cx.update_window(handle, |_, window, _| {
+            window.find(("binary", n));
+            window.find(("reveal", n));
+            assert!(window.try_find(("code", n)).is_none());
+        })
+        .unwrap();
+        click_file(handle, 1, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.find(("code", n));
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(!e.active_tab().unwrap().editor.read(cx).is_editable());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_w_closes_the_tab_and_the_x_closes_another(cx: &mut TestAppContext) {
+        use gpui_kit::ElementId;
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(dir.path().join(name), name).unwrap();
+        }
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        let n = id.0 as usize;
+        click_file(handle, 0, cx);
+        click_file(handle, 1, cx);
+        click_file(handle, 2, cx);
+        cx.update_window(handle, |_, window, cx| {
+            // c.txt is active: Ctrl+W closes it, b.txt becomes active.
+            window.press(CLOSE_TAB, cx);
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert_eq!((e.tabs.len(), e.active), (2, Some(1)));
+            assert_eq!(e.active_tab().unwrap().name(), "b.txt");
+            // The ✕ of a.txt: b.txt stays active, now at 0.
+            window.click(ElementId::Name(format!("tab-close-{n}-0").into()), cx);
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert_eq!((e.tabs.len(), e.active), (1, Some(0)));
+            assert_eq!(e.active_tab().unwrap().name(), "b.txt");
+            window.press(CLOSE_TAB, cx);
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert_eq!((e.tabs.len(), e.active), (0, None));
+            // With nothing open, a new terminal shortcut still works: the keyboard is back.
+            window.press(NEW, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.terminals().count(), 2));
+    }
+
+    #[gpui_kit::test]
+    fn a_saved_editor_comes_back_with_its_files_and_skips_paths_outside_the_folder(
+        cx: &mut TestAppContext,
+    ) {
+        let data = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("proj");
+        std::fs::create_dir_all(folder.join("src")).unwrap();
+        std::fs::write(folder.join("src/a.rs"), "a").unwrap();
+        std::fs::write(folder.join("b.txt"), "b").unwrap();
+        std::fs::write(root.path().join("outside.txt"), "no").unwrap();
+        let json = |p: &std::path::Path| p.display().to_string().replace('\\', "\\\\");
+        write_canvas(
+            data.path(),
+            &format!(
+                r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+                  {{"kind":"editor","rect":{{"x":0,"y":0,"w":900,"h":600}},"folder":"{}",
+                    "open":["src/a.rs","../outside.txt","{}","gone.txt","b.txt"],"active":4}}]}}"#,
+                json(&folder),
+                json(&folder.join("b.txt"))
+            ),
+        );
+        let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        let id = first_id(&ws, cx);
+        ws.read_with(cx, |ws, _| {
+            let e = ws.space.editor(id).unwrap();
+            let names: Vec<_> = e.tabs.iter().map(|t| t.name()).collect();
+            assert_eq!(
+                names,
+                ["a.rs", "b.txt"],
+                "outside, absolute and gone: skipped"
+            );
+            assert_eq!(
+                e.active,
+                Some(1),
+                "the saved index is beyond the kept tabs: the last one"
+            );
+        });
+        // What is saved: relative paths, the active one's position among them.
+        let item = ws.read_with(cx, |ws, _| {
+            ws.space
+                .editor(id)
+                .unwrap()
+                .item(ws.space.canvas.get(id).unwrap().rect)
+        });
+        assert_eq!(item.open, ["src/a.rs", "b.txt"]);
+        assert_eq!(item.active, Some(1));
+    }
+
     fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
         ws.read_with(cx, |ws, _| {
             let id = ws.space.canvas.top().unwrap();
@@ -7415,6 +7826,20 @@ mod tests {
         ws.read_with(cx, |ws, _| {
             assert!(ws.menu.is_some(), "the agents menu is open")
         });
+    }
+
+    #[test]
+    fn editor_only_commands_need_a_focused_editor() {
+        use crate::keys::Command;
+        assert_eq!(super::effective(Some(Command::CloseTab), false), None);
+        assert_eq!(
+            super::effective(Some(Command::CloseTab), true),
+            Some(Command::CloseTab)
+        );
+        assert_eq!(
+            super::effective(Some(Command::NewTerminal), false),
+            Some(Command::NewTerminal)
+        );
     }
 
     #[test]

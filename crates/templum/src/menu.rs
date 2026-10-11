@@ -126,6 +126,7 @@ impl Workspace {
                 Body::Editor(e) => Items::Editor {
                     block,
                     tree: e.show_tree,
+                    wrap: e.wrap,
                 },
             },
             Target::Board { block, board } => Items::Board {
@@ -191,6 +192,7 @@ enum Items {
     Editor {
         block: BlockId,
         tree: bool,
+        wrap: bool,
     },
     Board {
         block: BlockId,
@@ -355,7 +357,7 @@ impl Items {
                     move |ws, window, cx| ws.close(block, window, cx),
                 )),
             Items::Agents { at, agents } => agent_items(ws, menu, agents, at),
-            Items::Editor { block, tree } => menu
+            Items::Editor { block, tree, wrap } => menu
                 .item(item(
                     ws,
                     if tree {
@@ -365,6 +367,16 @@ impl Items {
                     },
                     Some(IconName::PanelLeft),
                     move |ws, _, cx| ws.toggle_tree(block, cx),
+                ))
+                .item(item(
+                    ws,
+                    if wrap {
+                        "Turn soft wrap off"
+                    } else {
+                        "Turn soft wrap on"
+                    },
+                    None,
+                    move |ws, window, cx| ws.toggle_wrap(block, window, cx),
                 ))
                 .separator()
                 .item(item(
