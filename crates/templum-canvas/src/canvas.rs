@@ -13,6 +13,8 @@ pub struct Block {
 
 /// Offset applied by [`Canvas::place_new`] while a spot is taken.
 pub const CASCADE: f32 = 32.0;
+/// The gap between a block and one placed beside it (world units).
+pub const BESIDE: f32 = 24.0;
 
 #[derive(Debug, Default)]
 pub struct Canvas {
@@ -96,6 +98,20 @@ impl Canvas {
             .any(|b| (b.rect.x - p.x).abs() < 8.0 && (b.rect.y - p.y).abs() < 8.0)
         {
             p = Point::new(p.x + CASCADE, p.y + CASCADE);
+        }
+        Rect::new(p.x, p.y, size.w, size.h)
+    }
+
+    /// A spot to the right of `anchor`, top-aligned, a BESIDE gap away; cascading down by
+    /// CASCADE while a block's top-left corner is already there.
+    pub fn place_beside(&self, anchor: Rect, size: Size) -> Rect {
+        let mut p = Point::new(anchor.x + anchor.w + BESIDE, anchor.y);
+        while self
+            .blocks
+            .iter()
+            .any(|b| (b.rect.x - p.x).abs() < 8.0 && (b.rect.y - p.y).abs() < 8.0)
+        {
+            p.y += CASCADE;
         }
         Rect::new(p.x, p.y, size.w, size.h)
     }
@@ -185,6 +201,22 @@ mod tests {
         assert_eq!(
             c.place_new(size, Point::new(1.0, 1.0)),
             rect(1.0 + 2.0 * CASCADE, 1.0 + 2.0 * CASCADE)
+        );
+    }
+
+    #[test]
+    fn place_beside_sits_to_the_right_and_cascades_down_off_taken_spots() {
+        let mut c = Canvas::default();
+        let anchor = Rect::new(100.0, 50.0, 300.0, 200.0);
+        let size = Size::new(100.0, 60.0);
+        assert_eq!(
+            c.place_beside(anchor, size),
+            Rect::new(100.0 + 300.0 + BESIDE, 50.0, 100.0, 60.0)
+        );
+        c.add(Rect::new(100.0 + 300.0 + BESIDE + 3.0, 52.0, 10.0, 10.0));
+        assert_eq!(
+            c.place_beside(anchor, size),
+            Rect::new(100.0 + 300.0 + BESIDE, 50.0 + CASCADE, 100.0, 60.0)
         );
     }
 

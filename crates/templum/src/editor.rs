@@ -16,12 +16,13 @@ use gpui_kit::component::input::{
 use gpui_kit::component::text::TextView;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, MouseButton, ScrollWheelEvent,
-    SharedString, Stateful, StyleRefinement, Subscription, TestSupportExt, Window, div, px,
-    relative,
+    AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, MouseButton, MouseDownEvent,
+    ScrollWheelEvent, SharedString, Stateful, StyleRefinement, Subscription, TestSupportExt,
+    Window, div, px, relative,
 };
 use templum_canvas::{BlockId, Rect, Size};
 
+use crate::menu::Target;
 use crate::session;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
@@ -95,6 +96,17 @@ pub(crate) fn encode(edited: &str, crlf: bool, newline: bool) -> String {
 /// The file's modification time; None when it is gone.
 pub(crate) fn mtime(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).ok()?.modified().ok()
+}
+
+/// Where `path` is after `from` was renamed `to`: `to` itself, or under it; None when `path`
+/// wasn't under `from`.
+pub(crate) fn moved(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
+    let rest = path.strip_prefix(from).ok()?;
+    Some(if rest.as_os_str().is_empty() {
+        to.to_path_buf()
+    } else {
+        to.join(rest)
+    })
 }
 
 /// "812 B", "12.3 KB", "4.0 MB".
@@ -533,6 +545,21 @@ fn tree_panel(
         .border_r_1()
         .border_color(ui.hairline)
         .overflow_hidden()
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                ws.open_menu(
+                    Target::Tree {
+                        block: id,
+                        path: None,
+                    },
+                    e.position,
+                    window,
+                    cx,
+                );
+                cx.stop_propagation();
+            }),
+        )
         .child(
             Tree::new(&editor.tree)
                 .item(move |ix, entry, state, _, _| row(&entity, id, ix, entry, state, ui, z))
@@ -588,6 +615,25 @@ fn row(
             let path = PathBuf::from(item.id.as_ref());
             el.on_click(move |_: &ClickEvent, window, cx| {
                 open.update(cx, |ws, cx| ws.open_file(block, &path, None, window, cx))
+            })
+        })
+        .when(!disabled, |el| {
+            let menu = entity.clone();
+            let path = PathBuf::from(item.id.as_ref());
+            el.on_mouse_down(MouseButton::Right, move |e: &MouseDownEvent, window, cx| {
+                menu.update(cx, |ws, cx| {
+                    ws.open_menu(
+                        Target::Tree {
+                            block,
+                            path: Some(path.clone()),
+                        },
+                        e.position,
+                        window,
+                        cx,
+                    )
+                });
+                // The innermost menu wins: not the tree's empty space, not the block's.
+                cx.stop_propagation();
             })
         })
         .test_support()
@@ -923,5 +969,23 @@ mod tests {
         assert_eq!(human(812), "812 B");
         assert_eq!(human(12 * 1024 + 300), "12.3 KB");
         assert_eq!(human(4 * 1024 * 1024), "4.0 MB");
+    }
+
+    #[test]
+    fn a_path_under_a_renamed_entry_follows_it() {
+        let (from, to) = (Path::new("/p/old"), Path::new("/p/new"));
+        assert_eq!(
+            moved(Path::new("/p/old"), from, to),
+            Some(PathBuf::from("/p/new"))
+        );
+        assert_eq!(
+            moved(Path::new("/p/old/a/b.rs"), from, to),
+            Some(PathBuf::from("/p/new/a/b.rs"))
+        );
+        assert_eq!(
+            moved(Path::new("/p/older/x"), from, to),
+            None,
+            "not under it"
+        );
     }
 }

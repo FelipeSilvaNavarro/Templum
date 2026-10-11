@@ -2,6 +2,8 @@
 //! Each right-clickable element opens its target's menu and stops the event, so the innermost
 //! one wins. See docs/specs/context-menus.md.
 
+use std::path::{Path, PathBuf};
+
 use crate::agents::AgentEntry;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
@@ -45,6 +47,11 @@ pub(crate) enum Target {
     Space(String),
     /// A drawing, by its index in the space's ink.
     Ink(usize),
+    /// A row of an editor's file tree (a file or a folder), or its empty space (None).
+    Tree {
+        block: BlockId,
+        path: Option<PathBuf>,
+    },
 }
 
 /// The open menu.
@@ -152,6 +159,19 @@ impl Workspace {
             }
             Target::Card { board, card } => Items::Card { board, card },
             Target::Ink(index) => Items::Ink { index },
+            Target::Tree { block, ref path } => {
+                let is_dir = path.as_ref().is_some_and(|p| p.is_dir());
+                Items::Tree {
+                    block,
+                    folder: self.space.editor(block)?.folder.clone(),
+                    path: path.clone(),
+                    is_dir,
+                    entries: path
+                        .as_ref()
+                        .filter(|_| is_dir)
+                        .map_or(0, |p| std::fs::read_dir(p).map_or(0, Iterator::count)),
+                }
+            }
             Target::Space(ref id) => Items::Space {
                 id: id.clone(),
                 name: self
@@ -217,6 +237,15 @@ enum Items {
     },
     Ink {
         index: usize,
+    },
+    Tree {
+        block: BlockId,
+        /// The editor's folder: where New file… goes from the empty space.
+        folder: PathBuf,
+        path: Option<PathBuf>,
+        is_dir: bool,
+        /// A folder's entries, for what Delete… says.
+        entries: usize,
     },
 }
 
@@ -357,6 +386,154 @@ impl Items {
                     move |ws, window, cx| ws.close(block, window, cx),
                 )),
             Items::Agents { at, agents } => agent_items(ws, menu, agents, at),
+            Items::Tree {
+                block,
+                folder,
+                path,
+                is_dir,
+                entries,
+            } => {
+                // Where a new entry goes: the folder clicked, the file's folder, or the root.
+                let dir = match &path {
+                    Some(p) if is_dir => p.clone(),
+                    Some(p) => p.parent().map_or(folder.clone(), Path::to_path_buf),
+                    None => folder.clone(),
+                };
+                let name = path
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+                let reveal = |ws: &Entity<Workspace>, p: PathBuf| {
+                    item(
+                        ws,
+                        "Reveal in file manager",
+                        Some(IconName::ExternalLink),
+                        move |_, _, cx| cx.reveal_path(&p),
+                    )
+                };
+                let mut menu = menu;
+                if let Some(p) = path.clone().filter(|_| !is_dir) {
+                    let open = p.clone();
+                    menu = menu
+                        .item(item(ws, "Open", None, move |ws, window, cx| {
+                            ws.open_file(block, &open, None, window, cx)
+                        }))
+                        .item(reveal(ws, p));
+                }
+                if path.is_none() || is_dir {
+                    let (file_dir, folder_dir) = (dir.clone(), dir.clone());
+                    menu = menu
+                        .item(item(
+                            ws,
+                            "New file…",
+                            Some(IconName::FilePlus),
+                            move |_, window, cx| {
+                                let ws = cx.entity();
+                                let dir = file_dir.clone();
+                                prompt::ask_text(
+                                    "New file",
+                                    "Create",
+                                    "",
+                                    move |text, window, cx| {
+                                        ws.update(cx, |ws, cx| {
+                                            ws.new_entry(block, &dir, false, &text, window, cx)
+                                        })
+                                    },
+                                    window,
+                                    cx,
+                                )
+                            },
+                        ))
+                        .item(item(
+                            ws,
+                            "New folder…",
+                            Some(IconName::FolderPlus),
+                            move |_, window, cx| {
+                                let ws = cx.entity();
+                                let dir = folder_dir.clone();
+                                prompt::ask_text(
+                                    "New folder",
+                                    "Create",
+                                    "",
+                                    move |text, window, cx| {
+                                        ws.update(cx, |ws, cx| {
+                                            ws.new_entry(block, &dir, true, &text, window, cx)
+                                        })
+                                    },
+                                    window,
+                                    cx,
+                                )
+                            },
+                        ));
+                }
+                if let Some(p) = path.clone().filter(|_| is_dir) {
+                    menu = menu.item(item(
+                        ws,
+                        "Open a terminal here",
+                        Some(IconName::SquareTerminal),
+                        move |ws, window, cx| ws.terminal_beside(block, &p, window, cx),
+                    ));
+                }
+                if let Some(p) = path.clone() {
+                    let (rename, rename_name) = (p.clone(), name.clone());
+                    let (delete, delete_name) = (p.clone(), name.clone());
+                    menu = menu
+                        .item(item(ws, "Rename…", None, move |_, window, cx| {
+                            let ws = cx.entity();
+                            let p = rename.clone();
+                            prompt::ask_text(
+                                "Rename",
+                                "Rename",
+                                rename_name.clone(),
+                                move |text, window, cx| {
+                                    ws.update(cx, |ws, cx| {
+                                        ws.rename_entry(block, &p, &text, window, cx)
+                                    })
+                                },
+                                window,
+                                cx,
+                            )
+                        }))
+                        .item(item(
+                            ws,
+                            "Delete…",
+                            Some(IconName::Delete),
+                            move |_, window, cx| {
+                                let ws = cx.entity();
+                                let p = delete.clone();
+                                let what = if is_dir {
+                                    format!("It has {entries} entries. This can't be undone.")
+                                } else {
+                                    "This can't be undone.".to_string()
+                                };
+                                prompt::confirm(
+                                    format!("Delete {delete_name}?"),
+                                    what,
+                                    "Delete",
+                                    move |window, cx| {
+                                        ws.update(cx, |ws, cx| {
+                                            ws.delete_entry(block, &p, window, cx)
+                                        })
+                                    },
+                                    window,
+                                    cx,
+                                )
+                            },
+                        ));
+                    if is_dir {
+                        menu = menu.item(reveal(ws, p));
+                    }
+                }
+                if path.is_none() {
+                    menu = menu.item(item(
+                        ws,
+                        "Refresh",
+                        Some(IconName::RefreshCw),
+                        move |ws, _, cx| ws.refresh_tree(block, cx),
+                    ));
+                }
+                menu
+            }
             Items::Editor { block, tree, wrap } => menu
                 .item(item(
                     ws,

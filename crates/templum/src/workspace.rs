@@ -1420,6 +1420,149 @@ impl Workspace {
         }
     }
 
+    pub(crate) fn refresh_tree(&mut self, block: BlockId, cx: &mut Context<Self>) {
+        if let Some(editor) = self.space.editor_mut(block) {
+            editor.refresh(cx);
+            cx.notify();
+        }
+    }
+
+    /// Creates a file (and opens it) or a folder in `dir`; false (the dialog stays) for an empty
+    /// name or one with a separator. A name already taken says so.
+    pub(crate) fn new_entry(
+        &mut self,
+        block: BlockId,
+        dir: &Path,
+        folder: bool,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let name = name.trim();
+        if name.is_empty() || name.contains(['/', '\\']) {
+            return false;
+        }
+        let path = dir.join(name);
+        let made = if folder {
+            std::fs::create_dir(&path)
+        } else {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map(|_| ())
+        };
+        if let Err(err) = made {
+            let message = format!("Couldn't create {name}: {err}");
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+            return false;
+        }
+        if let Some(editor) = self.space.editor_mut(block) {
+            editor.expanded.insert(dir.to_path_buf());
+        }
+        self.refresh_tree(block, cx);
+        if !folder {
+            self.open_file(block, &path, None, window, cx);
+        }
+        true
+    }
+
+    /// Renames a file or folder in place; open tabs under it follow it.
+    pub(crate) fn rename_entry(
+        &mut self,
+        block: BlockId,
+        path: &Path,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let name = name.trim();
+        if name.is_empty() || name.contains(['/', '\\']) {
+            return false;
+        }
+        let to = path.with_file_name(name);
+        if let Err(err) = std::fs::rename(path, &to) {
+            let message = format!("Couldn't rename {}: {err}", path.display());
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+            return false;
+        }
+        if let Some(editor) = self.space.editor_mut(block) {
+            for tab in &mut editor.tabs {
+                if let Some(moved) = editor::moved(&tab.path, path, &to) {
+                    tab.path = moved;
+                }
+            }
+            editor.expanded = editor
+                .expanded
+                .drain()
+                .map(|d| editor::moved(&d, path, &to).unwrap_or(d))
+                .collect();
+        }
+        self.refresh_tree(block, cx);
+        true
+    }
+
+    /// Deletes a file, or a folder with everything in it; tabs on what was deleted close.
+    pub(crate) fn delete_entry(
+        &mut self,
+        block: BlockId,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let removed = if path.is_dir() {
+            std::fs::remove_dir_all(path)
+        } else {
+            std::fs::remove_file(path)
+        };
+        if let Err(err) = removed {
+            let message = format!("Couldn't delete {}: {err}", path.display());
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+            return;
+        }
+        let gone: Vec<usize> = self
+            .space
+            .editor(block)
+            .map(|e| {
+                e.tabs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.path.starts_with(path))
+                    .map(|(i, _)| i)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Highest first, so the lower indices stay right.
+        for i in gone.into_iter().rev() {
+            self.remove_tab(block, i, window, cx);
+        }
+        if let Some(editor) = self.space.editor_mut(block) {
+            editor.expanded.retain(|d| !d.starts_with(path));
+        }
+        self.refresh_tree(block, cx);
+    }
+
+    /// A terminal in `folder`, placed to the right of the editor block.
+    pub(crate) fn terminal_beside(
+        &mut self,
+        block: BlockId,
+        folder: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(anchor) = self.space.canvas.get(block).map(|b| b.rect) else {
+            return;
+        };
+        self.space.pristine = false;
+        let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
+        let rect = self.space.canvas.place_beside(anchor, size);
+        self.spawn_block(rect, Some(folder.to_path_buf()), window, cx);
+        window.focus(&self.focus_handle, cx);
+    }
+
     /// The focused block, when it is an editor.
     fn focused_editor(&self) -> Option<BlockId> {
         self.space
@@ -8264,6 +8407,120 @@ mod tests {
             window.find(("entry", 1usize));
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_tree_creates_renames_and_deletes_entries(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/a.rs"), "a").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        // The actions, as the menu items call them.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                assert!(
+                    !ws.new_entry(id, dir.path(), false, "", window, cx),
+                    "empty: refused"
+                );
+                assert!(
+                    !ws.new_entry(id, dir.path(), false, "a/b", window, cx),
+                    "separator: refused"
+                );
+                assert!(ws.new_entry(id, &dir.path().join("src"), false, "new.rs", window, cx));
+            });
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(dir.path().join("src/new.rs").is_file());
+            assert_eq!(e.active_tab().unwrap().name(), "new.rs", "a new file opens");
+            assert!(
+                e.expanded.contains(&dir.path().join("src")),
+                "its folder is expanded"
+            );
+            ws.update(cx, |ws, cx| {
+                assert!(ws.rename_entry(id, &dir.path().join("src"), "lib", window, cx));
+            });
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(dir.path().join("lib/new.rs").is_file());
+            assert_eq!(
+                e.active_tab().unwrap().path,
+                dir.path().join("lib/new.rs"),
+                "the tab followed"
+            );
+            assert!(e.expanded.contains(&dir.path().join("lib")));
+            ws.update(cx, |ws, cx| {
+                ws.delete_entry(id, &dir.path().join("lib"), window, cx)
+            });
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(!dir.path().join("lib").exists());
+            assert!(e.tabs.is_empty(), "tabs on deleted files close");
+            assert_eq!(e.dirs[dir.path()].len(), 0);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_files_menu_asks_before_deleting_it(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("z.txt"), "z").unwrap();
+        let (handle, ws) = open(cx);
+        open_editor(handle, &ws, cx, dir.path());
+        cx.update_window(handle, |_, window, cx| {
+            window.right_click(("entry", 0usize), cx);
+            window.render_frame(cx);
+            assert!(
+                ws.read(cx).menu.is_some(),
+                "the row's menu, not the block's"
+            );
+            // Open, Reveal in file manager, Rename…, Delete….
+            window.within("popup-menu").click(3usize, cx);
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx), "Delete… asks");
+        })
+        .unwrap();
+        assert!(dir.path().join("z.txt").is_file(), "not yet");
+        cx.update_window(handle, |_, window, cx| {
+            window.press("enter", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        assert!(!dir.path().join("z.txt").exists(), "confirmed: deleted");
+    }
+
+    #[gpui_kit::test]
+    fn a_terminal_opened_from_the_tree_sits_beside_the_editor(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        cx.update_window(handle, |_, window, cx| {
+            window.right_click(("entry", 0usize), cx);
+            window.render_frame(cx);
+            // New file…, New folder…, Open a terminal here, …
+            window.within("popup-menu").click(2usize, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let (terminal, editor_rect, rect) = ws.read_with(cx, |ws, _| {
+            let top = ws.space.canvas.top().unwrap();
+            assert!(ws.space.terminal(top).is_some(), "a terminal opened");
+            let editor_rect = ws.space.canvas.get(id).unwrap().rect;
+            (top, editor_rect, ws.space.canvas.get(top).unwrap().rect)
+        });
+        assert_eq!(
+            rect.x,
+            editor_rect.x + editor_rect.w + templum_canvas::BESIDE
+        );
+        assert_eq!(rect.y, editor_rect.y);
+        #[cfg(unix)]
+        assert_eq!(
+            folder_of(&ws, terminal, cx),
+            dir.path().join("src").canonicalize().unwrap()
+        );
+        #[cfg(not(unix))]
+        let _ = terminal;
     }
 
     fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
