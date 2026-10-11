@@ -1333,6 +1333,144 @@ impl Workspace {
         self.refresh_lists_at(at, window, cx);
     }
 
+    pub(crate) fn load_stashes(&mut self, at: GitAt, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repo) = self.git_at(&at).and_then(|g| g.repo().cloned()) else {
+            return;
+        };
+        self.git_job(
+            at,
+            move || repo.stashes(),
+            |ws, at, stashes, _, _| {
+                let Some(git) = ws.git_at(&at) else {
+                    return;
+                };
+                match stashes {
+                    Ok(s) => {
+                        if git
+                            .stash_shown
+                            .is_some_and(|i| !s.iter().any(|st| st.index == i))
+                        {
+                            git.stash_shown = None;
+                        }
+                        git.stashes = s;
+                    }
+                    Err(e) => git.error = Some(e.to_string()),
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Stash changes…: a message and whether untracked files go too.
+    pub(crate) fn stash_changes(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ws = cx.entity();
+        prompt::ask_text_and_flag(
+            "Stash changes",
+            "Stash",
+            "Message",
+            "Include untracked files",
+            move |message, untracked, window, cx| {
+                let message = message.trim().to_string();
+                if message.is_empty() {
+                    return false;
+                }
+                ws.update(cx, |ws, cx| {
+                    ws.git_action(
+                        id,
+                        move |repo| repo.stash_push(&message, untracked),
+                        window,
+                        cx,
+                    )
+                });
+                true
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Apply (or Pop: apply and drop) a stash.
+    pub(crate) fn stash_apply(
+        &mut self,
+        id: BlockId,
+        index: usize,
+        pop: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.git_action(
+            id,
+            move |repo| {
+                if pop {
+                    repo.stash_pop(index)
+                } else {
+                    repo.stash_apply(index)
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn stash_drop(
+        &mut self,
+        id: BlockId,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ws = cx.entity();
+        prompt::confirm(
+            "Drop this stash?",
+            "Its changes are lost. This can't be undone.",
+            "Drop",
+            move |window, cx| {
+                ws.update(cx, |ws, cx| {
+                    ws.git_action(id, move |repo| repo.stash_drop(index), window, cx)
+                })
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Shows a stash's diff on the right.
+    pub(crate) fn show_stash(
+        &mut self,
+        id: BlockId,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        git.stash_shown = Some(index);
+        let Some(repo) = git.repo().cloned() else {
+            return;
+        };
+        self.git_job(
+            self.here(id),
+            move || repo.stash_show(index),
+            |ws, at, diff, window, cx| {
+                let Some(git) = ws.git_at(&at) else {
+                    return;
+                };
+                let text = diff.unwrap_or_else(|e| e.to_string());
+                let view = git.diff.clone();
+                view.update(cx, |d, cx| d.set_value(text, window, cx));
+            },
+            window,
+            cx,
+        );
+    }
+
     pub(crate) fn load_branches(&mut self, at: GitAt, window: &mut Window, cx: &mut Context<Self>) {
         let Some(repo) = self.git_at(&at).and_then(|g| g.repo().cloned()) else {
             return;
@@ -1590,8 +1728,7 @@ impl Workspace {
             git_block::Tab::Changes => {}
             git_block::Tab::History => self.load_history(at, 0, window, cx),
             git_block::Tab::Branches => self.load_branches(at, window, cx),
-            // Task 9.
-            git_block::Tab::Stashes => {}
+            git_block::Tab::Stashes => self.load_stashes(at, window, cx),
         }
     }
 
@@ -13382,5 +13519,97 @@ mod tests {
         .unwrap();
         settle(handle, cx);
         assert!(repo.path().join("b.txt").is_file(), "merged");
+    }
+
+    fn stash_row(id: BlockId, i: usize) -> gpui_kit::ElementId {
+        gpui_kit::ElementId::Name(format!("git-stash-{}-{i}", id.0).into())
+    }
+
+    #[gpui_kit::test]
+    fn stash_changes_asks_for_a_message_and_lists_the_stash(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let repo = committed_repo();
+        std::fs::write(repo.path().join("a.txt"), "changed\n").unwrap();
+        std::fs::write(repo.path().join("new.txt"), "n\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::Stashes);
+        let n = id.0 as usize;
+        cx.update_window(handle, |_, window, cx| {
+            window.click(("git-stash-changes", n), cx);
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx));
+            window.input("my work", cx);
+            window.within("dialog").click("flag", cx);
+            window.render_frame(cx);
+            window.within("dialog").click("ok", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.stashes.len(), 1);
+            assert_eq!(g.stashes[0].message, "On main: my work");
+            assert!(g.status.entries.is_empty(), "untracked went too");
+        });
+        assert!(!repo.path().join("new.txt").exists());
+    }
+
+    #[gpui_kit::test]
+    fn a_stash_is_shown_applied_popped_and_dropped(cx: &mut TestAppContext) {
+        no_motion(cx);
+        let repo = committed_repo();
+        std::fs::write(repo.path().join("a.txt"), "changed\n").unwrap();
+        git_run(repo.path(), &["stash", "push", "-q", "-m", "one"]);
+        std::fs::write(repo.path().join("a.txt"), "other\n").unwrap();
+        git_run(repo.path(), &["stash", "push", "-q", "-m", "two"]);
+        let (handle, ws) = open(cx);
+        let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::Stashes);
+        git_of(&ws, cx, id, |g| assert_eq!(g.stashes.len(), 2));
+        cx.update_window(handle, |_, window, cx| window.click(stash_row(id, 1), cx))
+            .unwrap();
+        settle(handle, cx);
+        let diff = git_of(&ws, cx, id, |g| {
+            assert_eq!(g.stash_shown, Some(1));
+            g.diff.clone()
+        });
+        let text = ws.read_with(cx, |_, cx| diff.read(cx).value().to_string());
+        assert!(text.contains("+changed"), "{text}");
+        // Apply, Pop, Drop…, Show.
+        let menu = |cx: &mut TestAppContext, row: usize, item: usize| {
+            cx.update_window(handle, |_, window, cx| {
+                window.right_click(stash_row(id, row), cx);
+                window.render_frame(cx);
+                window.within("popup-menu").click(item, cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+            settle(handle, cx);
+        };
+        menu(cx, 1, 0);
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
+            "changed\n"
+        );
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.stashes.len(), 2, "apply keeps it")
+        });
+        std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
+        menu(cx, 0, 1);
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
+            "other\n"
+        );
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.stashes.len(), 1, "pop drops it")
+        });
+        menu(cx, 0, 2);
+        cx.update_window(handle, |_, window, cx| {
+            window.within("dialog").click("ok", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| assert!(g.stashes.is_empty()));
     }
 }

@@ -49,6 +49,11 @@ pub(crate) enum Target {
     Space(String),
     /// A drawing, by its index in the space's ink.
     Ink(usize),
+    /// A stash in a Git block's Stashes tab, by N in `stash@{N}`.
+    GitStash {
+        block: BlockId,
+        index: usize,
+    },
     /// A branch in a Git block's Branches tab, by its name.
     GitBranch {
         block: BlockId,
@@ -191,6 +196,14 @@ impl Workspace {
                     entry: (*entries.get(index)?).clone(),
                 }
             }
+            Target::GitStash { block, index } => {
+                self.space
+                    .git(block)?
+                    .stashes
+                    .iter()
+                    .find(|s| s.index == index)?;
+                Items::GitStash { block, index }
+            }
             Target::GitBranch { block, ref name } => {
                 let git = self.space.git(block)?;
                 Items::GitBranch {
@@ -284,6 +297,10 @@ enum Items {
         block: BlockId,
         branch: Branch,
         current: Option<String>,
+    },
+    GitStash {
+        block: BlockId,
+        index: usize,
     },
     Board {
         block: BlockId,
@@ -791,6 +808,25 @@ impl Items {
                     move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(name.clone())),
                 ))
             }
+            Items::GitStash { block, index } => menu
+                .item(item(ws, "Apply", None, move |ws, window, cx| {
+                    ws.stash_apply(block, index, false, window, cx)
+                }))
+                .item(item(ws, "Pop", None, move |ws, window, cx| {
+                    ws.stash_apply(block, index, true, window, cx)
+                }))
+                .item(item(
+                    ws,
+                    "Drop…",
+                    Some(IconName::Delete),
+                    move |ws, window, cx| ws.stash_drop(block, index, window, cx),
+                ))
+                .item(item(
+                    ws,
+                    "Show",
+                    Some(IconName::FileDiff),
+                    move |ws, window, cx| ws.show_stash(block, index, window, cx),
+                )),
             Items::Git { block } => menu
                 .item(item(
                     ws,

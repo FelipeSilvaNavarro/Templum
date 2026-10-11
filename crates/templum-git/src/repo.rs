@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::parse::{self, Branch, Change, Commit, CommitFile, Entry, Operation, Status};
+use crate::parse::{self, Branch, Change, Commit, CommitFile, Entry, Operation, Stash, Status};
 
 /// A command that failed: which one, how, and what git said.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -487,5 +487,37 @@ impl Repo {
             args.push("-u");
         }
         self.run(&args).map(drop)
+    }
+
+    pub fn stashes(&self) -> Result<Vec<Stash>, GitError> {
+        let format = format!("--format={}", parse::STASH_FORMAT);
+        let out = self.run(&["stash", "list", "-z", &format])?;
+        Ok(parse::parse_stashes(&out))
+    }
+
+    pub fn stash_apply(&self, index: usize) -> Result<(), GitError> {
+        self.run(&["stash", "apply", "-q", &format!("stash@{{{index}}}")])
+            .map(drop)
+    }
+
+    pub fn stash_pop(&self, index: usize) -> Result<(), GitError> {
+        self.run(&["stash", "pop", "-q", &format!("stash@{{{index}}}")])
+            .map(drop)
+    }
+
+    pub fn stash_drop(&self, index: usize) -> Result<(), GitError> {
+        self.run(&["stash", "drop", "-q", &format!("stash@{{{index}}}")])
+            .map(drop)
+    }
+
+    /// The stash's diff.
+    pub fn stash_show(&self, index: usize) -> Result<String, GitError> {
+        self.text(&[
+            "stash",
+            "show",
+            "-p",
+            "--no-color",
+            &format!("stash@{{{index}}}"),
+        ])
     }
 }

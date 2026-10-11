@@ -492,3 +492,34 @@ fn branches_checkouts_renames_merges_and_deletes() {
     assert_eq!(s.upstream.as_deref(), Some("origin/topic"));
     drop(remote);
 }
+
+#[test]
+fn stashes_are_listed_shown_applied_popped_and_dropped() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("First", false).unwrap();
+    assert!(repo.stashes().unwrap().is_empty());
+    write(dir.path(), "a.txt", "changed\n");
+    write(dir.path(), "new.txt", "n\n");
+    repo.stash_push("my work", true).unwrap();
+    assert!(repo.status().unwrap().entries.is_empty());
+    let s = repo.stashes().unwrap();
+    assert_eq!(s.len(), 1);
+    assert_eq!(s[0].index, 0);
+    assert_eq!(s[0].message, "On main: my work");
+    assert!(repo.stash_show(0).unwrap().contains("+changed"));
+    repo.stash_apply(0).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "changed\n"
+    );
+    assert!(dir.path().join("new.txt").is_file());
+    assert_eq!(repo.stashes().unwrap().len(), 1, "apply keeps it");
+    repo.discard(&repo.status().unwrap().unstaged()).unwrap();
+    repo.stash_pop(0).unwrap();
+    assert!(repo.stashes().unwrap().is_empty(), "pop drops it");
+    repo.stash_push("again", false).unwrap();
+    repo.stash_drop(0).unwrap();
+    assert!(repo.stashes().unwrap().is_empty());
+}
