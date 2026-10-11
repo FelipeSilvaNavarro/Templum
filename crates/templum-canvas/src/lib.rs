@@ -9,6 +9,7 @@ mod dots;
 mod flight;
 mod geometry;
 mod gesture;
+mod ink;
 mod snap;
 
 pub use camera::{Camera, FIT_MARGIN, ZOOM_STEPS};
@@ -17,4 +18,8 @@ pub use dots::{DOT_SPACING, DotGrid, MIN_DOT_GAP, dot_grid, dot_size};
 pub use flight::{CameraFlight, FLIGHT_ZOOM_STEP};
 pub use geometry::{Point, Rect, Size};
 pub use gesture::{Gesture, Update};
+pub use ink::{
+    Color, Drawing, HIT_PX, MAX_WIDTH, MIN_POINT_DISTANCE, MIN_SHAPE, MIN_WIDTH, ShapeKind,
+    constrain, simplify,
+};
 pub use snap::{Guide, SNAP_PX, Snapped, snap_move, snap_resize};

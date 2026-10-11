@@ -23,8 +23,8 @@ use gpui_kit::{
     fill, point, px, size,
 };
 use templum_canvas::{
-    Block, BlockId, Camera, CameraFlight, Canvas, Gesture, Guide, Point, Rect, Size, chrome,
-    dot_grid, dot_size,
+    Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, HIT_PX, Point,
+    Rect, ShapeKind, Size, chrome, constrain, dot_grid, dot_size,
 };
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
@@ -34,6 +34,7 @@ use crate::block;
 use crate::board::{self, Boards};
 use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
 use crate::grid::CellMetrics;
+use crate::ink;
 use crate::kanban::{self, Kanban};
 use crate::keys::{self, Command, Keymap, Keys};
 use crate::menu;
@@ -59,6 +60,8 @@ const MAX_COLS: u16 = 2000;
 const MAX_ROWS: u16 = 1000;
 /// A press that moves less than this (screen pixels) before release is a click, not a pan.
 const CLICK_SLOP: f32 = 4.0;
+/// Drawing changes kept for undo, per workspace.
+pub(crate) const INK_UNDO: usize = 50;
 /// Cursor blink half-period.
 const BLINK: Duration = Duration::from_millis(500);
 /// Quitting takes a second press of its shortcut within this long.
@@ -146,11 +149,24 @@ impl Body {
     }
 }
 
-#[derive(Clone, Copy)]
 enum Drag {
     Canvas(Gesture),
     /// Selecting text in a block's terminal.
     Select(BlockId),
+    /// Drawing with a pen, a highlighter or a shape tool.
+    Ink(Drawing),
+    /// Erasing: whether anything was erased yet (for undo), and the pointer's last world point.
+    Erase {
+        erased: bool,
+        last: Point,
+    },
+    /// Moving a selected drawing: `last` is the pointer's previous world point; `moved` once it
+    /// has moved (and the undo step is taken).
+    MoveInk {
+        index: usize,
+        last: Point,
+        moved: bool,
+    },
 }
 
 /// One canvas and everything on it: its blocks, their terminals, the focus, and what is
@@ -186,6 +202,13 @@ pub(crate) struct Space {
     pub ghosts: Vec<Ghost>,
     /// The folders agents were opened in on this canvas, newest first.
     pub recent: Vec<PathBuf>,
+    /// The drawings, above the blocks.
+    pub ink: Vec<Drawing>,
+    /// The selected drawing, by its index in `ink`.
+    pub selected_ink: Option<usize>,
+    /// `ink` before each change, newest last, at most INK_UNDO; and the undone ones.
+    pub ink_undo: Vec<Vec<Drawing>>,
+    pub ink_redo: Vec<Vec<Drawing>>,
 }
 
 impl Space {
@@ -220,6 +243,7 @@ impl Space {
                 .and_then(|id| blocks.iter().position(|b| b.id == id)),
             recent: self.recent.clone(),
             agents,
+            ink: self.ink.iter().map(session::InkItem::of).collect(),
         }
     }
 
@@ -273,6 +297,20 @@ pub(crate) enum Tool {
     Select,
     /// Pans with any drag or wheel, over blocks too, like holding Alt.
     Hand,
+    Pen,
+    Highlighter,
+    Shape(ShapeKind),
+    Eraser,
+}
+
+impl Tool {
+    /// A tool that draws: it stays on, and a layer over the blocks takes the pointer.
+    pub fn draws(self) -> bool {
+        matches!(
+            self,
+            Tool::Pen | Tool::Highlighter | Tool::Shape(_) | Tool::Eraser
+        )
+    }
 }
 
 /// Called at the start of every render; returning false removes it (the bench drives frames).
@@ -384,6 +422,15 @@ pub struct Workspace {
     hand: bool,
     /// The toolbar's active tool.
     pub(crate) tool: Tool,
+    /// The drawing tools' color and width.
+    pub(crate) ink_color: Color,
+    pub(crate) ink_width: ink::Width,
+    /// The shape last picked: the Shapes button shows it.
+    pub(crate) last_shape: Option<ShapeKind>,
+    /// The shapes pill is open above the toolbar.
+    pub(crate) shapes_open: bool,
+    /// The drawings' paths, built once per zoom step.
+    ink_cache: Rc<RefCell<ink::Cache>>,
     /// The focused terminal's cursor blinks (painting reports it); and the blink phase.
     pub(crate) cursor_blinks: bool,
     pub(crate) blink_on: bool,
@@ -562,6 +609,11 @@ impl Workspace {
             menu: None,
             hand: false,
             tool: Tool::default(),
+            ink_color: Color::Blue,
+            ink_width: ink::Width::default(),
+            last_shape: None,
+            shapes_open: false,
+            ink_cache: Default::default(),
             cursor_blinks: false,
             blink_on: true,
             _blink: blink,
@@ -690,6 +742,7 @@ impl Workspace {
         left.guides.clear();
         left.flight = None;
         left.view = left.canvas.camera;
+        left.selected_ink = None;
         self.drag = None;
         self.press = None;
         self.marked = None;
@@ -1026,8 +1079,137 @@ impl Workspace {
     pub(crate) fn set_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
         self.tool = tool;
         self.menu = None;
+        self.shapes_open = false;
+        self.space.selected_ink = None;
         window.focus(&self.focus_handle, cx);
         cx.notify();
+    }
+
+    pub(crate) fn set_ink_color(&mut self, color: Color, cx: &mut Context<Self>) {
+        self.ink_color = color;
+        cx.notify();
+    }
+
+    pub(crate) fn set_ink_width(&mut self, width: ink::Width, cx: &mut Context<Self>) {
+        self.ink_width = width;
+        cx.notify();
+    }
+
+    /// The shapes pill above the toolbar, or closes it.
+    pub(crate) fn toggle_shapes(&mut self, cx: &mut Context<Self>) {
+        self.shapes_open = !self.shapes_open;
+        cx.notify();
+    }
+
+    pub(crate) fn pick_shape(
+        &mut self,
+        kind: ShapeKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.last_shape = Some(kind);
+        self.set_tool(Tool::Shape(kind), window, cx);
+    }
+
+    /// The topmost drawing under a world point, within the eraser's reach.
+    fn ink_at(&self, world: Point) -> Option<usize> {
+        let tolerance = HIT_PX / self.space.canvas.camera.zoom();
+        self.space.ink.iter().rposition(|d| d.hit(world, tolerance))
+    }
+
+    /// Before a change to the drawings: the current ones go on the undo stack.
+    fn remember_ink(&mut self) {
+        self.space.ink_undo.push(self.space.ink.clone());
+        if self.space.ink_undo.len() > INK_UNDO {
+            self.space.ink_undo.remove(0);
+        }
+        self.space.ink_redo.clear();
+    }
+
+    pub(crate) fn delete_ink(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.space.ink.len() {
+            return;
+        }
+        self.remember_ink();
+        self.space.ink.remove(index);
+        self.space.selected_ink = None;
+        cx.notify();
+    }
+
+    fn undo_ink(&mut self, cx: &mut Context<Self>) {
+        if let Some(previous) = self.space.ink_undo.pop() {
+            let current = std::mem::replace(&mut self.space.ink, previous);
+            self.space.ink_redo.push(current);
+            self.space.selected_ink = None;
+            cx.notify();
+        }
+    }
+
+    fn redo_ink(&mut self, cx: &mut Context<Self>) {
+        if let Some(next) = self.space.ink_redo.pop() {
+            let current = std::mem::replace(&mut self.space.ink, next);
+            self.space.ink_undo.push(current);
+            self.space.selected_ink = None;
+            cx.notify();
+        }
+    }
+
+    /// Removes every drawing the eraser passes over from `from` to `to` (world points); true when
+    /// any was. The first removal of a drag (`!erased_before`) takes an undo step.
+    fn erase_along(&mut self, from: Point, to: Point, erased_before: bool) -> bool {
+        let tolerance = HIT_PX / self.space.canvas.camera.zoom();
+        // Points along the way no farther apart than the eraser's reach: one move can cross a
+        // stroke without landing near it.
+        let len = (to.x - from.x).hypot(to.y - from.y);
+        let steps = (len / tolerance).ceil().max(1.0) as usize;
+        let along = |i: usize| {
+            let t = i as f32 / steps as f32;
+            Point::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t)
+        };
+        let hit = |d: &Drawing| (0..=steps).any(|i| d.hit(along(i), tolerance));
+        if !self.space.ink.iter().any(hit) {
+            return false;
+        }
+        if !erased_before {
+            self.remember_ink();
+        }
+        self.space.ink.retain(|d| !hit(d));
+        true
+    }
+
+    /// A press on the ink layer: starts the tool's drawing at the pointer.
+    pub(crate) fn begin_ink(&mut self, e: &MouseDownEvent) {
+        self.space.pristine = false;
+        self.press = None;
+        let p = self.space.canvas.camera.to_world(self.local(e.position));
+        let drawing = match self.tool {
+            Tool::Pen => Drawing::Stroke {
+                points: vec![p],
+                width: self.ink_width.units(),
+                color: self.ink_color,
+                highlight: false,
+            },
+            Tool::Highlighter => Drawing::Stroke {
+                points: vec![p],
+                width: ink::HIGHLIGHTER_WIDTH,
+                color: self.ink_color,
+                highlight: true,
+            },
+            Tool::Shape(kind) => Drawing::Shape {
+                kind,
+                from: p,
+                to: p,
+                width: self.ink_width.units(),
+                color: self.ink_color,
+            },
+            Tool::Eraser => {
+                let erased = self.erase_along(p, p, false);
+                self.drag = Some(Drag::Erase { erased, last: p });
+                return;
+            }
+            Tool::Select | Tool::Hand => return,
+        };
+        self.drag = Some(Drag::Ink(drawing));
     }
 
     /// Starts moving the canvas with the pointer, wherever it is (the hand, the middle button).
@@ -1046,6 +1228,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let at = self.space.canvas.camera.to_world(self.local(e.position));
+        if let Some(index) = self.ink_at(at) {
+            self.open_menu(menu::Target::Ink(index), e.position, window, cx);
+            return;
+        }
         self.open_menu(menu::Target::Canvas(at), e.position, window, cx);
     }
 
@@ -1229,6 +1415,11 @@ impl Workspace {
             eprintln!("templum: {message}");
             show_notification(window, cx, Notification::warning(message));
         }
+        self.space.ink = saved
+            .ink
+            .iter()
+            .filter_map(session::InkItem::drawing)
+            .collect();
         self.space.recent = saved.recent.iter().map(PathBuf::from).collect();
         self.space.saved = Some(saved);
     }
@@ -2007,6 +2198,7 @@ impl Workspace {
         self.space.pristine = false;
         self.space.canvas.raise(id);
         self.space.focused = Some(id);
+        self.space.selected_ink = None;
         // A note's editor takes the keyboard; anything else leaves it with the workspace.
         match self.space.blocks.get(&id) {
             Some(Body::Note(note)) if !note.preview => note.focus(window, cx),
@@ -2038,6 +2230,38 @@ impl Workspace {
         }
     }
 
+    /// The drawings, painted above the blocks. No listeners: the pointer goes through it.
+    fn ink_layer(&self) -> impl IntoElement + use<> {
+        let drawings = self.space.ink.clone();
+        let live = match &self.drag {
+            Some(Drag::Ink(d)) => Some(d.clone()),
+            _ => None,
+        };
+        let selected = self.space.selected_ink;
+        let camera = self.space.view;
+        let theme = self.theme.clone();
+        let ui = self.ui;
+        let cache = self.ink_cache.clone();
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                ink::paint(
+                    &drawings,
+                    live.as_ref(),
+                    selected,
+                    &camera,
+                    &theme,
+                    ui,
+                    bounds,
+                    &mut cache.borrow_mut(),
+                    window,
+                );
+            },
+        )
+        .absolute()
+        .size_full()
+    }
+
     fn local(&self, pos: PixelPoint<Pixels>) -> Point {
         Point::new(
             f32::from(pos.x - self.origin.x),
@@ -2062,7 +2286,7 @@ impl Workspace {
         self.drag = Gesture::resize_block(&self.space.canvas, id, p, min).map(Drag::Canvas);
     }
 
-    fn drag_to(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
+    fn drag_to(&mut self, pos: PixelPoint<Pixels>, shift: bool, cx: &mut Context<Self>) {
         let p = self.local(pos);
         match &mut self.drag {
             Some(Drag::Canvas(gesture)) => {
@@ -2082,6 +2306,50 @@ impl Workspace {
                     (self.cell_under(id, pos), self.space.terminal(id))
                 {
                     pane.term.shared().select_update(row, col, side);
+                }
+            }
+            Some(Drag::Ink(drawing)) => {
+                let world = self.space.canvas.camera.to_world(p);
+                match drawing {
+                    Drawing::Stroke { .. } => {
+                        if !drawing.push_point(world) {
+                            return;
+                        }
+                    }
+                    Drawing::Shape { kind, from, to, .. } => {
+                        *to = if shift {
+                            constrain(*from, world, *kind)
+                        } else {
+                            world
+                        };
+                    }
+                }
+            }
+            Some(Drag::Erase { erased, last }) => {
+                let world = self.space.canvas.camera.to_world(p);
+                let from = std::mem::replace(last, world);
+                let before = *erased;
+                if self.erase_along(from, world, before)
+                    && let Some(Drag::Erase { erased, .. }) = &mut self.drag
+                {
+                    *erased = true;
+                }
+            }
+            Some(Drag::MoveInk { index, last, moved }) => {
+                let world = self.space.canvas.camera.to_world(p);
+                let (dx, dy) = (world.x - last.x, world.y - last.y);
+                if dx == 0.0 && dy == 0.0 {
+                    return;
+                }
+                *last = world;
+                let (index, first) = (*index, !*moved);
+                *moved = true;
+                // A click that doesn't drag isn't a step.
+                if first {
+                    self.remember_ink();
+                }
+                if let Some(d) = self.space.ink.get_mut(index) {
+                    d.move_by(dx, dy);
                 }
             }
             None => return,
@@ -2226,6 +2494,13 @@ impl Workspace {
             if moved < CLICK_SLOP && self.space.focused.take().is_some() {
                 cx.notify();
             }
+        }
+        if let Some(Drag::Ink(drawing)) = self.drag.take()
+            && !drawing.is_empty()
+        {
+            self.remember_ink();
+            self.space.ink.push(drawing);
+            cx.notify();
         }
         self.end_drag();
     }
@@ -2404,12 +2679,34 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
-        // Esc puts a tool that stays on back to Select.
+        // Esc puts a tool that stays on back to Select, closes the shapes pill and deselects.
         if e.keystroke.key == "escape"
             && !e.keystroke.modifiers.modified()
-            && self.tool != Tool::Select
+            && (self.tool != Tool::Select || self.shapes_open || self.space.selected_ink.is_some())
         {
             self.set_tool(Tool::Select, window, cx);
+            cx.stop_propagation();
+            return;
+        }
+        let k = &e.keystroke;
+        if let Some(index) = self.space.selected_ink
+            && !k.modifiers.modified()
+            && matches!(k.key.as_str(), "delete" | "backspace")
+        {
+            self.delete_ink(index, cx);
+            cx.stop_propagation();
+            return;
+        }
+        // Undo and redo are the terminal's keys unless a drawing tool is on or a drawing is
+        // selected.
+        if (self.tool.draws() || self.space.selected_ink.is_some())
+            && let Some(redo) = undo_key(k, cfg!(target_os = "macos"))
+        {
+            if redo {
+                self.redo_ink(cx);
+            } else {
+                self.undo_ink(cx);
+            }
             cx.stop_propagation();
             return;
         }
@@ -2479,6 +2776,26 @@ impl Workspace {
         window.focus(&self.focus_handle, cx);
         self.space.pristine = false;
         let p = self.local(e.position);
+        // Drawings are hit only here, where no block is (blocks stop the press).
+        let world = self.space.canvas.camera.to_world(p);
+        if e.click_count == 1
+            && self.tool == Tool::Select
+            && let Some(index) = self.ink_at(world)
+        {
+            self.space.selected_ink = Some(index);
+            self.space.focused = None;
+            self.drag = Some(Drag::MoveInk {
+                index,
+                last: world,
+                moved: false,
+            });
+            self.press = None;
+            cx.notify();
+            return;
+        }
+        if self.space.selected_ink.take().is_some() {
+            cx.notify();
+        }
         if e.click_count == 2 {
             let at = self.space.canvas.camera.to_world(p);
             self.add_terminal_at(at, window, cx);
@@ -2595,6 +2912,20 @@ pub(crate) fn remember(recent: &mut Vec<PathBuf>, folder: PathBuf) {
     recent.retain(|f| *f != folder);
     recent.insert(0, folder);
     recent.truncate(RECENT);
+}
+
+/// Ctrl+Z / Ctrl+Shift+Z (Cmd on macOS): Some(false) undoes, Some(true) redoes.
+fn undo_key(k: &Keystroke, macos: bool) -> Option<bool> {
+    let m = &k.modifiers;
+    let held = if macos {
+        m.platform && !m.control
+    } else {
+        m.control && !m.platform
+    };
+    if !held || m.alt || m.function || k.key != "z" {
+        return None;
+    }
+    Some(m.shift)
 }
 
 /// Ctrl+1 to Ctrl+9 (Cmd on macOS), with no other modifier: the position of a workspace.
@@ -2814,7 +3145,7 @@ impl Render for Workspace {
                             }
                             // Any button: the middle one pans too.
                             if e.pressed_button.is_some() {
-                                ws.drag_to(e.position, cx);
+                                ws.drag_to(e.position, e.modifiers.shift, cx);
                             } else {
                                 ws.end_drag();
                             }
@@ -2859,6 +3190,30 @@ impl Render for Workspace {
             .on_pinch(cx.listener(Self::on_pinch))
             .child(layer)
             .children(blocks)
+            // The drawings, above the blocks; with a drawing tool on, a layer over them takes the
+            // pointer.
+            .child(self.ink_layer())
+            .when(self.tool.draws(), |el| {
+                el.child(
+                    div()
+                        .id("ink-layer")
+                        .absolute()
+                        .size_full()
+                        .cursor_crosshair()
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|ws, e: &MouseDownEvent, _, cx| {
+                                ws.begin_ink(e);
+                                cx.stop_propagation();
+                                cx.notify();
+                            }),
+                        )
+                        .on_scroll_wheel(cx.listener(Self::on_background_scroll))
+                        .on_pinch(cx.listener(Self::on_pinch))
+                        .test_support(),
+                )
+            })
             // The hand: while Alt is held, a layer over the blocks takes the pointer, and a drag
             // or the wheel moves the canvas wherever it is.
             .when(hand, |el| {
@@ -3050,6 +3405,7 @@ mod tests {
                 })],
                 focused: None,
                 recent: Vec::new(),
+                ink: Vec::new(),
             }),
             ..super::Space::default()
         };
@@ -3106,6 +3462,14 @@ mod tests {
     const CLOSE: &str = "cmd-w";
     #[cfg(not(target_os = "macos"))]
     const CLOSE: &str = "ctrl-shift-w";
+    #[cfg(target_os = "macos")]
+    const UNDO: &str = "cmd-z";
+    #[cfg(not(target_os = "macos"))]
+    const UNDO: &str = "ctrl-z";
+    #[cfg(target_os = "macos")]
+    const REDO: &str = "cmd-shift-z";
+    #[cfg(not(target_os = "macos"))]
+    const REDO: &str = "ctrl-shift-z";
 
     /// A long-lived command that prints nothing, so tests don't depend on shell output.
     fn quiet() -> (String, Vec<String>) {
@@ -6738,6 +7102,402 @@ mod tests {
         ws.read_with(cx, |ws, _| {
             assert!(ws.menu.is_some(), "the agents menu is open")
         });
+    }
+
+    #[test]
+    fn undo_keys_only_count_while_drawing_or_with_a_selection() {
+        let key = |s: &str| gpui_kit::Keystroke::parse(s).unwrap();
+        assert_eq!(super::undo_key(&key("ctrl-z"), false), Some(false));
+        assert_eq!(super::undo_key(&key("ctrl-shift-z"), false), Some(true));
+        assert_eq!(super::undo_key(&key("cmd-z"), true), Some(false));
+        assert_eq!(super::undo_key(&key("cmd-shift-z"), true), Some(true));
+        assert_eq!(super::undo_key(&key("ctrl-z"), true), None, "Cmd on macOS");
+        assert_eq!(super::undo_key(&key("ctrl-alt-z"), false), None);
+        assert_eq!(super::undo_key(&key("z"), false), None);
+        // The workspace asks only while a tool draws or something is selected: see
+        // ctrl_z_reaches_the_terminal_with_nothing_to_undo.
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_stroke_selects_it_and_delete_removes_it(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-pen", cx);
+        })
+        .unwrap();
+        draw(handle, &ws, cx, (20.0, 20.0), (120.0, 20.0));
+        cx.update_window(handle, |_, window, cx| {
+            window.press("escape", cx);
+            window.render_frame(cx);
+            let o = ws.read(cx).origin;
+            click(
+                window,
+                cx,
+                (f32::from(o.x) + 70.0, f32::from(o.y) + 22.0),
+                1,
+            );
+            window.render_frame(cx);
+            assert_eq!(ws.read(cx).space.selected_ink, Some(0));
+            assert_eq!(
+                ws.read(cx).space.focused,
+                None,
+                "Delete and Backspace go to the drawing, so no terminal keeps the keyboard"
+            );
+            assert_eq!(ws.read(cx).space.ink_undo.len(), 1, "a click isn't a step");
+            // Dragging it moves it.
+            press_with(
+                window,
+                cx,
+                MouseButton::Left,
+                Modifiers::default(),
+                (f32::from(o.x) + 70.0, f32::from(o.y) + 22.0),
+                (f32::from(o.x) + 70.0, f32::from(o.y) + 122.0),
+            );
+            window.render_frame(cx);
+            assert_eq!(ws.read(cx).space.ink[0].bounds().y.round(), 118.0);
+            assert_eq!(ws.read(cx).space.selected_ink, Some(0), "still selected");
+            assert_eq!(ws.read(cx).space.ink_undo.len(), 2, "the move is");
+            window.press("escape", cx);
+            assert_eq!(ws.read(cx).space.selected_ink, None, "Esc deselects");
+            click(
+                window,
+                cx,
+                (f32::from(o.x) + 70.0, f32::from(o.y) + 122.0),
+                1,
+            );
+            assert_eq!(ws.read(cx).space.selected_ink, Some(0));
+            window.press("delete", cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.space.ink.is_empty());
+            assert_eq!(ws.space.selected_ink, None);
+        });
+        // A click on empty canvas with nothing there selects nothing and pans as before.
+        cx.update_window(handle, |_, window, cx| {
+            let o = ws.read(cx).origin;
+            click(
+                window,
+                cx,
+                (f32::from(o.x) + 70.0, f32::from(o.y) + 22.0),
+                1,
+            );
+            assert_eq!(ws.read(cx).space.selected_ink, None);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_z_undoes_and_redoes_drawing_changes(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-pen", cx);
+        })
+        .unwrap();
+        draw(handle, &ws, cx, (20.0, 20.0), (120.0, 20.0));
+        draw(handle, &ws, cx, (20.0, 60.0), (120.0, 60.0));
+        cx.update_window(handle, |_, window, cx| {
+            window.press(UNDO, cx);
+            assert_eq!(ws.read(cx).space.ink.len(), 1);
+            window.press(UNDO, cx);
+            assert!(ws.read(cx).space.ink.is_empty());
+            window.press(REDO, cx);
+            assert_eq!(ws.read(cx).space.ink.len(), 1);
+            // The eraser over nothing adds no step: undo goes back to the empty canvas.
+            window.click("tool-eraser", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        draw(handle, &ws, cx, (300.0, 5.0), (300.0, 40.0));
+        cx.update_window(handle, |_, window, cx| {
+            window.press(UNDO, cx);
+            assert!(
+                ws.read(cx).space.ink.is_empty(),
+                "the eraser drag wasn't a step"
+            );
+        })
+        .unwrap();
+    }
+
+    // Linux: `cat` is a session leader, so its group is orphaned and the terminal's Ctrl+Z
+    // doesn't stop it; the PTY echoes the key as ^Z.
+    #[cfg(target_os = "linux")]
+    #[gpui_kit::test]
+    fn ctrl_z_reaches_the_terminal_with_nothing_to_undo(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        // Nothing drawn, Select on: the key goes to the terminal.
+        let shown = echo_after(UNDO, handle, &ws, cx);
+        assert!(shown.contains("^Z"), "{shown:?}");
+    }
+
+    #[gpui_kit::test]
+    fn a_stroke_over_a_terminal_doesnt_steal_its_clicks(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        let body = cx
+            .update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                window.click("tool-pen", cx);
+                window.render_frame(cx);
+                window.find(("body", id.0 as usize)).bounds()
+            })
+            .unwrap();
+        let (x, y) = (
+            f32::from(body.origin.x) + 30.0,
+            f32::from(body.origin.y) + 30.0,
+        );
+        cx.update_window(handle, |_, window, cx| {
+            press_with(
+                window,
+                cx,
+                MouseButton::Left,
+                Modifiers::default(),
+                (x, y),
+                (x + 100.0, y),
+            );
+            window.render_frame(cx);
+            window.press("escape", cx);
+            window.render_frame(cx);
+            ws.update(cx, |ws, _| ws.space.focused = None);
+            // With Select on, a click on the stroke over the terminal goes to the terminal.
+            click(window, cx, (x + 50.0, y), 1);
+            window.render_frame(cx);
+            let ws_now = ws.read(cx);
+            assert_eq!(ws_now.space.ink.len(), 1);
+            assert_eq!(ws_now.space.selected_ink, None);
+            assert_eq!(ws_now.space.focused, Some(id));
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn undo_keeps_the_last_50_drawing_changes(cx: &mut TestAppContext) {
+        let (_, ws) = open(cx);
+        ws.update(cx, |ws, _| {
+            for _ in 0..super::INK_UNDO + 10 {
+                ws.remember_ink();
+            }
+            assert_eq!(ws.space.ink_undo.len(), 50);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn right_clicking_a_drawing_opens_its_menu(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-pen", cx);
+        })
+        .unwrap();
+        draw(handle, &ws, cx, (20.0, 20.0), (120.0, 20.0));
+        cx.update_window(handle, |_, window, cx| {
+            window.press("escape", cx);
+            window.render_frame(cx);
+            let o = ws.read(cx).origin;
+            right_click(window, cx, (f32::from(o.x) + 70.0, f32::from(o.y) + 22.0));
+            window.render_frame(cx);
+            assert!(ws.read(cx).menu.is_some());
+            ws.update(cx, |ws, cx| ws.delete_ink(0, cx));
+            assert!(ws.read(cx).space.ink.is_empty());
+        })
+        .unwrap();
+    }
+
+    /// Drags on the empty canvas near its top-left corner, clear of the startup terminal.
+    fn draw(
+        handle: AnyWindowHandle,
+        ws: &Entity<Workspace>,
+        cx: &mut TestAppContext,
+        from: (f32, f32),
+        to: (f32, f32),
+    ) {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let o = ws.read(cx).origin;
+            let at = |p: (f32, f32)| (f32::from(o.x) + p.0, f32::from(o.y) + p.1);
+            press_with(
+                window,
+                cx,
+                MouseButton::Left,
+                Modifiers::default(),
+                at(from),
+                at(to),
+            );
+            window.render_frame(cx);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_pen_draws_a_stroke_that_comes_back_after_a_restart(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-pen", cx);
+            window.click("ink-color-red", cx);
+            window.click("ink-width-thick", cx);
+            window.render_frame(cx);
+            window.find("ink-layer");
+        })
+        .unwrap();
+        draw(handle, &ws, cx, (20.0, 20.0), (80.0, 50.0));
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.tool, super::Tool::Pen, "the pen stays on");
+            let [
+                templum_canvas::Drawing::Stroke {
+                    points,
+                    width,
+                    color,
+                    highlight,
+                },
+            ] = ws.space.ink.as_slice()
+            else {
+                panic!("one stroke: {:?}", ws.space.ink);
+            };
+            assert_eq!(points.len(), 2);
+            assert_eq!(
+                (*width, *color, *highlight),
+                (8.0, templum_canvas::Color::Red, false)
+            );
+            assert!(
+                ws.space.focused.is_some(),
+                "drawing doesn't unfocus the terminal"
+            );
+        });
+        // A press without a move is nothing.
+        draw(handle, &ws, cx, (200.0, 20.0), (200.0, 20.0));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.ink.len(), 1));
+        cx.update_window(handle, |_, _, cx| {
+            ws.update(cx, |ws, cx| ws.save_canvas_now(cx))
+        })
+        .unwrap();
+        let (_, again) = open_in(cx, None, Some(dir.path().to_path_buf()));
+        again.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.ink.len(), 1);
+            assert_eq!(ws.space.ink[0].width(), 8.0);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_highlighter_is_wide_and_translucent(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-highlighter", cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find("ink-width-thin").is_none(),
+                "one width only"
+            );
+        })
+        .unwrap();
+        draw(handle, &ws, cx, (20.0, 20.0), (120.0, 20.0));
+        ws.read_with(cx, |ws, _| {
+            let [
+                templum_canvas::Drawing::Stroke {
+                    width, highlight, ..
+                },
+            ] = ws.space.ink.as_slice()
+            else {
+                panic!("one stroke");
+            };
+            assert_eq!((*width, *highlight), (crate::ink::HIGHLIGHTER_WIDTH, true));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_shapes_pill_picks_an_arrow_and_shift_squares_a_rectangle(cx: &mut TestAppContext) {
+        use templum_canvas::{Drawing, ShapeKind};
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-shapes", cx);
+            window.render_frame(cx);
+            window.find("ink-shapes");
+            window.click("shape-arrow", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("ink-shapes").is_none(), "closed on a pick");
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.tool, super::Tool::Shape(ShapeKind::Arrow))
+        });
+        draw(handle, &ws, cx, (20.0, 20.0), (120.0, 60.0));
+        ws.read_with(cx, |ws, _| {
+            let [Drawing::Shape { kind, from, to, .. }] = ws.space.ink.as_slice() else {
+                panic!("one shape: {:?}", ws.space.ink);
+            };
+            assert_eq!(*kind, ShapeKind::Arrow);
+            assert_eq!((to.x - from.x, to.y - from.y), (100.0, 40.0));
+        });
+        // A rectangle with Shift held is a square.
+        cx.update_window(handle, |_, window, cx| {
+            window.click("tool-shapes", cx);
+            window.render_frame(cx);
+            window.click("shape-rect", cx);
+            window.render_frame(cx);
+            let o = ws.read(cx).origin;
+            let at = |p: (f32, f32)| (f32::from(o.x) + p.0, f32::from(o.y) + p.1);
+            press_with(
+                window,
+                cx,
+                MouseButton::Left,
+                Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+                at((200.0, 20.0)),
+                at((300.0, 60.0)),
+            );
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            let Some(Drawing::Shape { kind, from, to, .. }) = ws.space.ink.last() else {
+                panic!("a shape");
+            };
+            assert_eq!(*kind, ShapeKind::Rect);
+            assert_eq!((to.x - from.x, to.y - from.y), (100.0, 100.0), "squared");
+            assert_eq!(ws.last_shape, Some(ShapeKind::Rect));
+        });
+        // With Select on, Esc closes the pill.
+        cx.update_window(handle, |_, window, cx| {
+            window.click("tool-select", cx);
+            window.click("tool-shapes", cx);
+            window.render_frame(cx);
+            window.find("ink-shapes");
+            window.press("escape", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("ink-shapes").is_none(), "Esc closes it");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_eraser_removes_the_stroke_it_passes_over(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-pen", cx);
+        })
+        .unwrap();
+        draw(handle, &ws, cx, (20.0, 20.0), (120.0, 20.0));
+        draw(handle, &ws, cx, (20.0, 200.0), (120.0, 200.0));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.ink.len(), 2));
+        cx.update_window(handle, |_, window, cx| window.click("tool-eraser", cx))
+            .unwrap();
+        // Across the first stroke, well away from the second.
+        draw(handle, &ws, cx, (70.0, 5.0), (70.0, 40.0));
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.ink.len(), 1);
+            assert_eq!(ws.space.ink[0].bounds().y.round(), 198.0);
+        });
+        // An eraser drag over nothing changes nothing (and, in Task 5, adds no undo step).
+        draw(handle, &ws, cx, (300.0, 5.0), (300.0, 40.0));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.ink.len(), 1));
     }
 
     #[gpui_kit::test]

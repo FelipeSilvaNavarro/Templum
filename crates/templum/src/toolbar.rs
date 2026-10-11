@@ -1,15 +1,17 @@
-//! The floating toolbar at the bottom of the canvas: pointer tools, block tools and the AI
-//! agents. See docs/specs/cockpit.md, section 3.
+//! The floating toolbar at the bottom of the canvas: pointer tools, block tools, the AI agents
+//! and the drawing tools, with the stroke options above it. See docs/specs/cockpit.md, section 3.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, BoxShadow, ClickEvent, Context, Div, MouseButton, MouseDownEvent, ScrollWheelEvent,
-    SharedString, Stateful, TestSupportExt, div, point, px,
+    AnyElement, BoxShadow, ClickEvent, Context, Div, ElementId, MouseButton, MouseDownEvent,
+    ScrollWheelEvent, SharedString, Stateful, TestSupportExt, div, point, px,
 };
+use templum_canvas::{Color, ShapeKind};
 
+use crate::ink;
 use crate::keys::{self, Command};
 use crate::menu::Target;
 use crate::theme::Ui;
@@ -99,13 +101,60 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
             .test_support()
             .into_any_element(),
     ]);
+    let drawing = group(vec![
+        button("tool-pen", IconName::Pencil, "Pen", tool == Tool::Pen, ui)
+            .on_click(
+                cx.listener(|ws, _: &ClickEvent, window, cx| ws.set_tool(Tool::Pen, window, cx)),
+            )
+            .test_support()
+            .into_any_element(),
+        button(
+            "tool-highlighter",
+            IconName::Highlighter,
+            "Highlighter",
+            tool == Tool::Highlighter,
+            ui,
+        )
+        .on_click(
+            cx.listener(|ws, _: &ClickEvent, window, cx| {
+                ws.set_tool(Tool::Highlighter, window, cx)
+            }),
+        )
+        .test_support()
+        .into_any_element(),
+        button(
+            "tool-shapes",
+            ws.last_shape.map_or(IconName::Shapes, shape_icon),
+            "Shapes",
+            matches!(tool, Tool::Shape(_)),
+            ui,
+        )
+        .on_click(cx.listener(|ws, _: &ClickEvent, _, cx| ws.toggle_shapes(cx)))
+        .test_support()
+        .into_any_element(),
+        button(
+            "tool-eraser",
+            IconName::Eraser,
+            "Eraser",
+            tool == Tool::Eraser,
+            ui,
+        )
+        .on_click(
+            cx.listener(|ws, _: &ClickEvent, window, cx| ws.set_tool(Tool::Eraser, window, cx)),
+        )
+        .test_support()
+        .into_any_element(),
+    ]);
     div()
         .absolute()
         .bottom(px(MARGIN))
         .left_0()
         .right_0()
         .flex()
-        .justify_center()
+        .flex_col()
+        .items_center()
+        .gap(px(8.0))
+        .children(options(ws, cx))
         .child(
             div()
                 .id("toolbar")
@@ -132,8 +181,150 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                 .child(pointer)
                 .child(div().w(px(1.0)).h(px(20.0)).bg(ui.hairline))
                 .child(blocks)
+                .child(div().w(px(1.0)).h(px(20.0)).bg(ui.hairline))
+                .child(drawing)
                 .test_support(),
         )
+}
+
+/// Above the toolbar: the shapes pill while it is open, else the stroke options while a drawing
+/// tool other than the eraser is on: the colors, and the widths (the highlighter has one).
+fn options(ws: &Workspace, cx: &mut Context<Workspace>) -> Option<AnyElement> {
+    let ui = ws.ui;
+    if ws.shapes_open {
+        let kinds = ShapeKind::ALL.map(|kind| {
+            button(
+                shape_id(kind),
+                shape_icon(kind),
+                shape_name(kind),
+                ws.tool == Tool::Shape(kind),
+                ui,
+            )
+            .on_click(
+                cx.listener(move |ws, _: &ClickEvent, window, cx| ws.pick_shape(kind, window, cx)),
+            )
+            .test_support()
+            .into_any_element()
+        });
+        return Some(
+            pill("ink-shapes", ui)
+                .children(kinds)
+                .test_support()
+                .into_any_element(),
+        );
+    }
+    if !ws.tool.draws() || ws.tool == Tool::Eraser {
+        return None;
+    }
+    let swatches = Color::ALL.map(|color| {
+        let on = ws.ink_color == color;
+        div()
+            .id(ElementId::Name(
+                format!("ink-color-{}", color.name()).into(),
+            ))
+            .size(px(20.0))
+            .rounded_full()
+            .bg(ink::color_of(color, &ws.theme, false))
+            .border_2()
+            .border_color(if on {
+                ui.accent
+            } else {
+                gpui_kit::transparent_black()
+            })
+            .cursor_pointer()
+            .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.set_ink_color(color, cx)))
+            .test_support()
+            .into_any_element()
+    });
+    let widths: Vec<AnyElement> = if ws.tool == Tool::Highlighter {
+        Vec::new()
+    } else {
+        ink::Width::ALL
+            .map(|width| {
+                let on = ws.ink_width == width;
+                div()
+                    .id(ElementId::Name(
+                        format!("ink-width-{}", width.name()).into(),
+                    ))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(28.0))
+                    .rounded(px(6.0))
+                    .when(on, |el| el.bg(ui.card))
+                    .hover(move |s| s.bg(ui.hover))
+                    .cursor_pointer()
+                    .child(
+                        div()
+                            .rounded_full()
+                            .bg(ui.title)
+                            .size(px(width.units() * 1.5)),
+                    )
+                    .on_click(
+                        cx.listener(move |ws, _: &ClickEvent, _, cx| ws.set_ink_width(width, cx)),
+                    )
+                    .test_support()
+                    .into_any_element()
+            })
+            .into()
+    };
+    Some(
+        pill("ink-options", ui)
+            .children(swatches)
+            .when(!widths.is_empty(), |el| {
+                el.child(div().w(px(1.0)).h(px(18.0)).bg(ui.hairline))
+                    .children(widths)
+            })
+            .test_support()
+            .into_any_element(),
+    )
+}
+
+/// The small pill above the toolbar.
+fn pill(id: &'static str, ui: Ui) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(px(6.0))
+        .px(px(10.0))
+        .h(px(32.0))
+        .rounded(px(12.0))
+        .bg(ui.surface)
+        .border_1()
+        .border_color(ui.hairline)
+        // Nothing under the pill reacts to its clicks.
+        .block_mouse_except_scroll()
+        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+            cx.stop_propagation()
+        })
+}
+
+fn shape_icon(kind: ShapeKind) -> IconName {
+    match kind {
+        ShapeKind::Line => IconName::Minus,
+        ShapeKind::Arrow => IconName::ArrowUpRight,
+        ShapeKind::Rect => IconName::Square,
+        ShapeKind::Ellipse => IconName::Circle,
+    }
+}
+
+fn shape_id(kind: ShapeKind) -> &'static str {
+    match kind {
+        ShapeKind::Line => "shape-line",
+        ShapeKind::Arrow => "shape-arrow",
+        ShapeKind::Rect => "shape-rect",
+        ShapeKind::Ellipse => "shape-ellipse",
+    }
+}
+
+fn shape_name(kind: ShapeKind) -> &'static str {
+    match kind {
+        ShapeKind::Line => "Line",
+        ShapeKind::Arrow => "Arrow",
+        ShapeKind::Rect => "Rectangle",
+        ShapeKind::Ellipse => "Ellipse",
+    }
 }
 
 fn button(

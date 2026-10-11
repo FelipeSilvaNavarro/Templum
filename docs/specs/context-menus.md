@@ -33,6 +33,7 @@ would have opened together with the block's. The canvas and the blocks had no me
 | A column's title | Rename…, Add a card, Delete |
 | A card | Open, Delete card |
 | A workspace tile in the sidebar | Rename…, Delete… (disabled for the last workspace) |
+| A drawing (with the Select tool) | Delete |
 
 - Right-clicking a block focuses it first, so Copy and Paste act on that terminal.
 - The menu closes on a choice, Esc, or a click anywhere else. The keyboard goes back where it was.

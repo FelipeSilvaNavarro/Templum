@@ -1,10 +1,11 @@
-//! `templum --bench`: 20 terminals, 5 running `yes`, 10 s of animated pan and zoom.
+//! `templum --bench`: 20 terminals, 5 running `yes`, 200 strokes over them, 10 s of animated pan
+//! and zoom.
 //! Prints one JSON line (frame-interval percentiles, memory), then quits. Bar: p95 <= 16.7 ms.
 
 use std::time::{Duration, Instant};
 
 use gpui_kit::{AnyWindowHandle, App, AppContext as _, Entity};
-use templum_canvas::{Point, Rect, ZOOM_STEPS, chrome};
+use templum_canvas::{Color, Drawing, Point, Rect, ZOOM_STEPS, chrome};
 
 use crate::workspace::{DEFAULT_COLS, DEFAULT_ROWS, Workspace};
 
@@ -16,6 +17,24 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut App) 
                 let (col, row) = ((i % 5) as f32, (i / 5) as f32);
                 let rect = Rect::new(col * (size.w + 40.0), row * (size.h + 40.0), size.w, size.h);
                 ws.open(rect, window, cx);
+            }
+            // 200 strokes of 50 points over the terminals: the spec's bar must hold with ink on
+            // screen.
+            for s in 0..200 {
+                let x0 = (s % 20) as f32 * 150.0;
+                let y0 = (s / 20) as f32 * 120.0;
+                let points = (0..50)
+                    .map(|i| {
+                        let t = i as f32;
+                        Point::new(x0 + t * 3.0, y0 + (t * 0.4).sin() * 20.0)
+                    })
+                    .collect();
+                ws.space.ink.push(Drawing::Stroke {
+                    points,
+                    width: 4.0,
+                    color: Color::Blue,
+                    highlight: s % 4 == 0,
+                });
             }
         })
     });

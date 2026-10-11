@@ -699,6 +699,21 @@ Plans 2 and 3 can be done in either order after 1; 5 and 6 are independent of ea
 Plan 1 ([../plans/2026-10-11-canvas-foundations.md](../plans/2026-10-11-canvas-foundations.md)) shipped on
 2026-10-11. It left out §3's "hide the toolbar under the settings panel on narrow windows".
 
+Plan 2 ([../plans/2026-10-11-drawing.md](../plans/2026-10-11-drawing.md)) shipped on 2026-10-11. Where it differs
+from §4:
+
+- One dependency line, `lyon_tessellation = "1"`, names the `LineCap` and `LineJoin` that GPUI's `StrokeOptions`
+  needs; the crate was already in the tree through GPUI, so nothing new is compiled.
+- Drawings have no `id`: selection and the menu use their index in the canvas's list.
+- The eraser removes what the pointer's whole path since the last event passes over, not only the points it
+  lands on.
+- Performance: built paths are kept per drawing and zoom step (a flight between steps scales them, and after a
+  step change at most 24 are built again per frame); consecutive drawings of one color are painted as one path;
+  strokes go through points at least 2 px apart on screen, with straight lines where the points are under 8 px
+  apart (so zoomed out, a stroke is a polyline); lines up to 2 px wide get square ends, up to 6 px pointed joins.
+  With 200 strokes the bench measured p95 15.4–19.7 ms on a busy machine, against 14.3–15.4 ms without them:
+  the bar is not reliably held. What remains is GPUI's per-vertex cost of painting paths.
+
 ## Risks
 
 - **gpui-kit's editor at the canvas's zoom.** Kanban text scales by setting `text_size(px(13 × z))` on plain
