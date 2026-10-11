@@ -12,6 +12,7 @@ pub(crate) enum Command {
     CloseTerminal,
     CloseTab,
     Save,
+    GoToLine,
     Copy,
     Paste,
     PreviousPrompt,
@@ -32,7 +33,7 @@ pub(crate) enum Command {
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 23] = [
+    pub const ALL: [Command; 24] = [
         Command::NewTerminal,
         Command::NewKanban,
         Command::NewNote,
@@ -40,6 +41,7 @@ impl Command {
         Command::CloseTerminal,
         Command::CloseTab,
         Command::Save,
+        Command::GoToLine,
         Command::Copy,
         Command::Paste,
         Command::PreviousPrompt,
@@ -68,6 +70,7 @@ impl Command {
             Command::CloseTerminal => "close_terminal",
             Command::CloseTab => "close_tab",
             Command::Save => "save",
+            Command::GoToLine => "go_to_line",
             Command::Copy => "copy",
             Command::Paste => "paste",
             Command::PreviousPrompt => "previous_prompt",
@@ -97,6 +100,7 @@ impl Command {
             Command::CloseTerminal => "Close terminal",
             Command::CloseTab => "Close the file's tab (in an editor)",
             Command::Save => "Save the file (in an editor)",
+            Command::GoToLine => "Go to line (in an editor)",
             Command::Copy => "Copy",
             Command::Paste => "Paste",
             Command::PreviousPrompt => "Previous prompt",
@@ -118,7 +122,7 @@ impl Command {
 
     /// Runs only while an editor block has the focus; otherwise its key goes to the terminal.
     pub fn editor_only(self) -> bool {
-        matches!(self, Command::CloseTab | Command::Save)
+        matches!(self, Command::CloseTab | Command::Save | Command::GoToLine)
     }
 
     /// Shift+1 is reported as "!" on some layouts: fit_all binds both.
@@ -137,6 +141,8 @@ impl Command {
             (Command::CloseTab, _) => &["ctrl-w"],
             (Command::Save, false) => &["ctrl-s"],
             (Command::Save, true) => &["cmd-s"],
+            (Command::GoToLine, false) => &["ctrl-g"],
+            (Command::GoToLine, true) => &["cmd-g"],
             (Command::Copy, false) => &["ctrl-shift-c"],
             (Command::Copy, true) => &["cmd-c"],
             (Command::Paste, false) => &["ctrl-shift-v"],
@@ -188,6 +194,7 @@ pub(crate) struct KeysConfig {
     pub close_terminal: Option<Keys>,
     pub close_tab: Option<Keys>,
     pub save: Option<Keys>,
+    pub go_to_line: Option<Keys>,
     pub copy: Option<Keys>,
     pub paste: Option<Keys>,
     pub previous_prompt: Option<Keys>,
@@ -216,6 +223,7 @@ impl KeysConfig {
             Command::CloseTerminal => self.close_terminal.as_ref(),
             Command::CloseTab => self.close_tab.as_ref(),
             Command::Save => self.save.as_ref(),
+            Command::GoToLine => self.go_to_line.as_ref(),
             Command::Copy => self.copy.as_ref(),
             Command::Paste => self.paste.as_ref(),
             Command::PreviousPrompt => self.previous_prompt.as_ref(),
@@ -244,6 +252,7 @@ impl KeysConfig {
             Command::CloseTerminal => &mut self.close_terminal,
             Command::CloseTab => &mut self.close_tab,
             Command::Save => &mut self.save,
+            Command::GoToLine => &mut self.go_to_line,
             Command::Copy => &mut self.copy,
             Command::Paste => &mut self.paste,
             Command::PreviousPrompt => &mut self.previous_prompt,
@@ -408,6 +417,7 @@ mod tests {
         assert_eq!(linux.command(&typed("ctrl-,")), Some(Command::Settings));
         assert_eq!(linux.command(&typed("ctrl-shift-q")), Some(Command::Quit));
         assert_eq!(linux.command(&typed("ctrl-s")), Some(Command::Save));
+        assert_eq!(linux.command(&typed("ctrl-g")), Some(Command::GoToLine));
         assert_eq!(linux.command(&typed("ctrl-t")), None);
         assert_eq!(
             linux.command(&typed("ctrl-shift-e")),

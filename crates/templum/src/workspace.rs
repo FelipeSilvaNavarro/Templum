@@ -1563,6 +1563,81 @@ impl Workspace {
         window.focus(&self.focus_handle, cx);
     }
 
+    /// Opens `path` (at `line`, 1-based) in an editor of this workspace: one whose folder holds
+    /// the file, else any, else a new one on `folder` at the viewport's center. The camera flies
+    /// there if the block is off screen.
+    // The Git block (docs/plans, plan 5) is its first caller; until then only the tests call it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn open_in_editor(
+        &mut self,
+        folder: &Path,
+        path: &Path,
+        line: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let holding = |b: &Body| b.editor().is_some_and(|e| path.starts_with(&e.folder));
+        let found = self
+            .space
+            .blocks
+            .iter()
+            .find(|(_, b)| holding(b))
+            .or_else(|| self.space.blocks.iter().find(|(_, b)| b.editor().is_some()))
+            .map(|(id, _)| *id);
+        let id = found.or_else(|| {
+            let center = self.space.canvas.camera.to_world(self.center(window));
+            let size = editor::SIZE;
+            let at = self
+                .space
+                .canvas
+                .place_new(
+                    size,
+                    Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
+                )
+                .origin();
+            self.add_editor_at(folder, at, window, cx)
+        });
+        let Some(id) = id else {
+            return;
+        };
+        self.open_file(id, path, line, window, cx);
+        let space = self.space.id.clone();
+        self.reveal(&space, id, window, cx);
+    }
+
+    /// The `go_to_line` command: a line number, then the cursor goes there.
+    fn go_to_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(block) = self.focused_editor() else {
+            return;
+        };
+        let Some(path) = self
+            .space
+            .editor(block)
+            .and_then(|e| e.active_tab())
+            .filter(|t| matches!(t.content, editor::Content::Text { .. }))
+            .map(|t| t.path.clone())
+        else {
+            return;
+        };
+        let ws = cx.entity();
+        prompt::ask_text(
+            "Go to line",
+            "Go",
+            "",
+            move |text, window, cx| {
+                let Ok(line) = text.trim().parse::<u32>() else {
+                    return false;
+                };
+                ws.update(cx, |ws, cx| {
+                    ws.open_file(block, &path, Some(line), window, cx)
+                });
+                true
+            },
+            window,
+            cx,
+        );
+    }
+
     /// The focused block, when it is an editor.
     fn focused_editor(&self) -> Option<BlockId> {
         self.space
@@ -3244,6 +3319,7 @@ impl Workspace {
             Command::CloseTerminal => self.close_terminal(window, cx),
             Command::CloseTab => self.close_active_tab(window, cx),
             Command::Save => self.save_active(window, cx),
+            Command::GoToLine => self.go_to_line(window, cx),
             Command::Copy => self.copy_selection(cx),
             Command::Paste => self.paste_clipboard(cx),
             Command::PreviousPrompt => self.jump_to_prompt(true, cx),
@@ -8521,6 +8597,106 @@ mod tests {
         );
         #[cfg(not(unix))]
         let _ = terminal;
+    }
+
+    #[cfg(target_os = "macos")]
+    const GO_TO_LINE: &str = "cmd-g";
+    #[cfg(not(target_os = "macos"))]
+    const GO_TO_LINE: &str = "ctrl-g";
+
+    #[gpui_kit::test]
+    fn open_in_editor_reuses_the_block_and_opens_the_file_at_a_line(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "1\n2\n3\n").unwrap();
+        let (handle, ws) = open(cx);
+        // No editor yet: one is made on the folder.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_in_editor(dir.path(), &dir.path().join("a.txt"), None, window, cx)
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let id = ws.read_with(cx, |ws, _| {
+            let editors: Vec<_> = ws
+                .space
+                .blocks
+                .iter()
+                .filter(|(_, b)| b.editor().is_some())
+                .collect();
+            assert_eq!(editors.len(), 1);
+            *editors[0].0
+        });
+        // Far away, then asked for b.txt at line 2: the same block, the camera flies to it.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.space.canvas.camera.origin = Point::new(50_000.0, 50_000.0);
+                ws.open_in_editor(dir.path(), &dir.path().join("b.txt"), Some(2), window, cx);
+            });
+            window.render_frame(cx);
+            let ws_now = ws.read(cx);
+            let e = ws_now.space.editor(id).unwrap();
+            assert_eq!(e.tabs.len(), 2);
+            assert_eq!(e.active_tab().unwrap().name(), "b.txt");
+            assert_eq!(
+                e.active_tab()
+                    .unwrap()
+                    .editor
+                    .read(cx)
+                    .cursor_position()
+                    .line,
+                1
+            );
+            assert_eq!(ws_now.space.focused, Some(id));
+            assert!(ws_now.space.flight.is_some(), "flying to the block");
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(
+                ws.space
+                    .blocks
+                    .values()
+                    .filter(|b| b.editor().is_some())
+                    .count(),
+                1,
+                "no second editor"
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_g_asks_for_a_line_and_goes_there(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "1\n2\n3\n4\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.press(GO_TO_LINE, cx);
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx));
+        })
+        .unwrap();
+        cx.simulate_input(handle, "3");
+        cx.update_window(handle, |_, window, cx| {
+            window.press("enter", cx);
+            window.render_frame(cx);
+            assert!(!window.has_active_dialog(cx));
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert_eq!(tab.editor.read(cx).cursor_position().line, 2);
+        })
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[gpui_kit::test]
+    fn ctrl_g_reaches_the_terminal_without_an_editor(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let shown = echo_after(GO_TO_LINE, handle, &ws, cx);
+        assert!(shown.contains("^G"), "{shown:?}");
     }
 
     fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
