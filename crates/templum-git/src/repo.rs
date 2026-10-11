@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::parse::{self, Change, Entry, Operation, Status};
+use crate::parse::{self, Change, Commit, CommitFile, Entry, Operation, Status};
 
 /// A command that failed: which one, how, and what git said.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -369,5 +369,83 @@ impl Repo {
             Some(branch) => self.run(&["push", "-u", "origin", branch]).map(drop),
             None => self.run(&["push"]).map(drop),
         }
+    }
+}
+
+impl Repo {
+    /// `count` commits of HEAD's history after the first `skip`, newest first. Before the
+    /// first commit: none.
+    pub fn log(&self, skip: usize, count: usize) -> Result<Vec<Commit>, GitError> {
+        let format = format!("--format={}", parse::LOG_FORMAT);
+        let date = format!("--date={}", parse::LOG_DATE);
+        let skip = format!("--skip={skip}");
+        let count = format!("-n{count}");
+        match self.run(&["log", "-z", &format, &date, &skip, &count]) {
+            Ok(out) => Ok(parse::parse_log(&out)),
+            Err(e) if e.stderr.contains("does not have any commits") => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn commit_files(&self, hash: &str) -> Result<Vec<CommitFile>, GitError> {
+        let out = self.run(&[
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "-r",
+            "-z",
+            "-M",
+            "--name-status",
+            hash,
+        ])?;
+        Ok(parse::parse_name_status(&out))
+    }
+
+    /// One file's diff in a commit.
+    pub fn commit_diff(&self, hash: &str, file: &CommitFile) -> Result<String, GitError> {
+        let mut args = vec![
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "-p",
+            "-M",
+            "--no-color",
+            hash,
+            "--",
+        ];
+        if let Some(from) = &file.from {
+            args.push(from);
+        }
+        args.push(&file.path);
+        self.text(&args)
+    }
+
+    /// Detached at `hash`.
+    pub fn checkout_commit(&self, hash: &str) -> Result<(), GitError> {
+        self.run(&["checkout", "-q", "--detach", hash]).map(drop)
+    }
+
+    /// A branch named `name` at `from` (HEAD without), checked out. A name git refuses is an
+    /// error before anything is made.
+    pub fn new_branch(&self, name: &str, from: Option<&str>) -> Result<(), GitError> {
+        self.check_ref_format(name)?;
+        let mut args = vec!["checkout", "-q", "-b", name];
+        if let Some(from) = from {
+            args.push(from);
+        }
+        self.run(&args).map(drop)
+    }
+
+    pub fn tag(&self, name: &str, hash: &str) -> Result<(), GitError> {
+        self.run(&["tag", name, hash]).map(drop)
+    }
+
+    pub fn revert(&self, hash: &str) -> Result<(), GitError> {
+        self.run(&["revert", "--no-edit", hash]).map(drop)
+    }
+
+    /// Ok when git accepts `name` as a branch name.
+    pub fn check_ref_format(&self, name: &str) -> Result<(), GitError> {
+        self.run(&["check-ref-format", "--branch", name]).map(drop)
     }
 }

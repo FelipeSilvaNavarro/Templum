@@ -15,7 +15,7 @@ use gpui_kit::{
     div, px,
 };
 use templum_canvas::{BlockId, Point};
-use templum_git::Entry;
+use templum_git::{Commit, Entry};
 
 use crate::git_block;
 use crate::kanban;
@@ -49,6 +49,11 @@ pub(crate) enum Target {
     Space(String),
     /// A drawing, by its index in the space's ink.
     Ink(usize),
+    /// A commit in a Git block's History, by its hash.
+    GitCommit {
+        block: BlockId,
+        hash: String,
+    },
     /// A row of a Git block's Changes lists, by its list and its index in it.
     GitRow {
         block: BlockId,
@@ -181,6 +186,16 @@ impl Workspace {
                     entry: (*entries.get(index)?).clone(),
                 }
             }
+            Target::GitCommit { block, ref hash } => Items::GitCommit {
+                block,
+                commit: self
+                    .space
+                    .git(block)?
+                    .commits
+                    .iter()
+                    .find(|c| c.hash == *hash)?
+                    .clone(),
+            },
             Target::Tree { block, ref path } => {
                 let is_dir = path.as_ref().is_some_and(|p| p.is_dir());
                 Items::Tree {
@@ -247,6 +262,10 @@ enum Items {
         block: BlockId,
         list: git_block::List,
         entry: Entry,
+    },
+    GitCommit {
+        block: BlockId,
+        commit: Commit,
     },
     Board {
         block: BlockId,
@@ -667,6 +686,42 @@ impl Items {
                 .item(item(ws, "Ignore", None, move |ws, window, cx| {
                     ws.ignore_path(block, ignore.clone(), window, cx)
                 }))
+            }
+            Items::GitCommit { block, commit } => {
+                let (checkout, branch, tag, revert, copy) = (
+                    commit.hash.clone(),
+                    commit.hash.clone(),
+                    commit.hash.clone(),
+                    commit.hash.clone(),
+                    commit.hash.clone(),
+                );
+                menu.item(item(ws, "Checkout…", None, move |ws, window, cx| {
+                    ws.checkout_commit(block, checkout.clone(), window, cx)
+                }))
+                .item(item(
+                    ws,
+                    "New branch from here…",
+                    Some(IconName::GitBranchPlus),
+                    move |ws, window, cx| ws.branch_from(block, Some(branch.clone()), window, cx),
+                ))
+                .item(item(
+                    ws,
+                    "Create tag…",
+                    Some(IconName::Tag),
+                    move |ws, window, cx| ws.tag_commit(block, tag.clone(), window, cx),
+                ))
+                .item(item(
+                    ws,
+                    "Revert…",
+                    Some(IconName::Undo2),
+                    move |ws, window, cx| ws.revert_commit(block, revert.clone(), window, cx),
+                ))
+                .item(item(
+                    ws,
+                    "Copy hash",
+                    Some(IconName::Copy),
+                    move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())),
+                ))
             }
             Items::Git { block } => menu
                 .item(item(

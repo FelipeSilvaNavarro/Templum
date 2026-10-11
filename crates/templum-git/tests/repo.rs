@@ -357,3 +357,67 @@ fn a_remote_that_isnt_there_fails_with_the_command_in_the_error() {
     assert_eq!(err.command, "git fetch --prune");
     assert!(!err.needs_input());
 }
+
+#[test]
+fn log_files_diffs_tags_branches_and_reverts() {
+    let (dir, repo) = fresh();
+    assert!(
+        repo.log(0, 10).unwrap().is_empty(),
+        "no commits: an empty log, not an error"
+    );
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let first = repo.commit("First", false).unwrap();
+    write(dir.path(), "a.txt", "one\ntwo\n");
+    write(dir.path(), "b.txt", "b\n");
+    repo.stage(&["a.txt", "b.txt"]).unwrap();
+    repo.commit("Second\n\nWith a body.", false).unwrap();
+    let log = repo.log(0, 10).unwrap();
+    assert_eq!(log.len(), 2);
+    assert_eq!(log[0].subject, "Second");
+    assert_eq!(log[0].body, "With a body.");
+    assert_eq!(log[0].author, "Ada Lovelace");
+    assert!(
+        log[0].refs.contains(&"HEAD -> main".to_string()),
+        "{:?}",
+        log[0].refs
+    );
+    assert_eq!(log[1].short, first);
+    assert!(log[1].parents.is_empty());
+    assert_eq!(repo.log(1, 10).unwrap().len(), 1, "skip");
+    assert_eq!(repo.log(0, 1).unwrap().len(), 1, "count");
+    let files = repo.commit_files(&log[0].hash).unwrap();
+    let got: Vec<_> = files.iter().map(|f| (f.change, f.path.as_str())).collect();
+    assert_eq!(got, [(Change::Modified, "a.txt"), (Change::Added, "b.txt")]);
+    let diff = repo.commit_diff(&log[0].hash, &files[0]).unwrap();
+    assert!(diff.contains("+two"), "{diff}");
+    let root = repo.commit_files(&log[1].hash).unwrap();
+    assert_eq!(root.len(), 1, "a root commit's files");
+    assert!(
+        repo.commit_diff(&log[1].hash, &root[0])
+            .unwrap()
+            .contains("+one")
+    );
+    repo.tag("v1", &log[1].hash).unwrap();
+    assert!(
+        repo.log(0, 10).unwrap()[1]
+            .refs
+            .contains(&"tag: v1".to_string())
+    );
+    repo.new_branch("feat", Some(&log[1].hash)).unwrap();
+    let s = repo.status().unwrap();
+    assert_eq!(s.branch.as_deref(), Some("feat"));
+    assert_eq!(s.oid.as_deref(), Some(log[1].hash.as_str()));
+    let err = repo.new_branch("bad name", None).unwrap_err();
+    assert!(err.command.starts_with("git check-ref-format"), "{err}");
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    repo.revert(&log[0].hash).unwrap();
+    assert!(!dir.path().join("b.txt").exists(), "reverted");
+    assert!(
+        repo.log(0, 1).unwrap()[0]
+            .subject
+            .starts_with("Revert \"Second\"")
+    );
+    repo.checkout_commit(&log[1].hash).unwrap();
+    assert_eq!(repo.status().unwrap().branch, None, "detached");
+}

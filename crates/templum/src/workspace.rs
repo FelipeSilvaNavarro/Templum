@@ -1280,7 +1280,7 @@ impl Workspace {
                     Ok(None) => Found::NotARepo,
                     Err(e) => Found::NoGit(e),
                 };
-                ws.refresh_at(at, window, cx);
+                ws.after_action(at, window, cx);
             },
             window,
             cx,
@@ -1305,7 +1305,7 @@ impl Workspace {
                     if let Some(git) = ws.git_at(&at) {
                         git.found = Found::Repo(repo);
                     }
-                    ws.refresh_at(at, window, cx);
+                    ws.after_action(at, window, cx);
                 }
                 Err(e) => {
                     eprintln!("templum: {e}");
@@ -1317,12 +1317,281 @@ impl Workspace {
         );
     }
 
-    /// Shows a tab of a Git block.
-    pub(crate) fn set_git_tab(&mut self, id: BlockId, tab: git_block::Tab, cx: &mut Context<Self>) {
+    /// Shows a tab of a Git block, and reads its list.
+    pub(crate) fn set_git_tab(
+        &mut self,
+        id: BlockId,
+        tab: git_block::Tab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(git) = self.space.git_mut(id) {
             git.tab = tab;
             cx.notify();
         }
+        let at = self.here(id);
+        self.refresh_lists_at(at, window, cx);
+    }
+
+    /// The Git block `id` of the workspace on screen (the History list's closure builds it too).
+    pub(crate) fn here(&self, id: BlockId) -> GitAt {
+        GitAt {
+            space: self.space.id.clone(),
+            block: id,
+        }
+    }
+
+    /// After a command: the status now, and the shown tab's list once the status is in.
+    fn after_action(&mut self, at: GitAt, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(git) = self.git_at(&at) {
+            git.pending_lists = true;
+        }
+        self.refresh_at(at, window, cx);
+    }
+
+    /// Reads the list behind the shown tab (History, Branches or Stashes) in the background.
+    fn refresh_lists_at(&mut self, at: GitAt, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.git_at(&at) else {
+            return;
+        };
+        if git.busy {
+            git.pending_lists = true;
+            return;
+        }
+        match git.tab {
+            git_block::Tab::Changes => {}
+            git_block::Tab::History => self.load_history(at, 0, window, cx),
+            // Tasks 8 and 9.
+            git_block::Tab::Branches | git_block::Tab::Stashes => {}
+        }
+    }
+
+    /// Loads a page of History: the first page replaces the list, a later one extends it.
+    pub(crate) fn load_history(
+        &mut self,
+        at: GitAt,
+        skip: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.git_at(&at).and_then(|g| g.repo().cloned()) else {
+            return;
+        };
+        self.git_job(
+            at,
+            move || repo.log(skip, git_block::PAGE),
+            move |ws, at, log, _, _| {
+                let Some(git) = ws.git_at(&at) else {
+                    return;
+                };
+                match log {
+                    Ok(page) => {
+                        git.more = page.len() == git_block::PAGE;
+                        let mut all = if skip == 0 {
+                            Vec::new()
+                        } else {
+                            (*git.commits).clone()
+                        };
+                        all.extend(page);
+                        git.commits = Rc::new(all);
+                        git.error = None;
+                    }
+                    Err(e) => git.error = Some(e.to_string()),
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Shows a commit's message and files on the right of History.
+    pub(crate) fn show_commit(
+        &mut self,
+        id: BlockId,
+        hash: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git(id) else {
+            return;
+        };
+        let Some(commit) = git.commits.iter().find(|c| c.hash == hash).cloned() else {
+            return;
+        };
+        let Some(repo) = git.repo().cloned() else {
+            return;
+        };
+        let files_of = hash.clone();
+        self.git_job(
+            self.here(id),
+            move || repo.commit_files(&files_of),
+            move |ws, at, files, window, cx| {
+                let Some(git) = ws.git_at(&at) else {
+                    return;
+                };
+                match files {
+                    Ok(files) => {
+                        git.shown = Some(git_block::Shown {
+                            commit,
+                            files,
+                            file: None,
+                        });
+                        let view = git.diff.clone();
+                        view.update(cx, |d, cx| d.set_value("", window, cx));
+                    }
+                    Err(e) => git.error = Some(e.to_string()),
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Shows one file's diff in the shown commit.
+    pub(crate) fn show_commit_file(
+        &mut self,
+        id: BlockId,
+        path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        let Some(shown) = &mut git.shown else {
+            return;
+        };
+        let Some(file) = shown.files.iter().find(|f| f.path == path).cloned() else {
+            return;
+        };
+        shown.file = Some(path);
+        let hash = shown.commit.hash.clone();
+        let Some(repo) = git.repo().cloned() else {
+            return;
+        };
+        self.git_job(
+            self.here(id),
+            move || repo.commit_diff(&hash, &file),
+            |ws, at, diff, window, cx| {
+                let Some(git) = ws.git_at(&at) else {
+                    return;
+                };
+                let text = diff.unwrap_or_else(|e| e.to_string());
+                let view = git.diff.clone();
+                view.update(cx, |d, cx| d.set_value(text, window, cx));
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Checkout… on a commit: warns about the detached state first.
+    pub(crate) fn checkout_commit(
+        &mut self,
+        id: BlockId,
+        hash: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ws = cx.entity();
+        prompt::confirm(
+            format!("Check out {}?", &hash[..hash.len().min(7)]),
+            "HEAD will be detached: commits made here belong to no branch until one is made from them.",
+            "Check out",
+            move |window, cx| {
+                let hash = hash.clone();
+                ws.update(cx, |ws, cx| {
+                    ws.git_action(id, move |repo| repo.checkout_commit(&hash), window, cx)
+                })
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// New branch… from `from` (a commit; None: the current one): asks the name.
+    pub(crate) fn branch_from(
+        &mut self,
+        id: BlockId,
+        from: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ws = cx.entity();
+        prompt::ask_text(
+            "New branch",
+            "Create",
+            "",
+            move |name, window, cx| {
+                let name = name.trim().to_string();
+                if name.is_empty() {
+                    return false;
+                }
+                let from = from.clone();
+                ws.update(cx, |ws, cx| {
+                    ws.git_action(
+                        id,
+                        move |repo| repo.new_branch(&name, from.as_deref()),
+                        window,
+                        cx,
+                    )
+                });
+                true
+            },
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn tag_commit(
+        &mut self,
+        id: BlockId,
+        hash: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ws = cx.entity();
+        prompt::ask_text(
+            "New tag",
+            "Create",
+            "",
+            move |name, window, cx| {
+                let name = name.trim().to_string();
+                if name.is_empty() {
+                    return false;
+                }
+                let hash = hash.clone();
+                ws.update(cx, |ws, cx| {
+                    ws.git_action(id, move |repo| repo.tag(&name, &hash), window, cx)
+                });
+                true
+            },
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn revert_commit(
+        &mut self,
+        id: BlockId,
+        hash: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ws = cx.entity();
+        prompt::confirm(
+            format!("Revert {}?", &hash[..hash.len().min(7)]),
+            "A new commit undoes its changes.",
+            "Revert",
+            move |window, cx| {
+                let hash = hash.clone();
+                ws.update(cx, |ws, cx| {
+                    ws.git_action(id, move |repo| repo.revert(&hash), window, cx)
+                })
+            },
+            window,
+            cx,
+        );
     }
 
     /// Runs one of fetch, pull and push, its button spinning meanwhile.
@@ -1360,7 +1629,7 @@ impl Workspace {
                 if let Err(e) = result {
                     on_err(ws, at.block, &e, window, cx);
                 }
-                ws.refresh_at(at, window, cx);
+                ws.after_action(at, window, cx);
             },
             window,
             cx,
@@ -1504,7 +1773,7 @@ impl Workspace {
                         notify_git_error(&entity, at.block, &e, Vec::new(), window, cx)
                     }
                 }
-                ws.refresh_at(at, window, cx);
+                ws.after_action(at, window, cx);
             },
             window,
             cx,
@@ -1723,7 +1992,7 @@ impl Workspace {
                     let entity = cx.entity();
                     notify_git_error(&entity, at.block, &e, Vec::new(), window, cx);
                 }
-                ws.refresh_at(at, window, cx);
+                ws.after_action(at, window, cx);
             },
             window,
             cx,
@@ -1958,6 +2227,14 @@ impl Workspace {
         let Some(git) = self.git_at(&at) else {
             return;
         };
+        // One command at a time per block: this one waits for the running one.
+        if git.busy {
+            let at = at.clone();
+            git.queued.push(Box::new(move |ws, window, cx| {
+                ws.git_job(at, job, done, window, cx)
+            }));
+            return;
+        }
         git.busy = true;
         cx.notify();
         cx.spawn_in(window, async move |ws, cx| {
@@ -1967,11 +2244,30 @@ impl Workspace {
                     git.busy = false;
                 }
                 done(ws, at.clone(), result, window, cx);
-                let again = ws
-                    .git_at(&at)
-                    .is_some_and(|g| std::mem::take(&mut g.pending));
+                let (again, lists) = ws.git_at(&at).map_or((false, false), |g| {
+                    (
+                        std::mem::take(&mut g.pending),
+                        std::mem::take(&mut g.pending_lists),
+                    )
+                });
                 if again {
-                    ws.refresh_at(at, window, cx);
+                    if lists {
+                        // Taken back: the status read's completion runs the lists.
+                        if let Some(g) = ws.git_at(&at) {
+                            g.pending_lists = true;
+                        }
+                    }
+                    ws.refresh_at(at.clone(), window, cx);
+                } else if lists {
+                    ws.refresh_lists_at(at.clone(), window, cx);
+                }
+                // Then what waited, unless the refresh above took the turn.
+                let next = ws
+                    .git_at(&at)
+                    .filter(|g| !g.busy && !g.queued.is_empty())
+                    .map(|g| g.queued.remove(0));
+                if let Some(next) = next {
+                    next(ws, window, cx);
                 }
                 cx.notify();
             })
@@ -12436,5 +12732,221 @@ mod tests {
 
     fn first_id_of(ws: &Workspace) -> BlockId {
         ws.space.canvas.blocks().first().map(|b| b.id).unwrap()
+    }
+
+    fn commit_file(repo: &std::path::Path, name: &str, text: &str, message: &str) {
+        std::fs::write(repo.join(name), text).unwrap();
+        git_run(repo, &["add", name]);
+        git_run(repo, &["commit", "-q", "-m", message]);
+    }
+
+    /// Opens a Git block on `repo` showing `tab`, loaded.
+    fn open_git_on(
+        handle: AnyWindowHandle,
+        ws: &Entity<Workspace>,
+        cx: &mut TestAppContext,
+        repo: &std::path::Path,
+        tab: crate::git_block::Tab,
+    ) -> BlockId {
+        let id = open_git(handle, ws, cx, repo);
+        cx.update_window(handle, |_, window, cx| {
+            window.click(
+                gpui_kit::ElementId::Name(format!("git-tab-{}-{}", id.0, tab.name()).into()),
+                cx,
+            )
+        })
+        .unwrap();
+        settle(handle, cx);
+        id
+    }
+
+    #[gpui_kit::test]
+    fn history_lists_the_commits_newest_first_and_shows_one_with_its_files(
+        cx: &mut TestAppContext,
+    ) {
+        let repo = committed_repo();
+        commit_file(repo.path(), "b.txt", "b\n", "Second");
+        commit_file(repo.path(), "a.txt", "one\ntwo\n", "Third");
+        let (handle, ws) = open(cx);
+        let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
+        let n = id.0 as usize;
+        git_of(&ws, cx, id, |g| {
+            let subjects: Vec<_> = g.commits.iter().map(|c| c.subject.as_str()).collect();
+            assert_eq!(subjects, ["Third", "Second", "First"]);
+            assert!(g.commits[0].refs.contains(&"HEAD -> main".to_string()));
+            assert!(!g.more);
+        });
+        cx.update_window(handle, |_, window, cx| {
+            assert!(
+                window.try_find(("git-commit", 2usize)).is_some(),
+                "three rows"
+            );
+            window.click(("git-commit", 0usize), cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            let shown = g.shown.as_ref().expect("shown");
+            assert_eq!(shown.commit.subject, "Third");
+            assert_eq!(shown.files.len(), 1);
+            assert_eq!(shown.files[0].path, "a.txt");
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.click(
+                gpui_kit::ElementId::Name(format!("git-commit-file-{n}-0").into()),
+                cx,
+            )
+        })
+        .unwrap();
+        settle(handle, cx);
+        let diff = git_of(&ws, cx, id, |g| g.diff.clone());
+        let text = ws.read_with(cx, |_, cx| diff.read(cx).value().to_string());
+        assert!(text.contains("+two"), "{text}");
+    }
+
+    #[gpui_kit::test]
+    fn the_search_filters_by_subject_and_author_without_case(cx: &mut TestAppContext) {
+        let repo = committed_repo();
+        commit_file(repo.path(), "b.txt", "b\n", "Second");
+        git_run(repo.path(), &["config", "user.name", "Grace"]);
+        commit_file(repo.path(), "c.txt", "c\n", "Third");
+        let (handle, ws) = open(cx);
+        let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
+        let search = git_of(&ws, cx, id, |g| g.search.clone());
+        let filtered = |cx: &mut TestAppContext, text: &str| {
+            cx.update_window(handle, |_, window, cx| {
+                search.update(cx, |s, cx| s.set_value(text, window, cx));
+                window.render_frame(cx);
+            })
+            .unwrap();
+            ws.read_with(cx, |ws, cx| ws.space.git(id).unwrap().filtered(cx))
+        };
+        assert_eq!(filtered(cx, "SECOND"), [1]);
+        assert_eq!(filtered(cx, "grace"), [0]);
+        assert_eq!(filtered(cx, ""), [0, 1, 2]);
+    }
+
+    #[gpui_kit::test]
+    fn load_more_appends_the_next_page(cx: &mut TestAppContext) {
+        use crate::git_block::PAGE;
+        let repo = committed_repo();
+        for i in 0..PAGE {
+            git_run(
+                repo.path(),
+                &["commit", "-q", "--allow-empty", "-m", &format!("c{i}")],
+            );
+        }
+        let (handle, ws) = open(cx);
+        let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
+        let n = id.0 as usize;
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.commits.len(), PAGE);
+            assert!(g.more);
+        });
+        // The list is virtual: Load more is drawn once the end is scrolled into view.
+        cx.update_window(handle, |_, window, cx| {
+            // Over a row: the wheel reaches the list around it.
+            window.scroll(
+                ("git-commit", 0usize),
+                ScrollDelta::Pixels(point(px(0.0), px(-100_000.0))),
+                cx,
+            );
+            window.render_frame(cx);
+            window.render_frame(cx);
+            window.click(("git-load-more", n), cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.commits.len(), PAGE + 1);
+            assert!(!g.more);
+            assert_eq!(g.commits[PAGE].subject, "First");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_commits_menu_branches_from_it_tags_it_and_copies_its_hash(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let repo = committed_repo();
+        commit_file(repo.path(), "b.txt", "b\n", "Second");
+        let (handle, ws) = open(cx);
+        let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
+        let first = git_of(&ws, cx, id, |g| g.commits[1].hash.clone());
+        // Checkout…, New branch from here…, Create tag…, Revert…, Copy hash.
+        let menu = |cx: &mut TestAppContext, row: usize, item: usize| {
+            cx.update_window(handle, |_, window, cx| {
+                window.right_click(("git-commit", row), cx);
+                window.render_frame(cx);
+                window.within("popup-menu").click(item, cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+        };
+        menu(cx, 1, 1);
+        cx.update_window(handle, |_, window, cx| {
+            assert!(window.has_active_dialog(cx));
+            window.input("feat", cx);
+            window.press("enter", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.status.branch.as_deref(), Some("feat"));
+            assert_eq!(g.status.oid.as_deref(), Some(first.as_str()));
+            assert!(
+                g.commits[0].refs.iter().any(|r| r.contains("feat")),
+                "{:?}",
+                g.commits[0].refs
+            );
+        });
+        menu(cx, 0, 2);
+        cx.update_window(handle, |_, window, cx| {
+            window.input("v1", cx);
+            window.press("enter", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert!(
+                g.commits[0].refs.contains(&"tag: v1".to_string()),
+                "{:?}",
+                g.commits[0].refs
+            );
+        });
+        menu(cx, 0, 4);
+        let text = cx
+            .read_from_clipboard()
+            .and_then(|c| c.text())
+            .unwrap_or_default();
+        assert_eq!(text, first);
+    }
+
+    /// Reads asked while another runs wait for it (spec §8: one at a time per block, the second
+    /// waits); none is dropped.
+    #[gpui_kit::test]
+    fn a_commit_clicked_while_a_read_runs_is_still_shown(cx: &mut TestAppContext) {
+        let repo = committed_repo();
+        let (handle, ws) = open(cx);
+        let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
+        let hash = git_of(&ws, cx, id, |g| g.commits[0].hash.clone());
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.refresh_git(id, window, cx);
+                ws.show_commit(id, hash.clone(), window, cx);
+            })
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            let shown = g
+                .shown
+                .as_ref()
+                .expect("the commit waited for the read, then showed");
+            assert_eq!(shown.commit.subject, "First");
+            assert_eq!(shown.files.len(), 1);
+        });
     }
 }
