@@ -2783,6 +2783,7 @@ impl Workspace {
             && let Some(index) = self.ink_at(world)
         {
             self.space.selected_ink = Some(index);
+            self.space.focused = None;
             self.drag = Some(Drag::MoveInk {
                 index,
                 last: world,
@@ -7138,6 +7139,11 @@ mod tests {
             );
             window.render_frame(cx);
             assert_eq!(ws.read(cx).space.selected_ink, Some(0));
+            assert_eq!(
+                ws.read(cx).space.focused,
+                None,
+                "Delete and Backspace go to the drawing, so no terminal keeps the keyboard"
+            );
             assert_eq!(ws.read(cx).space.ink_undo.len(), 1, "a click isn't a step");
             // Dragging it moves it.
             press_with(
