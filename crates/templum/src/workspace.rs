@@ -28,7 +28,7 @@ use templum_canvas::{
     Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, HIT_PX, Point,
     Rect, STRING_PX, ShapeKind, Size, chrome, constrain, dot_grid, dot_size,
 };
-use templum_git::Repo;
+use templum_git::{GitError, Repo};
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
 use crate::agents::{self, AgentEntry};
@@ -1202,7 +1202,12 @@ impl Workspace {
         let rect = Rect::new(at.x, at.y, git_block::SIZE.w, git_block::SIZE.h);
         let id = self.add_block(
             rect,
-            Body::Git(Git::new(folder.to_path_buf(), git_block::Tab::Changes)),
+            Body::Git(Git::new(
+                folder.to_path_buf(),
+                git_block::Tab::Changes,
+                window,
+                cx,
+            )),
         );
         remember(&mut self.space.recent, folder.to_path_buf());
         self.look_up_git(id, window, cx);
@@ -1317,6 +1322,247 @@ impl Workspace {
         }
     }
 
+    /// Shows a row's diff on the right (read in the background).
+    pub(crate) fn select_git_row(
+        &mut self,
+        id: BlockId,
+        list: git_block::List,
+        path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        git.selected = Some((list, path));
+        cx.notify();
+        self.reload_git_diff(id, window, cx);
+    }
+
+    /// Reads the selected row's diff again; clears it when the row is gone.
+    pub(crate) fn reload_git_diff(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        let Some(repo) = git.repo().cloned() else {
+            return;
+        };
+        let Some(entry) = git.selected_entry().cloned() else {
+            git.selected = None;
+            git.diff_line = None;
+            git.diff.update(cx, |d, cx| d.set_value("", window, cx));
+            return;
+        };
+        let staged = git
+            .selected
+            .as_ref()
+            .is_some_and(|s| s.0 == git_block::List::Staged);
+        let at = GitAt {
+            space: self.space.id.clone(),
+            block: id,
+        };
+        self.git_job(
+            at,
+            move || repo.diff(&entry, staged),
+            |ws, at, diff, window, cx| {
+                let Some(git) = ws.git_at(&at) else {
+                    return;
+                };
+                let text = match diff {
+                    Ok(text) => text,
+                    Err(e) => e.to_string(),
+                };
+                git.diff_line = templum_git::first_hunk_line(&text);
+                let view = git.diff.clone();
+                view.update(cx, |d, cx| d.set_value(text, window, cx));
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Runs `job` on the block's repository in the background; its failure is a notification,
+    /// and the block is read again either way.
+    pub(crate) fn git_action(
+        &mut self,
+        id: BlockId,
+        job: impl FnOnce(&Repo) -> Result<(), GitError> + Send + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
+            return;
+        };
+        let at = GitAt {
+            space: self.space.id.clone(),
+            block: id,
+        };
+        self.git_job(
+            at,
+            move || job(&repo),
+            |ws, at, result, window, cx| {
+                if let Err(e) = result {
+                    notify_git_error(window, cx, &e);
+                }
+                ws.refresh_at(at, window, cx);
+            },
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn stage(
+        &mut self,
+        id: BlockId,
+        paths: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.git_action(id, move |repo| repo.stage(&refs(&paths)), window, cx);
+    }
+
+    pub(crate) fn unstage(
+        &mut self,
+        id: BlockId,
+        paths: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.git_action(id, move |repo| repo.unstage(&refs(&paths)), window, cx);
+    }
+
+    /// Asks, then throws the unstaged changes of `paths` away.
+    pub(crate) fn discard(
+        &mut self,
+        id: BlockId,
+        paths: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git(id) else {
+            return;
+        };
+        let entries: Vec<templum_git::Entry> = git
+            .status
+            .unstaged()
+            .into_iter()
+            .filter(|e| paths.contains(&e.path))
+            .cloned()
+            .collect();
+        if entries.is_empty() {
+            return;
+        }
+        let what = match entries.as_slice() {
+            [one] => format!("Discard the changes to {}?", one.path),
+            many => format!("Discard the changes to {} files?", many.len()),
+        };
+        let ws = cx.entity();
+        prompt::confirm(
+            what,
+            "Untracked files are deleted. This can't be undone.",
+            "Discard",
+            move |window, cx| {
+                let entries = entries.clone();
+                ws.update(cx, |ws, cx| {
+                    ws.git_action(
+                        id,
+                        move |repo| repo.discard(&entries.iter().collect::<Vec<_>>()),
+                        window,
+                        cx,
+                    )
+                })
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Appends the path to the repository's .gitignore.
+    pub(crate) fn ignore_path(
+        &mut self,
+        id: BlockId,
+        path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.git_action(
+            id,
+            move |repo| {
+                repo.ignore(&path).map_err(|e| GitError {
+                    command: format!("ignore {path}"),
+                    code: None,
+                    stderr: e.to_string(),
+                    missing: false,
+                })
+            },
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn resolve(
+        &mut self,
+        id: BlockId,
+        path: String,
+        side: templum_git::Side,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.git_action(id, move |repo| repo.resolve(&path, side), window, cx);
+    }
+
+    pub(crate) fn abort_operation(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(op) = self.space.git(id).and_then(|g| g.operation) else {
+            return;
+        };
+        self.git_action(id, move |repo| repo.abort(op), window, cx);
+    }
+
+    pub(crate) fn continue_operation(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(op) = self.space.git(id).and_then(|g| g.operation) else {
+            return;
+        };
+        self.git_action(id, move |repo| repo.continue_(op), window, cx);
+    }
+
+    /// Opens a repository path in an editor beside the Git block, at the shown diff's first hunk
+    /// when it is the selected row.
+    pub(crate) fn open_from_git(
+        &mut self,
+        id: BlockId,
+        path: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git(id) else {
+            return;
+        };
+        let Some(root) = git.repo().map(|r| r.root.clone()) else {
+            return;
+        };
+        let line = git
+            .selected
+            .as_ref()
+            .filter(|s| s.1 == path)
+            .and(git.diff_line);
+        self.open_in_editor(&root, &root.join(path), line, Some(id), window, cx);
+    }
+
     /// Reads the block's status in the background: at once, or when the running command ends.
     pub(crate) fn refresh_git(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         let at = GitAt {
@@ -1340,7 +1586,7 @@ impl Workspace {
         self.git_job(
             at,
             move || Read::of(&repo),
-            |ws, at, read, _, _| {
+            |ws, at, read, window, cx| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
                 };
@@ -1353,6 +1599,10 @@ impl Workspace {
                         git.error = None;
                     }
                     Err(e) => git.error = Some(e.to_string()),
+                }
+                // The diff follows the status (a file staged in a terminal, a file gone).
+                if at.space == ws.space.id {
+                    ws.reload_git_diff(at.block, window, cx);
                 }
             },
             window,
@@ -1939,15 +2189,14 @@ impl Workspace {
     }
 
     /// Opens `path` (at `line`, 1-based) in an editor of this workspace: one whose folder holds
-    /// the file, else any, else a new one on `folder` at the viewport's center. The camera flies
-    /// there if the block is off screen.
-    // The Git block (docs/plans, plan 5) is its first caller; until then only the tests call it.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// the file, else any, else a new one on `folder`, to the right of `beside` when given, else
+    /// at the viewport's center. The camera flies there if the block is off screen.
     pub(crate) fn open_in_editor(
         &mut self,
         folder: &Path,
         path: &Path,
         line: Option<u32>,
+        beside: Option<BlockId>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1960,16 +2209,21 @@ impl Workspace {
             .or_else(|| self.space.blocks.iter().find(|(_, b)| b.editor().is_some()))
             .map(|(id, _)| *id);
         let id = found.or_else(|| {
-            let center = self.space.canvas.camera.to_world(self.center(window));
             let size = editor::SIZE;
-            let at = self
-                .space
-                .canvas
-                .place_new(
-                    size,
-                    Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
-                )
-                .origin();
+            let anchor = beside.and_then(|b| self.space.canvas.get(b).map(|b| b.rect));
+            let at = match anchor {
+                Some(anchor) => self.space.canvas.place_beside(anchor, size).origin(),
+                None => {
+                    let center = self.space.canvas.camera.to_world(self.center(window));
+                    self.space
+                        .canvas
+                        .place_new(
+                            size,
+                            Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
+                        )
+                        .origin()
+                }
+            };
             self.add_editor_at(folder, at, window, cx)
         });
         let Some(id) = id else {
@@ -2469,8 +2723,12 @@ impl Workspace {
                 }
                 session::Item::Git(g) => {
                     let id = clamped_rect(g.rect.into(), git_block::MIN).map(|rect| {
-                        let git =
-                            Git::new(PathBuf::from(&g.folder), git_block::Tab::from_name(&g.tab));
+                        let git = Git::new(
+                            PathBuf::from(&g.folder),
+                            git_block::Tab::from_name(&g.tab),
+                            window,
+                            cx,
+                        );
                         self.add_block(rect, Body::Git(git))
                     });
                     if let Some(id) = id {
@@ -4127,6 +4385,17 @@ pub(crate) fn show_notification(window: &mut Window, cx: &mut App, notification:
     window.defer(cx, move |window, cx| {
         window.push_notification(notification, cx)
     });
+}
+
+/// Borrows a list of paths as git's arguments.
+fn refs(paths: &[String]) -> Vec<&str> {
+    paths.iter().map(String::as_str).collect()
+}
+
+/// A failed git command as a notification. Task 6 adds Details and Run in a terminal.
+pub(crate) fn notify_git_error(window: &mut Window, cx: &mut App, err: &GitError) {
+    eprintln!("templum: {err}");
+    show_notification(window, cx, Notification::error(err.to_string()));
 }
 
 /// A saved rect made safe: None with a number that isn't finite; at least `min`.
@@ -9021,7 +9290,14 @@ mod tests {
         // No editor yet: one is made on the folder.
         cx.update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
-                ws.open_in_editor(dir.path(), &dir.path().join("a.txt"), None, window, cx)
+                ws.open_in_editor(
+                    dir.path(),
+                    &dir.path().join("a.txt"),
+                    None,
+                    None,
+                    window,
+                    cx,
+                )
             });
             window.render_frame(cx);
         })
@@ -9040,7 +9316,14 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
                 ws.space.canvas.camera.origin = Point::new(50_000.0, 50_000.0);
-                ws.open_in_editor(dir.path(), &dir.path().join("b.txt"), Some(2), window, cx);
+                ws.open_in_editor(
+                    dir.path(),
+                    &dir.path().join("b.txt"),
+                    Some(2),
+                    None,
+                    window,
+                    cx,
+                );
             });
             window.render_frame(cx);
             let ws_now = ws.read(cx);
@@ -11047,6 +11330,343 @@ mod tests {
                 "{:?}",
                 g.status.entries
             );
+        });
+    }
+
+    /// A repository with one commit holding a.txt ("one\n").
+    fn committed_repo() -> tempfile::TempDir {
+        let repo = git_repo();
+        std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
+        git_run(repo.path(), &["add", "a.txt"]);
+        git_run(repo.path(), &["commit", "-q", "-m", "First"]);
+        repo
+    }
+
+    /// Hovers a row (its buttons show) and clicks one of them.
+    fn click_row_button(
+        handle: AnyWindowHandle,
+        cx: &mut TestAppContext,
+        row: gpui_kit::ElementId,
+        button: gpui_kit::ElementId,
+    ) {
+        cx.update_window(handle, |_, window, cx| {
+            window.hover(row, cx);
+            window.render_frame(cx);
+            window.click(button, cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+    }
+
+    fn git_button(id: BlockId, what: &str, list: &str, i: usize) -> gpui_kit::ElementId {
+        gpui_kit::ElementId::Name(format!("git-{what}-{}-{list}-{i}", id.0).into())
+    }
+
+    #[gpui_kit::test]
+    fn the_plus_button_stages_and_minus_unstages(cx: &mut TestAppContext) {
+        use crate::git_block::row_id;
+        let repo = git_repo();
+        std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        click_row_button(
+            handle,
+            cx,
+            row_id(id, "unstaged", 0),
+            git_button(id, "stage", "unstaged", 0),
+        );
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.status.staged().len(), 1);
+            assert_eq!(
+                g.status.staged()[0].staged,
+                Some(templum_git::Change::Added)
+            );
+            assert!(g.status.unstaged().is_empty());
+        });
+        click_row_button(
+            handle,
+            cx,
+            row_id(id, "staged", 0),
+            git_button(id, "unstage", "staged", 0),
+        );
+        git_of(&ws, cx, id, |g| {
+            assert!(g.status.staged().is_empty());
+            assert_eq!(g.status.unstaged().len(), 1);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn stage_all_and_unstage_all(cx: &mut TestAppContext) {
+        let repo = git_repo();
+        std::fs::write(repo.path().join("a.txt"), "a\n").unwrap();
+        std::fs::write(repo.path().join("b.txt"), "b\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        let n = id.0 as usize;
+        cx.update_window(handle, |_, window, cx| {
+            window.click(("git-stage-all", n), cx)
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| assert_eq!(g.status.staged().len(), 2));
+        cx.update_window(handle, |_, window, cx| {
+            window.click(("git-unstage-all", n), cx)
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| assert_eq!(g.status.unstaged().len(), 2));
+    }
+
+    #[gpui_kit::test]
+    fn discard_asks_first_then_restores_the_file(cx: &mut TestAppContext) {
+        use crate::git_block::row_id;
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let repo = committed_repo();
+        std::fs::write(repo.path().join("a.txt"), "changed\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        cx.update_window(handle, |_, window, cx| {
+            window.hover(row_id(id, "unstaged", 0), cx);
+            window.render_frame(cx);
+            window.click(git_button(id, "discard", "unstaged", 0), cx);
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx), "asks first");
+            window.within("dialog").click("cancel", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
+            "changed\n"
+        );
+        cx.update_window(handle, |_, window, cx| {
+            window.hover(row_id(id, "unstaged", 0), cx);
+            window.render_frame(cx);
+            window.click(git_button(id, "discard", "unstaged", 0), cx);
+            window.render_frame(cx);
+            window.within("dialog").click("ok", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
+            "one\n"
+        );
+        git_of(&ws, cx, id, |g| assert!(g.status.entries.is_empty()));
+    }
+
+    #[gpui_kit::test]
+    fn a_row_shows_its_diff_and_open_in_editor_opens_the_file_beside_the_block(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::git_block::row_id;
+        let repo = committed_repo();
+        std::fs::write(repo.path().join("a.txt"), "zero\none\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        let n = id.0 as usize;
+        cx.update_window(handle, |_, window, cx| {
+            window.click(row_id(id, "unstaged", 0), cx)
+        })
+        .unwrap();
+        settle(handle, cx);
+        let diff = git_of(&ws, cx, id, |g| {
+            assert_eq!(g.selected.as_ref().map(|s| s.1.as_str()), Some("a.txt"));
+            assert_eq!(g.diff_line, Some(1));
+            g.diff.clone()
+        });
+        let text = ws.read_with(cx, |_, cx| diff.read(cx).value().to_string());
+        assert!(text.contains("+zero"), "{text}");
+        cx.update_window(handle, |_, window, cx| {
+            assert!(window.try_find(("git-diff", n)).is_some());
+            window.click(("git-open-diff", n), cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, cx| {
+            let (eid, e) = ws
+                .space
+                .blocks
+                .iter()
+                .find_map(|(id, b)| Some((*id, b.editor()?)))
+                .expect("an editor opened");
+            assert_eq!(e.active_tab().unwrap().name(), "a.txt");
+            assert_eq!(
+                e.active_tab()
+                    .unwrap()
+                    .editor
+                    .read(cx)
+                    .cursor_position()
+                    .line,
+                0
+            );
+            let (git, editor) = (
+                ws.space.canvas.get(id).unwrap().rect,
+                ws.space.canvas.get(eid).unwrap().rect,
+            );
+            assert_eq!(editor.x, git.x + git.w + templum_canvas::BESIDE);
+            assert_eq!(editor.y, git.y);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn an_untracked_file_shows_its_content_as_added_and_a_binary_one_says_so(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::git_block::row_id;
+        let repo = git_repo();
+        std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
+        std::fs::write(repo.path().join("b.bin"), b"\0\x01").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        let shown = |cx: &mut TestAppContext, i: usize| {
+            cx.update_window(handle, |_, window, cx| {
+                window.click(row_id(id, "unstaged", i), cx)
+            })
+            .unwrap();
+            settle(handle, cx);
+            let diff = git_of(&ws, cx, id, |g| g.diff.clone());
+            ws.read_with(cx, |_, cx| diff.read(cx).value().to_string())
+        };
+        assert_eq!(shown(cx, 0), "+++ b/a.txt\n@@ -0,0 +1,1 @@\n+one\n");
+        assert_eq!(shown(cx, 1), "Binary file");
+    }
+
+    /// `main` and `topic` both changed a.txt; `git merge topic` is in progress with a conflict.
+    fn conflicted_repo() -> tempfile::TempDir {
+        let repo = committed_repo();
+        git_run(repo.path(), &["checkout", "-q", "-b", "topic"]);
+        std::fs::write(repo.path().join("a.txt"), "topic\n").unwrap();
+        git_run(repo.path(), &["commit", "-q", "-am", "topic"]);
+        git_run(repo.path(), &["checkout", "-q", "main"]);
+        std::fs::write(repo.path().join("a.txt"), "main\n").unwrap();
+        git_run(repo.path(), &["commit", "-q", "-am", "main"]);
+        let merge = std::process::Command::new("git")
+            .args(["merge", "topic"])
+            .current_dir(repo.path())
+            .output()
+            .unwrap();
+        assert!(!merge.status.success(), "conflicts");
+        repo
+    }
+
+    #[gpui_kit::test]
+    fn a_conflict_takes_a_side_is_marked_resolved_and_the_merge_continues(cx: &mut TestAppContext) {
+        use crate::git_block::row_id;
+        let repo = conflicted_repo();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        let n = id.0 as usize;
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.operation, Some(templum_git::Operation::Merge));
+            assert_eq!(g.status.conflicts().len(), 1);
+        });
+        cx.update_window(handle, |_, window, _| {
+            assert!(window.try_find(("git-abort", n)).is_some(), "the banner");
+            assert!(
+                window.try_find(("git-continue", n)).is_none(),
+                "not while conflicted"
+            );
+        })
+        .unwrap();
+        click_row_button(
+            handle,
+            cx,
+            row_id(id, "conflicts", 0),
+            git_button(id, "ours", "conflicts", 0),
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
+            "main\n"
+        );
+        click_row_button(
+            handle,
+            cx,
+            row_id(id, "conflicts", 0),
+            git_button(id, "resolved", "conflicts", 0),
+        );
+        git_of(&ws, cx, id, |g| {
+            assert!(g.status.conflicts().is_empty());
+            assert!(
+                g.status.staged().is_empty(),
+                "ours is HEAD's content: nothing left to stage"
+            );
+            assert_eq!(g.operation, Some(templum_git::Operation::Merge));
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.click(("git-continue", n), cx)
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.operation, None);
+            assert!(g.status.entries.is_empty());
+        });
+        assert_eq!(
+            git_run(repo.path(), &["rev-list", "--count", "HEAD"]),
+            "4\n"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn abort_ends_the_merge(cx: &mut TestAppContext) {
+        let repo = conflicted_repo();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        cx.update_window(handle, |_, window, cx| {
+            window.click(("git-abort", id.0 as usize), cx)
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.operation, None);
+            assert!(g.status.entries.is_empty());
+        });
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
+            "main\n"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_rows_menu_copies_the_path_and_ignores_the_file(cx: &mut TestAppContext) {
+        use crate::git_block::row_id;
+        let repo = git_repo();
+        std::fs::create_dir(repo.path().join("build")).unwrap();
+        std::fs::write(repo.path().join("build/out.o"), "x").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        // Stage, Discard…, Open, Copy path, Ignore.
+        cx.update_window(handle, |_, window, cx| {
+            window.right_click(row_id(id, "unstaged", 0), cx);
+            window.render_frame(cx);
+            window.within("popup-menu").click(3usize, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let text = cx
+            .read_from_clipboard()
+            .and_then(|c| c.text())
+            .unwrap_or_default();
+        assert_eq!(text, "build/out.o");
+        cx.update_window(handle, |_, window, cx| {
+            window.right_click(row_id(id, "unstaged", 0), cx);
+            window.render_frame(cx);
+            window.within("popup-menu").click(4usize, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join(".gitignore")).unwrap(),
+            "build/out.o\n"
+        );
+        git_of(&ws, cx, id, |g| {
+            let paths: Vec<_> = g.status.entries.iter().map(|e| e.path.as_str()).collect();
+            assert_eq!(paths, [".gitignore"], "out.o is ignored now");
         });
     }
 }

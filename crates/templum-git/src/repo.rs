@@ -314,3 +314,30 @@ impl Repo {
             .to_string())
     }
 }
+/// Which side of a conflict to keep.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Side {
+    Ours,
+    Theirs,
+}
+
+impl Repo {
+    /// Takes one side of a conflicted file (it stays unresolved until staged).
+    pub fn resolve(&self, path: &str, side: Side) -> Result<(), GitError> {
+        let flag = match side {
+            Side::Ours => "--ours",
+            Side::Theirs => "--theirs",
+        };
+        self.run(&["checkout", flag, "--", path]).map(drop)
+    }
+
+    /// `git <operation> --abort`.
+    pub fn abort(&self, op: Operation) -> Result<(), GitError> {
+        self.run(&[op.name(), "--abort"]).map(drop)
+    }
+
+    /// `git <operation> --continue`; GIT_EDITOR=true keeps the prepared message.
+    pub fn continue_(&self, op: Operation) -> Result<(), GitError> {
+        self.run(&[op.name(), "--continue"]).map(drop)
+    }
+}

@@ -15,7 +15,9 @@ use gpui_kit::{
     div, px,
 };
 use templum_canvas::{BlockId, Point};
+use templum_git::Entry;
 
+use crate::git_block;
 use crate::kanban;
 use crate::launcher;
 use crate::prompt;
@@ -47,6 +49,12 @@ pub(crate) enum Target {
     Space(String),
     /// A drawing, by its index in the space's ink.
     Ink(usize),
+    /// A row of a Git block's Changes lists, by its list and its index in it.
+    GitRow {
+        block: BlockId,
+        list: git_block::List,
+        index: usize,
+    },
     /// A row of an editor's file tree (a file or a folder), or its empty space (None).
     Tree {
         block: BlockId,
@@ -160,6 +168,19 @@ impl Workspace {
             }
             Target::Card { board, card } => Items::Card { board, card },
             Target::Ink(index) => Items::Ink { index },
+            Target::GitRow { block, list, index } => {
+                let git = self.space.git(block)?;
+                let entries = match list {
+                    git_block::List::Conflicts => git.status.conflicts(),
+                    git_block::List::Staged => git.status.staged(),
+                    git_block::List::Unstaged => git.status.unstaged(),
+                };
+                Items::GitRow {
+                    block,
+                    list,
+                    entry: (*entries.get(index)?).clone(),
+                }
+            }
             Target::Tree { block, ref path } => {
                 let is_dir = path.as_ref().is_some_and(|p| p.is_dir());
                 Items::Tree {
@@ -221,6 +242,11 @@ enum Items {
     },
     Git {
         block: BlockId,
+    },
+    GitRow {
+        block: BlockId,
+        list: git_block::List,
+        entry: Entry,
     },
     Board {
         block: BlockId,
@@ -549,6 +575,98 @@ impl Items {
                     ));
                 }
                 menu
+            }
+            Items::GitRow { block, list, entry } => {
+                use git_block::List;
+                let path = entry.path.clone();
+                let mut menu = menu;
+                match list {
+                    List::Conflicts => {
+                        let (open, ours, theirs, resolved) =
+                            (path.clone(), path.clone(), path.clone(), path.clone());
+                        menu = menu
+                            .item(item(
+                                ws,
+                                "Open in editor",
+                                Some(IconName::FileCode),
+                                move |ws, window, cx| ws.open_from_git(block, &open, window, cx),
+                            ))
+                            .item(item(ws, "Use ours", None, move |ws, window, cx| {
+                                ws.resolve(block, ours.clone(), templum_git::Side::Ours, window, cx)
+                            }))
+                            .item(item(ws, "Use theirs", None, move |ws, window, cx| {
+                                ws.resolve(
+                                    block,
+                                    theirs.clone(),
+                                    templum_git::Side::Theirs,
+                                    window,
+                                    cx,
+                                )
+                            }))
+                            .item(item(
+                                ws,
+                                "Mark resolved",
+                                Some(IconName::Check),
+                                move |ws, window, cx| {
+                                    ws.stage(block, vec![resolved.clone()], window, cx)
+                                },
+                            ));
+                    }
+                    List::Staged => {
+                        let (unstage, open) = (path.clone(), path.clone());
+                        menu = menu
+                            .item(item(
+                                ws,
+                                "Unstage",
+                                Some(IconName::Minus),
+                                move |ws, window, cx| {
+                                    ws.unstage(block, vec![unstage.clone()], window, cx)
+                                },
+                            ))
+                            .item(item(
+                                ws,
+                                "Open",
+                                Some(IconName::FileCode),
+                                move |ws, window, cx| ws.open_from_git(block, &open, window, cx),
+                            ));
+                    }
+                    List::Unstaged => {
+                        let (stage, discard, open) = (path.clone(), path.clone(), path.clone());
+                        menu = menu
+                            .item(item(
+                                ws,
+                                "Stage",
+                                Some(IconName::Plus),
+                                move |ws, window, cx| {
+                                    ws.stage(block, vec![stage.clone()], window, cx)
+                                },
+                            ))
+                            .item(item(
+                                ws,
+                                "Discard changes…",
+                                Some(IconName::Undo2),
+                                move |ws, window, cx| {
+                                    ws.discard(block, vec![discard.clone()], window, cx)
+                                },
+                            ))
+                            .item(item(
+                                ws,
+                                "Open",
+                                Some(IconName::FileCode),
+                                move |ws, window, cx| ws.open_from_git(block, &open, window, cx),
+                            ));
+                    }
+                }
+                let (copy, ignore) = (path.clone(), path.clone());
+                menu.item(item(
+                    ws,
+                    "Copy path",
+                    Some(IconName::Copy),
+                    move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())),
+                ))
+                .item(item(ws, "Ignore", None, move |ws, window, cx| {
+                    ws.ignore_path(block, ignore.clone(), window, cx)
+                }))
             }
             Items::Git { block } => menu
                 .item(item(

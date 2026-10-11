@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use templum_git::{Change, Operation, Repo};
+use templum_git::{Change, Operation, Repo, Side};
 
 /// A new repository on `main` with an author set, so commits work on a bare runner.
 fn fresh() -> (tempfile::TempDir, Repo) {
@@ -189,8 +189,8 @@ fn the_author_comes_from_the_config() {
     // headless test hides the global config behind a wrapper script and covers it.
 }
 
-#[test]
-fn a_merge_in_progress_is_an_operation_and_aborting_ends_it() {
+/// `main` and `topic` both changed a.txt: `git merge topic` conflicts.
+fn conflicted() -> (tempfile::TempDir, Repo) {
     let (dir, repo) = fresh();
     write(dir.path(), "a.txt", "base\n");
     repo.stage(&["a.txt"]).unwrap();
@@ -206,6 +206,12 @@ fn a_merge_in_progress_is_an_operation_and_aborting_ends_it() {
     assert_eq!(repo.operation(), None);
     let err = repo.run(&["merge", "topic"]).unwrap_err();
     assert_eq!(err.code, Some(1), "{err}");
+    (dir, repo)
+}
+
+#[test]
+fn a_merge_in_progress_is_an_operation_and_aborting_ends_it() {
+    let (_dir, repo) = conflicted();
     assert_eq!(repo.operation(), Some(Operation::Merge));
     let s = repo.status().unwrap();
     assert_eq!(s.conflicts().len(), 1);
@@ -214,8 +220,34 @@ fn a_merge_in_progress_is_an_operation_and_aborting_ends_it() {
             .unwrap()
             .contains("<<<<<<<")
     );
-    repo.run(&["merge", "--abort"]).unwrap();
+    repo.abort(Operation::Merge).unwrap();
     assert_eq!(repo.operation(), None);
+    assert!(repo.status().unwrap().entries.is_empty());
+}
+
+#[test]
+fn a_conflict_takes_a_side_and_the_merge_continues() {
+    let (dir, repo) = conflicted();
+    repo.resolve("a.txt", Side::Theirs).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "topic\n"
+    );
+    assert_eq!(
+        repo.status().unwrap().conflicts().len(),
+        1,
+        "not resolved until staged"
+    );
+    repo.stage(&["a.txt"]).unwrap();
+    assert!(repo.status().unwrap().conflicts().is_empty());
+    repo.continue_(Operation::Merge).unwrap();
+    assert_eq!(repo.operation(), None);
+    assert_eq!(repo.run(&["rev-list", "--count", "HEAD"]).unwrap(), b"4\n");
+    assert!(
+        repo.last_message()
+            .unwrap()
+            .starts_with("Merge branch 'topic'")
+    );
 }
 
 #[test]
