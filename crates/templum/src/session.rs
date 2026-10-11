@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use templum_canvas::{Camera, Rect};
+use templum_canvas::{Camera, Color, Drawing, MAX_WIDTH, MIN_WIDTH, Point, Rect, ShapeKind};
 use templum_terminal::Processes;
 
 use crate::config;
@@ -174,6 +174,9 @@ pub(crate) struct Saved {
     /// The folders agents were last opened in on this canvas, newest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recent: Vec<String>,
+    /// The drawings, above the blocks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ink: Vec<InkItem>,
 }
 
 /// The world point at the canvas's top left, and the zoom factor.
@@ -201,6 +204,95 @@ pub(crate) struct NoteItem {
     /// Shown rendered instead of the editor.
     #[serde(default)]
     pub preview: bool,
+}
+
+/// A drawing as the file holds it (docs/specs/cockpit.md, section 4): a `stroke` with `points`,
+/// or a `line`, `arrow`, `rect` or `ellipse` with `from` and `to`. Points are `[x, y]`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct InkItem {
+    pub kind: String,
+    pub color: String,
+    pub width: f32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub highlight: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<[f32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<[f32; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<[f32; 2]>,
+}
+
+impl InkItem {
+    pub fn of(drawing: &Drawing) -> InkItem {
+        let xy = |p: &Point| [p.x, p.y];
+        match drawing {
+            Drawing::Stroke {
+                points,
+                width,
+                color,
+                highlight,
+            } => InkItem {
+                kind: "stroke".into(),
+                color: color.name().into(),
+                width: *width,
+                highlight: *highlight,
+                points: points.iter().map(xy).collect(),
+                from: None,
+                to: None,
+            },
+            Drawing::Shape {
+                kind,
+                from,
+                to,
+                width,
+                color,
+            } => InkItem {
+                kind: kind.name().into(),
+                color: color.name().into(),
+                width: *width,
+                highlight: false,
+                points: Vec::new(),
+                from: Some(xy(from)),
+                to: Some(xy(to)),
+            },
+        }
+    }
+
+    /// None for an unknown kind, a stroke under 2 points, a shape missing an end, or a number
+    /// that isn't finite. An unknown color is the foreground; the width is clamped.
+    pub fn drawing(&self) -> Option<Drawing> {
+        let color = Color::from_name(&self.color).unwrap_or(Color::Foreground);
+        if !self.width.is_finite() {
+            return None;
+        }
+        let width = self.width.clamp(MIN_WIDTH, MAX_WIDTH);
+        let point =
+            |p: [f32; 2]| (p[0].is_finite() && p[1].is_finite()).then(|| Point::new(p[0], p[1]));
+        if self.kind == "stroke" {
+            let points = self
+                .points
+                .iter()
+                .map(|p| point(*p))
+                .collect::<Option<Vec<_>>>()?;
+            if points.len() < 2 {
+                return None;
+            }
+            return Some(Drawing::Stroke {
+                points,
+                width,
+                color,
+                highlight: self.highlight,
+            });
+        }
+        Some(Drawing::Shape {
+            kind: ShapeKind::from_name(&self.kind)?,
+            from: point(self.from?)?,
+            to: point(self.to?)?,
+            width,
+            color,
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -258,6 +350,7 @@ pub(crate) struct Layout {
     pub recent: Vec<PathBuf>,
     /// The agents to look for in the terminals.
     pub agents: std::sync::Arc<Vec<templum_terminal::Detect>>,
+    pub ink: Vec<InkItem>,
 }
 
 pub(crate) enum LayoutBlock {
@@ -304,6 +397,7 @@ impl Layout {
                 .collect(),
             focused: self.focused,
             recent: self.recent.into_iter().filter_map(utf8).collect(),
+            ink: self.ink,
         }
     }
 }
@@ -430,6 +524,7 @@ mod tests {
             ],
             focused: Some(1),
             recent: vec!["/home/u/proj".into(), "/srv/site".into()],
+            ink: Vec::new(),
         }
     }
 
@@ -551,6 +646,108 @@ mod tests {
             panic!("not read");
         };
         assert!(matches!(&read.items[0], Item::Note(n) if n.text == "t" && !n.preview));
+    }
+
+    #[test]
+    fn ink_round_trips_and_an_old_file_has_none() {
+        use templum_canvas::{Color, Drawing, Point, ShapeKind};
+        let d = tempfile::tempdir().unwrap();
+        let drawings = vec![
+            Drawing::Stroke {
+                points: vec![Point::new(1.0, 2.0), Point::new(3.5, 4.0)],
+                width: 4.0,
+                color: Color::Red,
+                highlight: false,
+            },
+            Drawing::Stroke {
+                points: vec![Point::new(0.0, 0.0), Point::new(100.0, 0.0)],
+                width: 16.0,
+                color: Color::Yellow,
+                highlight: true,
+            },
+            Drawing::Shape {
+                kind: ShapeKind::Arrow,
+                from: Point::new(0.0, 0.0),
+                to: Point::new(120.0, 40.0),
+                width: 2.0,
+                color: Color::Foreground,
+            },
+        ];
+        let mut saved = sample();
+        saved.ink = drawings.iter().map(InkItem::of).collect();
+        save(d.path(), "i", &saved, 1).unwrap();
+        let Loaded::Saved(read) = load(d.path(), "i") else {
+            panic!("not read");
+        };
+        assert_eq!(read, saved);
+        let back: Vec<Drawing> = read.ink.iter().filter_map(InkItem::drawing).collect();
+        assert_eq!(back, drawings);
+        let text = std::fs::read_to_string(path(d.path(), "i")).unwrap();
+        assert!(text.contains(r#""kind": "stroke""#) && text.contains(r#""highlight": true"#));
+        assert_eq!(text.matches("highlight").count(), 1, "false is left out");
+        // The file plan 1 wrote has no ink.
+        let old = sample();
+        save(d.path(), "o", &old, 1).unwrap();
+        assert!(
+            !std::fs::read_to_string(path(d.path(), "o"))
+                .unwrap()
+                .contains("ink")
+        );
+        assert_eq!(load(d.path(), "o"), Loaded::Saved(old));
+    }
+
+    #[test]
+    fn bad_ink_entries_are_dropped_or_fixed() {
+        use templum_canvas::{Color, Drawing};
+        let item = |json: &str| serde_json::from_str::<InkItem>(json).unwrap().drawing();
+        assert_eq!(
+            item(r#"{"kind":"stroke","color":"plaid","width":1000,"points":[[0,0],[1,1]]}"#),
+            Some(Drawing::Stroke {
+                points: vec![
+                    templum_canvas::Point::new(0.0, 0.0),
+                    templum_canvas::Point::new(1.0, 1.0)
+                ],
+                width: 64.0,
+                color: Color::Foreground,
+                highlight: false,
+            }),
+            "unknown color: foreground; width clamped"
+        );
+        assert!(
+            item(r#"{"kind":"stroke","color":"red","width":0,"points":[[0,0],[1,1]]}"#)
+                .is_some_and(|d| d.width() == 1.0)
+        );
+        assert_eq!(
+            item(r#"{"kind":"stroke","color":"red","width":4,"points":[[0,0]]}"#),
+            None,
+            "one point"
+        );
+        assert_eq!(
+            item(r#"{"kind":"blob","color":"red","width":4,"from":[0,0],"to":[1,1]}"#),
+            None
+        );
+        assert_eq!(
+            item(r#"{"kind":"line","color":"red","width":4,"from":[0,0]}"#),
+            None,
+            "no end"
+        );
+        assert!(
+            serde_json::from_str::<InkItem>(
+                r#"{"kind":"stroke","color":"red","width":4,"points":[[0,0],[1,null]]}"#
+            )
+            .is_err(),
+            "null isn't a number: the item doesn't parse, the file is set aside"
+        );
+        let nan = InkItem {
+            kind: "line".into(),
+            color: "red".into(),
+            width: f32::NAN,
+            highlight: false,
+            points: Vec::new(),
+            from: Some([0.0, 0.0]),
+            to: Some([1.0, 1.0]),
+        };
+        assert_eq!(nan.drawing(), None, "a width that isn't a number");
     }
 
     #[test]
@@ -720,6 +917,7 @@ mod tests {
             focused: Some(1),
             recent: vec![PathBuf::from("/a"), PathBuf::from("/b")],
             agents: Default::default(),
+            ink: Vec::new(),
         };
         let saved = layout.snapshot();
         assert_eq!(saved.recent, ["/a", "/b"], "recent folders, newest first");

@@ -23,8 +23,8 @@ use gpui_kit::{
     fill, point, px, size,
 };
 use templum_canvas::{
-    Block, BlockId, Camera, CameraFlight, Canvas, Gesture, Guide, Point, Rect, Size, chrome,
-    dot_grid, dot_size,
+    Block, BlockId, Camera, CameraFlight, Canvas, Drawing, Gesture, Guide, Point, Rect, Size,
+    chrome, dot_grid, dot_size,
 };
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
@@ -186,6 +186,8 @@ pub(crate) struct Space {
     pub ghosts: Vec<Ghost>,
     /// The folders agents were opened in on this canvas, newest first.
     pub recent: Vec<PathBuf>,
+    /// The drawings, above the blocks.
+    pub ink: Vec<Drawing>,
 }
 
 impl Space {
@@ -220,6 +222,7 @@ impl Space {
                 .and_then(|id| blocks.iter().position(|b| b.id == id)),
             recent: self.recent.clone(),
             agents,
+            ink: self.ink.iter().map(session::InkItem::of).collect(),
         }
     }
 
@@ -1229,6 +1232,11 @@ impl Workspace {
             eprintln!("templum: {message}");
             show_notification(window, cx, Notification::warning(message));
         }
+        self.space.ink = saved
+            .ink
+            .iter()
+            .filter_map(session::InkItem::drawing)
+            .collect();
         self.space.recent = saved.recent.iter().map(PathBuf::from).collect();
         self.space.saved = Some(saved);
     }
@@ -3050,6 +3058,7 @@ mod tests {
                 })],
                 focused: None,
                 recent: Vec::new(),
+                ink: Vec::new(),
             }),
             ..super::Space::default()
         };
