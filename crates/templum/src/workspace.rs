@@ -24,7 +24,7 @@ use gpui_kit::{
 };
 use templum_canvas::{
     Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, HIT_PX, Point,
-    Rect, ShapeKind, Size, chrome, constrain, dot_grid, dot_size,
+    Rect, STRING_PX, ShapeKind, Size, chrome, constrain, dot_grid, dot_size,
 };
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
@@ -2309,10 +2309,11 @@ impl Workspace {
                 }
             }
             Some(Drag::Ink(drawing)) => {
-                let world = self.space.canvas.camera.to_world(p);
+                let camera = &self.space.canvas.camera;
+                let world = camera.to_world(p);
                 match drawing {
                     Drawing::Stroke { .. } => {
-                        if !drawing.push_point(world) {
+                        if !drawing.push_point(world, STRING_PX / camera.zoom()) {
                             return;
                         }
                     }
@@ -2495,12 +2496,14 @@ impl Workspace {
                 cx.notify();
             }
         }
-        if let Some(Drag::Ink(drawing)) = self.drag.take()
-            && !drawing.is_empty()
-        {
-            self.remember_ink();
-            self.space.ink.push(drawing);
-            cx.notify();
+        if let Some(Drag::Ink(mut drawing)) = self.drag.take() {
+            // The pen catches up with the pointer: the stroke ends where it was let go.
+            drawing.push_point(self.space.canvas.camera.to_world(self.local(pos)), 0.0);
+            if !drawing.is_empty() {
+                self.remember_ink();
+                self.space.ink.push(drawing);
+                cx.notify();
+            }
         }
         self.end_drag();
     }
@@ -7357,7 +7360,11 @@ mod tests {
             else {
                 panic!("one stroke: {:?}", ws.space.ink);
             };
-            assert_eq!(points.len(), 2);
+            assert_eq!(
+                points.last(),
+                Some(&ws.space.canvas.camera.to_world(Point::new(80.0, 50.0))),
+                "the pen catches up with the pointer on release"
+            );
             assert_eq!(
                 (*width, *color, *highlight),
                 (8.0, templum_canvas::Color::Red, false)

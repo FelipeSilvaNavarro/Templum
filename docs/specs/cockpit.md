@@ -194,7 +194,7 @@ involved, so terminals under them keep working.
 
 | Tool | Drag | Result |
 |---|---|---|
-| Pen | Freehand | A stroke: the points the pointer passed, in world units, keeping only points at least 1.5 world units from the previous one. Drawn as a smooth curve: quadratic segments through the midpoints of consecutive points (`curve_to`), with round joins given by overlapping round caps at each point. |
+| Pen | Freehand | A stroke: the points the pointer passed, in world units, keeping only points at least 1.5 world units from the previous one. The pen trails the pointer by `5 / zoom` world units, like a pulled string, so a shaky hand still draws a smooth line; on release it catches up, and the stroke ends at the pointer. Drawn as a smooth curve: quadratic segments through the midpoints of consecutive points (`curve_to`), with round joins given by overlapping round caps at each point. |
 | Highlighter | Freehand | A stroke drawn 16 world units wide at 35% opacity, under the pen strokes (highlighters are painted first). |
 | Line, Arrow | From press to release | A straight segment; an arrow adds a head at the release end: two lines at 30°, `max(10, 4 × width)` long. Holding Shift snaps the angle to multiples of 45°. |
 | Rectangle, Ellipse | From press to release | The shape inside that rect. Holding Shift makes it a square or a circle. |
