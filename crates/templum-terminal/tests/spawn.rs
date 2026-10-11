@@ -236,20 +236,27 @@ fn inspect_finds_an_agent_and_its_folder() {
     let command = (claude, vec!["30".to_string()]);
     #[cfg(windows)]
     let command = (claude, vec!["/K".to_string()]);
-    let term = Terminal::spawn(
-        SpawnOptions {
-            cols: 40,
-            rows: 5,
-            cell_px: (8, 16),
-            command: Some(command),
-            palette: Palette::default(),
-            options: TermOptions::default(),
-            working_directory: Some(work.path().to_path_buf()),
-            integration: None,
-        },
-        Arc::new(|| {}),
-    )
-    .expect("spawn");
+    let options = || SpawnOptions {
+        cols: 40,
+        rows: 5,
+        cell_px: (8, 16),
+        command: Some(command.clone()),
+        palette: Palette::default(),
+        options: TermOptions::default(),
+        working_directory: Some(work.path().to_path_buf()),
+        integration: None,
+    };
+    // Another test may fork while `fake_claude` still has its copy open for writing; that
+    // child keeps the handle until it execs, and running `claude` meanwhile fails with
+    // "Text file busy" on Linux. The window is short, so try again.
+    let term = loop {
+        match Terminal::spawn(options(), Arc::new(|| {})) {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            spawned => break spawned.expect("spawn"),
+        }
+    };
     let want = work.path().canonicalize().unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
