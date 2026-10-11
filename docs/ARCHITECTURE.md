@@ -11,8 +11,9 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 | `templum` | bin | Window, event loop, rendering, input, wiring | **Yes, the only one** (`gpui-kit`) |
 | `templum-canvas` | lib | Pure model: camera (pan, zoom), blocks, hit-testing, snapping, layout (de)serialization | No |
 | `templum-terminal` | lib | Wraps `alacritty_terminal`: shell in a PTY, input, resize, key encoding, events | No |
+| `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values | No |
 
-All three crates exist. New library crates are created together with the first real code that needs
+All four crates exist. New library crates are created together with the first real code that needs
 them, never as empty scaffolding. The behavior of the current version is specified in
 [specs/walking-skeleton.md](specs/walking-skeleton.md), [specs/design-system.md](specs/design-system.md) and
 [specs/config.md](specs/config.md).

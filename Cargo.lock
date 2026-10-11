@@ -6823,6 +6823,13 @@ name = "templum-canvas"
 version = "0.0.0"
 
 [[package]]
+name = "templum-git"
+version = "0.0.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "templum-terminal"
 version = "0.0.0"
 dependencies = [
