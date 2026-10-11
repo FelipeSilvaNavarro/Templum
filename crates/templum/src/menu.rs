@@ -15,7 +15,7 @@ use gpui_kit::{
     div, px,
 };
 use templum_canvas::{BlockId, Point};
-use templum_git::{Commit, Entry};
+use templum_git::{Branch, Commit, Entry};
 
 use crate::git_block;
 use crate::kanban;
@@ -49,6 +49,11 @@ pub(crate) enum Target {
     Space(String),
     /// A drawing, by its index in the space's ink.
     Ink(usize),
+    /// A branch in a Git block's Branches tab, by its name.
+    GitBranch {
+        block: BlockId,
+        name: String,
+    },
     /// A commit in a Git block's History, by its hash.
     GitCommit {
         block: BlockId,
@@ -186,6 +191,14 @@ impl Workspace {
                     entry: (*entries.get(index)?).clone(),
                 }
             }
+            Target::GitBranch { block, ref name } => {
+                let git = self.space.git(block)?;
+                Items::GitBranch {
+                    block,
+                    branch: git.branches.iter().find(|b| b.name == *name)?.clone(),
+                    current: git.status.branch.clone(),
+                }
+            }
             Target::GitCommit { block, ref hash } => Items::GitCommit {
                 block,
                 commit: self
@@ -266,6 +279,11 @@ enum Items {
     GitCommit {
         block: BlockId,
         commit: Commit,
+    },
+    GitBranch {
+        block: BlockId,
+        branch: Branch,
+        current: Option<String>,
     },
     Board {
         block: BlockId,
@@ -721,6 +739,56 @@ impl Items {
                     "Copy hash",
                     Some(IconName::Copy),
                     move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())),
+                ))
+            }
+            Items::GitBranch {
+                block,
+                branch,
+                current,
+            } => {
+                let name = branch.name.clone();
+                let into = current.unwrap_or_else(|| "HEAD".to_string());
+                let mut menu = menu;
+                if !branch.remote {
+                    let rename = name.clone();
+                    menu = menu.item(item(ws, "Rename…", None, move |ws, window, cx| {
+                        ws.rename_branch(block, rename.clone(), window, cx)
+                    }));
+                }
+                if !branch.current {
+                    let merge = name.clone();
+                    menu = menu.item(item(
+                        ws,
+                        format!("Merge into {into}…"),
+                        Some(IconName::GitMerge),
+                        move |ws, window, cx| ws.merge_branch(block, merge.clone(), window, cx),
+                    ));
+                }
+                if !branch.remote && !branch.current {
+                    let delete = name.clone();
+                    menu = menu.item(item(
+                        ws,
+                        "Delete…",
+                        Some(IconName::Delete),
+                        move |ws, window, cx| {
+                            ws.delete_branch(block, delete.clone(), false, window, cx)
+                        },
+                    ));
+                }
+                if !branch.remote && branch.upstream.is_none() {
+                    let publish = name.clone();
+                    menu = menu.item(item(
+                        ws,
+                        "Publish",
+                        Some(IconName::Upload),
+                        move |ws, window, cx| ws.publish_branch(block, publish.clone(), window, cx),
+                    ));
+                }
+                menu.item(item(
+                    ws,
+                    "Copy name",
+                    Some(IconName::Copy),
+                    move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(name.clone())),
                 ))
             }
             Items::Git { block } => menu

@@ -421,3 +421,74 @@ fn log_files_diffs_tags_branches_and_reverts() {
     repo.checkout_commit(&log[1].hash).unwrap();
     assert_eq!(repo.status().unwrap().branch, None, "detached");
 }
+
+#[test]
+fn branches_checkouts_renames_merges_and_deletes() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("First", false).unwrap();
+    let remote = with_remote(&repo);
+    repo.new_branch("feat", None).unwrap();
+    write(dir.path(), "b.txt", "b\n");
+    repo.stage(&["b.txt"]).unwrap();
+    repo.commit("b", false).unwrap();
+    let b = repo.branches().unwrap();
+    let names: Vec<_> = b
+        .iter()
+        .map(|b| (b.name.as_str(), b.remote, b.current))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("feat", false, true),
+            ("main", false, false),
+            ("origin/main", true, false)
+        ]
+    );
+    assert_eq!(b[1].upstream.as_deref(), Some("origin/main"));
+    assert_eq!(b[0].subject, "b");
+    repo.rename_branch("feat", "feature").unwrap();
+    assert_eq!(repo.status().unwrap().branch.as_deref(), Some("feature"));
+    repo.checkout("main").unwrap();
+    assert_eq!(repo.status().unwrap().branch.as_deref(), Some("main"));
+    // Local changes in the way: refused, and stash_push clears the way.
+    repo.checkout("feature").unwrap();
+    write(dir.path(), "a.txt", "changed\n");
+    repo.run(&["checkout", "-q", "-b", "other"]).unwrap();
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("other a", false).unwrap();
+    repo.checkout("main").unwrap();
+    write(dir.path(), "a.txt", "dirty\n");
+    let err = repo.checkout("other").unwrap_err();
+    assert!(err.stderr.contains("would be overwritten"), "{err}");
+    repo.stash_push("Templum: before switching", true).unwrap();
+    repo.checkout("other").unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "changed\n"
+    );
+    repo.checkout("main").unwrap();
+    repo.merge("feature").unwrap();
+    assert!(dir.path().join("b.txt").is_file());
+    let err = repo.delete_branch("other", false).unwrap_err();
+    assert!(templum_git::not_merged(&err.stderr), "{err}");
+    repo.delete_branch("other", true).unwrap();
+    repo.delete_branch("feature", false).unwrap();
+    assert_eq!(
+        repo.branches()
+            .unwrap()
+            .iter()
+            .filter(|b| !b.remote)
+            .count(),
+        1
+    );
+    // A remote branch checks out as a local one tracking it.
+    repo.run(&["push", "-q", "origin", "main:topic"]).unwrap();
+    repo.fetch().unwrap();
+    repo.checkout_remote("origin/topic").unwrap();
+    let s = repo.status().unwrap();
+    assert_eq!(s.branch.as_deref(), Some("topic"));
+    assert_eq!(s.upstream.as_deref(), Some("origin/topic"));
+    drop(remote);
+}

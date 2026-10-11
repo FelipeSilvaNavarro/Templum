@@ -1333,6 +1333,234 @@ impl Workspace {
         self.refresh_lists_at(at, window, cx);
     }
 
+    pub(crate) fn load_branches(&mut self, at: GitAt, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repo) = self.git_at(&at).and_then(|g| g.repo().cloned()) else {
+            return;
+        };
+        self.git_job(
+            at,
+            move || repo.branches(),
+            |ws, at, branches, _, _| {
+                let Some(git) = ws.git_at(&at) else {
+                    return;
+                };
+                match branches {
+                    Ok(b) => git.branches = b,
+                    Err(e) => git.error = Some(e.to_string()),
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Checks a branch out; one git refuses for local changes offers Stash and switch.
+    pub(crate) fn checkout_branch(
+        &mut self,
+        id: BlockId,
+        name: String,
+        remote: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
+            return;
+        };
+        let job_name = name.clone();
+        self.git_job(
+            self.here(id),
+            move || {
+                if remote {
+                    repo.checkout_remote(&job_name)
+                } else {
+                    repo.checkout(&job_name)
+                }
+            },
+            move |ws, at, result, window, cx| {
+                if let Err(e) = result {
+                    let entity = cx.entity();
+                    let block = at.block;
+                    let mut extra: Vec<Extra> = Vec::new();
+                    if e.stderr.contains("would be overwritten")
+                        || e.stderr.contains("local changes")
+                    {
+                        let name = name.clone();
+                        extra.push((
+                            "git-stash-switch",
+                            "Stash and switch",
+                            Rc::new(move |ws, window, cx| {
+                                ws.stash_and_switch(block, name.clone(), remote, window, cx)
+                            }),
+                        ));
+                    }
+                    notify_git_error(&entity, at.block, &e, extra, window, cx);
+                }
+                ws.after_action(at, window, cx);
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Stashes everything (untracked files too), then checks the branch out.
+    pub(crate) fn stash_and_switch(
+        &mut self,
+        id: BlockId,
+        name: String,
+        remote: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.git_action(
+            id,
+            move |repo| {
+                repo.stash_push(&format!("Templum: before switching to {name}"), true)?;
+                if remote {
+                    repo.checkout_remote(&name)
+                } else {
+                    repo.checkout(&name)
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn rename_branch(
+        &mut self,
+        id: BlockId,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ws = cx.entity();
+        let from = name.clone();
+        prompt::ask_text(
+            "Rename branch",
+            "Rename",
+            name,
+            move |to, window, cx| {
+                let to = to.trim().to_string();
+                if to.is_empty() || to == from {
+                    return false;
+                }
+                let from = from.clone();
+                ws.update(cx, |ws, cx| {
+                    ws.git_action(id, move |repo| repo.rename_branch(&from, &to), window, cx)
+                });
+                true
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Merges `name` into the current branch, after asking.
+    pub(crate) fn merge_branch(
+        &mut self,
+        id: BlockId,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = self
+            .space
+            .git(id)
+            .and_then(|g| g.status.branch.clone())
+            .unwrap_or_else(|| "HEAD".to_string());
+        let ws = cx.entity();
+        prompt::confirm(
+            format!("Merge {name} into {current}?"),
+            "Conflicts, if any, show in the Changes tab.",
+            "Merge",
+            move |window, cx| {
+                let name = name.clone();
+                ws.update(cx, |ws, cx| {
+                    ws.git_action(id, move |repo| repo.merge(&name), window, cx)
+                })
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Deletes a local branch after asking; an unmerged one asks again, to force.
+    pub(crate) fn delete_branch(
+        &mut self,
+        id: BlockId,
+        name: String,
+        force: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if force {
+            self.delete_now(id, name, true, window, cx);
+            return;
+        }
+        let ws = cx.entity();
+        prompt::confirm(
+            format!("Delete {name}?"),
+            "Its commits stay in the history while something points at them.",
+            "Delete",
+            move |window, cx| {
+                let name = name.clone();
+                ws.update(cx, |ws, cx| ws.delete_now(id, name, false, window, cx))
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn delete_now(
+        &mut self,
+        id: BlockId,
+        name: String,
+        force: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
+            return;
+        };
+        let job_name = name.clone();
+        self.git_job(
+            self.here(id),
+            move || repo.delete_branch(&job_name, force),
+            move |ws, at, result, window, cx| {
+                if let Err(e) = result {
+                    let entity = cx.entity();
+                    let block = at.block;
+                    let mut extra: Vec<Extra> = Vec::new();
+                    if !force && templum_git::not_merged(&e.stderr) {
+                        let name = name.clone();
+                        extra.push((
+                            "git-delete-force",
+                            "Delete anyway",
+                            Rc::new(move |ws, window, cx| {
+                                ws.delete_branch(block, name.clone(), true, window, cx)
+                            }),
+                        ));
+                    }
+                    notify_git_error(&entity, at.block, &e, extra, window, cx);
+                }
+                ws.after_action(at, window, cx);
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// `git push -u origin <name>` for a local branch with no upstream.
+    pub(crate) fn publish_branch(
+        &mut self,
+        id: BlockId,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.push_now(id, Some(name), window, cx);
+    }
+
     /// The Git block `id` of the workspace on screen (the History list's closure builds it too).
     pub(crate) fn here(&self, id: BlockId) -> GitAt {
         GitAt {
@@ -1361,8 +1589,9 @@ impl Workspace {
         match git.tab {
             git_block::Tab::Changes => {}
             git_block::Tab::History => self.load_history(at, 0, window, cx),
-            // Tasks 8 and 9.
-            git_block::Tab::Branches | git_block::Tab::Stashes => {}
+            git_block::Tab::Branches => self.load_branches(at, window, cx),
+            // Task 9.
+            git_block::Tab::Stashes => {}
         }
     }
 
@@ -5052,8 +5281,10 @@ pub(crate) fn notify_git_error(
                         .into_any_element()
                 })
                 .collect();
+            // Wraps: three buttons are wider than a notification, which clips what overflows.
             div()
                 .flex()
+                .flex_wrap()
                 .gap(px(6.0))
                 .mt(px(6.0))
                 .child(
@@ -12948,5 +13179,208 @@ mod tests {
             assert_eq!(shown.commit.subject, "First");
             assert_eq!(shown.files.len(), 1);
         });
+    }
+
+    fn branch_row(id: BlockId, remote: bool, i: usize) -> gpui_kit::ElementId {
+        gpui_kit::ElementId::Name(
+            format!(
+                "git-branch-{}-{}-{i}",
+                id.0,
+                if remote { "remote" } else { "local" }
+            )
+            .into(),
+        )
+    }
+
+    #[gpui_kit::test]
+    fn branches_are_listed_with_the_current_one_and_a_click_checks_out(cx: &mut TestAppContext) {
+        let repo = committed_repo();
+        git_run(repo.path(), &["branch", "feat"]);
+        let (handle, ws) = open(cx);
+        let id = open_git_on(
+            handle,
+            &ws,
+            cx,
+            repo.path(),
+            crate::git_block::Tab::Branches,
+        );
+        git_of(&ws, cx, id, |g| {
+            let names: Vec<_> = g
+                .branches
+                .iter()
+                .map(|b| (b.name.as_str(), b.current))
+                .collect();
+            assert_eq!(names, [("feat", false), ("main", true)]);
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.click(branch_row(id, false, 0), cx)
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.status.branch.as_deref(), Some("feat"));
+            assert!(g.branches[0].current, "the list followed");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn new_branch_creates_and_checks_out_and_a_bad_name_is_refused(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let repo = committed_repo();
+        let (handle, ws) = open(cx);
+        let id = open_git_on(
+            handle,
+            &ws,
+            cx,
+            repo.path(),
+            crate::git_block::Tab::Branches,
+        );
+        let n = id.0 as usize;
+        let create = |cx: &mut TestAppContext, name: &str| {
+            cx.update_window(handle, |_, window, cx| {
+                window.click(("git-new-branch", n), cx);
+                window.render_frame(cx);
+                assert!(window.has_active_dialog(cx));
+                window.input(name, cx);
+                window.press("enter", cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+            settle(handle, cx);
+        };
+        create(cx, "feature/one");
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.status.branch.as_deref(), Some("feature/one"));
+            assert_eq!(g.branches.len(), 2);
+        });
+        create(cx, "bad name");
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.status.branch.as_deref(), Some("feature/one"), "unchanged");
+            assert_eq!(g.branches.len(), 2);
+        });
+        assert_eq!(notification_count(handle, cx), 1, "git's own message");
+    }
+
+    #[gpui_kit::test]
+    fn a_refused_checkout_offers_stash_and_switch(cx: &mut TestAppContext) {
+        // The notification slides in: its buttons take clicks once it is at rest.
+        no_motion(cx);
+        let repo = committed_repo();
+        git_run(repo.path(), &["checkout", "-q", "-b", "other"]);
+        commit_file(repo.path(), "a.txt", "other\n", "other a");
+        git_run(repo.path(), &["checkout", "-q", "main"]);
+        std::fs::write(repo.path().join("a.txt"), "dirty\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_git_on(
+            handle,
+            &ws,
+            cx,
+            repo.path(),
+            crate::git_block::Tab::Branches,
+        );
+        // main, other.
+        cx.update_window(handle, |_, window, cx| {
+            window.click(branch_row(id, false, 1), cx)
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.status.branch.as_deref(), Some("main"), "refused")
+        });
+        assert_eq!(notification_count(handle, cx), 1);
+        cx.update_window(handle, |_, window, cx| window.click("git-stash-switch", cx))
+            .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.status.branch.as_deref(), Some("other"));
+            assert!(g.status.entries.is_empty(), "stashed");
+        });
+        assert!(git_run(repo.path(), &["stash", "list"]).contains("before switching"));
+    }
+
+    #[gpui_kit::test]
+    fn a_branchs_menu_renames_merges_publishes_and_deletes_asking_to_force(
+        cx: &mut TestAppContext,
+    ) {
+        no_motion(cx);
+        let repo = committed_repo();
+        let _remote = add_remote(repo.path());
+        git_run(repo.path(), &["checkout", "-q", "-b", "feat"]);
+        commit_file(repo.path(), "b.txt", "b\n", "b");
+        git_run(repo.path(), &["checkout", "-q", "main"]);
+        let (handle, ws) = open(cx);
+        let id = open_git_on(
+            handle,
+            &ws,
+            cx,
+            repo.path(),
+            crate::git_block::Tab::Branches,
+        );
+        // feat, main; feat's menu: Rename…, Merge into main…, Delete…, Publish, Copy name.
+        let menu = |cx: &mut TestAppContext, row: usize, item: usize| {
+            cx.update_window(handle, |_, window, cx| {
+                window.right_click(branch_row(id, false, row), cx);
+                window.render_frame(cx);
+                window.within("popup-menu").click(item, cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+        };
+        menu(cx, 0, 0);
+        cx.update_window(handle, |_, window, cx| {
+            window.press("ctrl-a", cx);
+            window.press("cmd-a", cx);
+            window.input("feature", cx);
+            window.press("enter", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| assert_eq!(g.branches[0].name, "feature"));
+        // Delete… before it has an upstream: unmerged anywhere, so git refuses.
+        menu(cx, 0, 2);
+        cx.update_window(handle, |_, window, cx| {
+            window.within("dialog").click("ok", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.branches.len(), 3, "not merged: still there")
+        });
+        assert_eq!(notification_count(handle, cx), 1);
+        menu(cx, 0, 3);
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.branches[0].upstream.as_deref(), Some("origin/feature"))
+        });
+        cx.update_window(handle, |_, window, cx| window.click("git-delete-force", cx))
+            .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert!(
+                !g.branches.iter().any(|b| b.name == "feature"),
+                "{:?}",
+                g.branches
+            );
+        });
+        // Merge the remote one into main: origin/feature is the only remote row besides origin/main.
+        let remote_rows = git_of(&ws, cx, id, |g| {
+            g.branches.iter().filter(|b| b.remote).count()
+        });
+        assert_eq!(remote_rows, 2);
+        cx.update_window(handle, |_, window, cx| {
+            window.right_click(branch_row(id, true, 0), cx);
+            window.render_frame(cx);
+            // Merge into main…, Copy name.
+            window.within("popup-menu").click(0usize, cx);
+            window.render_frame(cx);
+            window.within("dialog").click("ok", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        assert!(repo.path().join("b.txt").is_file(), "merged");
     }
 }

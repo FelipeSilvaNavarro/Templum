@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::parse::{self, Change, Commit, CommitFile, Entry, Operation, Status};
+use crate::parse::{self, Branch, Change, Commit, CommitFile, Entry, Operation, Status};
 
 /// A command that failed: which one, how, and what git said.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -447,5 +447,45 @@ impl Repo {
     /// Ok when git accepts `name` as a branch name.
     pub fn check_ref_format(&self, name: &str) -> Result<(), GitError> {
         self.run(&["check-ref-format", "--branch", name]).map(drop)
+    }
+
+    /// Local and remote branches, sorted as git lists them (local first).
+    pub fn branches(&self) -> Result<Vec<Branch>, GitError> {
+        let format = format!("--format={}", parse::BRANCH_FORMAT);
+        let out = self.run(&["for-each-ref", &format, "refs/heads", "refs/remotes"])?;
+        Ok(parse::parse_branches(&out))
+    }
+
+    pub fn checkout(&self, name: &str) -> Result<(), GitError> {
+        self.run(&["checkout", "-q", name]).map(drop)
+    }
+
+    /// "origin/x": a local x tracking it, checked out.
+    pub fn checkout_remote(&self, name: &str) -> Result<(), GitError> {
+        self.run(&["checkout", "-q", "--track", name]).map(drop)
+    }
+
+    pub fn rename_branch(&self, from: &str, to: &str) -> Result<(), GitError> {
+        self.check_ref_format(to)?;
+        self.run(&["branch", "-m", from, to]).map(drop)
+    }
+
+    /// Merges `name` into the current branch.
+    pub fn merge(&self, name: &str) -> Result<(), GitError> {
+        self.run(&["merge", "--no-edit", name]).map(drop)
+    }
+
+    pub fn delete_branch(&self, name: &str, force: bool) -> Result<(), GitError> {
+        self.run(&["branch", if force { "-D" } else { "-d" }, name])
+            .map(drop)
+    }
+
+    /// `git stash push -m message`, with untracked files when asked.
+    pub fn stash_push(&self, message: &str, untracked: bool) -> Result<(), GitError> {
+        let mut args = vec!["stash", "push", "-q", "-m", message];
+        if untracked {
+            args.push("-u");
+        }
+        self.run(&args).map(drop)
     }
 }
