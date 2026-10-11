@@ -135,6 +135,7 @@ impl Workspace {
                     tree: e.show_tree,
                     wrap: e.wrap,
                 },
+                Body::Git(_) => Items::Git { block },
             },
             Target::Board { block, board } => Items::Board {
                 block,
@@ -217,6 +218,9 @@ enum Items {
         block: BlockId,
         tree: bool,
         wrap: bool,
+    },
+    Git {
+        block: BlockId,
     },
     Board {
         block: BlockId,
@@ -354,6 +358,12 @@ impl Items {
                             "Editor",
                             Some(IconName::FileCode),
                             move |ws, window, cx| ws.ask_editor_folder(at, window, cx),
+                        ))
+                        .item(item(
+                            ws,
+                            "Git",
+                            Some(IconName::GitBranch),
+                            move |ws, window, cx| ws.ask_git_folder(at, window, cx),
                         ))
                     },
                 )
@@ -540,6 +550,20 @@ impl Items {
                 }
                 menu
             }
+            Items::Git { block } => menu
+                .item(item(
+                    ws,
+                    "Refresh",
+                    Some(IconName::RefreshCw),
+                    move |ws, window, cx| ws.refresh_git(block, window, cx),
+                ))
+                .separator()
+                .item(item(
+                    ws,
+                    "Close",
+                    Some(IconName::Close),
+                    move |ws, window, cx| ws.close(block, window, cx),
+                )),
             Items::Editor { block, tree, wrap } => menu
                 .item(item(
                     ws,

@@ -28,6 +28,7 @@ use templum_canvas::{
     Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, HIT_PX, Point,
     Rect, STRING_PX, ShapeKind, Size, chrome, constrain, dot_grid, dot_size,
 };
+use templum_git::Repo;
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
 use crate::agents::{self, AgentEntry};
@@ -36,6 +37,7 @@ use crate::block;
 use crate::board::{self, Boards};
 use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
 use crate::editor::{self, Editor};
+use crate::git_block::{self, Found, Git, Read};
 use crate::grid::CellMetrics;
 use crate::ink;
 use crate::kanban::{self, Kanban};
@@ -93,6 +95,14 @@ pub(crate) struct Pane {
     pub alert: Option<Alert>,
 }
 
+/// A Git block of any workspace: block ids count from 0 in every one, so a result that comes
+/// back after a switch still finds its block.
+#[derive(Clone, Debug)]
+pub(crate) struct GitAt {
+    pub space: String,
+    pub block: BlockId,
+}
+
 /// A closed block, still drawn while it fades out. A terminal's shell lives until then.
 pub(crate) struct Ghost {
     pub block: Block,
@@ -106,6 +116,7 @@ pub(crate) enum Body {
     Kanban(Kanban),
     Note(Note),
     Editor(Editor),
+    Git(Git),
 }
 
 impl Body {
@@ -145,6 +156,7 @@ impl Body {
             Body::Kanban(_) => kanban::MIN,
             Body::Note(_) => note::MIN,
             Body::Editor(_) => editor::MIN,
+            Body::Git(_) => git_block::MIN,
         }
     }
 
@@ -165,6 +177,20 @@ impl Body {
     pub fn editor_mut(&mut self) -> Option<&mut Editor> {
         match self {
             Body::Editor(editor) => Some(editor),
+            _ => None,
+        }
+    }
+
+    pub fn git(&self) -> Option<&Git> {
+        match self {
+            Body::Git(git) => Some(git),
+            _ => None,
+        }
+    }
+
+    pub fn git_mut(&mut self) -> Option<&mut Git> {
+        match self {
+            Body::Git(git) => Some(git),
             _ => None,
         }
     }
@@ -286,6 +312,7 @@ impl Space {
                     Body::Editor(e) => {
                         session::LayoutBlock::Saved(session::Item::Editor(e.item(b.rect)))
                     }
+                    Body::Git(g) => session::LayoutBlock::Saved(session::Item::Git(g.item(b.rect))),
                 })
                 .collect(),
             focused: self
@@ -340,6 +367,14 @@ impl Space {
 
     pub fn editor_mut(&mut self, id: BlockId) -> Option<&mut Editor> {
         self.blocks.get_mut(&id)?.editor_mut()
+    }
+
+    pub fn git(&self, id: BlockId) -> Option<&Git> {
+        self.blocks.get(&id)?.git()
+    }
+
+    pub fn git_mut(&mut self, id: BlockId) -> Option<&mut Git> {
+        self.blocks.get_mut(&id)?.git_mut()
     }
 
     /// The changed files' names: of one block, or of every block of this workspace.
@@ -507,6 +542,11 @@ pub struct Workspace {
     _blink: Task<()>,
     /// Checks open files for changes on disk every editor::POLL.
     _files: Task<()>,
+    /// Reads every Git block on screen every git_block::POLL.
+    _git: Task<()>,
+    /// `git --version` with the configured program, read when the settings panel opens: Ok is
+    /// the version, Err why it can't run. None while it is being read.
+    pub(crate) git_version: Option<Result<String, String>>,
     _wake: Task<()>,
 }
 
@@ -626,6 +666,17 @@ impl Workspace {
                 }
             }
         });
+        let git = cx.spawn_in(window, async move |ws, cx| {
+            loop {
+                cx.background_executor().timer(git_block::POLL).await;
+                if ws
+                    .update_in(cx, |ws, window, cx| ws.poll_git(window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         // Closing the window with unsaved files asks first, as quitting does.
         let closing = cx.weak_entity();
         window.on_window_should_close(cx, move |window, cx| {
@@ -708,6 +759,8 @@ impl Workspace {
             blink_on: true,
             _blink: blink,
             _files: files,
+            _git: git,
+            git_version: None,
             config,
             keymap,
             agents: effective_agents,
@@ -1098,6 +1151,269 @@ impl Workspace {
         remember(&mut self.space.recent, folder.to_path_buf());
         cx.notify();
         Some(id)
+    }
+
+    /// Asks for a folder, then opens a Git block on its repository at the viewport's center.
+    pub(crate) fn new_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let center = self.space.canvas.camera.to_world(self.center(window));
+        let size = git_block::SIZE;
+        let at = self
+            .space
+            .canvas
+            .place_new(
+                size,
+                Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
+            )
+            .origin();
+        self.ask_git_folder(at, window, cx);
+    }
+
+    /// The folder dialog; the block's top-left corner goes to `at` (world units).
+    pub(crate) fn ask_git_folder(&self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
+        let entity = cx.entity();
+        launcher::ask_folder_for(
+            self,
+            "Open a Git block".to_string(),
+            None,
+            Rc::new(move |folder, window, cx| {
+                entity.update(cx, |ws, cx| ws.add_git_at(folder, at, window, cx))
+            }),
+            window,
+            cx,
+        );
+    }
+
+    /// A Git block on `folder`'s repository, its top-left corner at `at`; the folder becomes a
+    /// recent one. The repository is looked up in the background.
+    pub(crate) fn add_git_at(
+        &mut self,
+        folder: &Path,
+        at: Point,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<BlockId> {
+        if !folder.is_dir() {
+            let message = format!("{} isn't a folder", folder.display());
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+            return None;
+        }
+        self.space.pristine = false;
+        let rect = Rect::new(at.x, at.y, git_block::SIZE.w, git_block::SIZE.h);
+        let id = self.add_block(
+            rect,
+            Body::Git(Git::new(folder.to_path_buf(), git_block::Tab::Changes)),
+        );
+        remember(&mut self.space.recent, folder.to_path_buf());
+        self.look_up_git(id, window, cx);
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+        Some(id)
+    }
+
+    /// The system's folder picker, for a Git block whose folder is gone or isn't a repository.
+    pub(crate) fn choose_git_folder(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entity = cx.entity();
+        launcher::pick_folder(
+            Rc::new(move |folder, window, cx| {
+                entity.update(cx, |ws, cx| ws.set_git_folder(id, folder, window, cx))
+            }),
+            window,
+            cx,
+        );
+    }
+
+    /// Points a Git block at another folder, looked up afresh.
+    pub(crate) fn set_git_folder(
+        &mut self,
+        id: BlockId,
+        folder: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<BlockId> {
+        let git = self.space.git_mut(id)?;
+        git.folder = folder.to_path_buf();
+        git.found = Found::Looking;
+        git.status = templum_git::Status::default();
+        git.error = None;
+        remember(&mut self.space.recent, folder.to_path_buf());
+        self.look_up_git(id, window, cx);
+        cx.notify();
+        Some(id)
+    }
+
+    /// Finds the repository holding the block's folder, in the background, then reads it.
+    pub(crate) fn look_up_git(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git(id) else {
+            return;
+        };
+        let (program, folder) = (self.config.git.program.clone(), git.folder.clone());
+        if !folder.is_dir() {
+            return;
+        }
+        let at = GitAt {
+            space: self.space.id.clone(),
+            block: id,
+        };
+        self.git_job(
+            at,
+            move || Repo::discover(&program, &folder),
+            |ws, at, found, window, cx| {
+                let Some(git) = ws.git_at(&at) else {
+                    return;
+                };
+                git.found = match found {
+                    Ok(Some(repo)) => Found::Repo(repo),
+                    Ok(None) => Found::NotARepo,
+                    Err(e) => Found::NoGit(e),
+                };
+                ws.refresh_at(at, window, cx);
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// `git init` in the block's folder, then reads it.
+    pub(crate) fn init_git(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git(id) else {
+            return;
+        };
+        let (program, folder) = (self.config.git.program.clone(), git.folder.clone());
+        let at = GitAt {
+            space: self.space.id.clone(),
+            block: id,
+        };
+        self.git_job(
+            at,
+            move || Repo::init(&program, &folder),
+            |ws, at, made, window, cx| match made {
+                Ok(repo) => {
+                    if let Some(git) = ws.git_at(&at) {
+                        git.found = Found::Repo(repo);
+                    }
+                    ws.refresh_at(at, window, cx);
+                }
+                Err(e) => {
+                    eprintln!("templum: {e}");
+                    show_notification(window, cx, Notification::error(e.to_string()));
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Shows a tab of a Git block.
+    pub(crate) fn set_git_tab(&mut self, id: BlockId, tab: git_block::Tab, cx: &mut Context<Self>) {
+        if let Some(git) = self.space.git_mut(id) {
+            git.tab = tab;
+            cx.notify();
+        }
+    }
+
+    /// Reads the block's status in the background: at once, or when the running command ends.
+    pub(crate) fn refresh_git(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        let at = GitAt {
+            space: self.space.id.clone(),
+            block: id,
+        };
+        self.refresh_at(at, window, cx);
+    }
+
+    fn refresh_at(&mut self, at: GitAt, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.git_at(&at) else {
+            return;
+        };
+        let Some(repo) = git.repo().cloned() else {
+            return;
+        };
+        if git.busy {
+            git.pending = true;
+            return;
+        }
+        self.git_job(
+            at,
+            move || Read::of(&repo),
+            |ws, at, read, _, _| {
+                let Some(git) = ws.git_at(&at) else {
+                    return;
+                };
+                git.reads += 1;
+                match read {
+                    Ok(read) => {
+                        git.status = read.status;
+                        git.operation = read.operation;
+                        git.author = read.author;
+                        git.error = None;
+                    }
+                    Err(e) => git.error = Some(e.to_string()),
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Every git_block::POLL: reads the Git blocks in the viewport again.
+    fn poll_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let vp = self.viewport(window);
+        let due: Vec<BlockId> = self
+            .space
+            .canvas
+            .visible_from(&self.space.view, vp)
+            .map(|b| b.id)
+            .filter(|id| self.space.git(*id).is_some_and(|g| g.repo().is_some()))
+            .collect();
+        for id in due {
+            self.refresh_git(id, window, cx);
+        }
+    }
+
+    /// The Git block `at` names, in whichever workspace it is.
+    fn git_at(&mut self, at: &GitAt) -> Option<&mut Git> {
+        self.space_by_id_mut(&at.space)?.git_mut(at.block)
+    }
+
+    /// Runs `job` on the background executor, the block marked busy meanwhile, then `done` on
+    /// the UI thread with its result. A refresh asked while it ran follows, once. A block
+    /// closed in the meantime gets nothing.
+    fn git_job<T: Send + 'static>(
+        &mut self,
+        at: GitAt,
+        job: impl FnOnce() -> T + Send + 'static,
+        done: impl FnOnce(&mut Workspace, GitAt, T, &mut Window, &mut Context<Workspace>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.git_at(&at) else {
+            return;
+        };
+        git.busy = true;
+        cx.notify();
+        cx.spawn_in(window, async move |ws, cx| {
+            let result = cx.background_executor().spawn(async move { job() }).await;
+            ws.update_in(cx, |ws, window, cx| {
+                if let Some(git) = ws.git_at(&at) {
+                    git.busy = false;
+                }
+                done(ws, at.clone(), result, window, cx);
+                let again = ws
+                    .git_at(&at)
+                    .is_some_and(|g| std::mem::take(&mut g.pending));
+                if again {
+                    ws.refresh_at(at, window, cx);
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     pub(crate) fn toggle_tree(&mut self, id: BlockId, cx: &mut Context<Self>) {
@@ -2151,6 +2467,18 @@ impl Workspace {
                     ids.push(id);
                     continue;
                 }
+                session::Item::Git(g) => {
+                    let id = clamped_rect(g.rect.into(), git_block::MIN).map(|rect| {
+                        let git =
+                            Git::new(PathBuf::from(&g.folder), git_block::Tab::from_name(&g.tab));
+                        self.add_block(rect, Body::Git(git))
+                    });
+                    if let Some(id) = id {
+                        self.look_up_git(id, window, cx);
+                    }
+                    ids.push(id);
+                    continue;
+                }
                 session::Item::Editor(e) => {
                     let id = clamped_rect(e.rect.into(), editor::MIN).map(|rect| {
                         let folder = PathBuf::from(&e.folder);
@@ -2658,6 +2986,7 @@ impl Workspace {
         let active = window.is_window_active();
         let several = !self.others.is_empty();
         let mut news = Vec::new();
+        let mut finished_in: Vec<PathBuf> = Vec::new();
         let spaces = std::iter::once(&mut self.space).chain(&mut self.others);
         for (i, space) in spaces.enumerate() {
             let terminals = space
@@ -2667,6 +2996,9 @@ impl Workspace {
             for (id, pane) in terminals {
                 let status = pane.term.status();
                 let new = alert::news(&status, pane.heard);
+                if i == 0 && status.finished > pane.heard.0 {
+                    finished_in.extend(pane.term.processes().reported);
+                }
                 pane.heard = (status.finished, status.attention);
                 if active && i == 0 && space.focused == Some(id) {
                     pane.alert = None;
@@ -2682,6 +3014,22 @@ impl Workspace {
                     pane.alert = Some(alert);
                 }
             }
+        }
+        // `git add` in a terminal shows in the block within a frame.
+        let repos: Vec<BlockId> = self
+            .space
+            .blocks
+            .iter()
+            .filter_map(|(id, b)| {
+                let root = &b.git()?.repo()?.root;
+                finished_in
+                    .iter()
+                    .any(|f| f.starts_with(root))
+                    .then_some(*id)
+            })
+            .collect();
+        for id in repos {
+            self.refresh_git(id, window, cx);
         }
         let delivery = if self.config.terminal.notifications && !active {
             NotificationDelivery::InAppAndSystem
@@ -2854,6 +3202,22 @@ impl Workspace {
         self.fonts = settings::monospace_families(window);
         self.shells = templum_terminal::available_shells();
         self.default_shell = templum_terminal::default_shell_label();
+        self.git_version = None;
+        let program = self.config.git.program.clone();
+        cx.spawn_in(window, async move |ws, cx| {
+            let version = cx
+                .background_executor()
+                .spawn(
+                    async move { Repo::version(&program).map_err(|e| e.first_line().to_string()) },
+                )
+                .await;
+            ws.update(cx, |ws, cx| {
+                ws.git_version = Some(version);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
         let now = Instant::now();
         self.settings = Some(match &self.settings {
             // Still sliding out: it turns back from where it is.
@@ -3394,6 +3758,7 @@ impl Workspace {
             Command::NewKanban => self.new_kanban(window, cx),
             Command::NewNote => self.new_note(window, cx),
             Command::NewEditor => self.new_editor(window, cx),
+            Command::NewGit => self.new_git(window, cx),
             Command::NextWorkspace => self.cycle_space(1, window, cx),
             Command::PreviousWorkspace => self.cycle_space(-1, window, cx),
             Command::NewWorkspace => self.new_space(window, cx),
@@ -10332,5 +10697,356 @@ mod tests {
             !shown(ids[0], cx).contains("claude"),
             "not in the home folder: that's another conversation"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    const NEW_GIT: &str = "cmd-shift-g";
+    #[cfg(not(target_os = "macos"))]
+    const NEW_GIT: &str = "ctrl-shift-g";
+
+    /// Runs `git args` in `dir`, panicking with git's stderr on failure; returns stdout.
+    fn git_run(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// A repository on `main` in a temporary folder, with an author so commits work.
+    fn git_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        git_run(dir.path(), &["init", "-q"]);
+        git_run(dir.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git_run(dir.path(), &["config", "user.name", "Ada"]);
+        git_run(dir.path(), &["config", "user.email", "ada@example.com"]);
+        git_run(dir.path(), &["config", "commit.gpgsign", "false"]);
+        dir
+    }
+
+    /// Lets the background git jobs finish, draws a frame, and lets what the frame started finish.
+    fn settle(handle: AnyWindowHandle, cx: &mut TestAppContext) {
+        cx.run_until_parked();
+        frame(handle, cx);
+        cx.run_until_parked();
+        frame(handle, cx);
+    }
+
+    /// A Git block on `folder`, near the canvas's top-left, looked up and read.
+    fn open_git(
+        handle: AnyWindowHandle,
+        ws: &Entity<Workspace>,
+        cx: &mut TestAppContext,
+        folder: &std::path::Path,
+    ) -> BlockId {
+        let id = cx
+            .update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    let id = ws
+                        .add_git_at(folder, Point::new(40.0, 40.0), window, cx)
+                        .unwrap();
+                    ws.space.appearing.clear();
+                    id
+                })
+            })
+            .unwrap();
+        settle(handle, cx);
+        id
+    }
+
+    fn git_of<T>(
+        ws: &Entity<Workspace>,
+        cx: &mut TestAppContext,
+        id: BlockId,
+        read: impl FnOnce(&crate::git_block::Git) -> T,
+    ) -> T {
+        ws.read_with(cx, |ws, _| read(ws.space.git(id).unwrap()))
+    }
+
+    #[gpui_kit::test]
+    fn a_git_block_on_a_fresh_repository_lists_an_untracked_file(cx: &mut TestAppContext) {
+        let repo = git_repo();
+        std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        git_of(&ws, cx, id, |g| {
+            assert!(g.repo().is_some(), "found");
+            assert_eq!(g.status.branch.as_deref(), Some("main"));
+            assert_eq!(g.status.entries.len(), 1);
+            assert_eq!(g.status.entries[0].path, "a.txt");
+            assert_eq!(
+                g.status.entries[0].unstaged,
+                Some(templum_git::Change::Untracked)
+            );
+            assert_eq!(g.author.as_ref().map(|a| a.0.as_str()), Some("Ada"));
+        });
+        cx.update_window(handle, |_, window, _| {
+            assert!(
+                window
+                    .try_find(crate::git_block::row_id(id, "unstaged", 0))
+                    .is_some()
+            );
+            assert!(
+                window
+                    .try_find(crate::git_block::row_id(id, "staged", 0))
+                    .is_none()
+            );
+            assert!(window.try_find(("branch", id.0 as usize)).is_some());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_folder_outside_a_repository_offers_initialize(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, dir.path());
+        git_of(&ws, cx, id, |g| {
+            assert!(matches!(g.found, crate::git_block::Found::NotARepo))
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.click(("init", id.0 as usize), cx)
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert!(g.repo().is_some(), "initialized");
+            assert_eq!(g.status.oid, None, "no commits");
+        });
+        assert!(dir.path().join(".git").is_dir());
+    }
+
+    #[gpui_kit::test]
+    fn without_git_the_block_says_so_and_tries_again_when_asked(cx: &mut TestAppContext) {
+        let config = tempfile::tempdir().unwrap();
+        write_config(config.path(), "[git]\nprogram = \"templum-no-such-git\"\n");
+        let repo = git_repo();
+        let (handle, ws) = open_with(cx, Some(config.path().to_path_buf()));
+        let id = open_git(handle, &ws, cx, repo.path());
+        git_of(&ws, cx, id, |g| {
+            assert!(matches!(&g.found, crate::git_block::Found::NoGit(e) if e.missing))
+        });
+        cx.update_window(handle, |_, window, _| {
+            assert!(window.try_find(("retry", id.0 as usize)).is_some());
+        })
+        .unwrap();
+        ws.update(cx, |ws, cx| {
+            ws.edit(
+                Edit::set("git", "program", "git"),
+                |c| c.git.program = "git".to_string(),
+                cx,
+            )
+        });
+        frame(handle, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.click(("retry", id.0 as usize), cx)
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| assert!(g.repo().is_some()));
+    }
+
+    #[gpui_kit::test]
+    fn the_status_is_read_again_every_two_seconds_while_on_screen(cx: &mut TestAppContext) {
+        let repo = git_repo();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        let reads = git_of(&ws, cx, id, |g| g.reads);
+        std::fs::write(repo.path().join("b.txt"), "b\n").unwrap();
+        cx.executor().advance_clock(crate::git_block::POLL);
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.reads, reads + 1);
+            assert_eq!(g.status.entries[0].path, "b.txt");
+        });
+        // Off screen: not read.
+        ws.update(cx, |ws, _| {
+            ws.space.canvas.camera = Camera::at(Point::new(100_000.0, 100_000.0), 1.0);
+            ws.space.view = ws.space.canvas.camera;
+        });
+        frame(handle, cx);
+        cx.executor().advance_clock(crate::git_block::POLL);
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| assert_eq!(g.reads, reads + 1));
+    }
+
+    #[gpui_kit::test]
+    fn a_refresh_asked_while_one_runs_waits_and_runs_once(cx: &mut TestAppContext) {
+        let repo = git_repo();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        let reads = git_of(&ws, cx, id, |g| g.reads);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                for _ in 0..3 {
+                    ws.refresh_git(id, window, cx);
+                }
+            })
+        })
+        .unwrap();
+        git_of(&ws, cx, id, |g| assert!(g.busy && g.pending));
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.reads, reads + 2, "the first, then one for the two asked");
+            assert!(!g.busy && !g.pending);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_result_for_a_closed_block_is_dropped(cx: &mut TestAppContext) {
+        let repo = git_repo();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.refresh_git(id, window, cx);
+                ws.close(id, window, cx);
+            })
+        })
+        .unwrap();
+        settle(handle, cx);
+        ws.read_with(cx, |ws, _| assert!(ws.space.git(id).is_none()));
+    }
+
+    #[gpui_kit::test]
+    fn new_git_asks_for_a_folder_and_a_saved_block_comes_back_on_its_tab(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let repo = git_repo();
+        let data = tempfile::tempdir().unwrap();
+        let json = repo.path().display().to_string().replace('\\', "\\\\");
+        write_canvas(
+            data.path(),
+            &format!(
+                r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+                  {{"kind":"git","rect":{{"x":0,"y":0,"w":800,"h":560}},"folder":"{json}","tab":"branches"}}]}}"#
+            ),
+        );
+        let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        settle(handle, cx);
+        let id = first_id(&ws, cx);
+        git_of(&ws, cx, id, |g| {
+            assert!(g.repo().is_some());
+            assert_eq!(g.tab, crate::git_block::Tab::Branches);
+        });
+        let item = ws.read_with(cx, |ws, _| {
+            ws.space
+                .git(id)
+                .unwrap()
+                .item(Rect::new(0.0, 0.0, 1.0, 1.0))
+        });
+        assert_eq!(item.tab, "branches");
+        cx.update_window(handle, |_, window, cx| {
+            window.press(NEW_GIT, cx);
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx), "the folder dialog");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_tools_section_shows_gits_version_and_sets_the_program(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.toggle_settings(window, cx));
+        })
+        .unwrap();
+        settle(handle, cx);
+        // The panel slides in in real time: clicks land once it is at rest.
+        settle_slide(handle, cx);
+        ws.read_with(cx, |ws, _| {
+            let version = ws.git_version.clone().unwrap().unwrap();
+            assert!(version.starts_with("git version "), "{version}");
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.click("settings-tab-tools", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("field-git.program").is_some());
+            assert!(
+                window.try_find("reset-git.program").is_none(),
+                "the default"
+            );
+        })
+        .unwrap();
+        // What the field calls on each change, as the shell program's tests do.
+        ws.update(cx, |ws, cx| {
+            crate::settings::set_git_program(ws, " /opt/git ", cx)
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+            assert_eq!(ws.read(cx).config.git.program, "/opt/git");
+            assert!(window.try_find("reset-git.program").is_some());
+        })
+        .unwrap();
+        ws.update(cx, |ws, _| ws.save());
+        let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap();
+        assert!(
+            text.contains("[git]") && text.contains("program = \"/opt/git\""),
+            "{text}"
+        );
+    }
+
+    /// Shell integration's `finished` count: a command run in the repository from a terminal of
+    /// this workspace refreshes the block.
+    #[cfg(unix)]
+    #[gpui_kit::test]
+    fn a_terminal_finishing_a_command_in_the_repository_refreshes_the_block(
+        cx: &mut TestAppContext,
+    ) {
+        let ps0 = std::process::Command::new("bash")
+            .args([
+                "-c",
+                "(( BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 404 ))",
+            ])
+            .status()
+            .is_ok_and(|s| s.success());
+        use std::time::{Duration, Instant};
+        if !ps0 {
+            eprintln!("skipped: this bash doesn't report commands");
+            return;
+        }
+        let repo = git_repo();
+        std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let bash = Some(("bash".to_string(), Vec::new()));
+        let (handle, ws) = open_as(cx, bash, None, Some(data.path().to_path_buf()));
+        let term = first_id(&ws, cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        let reads = git_of(&ws, cx, id, |g| g.reads);
+        let line = format!("cd '{}' && git add a.txt\r", repo.path().display());
+        ws.read_with(cx, |ws, _| {
+            ws.space
+                .terminal(term)
+                .unwrap()
+                .term
+                .write(line.into_bytes())
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while ws.read_with(cx, |ws, _| {
+            ws.space.terminal(term).unwrap().term.status().finished
+        }) < 1
+        {
+            assert!(Instant::now() < deadline, "the command never ended");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert!(g.reads > reads, "refreshed by the terminal");
+            assert_eq!(
+                g.status.entries[0].staged,
+                Some(templum_git::Change::Added),
+                "{:?}",
+                g.status.entries
+            );
+        });
     }
 }

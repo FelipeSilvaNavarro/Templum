@@ -9,6 +9,7 @@ pub(crate) enum Command {
     NewKanban,
     NewNote,
     NewEditor,
+    NewGit,
     CloseTerminal,
     CloseTab,
     Save,
@@ -33,11 +34,12 @@ pub(crate) enum Command {
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 24] = [
+    pub const ALL: [Command; 25] = [
         Command::NewTerminal,
         Command::NewKanban,
         Command::NewNote,
         Command::NewEditor,
+        Command::NewGit,
         Command::CloseTerminal,
         Command::CloseTab,
         Command::Save,
@@ -67,6 +69,7 @@ impl Command {
             Command::NewKanban => "new_kanban",
             Command::NewNote => "new_note",
             Command::NewEditor => "new_editor",
+            Command::NewGit => "new_git",
             Command::CloseTerminal => "close_terminal",
             Command::CloseTab => "close_tab",
             Command::Save => "save",
@@ -97,6 +100,7 @@ impl Command {
             Command::NewKanban => "New kanban board",
             Command::NewNote => "New note",
             Command::NewEditor => "New editor",
+            Command::NewGit => "New Git block",
             Command::CloseTerminal => "Close terminal",
             Command::CloseTab => "Close the file's tab (in an editor)",
             Command::Save => "Save the file (in an editor)",
@@ -136,6 +140,8 @@ impl Command {
             (Command::NewNote, true) => &["cmd-shift-m"],
             (Command::NewEditor, false) => &["ctrl-shift-e"],
             (Command::NewEditor, true) => &["cmd-shift-e"],
+            (Command::NewGit, false) => &["ctrl-shift-g"],
+            (Command::NewGit, true) => &["cmd-shift-g"],
             (Command::CloseTerminal, false) => &["ctrl-shift-w"],
             (Command::CloseTerminal, true) => &["cmd-w"],
             (Command::CloseTab, _) => &["ctrl-w"],
@@ -191,6 +197,7 @@ pub(crate) struct KeysConfig {
     pub new_kanban: Option<Keys>,
     pub new_note: Option<Keys>,
     pub new_editor: Option<Keys>,
+    pub new_git: Option<Keys>,
     pub close_terminal: Option<Keys>,
     pub close_tab: Option<Keys>,
     pub save: Option<Keys>,
@@ -220,6 +227,7 @@ impl KeysConfig {
             Command::NewKanban => self.new_kanban.as_ref(),
             Command::NewNote => self.new_note.as_ref(),
             Command::NewEditor => self.new_editor.as_ref(),
+            Command::NewGit => self.new_git.as_ref(),
             Command::CloseTerminal => self.close_terminal.as_ref(),
             Command::CloseTab => self.close_tab.as_ref(),
             Command::Save => self.save.as_ref(),
@@ -249,6 +257,7 @@ impl KeysConfig {
             Command::NewKanban => &mut self.new_kanban,
             Command::NewNote => &mut self.new_note,
             Command::NewEditor => &mut self.new_editor,
+            Command::NewGit => &mut self.new_git,
             Command::CloseTerminal => &mut self.close_terminal,
             Command::CloseTab => &mut self.close_tab,
             Command::Save => &mut self.save,
@@ -385,6 +394,17 @@ pub(crate) fn display(shortcut: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn new_git_has_its_shortcut_and_key() {
+        assert_eq!(Command::NewGit.name(), "new_git");
+        assert_eq!(Command::NewGit.defaults(false), ["ctrl-shift-g"]);
+        assert_eq!(Command::NewGit.defaults(true), ["cmd-shift-g"]);
+        assert!(Command::ALL.contains(&Command::NewGit));
+        let mut keys = KeysConfig::default();
+        keys.set(Command::NewGit, Some(Keys::One("ctrl-g".into())));
+        assert_eq!(keys.get(Command::NewGit), Some(&Keys::One("ctrl-g".into())));
+    }
 
     fn typed(s: &str) -> Keystroke {
         Keystroke::parse(s).unwrap()

@@ -35,6 +35,7 @@ pub(crate) struct Config {
     pub cursor: Cursor,
     pub terminal: TerminalConfig,
     pub keys: KeysConfig,
+    pub git: GitConfig,
     /// `[agents.<id>]`: changes to one of Templum's AI agents (only what differs), or an agent of
     /// the user's own.
     pub agents: BTreeMap<String, AgentConfig>,
@@ -218,6 +219,22 @@ impl Default for TerminalConfig {
         Self {
             scrollback: 10_000,
             notifications: true,
+        }
+    }
+}
+
+/// `[git]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct GitConfig {
+    /// The program the Git block runs: a name on PATH, or a path.
+    pub program: String,
+}
+
+impl Default for GitConfig {
+    fn default() -> Self {
+        Self {
+            program: "git".to_string(),
         }
     }
 }
@@ -594,6 +611,8 @@ pub(crate) fn template(macos: bool) -> String {
         "## A system notification when Templum is in the background and a long command ends or\n",
         "## a terminal asks for attention.\n",
         "# notifications = true\n\n",
+        "[git]\n",
+        "# program = \"git\"   # a name on PATH, or a path\n\n",
         "[keys]\n",
     ));
     for command in Command::ALL {
@@ -624,6 +643,14 @@ pub(crate) fn ensure_file(dir: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_git_program_is_read_and_defaults_to_git() {
+        assert_eq!(Config::default().git.program, "git");
+        let config = parse("[git]\nprogram = \"/opt/git/bin/git\"\n").unwrap();
+        assert_eq!(config.git.program, "/opt/git/bin/git");
+        assert!(template(false).contains("[git]\n# program = \"git\""));
+    }
 
     fn write(dir: &Path, text: &str) {
         std::fs::write(dir.join(FILE), text).unwrap();

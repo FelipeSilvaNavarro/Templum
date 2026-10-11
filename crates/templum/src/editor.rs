@@ -566,7 +566,12 @@ fn gone(id: BlockId, folder: &Path, ui: Ui, z: f32, cx: &mut Context<Workspace>)
 }
 
 /// A small outlined button, at the zoom.
-fn button(id: impl Into<ElementId>, label: &'static str, ui: Ui, z: f32) -> Stateful<Div> {
+pub(crate) fn button(
+    id: impl Into<ElementId>,
+    label: &'static str,
+    ui: Ui,
+    z: f32,
+) -> Stateful<Div> {
     div()
         .id(id)
         .px(px(10.0 * z))

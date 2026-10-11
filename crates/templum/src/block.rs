@@ -18,6 +18,7 @@ use templum_canvas::{Block, Rect, chrome};
 
 use crate::alert::{self, Alert};
 use crate::editor;
+use crate::git_block;
 use crate::grid::{self, hsla};
 use crate::kanban;
 use crate::menu::Target;
@@ -95,6 +96,7 @@ pub(crate) fn render(
                     Body::Kanban(k) => k.title(ws),
                     Body::Note(n) => n.title(cx),
                     Body::Editor(e) => e.title(),
+                    Body::Git(g) => g.title(),
                 }),
         )
         .when(live, |el| {
@@ -293,6 +295,8 @@ pub(crate) fn render(
         Body::Note(n) => frame.when(live, |el| el.child(note::body(ws, id, n, z, cx))),
         // A fading editor is drawn empty, like a note.
         Body::Editor(e) => frame.when(live, |el| el.child(editor::body(ws, id, e, z, cx))),
+        // A fading Git block is drawn empty, like a note.
+        Body::Git(g) => frame.when(live, |el| el.child(git_block::body(ws, id, g, z, cx))),
     }
     .test_support();
 

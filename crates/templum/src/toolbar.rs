@@ -102,6 +102,16 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.new_editor(window, cx)))
         .test_support()
         .into_any_element(),
+        button(
+            "tool-git",
+            IconName::GitBranch,
+            tip("Git", Command::NewGit),
+            false,
+            ui,
+        )
+        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.new_git(window, cx)))
+        .test_support()
+        .into_any_element(),
         button("tool-agent", IconName::Bot, "AI agent", false, ui)
             .on_click(cx.listener(|ws, e: &ClickEvent, window, cx| {
                 // The agent's block opens in the middle of the canvas.
