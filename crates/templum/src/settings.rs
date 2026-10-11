@@ -680,6 +680,7 @@ fn rows(
         }
         Section::Tools => {
             let program = ws.config.git.program.clone();
+            let changed = ws.config.git.program() != "git";
             let version = match &ws.git_version {
                 Some(Ok(v)) => v.clone(),
                 Some(Err(e)) => format!("Not found: {e}"),
@@ -697,7 +698,7 @@ fn rows(
                         cx,
                     ))
                     .reset(
-                        program != "git",
+                        changed,
                         remove(entity, "git", "program", |c| {
                             c.git.program = "git".to_string()
                         }),
@@ -1554,12 +1555,11 @@ pub(crate) fn join_args(args: &[String]) -> String {
         .join(" ")
 }
 
-/// `shell.program`, trimmed; empty removes the key (the default shell). The typed
-/// text is kept as a draft, so a space typed before the rest of a path stays in the field.
 /// The Git program typed in the panel; empty or "git" is the default (the key is removed).
 pub(crate) fn set_git_program(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
-    let text = text.trim();
-    if text.is_empty() || text == "git" {
+    // Kept as typed (the field shows the config's value: trimming here would eat a space typed
+    // before the next word, as in "Program Files"); GitConfig::program trims it for use.
+    if text.trim().is_empty() || text.trim() == "git" {
         ws.edit(
             Edit::remove("git", "program"),
             |c| c.git.program = "git".to_string(),
@@ -1574,6 +1574,8 @@ pub(crate) fn set_git_program(ws: &mut Workspace, text: &str, cx: &mut Context<W
     }
 }
 
+/// `shell.program`, trimmed; empty removes the key (the default shell). The typed
+/// text is kept as a draft, so a space typed before the rest of a path stays in the field.
 pub(crate) fn set_program(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
     ws.drafts.insert("program", text.to_string());
     let text = text.trim();

@@ -10,4 +10,4 @@ pub use parse::{
     STASH_FORMAT, Stash, Status, ago, first_hunk_line, needs_input, not_fast_forward, not_merged,
     parse_branches, parse_log, parse_name_status, parse_stashes, parse_status,
 };
-pub use repo::{GitError, Pull, Repo, Side};
+pub use repo::{DIFF_LIMIT, GitError, Pull, Repo, Side};

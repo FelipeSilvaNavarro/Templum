@@ -747,12 +747,24 @@ Plan 5 ([../plans/2026-10-11-git.md](../plans/2026-10-11-git.md)) shipped on 202
 - The author is read with each status; Set… asks the name, then the email, in two dialogs.
 - Unstaging uses `git reset -q --`, which works before the first commit (`git restore --staged` needs HEAD).
 - An untracked file's diff is built by Templum (the whole file as added), not by `git diff --no-index`.
-- One command at a time per block: a command asked while one runs waits and runs in turn (a commit or a stash
-  clicked during the 2-second read is never lost); fetch, pull, push and the rows' buttons are disabled meanwhile.
+- One command at a time per block: a command asked while one runs waits and runs in turn, so a commit, a stash,
+  a Publish or a Merge asked during the 2-second read runs right after it. Reads don't disable anything; while an
+  action runs, the action buttons are disabled. The timer skips a block whose last read is still out.
+- Fetch, pull and push can be cancelled: their spinning button kills the command (git only: an ssh it started
+  and that waits on a terminal stays until that terminal closes).
+- Every command runs with `GIT_OPTIONAL_LOCKS=0`, so the background status never takes `index.lock` from a
+  `git add` run in a terminal.
+- A stash is named by its hash too: apply, pop, drop and show check `stash@{N}` still is it, so a list changed by a
+  terminal is read again rather than acted on.
+- A diff over 4 MB (an untracked file's size, or `git diff`'s output) says "Too large to show".
+- **Ignore** writes the path anchored at the root (`/notes.txt`, wildcards escaped) and keeps the file's other
+  bytes.
 - A block restored on History, Branches or Stashes reads that list at once.
-- Run in a terminal places the terminal beside the block with `Canvas::place_beside` and types the command in, as
-  the agents' resume command is; a failed command's buttons wrap, so a third one (Stash and switch, Merge, Rebase)
-  stays clickable.
+- Run in a terminal places the terminal beside the block with `Canvas::place_beside` and types the command in,
+  POSIX-quoted, without Enter: the person reads it and runs it. The notification's buttons act on their own block,
+  switching to its workspace first, and wrap, so a third one (Stash and switch, Merge, Rebase) stays clickable.
+- When git would have asked for a key or a password, the notification's line is the one that says so, followed
+  by "Git needs your key or password: run it in a terminal.".
 - Settings ▸ Tools has `git.program` only; `docker.program` comes with plan 6.
 
 ## Risks

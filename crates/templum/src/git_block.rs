@@ -4,6 +4,8 @@
 
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use gpui_kit::Focusable as _;
@@ -162,6 +164,11 @@ pub(crate) struct Git {
     pub author: Option<(String, String)>,
     /// A command runs in the background: reads wait, actions are disabled.
     pub busy: bool,
+    /// Actions asked and not done yet (reads don't count): while any, the action buttons are
+    /// disabled.
+    pub acting: u32,
+    /// Kills the running fetch, pull or push (its spinning button).
+    pub cancel: Option<Arc<AtomicBool>>,
     /// A refresh was asked while busy: one runs when the command ends.
     pub pending: bool,
     /// Other commands asked while busy, run in turn as each one ends.
@@ -174,6 +181,10 @@ pub(crate) struct Git {
     pub error: Option<String>,
     /// The read-only diff on the right of the Changes tab, with the `diff` grammar.
     pub diff: Entity<EditorState>,
+    /// History's file diff and Stashes' diff: each tab has its own, so a 2-second read of the
+    /// Changes diff never replaces what another tab shows.
+    pub commit_diff: Entity<EditorState>,
+    pub stash_diff: Entity<EditorState>,
     /// The row whose diff is shown.
     pub selected: Option<(List, String)>,
     /// The diff's first hunk's line in the new file, for Open in editor.
@@ -204,12 +215,15 @@ pub(crate) struct Git {
 
 impl Git {
     pub fn new(folder: PathBuf, tab: Tab, window: &mut Window, cx: &mut Context<Workspace>) -> Git {
-        let diff = cx.new(|cx| {
-            EditorState::new(window, cx)
-                .language("diff")
-                .line_number(false)
-                .soft_wrap(false)
-        });
+        let mut diff_view = || {
+            cx.new(|cx| {
+                EditorState::new(window, cx)
+                    .language("diff")
+                    .line_number(false)
+                    .soft_wrap(false)
+            })
+        };
+        let (diff, commit_diff, stash_diff) = (diff_view(), diff_view(), diff_view());
         let summary = cx.new(|cx| InputState::new(window, cx).placeholder("Summary"));
         let description = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -264,12 +278,16 @@ impl Git {
             operation: None,
             author: None,
             busy: false,
+            acting: 0,
+            cancel: None,
             pending: false,
             queued: Vec::new(),
             reads: 0,
             sync: None,
             error: None,
             diff,
+            commit_diff,
+            stash_diff,
             selected: None,
             diff_line: None,
             summary,
@@ -335,7 +353,7 @@ impl Git {
         (self.amend || !self.status.staged().is_empty())
             && !self.summary.read(cx).value().trim().is_empty()
             && self.author.is_some()
-            && !self.busy
+            && self.acting == 0
     }
 
     /// The summary or the description is this entity: which block a Ctrl+Enter came from.
@@ -427,7 +445,7 @@ pub(crate) fn body(
             Found::NoGit(err) => centered(ui, z)
                 .child(format!(
                     "Couldn't run {}: {}",
-                    ws.config.git.program,
+                    ws.config.git.program(),
                     err.first_line()
                 ))
                 .child(install_hint())
@@ -597,14 +615,19 @@ fn repo_body(
                     Sync::Push => ("git-push", "Push"),
                 };
                 let running = git.sync == Some(which);
-                let disabled = git.busy && !running;
-                let el = button((name, n), label, ui, z)
+                let disabled = git.acting > 0 && !running;
+                // The running one spins, and a click on it cancels it.
+                let el = button((name, n), if running { "Cancel" } else { label }, ui, z)
                     .when(running, |el| {
                         el.child(Spinner::new().with_size(UiSize::Size(px(12.0 * z))))
                     })
                     .when(disabled, |el| el.opacity(0.5));
-                if disabled || running {
+                if disabled {
                     el.test_support().into_any_element()
+                } else if running {
+                    el.on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.cancel_git(id, cx)))
+                        .test_support()
+                        .into_any_element()
                 } else {
                     el.on_click(
                         cx.listener(move |ws, _: &ClickEvent, window, cx| match which {
@@ -885,7 +908,7 @@ fn list(
         List::Unstaged => "Changes",
     };
     let paths: Vec<String> = entries.iter().map(|e| e.path.clone()).collect();
-    let disabled = ws.space.git(id).is_some_and(|g| g.busy) || paths.is_empty();
+    let disabled = ws.space.git(id).is_some_and(|g| g.acting > 0) || paths.is_empty();
     let header = div()
         .flex()
         .items_center()
@@ -999,7 +1022,7 @@ fn row(
     let selected = git
         .and_then(|g| g.selected.as_ref())
         .is_some_and(|s| s.0 == which && s.1 == e.path);
-    let busy = git.is_some_and(|g| g.busy);
+    let busy = git.is_some_and(|g| g.acting > 0);
     let ids =
         |what: &str| ElementId::Name(format!("git-{what}-{}-{}-{i}", id.0, which.name()).into());
     // Shown while the row is hovered; pressing one never counts as a click on the row.
@@ -1359,7 +1382,7 @@ fn commit_details(
         .child(div().flex_shrink_0().children(files))
         .child(
             div().flex_1().min_h(px(0.0)).child(
-                EditorView::new(&git.diff)
+                EditorView::new(&git.commit_diff)
                     .appearance(false)
                     .bordered(false)
                     .readonly(true)
@@ -1382,7 +1405,7 @@ fn branches(
     let ui = ws.ui;
     let n = id.0 as usize;
     let query = git.filter.read(cx).value().trim().to_lowercase();
-    let busy = git.busy;
+    let busy = git.acting > 0;
     let rows = |remote: bool| {
         git.branches
             .iter()
@@ -1580,10 +1603,10 @@ fn stashes(
         .child(
             div().p(px(6.0 * z)).child(
                 button(("git-stash-changes", n), "Stash changes…", ui, z)
-                    .when(git.status.entries.is_empty() || git.busy, |el| {
+                    .when(git.status.entries.is_empty() || git.acting > 0, |el| {
                         el.opacity(0.5)
                     })
-                    .when(!git.status.entries.is_empty() && !git.busy, |el| {
+                    .when(!git.status.entries.is_empty() && git.acting == 0, |el| {
                         el.on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.stash_changes(id, window, cx)
                         }))
@@ -1608,7 +1631,7 @@ fn stashes(
             .flex_1()
             .min_w(px(0.0))
             .child(
-                EditorView::new(&git.diff)
+                EditorView::new(&git.stash_diff)
                     .appearance(false)
                     .bordered(false)
                     .readonly(true)

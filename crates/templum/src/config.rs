@@ -231,6 +231,16 @@ pub(crate) struct GitConfig {
     pub program: String,
 }
 
+impl GitConfig {
+    /// The program to run: the setting without the spaces around it ("git" when empty).
+    pub fn program(&self) -> &str {
+        match self.program.trim() {
+            "" => "git",
+            program => program,
+        }
+    }
+}
+
 impl Default for GitConfig {
     fn default() -> Self {
         Self {

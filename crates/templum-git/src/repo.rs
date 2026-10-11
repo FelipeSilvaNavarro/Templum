@@ -5,7 +5,10 @@
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use crate::parse::{self, Branch, Change, Commit, CommitFile, Entry, Operation, Stash, Status};
 
@@ -22,13 +25,21 @@ pub struct GitError {
 }
 
 impl GitError {
+    /// The line that says why: what would have asked for a key or a password, a rejected ref,
+    /// else git's fatal or error line (its hints come first), else the first line.
     pub fn first_line(&self) -> &str {
-        self.stderr
-            .lines()
-            // Git's hints come before the fatal line; the fatal line says why.
-            .find(|l| l.starts_with("fatal:") || l.starts_with("error:"))
-            .or_else(|| self.stderr.lines().next())
+        let lines = || self.stderr.lines().map(str::trim).filter(|l| !l.is_empty());
+        lines()
+            .find(|l| parse::needs_input(l))
+            .or_else(|| lines().find(|l| l.starts_with("! [")))
+            .or_else(|| lines().find(|l| l.starts_with("fatal:") || l.starts_with("error:")))
+            .or_else(|| lines().next())
             .unwrap_or("")
+    }
+
+    /// It was cancelled ([`Repo::with_cancel`]), not refused.
+    pub fn cancelled(&self) -> bool {
+        self.code.is_none() && !self.missing && self.stderr == CANCELLED
     }
 
     /// It failed because git would have asked for a password or a key.
@@ -45,24 +56,39 @@ impl fmt::Display for GitError {
 
 impl std::error::Error for GitError {}
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A diff over this isn't shown: the view would stall the window (the editor opens files up to
+/// 4 MB editable, too).
+pub const DIFF_LIMIT: usize = 4 * 1024 * 1024;
+
+fn too_large(bytes: u64) -> String {
+    format!(
+        "Too large to show ({:.1} MB)",
+        bytes as f64 / (1024.0 * 1024.0)
+    )
+}
+
+#[derive(Clone, Debug)]
 pub struct Repo {
     program: String,
+    /// Set from elsewhere: the running command is killed.
+    cancel: Option<Arc<AtomicBool>>,
     /// The working tree's top folder.
     pub root: PathBuf,
     /// Where HEAD, MERGE_HEAD and the like live (a worktree's own, for a linked worktree).
     pub git_dir: PathBuf,
 }
 
-/// "git a 'b c'": the command as a notification or a terminal shows it.
+/// "git commit -m 'it'\''s done'": the command as a POSIX shell would take it, argument for
+/// argument (what "Run in a terminal" types). bash, zsh and fish read it alike.
 fn shown(program: &str, args: &[&str]) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
     std::iter::once(program)
         .chain(args.iter().copied())
         .map(|a| {
-            if a.is_empty() || a.contains(' ') {
-                format!("'{a}'")
-            } else {
+            if !a.is_empty() && a.chars().all(safe) {
                 a.to_string()
+            } else {
+                format!("'{}'", a.replace('\'', r"'\''"))
             }
         })
         .collect::<Vec<_>>()
@@ -70,7 +96,12 @@ fn shown(program: &str, args: &[&str]) -> String {
 }
 
 /// Runs `program args` in `dir`: no terminal, no prompt, no editor, English messages.
-fn run_in(program: &str, dir: &Path, args: &[&str]) -> Result<Vec<u8>, GitError> {
+fn run_in(
+    program: &str,
+    dir: &Path,
+    args: &[&str],
+    cancel: Option<&AtomicBool>,
+) -> Result<Vec<u8>, GitError> {
     let command = shown(program, args);
     let mut c = Command::new(program);
     c.args(args)
@@ -78,6 +109,8 @@ fn run_in(program: &str, dir: &Path, args: &[&str]) -> Result<Vec<u8>, GitError>
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_EDITOR", "true")
         .env("LC_ALL", "C")
+        // Reads never take index.lock: a `git add` in a terminal at that moment would fail.
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -87,12 +120,26 @@ fn run_in(program: &str, dir: &Path, args: &[&str]) -> Result<Vec<u8>, GitError>
         use std::os::windows::process::CommandExt as _;
         c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let out = c.output().map_err(|e| GitError {
+    let couldnt = |e: io::Error| GitError {
         missing: e.kind() == io::ErrorKind::NotFound,
         command: command.clone(),
         code: None,
         stderr: format!("Couldn't run {program}: {e}"),
-    })?;
+    };
+    let out = match cancel {
+        None => c.output().map_err(couldnt)?,
+        Some(cancel) => match until_cancelled(&mut c, cancel).map_err(couldnt)? {
+            Some(out) => out,
+            None => {
+                return Err(GitError {
+                    command,
+                    code: None,
+                    stderr: CANCELLED.to_string(),
+                    missing: false,
+                });
+            }
+        },
+    };
     if out.status.success() {
         Ok(out.stdout)
     } else {
@@ -105,10 +152,59 @@ fn run_in(program: &str, dir: &Path, args: &[&str]) -> Result<Vec<u8>, GitError>
     }
 }
 
+/// What a cancelled command's error says.
+const CANCELLED: &str = "Cancelled";
+
+/// Runs `c` to the end, or kills it once `cancel` is set (None then). Its output is read on
+/// threads meanwhile, so a chatty command never blocks on a full pipe.
+fn until_cancelled(c: &mut Command, cancel: &AtomicBool) -> io::Result<Option<Output>> {
+    use std::io::Read;
+    let mut child = c.spawn()?;
+    let read = |pipe: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut bytes);
+            }
+            bytes
+        })
+    };
+    let stdout = read(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let stderr = read(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    );
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if cancel.load(Ordering::Relaxed) {
+            // ponytail: kills git, not what it started (an ssh asking on a terminal stays until
+            // that terminal closes); a process group needs a dependency or unsafe.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    Ok(Some(Output {
+        status,
+        stdout: stdout.join().unwrap_or_default(),
+        stderr: stderr.join().unwrap_or_default(),
+    }))
+}
+
 impl Repo {
     /// "git version 2.55.0", or why `program` can't run.
     pub fn version(program: &str) -> Result<String, GitError> {
-        let out = run_in(program, Path::new("."), &["--version"])?;
+        let out = run_in(program, Path::new("."), &["--version"], None)?;
         Ok(String::from_utf8_lossy(&out).trim().to_string())
     }
 
@@ -118,6 +214,7 @@ impl Repo {
             program,
             folder,
             &["rev-parse", "--show-toplevel", "--absolute-git-dir"],
+            None,
         ) {
             Ok(out) => out,
             Err(e) if e.stderr.contains("not a git repository") => return Ok(None),
@@ -130,6 +227,7 @@ impl Repo {
         };
         Ok(Some(Repo {
             program: program.to_string(),
+            cancel: None,
             root: PathBuf::from(root),
             git_dir: PathBuf::from(git_dir),
         }))
@@ -137,7 +235,7 @@ impl Repo {
 
     /// `git init` in `folder`.
     pub fn init(program: &str, folder: &Path) -> Result<Repo, GitError> {
-        run_in(program, folder, &["init", "-q"])?;
+        run_in(program, folder, &["init", "-q"], None)?;
         Self::discover(program, folder)?.ok_or_else(|| GitError {
             command: shown(program, &["init", "-q"]),
             code: None,
@@ -146,9 +244,18 @@ impl Repo {
         })
     }
 
+    /// This repository, its commands killed once `cancel` is set (fetch, pull and push can
+    /// hang on a network or on ssh asking on a terminal).
+    pub fn with_cancel(&self, cancel: Arc<AtomicBool>) -> Repo {
+        Repo {
+            cancel: Some(cancel),
+            ..self.clone()
+        }
+    }
+
     /// Runs `git args` in the root; Ok is stdout.
     pub fn run(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
-        run_in(&self.program, &self.root, args)
+        run_in(&self.program, &self.root, args, self.cancel.as_deref())
     }
 
     fn text(&self, args: &[&str]) -> Result<String, GitError> {
@@ -199,11 +306,13 @@ impl Repo {
             program,
             Path::new("."),
             &["config", "--global", "user.name", name],
+            None,
         )?;
         run_in(
             program,
             Path::new("."),
             &["config", "--global", "user.email", email],
+            None,
         )?;
         Ok(())
     }
@@ -241,7 +350,7 @@ impl Repo {
         {
             // -uall lists files, never folders.
             std::fs::remove_file(self.root.join(&e.path)).map_err(|err| GitError {
-                command: format!("rm {}", e.path),
+                command: shown("rm", &["--", &e.path]),
                 code: None,
                 stderr: err.to_string(),
                 missing: false,
@@ -250,16 +359,33 @@ impl Repo {
         Ok(())
     }
 
-    /// Appends `path` as a line of the root's .gitignore (made if missing).
+    /// Appends `path` to the root's .gitignore (made if missing) as a pattern for that path
+    /// alone: anchored at the root, its wildcards escaped. The file's other bytes stay as they
+    /// are; one that can't be read is left alone.
     pub fn ignore(&self, path: &str) -> io::Result<()> {
         let file = self.root.join(".gitignore");
-        let mut text = std::fs::read_to_string(&file).unwrap_or_default();
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
+        let mut bytes = match std::fs::read(&file) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+            bytes.push(b'\n');
         }
-        text.push_str(path);
-        text.push('\n');
-        std::fs::write(file, text)
+        let mut line = String::from("/");
+        for c in path.chars() {
+            if "\\*?[".contains(c) {
+                line.push('\\');
+            }
+            line.push(c);
+        }
+        // A trailing space is dropped unless escaped.
+        if line.ends_with(' ') {
+            line.insert(line.len() - 1, '\\');
+        }
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+        std::fs::write(file, bytes)
     }
 
     /// The entry's diff as `git diff` prints it: the index against HEAD for `staged`, else the
@@ -267,7 +393,12 @@ impl Repo {
     /// one says "Binary file".
     pub fn diff(&self, entry: &Entry, staged: bool) -> Result<String, GitError> {
         if entry.unstaged == Some(Change::Untracked) {
-            let bytes = std::fs::read(self.root.join(&entry.path)).unwrap_or_default();
+            let path = self.root.join(&entry.path);
+            let size = std::fs::metadata(&path).map_or(0, |m| m.len());
+            if size > DIFF_LIMIT as u64 {
+                return Ok(too_large(size));
+            }
+            let bytes = std::fs::read(path).unwrap_or_default();
             if bytes.iter().take(8 * 1024).any(|b| *b == 0) {
                 return Ok("Binary file".to_string());
             }
@@ -290,7 +421,12 @@ impl Repo {
             args.push(from);
         }
         args.push(&entry.path);
-        self.text(&args)
+        let text = self.text(&args)?;
+        Ok(if text.len() > DIFF_LIMIT {
+            too_large(text.len() as u64)
+        } else {
+            text
+        })
     }
 
     /// `git commit -m message` (`--amend` with `amend`): the new commit's short hash.
@@ -495,29 +631,43 @@ impl Repo {
         Ok(parse::parse_stashes(&out))
     }
 
-    pub fn stash_apply(&self, index: usize) -> Result<(), GitError> {
-        self.run(&["stash", "apply", "-q", &format!("stash@{{{index}}}")])
-            .map(drop)
+    /// `stash@{N}` when it is still `stash`; an error when the list changed since it was read.
+    fn stash_ref(&self, stash: &Stash) -> Result<String, GitError> {
+        let name = format!("stash@{{{}}}", stash.index);
+        let now = self
+            .text(&["rev-parse", "--verify", "-q", &name])
+            .unwrap_or_default();
+        if now.trim() == stash.hash {
+            Ok(name)
+        } else {
+            Err(GitError {
+                command: shown(&self.program, &["stash", "list"]),
+                code: None,
+                stderr: "error: the stash list changed since it was read; it is read again"
+                    .to_string(),
+                missing: false,
+            })
+        }
     }
 
-    pub fn stash_pop(&self, index: usize) -> Result<(), GitError> {
-        self.run(&["stash", "pop", "-q", &format!("stash@{{{index}}}")])
-            .map(drop)
+    pub fn stash_apply(&self, stash: &Stash) -> Result<(), GitError> {
+        let name = self.stash_ref(stash)?;
+        self.run(&["stash", "apply", "-q", &name]).map(drop)
     }
 
-    pub fn stash_drop(&self, index: usize) -> Result<(), GitError> {
-        self.run(&["stash", "drop", "-q", &format!("stash@{{{index}}}")])
-            .map(drop)
+    pub fn stash_pop(&self, stash: &Stash) -> Result<(), GitError> {
+        let name = self.stash_ref(stash)?;
+        self.run(&["stash", "pop", "-q", &name]).map(drop)
+    }
+
+    pub fn stash_drop(&self, stash: &Stash) -> Result<(), GitError> {
+        let name = self.stash_ref(stash)?;
+        self.run(&["stash", "drop", "-q", &name]).map(drop)
     }
 
     /// The stash's diff.
-    pub fn stash_show(&self, index: usize) -> Result<String, GitError> {
-        self.text(&[
-            "stash",
-            "show",
-            "-p",
-            "--no-color",
-            &format!("stash@{{{index}}}"),
-        ])
+    pub fn stash_show(&self, stash: &Stash) -> Result<String, GitError> {
+        let name = self.stash_ref(stash)?;
+        self.text(&["stash", "show", "-p", "--no-color", &name])
     }
 }

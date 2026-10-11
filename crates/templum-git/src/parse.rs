@@ -304,12 +304,14 @@ pub fn parse_branches(out: &[u8]) -> Vec<Branch> {
 }
 
 /// `git stash list -z --format=STASH_FORMAT`.
-pub const STASH_FORMAT: &str = "%gd%x1f%at%x1f%gs";
+pub const STASH_FORMAT: &str = "%gd%x1f%H%x1f%at%x1f%gs";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Stash {
-    /// N in `stash@{N}`.
+    /// N in `stash@{N}`: it shifts when a stash is pushed or dropped.
     pub index: usize,
+    /// Its commit: who it is, whatever its index becomes.
+    pub hash: String,
     pub time: i64,
     /// "On main: my work", "WIP on main: 3dba34c Add 2b".
     pub message: String,
@@ -318,8 +320,8 @@ pub struct Stash {
 pub fn parse_stashes(out: &[u8]) -> Vec<Stash> {
     records(out)
         .filter_map(|record| {
-            let f: Vec<&str> = record.splitn(3, '\x1f').collect();
-            if f.len() < 3 {
+            let f: Vec<&str> = record.splitn(4, '\x1f').collect();
+            if f.len() < 4 {
                 return None;
             }
             let index = f[0]
@@ -329,8 +331,9 @@ pub fn parse_stashes(out: &[u8]) -> Vec<Stash> {
                 .ok()?;
             Some(Stash {
                 index,
-                time: f[1].parse().unwrap_or(0),
-                message: f[2].to_string(),
+                hash: f[1].to_string(),
+                time: f[2].parse().unwrap_or(0),
+                message: f[3].to_string(),
             })
         })
         .collect()
@@ -567,9 +570,13 @@ refs/remotes/origin/main\0origin/main\0a95aff3\0\0\0Local only\0 \n";
 
     #[test]
     fn a_stash_list() {
-        let s = parse_stashes(b"stash@{0}\x1f1791755697\x1fOn main: my work\0stash@{1}\x1f1791755600\x1fWIP on main: 3dba34c Add 2b\0");
+        let s = parse_stashes(b"stash@{0}\x1f8f4ad1c2\x1f1791755697\x1fOn main: my work\0stash@{1}\x1f3dba34cf\x1f1791755600\x1fWIP on main: 3dba34c Add 2b\0");
         assert_eq!(s.len(), 2);
         assert_eq!((s[0].index, s[0].time), (0, 1791755697));
+        assert_eq!(
+            s[0].hash, "8f4ad1c2",
+            "who it is, whatever its index becomes"
+        );
         assert_eq!(s[0].message, "On main: my work");
         assert_eq!(s[1].index, 1);
         assert!(parse_stashes(b"").is_empty());

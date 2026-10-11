@@ -147,12 +147,13 @@ as you type; right-click one to check it out, make a branch or a tag from it, re
 **Branches** checks out on a click, makes, renames, merges, deletes and publishes them, and offers **Stash and
 switch** when local changes are in the way. **Stashes** stashes, applies, pops and drops. The top bar has the
 branch, ↑↓ against its upstream, **Fetch**, **Pull** (fast-forward only; otherwise it offers Merge or Rebase) and
-**Push** (a branch with no upstream asks before publishing). During a merge, rebase, cherry-pick or revert a banner
+**Push** (a branch with no upstream asks before publishing); while one runs, its button cancels it. During a merge, rebase, cherry-pick or revert a banner
 offers Abort and, once nothing conflicts, Continue; a conflicted file has Use ours, Use theirs and Mark resolved.
 
 Everything runs through your own `git`, in the background, without ever waiting for input: a command that fails
 shows git's message, with **Details** and **Run in a terminal**, which opens a terminal beside the block with the
-command typed in, so your credential helper or SSH agent does what it does in any terminal. The block refreshes
+command typed in, for you to read and run, so your credential helper or SSH agent does what it does in any
+terminal. The block refreshes
 every 2 seconds while it is on screen, after each action, and when a terminal of the workspace finishes a command
 in the repository, so `git add` in a terminal shows at once. Settings ▸ Tools names the `git` program.
 

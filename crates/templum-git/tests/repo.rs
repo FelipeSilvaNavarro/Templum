@@ -174,7 +174,8 @@ fn ignore_appends_a_line_to_gitignore() {
     repo.ignore("secret.txt").unwrap();
     assert_eq!(
         std::fs::read_to_string(dir.path().join(".gitignore")).unwrap(),
-        "*.log\nbuild/\nsecret.txt\n"
+        "*.log\n/build/\n/secret.txt\n",
+        "anchored at the root"
     );
 }
 
@@ -508,8 +509,8 @@ fn stashes_are_listed_shown_applied_popped_and_dropped() {
     assert_eq!(s.len(), 1);
     assert_eq!(s[0].index, 0);
     assert_eq!(s[0].message, "On main: my work");
-    assert!(repo.stash_show(0).unwrap().contains("+changed"));
-    repo.stash_apply(0).unwrap();
+    assert!(repo.stash_show(&s[0]).unwrap().contains("+changed"));
+    repo.stash_apply(&s[0]).unwrap();
     assert_eq!(
         std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
         "changed\n"
@@ -517,9 +518,180 @@ fn stashes_are_listed_shown_applied_popped_and_dropped() {
     assert!(dir.path().join("new.txt").is_file());
     assert_eq!(repo.stashes().unwrap().len(), 1, "apply keeps it");
     repo.discard(&repo.status().unwrap().unstaged()).unwrap();
-    repo.stash_pop(0).unwrap();
+    repo.stash_pop(&s[0]).unwrap();
     assert!(repo.stashes().unwrap().is_empty(), "pop drops it");
     repo.stash_push("again", false).unwrap();
-    repo.stash_drop(0).unwrap();
+    repo.stash_drop(&repo.stashes().unwrap()[0]).unwrap();
     assert!(repo.stashes().unwrap().is_empty());
+}
+
+// Final review I1: a stash is named by its hash, so a list read before another stash was
+// pushed (from a terminal, by an agent) can't drop the wrong one.
+#[test]
+fn a_stale_stash_is_refused_not_mistaken_for_another() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("First", false).unwrap();
+    write(dir.path(), "a.txt", "mine\n");
+    repo.stash_push("mine", false).unwrap();
+    let stale = repo.stashes().unwrap();
+    write(dir.path(), "a.txt", "theirs\n");
+    repo.stash_push("theirs", false).unwrap();
+    let err = repo.stash_drop(&stale[0]).unwrap_err();
+    assert!(err.first_line().contains("changed"), "{err}");
+    let now = repo.stashes().unwrap();
+    assert_eq!(now.len(), 2, "nothing dropped");
+    assert_eq!(now[1].message, "On main: mine");
+    repo.stash_drop(&now[1]).unwrap();
+    assert_eq!(repo.stashes().unwrap()[0].message, "On main: theirs");
+}
+
+// Final review I2: the command a failure names is what a shell would run, argument for argument.
+#[test]
+fn a_failed_commands_text_quotes_its_arguments_for_a_shell() {
+    let (_dir, repo) = fresh();
+    let err = repo
+        .run(&["check-ref-format", "--branch", "it's [1] $x stash@{0}"])
+        .unwrap_err();
+    assert_eq!(
+        err.command,
+        r#"git check-ref-format --branch 'it'\''s [1] $x stash@{0}'"#
+    );
+    #[cfg(unix)]
+    {
+        let back = std::process::Command::new("sh")
+            .args(["-c", &format!("printf '%s\\n' {}", err.command)])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&back.stdout),
+            "git\ncheck-ref-format\n--branch\nit's [1] $x stash@{0}\n"
+        );
+    }
+}
+
+// Final review I3: the background status never takes index.lock, which would make a `git add`
+// run at that moment in a terminal fail.
+#[test]
+fn status_leaves_the_index_alone() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("First", false).unwrap();
+    // Same content, newer time: a plain `git status` refreshes the index and writes it.
+    std::fs::File::options()
+        .write(true)
+        .open(dir.path().join("a.txt"))
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+        .unwrap();
+    let index = repo.git_dir.join("index");
+    let before = std::fs::read(&index).unwrap();
+    repo.status().unwrap();
+    assert_eq!(std::fs::read(&index).unwrap(), before, "not rewritten");
+}
+
+// Final review I7: the notification's line says why: the key, the rejection.
+#[test]
+fn the_first_line_is_the_reason_not_the_summary() {
+    let err = |stderr: &str| templum_git::GitError {
+        command: "git push".to_string(),
+        code: Some(128),
+        stderr: stderr.to_string(),
+        missing: false,
+    };
+    let ssh = err(
+        "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n\nPlease make sure you have the correct access rights\nand the repository exists.\n",
+    );
+    assert_eq!(
+        ssh.first_line(),
+        "git@github.com: Permission denied (publickey)."
+    );
+    assert!(ssh.needs_input());
+    let rejected = err(
+        "To github.com:me/x.git\n ! [rejected]        main -> main (fetch first)\nerror: failed to push some refs to 'github.com:me/x.git'\nhint: Updates were rejected because the remote contains work that you do not\n",
+    );
+    assert_eq!(
+        rejected.first_line(),
+        "! [rejected]        main -> main (fetch first)"
+    );
+    let plain = err("hint: something\nfatal: not a git repository\n");
+    assert_eq!(plain.first_line(), "fatal: not a git repository");
+}
+
+// Final review I6: a huge untracked file isn't read into the diff view.
+#[test]
+fn a_huge_untracked_file_is_named_not_shown() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "big.csv", &"a,b\n".repeat(1_310_720));
+    let s = repo.status().unwrap();
+    assert_eq!(
+        repo.diff(&s.entries[0], false).unwrap(),
+        "Too large to show (5.0 MB)"
+    );
+}
+
+// Re-graded from minor: Ignore anchors the path at the root and keeps the rest of the file.
+#[test]
+fn ignore_anchors_the_path_and_keeps_the_rest_of_the_file() {
+    let (dir, repo) = fresh();
+    std::fs::write(dir.path().join(".gitignore"), b"*.log\n# caf\xe9\n").unwrap();
+    write(dir.path(), "notes.txt", "n\n");
+    write(dir.path(), "sub/notes.txt", "n\n");
+    write(dir.path(), "a[1]*.txt", "x\n");
+    repo.ignore("notes.txt").unwrap();
+    repo.ignore("a[1]*.txt").unwrap();
+    assert_eq!(
+        std::fs::read(dir.path().join(".gitignore")).unwrap(),
+        b"*.log\n# caf\xe9\n/notes.txt\n/a\\[1]\\*.txt\n"
+    );
+    let paths: Vec<String> = repo
+        .status()
+        .unwrap()
+        .entries
+        .into_iter()
+        .map(|e| e.path)
+        .collect();
+    assert!(
+        paths.contains(&"sub/notes.txt".to_string()),
+        "only the root's: {paths:?}"
+    );
+    assert!(!paths.contains(&"notes.txt".to_string()), "{paths:?}");
+    assert!(!paths.contains(&"a[1]*.txt".to_string()), "{paths:?}");
+}
+
+// Final review I4: a command that hangs (ssh asking on a terminal, a stalled network) can be
+// cancelled: the process is killed and the error says so.
+#[cfg(unix)]
+#[test]
+fn a_cancelled_command_is_killed_and_says_so() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (dir, _) = fresh();
+    let bin = tempfile::tempdir().unwrap();
+    let slow = bin.path().join("slow-git");
+    std::fs::write(
+        &slow,
+        "#!/bin/sh\nif [ \"$1\" = fetch ]; then exec sleep 30; fi\nexec git \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let repo = Repo::discover(&slow.display().to_string(), dir.path())
+        .unwrap()
+        .unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let hanging = repo.with_cancel(cancel.clone());
+    let started = std::time::Instant::now();
+    let fetch = std::thread::spawn(move || hanging.fetch());
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    cancel.store(true, Ordering::Relaxed);
+    let err = fetch.join().unwrap().unwrap_err();
+    assert!(err.cancelled(), "{err}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "killed, not waited for"
+    );
+    assert!(repo.status().is_ok(), "the repo itself still answers");
 }

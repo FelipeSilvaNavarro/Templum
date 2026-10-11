@@ -1260,7 +1260,7 @@ impl Workspace {
         let Some(git) = self.space.git(id) else {
             return;
         };
-        let (program, folder) = (self.config.git.program.clone(), git.folder.clone());
+        let (program, folder) = (self.config.git.program().to_string(), git.folder.clone());
         if !folder.is_dir() {
             return;
         }
@@ -1292,12 +1292,12 @@ impl Workspace {
         let Some(git) = self.space.git(id) else {
             return;
         };
-        let (program, folder) = (self.config.git.program.clone(), git.folder.clone());
+        let (program, folder) = (self.config.git.program().to_string(), git.folder.clone());
         let at = GitAt {
             space: self.space.id.clone(),
             block: id,
         };
-        self.git_job(
+        self.act_job(
             at,
             move || Repo::init(&program, &folder),
             |ws, at, made, window, cx| match made {
@@ -1395,6 +1395,17 @@ impl Workspace {
         );
     }
 
+    /// The stash at `index` as the Stashes tab shows it (with its hash, so a list changed
+    /// meanwhile by a terminal is caught rather than acted on).
+    fn shown_stash(&self, id: BlockId, index: usize) -> Option<templum_git::Stash> {
+        self.space
+            .git(id)?
+            .stashes
+            .iter()
+            .find(|s| s.index == index)
+            .cloned()
+    }
+
     /// Apply (or Pop: apply and drop) a stash.
     pub(crate) fn stash_apply(
         &mut self,
@@ -1404,13 +1415,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(stash) = self.shown_stash(id, index) else {
+            return;
+        };
         self.git_action(
             id,
             move |repo| {
                 if pop {
-                    repo.stash_pop(index)
+                    repo.stash_pop(&stash)
                 } else {
-                    repo.stash_apply(index)
+                    repo.stash_apply(&stash)
                 }
             },
             window,
@@ -1425,14 +1439,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(stash) = self.shown_stash(id, index) else {
+            return;
+        };
         let ws = cx.entity();
         prompt::confirm(
-            "Drop this stash?",
+            format!("Drop “{}”?", stash.message),
             "Its changes are lost. This can't be undone.",
             "Drop",
             move |window, cx| {
+                let stash = stash.clone();
                 ws.update(cx, |ws, cx| {
-                    ws.git_action(id, move |repo| repo.stash_drop(index), window, cx)
+                    ws.git_action(id, move |repo| repo.stash_drop(&stash), window, cx)
                 })
             },
             window,
@@ -1448,6 +1466,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(stash) = self.shown_stash(id, index) else {
+            return;
+        };
         let Some(git) = self.space.git_mut(id) else {
             return;
         };
@@ -1457,13 +1478,13 @@ impl Workspace {
         };
         self.git_job(
             self.here(id),
-            move || repo.stash_show(index),
+            move || repo.stash_show(&stash),
             |ws, at, diff, window, cx| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
                 };
                 let text = diff.unwrap_or_else(|e| e.to_string());
-                let view = git.diff.clone();
+                let view = git.stash_diff.clone();
                 view.update(cx, |d, cx| d.set_value(text, window, cx));
             },
             window,
@@ -1505,7 +1526,7 @@ impl Workspace {
             return;
         };
         let job_name = name.clone();
-        self.git_job(
+        self.act_job(
             self.here(id),
             move || {
                 if remote {
@@ -1531,7 +1552,7 @@ impl Workspace {
                             }),
                         ));
                     }
-                    notify_git_error(&entity, at.block, &e, extra, window, cx);
+                    notify_git_error(&entity, at.clone(), &e, extra, window, cx);
                 }
                 ws.after_action(at, window, cx);
             },
@@ -1661,7 +1682,7 @@ impl Workspace {
             return;
         };
         let job_name = name.clone();
-        self.git_job(
+        self.act_job(
             self.here(id),
             move || repo.delete_branch(&job_name, force),
             move |ws, at, result, window, cx| {
@@ -1679,7 +1700,7 @@ impl Workspace {
                             }),
                         ));
                     }
-                    notify_git_error(&entity, at.block, &e, extra, window, cx);
+                    notify_git_error(&entity, at.clone(), &e, extra, window, cx);
                 }
                 ws.after_action(at, window, cx);
             },
@@ -1705,6 +1726,19 @@ impl Workspace {
             space: self.space.id.clone(),
             block: id,
         }
+    }
+
+    /// Shows the Git block `at` names, switching to its workspace; false when it is gone.
+    pub(crate) fn show_git_block(
+        &mut self,
+        at: &GitAt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.space.id != at.space {
+            self.reveal(&at.space, at.block, window, cx);
+        }
+        self.space.id == at.space && self.space.git(at.block).is_some()
     }
 
     /// After a command: the status now, and the shown tab's list once the status is in.
@@ -1802,7 +1836,7 @@ impl Workspace {
                             files,
                             file: None,
                         });
-                        let view = git.diff.clone();
+                        let view = git.commit_diff.clone();
                         view.update(cx, |d, cx| d.set_value("", window, cx));
                     }
                     Err(e) => git.error = Some(e.to_string()),
@@ -1843,7 +1877,7 @@ impl Workspace {
                     return;
                 };
                 let text = diff.unwrap_or_else(|e| e.to_string());
-                let view = git.diff.clone();
+                let view = git.commit_diff.clone();
                 view.update(cx, |d, cx| d.set_value(text, window, cx));
             },
             window,
@@ -1961,12 +1995,20 @@ impl Workspace {
     }
 
     /// Runs one of fetch, pull and push, its button spinning meanwhile.
+    /// The spinning button: kills the running fetch, pull or push.
+    pub(crate) fn cancel_git(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        if let Some(cancel) = self.space.git(id).and_then(|g| g.cancel.as_ref()) {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            cx.notify();
+        }
+    }
+
     fn git_sync(
         &mut self,
         id: BlockId,
         which: git_block::Sync,
         job: impl FnOnce(&Repo) -> Result<(), GitError> + Send + 'static,
-        on_err: impl FnOnce(&mut Workspace, BlockId, &GitError, &mut Window, &mut Context<Workspace>)
+        on_err: impl FnOnce(&mut Workspace, GitAt, &GitError, &mut Window, &mut Context<Workspace>)
         + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -1974,26 +2016,31 @@ impl Workspace {
         let Some(git) = self.space.git_mut(id) else {
             return;
         };
-        if git.busy {
-            return;
-        }
         let Some(repo) = git.repo().cloned() else {
             return;
         };
+        // Asked while something runs, it waits its turn (a Publish or a Merge from a
+        // notification); the buttons themselves are disabled meanwhile.
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         git.sync = Some(which);
+        git.cancel = Some(cancel.clone());
+        let repo = repo.with_cancel(cancel);
         let at = GitAt {
             space: self.space.id.clone(),
             block: id,
         };
-        self.git_job(
+        self.act_job(
             at,
             move || job(&repo),
             move |ws, at, result, window, cx| {
                 if let Some(git) = ws.git_at(&at) {
                     git.sync = None;
+                    git.cancel = None;
                 }
-                if let Err(e) = result {
-                    on_err(ws, at.block, &e, window, cx);
+                match result {
+                    // Cancelling isn't a failure: nothing to tell.
+                    Err(e) if !e.cancelled() => on_err(ws, at.clone(), &e, window, cx),
+                    _ => {}
                 }
                 ws.after_action(at, window, cx);
             },
@@ -2007,9 +2054,9 @@ impl Workspace {
             id,
             git_block::Sync::Fetch,
             |repo| repo.fetch(),
-            |_, block, e, window, cx| {
+            |_, at, e, window, cx| {
                 let ws = cx.entity();
-                notify_git_error(&ws, block, e, Vec::new(), window, cx)
+                notify_git_error(&ws, at, e, Vec::new(), window, cx)
             },
             window,
             cx,
@@ -2029,8 +2076,9 @@ impl Workspace {
             id,
             git_block::Sync::Pull,
             move |repo| repo.pull(how),
-            move |_, block, e, window, cx| {
+            move |_, at, e, window, cx| {
                 let ws = cx.entity();
+                let block = at.block;
                 let mut extra: Vec<Extra> = Vec::new();
                 if how == Pull::FastForward && templum_git::not_fast_forward(&e.stderr) {
                     extra.push((
@@ -2044,7 +2092,7 @@ impl Workspace {
                         Rc::new(move |ws, window, cx| ws.pull(block, Pull::Rebase, window, cx)),
                     ));
                 }
-                notify_git_error(&ws, block, e, extra, window, cx);
+                notify_git_error(&ws, at, e, extra, window, cx);
             },
             window,
             cx,
@@ -2089,9 +2137,9 @@ impl Workspace {
             id,
             git_block::Sync::Push,
             move |repo| repo.push(publish.as_deref()),
-            |_, block, e, window, cx| {
+            |_, at, e, window, cx| {
                 let ws = cx.entity();
-                notify_git_error(&ws, block, e, Vec::new(), window, cx)
+                notify_git_error(&ws, at, e, Vec::new(), window, cx)
             },
             window,
             cx,
@@ -2115,7 +2163,7 @@ impl Workspace {
             space: self.space.id.clone(),
             block: id,
         };
-        self.git_job(
+        self.act_job(
             at,
             move || repo.commit(&message, amend),
             |ws, at, result, window, cx| {
@@ -2136,7 +2184,7 @@ impl Workspace {
                     }
                     Err(e) => {
                         let entity = cx.entity();
-                        notify_git_error(&entity, at.block, &e, Vec::new(), window, cx)
+                        notify_git_error(&entity, at.clone(), &e, Vec::new(), window, cx)
                     }
                 }
                 ws.after_action(at, window, cx);
@@ -2244,7 +2292,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let ws = cx.entity();
-        let program = self.config.git.program.clone();
+        let program = self.config.git.program().to_string();
         prompt::ask_text(
             "Your email for commits",
             "Set",
@@ -2303,7 +2351,9 @@ impl Workspace {
         let Some(entry) = git.selected_entry().cloned() else {
             git.selected = None;
             git.diff_line = None;
-            git.diff.update(cx, |d, cx| d.set_value("", window, cx));
+            if !git.diff.read(cx).value().is_empty() {
+                git.diff.update(cx, |d, cx| d.set_value("", window, cx));
+            }
             return;
         };
         let staged = git
@@ -2326,8 +2376,12 @@ impl Workspace {
                     Err(e) => e.to_string(),
                 };
                 git.diff_line = templum_git::first_hunk_line(&text);
+                // The same text again (the 2-second read): left alone, so the reader's place and
+                // selection stay.
                 let view = git.diff.clone();
-                view.update(cx, |d, cx| d.set_value(text, window, cx));
+                if view.read(cx).value() != text {
+                    view.update(cx, |d, cx| d.set_value(text, window, cx));
+                }
             },
             window,
             cx,
@@ -2350,13 +2404,13 @@ impl Workspace {
             space: self.space.id.clone(),
             block: id,
         };
-        self.git_job(
+        self.act_job(
             at,
             move || job(&repo),
             |ws, at, result, window, cx| {
                 if let Err(e) = result {
                     let entity = cx.entity();
-                    notify_git_error(&entity, at.block, &e, Vec::new(), window, cx);
+                    notify_git_error(&entity, at.clone(), &e, Vec::new(), window, cx);
                 }
                 ws.after_action(at, window, cx);
             },
@@ -2439,15 +2493,20 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.git_action(
-            id,
-            move |repo| {
-                repo.ignore(&path).map_err(|e| GitError {
-                    command: format!("ignore {path}"),
-                    code: None,
-                    stderr: e.to_string(),
-                    missing: false,
-                })
+        let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
+            return;
+        };
+        // Not a git command: a failure is said plainly, with nothing to run in a terminal.
+        self.act_job(
+            self.here(id),
+            move || repo.ignore(&path),
+            |ws, at, written, window, cx| {
+                if let Err(e) = written {
+                    let message = format!("Couldn't write .gitignore: {e}");
+                    eprintln!("templum: {message}");
+                    show_notification(window, cx, Notification::error(message));
+                }
+                ws.after_action(at, window, cx);
             },
             window,
             cx,
@@ -2567,7 +2626,12 @@ impl Workspace {
             .canvas
             .visible_from(&self.space.view, vp)
             .map(|b| b.id)
-            .filter(|id| self.space.git(*id).is_some_and(|g| g.repo().is_some()))
+            // A block still reading is skipped: a slow repository never piles reads up.
+            .filter(|id| {
+                self.space
+                    .git(*id)
+                    .is_some_and(|g| g.repo().is_some() && !g.busy)
+            })
             .collect();
         for id in due {
             self.refresh_git(id, window, cx);
@@ -2577,6 +2641,34 @@ impl Workspace {
     /// The Git block `at` names, in whichever workspace it is.
     fn git_at(&mut self, at: &GitAt) -> Option<&mut Git> {
         self.space_by_id_mut(&at.space)?.git_mut(at.block)
+    }
+
+    /// `git_job` for an action (not a read): while any action is asked and not done, the
+    /// block's action buttons are disabled.
+    fn act_job<T: Send + 'static>(
+        &mut self,
+        at: GitAt,
+        job: impl FnOnce() -> T + Send + 'static,
+        done: impl FnOnce(&mut Workspace, GitAt, T, &mut Window, &mut Context<Workspace>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.git_at(&at) else {
+            return;
+        };
+        git.acting += 1;
+        self.git_job(
+            at,
+            job,
+            move |ws, at, result, window, cx| {
+                if let Some(git) = ws.git_at(&at) {
+                    git.acting = git.acting.saturating_sub(1);
+                }
+                done(ws, at, result, window, cx)
+            },
+            window,
+            cx,
+        );
     }
 
     /// Runs `job` on the background executor, the block marked busy meanwhile, then `done` on
@@ -3146,7 +3238,8 @@ impl Workspace {
         self.refresh_tree(block, cx);
     }
 
-    /// A terminal in `folder`, placed to the right of `block`, with `command` typed in.
+    /// A terminal in `folder`, placed to the right of `block`, with `command` typed in (not
+    /// run: Enter is the person's).
     pub(crate) fn terminal_beside(
         &mut self,
         block: BlockId,
@@ -3163,10 +3256,10 @@ impl Workspace {
         let rect = self.space.canvas.place_beside(anchor, size);
         let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx);
         if let (Some(id), Some(command)) = (id, command) {
+            // Typed, not run: the person reads it and presses Enter (it may delete or push).
             // The shell reads it once it is ready.
-            let line = format!("{command}\r");
             if let Some(pane) = self.space.terminal(id) {
-                pane.term.write(line.into_bytes());
+                pane.term.write(command.to_string().into_bytes());
             }
         }
         window.focus(&self.focus_handle, cx);
@@ -4445,7 +4538,7 @@ impl Workspace {
         self.shells = templum_terminal::available_shells();
         self.default_shell = templum_terminal::default_shell_label();
         self.git_version = None;
-        let program = self.config.git.program.clone();
+        let program = self.config.git.program().to_string();
         cx.spawn_in(window, async move |ws, cx| {
             let version = cx
                 .background_executor()
@@ -5376,6 +5469,17 @@ fn refs(paths: &[String]) -> Vec<&str> {
     paths.iter().map(String::as_str).collect()
 }
 
+/// What a failed command's notification says: the line that says why, and when git would
+/// have asked for a key or a password, that it needs one (spec §8, Credentials).
+pub(crate) fn git_error_message(err: &GitError) -> String {
+    let why = err.first_line().to_string();
+    if err.needs_input() {
+        format!("{why} Git needs your key or password: run it in a terminal.")
+    } else {
+        why
+    }
+}
+
 /// One more button on a failed command's notification: its element id, its label, what it does.
 pub(crate) type Extra = (
     &'static str,
@@ -5387,7 +5491,7 @@ pub(crate) type Extra = (
 /// terminal beside the block with the command typed in), and `extra`'s buttons.
 pub(crate) fn notify_git_error(
     ws: &Entity<Workspace>,
-    block: BlockId,
+    at: GitAt,
     err: &GitError,
     extra: Vec<Extra>,
     window: &mut Window,
@@ -5395,24 +5499,29 @@ pub(crate) fn notify_git_error(
 ) {
     eprintln!("templum: {err}");
     let (err, ws) = (err.clone(), ws.clone());
-    let notification = Notification::error(err.first_line().to_string())
+    let notification = Notification::error(git_error_message(&err))
         .title(err.command.clone())
         .autohide(false)
         .content(move |_, _, cx| {
             let note = cx.entity();
             let (details, run) = (err.clone(), err.clone());
             let (ws_run, ws_details) = (ws.clone(), ws.clone());
-            let run_note = note.clone();
+            let (run_at, run_note) = (at.clone(), note.clone());
             let extras: Vec<AnyElement> = extra
                 .iter()
                 .map(|(id, label, act)| {
-                    let (ws, act, note) = (ws.clone(), act.clone(), note.clone());
+                    let (ws, act, note, at) = (ws.clone(), act.clone(), note.clone(), at.clone());
                     Button::new(*id)
                         .label(*label)
                         .small()
                         .primary()
                         .on_click(move |_, window, cx| {
-                            ws.update(cx, |ws, cx| act(ws, window, cx));
+                            // The block's own workspace first: block ids repeat across them.
+                            ws.update(cx, |ws, cx| {
+                                if ws.show_git_block(&at, window, cx) {
+                                    act(ws, window, cx)
+                                }
+                            });
                             note.update(cx, |n, cx| n.dismiss(window, cx));
                         })
                         .into_any_element()
@@ -5447,6 +5556,10 @@ pub(crate) fn notify_git_error(
                         .on_click(move |_, window, cx| {
                             let command = run.command.clone();
                             ws_run.update(cx, |ws, cx| {
+                                if !ws.show_git_block(&run_at, window, cx) {
+                                    return;
+                                }
+                                let block = run_at.block;
                                 let root = ws
                                     .space
                                     .git(block)
@@ -5956,6 +6069,26 @@ mod tests {
     };
 
     use super::{Workspace, bind_keys};
+
+    #[test]
+    fn a_failure_that_wanted_a_key_or_a_password_says_so() {
+        let err = |stderr: &str| templum_git::GitError {
+            command: "git push".to_string(),
+            code: Some(128),
+            stderr: stderr.to_string(),
+            missing: false,
+        };
+        assert_eq!(
+            super::git_error_message(&err(
+                "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.\n"
+            )),
+            "git@github.com: Permission denied (publickey). Git needs your key or password: run it in a terminal."
+        );
+        assert_eq!(
+            super::git_error_message(&err("fatal: not a git repository\n")),
+            "fatal: not a git repository"
+        );
+    }
 
     #[test]
     fn a_workspace_shows_an_agent_from_its_last_snapshot() {
@@ -12329,7 +12462,7 @@ mod tests {
         .unwrap();
         // What the field calls on each change, as the shell program's tests do.
         ws.update(cx, |ws, cx| {
-            crate::settings::set_git_program(ws, " /opt/git ", cx)
+            crate::settings::set_git_program(ws, "/opt/git", cx)
         });
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
@@ -12730,7 +12863,7 @@ mod tests {
         settle(handle, cx);
         assert_eq!(
             std::fs::read_to_string(repo.path().join(".gitignore")).unwrap(),
-            "build/out.o\n"
+            "/build/out.o\n"
         );
         git_of(&ws, cx, id, |g| {
             let paths: Vec<_> = g.status.entries.iter().map(|e| e.path.as_str()).collect();
@@ -13098,6 +13231,18 @@ mod tests {
             assert!(Instant::now() < deadline, "not typed: {shown:?}");
             std::thread::sleep(Duration::from_millis(50));
         }
+        // Typed, not run: the person reads it and presses Enter (cat would echo a run line
+        // a second time).
+        std::thread::sleep(Duration::from_millis(300));
+        let shown = ws.read_with(cx, |ws, _| {
+            let mut snap = Snapshot::default();
+            snap.refresh(
+                ws.space.terminal(term).unwrap().term.shared(),
+                &ws.theme.palette,
+            );
+            snap.text()
+        });
+        assert_eq!(shown.matches("git fetch --prune").count(), 1, "{shown:?}");
     }
 
     fn first_id_of(ws: &Workspace) -> BlockId {
@@ -13169,7 +13314,7 @@ mod tests {
         })
         .unwrap();
         settle(handle, cx);
-        let diff = git_of(&ws, cx, id, |g| g.diff.clone());
+        let diff = git_of(&ws, cx, id, |g| g.commit_diff.clone());
         let text = ws.read_with(cx, |_, cx| diff.read(cx).value().to_string());
         assert!(text.contains("+two"), "{text}");
     }
@@ -13573,7 +13718,7 @@ mod tests {
         settle(handle, cx);
         let diff = git_of(&ws, cx, id, |g| {
             assert_eq!(g.stash_shown, Some(1));
-            g.diff.clone()
+            g.stash_diff.clone()
         });
         let text = ws.read_with(cx, |_, cx| diff.read(cx).value().to_string());
         assert!(text.contains("+changed"), "{text}");
@@ -13613,5 +13758,230 @@ mod tests {
         .unwrap();
         settle(handle, cx);
         git_of(&ws, cx, id, |g| assert!(g.stashes.is_empty()));
+    }
+
+    // Final review, C1: the 2-second read must leave the diffs alone.
+    #[gpui_kit::test]
+    fn a_commits_file_diff_survives_the_two_second_read(cx: &mut TestAppContext) {
+        let repo = committed_repo();
+        commit_file(repo.path(), "a.txt", "one\ntwo\n", "Second");
+        let (handle, ws) = open(cx);
+        let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
+        let n = id.0 as usize;
+        cx.update_window(handle, |_, window, cx| {
+            window.click(("git-commit", 0usize), cx)
+        })
+        .unwrap();
+        settle(handle, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.click(
+                gpui_kit::ElementId::Name(format!("git-commit-file-{n}-0").into()),
+                cx,
+            )
+        })
+        .unwrap();
+        settle(handle, cx);
+        let diff = git_of(&ws, cx, id, |g| g.commit_diff.clone());
+        let text =
+            |cx: &mut TestAppContext| ws.read_with(cx, |_, cx| diff.read(cx).value().to_string());
+        assert!(text(cx).contains("+two"));
+        cx.executor().advance_clock(crate::git_block::POLL);
+        settle(handle, cx);
+        assert!(text(cx).contains("+two"), "still shown: {:?}", text(cx));
+    }
+
+    #[gpui_kit::test]
+    fn the_changes_diff_isnt_reset_by_a_read_that_changes_nothing(cx: &mut TestAppContext) {
+        use crate::git_block::row_id;
+        use gpui_kit::component::input::Position;
+        let repo = committed_repo();
+        std::fs::write(repo.path().join("a.txt"), "zero\none\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        cx.update_window(handle, |_, window, cx| {
+            window.click(row_id(id, "unstaged", 0), cx)
+        })
+        .unwrap();
+        settle(handle, cx);
+        let diff = git_of(&ws, cx, id, |g| g.diff.clone());
+        cx.update_window(handle, |_, window, cx| {
+            diff.update(cx, |d, cx| {
+                d.set_cursor_position(Position::new(2, 0), window, cx)
+            })
+        })
+        .unwrap();
+        cx.executor().advance_clock(crate::git_block::POLL);
+        settle(handle, cx);
+        ws.read_with(cx, |_, cx| {
+            assert_eq!(
+                diff.read(cx).cursor_position().line,
+                2,
+                "where the reader left it"
+            )
+        });
+    }
+
+    /// `main` with one commit, and `feature` one commit ahead of it (unmerged).
+    fn repo_with_unmerged_feature() -> tempfile::TempDir {
+        let repo = committed_repo();
+        git_run(repo.path(), &["checkout", "-q", "-b", "feature"]);
+        commit_file(repo.path(), "f.txt", "f\n", "feature work");
+        git_run(repo.path(), &["checkout", "-q", "main"]);
+        repo
+    }
+
+    // Final review, C2: a notification's buttons act on its own block, in its own workspace.
+    #[gpui_kit::test]
+    fn delete_anyway_after_a_switch_acts_on_its_own_repository(cx: &mut TestAppContext) {
+        no_motion(cx);
+        let (x, y) = (repo_with_unmerged_feature(), repo_with_unmerged_feature());
+        let (handle, ws) = open(cx);
+        let in_x = open_git(handle, &ws, cx, x.path());
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.delete_now(in_x, "feature".to_string(), false, window, cx)
+            })
+        })
+        .unwrap();
+        settle(handle, cx);
+        assert_eq!(notification_count(handle, cx), 1, "refused: not merged");
+        // A new workspace whose first block takes id 0, like X's terminal: Y's Git block gets
+        // X's id.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.new_space(window, cx);
+                ws.add_note_at(Point::new(3000.0, 3000.0), window, cx);
+            })
+        })
+        .unwrap();
+        settle(handle, cx);
+        let in_y = open_git(handle, &ws, cx, y.path());
+        assert_eq!(in_y, in_x, "block ids repeat across workspaces");
+        cx.update_window(handle, |_, window, cx| window.click("git-delete-force", cx))
+            .unwrap();
+        settle(handle, cx);
+        assert!(
+            !git_run(y.path(), &["branch", "--list", "feature"]).is_empty(),
+            "the other workspace's repository is untouched"
+        );
+        assert!(
+            git_run(x.path(), &["branch", "--list", "feature"]).is_empty(),
+            "deleted in X"
+        );
+    }
+
+    // Final review I5: a read isn't an action: it hides no button and takes no action's turn.
+    #[gpui_kit::test]
+    fn the_rows_buttons_stay_while_a_read_runs(cx: &mut TestAppContext) {
+        use crate::git_block::row_id;
+        let repo = git_repo();
+        std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.refresh_git(id, window, cx));
+            window.render_frame(cx);
+            window.hover(row_id(id, "unstaged", 0), cx);
+            window.render_frame(cx);
+            assert!(
+                window
+                    .try_find(git_button(id, "stage", "unstaged", 0))
+                    .is_some()
+            );
+        })
+        .unwrap();
+        git_of(&ws, cx, id, |g| assert!(g.busy, "a read was out"));
+    }
+
+    #[gpui_kit::test]
+    fn publish_asked_during_a_read_waits_for_it(cx: &mut TestAppContext) {
+        let repo = committed_repo();
+        let _remote = add_remote(repo.path());
+        git_run(repo.path(), &["checkout", "-q", "-b", "topic"]);
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.refresh_git(id, window, cx);
+                ws.publish_branch(id, "topic".to_string(), window, cx);
+            })
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.status.upstream.as_deref(), Some("origin/topic"))
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_timer_skips_a_block_whose_read_is_still_out(cx: &mut TestAppContext) {
+        let repo = git_repo();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.refresh_git(id, window, cx);
+                ws.poll_git(window, cx);
+            })
+        })
+        .unwrap();
+        git_of(&ws, cx, id, |g| {
+            assert!(g.busy);
+            assert!(!g.pending, "a slow repository never piles reads up");
+        });
+    }
+
+    // Final review I4 in the block: the spinning button cancels its command, quietly.
+    #[gpui_kit::test]
+    fn the_running_fetch_button_cancels_it(cx: &mut TestAppContext) {
+        let repo = committed_repo();
+        let _remote = add_remote(repo.path());
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        let n = id.0 as usize;
+        cx.update_window(handle, |_, window, cx| {
+            window.click(("git-fetch", n), cx);
+            window.render_frame(cx);
+            window.click(("git-fetch", n), cx);
+        })
+        .unwrap();
+        git_of(&ws, cx, id, |g| {
+            let cancel = g.cancel.as_ref().expect("a running fetch can be cancelled");
+            assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
+        });
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.sync, None);
+            assert!(g.cancel.is_none());
+        });
+        assert_eq!(
+            notification_count(handle, cx),
+            0,
+            "cancelling isn't a failure"
+        );
+    }
+
+    // Re-graded from minor: a space can be typed in Settings ▸ Tools' Git field.
+    #[gpui_kit::test]
+    fn the_git_program_field_keeps_a_typed_space(cx: &mut TestAppContext) {
+        let (_, ws) = open(cx);
+        ws.update(cx, |ws, cx| {
+            crate::settings::set_git_program(ws, "C:\\Program ", cx)
+        });
+        ws.update(cx, |ws, _| {
+            let git = &ws.pending.as_ref().unwrap_or(&ws.config).git;
+            assert_eq!(
+                git.program, "C:\\Program ",
+                "the field shows what was typed"
+            );
+            assert_eq!(git.program(), "C:\\Program", "what runs is trimmed");
+        });
+        ws.update(cx, |ws, cx| crate::settings::set_git_program(ws, "  ", cx));
+        ws.update(cx, |ws, _| {
+            assert_eq!(
+                ws.pending.as_ref().unwrap_or(&ws.config).git.program(),
+                "git"
+            )
+        });
     }
 }
