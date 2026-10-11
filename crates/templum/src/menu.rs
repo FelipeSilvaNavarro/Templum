@@ -123,6 +123,10 @@ impl Workspace {
                     block,
                     preview: n.preview,
                 },
+                Body::Editor(e) => Items::Editor {
+                    block,
+                    tree: e.show_tree,
+                },
             },
             Target::Board { block, board } => Items::Board {
                 block,
@@ -183,6 +187,10 @@ enum Items {
         block: BlockId,
         /// It shows rendered.
         preview: bool,
+    },
+    Editor {
+        block: BlockId,
+        tree: bool,
     },
     Board {
         block: BlockId,
@@ -304,6 +312,12 @@ impl Items {
                             Some(IconName::StickyNote),
                             move |ws, window, cx| ws.add_note_at(at, window, cx),
                         ))
+                        .item(item(
+                            ws,
+                            "Editor",
+                            Some(IconName::FileCode),
+                            move |ws, window, cx| ws.ask_editor_folder(at, window, cx),
+                        ))
                     },
                 )
             }
@@ -341,6 +355,24 @@ impl Items {
                     move |ws, window, cx| ws.close(block, window, cx),
                 )),
             Items::Agents { at, agents } => agent_items(ws, menu, agents, at),
+            Items::Editor { block, tree } => menu
+                .item(item(
+                    ws,
+                    if tree {
+                        "Hide the file tree"
+                    } else {
+                        "Show the file tree"
+                    },
+                    Some(IconName::PanelLeft),
+                    move |ws, _, cx| ws.toggle_tree(block, cx),
+                ))
+                .separator()
+                .item(item(
+                    ws,
+                    "Close",
+                    Some(IconName::Close),
+                    move |ws, window, cx| ws.close(block, window, cx),
+                )),
             Items::Ink { index } => menu.item(item(
                 ws,
                 "Delete",

@@ -3,24 +3,25 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use gpui_kit::base::motion::{MotionStatus, Transition, transition_with_status};
+use gpui_kit::base::{TreeEvent, TreeState};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::notification::{Notification, NotificationDelivery};
 use gpui_kit::component::{TITLE_BAR_HEIGHT, WindowExt, window_paddings};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Anchor, AnyElement, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler,
-    EntityInputHandler, FocusHandle, Focusable as _, FontWeight, Hsla, KeyBinding, KeyDownEvent,
-    Keystroke, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PinchEvent, Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, SharedString,
-    Subscription, Task, TestSupportExt, UTF16Selection, Window, WindowAppearance, canvas, div,
-    fill, point, px, size,
+    Entity, EntityInputHandler, FocusHandle, Focusable as _, FontWeight, Hsla, KeyBinding,
+    KeyDownEvent, Keystroke, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent,
+    SharedString, Subscription, Task, TestSupportExt, UTF16Selection, Window, WindowAppearance,
+    canvas, div, fill, point, px, size,
 };
 use templum_canvas::{
     Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, HIT_PX, Point,
@@ -33,10 +34,12 @@ use crate::alert::{self, Alert};
 use crate::block;
 use crate::board::{self, Boards};
 use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
+use crate::editor::{self, Editor};
 use crate::grid::CellMetrics;
 use crate::ink;
 use crate::kanban::{self, Kanban};
 use crate::keys::{self, Command, Keymap, Keys};
+use crate::launcher;
 use crate::menu;
 use crate::motion;
 use crate::note::{self, Note};
@@ -100,6 +103,7 @@ pub(crate) enum Body {
     Terminal(Pane),
     Kanban(Kanban),
     Note(Note),
+    Editor(Editor),
 }
 
 impl Body {
@@ -138,12 +142,28 @@ impl Body {
             Body::Terminal(_) => chrome::min_block_size(cell),
             Body::Kanban(_) => kanban::MIN,
             Body::Note(_) => note::MIN,
+            Body::Editor(_) => editor::MIN,
         }
     }
 
     pub fn note(&self) -> Option<&Note> {
         match self {
             Body::Note(note) => Some(note),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn editor(&self) -> Option<&Editor> {
+        match self {
+            Body::Editor(editor) => Some(editor),
+            _ => None,
+        }
+    }
+
+    pub fn editor_mut(&mut self) -> Option<&mut Editor> {
+        match self {
+            Body::Editor(editor) => Some(editor),
             _ => None,
         }
     }
@@ -236,6 +256,9 @@ impl Space {
                             preview: n.preview,
                         }))
                     }
+                    Body::Editor(e) => {
+                        session::LayoutBlock::Saved(session::Item::Editor(e.item(b.rect)))
+                    }
                 })
                 .collect(),
             focused: self
@@ -282,6 +305,15 @@ impl Space {
 
     pub fn kanban_mut(&mut self, id: BlockId) -> Option<&mut Kanban> {
         self.blocks.get_mut(&id)?.kanban_mut()
+    }
+
+    #[cfg(test)]
+    pub fn editor(&self, id: BlockId) -> Option<&Editor> {
+        self.blocks.get(&id)?.editor()
+    }
+
+    pub fn editor_mut(&mut self, id: BlockId) -> Option<&mut Editor> {
+        self.blocks.get_mut(&id)?.editor_mut()
     }
 
     /// The focused block's terminal, when the focused block is one.
@@ -876,31 +908,6 @@ impl Workspace {
         id
     }
 
-    /// A saved kanban block's rect made safe: None with a number that isn't finite; at least
-    /// the smallest kanban block.
-    fn kanban_rect(r: Rect) -> Option<Rect> {
-        [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()).then(|| {
-            Rect::new(
-                r.x,
-                r.y,
-                r.w.clamp(kanban::MIN.w, 20_000.0),
-                r.h.clamp(kanban::MIN.h, 20_000.0),
-            )
-        })
-    }
-
-    /// A saved note's rect made safe, like a kanban's.
-    fn note_rect(r: Rect) -> Option<Rect> {
-        [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()).then(|| {
-            Rect::new(
-                r.x,
-                r.y,
-                r.w.clamp(note::MIN.w, 20_000.0),
-                r.h.clamp(note::MIN.h, 20_000.0),
-            )
-        })
-    }
-
     /// A note at the viewport's center, focused, in edit mode.
     pub(crate) fn new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let center = self.space.canvas.camera.to_world(self.center(window));
@@ -942,6 +949,129 @@ impl Workspace {
             }
             cx.notify();
         }
+    }
+
+    /// Asks for a folder, then opens an editor on it at the viewport's center.
+    pub(crate) fn new_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let center = self.space.canvas.camera.to_world(self.center(window));
+        let size = editor::SIZE;
+        let at = self
+            .space
+            .canvas
+            .place_new(
+                size,
+                Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
+            )
+            .origin();
+        self.ask_editor_folder(at, window, cx);
+    }
+
+    /// The folder dialog; the editor's top-left corner goes to `at` (world units).
+    pub(crate) fn ask_editor_folder(&self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
+        let entity = cx.entity();
+        launcher::ask_folder_for(
+            self,
+            "Open an editor".to_string(),
+            None,
+            Rc::new(move |folder, window, cx| {
+                entity.update(cx, |ws, cx| ws.add_editor_at(folder, at, window, cx))
+            }),
+            window,
+            cx,
+        );
+    }
+
+    /// An editor on `folder`, its top-left corner at `at`; the folder becomes a recent one.
+    pub(crate) fn add_editor_at(
+        &mut self,
+        folder: &Path,
+        at: Point,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<BlockId> {
+        if !folder.is_dir() {
+            let message = format!("{} isn't a folder", folder.display());
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+            return None;
+        }
+        self.space.pristine = false;
+        let rect = Rect::new(at.x, at.y, editor::SIZE.w, editor::SIZE.h);
+        let editor = Editor::new(folder.to_path_buf(), true, cx);
+        let id = self.add_block(rect, Body::Editor(editor));
+        remember(&mut self.space.recent, folder.to_path_buf());
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+        Some(id)
+    }
+
+    /// The system's folder picker, for an editor whose folder is gone.
+    pub(crate) fn choose_editor_folder(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entity = cx.entity();
+        launcher::pick_folder(
+            Rc::new(move |folder, _, cx| {
+                entity.update(cx, |ws, cx| ws.set_editor_folder(id, folder, cx))
+            }),
+            window,
+            cx,
+        );
+    }
+
+    /// Points an editor block at another folder, read afresh.
+    pub(crate) fn set_editor_folder(
+        &mut self,
+        id: BlockId,
+        folder: &Path,
+        cx: &mut Context<Self>,
+    ) -> Option<BlockId> {
+        let editor = self.space.editor_mut(id)?;
+        editor.folder = folder.to_path_buf();
+        editor.expanded.clear();
+        editor.refresh(cx);
+        remember(&mut self.space.recent, folder.to_path_buf());
+        cx.notify();
+        Some(id)
+    }
+
+    pub(crate) fn toggle_tree(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        if let Some(editor) = self.space.editor_mut(id) {
+            editor.show_tree = !editor.show_tree;
+            cx.notify();
+        }
+    }
+
+    /// A folder of an editor's tree was expanded (read it, once) or collapsed.
+    pub(crate) fn on_tree_event(
+        &mut self,
+        tree: &Entity<TreeState>,
+        event: &TreeEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.space.blocks.values_mut().find_map(|b| match b {
+            Body::Editor(e) if e.tree == *tree => Some(e),
+            _ => None,
+        }) else {
+            return;
+        };
+        match event {
+            TreeEvent::Expanded(id) => {
+                let path = PathBuf::from(id.as_ref());
+                if !editor.dirs.contains_key(&path) {
+                    editor.dirs.insert(path.clone(), editor::read_dir(&path));
+                }
+                editor.expanded.insert(path);
+            }
+            TreeEvent::Collapsed(id) => {
+                editor.expanded.remove(Path::new(id.as_ref()));
+            }
+        }
+        editor.show(cx);
+        cx.notify();
     }
 
     /// A block's editor is about to leave the frame: if it has the keyboard, the canvas takes it.
@@ -1343,7 +1473,7 @@ impl Workspace {
             let t = match item {
                 session::Item::Terminal(t) => t,
                 session::Item::Kanban(k) => {
-                    let id = Self::kanban_rect(k.rect.into()).map(|rect| {
+                    let id = clamped_rect(k.rect.into(), kanban::MIN).map(|rect| {
                         self.add_block(
                             rect,
                             Body::Kanban(Kanban {
@@ -1356,9 +1486,17 @@ impl Workspace {
                     continue;
                 }
                 session::Item::Note(n) => {
-                    let id = Self::note_rect(n.rect.into()).map(|rect| {
+                    let id = clamped_rect(n.rect.into(), note::MIN).map(|rect| {
                         let note = Note::new(&n.text, n.preview, window, cx);
                         self.add_block(rect, Body::Note(note))
+                    });
+                    ids.push(id);
+                    continue;
+                }
+                session::Item::Editor(e) => {
+                    let id = clamped_rect(e.rect.into(), editor::MIN).map(|rect| {
+                        let editor = Editor::new(PathBuf::from(&e.folder), e.tree, cx);
+                        self.add_block(rect, Body::Editor(editor))
                     });
                     ids.push(id);
                     continue;
@@ -2545,6 +2683,7 @@ impl Workspace {
             Command::Settings => self.toggle_settings(window, cx),
             Command::NewKanban => self.new_kanban(window, cx),
             Command::NewNote => self.new_note(window, cx),
+            Command::NewEditor => self.new_editor(window, cx),
             Command::NextWorkspace => self.cycle_space(1, window, cx),
             Command::PreviousWorkspace => self.cycle_space(-1, window, cx),
             Command::NewWorkspace => self.new_space(window, cx),
@@ -2908,6 +3047,18 @@ pub(crate) fn show_notification(window: &mut Window, cx: &mut App, notification:
     window.defer(cx, move |window, cx| {
         window.push_notification(notification, cx)
     });
+}
+
+/// A saved rect made safe: None with a number that isn't finite; at least `min`.
+fn clamped_rect(r: Rect, min: Size) -> Option<Rect> {
+    [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()).then(|| {
+        Rect::new(
+            r.x,
+            r.y,
+            r.w.clamp(min.w, 20_000.0),
+            r.h.clamp(min.h, 20_000.0),
+        )
+    })
 }
 
 /// `folder` becomes the newest recent folder: once, and only the RECENT newest are kept.
@@ -7016,6 +7167,164 @@ mod tests {
         });
     }
 
+    #[cfg(target_os = "macos")]
+    const NEW_EDITOR: &str = "cmd-shift-e";
+    #[cfg(not(target_os = "macos"))]
+    const NEW_EDITOR: &str = "ctrl-shift-e";
+
+    /// An editor block on `folder`, near the canvas's top-left, read and at rest.
+    fn open_editor(
+        handle: AnyWindowHandle,
+        ws: &Entity<Workspace>,
+        cx: &mut TestAppContext,
+        folder: &std::path::Path,
+    ) -> BlockId {
+        cx.update_window(handle, |_, window, cx| {
+            let id = ws.update(cx, |ws, cx| {
+                let id = ws
+                    .add_editor_at(folder, Point::new(40.0, 40.0), window, cx)
+                    .unwrap();
+                ws.space.appearing.clear();
+                id
+            });
+            window.render_frame(cx);
+            id
+        })
+        .unwrap()
+    }
+
+    #[gpui_kit::test]
+    fn an_editor_lists_its_folder_and_reads_a_subfolder_when_expanded(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+        std::fs::write(dir.path().join("A.txt"), "a").unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "fn main() {}").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        let src = dir.path().join("src");
+        ws.read_with(cx, |ws, _| {
+            let e = ws.space.editor(id).unwrap();
+            assert_eq!(
+                e.title().as_ref(),
+                dir.path().file_name().unwrap().to_str().unwrap()
+            );
+            let names: Vec<_> = e.dirs[dir.path()].iter().map(|e| e.name.as_str()).collect();
+            assert_eq!(
+                names,
+                ["src", "A.txt", "b.txt"],
+                "folders first, then files without case"
+            );
+            assert!(
+                !e.dirs.contains_key(&src),
+                "a folder isn't read until it is expanded"
+            );
+            let rect = ws.space.canvas.get(id).unwrap().rect;
+            assert_eq!(
+                (rect.w, rect.h),
+                (crate::editor::SIZE.w, crate::editor::SIZE.h)
+            );
+            assert_eq!(ws.space.recent, [dir.path()]);
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.find(("tree", id.0 as usize));
+            window.click(("entry", 0usize), cx);
+            window.render_frame(cx);
+            // main.rs is now the row under src.
+            window.find(("entry", 1usize));
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            let e = ws.space.editor(id).unwrap();
+            assert_eq!(e.dirs[&src][0].name, "main.rs");
+            assert!(e.expanded.contains(&src));
+        });
+        // The header's toggle hides the tree.
+        cx.update_window(handle, |_, window, cx| {
+            window.hover(("block", id.0 as usize), cx);
+            window.render_frame(cx);
+            window.click(("tree-toggle", id.0 as usize), cx);
+            window.render_frame(cx);
+            assert!(window.try_find(("tree", id.0 as usize)).is_none());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_editor_shortcut_asks_for_a_folder_and_a_recent_one_opens_it(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open(cx);
+        ws.update(cx, |ws, _| ws.space.recent = vec![dir.path().to_path_buf()]);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(NEW_EDITOR, cx);
+            window.render_frame(cx);
+            window.click("recent-0", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            let editors: Vec<_> = ws
+                .space
+                .blocks
+                .values()
+                .filter_map(|b| b.editor())
+                .collect();
+            assert_eq!(editors.len(), 1);
+            assert_eq!(editors[0].folder, dir.path());
+            assert_eq!(ws.space.focused, Some(ws.space.canvas.top().unwrap()));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn an_editor_comes_back_and_one_whose_folder_is_gone_says_so(cx: &mut TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let json = |p: &std::path::Path| p.display().to_string().replace('\\', "\\\\");
+        write_canvas(
+            data.path(),
+            &format!(
+                r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+                  {{"kind":"editor","rect":{{"x":0,"y":0,"w":900,"h":600}},"folder":"{}","tree":false}},
+                  {{"kind":"editor","rect":{{"x":950,"y":0,"w":100,"h":100}},"folder":"{}"}}]}}"#,
+                json(folder.path()),
+                json(&folder.path().join("nope"))
+            ),
+        );
+        let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        let (there, gone) = ws.read_with(cx, |ws, _| {
+            let ids: Vec<_> = ws.space.canvas.blocks().iter().map(|b| b.id).collect();
+            (ids[0], ids[1])
+        });
+        ws.read_with(cx, |ws, _| {
+            let e = ws.space.editor(there).unwrap();
+            assert_eq!(e.folder, folder.path());
+            assert!(!e.show_tree);
+            let rect = ws.space.canvas.get(gone).unwrap().rect;
+            assert_eq!(
+                (rect.w, rect.h),
+                (crate::editor::MIN.w, crate::editor::MIN.h),
+                "clamped"
+            );
+        });
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, _| ws.space.appearing.clear());
+            window.render_frame(cx);
+            assert!(
+                window.try_find(("tree", there.0 as usize)).is_none(),
+                "tree hidden"
+            );
+            window.find(("choose-folder", gone.0 as usize));
+            // Pointing it at a folder that exists reads it.
+            ws.update(cx, |ws, cx| {
+                ws.set_editor_folder(gone, folder.path(), cx);
+            });
+            window.render_frame(cx);
+            window.find(("tree", gone.0 as usize));
+        })
+        .unwrap();
+    }
+
     fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
         ws.read_with(cx, |ws, _| {
             let id = ws.space.canvas.top().unwrap();
@@ -7041,6 +7350,7 @@ mod tests {
             window.render_frame(cx);
             window.click("tool-kanban", cx);
             window.render_frame(cx);
+            window.find("tool-editor");
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {

@@ -8,6 +8,7 @@ pub(crate) enum Command {
     NewTerminal,
     NewKanban,
     NewNote,
+    NewEditor,
     CloseTerminal,
     Copy,
     Paste,
@@ -29,10 +30,11 @@ pub(crate) enum Command {
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 20] = [
+    pub const ALL: [Command; 21] = [
         Command::NewTerminal,
         Command::NewKanban,
         Command::NewNote,
+        Command::NewEditor,
         Command::CloseTerminal,
         Command::Copy,
         Command::Paste,
@@ -58,6 +60,7 @@ impl Command {
             Command::NewTerminal => "new_terminal",
             Command::NewKanban => "new_kanban",
             Command::NewNote => "new_note",
+            Command::NewEditor => "new_editor",
             Command::CloseTerminal => "close_terminal",
             Command::Copy => "copy",
             Command::Paste => "paste",
@@ -84,6 +87,7 @@ impl Command {
             Command::NewTerminal => "New terminal",
             Command::NewKanban => "New kanban board",
             Command::NewNote => "New note",
+            Command::NewEditor => "New editor",
             Command::CloseTerminal => "Close terminal",
             Command::Copy => "Copy",
             Command::Paste => "Paste",
@@ -113,6 +117,8 @@ impl Command {
             (Command::NewKanban, true) => &["cmd-shift-k"],
             (Command::NewNote, false) => &["ctrl-shift-m"],
             (Command::NewNote, true) => &["cmd-shift-m"],
+            (Command::NewEditor, false) => &["ctrl-shift-e"],
+            (Command::NewEditor, true) => &["cmd-shift-e"],
             (Command::CloseTerminal, false) => &["ctrl-shift-w"],
             (Command::CloseTerminal, true) => &["cmd-w"],
             (Command::Copy, false) => &["ctrl-shift-c"],
@@ -162,6 +168,7 @@ pub(crate) struct KeysConfig {
     pub new_terminal: Option<Keys>,
     pub new_kanban: Option<Keys>,
     pub new_note: Option<Keys>,
+    pub new_editor: Option<Keys>,
     pub close_terminal: Option<Keys>,
     pub copy: Option<Keys>,
     pub paste: Option<Keys>,
@@ -187,6 +194,7 @@ impl KeysConfig {
             Command::NewTerminal => self.new_terminal.as_ref(),
             Command::NewKanban => self.new_kanban.as_ref(),
             Command::NewNote => self.new_note.as_ref(),
+            Command::NewEditor => self.new_editor.as_ref(),
             Command::CloseTerminal => self.close_terminal.as_ref(),
             Command::Copy => self.copy.as_ref(),
             Command::Paste => self.paste.as_ref(),
@@ -212,6 +220,7 @@ impl KeysConfig {
             Command::NewTerminal => &mut self.new_terminal,
             Command::NewKanban => &mut self.new_kanban,
             Command::NewNote => &mut self.new_note,
+            Command::NewEditor => &mut self.new_editor,
             Command::CloseTerminal => &mut self.close_terminal,
             Command::Copy => &mut self.copy,
             Command::Paste => &mut self.paste,
@@ -377,7 +386,12 @@ mod tests {
         assert_eq!(linux.command(&typed("ctrl-,")), Some(Command::Settings));
         assert_eq!(linux.command(&typed("ctrl-shift-q")), Some(Command::Quit));
         assert_eq!(linux.command(&typed("ctrl-t")), None);
+        assert_eq!(
+            linux.command(&typed("ctrl-shift-e")),
+            Some(Command::NewEditor)
+        );
         let mac = defaults(true);
+        assert_eq!(mac.command(&typed("cmd-shift-e")), Some(Command::NewEditor));
         assert_eq!(mac.command(&typed("cmd-t")), Some(Command::NewTerminal));
         assert_eq!(mac.command(&typed("cmd-,")), Some(Command::Settings));
         assert_eq!(mac.command(&typed("cmd-q")), Some(Command::Quit));
