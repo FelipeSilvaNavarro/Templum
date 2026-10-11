@@ -8,23 +8,26 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Context, DismissEvent, Entity, Focusable as _, Pixels, Point as PixelPoint,
-    ScrollWheelEvent, SharedString, Subscription, Window, anchored, deferred, div, px,
+    AnyElement, App, ClipboardItem, Context, DismissEvent, Entity, Focusable as _, Pixels,
+    Point as PixelPoint, ScrollWheelEvent, SharedString, Subscription, Window, anchored, deferred,
+    div, px,
 };
 use templum_canvas::{BlockId, Point};
 
 use crate::kanban;
 use crate::launcher;
 use crate::prompt;
-use crate::workspace::Workspace;
+use crate::workspace::{Body, Workspace};
 
 /// What was right-clicked.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Target {
     /// The empty canvas, at a world point: blocks are added there.
     Canvas(Point),
-    Terminal(BlockId),
-    Kanban(BlockId),
+    /// A block, whatever it holds: the menu is built for its kind.
+    Block(BlockId),
+    /// The AI agents alone (the toolbar): the chosen one opens at this world point.
+    Agents(Point),
     /// A row of a kanban block's board list.
     Board {
         block: BlockId,
@@ -64,7 +67,9 @@ impl Workspace {
         let back = window
             .focused(cx)
             .unwrap_or_else(|| self.focus_handle.clone());
-        let items = self.items(&target);
+        let Some(items) = self.items(&target) else {
+            return;
+        };
         let view = PopupMenu::build(window, cx, move |menu, window, cx| {
             items.build(&ws, menu.action_context(back), window, cx)
         });
@@ -83,33 +88,39 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The agents the menus list, and whether each one's program was found.
+    fn agents_for_menu(&self) -> Vec<(AgentEntry, bool)> {
+        self.agents
+            .iter()
+            .filter(|a| a.show)
+            .map(|a| (a.clone(), templum_terminal::installed(a.program())))
+            .collect()
+    }
+
     /// What the menu for `target` needs to know, read now: building it can't read the workspace.
-    fn items(&self, target: &Target) -> Items {
-        match *target {
+    fn items(&self, target: &Target) -> Option<Items> {
+        Some(match *target {
             Target::Canvas(at) => Items::Canvas {
                 at,
-                agents: self
-                    .agents
-                    .iter()
-                    .filter(|a| a.show)
-                    .map(|a| (a.clone(), templum_terminal::installed(a.program())))
-                    .collect(),
+                agents: self.agents_for_menu(),
             },
-            Target::Terminal(block) => Items::Terminal {
-                block,
-                selection: self
-                    .space
-                    .terminals
-                    .get(&block)
-                    .is_some_and(|p| p.term.shared().selection_text().is_some()),
+            Target::Agents(at) => Items::Agents {
+                at,
+                agents: self.agents_for_menu(),
             },
-            Target::Kanban(block) => Items::Kanban {
-                block,
-                listing: self
-                    .space
-                    .kanbans
-                    .get(&block)
-                    .is_some_and(|k| k.shown(self).is_none() && k.board.is_some()),
+            Target::Block(block) => match self.space.blocks.get(&block)? {
+                Body::Terminal(pane) => Items::Terminal {
+                    block,
+                    selection: pane.term.shared().selection_text().is_some(),
+                },
+                Body::Kanban(k) => Items::Kanban {
+                    block,
+                    listing: k.shown(self).is_none() && k.board.is_some(),
+                },
+                Body::Note(n) => Items::Note {
+                    block,
+                    preview: n.preview,
+                },
             },
             Target::Board { block, board } => Items::Board {
                 block,
@@ -141,7 +152,7 @@ impl Workspace {
                     .map_or_else(String::new, |s| s.name.clone()),
                 only_one: self.others.is_empty(),
             },
-        }
+        })
     }
 }
 
@@ -152,6 +163,10 @@ enum Items {
         /// Each agent the menu lists, and whether its program was found.
         agents: Vec<(AgentEntry, bool)>,
     },
+    Agents {
+        at: Point,
+        agents: Vec<(AgentEntry, bool)>,
+    },
     Terminal {
         block: BlockId,
         selection: bool,
@@ -160,6 +175,11 @@ enum Items {
         block: BlockId,
         /// The board list shows over a board the block has.
         listing: bool,
+    },
+    Note {
+        block: BlockId,
+        /// It shows rendered.
+        preview: bool,
     },
     Board {
         block: BlockId,
@@ -197,6 +217,34 @@ fn item(
         .on_click(move |_, window, cx| ws.update(cx, |ws, cx| act(ws, window, cx)))
 }
 
+/// The agents, installed first; the others say how to install them when chosen. `at`: where the
+/// agent's block goes.
+fn agent_items(
+    ws: &Entity<Workspace>,
+    menu: PopupMenu,
+    agents: Vec<(AgentEntry, bool)>,
+    at: Point,
+) -> PopupMenu {
+    let (found, missing): (Vec<_>, Vec<_>) =
+        agents.into_iter().partition(|(_, installed)| *installed);
+    let entry = |menu: PopupMenu, (agent, installed): (AgentEntry, bool)| {
+        let title = SharedString::from(agent.title.clone());
+        menu.item(item(ws, title, None, move |ws, window, cx| {
+            launcher::ask_folder(ws, agent.clone(), at, installed, window, cx)
+        }))
+    };
+    // Twenty agents: the list scrolls in a short window.
+    let menu = found
+        .into_iter()
+        .fold(menu.scrollable(true).max_h(px(420.0)), entry);
+    if missing.is_empty() {
+        return menu;
+    }
+    missing
+        .into_iter()
+        .fold(menu.separator().label("Not installed"), entry)
+}
+
 /// What deleting `n` cards along with their board or column says.
 fn cards(n: usize) -> String {
     if n == 1 {
@@ -223,29 +271,7 @@ impl Items {
                     "AI agent",
                     window,
                     cx,
-                    move |menu, _, _| {
-                        // Installed first; the others say how to install them when chosen.
-                        let (found, missing): (Vec<_>, Vec<_>) = agents
-                            .iter()
-                            .cloned()
-                            .partition(|(_, installed)| *installed);
-                        let entry = |menu: PopupMenu, (agent, installed): (AgentEntry, bool)| {
-                            let title = SharedString::from(agent.title.clone());
-                            menu.item(item(&ws, title, None, move |ws, window, cx| {
-                                launcher::ask_folder(ws, agent.clone(), at, installed, window, cx)
-                            }))
-                        };
-                        // Twenty agents: the list scrolls in a short window.
-                        let menu = found
-                            .into_iter()
-                            .fold(menu.scrollable(true).max_h(px(420.0)), entry);
-                        if missing.is_empty() {
-                            return menu;
-                        }
-                        missing
-                            .into_iter()
-                            .fold(menu.separator().label("Not installed"), entry)
-                    },
+                    move |menu, _, _| agent_items(&ws, menu, agents.clone(), at),
                 )
                 .submenu_with_icon(
                     Some(Icon::new(IconName::Plus)),
@@ -266,6 +292,12 @@ impl Items {
                             Some(IconName::LayoutDashboard),
                             move |ws, window, cx| ws.add_kanban_at(at, window, cx),
                         ))
+                        .item(item(
+                            ws,
+                            "Note",
+                            Some(IconName::StickyNote),
+                            move |ws, window, cx| ws.add_note_at(at, window, cx),
+                        ))
                     },
                 )
             }
@@ -282,7 +314,7 @@ impl Items {
                     ws,
                     "Close terminal",
                     Some(IconName::Close),
-                    move |ws, _, cx| ws.close(block, cx),
+                    move |ws, window, cx| ws.close(block, window, cx),
                 )),
             Items::Kanban { block, listing } => menu
                 .item(item(
@@ -300,7 +332,37 @@ impl Items {
                     ws,
                     "Close",
                     Some(IconName::Close),
-                    move |ws, _, cx| ws.close(block, cx),
+                    move |ws, window, cx| ws.close(block, window, cx),
+                )),
+            Items::Agents { at, agents } => agent_items(ws, menu, agents, at),
+            Items::Note { block, preview } => menu
+                .item(item(
+                    ws,
+                    if preview { "Edit" } else { "Preview" },
+                    Some(if preview {
+                        IconName::EyeOff
+                    } else {
+                        IconName::Eye
+                    }),
+                    move |ws, window, cx| ws.toggle_preview(block, window, cx),
+                ))
+                .item(item(
+                    ws,
+                    "Copy all",
+                    Some(IconName::Copy),
+                    move |ws, _, cx| {
+                        if let Some(note) = ws.space.blocks.get(&block).and_then(|b| b.note()) {
+                            let text = note.text(cx);
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        }
+                    },
+                ))
+                .separator()
+                .item(item(
+                    ws,
+                    "Close",
+                    Some(IconName::Close),
+                    move |ws, window, cx| ws.close(block, window, cx),
                 )),
             Items::Board {
                 block,

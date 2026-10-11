@@ -16,20 +16,21 @@ use gpui_kit::component::{TITLE_BAR_HEIGHT, WindowExt, window_paddings};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Anchor, AnyElement, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler,
-    EntityInputHandler, FocusHandle, FontWeight, Hsla, KeyBinding, KeyDownEvent, Keystroke,
-    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PinchEvent,
-    Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, SharedString, Subscription, Task,
-    TestSupportExt, UTF16Selection, Window, WindowAppearance, canvas, div, fill, point, px, size,
+    EntityInputHandler, FocusHandle, Focusable as _, FontWeight, Hsla, KeyBinding, KeyDownEvent,
+    Keystroke, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PinchEvent, Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, SharedString,
+    Subscription, Task, TestSupportExt, UTF16Selection, Window, WindowAppearance, canvas, div,
+    fill, point, px, size,
 };
 use templum_canvas::{
-    Block, BlockId, Camera, CameraFlight, Canvas, Gesture, Point, Rect, Size, chrome, dot_grid,
-    dot_size,
+    Block, BlockId, Camera, CameraFlight, Canvas, Gesture, Guide, Point, Rect, Size, chrome,
+    dot_grid, dot_size,
 };
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
 use crate::agents::{self, AgentEntry};
 use crate::alert::{self, Alert};
-use crate::block::{self, Content};
+use crate::block;
 use crate::board::{self, Boards};
 use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
 use crate::grid::CellMetrics;
@@ -37,12 +38,14 @@ use crate::kanban::{self, Kanban};
 use crate::keys::{self, Command, Keymap, Keys};
 use crate::menu;
 use crate::motion;
+use crate::note::{self, Note};
 use crate::session;
 use crate::settings::{self, Panel};
 use crate::sidebar;
 use crate::theme::{self, Entry, Theme, Ui};
 use crate::theme_picker::{self, Picker};
 use crate::title_bar;
+use crate::toolbar;
 
 pub(crate) const DEFAULT_COLS: u16 = 80;
 pub(crate) const DEFAULT_ROWS: u16 = 24;
@@ -85,13 +88,62 @@ pub(crate) struct Pane {
 /// A closed block, still drawn while it fades out. A terminal's shell lives until then.
 pub(crate) struct Ghost {
     pub block: Block,
-    pub body: GhostBody,
+    pub body: Body,
     since: Instant,
 }
 
-pub(crate) enum GhostBody {
+/// What a block holds. Every block on a canvas is one of these.
+pub(crate) enum Body {
     Terminal(Pane),
     Kanban(Kanban),
+    Note(Note),
+}
+
+impl Body {
+    pub fn terminal(&self) -> Option<&Pane> {
+        match self {
+            Body::Terminal(pane) => Some(pane),
+            _ => None,
+        }
+    }
+
+    pub fn terminal_mut(&mut self) -> Option<&mut Pane> {
+        match self {
+            Body::Terminal(pane) => Some(pane),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn kanban(&self) -> Option<&Kanban> {
+        match self {
+            Body::Kanban(kanban) => Some(kanban),
+            _ => None,
+        }
+    }
+
+    pub fn kanban_mut(&mut self) -> Option<&mut Kanban> {
+        match self {
+            Body::Kanban(kanban) => Some(kanban),
+            _ => None,
+        }
+    }
+
+    /// The smallest block of this kind.
+    pub fn min_size(&self, cell: Size) -> Size {
+        match self {
+            Body::Terminal(_) => chrome::min_block_size(cell),
+            Body::Kanban(_) => kanban::MIN,
+            Body::Note(_) => note::MIN,
+        }
+    }
+
+    pub fn note(&self) -> Option<&Note> {
+        match self {
+            Body::Note(note) => Some(note),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -109,9 +161,8 @@ pub(crate) struct Space {
     pub id: String,
     pub name: String,
     pub canvas: Canvas,
-    pub terminals: HashMap<BlockId, Pane>,
-    /// The kanban blocks: every block is a terminal or one of these.
-    pub kanbans: HashMap<BlockId, Kanban>,
+    /// What each block of the canvas holds. Inserted and removed together with `canvas`'s blocks.
+    pub blocks: HashMap<BlockId, Body>,
     pub focused: Option<BlockId>,
     /// True until the user first moves the camera or touches a block: meanwhile the startup
     /// terminal stays centered, since tiling compositors resize the window after it opens.
@@ -123,6 +174,8 @@ pub(crate) struct Space {
     pub frozen: bool,
     /// The block under the pointer: it shows its close button and resize grip.
     pub hovered: Option<BlockId>,
+    /// The snaps in effect during a drag, drawn as lines; empty otherwise.
+    pub guides: Vec<Guide>,
     /// The camera drawn this frame: `canvas.camera` (where it is going), or a frame of `flight`.
     pub view: Camera,
     /// The view gliding to `canvas.camera`, since when.
@@ -137,18 +190,29 @@ pub(crate) struct Space {
 
 impl Space {
     /// The canvas as a snapshot needs it: rects and process ids, cheap on the UI thread.
-    fn layout(&self, agents: Arc<Vec<templum_terminal::Detect>>) -> session::Layout {
+    fn layout(&self, agents: Arc<Vec<templum_terminal::Detect>>, cx: &App) -> session::Layout {
         let blocks = self.canvas.blocks();
         session::Layout {
             camera: self.canvas.camera,
             blocks: blocks
                 .iter()
-                .map(|b| match self.terminals.get(&b.id) {
-                    Some(pane) => session::LayoutBlock::Terminal(b.rect, pane.term.processes()),
-                    None => session::LayoutBlock::Kanban(
-                        b.rect,
-                        self.kanbans.get(&b.id).and_then(|k| k.board),
-                    ),
+                .map(|b| match &self.blocks[&b.id] {
+                    Body::Terminal(pane) => {
+                        session::LayoutBlock::Terminal(b.rect, pane.term.processes())
+                    }
+                    Body::Kanban(k) => {
+                        session::LayoutBlock::Saved(session::Item::Kanban(session::KanbanItem {
+                            rect: b.rect.into(),
+                            board: k.board,
+                        }))
+                    }
+                    Body::Note(n) => {
+                        session::LayoutBlock::Saved(session::Item::Note(session::NoteItem {
+                            rect: b.rect.into(),
+                            text: n.text(cx),
+                            preview: n.preview,
+                        }))
+                    }
                 })
                 .collect(),
             focused: self
@@ -167,10 +231,48 @@ impl Space {
                     .agent
                     .as_ref()
                     .is_some_and(|id| agents.iter().any(|a| a.id == *id)),
-                session::Item::Kanban(_) => false,
+                _ => false,
             })
         })
     }
+
+    /// Every terminal block, in no order.
+    pub fn terminals(&self) -> impl Iterator<Item = (BlockId, &Pane)> {
+        self.blocks
+            .iter()
+            .filter_map(|(id, body)| Some((*id, body.terminal()?)))
+    }
+
+    pub fn terminal(&self, id: BlockId) -> Option<&Pane> {
+        self.blocks.get(&id)?.terminal()
+    }
+
+    pub fn terminal_mut(&mut self, id: BlockId) -> Option<&mut Pane> {
+        self.blocks.get_mut(&id)?.terminal_mut()
+    }
+
+    #[cfg(test)]
+    pub fn kanban(&self, id: BlockId) -> Option<&Kanban> {
+        self.blocks.get(&id)?.kanban()
+    }
+
+    pub fn kanban_mut(&mut self, id: BlockId) -> Option<&mut Kanban> {
+        self.blocks.get_mut(&id)?.kanban_mut()
+    }
+
+    /// The focused block's terminal, when the focused block is one.
+    pub fn focused_terminal(&self) -> Option<&Pane> {
+        self.focused.and_then(|id| self.terminal(id))
+    }
+}
+
+/// What the pointer does on the canvas. Block tools act at once and don't stay on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Tool {
+    #[default]
+    Select,
+    /// Pans with any drag or wheel, over blocks too, like holding Alt.
+    Hand,
 }
 
 /// Called at the start of every render; returning false removes it (the bench drives frames).
@@ -278,8 +380,10 @@ pub struct Workspace {
     pub(crate) picker: Option<Picker>,
     /// The open right-click menu.
     pub(crate) menu: Option<menu::OpenMenu>,
-    /// The hand layer is drawn: Alt was held at the last frame.
+    /// Alt was held at the last frame (the hand layer is drawn).
     hand: bool,
+    /// The toolbar's active tool.
+    pub(crate) tool: Tool,
     /// The focused terminal's cursor blinks (painting reports it); and the blink phase.
     pub(crate) cursor_blinks: bool,
     pub(crate) blink_on: bool,
@@ -393,13 +497,13 @@ impl Workspace {
             }
         });
         let flush = vec![
-            cx.on_release(|ws, _| {
+            cx.on_release(|ws, cx| {
                 ws.save();
-                ws.save_canvas_now();
+                ws.save_canvas_now(cx);
             }),
-            cx.on_app_quit(|ws, _| {
+            cx.on_app_quit(|ws, cx| {
                 ws.save();
-                ws.save_canvas_now();
+                ws.save_canvas_now(cx);
                 async {}
             }),
         ];
@@ -457,6 +561,7 @@ impl Workspace {
             picker: None,
             menu: None,
             hand: false,
+            tool: Tool::default(),
             cursor_blinks: false,
             blink_on: true,
             _blink: blink,
@@ -582,6 +687,7 @@ impl Workspace {
         left.ghosts.clear();
         left.appearing.clear();
         left.hovered = None;
+        left.guides.clear();
         left.flight = None;
         left.view = left.canvas.camera;
         self.drag = None;
@@ -708,10 +814,10 @@ impl Workspace {
         }
     }
 
-    /// Adds a kanban block on top, focused, popping in.
-    fn add_kanban(&mut self, rect: Rect, kanban: Kanban) -> BlockId {
+    /// Adds a block on top, focused, popping in.
+    fn add_block(&mut self, rect: Rect, body: Body) -> BlockId {
         let id = self.space.canvas.add(rect);
-        self.space.kanbans.insert(id, kanban);
+        self.space.blocks.insert(id, body);
         self.space.focused = Some(id);
         self.space.appearing.insert(id, Instant::now());
         id
@@ -728,6 +834,76 @@ impl Workspace {
                 r.h.clamp(kanban::MIN.h, 20_000.0),
             )
         })
+    }
+
+    /// A saved note's rect made safe, like a kanban's.
+    fn note_rect(r: Rect) -> Option<Rect> {
+        [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()).then(|| {
+            Rect::new(
+                r.x,
+                r.y,
+                r.w.clamp(note::MIN.w, 20_000.0),
+                r.h.clamp(note::MIN.h, 20_000.0),
+            )
+        })
+    }
+
+    /// A note at the viewport's center, focused, in edit mode.
+    pub(crate) fn new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let center = self.space.canvas.camera.to_world(self.center(window));
+        let size = note::SIZE;
+        let at = self
+            .space
+            .canvas
+            .place_new(
+                size,
+                Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
+            )
+            .origin();
+        self.add_note_at(at, window, cx);
+    }
+
+    /// An empty note, its top-left corner at `at` (world units), with the keyboard.
+    pub(crate) fn add_note_at(&mut self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
+        self.space.pristine = false;
+        let rect = Rect::new(at.x, at.y, note::SIZE.w, note::SIZE.h);
+        let note = Note::new("", false, window, cx);
+        note.focus(window, cx);
+        self.add_block(rect, Body::Note(note));
+        cx.notify();
+    }
+
+    /// A note shows its rendered text, or its editor again. Leaving the editor hands the keyboard
+    /// to the canvas; going back to it gives the editor the keyboard.
+    pub(crate) fn toggle_preview(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.release_focus(id, window, cx);
+        if let Some(Body::Note(note)) = self.space.blocks.get_mut(&id) {
+            note.preview = !note.preview;
+            if !note.preview {
+                note.focus(window, cx);
+            }
+            cx.notify();
+        }
+    }
+
+    /// A block's editor is about to leave the frame: if it has the keyboard, the canvas takes it.
+    /// GPUI sends keys to the window's root when the focused element isn't drawn, and the
+    /// shortcuts would stop working until a click.
+    fn release_focus(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(Body::Note(note)) = self.space.blocks.get(&id)
+            && note
+                .editor
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+        {
+            window.focus(&self.focus_handle, cx);
+        }
     }
 
     /// A kanban block at the viewport's center, showing the board list.
@@ -749,7 +925,7 @@ impl Workspace {
     pub(crate) fn add_kanban_at(&mut self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
         self.space.pristine = false;
         let rect = Rect::new(at.x, at.y, kanban::SIZE.w, kanban::SIZE.h);
-        self.add_kanban(rect, Kanban::default());
+        self.add_block(rect, Body::Kanban(Kanban::default()));
         window.focus(&self.focus_handle, cx);
         cx.notify();
     }
@@ -789,7 +965,11 @@ impl Workspace {
         let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx)?;
         // The shell reads it once it is ready.
         let line = format!("{command}\r");
-        self.space.terminals[&id].term.write(line.into_bytes());
+        self.space
+            .terminal(id)
+            .expect("just spawned")
+            .term
+            .write(line.into_bytes());
         remember(&mut self.space.recent, folder.to_path_buf());
         window.focus(&self.focus_handle, cx);
         Some(id)
@@ -842,6 +1022,14 @@ impl Workspace {
         );
     }
 
+    /// The toolbar's tool; the keyboard goes back to the canvas.
+    pub(crate) fn set_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        self.tool = tool;
+        self.menu = None;
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
     /// Starts moving the canvas with the pointer, wherever it is (the hand, the middle button).
     pub(crate) fn begin_pan(&mut self, pos: PixelPoint<Pixels>) {
         self.space.pristine = false;
@@ -863,7 +1051,7 @@ impl Workspace {
 
     /// The kanban block `block` shows `board`.
     pub(crate) fn show_board(&mut self, block: BlockId, board: u64, cx: &mut Context<Self>) {
-        if let Some(k) = self.space.kanbans.get_mut(&block) {
+        if let Some(k) = self.space.kanban_mut(block) {
             *k = Kanban {
                 board: Some(board),
                 picking: false,
@@ -874,7 +1062,7 @@ impl Workspace {
 
     /// The kanban block `block` shows the board list.
     pub(crate) fn pick_board(&mut self, block: BlockId, cx: &mut Context<Self>) {
-        if let Some(k) = self.space.kanbans.get_mut(&block) {
+        if let Some(k) = self.space.kanban_mut(block) {
             k.picking = !k.picking;
             cx.notify();
         }
@@ -931,14 +1119,14 @@ impl Workspace {
         let id = match Terminal::spawn(opts, self.notify.clone()) {
             Ok(term) => {
                 let id = self.space.canvas.add(rect);
-                self.space.terminals.insert(
+                self.space.blocks.insert(
                     id,
-                    Pane {
+                    Body::Terminal(Pane {
                         term,
                         snapshot: Rc::default(),
                         heard: (0, 0),
                         alert: None,
-                    },
+                    }),
                 );
                 self.space.focused = Some(id);
                 self.space.appearing.insert(id, Instant::now());
@@ -970,13 +1158,21 @@ impl Workspace {
                 session::Item::Terminal(t) => t,
                 session::Item::Kanban(k) => {
                     let id = Self::kanban_rect(k.rect.into()).map(|rect| {
-                        self.add_kanban(
+                        self.add_block(
                             rect,
-                            Kanban {
+                            Body::Kanban(Kanban {
                                 board: k.board,
                                 picking: false,
-                            },
+                            }),
                         )
+                    });
+                    ids.push(id);
+                    continue;
+                }
+                session::Item::Note(n) => {
+                    let id = Self::note_rect(n.rect.into()).map(|rect| {
+                        let note = Note::new(&n.text, n.preview, window, cx);
+                        self.add_block(rect, Body::Note(note))
                     });
                     ids.push(id);
                     continue;
@@ -1005,7 +1201,11 @@ impl Workspace {
                 .and_then(|a| self.agents.iter().find(|known| known.id == *a));
             if let (Some(id), Some(agent), true) = (id, agent, in_its_folder) {
                 let line = format!("{}\r", agent.resume_command());
-                self.space.terminals[&id].term.write(line.into_bytes());
+                self.space
+                    .terminal(id)
+                    .expect("just spawned")
+                    .term
+                    .write(line.into_bytes());
             }
             ids.push(id);
         }
@@ -1072,7 +1272,7 @@ impl Workspace {
         let jobs: Vec<_> = self
             .spaces()
             .filter(|s| !s.frozen)
-            .map(|s| (s.id.clone(), s.layout(known.clone()), s.saved.clone()))
+            .map(|s| (s.id.clone(), s.layout(known.clone(), cx), s.saved.clone()))
             .collect();
         let boards = (!self.boards_frozen && self.boards_saved.as_ref() != Some(&self.boards))
             .then(|| self.boards.clone());
@@ -1153,7 +1353,7 @@ impl Workspace {
 
     /// When the window closes or Templum quits: the last snapshot of every workspace, read and
     /// written at once.
-    fn save_canvas_now(&mut self) {
+    fn save_canvas_now(&mut self, cx: &App) {
         let Some(dir) = self.data_dir.clone() else {
             return;
         };
@@ -1170,7 +1370,7 @@ impl Workspace {
             if space.frozen {
                 continue;
             }
-            let saved = space.layout(known.clone()).snapshot();
+            let saved = space.layout(known.clone(), cx).snapshot();
             if space.saved.as_ref() == Some(&saved) {
                 continue;
             }
@@ -1199,14 +1399,12 @@ impl Workspace {
 
     /// Removes a block and kills its shell (dropping the Terminal shuts it down).
     /// The block leaves the canvas at once; it stays on screen as a ghost while it fades out.
-    pub(crate) fn close(&mut self, id: BlockId, cx: &mut Context<Self>) {
+    pub(crate) fn close(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        self.release_focus(id, window, cx);
         let block = self.space.canvas.get(id).copied();
         self.space.canvas.remove(id);
         self.space.appearing.remove(&id);
-        let body = match self.space.terminals.remove(&id) {
-            Some(pane) => Some(GhostBody::Terminal(pane)),
-            None => self.space.kanbans.remove(&id).map(GhostBody::Kanban),
-        };
+        let body = self.space.blocks.remove(&id);
         if let (Some(block), Some(body)) = (block, body) {
             self.space.ghosts.push(Ghost {
                 block,
@@ -1227,7 +1425,7 @@ impl Workspace {
 
     /// Draws with `theme` from the next frame on, in every terminal and gpui-kit widget.
     pub(crate) fn apply(&mut self, theme: Rc<Theme>, cx: &mut Context<Self>) {
-        for pane in self.spaces().flat_map(|s| s.terminals.values()) {
+        for pane in self.spaces().flat_map(|s| s.terminals().map(|(_, p)| p)) {
             pane.term.set_palette(theme.palette);
         }
         theme::apply_to_kit(&theme, cx);
@@ -1318,7 +1516,7 @@ impl Workspace {
         }
         if self.config.cursor != old.cursor || self.config.terminal != old.terminal {
             let options = self.config.term_options();
-            for pane in self.spaces().flat_map(|s| s.terminals.values()) {
+            for pane in self.spaces().flat_map(|s| s.terminals().map(|(_, p)| p)) {
                 pane.term.shared().set_options(options);
             }
         }
@@ -1411,8 +1609,8 @@ impl Workspace {
         }
         self.cell = cell;
         for space in std::iter::once(&mut self.space).chain(&mut self.others) {
-            for (id, pane) in space.terminals.iter_mut() {
-                if let Some(block) = space.canvas.get(*id) {
+            for (id, body) in space.blocks.iter_mut() {
+                if let (Some(pane), Some(block)) = (body.terminal_mut(), space.canvas.get(*id)) {
                     let content = chrome::content_rect(block.rect).size();
                     let (cols, rows) = chrome::grid_size(content, self.cell.size);
                     pane.term.resize(cols, rows, self.cell.px());
@@ -1431,7 +1629,11 @@ impl Workspace {
         let mut news = Vec::new();
         let spaces = std::iter::once(&mut self.space).chain(&mut self.others);
         for (i, space) in spaces.enumerate() {
-            for (&id, pane) in &mut space.terminals {
+            let terminals = space
+                .blocks
+                .iter_mut()
+                .filter_map(|(id, body)| Some((*id, body.terminal_mut()?)));
+            for (id, pane) in terminals {
                 let status = pane.term.status();
                 let new = alert::news(&status, pane.heard);
                 pane.heard = (status.finished, status.attention);
@@ -1508,8 +1710,7 @@ impl Workspace {
         match &self.config.shell.working_directory {
             WorkingDirectory::Inherit => self
                 .space
-                .focused
-                .and_then(|id| self.space.terminals.get(&id))
+                .focused_terminal()
                 .and_then(|pane| pane.term.cwd()),
             WorkingDirectory::Home => None,
             WorkingDirectory::Path(path) if path.is_dir() => Some(path.clone()),
@@ -1806,7 +2007,11 @@ impl Workspace {
         self.space.pristine = false;
         self.space.canvas.raise(id);
         self.space.focused = Some(id);
-        window.focus(&self.focus_handle, cx);
+        // A note's editor takes the keyboard; anything else leaves it with the workspace.
+        match self.space.blocks.get(&id) {
+            Some(Body::Note(note)) if !note.preview => note.focus(window, cx),
+            _ => window.focus(&self.focus_handle, cx),
+        }
         cx.notify();
     }
 
@@ -1847,11 +2052,13 @@ impl Workspace {
 
     pub(crate) fn begin_resize(&mut self, id: BlockId, pos: PixelPoint<Pixels>) {
         let p = self.local(pos);
-        let min = if self.space.kanbans.contains_key(&id) {
-            kanban::MIN
-        } else {
-            chrome::min_block_size(self.cell.size)
-        };
+        let min = self
+            .space
+            .blocks
+            .get(&id)
+            .map_or(chrome::min_block_size(self.cell.size), |b| {
+                b.min_size(self.cell.size)
+            });
         self.drag = Gesture::resize_block(&self.space.canvas, id, p, min).map(Drag::Canvas);
     }
 
@@ -1859,10 +2066,12 @@ impl Workspace {
         let p = self.local(pos);
         match &mut self.drag {
             Some(Drag::Canvas(gesture)) => {
-                if let Some((id, rect)) = gesture.update(&mut self.space.canvas, p) {
+                let update = gesture.update(&mut self.space.canvas, p);
+                self.space.guides = update.guides;
+                if let Some((id, rect)) = update.resized {
                     let (cols, rows) =
                         chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
-                    if let Some(pane) = self.space.terminals.get_mut(&id) {
+                    if let Some(pane) = self.space.terminal_mut(id) {
                         pane.term.resize(cols, rows, self.cell.px());
                     }
                 }
@@ -1870,7 +2079,7 @@ impl Workspace {
             Some(Drag::Select(id)) => {
                 let id = *id;
                 if let (Some((row, col, side)), Some(pane)) =
-                    (self.cell_under(id, pos), self.space.terminals.get(&id))
+                    (self.cell_under(id, pos), self.space.terminal(id))
                 {
                     pane.term.shared().select_update(row, col, side);
                 }
@@ -1894,7 +2103,7 @@ impl Workspace {
         let Some((row, col, side)) = self.cell_under(id, e.position) else {
             return;
         };
-        let Some(pane) = self.space.terminals.get(&id) else {
+        let Some(pane) = self.space.terminal(id) else {
             return;
         };
         let kind = match e.click_count {
@@ -1909,8 +2118,7 @@ impl Workspace {
     pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
         let text = self
             .space
-            .focused
-            .and_then(|id| self.space.terminals.get(&id))
+            .focused_terminal()
             .and_then(|pane| pane.term.shared().selection_text());
         if let Some(text) = text {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
@@ -1929,7 +2137,7 @@ impl Workspace {
         )
     }
 
-    fn center(&self, window: &Window) -> Point {
+    pub(crate) fn center(&self, window: &Window) -> Point {
         let vp = self.viewport(window);
         Point::new(vp.w / 2.0, vp.h / 2.0)
     }
@@ -1998,11 +2206,7 @@ impl Workspace {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        if let Some(pane) = self
-            .space
-            .focused
-            .and_then(|id| self.space.terminals.get(&id))
-        {
+        if let Some(pane) = self.space.focused_terminal() {
             pane.term.paste(&text);
         }
     }
@@ -2010,6 +2214,7 @@ impl Workspace {
     fn end_drag(&mut self) {
         self.drag = None;
         self.press = None;
+        self.space.guides.clear();
     }
 
     /// Mouse up: a press on the empty canvas that didn't pan is a click, and leaves no terminal
@@ -2039,16 +2244,16 @@ impl Workspace {
         self.open(rect, window, cx);
     }
 
-    fn close_terminal(&mut self, cx: &mut Context<Self>) {
+    fn close_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.space.focused {
-            self.close(id, cx);
+            self.close(id, window, cx);
         }
     }
 
     fn run(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
         match command {
             Command::NewTerminal => self.new_terminal(window, cx),
-            Command::CloseTerminal => self.close_terminal(cx),
+            Command::CloseTerminal => self.close_terminal(window, cx),
             Command::Copy => self.copy_selection(cx),
             Command::Paste => self.paste_clipboard(cx),
             Command::PreviousPrompt => self.jump_to_prompt(true, cx),
@@ -2061,6 +2266,7 @@ impl Workspace {
             Command::OpenConfig => self.open_config(window, cx),
             Command::Settings => self.toggle_settings(window, cx),
             Command::NewKanban => self.new_kanban(window, cx),
+            Command::NewNote => self.new_note(window, cx),
             Command::NextWorkspace => self.cycle_space(1, window, cx),
             Command::PreviousWorkspace => self.cycle_space(-1, window, cx),
             Command::NewWorkspace => self.new_space(window, cx),
@@ -2071,10 +2277,7 @@ impl Workspace {
 
     /// Scrolls the focused terminal to its previous or next prompt (shell integration marks them).
     fn jump_to_prompt(&mut self, up: bool, cx: &mut Context<Self>) {
-        let pane = self
-            .space
-            .focused
-            .and_then(|id| self.space.terminals.get(&id));
+        let pane = self.space.focused_terminal();
         if pane.is_some_and(|pane| pane.term.jump_to_prompt(up)) {
             cx.notify();
         }
@@ -2201,6 +2404,15 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
+        // Esc puts a tool that stays on back to Select.
+        if e.keystroke.key == "escape"
+            && !e.keystroke.modifiers.modified()
+            && self.tool != Tool::Select
+        {
+            self.set_tool(Tool::Select, window, cx);
+            cx.stop_propagation();
+            return;
+        }
         if let Some(to) = workspace_digit(&e.keystroke, cfg!(target_os = "macos"))
             && to <= self.others.len()
         {
@@ -2208,11 +2420,7 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
-        let Some(pane) = self
-            .space
-            .focused
-            .and_then(|id| self.space.terminals.get(&id))
-        else {
+        let Some(pane) = self.space.focused_terminal() else {
             return;
         };
         let k = &e.keystroke;
@@ -2332,7 +2540,7 @@ impl Workspace {
         let lines = self.scroll_acc.trunc();
         self.scroll_acc -= lines;
         if lines != 0.0 {
-            if let Some(pane) = self.space.terminals.get(&id) {
+            if let Some(pane) = self.space.terminal(id) {
                 pane.term.scroll(lines as i32);
             }
             cx.notify();
@@ -2433,6 +2641,28 @@ fn paint_dots(camera: &Camera, color: Hsla, bounds: Bounds<Pixels>, window: &mut
     }
 }
 
+/// The snap guides: 1 px lines in the accent color, world units to screen.
+fn paint_guides(
+    camera: &Camera,
+    color: Hsla,
+    bounds: Bounds<Pixels>,
+    guides: &[Guide],
+    window: &mut Window,
+) {
+    for guide in guides {
+        let (a, b) = match *guide {
+            Guide::Vertical { x, y0, y1 } => (Point::new(x, y0), Point::new(x, y1)),
+            Guide::Horizontal { y, x0, x1 } => (Point::new(x0, y), Point::new(x1, y)),
+        };
+        let (a, b) = (camera.to_screen(a), camera.to_screen(b));
+        let rect = Bounds::new(
+            point(bounds.origin.x + px(a.x), bounds.origin.y + px(a.y)),
+            size(px((b.x - a.x).max(1.0)), px((b.y - a.y).max(1.0))),
+        );
+        window.paint_quad(fill(rect, color));
+    }
+}
+
 fn is_dark(appearance: WindowAppearance) -> bool {
     matches!(
         appearance,
@@ -2472,16 +2702,15 @@ impl Render for Workspace {
         self.cursor_blinks = false;
         let exited: Vec<BlockId> = self
             .space
-            .terminals
-            .iter()
+            .terminals()
             .filter(|(_, pane)| pane.term.exited())
-            .map(|(id, _)| *id)
+            .map(|(id, _)| id)
             .collect();
         for id in exited {
-            self.close(id, cx);
+            self.close(id, window, cx);
         }
         // Re-arm once per frame: output is coalesced to frame rate.
-        for pane in self.space.terminals.values() {
+        for (_, pane) in self.space.terminals() {
             pane.term.rearm();
         }
         self.hear(window, cx);
@@ -2549,35 +2778,29 @@ impl Render for Workspace {
                     .map_or(motion::Look::REST, |since| {
                         motion::opening(motion::progress(*since, now, motion::OPEN))
                     });
-                let content = match self.space.terminals.get(&b.id) {
-                    Some(pane) => Content::Terminal(pane),
-                    None => {
-                        Content::Kanban(self.space.kanbans.get(&b.id).copied().unwrap_or_default())
-                    }
-                };
-                block::render(self, b, content, look, true, window, cx)
+                let body = &self.space.blocks[&b.id];
+                block::render(self, b, body, look, true, window, cx)
             })
             .collect();
         // Ghosts fade above the blocks, where they were.
         blocks.extend(self.space.ghosts.iter().map(|g| {
             let look = motion::closing(motion::progress(g.since, now, motion::CLOSE));
-            let content = match &g.body {
-                GhostBody::Terminal(pane) => Content::Terminal(pane),
-                GhostBody::Kanban(k) => Content::Kanban(*k),
-            };
-            block::render(self, g.block, content, look, false, window, cx)
+            block::render(self, g.block, &g.body, look, false, window, cx)
         }));
 
         let entity = cx.entity();
         let focus = self.focus_handle.clone();
         let camera = self.space.view;
         let dot = self.ui.dot;
+        let guides = self.space.guides.clone();
+        let accent = self.ui.accent;
         // A full-size layer under the blocks: the IME handler, the workspace origin, and
         // window-wide drag listeners (drags keep working outside the window).
         let layer = canvas(
             |_, _, _| {},
             move |bounds, _, window, cx| {
                 paint_dots(&camera, dot, bounds, window);
+                paint_guides(&camera, accent, bounds, &guides, window);
                 window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
                 entity.update(cx, |ws, _| ws.origin = bounds.origin);
                 let on_move = entity.clone();
@@ -2613,8 +2836,8 @@ impl Render for Workspace {
         .absolute()
         .size_full();
 
-        let hand = window.modifiers().alt;
-        self.hand = hand;
+        self.hand = window.modifiers().alt;
+        let hand = self.hand || self.tool == Tool::Hand;
         let panning = matches!(self.drag, Some(Drag::Canvas(Gesture::Pan { .. })));
         let area = div()
             .id("workspace")
@@ -2675,7 +2898,8 @@ impl Render for Workspace {
                         .justify_center()
                         .child(self.hint()),
                 )
-            });
+            })
+            .child(toolbar::render(self, cx));
         let picker = self
             .picker
             .as_ref()
@@ -2754,11 +2978,7 @@ impl EntityInputHandler for Workspace {
         cx: &mut Context<Self>,
     ) {
         self.marked = None;
-        if let Some(pane) = self
-            .space
-            .focused
-            .and_then(|id| self.space.terminals.get(&id))
-        {
+        if let Some(pane) = self.space.focused_terminal() {
             pane.term.write(text.as_bytes().to_vec());
         }
         cx.notify();
@@ -3075,7 +3295,28 @@ mod tests {
         ws.read_with(cx, |ws, _| {
             assert_eq!(ws.space.canvas.blocks().len(), 1);
             assert_eq!(ws.space.focused, ws.space.canvas.top());
-            assert_eq!(ws.space.terminals.len(), 1);
+            assert_eq!(ws.space.terminals().count(), 1);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn blocks_of_any_kind_share_one_map(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let terminal = first_id(&ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.new_kanban(window, cx));
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            let kanban = ws.space.canvas.top().unwrap();
+            assert_eq!(ws.space.blocks.len(), 2);
+            assert!(ws.space.terminal(terminal).is_some());
+            assert!(ws.space.kanban(terminal).is_none());
+            assert!(ws.space.kanban(kanban).is_some());
+            assert!(ws.space.terminal(kanban).is_none());
+            assert_eq!(ws.space.terminals().count(), 1);
+            assert_eq!(ws.space.focused, Some(kanban));
+            assert!(ws.space.focused_terminal().is_none());
         });
     }
 
@@ -3140,7 +3381,7 @@ mod tests {
         .unwrap();
         ws.read_with(cx, |ws, _| {
             assert!(ws.space.canvas.blocks().is_empty());
-            assert!(ws.space.terminals.is_empty());
+            assert!(ws.space.terminals().next().is_none());
             assert_eq!(ws.space.focused, None);
         });
     }
@@ -3171,7 +3412,11 @@ mod tests {
     #[cfg(unix)]
     fn ring(ws: &Entity<Workspace>, id: templum_canvas::BlockId, cx: &mut TestAppContext) {
         ws.read_with(cx, |ws, _| {
-            ws.space.terminals[&id].term.write(b"\x07\r".to_vec())
+            ws.space
+                .terminal(id)
+                .unwrap()
+                .term
+                .write(b"\x07\r".to_vec())
         });
     }
 
@@ -3200,11 +3445,11 @@ mod tests {
         .unwrap();
         ring(&ws, ringing, cx);
         until("the alert", handle, &ws, cx, |ws| {
-            ws.space.terminals[&ringing].alert.is_some()
+            ws.space.terminal(ringing).unwrap().alert.is_some()
         });
         ws.read_with(cx, |ws, _| {
             assert_eq!(
-                ws.space.terminals[&ringing].alert,
+                ws.space.terminal(ringing).unwrap().alert,
                 Some(Alert::Attention(None))
             );
         });
@@ -3217,15 +3462,15 @@ mod tests {
         })
         .unwrap();
         until("the alert to go", handle, &ws, cx, |ws| {
-            ws.space.terminals[&ringing].alert.is_none()
+            ws.space.terminal(ringing).unwrap().alert.is_none()
         });
         // The focused terminal, looked at: no news.
         ring(&ws, ringing, cx);
         until("the bell", handle, &ws, cx, |ws| {
-            ws.space.terminals[&ringing].heard.1 == 2
+            ws.space.terminal(ringing).unwrap().heard.1 == 2
         });
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.space.terminals[&ringing].alert, None)
+            assert_eq!(ws.space.terminal(ringing).unwrap().alert, None)
         });
     }
 
@@ -3243,7 +3488,7 @@ mod tests {
         let bell = |bells: u64, cx: &mut TestAppContext| {
             ring(&ws, id, cx);
             until("the bell", handle, &ws, cx, |ws| {
-                ws.space.terminals[&id].heard.1 == bells
+                ws.space.terminal(id).unwrap().heard.1 == bells
             });
             cx.update_window(handle, |_, window, cx| window.render_frame(cx))
                 .unwrap();
@@ -3252,12 +3497,12 @@ mod tests {
         set_active(handle, false, cx);
         ws.update(cx, |ws, _| ws.config.terminal.notifications = false);
         bell(1, cx);
-        assert!(ws.read_with(cx, |ws, _| ws.space.terminals[&id].alert.is_some()));
+        assert!(ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().alert.is_some()));
         assert_eq!(cx.shown_system_notifications().len(), 0, "turned off");
         // Looked at, then in the background again.
         set_active(handle, true, cx);
         until("the alert to go", handle, &ws, cx, |ws| {
-            ws.space.terminals[&id].alert.is_none()
+            ws.space.terminal(id).unwrap().alert.is_none()
         });
         set_active(handle, false, cx);
         ws.update(cx, |ws, _| ws.config.terminal.notifications = true);
@@ -3328,6 +3573,74 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn a_dragged_block_snaps_to_a_neighbour_and_shows_a_guide_until_release(
+        cx: &mut TestAppContext,
+    ) {
+        let (handle, ws) = open(cx);
+        let first = first_id(&ws, cx);
+        // A small second block over the first one's top, its horizontal lines (30, 80 and 130
+        // below the first's top) clear of the first's (0, half its height, its height).
+        let second = cx
+            .update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    let r = ws.space.canvas.get(first).unwrap().rect;
+                    ws.open(Rect::new(r.x + 300.0, r.y + 30.0, 200.0, 100.0), window, cx);
+                    ws.space.appearing.clear();
+                    ws.space.canvas.top().unwrap()
+                })
+            })
+            .unwrap();
+        let (first_rect, second_rect) = ws.read_with(cx, |ws, _| {
+            (
+                ws.space.canvas.get(first).unwrap().rect,
+                ws.space.canvas.get(second).unwrap().rect,
+            )
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let from = window.find(("title", second.0 as usize)).bounds().center();
+            // Left, so the second's left edge lands 5 px right of the first's: it snaps there.
+            let to = point(from.x + px(first_rect.x - second_rect.x + 5.0), from.y);
+            let modifiers = Modifiers::default();
+            window.dispatch_event(
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: from,
+                    modifiers,
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                    position: to,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers,
+                }),
+                cx,
+            );
+            let ws_now = ws.read(cx);
+            assert_eq!(
+                ws_now.space.canvas.get(second).unwrap().rect.x,
+                first_rect.x
+            );
+            assert_eq!(ws_now.space.guides.len(), 1, "a vertical guide");
+            window.dispatch_event(
+                PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position: to,
+                    modifiers,
+                    click_count: 1,
+                }),
+                cx,
+            );
+            assert!(ws.read(cx).space.guides.is_empty(), "gone on release");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn dragging_the_handle_resizes_block_and_terminal(cx: &mut TestAppContext) {
         let (handle, ws) = open(cx);
         let id = first_id(&ws, cx);
@@ -3350,7 +3663,7 @@ mod tests {
                 templum_canvas::chrome::content_rect(rect).size(),
                 cell,
             );
-            assert_eq!(ws.space.terminals[&id].term.grid_size(), expected);
+            assert_eq!(ws.space.terminal(id).unwrap().term.grid_size(), expected);
             assert_eq!(
                 expected,
                 (super::DEFAULT_COLS + 10, super::DEFAULT_ROWS + 3)
@@ -3408,7 +3721,9 @@ mod tests {
         #[cfg(windows)]
         let input = "echo hello\r";
         ws.read_with(cx, |ws, _| {
-            ws.space.terminals[&id]
+            ws.space
+                .terminal(id)
+                .unwrap()
                 .term
                 .write(input.as_bytes().to_vec())
         });
@@ -3416,7 +3731,10 @@ mod tests {
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 snap.text()
             });
             if shown.contains("hello") {
@@ -3426,7 +3744,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         ws.read_with(cx, |ws, _| {
-            let pane = &ws.space.terminals[&id];
+            let pane = &ws.space.terminal(id).unwrap();
             let (cols, rows) = pane.term.grid_size();
             let term = pane.term.shared();
             term.select_start(0, 0, Side::Left, SelectionKind::Simple);
@@ -3657,13 +3975,16 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
-            ws.space.terminals[&id].term.write(b"x\r".to_vec())
+            ws.space.terminal(id).unwrap().term.write(b"x\r".to_vec())
         });
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 snap.text()
             });
             if shown.contains('x') {
@@ -3722,8 +4043,8 @@ mod tests {
         .unwrap();
         ws.read_with(cx, |ws, _| {
             assert_eq!(ws.theme.name, "Catppuccin Mocha");
-            assert_eq!(ws.space.terminals.len(), 2);
-            for pane in ws.space.terminals.values() {
+            assert_eq!(ws.space.terminals().count(), 2);
+            for pane in ws.space.terminals().map(|(_, p)| p) {
                 assert_eq!(
                     pane.term.palette(),
                     ws.theme.palette,
@@ -3765,7 +4086,7 @@ mod tests {
             window.render_frame(cx);
             window.click("zoom-level", cx);
             window.render_frame(cx);
-            window.click("new-terminal", cx);
+            window.click("tool-terminal", cx);
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
@@ -4029,7 +4350,7 @@ mod tests {
             (
                 ws.space.canvas.get(id).unwrap().rect,
                 ws.cell.size,
-                ws.space.terminals[&id].term.grid_size(),
+                ws.space.terminal(id).unwrap().term.grid_size(),
             )
         });
         write_config(dir.path(), "[font]\nsize = 28\n");
@@ -4041,7 +4362,7 @@ mod tests {
                 "the block keeps its rect"
             );
             assert!(ws.cell.size.w > cell.w);
-            let now = ws.space.terminals[&id].term.grid_size();
+            let now = ws.space.terminal(id).unwrap().term.grid_size();
             assert!(now.0 < grid.0 && now.1 < grid.1, "{now:?} vs {grid:?}");
         });
     }
@@ -4073,7 +4394,10 @@ mod tests {
         reload(handle, &ws, cx);
         ws.read_with(cx, |ws, _| {
             let mut snap = templum_terminal::Snapshot::default();
-            snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+            snap.refresh(
+                ws.space.terminal(id).unwrap().term.shared(),
+                &ws.theme.palette,
+            );
             let c = snap.cursor.unwrap();
             assert_eq!(
                 (c.shape, c.blinking),
@@ -4149,7 +4473,7 @@ mod tests {
         let new = ws.read_with(cx, |ws, _| ws.space.canvas.top().unwrap());
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let cwd = ws.read_with(cx, |ws, _| ws.space.terminals[&new].term.cwd());
+            let cwd = ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().term.cwd());
             if let Some(cwd) = cwd {
                 assert_eq!(cwd.canonicalize().unwrap(), start.canonicalize().unwrap());
                 break;
@@ -4679,15 +5003,21 @@ mod tests {
         let top = |cx: &mut TestAppContext| {
             ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 (snap.rows[0].text.clone(), snap.rows[0].mark)
             })
         };
         ws.read_with(cx, |ws, _| {
-            ws.space.terminals[&id].term.write(&b"seq 100\r"[..])
+            ws.space.terminal(id).unwrap().term.write(&b"seq 100\r"[..])
         });
         let deadline = Instant::now() + Duration::from_secs(10);
-        while ws.read_with(cx, |ws, _| ws.space.terminals[&id].term.status().finished) < 1 {
+        while ws.read_with(cx, |ws, _| {
+            ws.space.terminal(id).unwrap().term.status().finished
+        }) < 1
+        {
             assert!(Instant::now() < deadline, "seq never ended");
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -4721,13 +5051,18 @@ mod tests {
         let shown = |id, cx: &mut TestAppContext| {
             ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 snap.text()
             })
         };
         let ask = |id, want: &str, cx: &mut TestAppContext| {
             ws.read_with(cx, |ws, _| {
-                ws.space.terminals[&id]
+                ws.space
+                    .terminal(id)
+                    .unwrap()
                     .term
                     .write(&b"echo \"[${__templum_installed-no}]\"\r"[..])
             });
@@ -5755,7 +6090,7 @@ mod tests {
         use std::time::{Duration, Instant};
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            if let Some(cwd) = ws.read_with(cx, |ws, _| ws.space.terminals[&id].term.cwd()) {
+            if let Some(cwd) = ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().term.cwd()) {
                 return cwd.canonicalize().unwrap();
             }
             assert!(Instant::now() < deadline, "no cwd");
@@ -5932,7 +6267,7 @@ mod tests {
                 ws.space.canvas.get_mut(first).unwrap().rect = Rect::new(-50.0, 60.0, 700.0, 450.0);
                 ws.focus_block(first, window, cx);
                 ws.space.canvas.camera = Camera::at(Point::new(-40.0, 25.0), 1.25);
-                ws.save_canvas_now();
+                ws.save_canvas_now(cx);
             })
         })
         .unwrap();
@@ -5987,7 +6322,10 @@ mod tests {
         ws.read_with(cx, |ws, _| {
             assert_eq!(ws.active, 0);
             assert_eq!(ws.space.focused, Some(first));
-            assert!(!ws.space.terminals[&first].term.exited(), "still running");
+            assert!(
+                !ws.space.terminal(first).unwrap().term.exited(),
+                "still running"
+            );
         });
     }
 
@@ -6022,7 +6360,7 @@ mod tests {
         ws.update(cx, |ws, cx| ws.set_dark(true, cx));
         ws.read_with(cx, |ws, _| {
             assert_eq!(
-                ws.others[0].terminals[&first].term.palette(),
+                ws.others[0].terminal(first).unwrap().term.palette(),
                 ws.theme.palette
             );
         });
@@ -6042,7 +6380,7 @@ mod tests {
                 assert_eq!(ws.others.len(), 0, "the last one stays");
                 ws.new_space(window, cx);
                 ws.open(Rect::new(0.0, 0.0, 600.0, 400.0), window, cx);
-                ws.save_canvas_now();
+                ws.save_canvas_now(cx);
                 ws.delete_space("w2", window, cx);
                 assert_eq!((ws.active, ws.others.len()), (0, 0));
                 assert_eq!(ws.space.name, "Work", "the one before it is shown");
@@ -6075,7 +6413,7 @@ mod tests {
                 ws.new_space(window, cx);
                 ws.switch_to(1, window, cx);
                 ws.toggle_sidebar(window, cx);
-                ws.save_canvas_now();
+                ws.save_canvas_now(cx);
             })
         })
         .unwrap();
@@ -6092,15 +6430,314 @@ mod tests {
     }
 
     /// The kanban block on top.
-    fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
+    #[cfg(target_os = "macos")]
+    const NEW_NOTE: &str = "cmd-shift-m";
+    #[cfg(not(target_os = "macos"))]
+    const NEW_NOTE: &str = "ctrl-shift-m";
+
+    fn top_note(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
         ws.read_with(cx, |ws, _| {
             let id = ws.space.canvas.top().unwrap();
             assert!(
-                ws.space.kanbans.contains_key(&id),
-                "the top block is a kanban"
+                matches!(ws.space.blocks.get(&id), Some(super::Body::Note(_))),
+                "the top block is a note"
             );
             id
         })
+    }
+
+    /// Opens a note with the shortcut and returns it.
+    fn new_note(
+        handle: AnyWindowHandle,
+        ws: &Entity<Workspace>,
+        cx: &mut TestAppContext,
+    ) -> BlockId {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(NEW_NOTE, cx);
+            ws.update(cx, |ws, _| ws.space.appearing.clear());
+            window.render_frame(cx);
+        })
+        .unwrap();
+        top_note(ws, cx)
+    }
+
+    #[gpui_kit::test]
+    fn new_note_adds_a_focused_note_whose_heading_titles_it(cx: &mut TestAppContext) {
+        use gpui_kit::Focusable as _;
+        let (handle, ws) = open(cx);
+        let id = new_note(handle, &ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            let ws_now = ws.read(cx);
+            assert_eq!(ws_now.space.focused, Some(id));
+            let rect = ws_now.space.canvas.get(id).unwrap().rect;
+            assert_eq!((rect.w, rect.h), (crate::note::SIZE.w, crate::note::SIZE.h));
+            let super::Body::Note(note) = &ws_now.space.blocks[&id] else {
+                unreachable!()
+            };
+            assert!(
+                note.editor.read(cx).focus_handle(cx).is_focused(window),
+                "the editor has the keyboard"
+            );
+        })
+        .unwrap();
+        // Typed text reaches the editor.
+        cx.simulate_input(handle, "hi");
+        ws.read_with(cx, |ws, cx| {
+            let super::Body::Note(note) = &ws.space.blocks[&id] else {
+                unreachable!()
+            };
+            assert_eq!(note.text(cx), "hi");
+            assert_eq!(note.title(cx).as_ref(), "Note");
+        });
+        // A heading becomes the title.
+        cx.update_window(handle, |_, window, cx| {
+            let super::Body::Note(note) = &ws.read(cx).space.blocks[&id] else {
+                unreachable!()
+            };
+            let editor = note.editor.clone();
+            editor.update(cx, |e, cx| e.set_value("# Hello\nhi", window, cx));
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, cx| {
+            let super::Body::Note(note) = &ws.space.blocks[&id] else {
+                unreachable!()
+            };
+            assert_eq!(note.title(cx).as_ref(), "Hello");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn shortcuts_run_from_inside_a_note(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        new_note(handle, &ws, cx);
+        cx.update_window(handle, |_, window, cx| window.press(NEW, cx))
+            .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.blocks.len(), 3, "terminal, note, terminal");
+            assert_eq!(ws.space.terminals().count(), 2);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_note_focuses_its_editor(cx: &mut TestAppContext) {
+        use gpui_kit::Focusable as _;
+        let (handle, ws) = open(cx);
+        let id = new_note(handle, &ws, cx);
+        let terminal = ws.read_with(cx, |ws, _| ws.space.terminals().next().unwrap().0);
+        cx.update_window(handle, |_, window, cx| {
+            // The terminal gets the keyboard, but stays under the note (focus_block would raise
+            // it, and it covers the note).
+            ws.update(cx, |ws, cx| {
+                ws.space.focused = Some(terminal);
+                window.focus(&ws.focus_handle, cx);
+            });
+            window.render_frame(cx);
+            let body = window.find(("note-editor", id.0 as usize)).bounds();
+            click(
+                window,
+                cx,
+                (
+                    f32::from(body.origin.x) + 20.0,
+                    f32::from(body.origin.y) + 20.0,
+                ),
+                1,
+            );
+            window.render_frame(cx);
+            let ws_now = ws.read(cx);
+            assert_eq!(ws_now.space.focused, Some(id));
+            let super::Body::Note(note) = &ws_now.space.blocks[&id] else {
+                unreachable!()
+            };
+            assert!(
+                note.editor.read(cx).focus_handle(cx).is_focused(window),
+                "the editor keeps the keyboard"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_preview_button_shows_the_rendered_note(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = new_note(handle, &ws, cx);
+        let n = id.0 as usize;
+        cx.update_window(handle, |_, window, cx| {
+            window.find(("note-editor", n));
+            window.hover(("block", n), cx);
+            window.render_frame(cx);
+            window.click(("preview", n), cx);
+            window.render_frame(cx);
+            window.find(("note-preview", n));
+            assert!(window.try_find(("note-editor", n)).is_none());
+            let super::Body::Note(note) = &ws.read(cx).space.blocks[&id] else {
+                unreachable!()
+            };
+            assert!(note.preview);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn closing_a_focused_note_gives_the_keyboard_back_to_the_canvas(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        new_note(handle, &ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.press(CLOSE, cx);
+            window.render_frame(cx);
+            window.press(NEW, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(
+                ws.space.blocks.values().all(|b| b.note().is_none()),
+                "closed"
+            );
+            assert_eq!(ws.space.terminals().count(), 2, "the shortcut still works");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn previewing_a_focused_note_gives_the_keyboard_back_to_the_canvas(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = new_note(handle, &ws, cx);
+        let n = id.0 as usize;
+        cx.update_window(handle, |_, window, cx| {
+            window.hover(("block", n), cx);
+            window.render_frame(cx);
+            window.click(("preview", n), cx);
+            window.render_frame(cx);
+            window.press(NEW, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.terminals().count(), 2, "the shortcut still works");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_note_comes_back_with_its_text_and_mode(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
+        let id = new_note(handle, &ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let super::Body::Note(note) = &ws.space.blocks[&id] else {
+                    unreachable!()
+                };
+                note.editor
+                    .update(cx, |e, cx| e.set_value("# Keep me\n- x", window, cx));
+                ws.toggle_preview(id, window, cx);
+                ws.save_canvas_now(cx);
+            });
+        })
+        .unwrap();
+        // As the_canvas_comes_back_as_it_was_left does: a second workspace on the same folder.
+        let (_, again) = open_in(cx, None, Some(dir.path().to_path_buf()));
+        again.read_with(cx, |ws, cx| {
+            let notes: Vec<_> = ws
+                .space
+                .blocks
+                .values()
+                .filter_map(|b| match b {
+                    super::Body::Note(n) => Some((n.text(cx), n.preview)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(notes, [("# Keep me\n- x".to_string(), true)]);
+        });
+    }
+
+    fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
+        ws.read_with(cx, |ws, _| {
+            let id = ws.space.canvas.top().unwrap();
+            assert!(ws.space.kanban(id).is_some(), "the top block is a kanban");
+            id
+        })
+    }
+
+    #[gpui_kit::test]
+    fn the_toolbar_adds_blocks_and_the_title_bar_lost_its_add_buttons(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find("toolbar");
+            assert!(
+                window.try_find("new-terminal").is_none(),
+                "no + in the title bar"
+            );
+            assert!(window.try_find("new-kanban").is_none());
+            window.click("tool-terminal", cx);
+            window.render_frame(cx);
+            window.click("tool-note", cx);
+            window.render_frame(cx);
+            window.click("tool-kanban", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.terminals().count(), 2);
+            let kinds =
+                |f: fn(&super::Body) -> bool| ws.space.blocks.values().filter(|b| f(b)).count();
+            assert_eq!(kinds(|b| b.note().is_some()), 1);
+            assert_eq!(kinds(|b| b.kanban().is_some()), 1);
+            assert_eq!(ws.tool, super::Tool::Select, "block tools don't stay on");
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_hand_tool_pans_over_blocks_until_escape(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        let before = ws.read_with(cx, |ws, _| {
+            (
+                ws.space.canvas.camera.origin,
+                ws.space.canvas.get(id).unwrap().rect,
+            )
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-hand", cx);
+            window.render_frame(cx);
+            window.find("hand");
+            let from = window.find(("title", id.0 as usize)).bounds().center();
+            press_with(
+                window,
+                cx,
+                MouseButton::Left,
+                Modifiers::default(),
+                (f32::from(from.x), f32::from(from.y)),
+                (f32::from(from.x) + 40.0, f32::from(from.y) + 10.0),
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.tool, super::Tool::Hand);
+            assert_eq!(ws.space.canvas.get(id).unwrap().rect, before.1, "not moved");
+            assert_ne!(ws.space.canvas.camera.origin, before.0, "panned");
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.press("escape", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("hand").is_none(), "the layer is gone");
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.tool, super::Tool::Select));
+    }
+
+    #[gpui_kit::test]
+    fn the_toolbar_agent_button_lists_the_agents(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-agent", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.menu.is_some(), "the agents menu is open")
+        });
     }
 
     #[gpui_kit::test]
@@ -6108,7 +6745,7 @@ mod tests {
         let (handle, ws) = open(cx);
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
-            window.click("new-kanban", cx);
+            window.click("tool-kanban", cx);
             window.render_frame(cx);
         })
         .unwrap();
@@ -6126,7 +6763,7 @@ mod tests {
         .unwrap();
         ws.read_with(cx, |ws, _| {
             let board = ws.boards.boards[0].id;
-            assert_eq!(ws.space.kanbans[&block].board, Some(board));
+            assert_eq!(ws.space.kanban(block).unwrap().board, Some(board));
             assert_eq!(ws.boards.board(board).unwrap().columns.len(), 3);
         });
     }
@@ -6142,7 +6779,7 @@ mod tests {
                     ws.new_board(a, cx);
                     ws.new_kanban(window, cx);
                     let b = ws.space.canvas.top().unwrap();
-                    let board = ws.space.kanbans[&a].board.unwrap();
+                    let board = ws.space.kanban(a).unwrap().board.unwrap();
                     ws.show_board(b, board, cx);
                     let todo = ws.boards.board(board).unwrap().columns[0].id;
                     ws.space.appearing.clear();
@@ -6212,7 +6849,7 @@ mod tests {
                     ws.new_kanban(window, cx);
                     let block = ws.space.canvas.top().unwrap();
                     ws.new_board(block, cx);
-                    let board = ws.space.kanbans[&block].board.unwrap();
+                    let board = ws.space.kanban(block).unwrap().board.unwrap();
                     let todo = ws.boards.board(board).unwrap().columns[0].id;
                     let card = ws.boards.add_card(board, todo).unwrap();
                     ws.space.appearing.clear();
@@ -6266,7 +6903,7 @@ mod tests {
                     let block = ws.space.canvas.top().unwrap();
                     ws.new_board(block, cx);
                     ws.space.appearing.clear();
-                    let board = ws.space.kanbans[&block].board.unwrap();
+                    let board = ws.space.kanban(block).unwrap().board.unwrap();
                     (block, ws.boards.board(board).unwrap().columns[1].id)
                 })
             })
@@ -6357,7 +6994,7 @@ mod tests {
         ws.read_with(cx, |ws, _| {
             let moved = ws.space.canvas.camera.origin;
             assert_eq!((moved.x, moved.y), (before.x - 100.0, before.y - 40.0));
-            let term = ws.space.terminals[&id].term.shared();
+            let term = ws.space.terminal(id).unwrap().term.shared();
             assert!(term.selection_text().is_none(), "no selection");
             assert!(ws.drag.is_none(), "the drag ended");
         });
@@ -6476,7 +7113,7 @@ mod tests {
             ws.read_with(cx, |ws, _| {
                 let top = ws.space.canvas.top().unwrap();
                 assert_eq!(ws.space.canvas.get(top).unwrap().rect.origin(), world);
-                assert_eq!(ws.space.kanbans.contains_key(&top), item == 1);
+                assert_eq!(ws.space.kanban(top).is_some(), item == 1);
                 assert!(ws.menu.is_none(), "a choice closes it");
             });
         }
@@ -6529,7 +7166,7 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.space.terminals.len(), 2, "the agent's terminal");
+            assert_eq!(ws.space.terminals().count(), 2, "the agent's terminal");
             assert_eq!(ws.space.recent, [folder.path()]);
         });
     }
@@ -6544,7 +7181,7 @@ mod tests {
                     ws.add_kanban_at(Point::new(900.0, 0.0), window, cx);
                     let block = ws.space.canvas.top().unwrap();
                     ws.new_board(block, cx);
-                    let board = ws.space.kanbans[&block].board.unwrap();
+                    let board = ws.space.kanban(block).unwrap().board.unwrap();
                     let todo = ws.boards.board(board).unwrap().columns[0].id;
                     let card = ws.boards.add_card(board, todo).unwrap();
                     ws.space.appearing.clear();
@@ -6562,7 +7199,7 @@ mod tests {
             window.render_frame(cx);
             let ws = ws.read(cx);
             assert!(ws.boards.card(board, card).is_none(), "the card went");
-            assert!(ws.space.kanbans.contains_key(&block), "its block stayed");
+            assert!(ws.space.kanban(block).is_some(), "its block stayed");
         })
         .unwrap();
         cx.update_window(handle, |_, window, cx| {
@@ -6575,7 +7212,7 @@ mod tests {
             window.within("popup-menu").click(3usize, cx);
             window.render_frame(cx);
             assert!(
-                !ws.read(cx).space.terminals.contains_key(&terminal),
+                !ws.read(cx).space.terminal(terminal).is_some(),
                 "the terminal closed"
             );
         })
@@ -6592,11 +7229,11 @@ mod tests {
                     ws.new_kanban(window, cx);
                     let block = ws.space.canvas.top().unwrap();
                     ws.new_board(block, cx);
-                    let board = ws.space.kanbans[&block].board.unwrap();
+                    let board = ws.space.kanban(block).unwrap().board.unwrap();
                     let todo = ws.boards.board(board).unwrap().columns[0].id;
                     ws.boards.add_card(board, todo);
                     ws.new_kanban(window, cx);
-                    ws.save_canvas_now();
+                    ws.save_canvas_now(cx);
                     board
                 })
             })
@@ -6610,11 +7247,11 @@ mod tests {
                 .canvas
                 .blocks()
                 .iter()
-                .filter_map(|b| ws.space.kanbans.get(&b.id).map(|k| k.board))
+                .filter_map(|b| ws.space.kanban(b.id).map(|k| k.board))
                 .collect();
             shown.sort();
             assert_eq!(shown, [None, Some(board)]);
-            assert_eq!(ws.space.terminals.len(), 1, "and the terminal");
+            assert_eq!(ws.space.terminals().count(), 1, "and the terminal");
         });
     }
 
@@ -6736,7 +7373,10 @@ mod tests {
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 snap.text()
             });
             if shown.contains("claude --continue") {
@@ -6796,7 +7436,10 @@ mod tests {
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 snap.text()
             });
             if shown.contains("claude") {
@@ -6902,7 +7545,10 @@ mod tests {
         loop {
             let shown = ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 snap.text()
             });
             if shown.contains("claude -c --fast") {
@@ -6937,7 +7583,10 @@ mod tests {
         let shown = |id: BlockId, cx: &mut TestAppContext| {
             ws.read_with(cx, |ws, _| {
                 let mut snap = Snapshot::default();
-                snap.refresh(ws.space.terminals[&id].term.shared(), &ws.theme.palette);
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
                 snap.text()
             })
         };
