@@ -13,6 +13,8 @@ fn fresh() -> (tempfile::TempDir, Repo) {
         &["config", "user.name", "Ada Lovelace"],
         &["config", "user.email", "ada@example.com"],
         &["config", "commit.gpgsign", "false"],
+        // Files as written: a runner's core.autocrlf would turn restored files into CRLF.
+        &["config", "core.autocrlf", "false"],
     ] {
         repo.run(args).unwrap();
     }
@@ -639,12 +641,14 @@ fn ignore_anchors_the_path_and_keeps_the_rest_of_the_file() {
     std::fs::write(dir.path().join(".gitignore"), b"*.log\n# caf\xe9\n").unwrap();
     write(dir.path(), "notes.txt", "n\n");
     write(dir.path(), "sub/notes.txt", "n\n");
-    write(dir.path(), "a[1]*.txt", "x\n");
+    write(dir.path(), "a[1].txt", "x\n");
     repo.ignore("notes.txt").unwrap();
-    repo.ignore("a[1]*.txt").unwrap();
+    repo.ignore("a[1].txt").unwrap();
+    // Not a file name on Windows: only its pattern is checked.
+    repo.ignore("all*.tmp").unwrap();
     assert_eq!(
         std::fs::read(dir.path().join(".gitignore")).unwrap(),
-        b"*.log\n# caf\xe9\n/notes.txt\n/a\\[1]\\*.txt\n"
+        b"*.log\n# caf\xe9\n/notes.txt\n/a\\[1].txt\n/all\\*.tmp\n"
     );
     let paths: Vec<String> = repo
         .status()
@@ -658,7 +662,7 @@ fn ignore_anchors_the_path_and_keeps_the_rest_of_the_file() {
         "only the root's: {paths:?}"
     );
     assert!(!paths.contains(&"notes.txt".to_string()), "{paths:?}");
-    assert!(!paths.contains(&"a[1]*.txt".to_string()), "{paths:?}");
+    assert!(!paths.contains(&"a[1].txt".to_string()), "{paths:?}");
 }
 
 // Final review I4: a command that hangs (ssh asking on a terminal, a stalled network) can be

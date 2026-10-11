@@ -12212,6 +12212,8 @@ mod tests {
         git_run(dir.path(), &["config", "user.name", "Ada"]);
         git_run(dir.path(), &["config", "user.email", "ada@example.com"]);
         git_run(dir.path(), &["config", "commit.gpgsign", "false"]);
+        // Files as written: a runner's core.autocrlf would turn restored files into CRLF.
+        git_run(dir.path(), &["config", "core.autocrlf", "false"]);
         dir
     }
 
@@ -13245,6 +13247,7 @@ mod tests {
         assert_eq!(shown.matches("git fetch --prune").count(), 1, "{shown:?}");
     }
 
+    #[cfg(unix)]
     fn first_id_of(ws: &Workspace) -> BlockId {
         ws.space.canvas.blocks().first().map(|b| b.id).unwrap()
     }
