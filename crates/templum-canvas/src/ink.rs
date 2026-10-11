@@ -92,6 +92,9 @@ pub enum Drawing {
 
 /// A pen point closer than this to the previous one isn't kept.
 pub const MIN_POINT_DISTANCE: f32 = 1.5;
+/// How far (screen pixels) the pen trails the pointer while drawing, like a pulled string, so a
+/// shaky hand still draws a smooth line. The caller divides by the zoom.
+pub const STRING_PX: f32 = 5.0;
 /// How far (screen pixels) from the ink a click still hits it. The caller divides by the zoom.
 pub const HIT_PX: f32 = 6.0;
 pub const MIN_WIDTH: f32 = 1.0;
@@ -100,19 +103,26 @@ pub const MAX_WIDTH: f32 = 64.0;
 pub const MIN_SHAPE: f32 = 2.0;
 
 impl Drawing {
-    /// Appends a point to a stroke, unless it is within [`MIN_POINT_DISTANCE`] of the last one.
-    /// Shapes take no points.
-    pub fn push_point(&mut self, p: Point) -> bool {
+    /// Pulls a stroke's pen toward the pointer at `p`, stopping `string` short of it (0 puts it
+    /// on `p`): a wobble shorter than the string never reaches the ink. The new point is kept
+    /// only [`MIN_POINT_DISTANCE`] or more from the last one. Shapes take no points.
+    pub fn push_point(&mut self, p: Point, string: f32) -> bool {
         let Drawing::Stroke { points, .. } = self else {
             return false;
         };
-        if points
-            .last()
-            .is_some_and(|last| distance(*last, p) < MIN_POINT_DISTANCE)
-        {
+        let Some(&last) = points.last() else {
+            points.push(p);
+            return true;
+        };
+        let d = distance(last, p);
+        if d - string < MIN_POINT_DISTANCE {
             return false;
         }
-        points.push(p);
+        let k = (d - string) / d;
+        points.push(Point::new(
+            last.x + (p.x - last.x) * k,
+            last.y + (p.y - last.y) * k,
+        ));
         true
     }
 
@@ -333,9 +343,9 @@ mod tests {
     #[test]
     fn points_closer_than_the_minimum_are_skipped() {
         let mut s = stroke(&[(0.0, 0.0)], 4.0);
-        assert!(!s.push_point(Point::new(1.0, 0.0)), "1 away: skipped");
-        assert!(s.push_point(Point::new(2.0, 0.0)));
-        assert!(s.push_point(Point::new(2.0, 1.6)));
+        assert!(!s.push_point(Point::new(1.0, 0.0), 0.0), "1 away: skipped");
+        assert!(s.push_point(Point::new(2.0, 0.0), 0.0));
+        assert!(s.push_point(Point::new(2.0, 1.6), 0.0));
         let Drawing::Stroke { points, .. } = &s else {
             unreachable!()
         };
@@ -343,8 +353,34 @@ mod tests {
         assert!(
             !shape(ShapeKind::Line, (0.0, 0.0), (1.0, 1.0))
                 .clone()
-                .push_point(Point::default())
+                .push_point(Point::default(), 0.0)
         );
+    }
+
+    #[test]
+    fn the_pen_trails_the_pointer_by_the_string() {
+        let mut s = stroke(&[(0.0, 0.0)], 4.0);
+        assert!(
+            !s.push_point(Point::new(0.0, 6.0), 5.0),
+            "within the string"
+        );
+        assert!(s.push_point(Point::new(10.0, 0.0), 5.0));
+        let Drawing::Stroke { points, .. } = &s else {
+            unreachable!()
+        };
+        assert_eq!(points.last(), Some(&Point::new(5.0, 0.0)));
+
+        // A hand shaking 2 up and down every 8 along a line: the ink strays a quarter as much.
+        let mut s = stroke(&[(0.0, 0.0)], 4.0);
+        for i in 1..200 {
+            let y = 2.0 * (i as f32 * std::f32::consts::TAU / 8.0).sin();
+            s.push_point(Point::new(i as f32, y), 5.0);
+        }
+        let Drawing::Stroke { points, .. } = &s else {
+            unreachable!()
+        };
+        let stray = points.iter().map(|p| p.y.abs()).fold(0.0, f32::max);
+        assert!(stray < 0.5, "strays {stray}");
     }
 
     #[test]

@@ -45,6 +45,9 @@ fn label(folder: &Path) -> (String, String) {
     (name, place)
 }
 
+/// Opens something in a folder: Some when it opened, so the dialog closes.
+pub(crate) type Open = dyn Fn(&Path, &mut Window, &mut App) -> Option<templum_canvas::BlockId>;
+
 /// Asks where `agent` runs, then opens it there with its block's top-left corner at `at`.
 /// `installed`: its command was found; if not, the dialog says how to install it.
 pub(crate) fn ask_folder(
@@ -56,11 +59,9 @@ pub(crate) fn ask_folder(
     cx: &mut Context<Workspace>,
 ) {
     let entity = cx.entity();
-    let ui = ws.ui;
-    let title = agent.title.clone();
     let program = agent.program().to_string();
     // One of Templum's own says how to install it; for one of the user's, the command may be off.
-    let help = match agent.install {
+    let help = (!installed).then(|| match agent.install {
         Some(install) => (
             format!("{program} isn't installed on this computer. To install it:"),
             install.to_string(),
@@ -69,8 +70,28 @@ pub(crate) fn ask_folder(
             format!("{program} wasn't found on this computer. Its command, in Settings ▸ Agents:"),
             agent.command.clone(),
         ),
-    };
+    });
     let command = agent.command.clone();
+    let open: Rc<Open> = Rc::new(move |folder, window, cx| {
+        entity.update(cx, |ws, cx| {
+            ws.launch_agent(&command, folder, at, window, cx)
+        })
+    });
+    ask_folder_for(ws, format!("Open {}", agent.title), help, open, window, cx);
+}
+
+/// Asks for a folder: this workspace's recent ones, the system's picker, or a typed path;
+/// `open` gets the choice. `help`: a note and a command shown above the list (an agent that
+/// isn't installed).
+pub(crate) fn ask_folder_for(
+    ws: &Workspace,
+    title: String,
+    help: Option<(String, String)>,
+    open: Rc<Open>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let ui = ws.ui;
     let warn = hsla(ws.theme.palette.ansi[3], 1.0);
     // The terminal's font: the install command is to copy into one.
     let mono = ws.cell.font.family.clone();
@@ -83,14 +104,6 @@ pub(crate) fn ask_folder(
         .collect();
     let input =
         cx.new(|cx| InputState::new(window, cx).placeholder("Or type a path, like ~/projects/app"));
-    let open = {
-        let entity = entity.clone();
-        Rc::new(move |folder: &Path, window: &mut Window, cx: &mut App| {
-            entity.update(cx, |ws, cx| {
-                ws.launch_agent(&command, folder, at, window, cx)
-            })
-        })
-    };
     let typed = {
         let (open, input) = (open.clone(), input.clone());
         move |window: &mut Window, cx: &mut App| -> bool {
@@ -171,7 +184,7 @@ pub(crate) fn ask_folder(
         let typed = typed.clone();
         alert
             .confirm()
-            .title(format!("Open {title}"))
+            .title(title.clone())
             .w(px(480.0))
             .button_props(DialogButtonProps::default().ok_text("Open"))
             .child(
@@ -179,7 +192,7 @@ pub(crate) fn ask_folder(
                     .flex()
                     .flex_col()
                     .gap(px(8.0))
-                    .when(!installed, |el| {
+                    .when_some(help.clone(), |el, (note, command)| {
                         el.child(
                             div()
                                 .px(px(10.0))
@@ -187,8 +200,8 @@ pub(crate) fn ask_folder(
                                 .rounded(px(8.0))
                                 .bg(ui.card)
                                 .text_size(px(12.0))
-                                .child(div().text_color(warn).child(help.0.clone()))
-                                .child(div().font_family(mono.clone()).child(help.1.clone())),
+                                .child(div().text_color(warn).child(note))
+                                .child(div().font_family(mono.clone()).child(command)),
                         )
                     })
                     .when(!recent.is_empty(), |el| {
@@ -208,11 +221,8 @@ pub(crate) fn ask_folder(
     input.update(cx, |input, cx| input.focus(window, cx));
 }
 
-/// Opens the agent in a folder.
-type Open = dyn Fn(&Path, &mut Window, &mut App) -> Option<templum_canvas::BlockId>;
-
-/// The system's folder picker; the chosen folder opens the agent.
-fn pick_folder(open: Rc<Open>, window: &mut Window, cx: &mut App) {
+/// The system's folder picker; `open` gets the chosen folder.
+pub(crate) fn pick_folder(open: Rc<Open>, window: &mut Window, cx: &mut App) {
     let picked = cx.prompt_for_paths(PathPromptOptions {
         files: false,
         directories: true,

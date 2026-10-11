@@ -16,7 +16,14 @@ use crate::workspace::Workspace;
 pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
     let ui = ws.ui;
     let zoom = format!("{}%", (ws.space.canvas.camera.zoom() * 100.0).round());
+    let closing = cx.entity();
     TitleBar::new()
+        // Linux draws its own ✕: unsaved files are asked about, as the system's close does.
+        .on_close_window(move |_, window, cx| {
+            if closing.update(cx, |ws, cx| ws.may_close(window, cx)) {
+                window.remove_window();
+            }
+        })
         .bg(transparent_black())
         .border_color(ui.hairline)
         .child(

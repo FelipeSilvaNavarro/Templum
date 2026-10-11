@@ -4,6 +4,7 @@ mod bench;
 mod block;
 mod board;
 mod config;
+mod editor;
 mod grid;
 mod ink;
 mod kanban;

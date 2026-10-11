@@ -193,6 +193,7 @@ pub(crate) enum Item {
     Terminal(TerminalItem),
     Kanban(KanbanItem),
     Note(NoteItem),
+    Editor(EditorItem),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -204,6 +205,22 @@ pub(crate) struct NoteItem {
     /// Shown rendered instead of the editor.
     #[serde(default)]
     pub preview: bool,
+}
+
+/// An editor block (docs/specs/cockpit.md, section 7).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct EditorItem {
+    pub rect: SavedRect,
+    pub folder: String,
+    /// The open files, relative to the folder, in tab order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open: Vec<String>,
+    /// The active tab's index in `open`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<usize>,
+    /// The file tree is shown.
+    #[serde(default = "shown")]
+    pub tree: bool,
 }
 
 /// A drawing as the file holds it (docs/specs/cockpit.md, section 4): a `stroke` with `points`,
@@ -526,6 +543,21 @@ mod tests {
             recent: vec!["/home/u/proj".into(), "/srv/site".into()],
             ink: Vec::new(),
         }
+    }
+
+    #[test]
+    fn an_editor_item_round_trips_and_its_tree_defaults_to_shown() {
+        let text = r#"{"kind":"editor","rect":{"x":1,"y":2,"w":900,"h":600},"folder":"/p","open":["src/main.rs"],"active":0}"#;
+        let item: Item = serde_json::from_str(text).unwrap();
+        let Item::Editor(e) = &item else {
+            panic!("{item:?}")
+        };
+        assert!(e.tree, "missing: shown");
+        assert_eq!(e.open, ["src/main.rs"]);
+        assert_eq!(e.active, Some(0));
+        let back = serde_json::to_string(&item).unwrap();
+        assert!(back.contains(r#""kind":"editor""#), "{back}");
+        assert!(back.contains(r#""tree":true"#), "{back}");
     }
 
     #[test]
@@ -937,6 +969,7 @@ mod tests {
                 Item::Terminal(t) => t.rect,
                 Item::Kanban(k) => k.rect,
                 Item::Note(n) => n.rect,
+                Item::Editor(e) => e.rect,
             })
             .collect();
         assert!(matches!(&saved.items[1], Item::Kanban(k) if k.board == Some(3)));

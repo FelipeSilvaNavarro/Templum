@@ -11,7 +11,14 @@ publish.workspace = true
 [dependencies]
 # GPUI (Zed's UI framework) + widgets, through one facade that pins the GPUI snapshot.
 # Pinned exactly: upgrade only in a dedicated PR (see docs/adr/0002-ui-framework.md).
-gpui-kit = { version = "=0.7.1", features = ["tree-sitter-markdown"] }
+# The grammars the editor highlights with. Not `tree-sitter-languages`: its SQL grammar pins `cc ~1.2`
+# against the tree's `cc 1.7`, so the list is the spec's curated one (docs/specs/cockpit.md, Risks).
+gpui-kit = { version = "=0.7.1", features = [
+    "tree-sitter-markdown", "tree-sitter-toml", "tree-sitter-yaml", "tree-sitter-diff", "tree-sitter-bash",
+    "tree-sitter-rust", "tree-sitter-javascript", "tree-sitter-typescript", "tree-sitter-tsx",
+    "tree-sitter-python", "tree-sitter-go", "tree-sitter-html", "tree-sitter-css", "tree-sitter-c",
+    "tree-sitter-cpp", "tree-sitter-java", "tree-sitter-lua", "tree-sitter-make",
+] }
 templum-canvas = { path = "../templum-canvas" }
 templum-terminal = { path = "../templum-terminal" }
 # Already in the tree through GPUI: its channel wakes the UI from PTY threads.

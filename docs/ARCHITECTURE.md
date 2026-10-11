@@ -65,7 +65,9 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - `config.toml` is read into a typed `Config` (`crates/templum/src/config.rs`) and polled every 0.5 s. A reload
   applies only what changed; an invalid file keeps the last valid config and shows a notification.
 - Shortcuts are Templum's own keymap (`crates/templum/src/keys.rs`), matched in the workspace's key handler, so a
-  reload can replace them. GPUI key bindings are only used to keep Tab for the shell.
+  reload can replace them. GPUI key bindings are only used to keep Tab for the shell. Commands that only make sense
+  in an editor (`save`, `close_tab`, `go_to_line`) are dropped by `effective` when no editor block has the focus, so
+  their keys reach the terminal.
 - `templum-terminal` gets settings as plain values (`TermOptions`, a start folder) and reports a shell's folder
   through `sysinfo`. It never reads the file.
 - The settings panel (`crates/templum/src/settings.rs`) builds gpui-kit `Settings` pages from the active `Config`
@@ -78,8 +80,9 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - The workspace on screen is `Workspace::space`; the hidden ones (`others`) keep their terminals running, unarmed so
   their output never wakes the UI. The sidebar (`sidebar.rs`) switches them by swapping. `session.rs` keeps their
   order and names in `workspaces/index.json` ([specs/workspaces.md](specs/workspaces.md)).
-- Every block's content is a `Body` in `Space::blocks`: a terminal, a kanban block or a note (`note.rs`, gpui-kit's
-  editor with the Markdown grammar). Adding a kind is one `Body` arm, one `session::Item` variant and one
+- Every block's content is a `Body` in `Space::blocks`: a terminal, a kanban block, a note (`note.rs`, gpui-kit's
+  editor with the Markdown grammar) or an editor (`editor.rs`: a lazy folder model behind gpui-base's `Tree`, tabs of
+  gpui-kit `EditorState`s, files read and written on the UI thread). Adding a kind is one `Body` arm, one `session::Item` variant and one
   `menu::Items` arm ([specs/cockpit.md](specs/cockpit.md)). Blocks snap to each other's edges and centers while they
   are moved or resized (`templum-canvas`'s `snap.rs`). The toolbar (`toolbar.rs`) holds the tools;
   `workspace::Tool` is the active one. Kanban boards are app-wide (`Workspace::boards`,

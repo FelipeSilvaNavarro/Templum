@@ -3,28 +3,30 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
 use gpui_kit::base::motion::{MotionStatus, Transition, transition_with_status};
+use gpui_kit::base::{TreeEvent, TreeState};
+use gpui_kit::component::input::{EditorState, Position};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::notification::{Notification, NotificationDelivery};
 use gpui_kit::component::{TITLE_BAR_HEIGHT, WindowExt, window_paddings};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Anchor, AnyElement, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler,
-    EntityInputHandler, FocusHandle, Focusable as _, FontWeight, Hsla, KeyBinding, KeyDownEvent,
-    Keystroke, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PinchEvent, Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, SharedString,
-    Subscription, Task, TestSupportExt, UTF16Selection, Window, WindowAppearance, canvas, div,
-    fill, point, px, size,
+    Entity, EntityInputHandler, FocusHandle, Focusable as _, FontWeight, Hsla, KeyBinding,
+    KeyDownEvent, Keystroke, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent,
+    SharedString, Subscription, Task, TestSupportExt, UTF16Selection, Window, WindowAppearance,
+    canvas, div, fill, point, px, size,
 };
 use templum_canvas::{
     Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, HIT_PX, Point,
-    Rect, ShapeKind, Size, chrome, constrain, dot_grid, dot_size,
+    Rect, STRING_PX, ShapeKind, Size, chrome, constrain, dot_grid, dot_size,
 };
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
@@ -33,13 +35,16 @@ use crate::alert::{self, Alert};
 use crate::block;
 use crate::board::{self, Boards};
 use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
+use crate::editor::{self, Editor};
 use crate::grid::CellMetrics;
 use crate::ink;
 use crate::kanban::{self, Kanban};
 use crate::keys::{self, Command, Keymap, Keys};
+use crate::launcher;
 use crate::menu;
 use crate::motion;
 use crate::note::{self, Note};
+use crate::prompt;
 use crate::session;
 use crate::settings::{self, Panel};
 use crate::sidebar;
@@ -100,6 +105,7 @@ pub(crate) enum Body {
     Terminal(Pane),
     Kanban(Kanban),
     Note(Note),
+    Editor(Editor),
 }
 
 impl Body {
@@ -138,6 +144,7 @@ impl Body {
             Body::Terminal(_) => chrome::min_block_size(cell),
             Body::Kanban(_) => kanban::MIN,
             Body::Note(_) => note::MIN,
+            Body::Editor(_) => editor::MIN,
         }
     }
 
@@ -145,6 +152,46 @@ impl Body {
         match self {
             Body::Note(note) => Some(note),
             _ => None,
+        }
+    }
+
+    pub fn editor(&self) -> Option<&Editor> {
+        match self {
+            Body::Editor(editor) => Some(editor),
+            _ => None,
+        }
+    }
+
+    pub fn editor_mut(&mut self) -> Option<&mut Editor> {
+        match self {
+            Body::Editor(editor) => Some(editor),
+            _ => None,
+        }
+    }
+
+    /// Gives the keyboard to what types inside the block: a note's editor, an editor's open
+    /// file. False when nothing does.
+    pub fn focus_inner(&self, window: &mut Window, cx: &mut App) -> bool {
+        match self {
+            Body::Note(note) if !note.preview => {
+                note.focus(window, cx);
+                true
+            }
+            Body::Editor(e) => e.focus(window, cx),
+            _ => false,
+        }
+    }
+
+    /// The keyboard is inside the block.
+    pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
+        match self {
+            Body::Note(note) => note
+                .editor
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx),
+            Body::Editor(e) => e.has_focus(window, cx),
+            _ => false,
         }
     }
 }
@@ -236,6 +283,9 @@ impl Space {
                             preview: n.preview,
                         }))
                     }
+                    Body::Editor(e) => {
+                        session::LayoutBlock::Saved(session::Item::Editor(e.item(b.rect)))
+                    }
                 })
                 .collect(),
             focused: self
@@ -282,6 +332,26 @@ impl Space {
 
     pub fn kanban_mut(&mut self, id: BlockId) -> Option<&mut Kanban> {
         self.blocks.get_mut(&id)?.kanban_mut()
+    }
+
+    pub fn editor(&self, id: BlockId) -> Option<&Editor> {
+        self.blocks.get(&id)?.editor()
+    }
+
+    pub fn editor_mut(&mut self, id: BlockId) -> Option<&mut Editor> {
+        self.blocks.get_mut(&id)?.editor_mut()
+    }
+
+    /// The changed files' names: of one block, or of every block of this workspace.
+    pub fn unsaved(&self, block: Option<BlockId>) -> Vec<String> {
+        self.blocks
+            .iter()
+            .filter(|(id, _)| block.is_none_or(|b| b == **id))
+            .filter_map(|(_, b)| b.editor())
+            .flat_map(|e| e.tabs.iter())
+            .filter(|t| t.dirty)
+            .map(editor::Tab::name)
+            .collect()
     }
 
     /// The focused block's terminal, when the focused block is one.
@@ -435,6 +505,8 @@ pub struct Workspace {
     pub(crate) cursor_blinks: bool,
     pub(crate) blink_on: bool,
     _blink: Task<()>,
+    /// Checks open files for changes on disk every editor::POLL.
+    _files: Task<()>,
     _wake: Task<()>,
 }
 
@@ -543,6 +615,24 @@ impl Workspace {
                 }
             }
         });
+        let files = cx.spawn_in(window, async move |ws, cx| {
+            loop {
+                cx.background_executor().timer(editor::POLL).await;
+                if ws
+                    .update_in(cx, |ws, window, cx| ws.check_files(window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        // Closing the window with unsaved files asks first, as quitting does.
+        let closing = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            closing
+                .update(cx, |ws, cx| ws.may_close(window, cx))
+                .unwrap_or(true)
+        });
         let flush = vec![
             cx.on_release(|ws, cx| {
                 ws.save();
@@ -617,6 +707,7 @@ impl Workspace {
             cursor_blinks: false,
             blink_on: true,
             _blink: blink,
+            _files: files,
             config,
             keymap,
             agents: effective_agents,
@@ -876,31 +967,6 @@ impl Workspace {
         id
     }
 
-    /// A saved kanban block's rect made safe: None with a number that isn't finite; at least
-    /// the smallest kanban block.
-    fn kanban_rect(r: Rect) -> Option<Rect> {
-        [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()).then(|| {
-            Rect::new(
-                r.x,
-                r.y,
-                r.w.clamp(kanban::MIN.w, 20_000.0),
-                r.h.clamp(kanban::MIN.h, 20_000.0),
-            )
-        })
-    }
-
-    /// A saved note's rect made safe, like a kanban's.
-    fn note_rect(r: Rect) -> Option<Rect> {
-        [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()).then(|| {
-            Rect::new(
-                r.x,
-                r.y,
-                r.w.clamp(note::MIN.w, 20_000.0),
-                r.h.clamp(note::MIN.h, 20_000.0),
-            )
-        })
-    }
-
     /// A note at the viewport's center, focused, in edit mode.
     pub(crate) fn new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let center = self.space.canvas.camera.to_world(self.center(window));
@@ -944,16 +1010,738 @@ impl Workspace {
         }
     }
 
+    /// Asks for a folder, then opens an editor on it at the viewport's center.
+    pub(crate) fn new_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let center = self.space.canvas.camera.to_world(self.center(window));
+        let size = editor::SIZE;
+        let at = self
+            .space
+            .canvas
+            .place_new(
+                size,
+                Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
+            )
+            .origin();
+        self.ask_editor_folder(at, window, cx);
+    }
+
+    /// The folder dialog; the editor's top-left corner goes to `at` (world units).
+    pub(crate) fn ask_editor_folder(&self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
+        let entity = cx.entity();
+        launcher::ask_folder_for(
+            self,
+            "Open an editor".to_string(),
+            None,
+            Rc::new(move |folder, window, cx| {
+                entity.update(cx, |ws, cx| ws.add_editor_at(folder, at, window, cx))
+            }),
+            window,
+            cx,
+        );
+    }
+
+    /// An editor on `folder`, its top-left corner at `at`; the folder becomes a recent one.
+    pub(crate) fn add_editor_at(
+        &mut self,
+        folder: &Path,
+        at: Point,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<BlockId> {
+        if !folder.is_dir() {
+            let message = format!("{} isn't a folder", folder.display());
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+            return None;
+        }
+        self.space.pristine = false;
+        let rect = Rect::new(at.x, at.y, editor::SIZE.w, editor::SIZE.h);
+        let editor = Editor::new(folder.to_path_buf(), true, cx);
+        let id = self.add_block(rect, Body::Editor(editor));
+        remember(&mut self.space.recent, folder.to_path_buf());
+        window.focus(&self.focus_handle, cx);
+        cx.notify();
+        Some(id)
+    }
+
+    /// The system's folder picker, for an editor whose folder is gone.
+    pub(crate) fn choose_editor_folder(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let entity = cx.entity();
+        launcher::pick_folder(
+            Rc::new(move |folder, _, cx| {
+                entity.update(cx, |ws, cx| ws.set_editor_folder(id, folder, cx))
+            }),
+            window,
+            cx,
+        );
+    }
+
+    /// Points an editor block at another folder, read afresh.
+    pub(crate) fn set_editor_folder(
+        &mut self,
+        id: BlockId,
+        folder: &Path,
+        cx: &mut Context<Self>,
+    ) -> Option<BlockId> {
+        let editor = self.space.editor_mut(id)?;
+        editor.folder = folder.to_path_buf();
+        editor.expanded.clear();
+        // Changed files stay open (Save writes them where they were); the others close.
+        editor.tabs.retain(|t| t.dirty);
+        editor.active = (!editor.tabs.is_empty()).then_some(0);
+        editor.refresh(cx);
+        remember(&mut self.space.recent, folder.to_path_buf());
+        cx.notify();
+        Some(id)
+    }
+
+    pub(crate) fn toggle_tree(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        if let Some(editor) = self.space.editor_mut(id) {
+            editor.show_tree = !editor.show_tree;
+            cx.notify();
+        }
+    }
+
+    /// Opens `path` in the editor block's tab (at `line`, 1-based, when given) and gives it
+    /// the keyboard. A file that can't be opened says why.
+    pub(crate) fn open_file(
+        &mut self,
+        block: BlockId,
+        path: &Path,
+        line: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.space.editor_mut(block) else {
+            return;
+        };
+        match editor.open_tab(path, window, cx) {
+            Ok(i) => {
+                if let Some(line) = line {
+                    let at = Position {
+                        line: line.saturating_sub(1),
+                        character: 0,
+                    };
+                    editor.tabs[i]
+                        .editor
+                        .update(cx, |e, cx| e.set_cursor_position(at, window, cx));
+                }
+                self.focus_block(block, window, cx);
+            }
+            Err(message) => {
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn activate_tab(
+        &mut self,
+        block: BlockId,
+        i: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(editor) = self.space.editor_mut(block)
+            && i < editor.tabs.len()
+        {
+            editor.active = Some(i);
+            self.focus_block(block, window, cx);
+        }
+    }
+
+    /// Removes a tab; the next one (or the previous, for the last) becomes active.
+    fn remove_tab(
+        &mut self,
+        block: BlockId,
+        i: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.release_focus(block, window, cx);
+        let Some(editor) = self.space.editor_mut(block) else {
+            return;
+        };
+        if i >= editor.tabs.len() {
+            return;
+        }
+        editor.tabs.remove(i);
+        let n = editor.tabs.len();
+        let a = editor.active.unwrap_or(0);
+        let next = if a > i { a - 1 } else { a };
+        editor.active = (n > 0).then(|| next.min(n - 1));
+        self.focus_block(block, window, cx);
+    }
+
+    /// Closes a tab. One with unsaved edits asks first: Save, Don't save, Cancel.
+    pub(crate) fn close_tab(
+        &mut self,
+        block: BlockId,
+        i: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dirty = self
+            .space
+            .editor(block)
+            .and_then(|e| e.tabs.get(i))
+            .filter(|t| t.dirty)
+            .map(editor::Tab::name);
+        let Some(name) = dirty else {
+            self.remove_tab(block, i, window, cx);
+            return;
+        };
+        let ws = cx.entity();
+        let saver = ws.clone();
+        prompt::save_or_discard(
+            format!("Save {name}?"),
+            "Its changes are lost otherwise.",
+            move |window, cx| {
+                saver.update(cx, |ws, cx| {
+                    let saved = ws.save_tab(block, i, window, cx);
+                    if saved {
+                        ws.remove_tab(block, i, window, cx);
+                    }
+                    saved
+                })
+            },
+            move |window, cx| ws.update(cx, |ws, cx| ws.remove_tab(block, i, window, cx)),
+            window,
+            cx,
+        );
+    }
+
+    /// Writes one tab's file; a failure says so and the tab stays changed.
+    pub(crate) fn save_tab(
+        &mut self,
+        block: BlockId,
+        i: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab) = self.space.editor_mut(block).and_then(|e| e.tabs.get_mut(i)) else {
+            return true;
+        };
+        let result = tab.save(cx);
+        let name = tab.name();
+        cx.notify();
+        match result {
+            Ok(()) => true,
+            Err(err) => {
+                let message = format!("Couldn't save {name}: {err}");
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::error(message));
+                false
+            }
+        }
+    }
+
+    /// The `save` command: the focused editor's active tab.
+    fn save_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(block) = self.focused_editor()
+            && let Some(i) = self.space.editor(block).and_then(|e| e.active)
+        {
+            self.save_tab(block, i, window, cx);
+        }
+    }
+
+    /// Writes every changed tab of an editor block; false when one failed.
+    pub(crate) fn save_all(
+        &mut self,
+        block: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let dirty: Vec<usize> = self
+            .space
+            .editor(block)
+            .map(|e| {
+                e.tabs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.dirty)
+                    .map(|(i, _)| i)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Every one is tried, even after a failure.
+        let mut ok = true;
+        for i in dirty {
+            ok &= self.save_tab(block, i, window, cx);
+        }
+        ok
+    }
+
+    /// Every changed tab of the workspace `only`, or of every one; false when one failed.
+    pub(crate) fn save_spaces(
+        &mut self,
+        only: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut failed = None;
+        for space in std::iter::once(&mut self.space)
+            .chain(&mut self.others)
+            .filter(|s| only.is_none_or(|id| s.id == id))
+        {
+            for tab in space
+                .blocks
+                .values_mut()
+                .filter_map(|b| b.editor_mut())
+                .flat_map(|e| e.tabs.iter_mut())
+                .filter(|t| t.dirty)
+            {
+                if let Err(err) = tab.save(cx) {
+                    failed.get_or_insert(format!("Couldn't save {}: {err}", tab.name()));
+                }
+            }
+        }
+        cx.notify();
+        match failed {
+            Some(message) => {
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::error(message));
+                false
+            }
+            None => true,
+        }
+    }
+
+    /// Every workspace's changed files' names.
+    fn unsaved_names(&self) -> Vec<String> {
+        self.spaces().flat_map(|s| s.unsaved(None)).collect()
+    }
+
+    /// Asks before the window or Templum closes with unsaved files: Save all, Don't save or
+    /// Cancel; either of the first two quits. True when nothing is unsaved and it may close now.
+    pub(crate) fn may_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let unsaved = self.unsaved_names();
+        if unsaved.is_empty() {
+            return true;
+        }
+        let ws = cx.entity();
+        prompt::save_or_discard(
+            "Save changes before quitting?",
+            format!("Unsaved: {}", unsaved.join(", ")),
+            move |window, cx| {
+                let saved = ws.update(cx, |ws, cx| ws.save_spaces(None, window, cx));
+                if saved {
+                    cx.quit();
+                }
+                saved
+            },
+            |_, cx| cx.quit(),
+            window,
+            cx,
+        );
+        false
+    }
+
+    fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(block) = self.focused_editor()
+            && let Some(i) = self.space.editor(block).and_then(|e| e.active)
+        {
+            self.close_tab(block, i, window, cx);
+        }
+    }
+
+    pub(crate) fn toggle_wrap(
+        &mut self,
+        block: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(editor) = self.space.editor_mut(block) {
+            editor.wrap = !editor.wrap;
+            let wrap = editor.wrap;
+            for tab in &editor.tabs {
+                tab.editor
+                    .update(cx, |e, cx| e.set_soft_wrap(wrap, window, cx));
+            }
+            cx.notify();
+        }
+    }
+
+    /// A Markdown file shows rendered, or its editor again (as a note's preview does).
+    pub(crate) fn toggle_file_preview(
+        &mut self,
+        block: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.release_focus(block, window, cx);
+        if let Some(tab) = self
+            .space
+            .editor_mut(block)
+            .and_then(|e| e.active_tab_mut())
+        {
+            tab.preview = !tab.preview;
+        }
+        self.focus_block(block, window, cx);
+    }
+
+    /// The user typed in a tab's editor: it has unsaved edits.
+    pub(crate) fn on_edit(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
+        let tab = self
+            .space
+            .blocks
+            .values_mut()
+            .filter_map(|b| b.editor_mut())
+            .flat_map(|e| e.tabs.iter_mut())
+            .find(|t| t.editor == *editor);
+        if let Some(tab) = tab
+            && !tab.dirty
+        {
+            tab.dirty = true;
+            cx.notify();
+        }
+    }
+
+    /// Every POLL: an open file changed on disk is reloaded (clean) or flagged (edited), a
+    /// gone one is marked changed so Save brings it back; and the focused editor's tree is
+    /// read again once TREE_REFRESH has passed. Only the workspace on screen: hidden ones catch
+    /// up when shown.
+    fn check_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self.space.focused;
+        let mut changed = false;
+        for (id, body) in &mut self.space.blocks {
+            let Body::Editor(editor) = body else {
+                continue;
+            };
+            for tab in &mut editor.tabs {
+                let now = editor::mtime(&tab.path);
+                if now == tab.mtime {
+                    continue;
+                }
+                match (now, tab.dirty) {
+                    (None, _) => {
+                        tab.dirty = true;
+                        tab.mtime = None;
+                    }
+                    (Some(_), false) => {
+                        // Can't be read as it is now (over 32 MB, not a file any more): the
+                        // bar says it changed, and Reload says why.
+                        if tab.reload(window, cx).is_err() {
+                            tab.conflict = true;
+                            tab.mtime = now;
+                        }
+                    }
+                    (Some(_), true) => {
+                        tab.conflict = true;
+                        tab.mtime = now;
+                    }
+                }
+                changed = true;
+            }
+            if focused == Some(*id) && editor.tree_read.elapsed() >= editor::TREE_REFRESH {
+                changed |= editor.refresh(cx);
+            }
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// The bar's Reload: the disk's text replaces the edits.
+    pub(crate) fn reload_tab(
+        &mut self,
+        block: BlockId,
+        i: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(tab) = self.space.editor_mut(block).and_then(|e| e.tabs.get_mut(i)) {
+            if let Err(message) = tab.reload(window, cx) {
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+            }
+            cx.notify();
+        }
+    }
+
+    /// The bar's Keep mine: the edits stay, the next Save writes over the disk's version.
+    pub(crate) fn keep_mine(&mut self, block: BlockId, i: usize, cx: &mut Context<Self>) {
+        if let Some(tab) = self.space.editor_mut(block).and_then(|e| e.tabs.get_mut(i)) {
+            tab.conflict = false;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn refresh_tree(&mut self, block: BlockId, cx: &mut Context<Self>) {
+        if let Some(editor) = self.space.editor_mut(block) {
+            editor.refresh(cx);
+            cx.notify();
+        }
+    }
+
+    /// Creates a file (and opens it) or a folder in `dir`; false (the dialog stays) for an empty
+    /// name or one with a separator. A name already taken says so.
+    pub(crate) fn new_entry(
+        &mut self,
+        block: BlockId,
+        dir: &Path,
+        folder: bool,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let name = name.trim();
+        if name.is_empty() || name.contains(['/', '\\']) {
+            return false;
+        }
+        let path = dir.join(name);
+        let made = if folder {
+            std::fs::create_dir(&path)
+        } else {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map(|_| ())
+        };
+        if let Err(err) = made {
+            let message = format!("Couldn't create {name}: {err}");
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+            return false;
+        }
+        if let Some(editor) = self.space.editor_mut(block) {
+            editor.expanded.insert(dir.to_path_buf());
+        }
+        self.refresh_tree(block, cx);
+        if !folder {
+            self.open_file(block, &path, None, window, cx);
+        }
+        true
+    }
+
+    /// Renames a file or folder in place; open tabs under it follow it.
+    pub(crate) fn rename_entry(
+        &mut self,
+        block: BlockId,
+        path: &Path,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let name = name.trim();
+        if name.is_empty() || name.contains(['/', '\\']) {
+            return false;
+        }
+        let to = path.with_file_name(name);
+        if to != path && to.symlink_metadata().is_ok() && !editor::same_file(path, &to) {
+            let message = format!("{name} already exists");
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+            return false;
+        }
+        if let Err(err) = std::fs::rename(path, &to) {
+            let message = format!("Couldn't rename {}: {err}", path.display());
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+            return false;
+        }
+        if let Some(editor) = self.space.editor_mut(block) {
+            for tab in &mut editor.tabs {
+                if let Some(moved) = editor::moved(&tab.path, path, &to) {
+                    tab.path = moved;
+                }
+            }
+            editor.expanded = editor
+                .expanded
+                .drain()
+                .map(|d| editor::moved(&d, path, &to).unwrap_or(d))
+                .collect();
+        }
+        self.refresh_tree(block, cx);
+        true
+    }
+
+    /// Deletes a file, or a folder with everything in it; tabs on what was deleted close.
+    pub(crate) fn delete_entry(
+        &mut self,
+        block: BlockId,
+        path: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let removed = if path.is_dir() {
+            std::fs::remove_dir_all(path)
+        } else {
+            std::fs::remove_file(path)
+        };
+        if let Err(err) = removed {
+            let message = format!("Couldn't delete {}: {err}", path.display());
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+            return;
+        }
+        let gone: Vec<usize> = self
+            .space
+            .editor(block)
+            .map(|e| {
+                e.tabs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.path.starts_with(path))
+                    .map(|(i, _)| i)
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Highest first, so the lower indices stay right.
+        for i in gone.into_iter().rev() {
+            self.remove_tab(block, i, window, cx);
+        }
+        if let Some(editor) = self.space.editor_mut(block) {
+            editor.expanded.retain(|d| !d.starts_with(path));
+        }
+        self.refresh_tree(block, cx);
+    }
+
+    /// A terminal in `folder`, placed to the right of the editor block.
+    pub(crate) fn terminal_beside(
+        &mut self,
+        block: BlockId,
+        folder: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(anchor) = self.space.canvas.get(block).map(|b| b.rect) else {
+            return;
+        };
+        self.space.pristine = false;
+        let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
+        let rect = self.space.canvas.place_beside(anchor, size);
+        self.spawn_block(rect, Some(folder.to_path_buf()), window, cx);
+        window.focus(&self.focus_handle, cx);
+    }
+
+    /// Opens `path` (at `line`, 1-based) in an editor of this workspace: one whose folder holds
+    /// the file, else any, else a new one on `folder` at the viewport's center. The camera flies
+    /// there if the block is off screen.
+    // The Git block (docs/plans, plan 5) is its first caller; until then only the tests call it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn open_in_editor(
+        &mut self,
+        folder: &Path,
+        path: &Path,
+        line: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let holding = |b: &Body| b.editor().is_some_and(|e| path.starts_with(&e.folder));
+        let found = self
+            .space
+            .blocks
+            .iter()
+            .find(|(_, b)| holding(b))
+            .or_else(|| self.space.blocks.iter().find(|(_, b)| b.editor().is_some()))
+            .map(|(id, _)| *id);
+        let id = found.or_else(|| {
+            let center = self.space.canvas.camera.to_world(self.center(window));
+            let size = editor::SIZE;
+            let at = self
+                .space
+                .canvas
+                .place_new(
+                    size,
+                    Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
+                )
+                .origin();
+            self.add_editor_at(folder, at, window, cx)
+        });
+        let Some(id) = id else {
+            return;
+        };
+        self.open_file(id, path, line, window, cx);
+        let space = self.space.id.clone();
+        self.reveal(&space, id, window, cx);
+    }
+
+    /// The `go_to_line` command: a line number, then the cursor goes there.
+    fn go_to_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(block) = self.focused_editor() else {
+            return;
+        };
+        let Some(path) = self
+            .space
+            .editor(block)
+            .and_then(|e| e.active_tab())
+            .filter(|t| matches!(t.content, editor::Content::Text { .. }))
+            .map(|t| t.path.clone())
+        else {
+            return;
+        };
+        let ws = cx.entity();
+        prompt::ask_text(
+            "Go to line",
+            "Go",
+            "",
+            move |text, window, cx| {
+                let Ok(line) = text.trim().parse::<u32>() else {
+                    return false;
+                };
+                ws.update(cx, |ws, cx| {
+                    ws.open_file(block, &path, Some(line), window, cx)
+                });
+                true
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// The focused block, when it is an editor.
+    fn focused_editor(&self) -> Option<BlockId> {
+        self.space
+            .focused
+            .filter(|id| self.space.editor(*id).is_some())
+    }
+
+    /// A folder of an editor's tree was expanded (read it, once) or collapsed.
+    pub(crate) fn on_tree_event(
+        &mut self,
+        tree: &Entity<TreeState>,
+        event: &TreeEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.space.blocks.values_mut().find_map(|b| match b {
+            Body::Editor(e) if e.tree == *tree => Some(e),
+            _ => None,
+        }) else {
+            return;
+        };
+        match event {
+            TreeEvent::Expanded(id) => {
+                let path = PathBuf::from(id.as_ref());
+                if !editor.dirs.contains_key(&path) {
+                    editor.dirs.insert(path.clone(), editor::read_dir(&path));
+                }
+                editor.expanded.insert(path);
+            }
+            TreeEvent::Collapsed(id) => {
+                editor.expanded.remove(Path::new(id.as_ref()));
+            }
+        }
+        editor.show(cx);
+        cx.notify();
+    }
+
     /// A block's editor is about to leave the frame: if it has the keyboard, the canvas takes it.
     /// GPUI sends keys to the window's root when the focused element isn't drawn, and the
     /// shortcuts would stop working until a click.
     fn release_focus(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(Body::Note(note)) = self.space.blocks.get(&id)
-            && note
-                .editor
-                .read(cx)
-                .focus_handle(cx)
-                .contains_focused(window, cx)
+        if self
+            .space
+            .blocks
+            .get(&id)
+            .is_some_and(|b| b.has_focus(window, cx))
         {
             window.focus(&self.focus_handle, cx);
         }
@@ -1343,7 +2131,7 @@ impl Workspace {
             let t = match item {
                 session::Item::Terminal(t) => t,
                 session::Item::Kanban(k) => {
-                    let id = Self::kanban_rect(k.rect.into()).map(|rect| {
+                    let id = clamped_rect(k.rect.into(), kanban::MIN).map(|rect| {
                         self.add_block(
                             rect,
                             Body::Kanban(Kanban {
@@ -1356,9 +2144,33 @@ impl Workspace {
                     continue;
                 }
                 session::Item::Note(n) => {
-                    let id = Self::note_rect(n.rect.into()).map(|rect| {
+                    let id = clamped_rect(n.rect.into(), note::MIN).map(|rect| {
                         let note = Note::new(&n.text, n.preview, window, cx);
                         self.add_block(rect, Body::Note(note))
+                    });
+                    ids.push(id);
+                    continue;
+                }
+                session::Item::Editor(e) => {
+                    let id = clamped_rect(e.rect.into(), editor::MIN).map(|rect| {
+                        let folder = PathBuf::from(&e.folder);
+                        let mut editor = Editor::new(folder.clone(), e.tree, cx);
+                        for rel in &e.open {
+                            let rel = Path::new(rel);
+                            // Only files inside the folder, as they were saved: a path that
+                            // climbs out or is absolute is not followed.
+                            let inside = rel
+                                .components()
+                                .all(|c| matches!(c, std::path::Component::Normal(_)));
+                            let path = folder.join(rel);
+                            if inside && path.is_file() {
+                                editor.open_tab(&path, window, cx).ok();
+                            }
+                        }
+                        if let Some(a) = e.active.filter(|a| *a < editor.tabs.len()) {
+                            editor.active = Some(a);
+                        }
+                        self.add_block(rect, Body::Editor(editor))
                     });
                     ids.push(id);
                     continue;
@@ -1588,9 +2400,37 @@ impl Workspace {
         ))
     }
 
+    /// Closes a block. An editor with unsaved edits asks first: Save all, Don't save, Cancel.
+    pub(crate) fn close(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        // Only this workspace: block ids count from 0 in every one.
+        let unsaved = self.space.unsaved(Some(id));
+        if unsaved.is_empty() {
+            self.remove_block(id, window, cx);
+            return;
+        }
+        let ws = cx.entity();
+        let saver = ws.clone();
+        prompt::save_or_discard(
+            "Save changes?",
+            format!("Unsaved: {}", unsaved.join(", ")),
+            move |window, cx| {
+                saver.update(cx, |ws, cx| {
+                    let saved = ws.save_all(id, window, cx);
+                    if saved {
+                        ws.remove_block(id, window, cx);
+                    }
+                    saved
+                })
+            },
+            move |window, cx| ws.update(cx, |ws, cx| ws.remove_block(id, window, cx)),
+            window,
+            cx,
+        );
+    }
+
     /// Removes a block and kills its shell (dropping the Terminal shuts it down).
     /// The block leaves the canvas at once; it stays on screen as a ghost while it fades out.
-    pub(crate) fn close(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+    fn remove_block(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         self.release_focus(id, window, cx);
         let block = self.space.canvas.get(id).copied();
         self.space.canvas.remove(id);
@@ -2199,10 +3039,15 @@ impl Workspace {
         self.space.canvas.raise(id);
         self.space.focused = Some(id);
         self.space.selected_ink = None;
-        // A note's editor takes the keyboard; anything else leaves it with the workspace.
-        match self.space.blocks.get(&id) {
-            Some(Body::Note(note)) if !note.preview => note.focus(window, cx),
-            _ => window.focus(&self.focus_handle, cx),
+        // What types inside the block takes the keyboard; anything else leaves it with the
+        // workspace.
+        if !self
+            .space
+            .blocks
+            .get(&id)
+            .is_some_and(|b| b.focus_inner(window, cx))
+        {
+            window.focus(&self.focus_handle, cx);
         }
         cx.notify();
     }
@@ -2309,10 +3154,11 @@ impl Workspace {
                 }
             }
             Some(Drag::Ink(drawing)) => {
-                let world = self.space.canvas.camera.to_world(p);
+                let camera = &self.space.canvas.camera;
+                let world = camera.to_world(p);
                 match drawing {
                     Drawing::Stroke { .. } => {
-                        if !drawing.push_point(world) {
+                        if !drawing.push_point(world, STRING_PX / camera.zoom()) {
                             return;
                         }
                     }
@@ -2495,12 +3341,14 @@ impl Workspace {
                 cx.notify();
             }
         }
-        if let Some(Drag::Ink(drawing)) = self.drag.take()
-            && !drawing.is_empty()
-        {
-            self.remember_ink();
-            self.space.ink.push(drawing);
-            cx.notify();
+        if let Some(Drag::Ink(mut drawing)) = self.drag.take() {
+            // The pen catches up with the pointer: the stroke ends where it was let go.
+            drawing.push_point(self.space.canvas.camera.to_world(self.local(pos)), 0.0);
+            if !drawing.is_empty() {
+                self.remember_ink();
+                self.space.ink.push(drawing);
+                cx.notify();
+            }
         }
         self.end_drag();
     }
@@ -2529,6 +3377,9 @@ impl Workspace {
         match command {
             Command::NewTerminal => self.new_terminal(window, cx),
             Command::CloseTerminal => self.close_terminal(window, cx),
+            Command::CloseTab => self.close_active_tab(window, cx),
+            Command::Save => self.save_active(window, cx),
+            Command::GoToLine => self.go_to_line(window, cx),
             Command::Copy => self.copy_selection(cx),
             Command::Paste => self.paste_clipboard(cx),
             Command::PreviousPrompt => self.jump_to_prompt(true, cx),
@@ -2542,6 +3393,7 @@ impl Workspace {
             Command::Settings => self.toggle_settings(window, cx),
             Command::NewKanban => self.new_kanban(window, cx),
             Command::NewNote => self.new_note(window, cx),
+            Command::NewEditor => self.new_editor(window, cx),
             Command::NextWorkspace => self.cycle_space(1, window, cx),
             Command::PreviousWorkspace => self.cycle_space(-1, window, cx),
             Command::NewWorkspace => self.new_space(window, cx),
@@ -2567,7 +3419,9 @@ impl Workspace {
             .take()
             .is_some_and(|at| now.duration_since(at) < QUIT_AGAIN)
         {
-            cx.quit();
+            if self.may_close(window, cx) {
+                cx.quit();
+            }
             return;
         }
         self.quit_armed = Some(now);
@@ -2672,7 +3526,10 @@ impl Workspace {
     fn on_key_down(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // The cursor shows again on any key.
         self.blink_on = true;
-        let command = self.keymap.command(&e.keystroke);
+        let command = effective(
+            self.keymap.command(&e.keystroke),
+            self.focused_editor().is_some(),
+        );
         if self.picker.is_some() || command.is_some() {
             // While the picker is open, typing and shortcuts don't reach the terminal.
             self.command_key(e, command, window, cx);
@@ -2907,6 +3764,18 @@ pub(crate) fn show_notification(window: &mut Window, cx: &mut App, notification:
     });
 }
 
+/// A saved rect made safe: None with a number that isn't finite; at least `min`.
+fn clamped_rect(r: Rect, min: Size) -> Option<Rect> {
+    [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()).then(|| {
+        Rect::new(
+            r.x,
+            r.y,
+            r.w.clamp(min.w, 20_000.0),
+            r.h.clamp(min.h, 20_000.0),
+        )
+    })
+}
+
 /// `folder` becomes the newest recent folder: once, and only the RECENT newest are kept.
 pub(crate) fn remember(recent: &mut Vec<PathBuf>, folder: PathBuf) {
     recent.retain(|f| *f != folder);
@@ -2915,6 +3784,12 @@ pub(crate) fn remember(recent: &mut Vec<PathBuf>, folder: PathBuf) {
 }
 
 /// Ctrl+Z / Ctrl+Shift+Z (Cmd on macOS): Some(false) undoes, Some(true) redoes.
+/// The command a key press runs: one that only works in an editor is nothing without one, so
+/// the key goes on to the terminal (Ctrl+S is XOFF, Ctrl+W erases a word).
+fn effective(command: Option<Command>, in_editor: bool) -> Option<Command> {
+    command.filter(|c| in_editor || !c.editor_only())
+}
+
 fn undo_key(k: &Keystroke, macos: bool) -> Option<bool> {
     let m = &k.modifiers;
     let held = if macos {
@@ -7013,6 +7888,1083 @@ mod tests {
         });
     }
 
+    #[cfg(target_os = "macos")]
+    const NEW_EDITOR: &str = "cmd-shift-e";
+    #[cfg(not(target_os = "macos"))]
+    const NEW_EDITOR: &str = "ctrl-shift-e";
+
+    /// An editor block on `folder`, near the canvas's top-left, read and at rest.
+    fn open_editor(
+        handle: AnyWindowHandle,
+        ws: &Entity<Workspace>,
+        cx: &mut TestAppContext,
+        folder: &std::path::Path,
+    ) -> BlockId {
+        cx.update_window(handle, |_, window, cx| {
+            let id = ws.update(cx, |ws, cx| {
+                let id = ws
+                    .add_editor_at(folder, Point::new(40.0, 40.0), window, cx)
+                    .unwrap();
+                ws.space.appearing.clear();
+                id
+            });
+            window.render_frame(cx);
+            id
+        })
+        .unwrap()
+    }
+
+    #[gpui_kit::test]
+    fn an_editor_lists_its_folder_and_reads_a_subfolder_when_expanded(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+        std::fs::write(dir.path().join("A.txt"), "a").unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "fn main() {}").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        let src = dir.path().join("src");
+        ws.read_with(cx, |ws, _| {
+            let e = ws.space.editor(id).unwrap();
+            assert_eq!(
+                e.title().as_ref(),
+                dir.path().file_name().unwrap().to_str().unwrap()
+            );
+            let names: Vec<_> = e.dirs[dir.path()].iter().map(|e| e.name.as_str()).collect();
+            assert_eq!(
+                names,
+                ["src", "A.txt", "b.txt"],
+                "folders first, then files without case"
+            );
+            assert!(
+                !e.dirs.contains_key(&src),
+                "a folder isn't read until it is expanded"
+            );
+            let rect = ws.space.canvas.get(id).unwrap().rect;
+            assert_eq!(
+                (rect.w, rect.h),
+                (crate::editor::SIZE.w, crate::editor::SIZE.h)
+            );
+            assert_eq!(ws.space.recent, [dir.path()]);
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.find(("tree", id.0 as usize));
+            window.click(("entry", 0usize), cx);
+            window.render_frame(cx);
+            // main.rs is now the row under src.
+            window.find(("entry", 1usize));
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            let e = ws.space.editor(id).unwrap();
+            assert_eq!(e.dirs[&src][0].name, "main.rs");
+            assert!(e.expanded.contains(&src));
+        });
+        // The header's toggle hides the tree.
+        cx.update_window(handle, |_, window, cx| {
+            window.hover(("block", id.0 as usize), cx);
+            window.render_frame(cx);
+            window.click(("tree-toggle", id.0 as usize), cx);
+            window.render_frame(cx);
+            assert!(window.try_find(("tree", id.0 as usize)).is_none());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_editor_shortcut_asks_for_a_folder_and_a_recent_one_opens_it(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open(cx);
+        ws.update(cx, |ws, _| ws.space.recent = vec![dir.path().to_path_buf()]);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press(NEW_EDITOR, cx);
+            window.render_frame(cx);
+            window.click("recent-0", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            let editors: Vec<_> = ws
+                .space
+                .blocks
+                .values()
+                .filter_map(|b| b.editor())
+                .collect();
+            assert_eq!(editors.len(), 1);
+            assert_eq!(editors[0].folder, dir.path());
+            assert_eq!(ws.space.focused, Some(ws.space.canvas.top().unwrap()));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn an_editor_comes_back_and_one_whose_folder_is_gone_says_so(cx: &mut TestAppContext) {
+        let data = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let json = |p: &std::path::Path| p.display().to_string().replace('\\', "\\\\");
+        write_canvas(
+            data.path(),
+            &format!(
+                r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+                  {{"kind":"editor","rect":{{"x":0,"y":0,"w":900,"h":600}},"folder":"{}","tree":false}},
+                  {{"kind":"editor","rect":{{"x":950,"y":0,"w":100,"h":100}},"folder":"{}"}}]}}"#,
+                json(folder.path()),
+                json(&folder.path().join("nope"))
+            ),
+        );
+        let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        let (there, gone) = ws.read_with(cx, |ws, _| {
+            let ids: Vec<_> = ws.space.canvas.blocks().iter().map(|b| b.id).collect();
+            (ids[0], ids[1])
+        });
+        ws.read_with(cx, |ws, _| {
+            let e = ws.space.editor(there).unwrap();
+            assert_eq!(e.folder, folder.path());
+            assert!(!e.show_tree);
+            let rect = ws.space.canvas.get(gone).unwrap().rect;
+            assert_eq!(
+                (rect.w, rect.h),
+                (crate::editor::MIN.w, crate::editor::MIN.h),
+                "clamped"
+            );
+        });
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, _| ws.space.appearing.clear());
+            window.render_frame(cx);
+            assert!(
+                window.try_find(("tree", there.0 as usize)).is_none(),
+                "tree hidden"
+            );
+            window.find(("choose-folder", gone.0 as usize));
+            // Pointing it at a folder that exists reads it.
+            ws.update(cx, |ws, cx| {
+                ws.set_editor_folder(gone, folder.path(), cx);
+            });
+            window.render_frame(cx);
+            window.find(("tree", gone.0 as usize));
+        })
+        .unwrap();
+    }
+
+    const CLOSE_TAB: &str = "ctrl-w";
+
+    /// Clicks the tree's row `ix` (a file opens, a folder expands).
+    fn click_file(handle: AnyWindowHandle, ix: usize, cx: &mut TestAppContext) {
+        cx.update_window(handle, |_, window, cx| {
+            window.click(("entry", ix), cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_file_opens_it_in_a_tab_with_its_text_and_language(cx: &mut TestAppContext) {
+        use gpui_kit::ElementId;
+        use gpui_kit::Focusable as _;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("main.rs"), "fn main() {}\r\n").unwrap();
+        std::fs::write(dir.path().join("notes.md"), "# Hi\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        let n = id.0 as usize;
+        click_file(handle, 0, cx);
+        cx.update_window(handle, |_, window, cx| {
+            let ws_now = ws.read(cx);
+            let e = ws_now.space.editor(id).unwrap();
+            assert_eq!(e.tabs.len(), 1);
+            let tab = e.active_tab().unwrap();
+            assert_eq!(
+                tab.editor.read(cx).value().as_ref(),
+                "fn main() {}\n",
+                "CRLF normalized"
+            );
+            assert_eq!(tab.editor.read(cx).language_name().as_ref(), "rust");
+            assert!(matches!(
+                tab.content,
+                crate::editor::Content::Text {
+                    crlf: true,
+                    newline: true,
+                    read_only: None
+                }
+            ));
+            assert!(
+                tab.editor.read(cx).focus_handle(cx).is_focused(window),
+                "the file has the keyboard"
+            );
+            assert!(e.title().starts_with("main.rs — "), "{}", e.title());
+            window.find(("code", n));
+            window.find(ElementId::Name(format!("tab-{n}-0").into()));
+        })
+        .unwrap();
+        // A second file: a second tab, active; the Markdown preview toggle shows for it.
+        click_file(handle, 1, cx);
+        cx.update_window(handle, |_, window, cx| {
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert_eq!((e.tabs.len(), e.active), (2, Some(1)));
+            window.click(("md-preview", n), cx);
+            window.render_frame(cx);
+            window.find(("file-preview", n));
+            assert!(window.try_find(("code", n)).is_none());
+            // Clicking the first file's row again shows its tab, no new one.
+            window.click(("entry", 0usize), cx);
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert_eq!((e.tabs.len(), e.active), (2, Some(0)));
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn clicking_inside_an_open_file_keeps_its_editor_focused(cx: &mut TestAppContext) {
+        use gpui_kit::Focusable as _;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "text").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| window.focus(&ws.focus_handle, cx));
+            window.render_frame(cx);
+            let body = window.find(("code", id.0 as usize)).bounds();
+            click(
+                window,
+                cx,
+                (
+                    f32::from(body.origin.x) + f32::from(body.size.width) / 2.0,
+                    f32::from(body.origin.y) + f32::from(body.size.height) / 2.0,
+                ),
+                1,
+            );
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(
+                e.active_tab()
+                    .unwrap()
+                    .editor
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window),
+                "the block's mouse-down gave the keyboard back to the file"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_binary_file_and_a_big_one_are_not_edited(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.bin"), b"\x7fELF\0\x01").unwrap();
+        let lines = crate::editor::READ_ONLY_OVER as usize / 2 + 1;
+        std::fs::write(dir.path().join("big.txt"), "x\n".repeat(lines)).unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        let n = id.0 as usize;
+        click_file(handle, 0, cx);
+        cx.update_window(handle, |_, window, _| {
+            window.find(("binary", n));
+            window.find(("reveal", n));
+            assert!(window.try_find(("code", n)).is_none());
+        })
+        .unwrap();
+        click_file(handle, 1, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.find(("code", n));
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(!e.active_tab().unwrap().editor.read(cx).is_editable());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_w_closes_the_tab_and_the_x_closes_another(cx: &mut TestAppContext) {
+        use gpui_kit::ElementId;
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(dir.path().join(name), name).unwrap();
+        }
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        let n = id.0 as usize;
+        click_file(handle, 0, cx);
+        click_file(handle, 1, cx);
+        click_file(handle, 2, cx);
+        cx.update_window(handle, |_, window, cx| {
+            // c.txt is active: Ctrl+W closes it, b.txt becomes active.
+            window.press(CLOSE_TAB, cx);
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert_eq!((e.tabs.len(), e.active), (2, Some(1)));
+            assert_eq!(e.active_tab().unwrap().name(), "b.txt");
+            // The ✕ of a.txt: b.txt stays active, now at 0.
+            window.click(ElementId::Name(format!("tab-close-{n}-0").into()), cx);
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert_eq!((e.tabs.len(), e.active), (1, Some(0)));
+            assert_eq!(e.active_tab().unwrap().name(), "b.txt");
+            window.press(CLOSE_TAB, cx);
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert_eq!((e.tabs.len(), e.active), (0, None));
+            // With nothing open, a new terminal shortcut still works: the keyboard is back.
+            window.press(NEW, cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.terminals().count(), 2));
+    }
+
+    #[gpui_kit::test]
+    fn a_saved_editor_comes_back_with_its_files_and_skips_paths_outside_the_folder(
+        cx: &mut TestAppContext,
+    ) {
+        let data = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("proj");
+        std::fs::create_dir_all(folder.join("src")).unwrap();
+        std::fs::write(folder.join("src/a.rs"), "a").unwrap();
+        std::fs::write(folder.join("b.txt"), "b").unwrap();
+        std::fs::write(root.path().join("outside.txt"), "no").unwrap();
+        let json = |p: &std::path::Path| p.display().to_string().replace('\\', "\\\\");
+        write_canvas(
+            data.path(),
+            &format!(
+                r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+                  {{"kind":"editor","rect":{{"x":0,"y":0,"w":900,"h":600}},"folder":"{}",
+                    "open":["src/a.rs","../outside.txt","{}","gone.txt","b.txt"],"active":4}}]}}"#,
+                json(&folder),
+                json(&folder.join("b.txt"))
+            ),
+        );
+        let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        let id = first_id(&ws, cx);
+        ws.read_with(cx, |ws, _| {
+            let e = ws.space.editor(id).unwrap();
+            let names: Vec<_> = e.tabs.iter().map(|t| t.name()).collect();
+            assert_eq!(
+                names,
+                ["a.rs", "b.txt"],
+                "outside, absolute and gone: skipped"
+            );
+            assert_eq!(
+                e.active,
+                Some(1),
+                "the saved index is beyond the kept tabs: the last one"
+            );
+        });
+        // What is saved: relative paths, the active one's position among them.
+        let item = ws.read_with(cx, |ws, _| {
+            ws.space
+                .editor(id)
+                .unwrap()
+                .item(ws.space.canvas.get(id).unwrap().rect)
+        });
+        assert_eq!(item.open, ["src/a.rs", "b.txt"]);
+        assert_eq!(item.active, Some(1));
+    }
+
+    #[cfg(target_os = "macos")]
+    const SAVE: &str = "cmd-s";
+    #[cfg(not(target_os = "macos"))]
+    const SAVE: &str = "ctrl-s";
+
+    #[gpui_kit::test]
+    fn typing_marks_the_tab_changed_and_ctrl_s_writes_the_file(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\r\ntwo\r\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        cx.simulate_input(handle, "x");
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(e.active_tab().unwrap().dirty);
+            assert!(e.title().starts_with("● a.txt"), "{}", e.title());
+            window.press(SAVE, cx);
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(!e.active_tab().unwrap().dirty, "saved");
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "xone\r\ntwo\r\n",
+            "the file keeps its CRLF and its final newline"
+        );
+    }
+
+    /// Dialogs slide in over 250 ms of real time: a click mid-slide can miss its button.
+    fn no_motion(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_reduce_motion(true));
+    }
+
+    #[gpui_kit::test]
+    fn closing_with_unsaved_changes_asks_first(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        cx.simulate_input(handle, "x");
+        click_file(handle, 1, cx);
+        cx.simulate_input(handle, "y");
+        // Ctrl+W on a changed tab: the question; Cancel keeps it.
+        cx.update_window(handle, |_, window, cx| {
+            window.press(CLOSE_TAB, cx);
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx));
+            window.within("dialog").click("cancel", cx);
+            window.render_frame(cx);
+            assert!(!window.has_active_dialog(cx));
+            assert_eq!(ws.read(cx).space.editor(id).unwrap().tabs.len(), 2);
+        })
+        .unwrap();
+        // Save writes b.txt and closes the tab.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.focus_block(id, window, cx));
+            window.press(CLOSE_TAB, cx);
+            window.render_frame(cx);
+            window.within("dialog").click("save", cx);
+            window.render_frame(cx);
+            assert_eq!(ws.read(cx).space.editor(id).unwrap().tabs.len(), 1);
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+            "yb"
+        );
+        // Closing the block with a.txt changed: the question; Don't save closes anyway.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.close(id, window, cx));
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx));
+            assert!(ws.read(cx).space.editor(id).is_some(), "still there");
+            window.within("dialog").click("discard", cx);
+            window.render_frame(cx);
+            assert!(ws.read(cx).space.editor(id).is_none());
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "a",
+            "not written"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_failed_save_says_so_and_keeps_the_tab_changed(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "a").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        cx.simulate_input(handle, "x");
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        let before = notification_count(handle, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.press(SAVE, cx);
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(e.active_tab().unwrap().dirty);
+        })
+        .unwrap();
+        assert_eq!(notification_count(handle, cx), before + 1);
+    }
+
+    /// Rewrites `path` as another program would, a modification time clearly later.
+    fn change_on_disk(path: &std::path::Path, text: &str) {
+        use std::time::{Duration, SystemTime};
+        std::fs::write(path, text).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(5))
+            .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_file_changed_on_disk_is_reloaded_while_clean_and_flagged_while_edited(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::input::Position;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        let n = id.0 as usize;
+        click_file(handle, 0, cx);
+        let value = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+            ws.read_with(cx, |ws, cx| {
+                let tab = ws.space.editor(id).unwrap().active_tab().unwrap();
+                tab.editor.read(cx).value().to_string()
+            })
+        };
+        // The cursor on line 2 (0-based 1); a clean tab is reloaded in place, the line kept.
+        cx.update_window(handle, |_, window, cx| {
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            let editor = tab.editor.clone();
+            editor.update(cx, |e, cx| {
+                e.set_cursor_position(
+                    Position {
+                        line: 1,
+                        character: 0,
+                    },
+                    window,
+                    cx,
+                )
+            });
+        })
+        .unwrap();
+        change_on_disk(&path, "uno\ndos\ntres\n");
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.check_files(window, cx));
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            let tab = e.active_tab().unwrap();
+            assert_eq!(tab.editor.read(cx).value().as_ref(), "uno\ndos\ntres\n");
+            assert_eq!(tab.editor.read(cx).cursor_position().line, 1);
+            assert!(!tab.dirty && !tab.conflict);
+        })
+        .unwrap();
+        // Edited, then changed on disk: flagged, the bar shows; Keep mine clears the flag.
+        cx.simulate_input(handle, "x");
+        assert_eq!(
+            value(&ws, cx),
+            "uno\nxdos\ntres\n",
+            "typed on the kept line"
+        );
+        change_on_disk(&path, "other\n");
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.check_files(window, cx));
+            window.render_frame(cx);
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert!(tab.conflict && tab.dirty);
+            window.find(("conflict", n));
+            window.click(("keep", n), cx);
+            window.render_frame(cx);
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert!(!tab.conflict && tab.dirty);
+            assert!(window.try_find(("conflict", n)).is_none());
+        })
+        .unwrap();
+        assert_eq!(value(&ws, cx), "uno\nxdos\ntres\n", "kept");
+        // Changed again: Reload takes the disk's text.
+        change_on_disk(&path, "newest\n");
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.check_files(window, cx));
+            window.render_frame(cx);
+            window.click(("reload", n), cx);
+            window.render_frame(cx);
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert!(!tab.conflict && !tab.dirty);
+        })
+        .unwrap();
+        assert_eq!(value(&ws, cx), "newest\n");
+        // Templum's own save is not a change on disk: nothing is reloaded or flagged.
+        cx.simulate_input(handle, "y");
+        let typed = value(&ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.press(SAVE, cx);
+            ws.update(cx, |ws, cx| ws.check_files(window, cx));
+            window.render_frame(cx);
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert!(
+                !tab.conflict && !tab.dirty,
+                "a save is not a change on disk"
+            );
+        })
+        .unwrap();
+        assert_eq!(value(&ws, cx), typed);
+        // Gone: the tab stays, marked changed, and Save brings the file back.
+        std::fs::remove_file(&path).unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.check_files(window, cx));
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert!(tab.dirty && tab.mtime.is_none());
+            window.press(SAVE, cx);
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            crate::editor::encode(&typed, false, true)
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_focused_editors_tree_is_read_again_after_two_seconds(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.space.focused = Some(id);
+                ws.check_files(window, cx);
+            });
+            let count = |cx: &mut gpui_kit::App| {
+                ws.read(cx).space.editor(id).unwrap().dirs[dir.path()].len()
+            };
+            assert_eq!(count(cx), 1, "too soon");
+            ws.update(cx, |ws, cx| {
+                let e = ws.space.editor_mut(id).unwrap();
+                e.tree_read = std::time::Instant::now()
+                    .checked_sub(crate::editor::TREE_REFRESH)
+                    .unwrap();
+                ws.check_files(window, cx);
+            });
+            assert_eq!(count(cx), 2);
+            window.render_frame(cx);
+            window.find(("entry", 1usize));
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_tree_creates_renames_and_deletes_entries(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/a.rs"), "a").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        // The actions, as the menu items call them.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                assert!(
+                    !ws.new_entry(id, dir.path(), false, "", window, cx),
+                    "empty: refused"
+                );
+                assert!(
+                    !ws.new_entry(id, dir.path(), false, "a/b", window, cx),
+                    "separator: refused"
+                );
+                assert!(ws.new_entry(id, &dir.path().join("src"), false, "new.rs", window, cx));
+            });
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(dir.path().join("src/new.rs").is_file());
+            assert_eq!(e.active_tab().unwrap().name(), "new.rs", "a new file opens");
+            assert!(
+                e.expanded.contains(&dir.path().join("src")),
+                "its folder is expanded"
+            );
+            ws.update(cx, |ws, cx| {
+                assert!(ws.rename_entry(id, &dir.path().join("src"), "lib", window, cx));
+            });
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(dir.path().join("lib/new.rs").is_file());
+            assert_eq!(
+                e.active_tab().unwrap().path,
+                dir.path().join("lib/new.rs"),
+                "the tab followed"
+            );
+            assert!(e.expanded.contains(&dir.path().join("lib")));
+            ws.update(cx, |ws, cx| {
+                ws.delete_entry(id, &dir.path().join("lib"), window, cx)
+            });
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert!(!dir.path().join("lib").exists());
+            assert!(e.tabs.is_empty(), "tabs on deleted files close");
+            assert_eq!(e.dirs[dir.path()].len(), 0);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_files_menu_asks_before_deleting_it(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("z.txt"), "z").unwrap();
+        let (handle, ws) = open(cx);
+        open_editor(handle, &ws, cx, dir.path());
+        cx.update_window(handle, |_, window, cx| {
+            window.right_click(("entry", 0usize), cx);
+            window.render_frame(cx);
+            assert!(
+                ws.read(cx).menu.is_some(),
+                "the row's menu, not the block's"
+            );
+            // Open, Reveal in file manager, Rename…, Delete….
+            window.within("popup-menu").click(3usize, cx);
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx), "Delete… asks");
+        })
+        .unwrap();
+        assert!(dir.path().join("z.txt").is_file(), "not yet");
+        cx.update_window(handle, |_, window, cx| {
+            window.press("enter", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        assert!(!dir.path().join("z.txt").exists(), "confirmed: deleted");
+    }
+
+    #[gpui_kit::test]
+    fn a_terminal_opened_from_the_tree_sits_beside_the_editor(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("src")).unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        cx.update_window(handle, |_, window, cx| {
+            window.right_click(("entry", 0usize), cx);
+            window.render_frame(cx);
+            // New file…, New folder…, Open a terminal here, …
+            window.within("popup-menu").click(2usize, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let (terminal, editor_rect, rect) = ws.read_with(cx, |ws, _| {
+            let top = ws.space.canvas.top().unwrap();
+            assert!(ws.space.terminal(top).is_some(), "a terminal opened");
+            let editor_rect = ws.space.canvas.get(id).unwrap().rect;
+            (top, editor_rect, ws.space.canvas.get(top).unwrap().rect)
+        });
+        assert_eq!(
+            rect.x,
+            editor_rect.x + editor_rect.w + templum_canvas::BESIDE
+        );
+        assert_eq!(rect.y, editor_rect.y);
+        #[cfg(unix)]
+        assert_eq!(
+            folder_of(&ws, terminal, cx),
+            dir.path().join("src").canonicalize().unwrap()
+        );
+        #[cfg(not(unix))]
+        let _ = terminal;
+    }
+
+    #[cfg(target_os = "macos")]
+    const GO_TO_LINE: &str = "cmd-g";
+    #[cfg(not(target_os = "macos"))]
+    const GO_TO_LINE: &str = "ctrl-g";
+
+    #[gpui_kit::test]
+    fn open_in_editor_reuses_the_block_and_opens_the_file_at_a_line(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "1\n2\n3\n").unwrap();
+        let (handle, ws) = open(cx);
+        // No editor yet: one is made on the folder.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_in_editor(dir.path(), &dir.path().join("a.txt"), None, window, cx)
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let id = ws.read_with(cx, |ws, _| {
+            let editors: Vec<_> = ws
+                .space
+                .blocks
+                .iter()
+                .filter(|(_, b)| b.editor().is_some())
+                .collect();
+            assert_eq!(editors.len(), 1);
+            *editors[0].0
+        });
+        // Far away, then asked for b.txt at line 2: the same block, the camera flies to it.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.space.canvas.camera.origin = Point::new(50_000.0, 50_000.0);
+                ws.open_in_editor(dir.path(), &dir.path().join("b.txt"), Some(2), window, cx);
+            });
+            window.render_frame(cx);
+            let ws_now = ws.read(cx);
+            let e = ws_now.space.editor(id).unwrap();
+            assert_eq!(e.tabs.len(), 2);
+            assert_eq!(e.active_tab().unwrap().name(), "b.txt");
+            assert_eq!(
+                e.active_tab()
+                    .unwrap()
+                    .editor
+                    .read(cx)
+                    .cursor_position()
+                    .line,
+                1
+            );
+            assert_eq!(ws_now.space.focused, Some(id));
+            assert!(ws_now.space.flight.is_some(), "flying to the block");
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(
+                ws.space
+                    .blocks
+                    .values()
+                    .filter(|b| b.editor().is_some())
+                    .count(),
+                1,
+                "no second editor"
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_g_asks_for_a_line_and_goes_there(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "1\n2\n3\n4\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.press(GO_TO_LINE, cx);
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx));
+        })
+        .unwrap();
+        cx.simulate_input(handle, "3");
+        cx.update_window(handle, |_, window, cx| {
+            window.press("enter", cx);
+            window.render_frame(cx);
+            assert!(!window.has_active_dialog(cx));
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert_eq!(tab.editor.read(cx).cursor_position().line, 2);
+        })
+        .unwrap();
+    }
+
+    // Linux only: macOS's zsh takes Ctrl+G as send-break and shows nothing, while bash
+    // in cooked mode echoes it as ^G.
+    #[cfg(target_os = "linux")]
+    #[gpui_kit::test]
+    fn ctrl_g_reaches_the_terminal_without_an_editor(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let shown = echo_after(GO_TO_LINE, handle, &ws, cx);
+        assert!(shown.contains("^G"), "{shown:?}");
+    }
+
+    /// An editor on `dir` with `name` open and typed into, so it has unsaved edits.
+    fn dirty_tab(
+        handle: AnyWindowHandle,
+        ws: &Entity<Workspace>,
+        cx: &mut TestAppContext,
+        dir: &std::path::Path,
+    ) -> BlockId {
+        let id = open_editor(handle, ws, cx, dir);
+        click_file(handle, 0, cx);
+        cx.simulate_input(handle, "x");
+        id
+    }
+
+    #[gpui_kit::test]
+    fn closing_a_block_doesnt_ask_about_another_workspaces_files(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let (handle, ws) = open(cx);
+        let id = dirty_tab(handle, &ws, cx, dir.path());
+        // Another workspace, whose blocks count their ids from 0 again.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.new_space(window, cx);
+                while ws.space.terminal(id).is_none() {
+                    ws.new_terminal(window, cx);
+                }
+                ws.close(id, window, cx);
+            });
+            window.render_frame(cx);
+            assert!(!window.has_active_dialog(cx), "not this workspace's file");
+            assert!(ws.read(cx).space.terminal(id).is_none(), "closed");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn closing_the_window_with_unsaved_files_asks_first(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let (handle, ws) = open(cx);
+        let mut window_cx = gpui_kit::VisualTestContext::from_window(handle, cx);
+        assert!(window_cx.simulate_close(), "nothing unsaved: it closes");
+        dirty_tab(handle, &ws, cx, dir.path());
+        assert!(!window_cx.simulate_close(), "unsaved: it stays open");
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx), "and asks");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_file_that_isnt_utf8_opens_read_only_and_keeps_its_bytes(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("latin1.txt");
+        std::fs::write(&path, b"caf\xe9\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        cx.simulate_input(handle, "x");
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert!(!tab.editor.read(cx).is_editable(), "read-only");
+            assert!(!tab.dirty);
+            window.press(SAVE, cx);
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"caf\xe9\n",
+            "its bytes are kept"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn renaming_onto_an_existing_file_is_refused(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                assert!(!ws.rename_entry(id, &dir.path().join("a.txt"), "b.txt", window, cx));
+                // The same name in another case is the same file only on some disks: renaming to
+                // the same name is always allowed.
+                assert!(ws.rename_entry(id, &dir.path().join("a.txt"), "a.txt", window, cx));
+            });
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+            "b"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "a"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn deleting_a_workspace_with_unsaved_files_asks_and_can_save_them(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let data = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        dirty_tab(handle, &ws, cx, dir.path());
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.new_space(window, cx);
+                ws.open_menu(
+                    super::menu::Target::Space("default".into()),
+                    point(px(100.0), px(100.0)),
+                    window,
+                    cx,
+                );
+            });
+            window.render_frame(cx);
+            // Rename…, Delete….
+            window.within("popup-menu").click(1usize, cx);
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx));
+            window.within("dialog").click("save", cx);
+            window.render_frame(cx);
+            assert_eq!(ws.read(cx).others.len(), 0, "deleted");
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "xa",
+            "saved first"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_file_that_grows_past_4_mb_on_disk_turns_read_only(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.txt");
+        std::fs::write(&path, "start\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        let lines = crate::editor::READ_ONLY_OVER as usize / 2 + 1;
+        change_on_disk(&path, &"x\n".repeat(lines));
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.check_files(window, cx));
+            window.render_frame(cx);
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert!(!tab.editor.read(cx).is_editable(), "over 4 MB: read-only");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_makefile_indents_with_a_tab(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Makefile"), "all:\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.press("tab", cx);
+            window.render_frame(cx);
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            let text = tab.editor.read(cx).value().to_string();
+            assert!(text.starts_with('\t'), "{text:?}");
+        })
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[gpui_kit::test]
+    fn a_fifo_in_the_tree_isnt_opened(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        let before = notification_count(handle, cx);
+        // Reading it would wait for a writer forever, on the UI thread.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.open_file(id, &fifo, None, window, cx));
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.space.editor(id).unwrap().tabs.is_empty())
+        });
+        assert_eq!(notification_count(handle, cx), before + 1, "it says why");
+    }
+
+    #[gpui_kit::test]
+    fn choosing_another_folder_keeps_unsaved_tabs(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let (handle, ws) = open(cx);
+        let id = dirty_tab(handle, &ws, cx, dir.path());
+        cx.update_window(handle, |_, _, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.set_editor_folder(id, other.path(), cx);
+            });
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert_eq!(e.tabs.len(), 1, "the changed file stays open");
+            assert!(e.tabs[0].dirty);
+            assert_eq!(e.active, Some(0));
+        })
+        .unwrap();
+    }
+
     fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
         ws.read_with(cx, |ws, _| {
             let id = ws.space.canvas.top().unwrap();
@@ -7038,6 +8990,7 @@ mod tests {
             window.render_frame(cx);
             window.click("tool-kanban", cx);
             window.render_frame(cx);
+            window.find("tool-editor");
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
@@ -7102,6 +9055,20 @@ mod tests {
         ws.read_with(cx, |ws, _| {
             assert!(ws.menu.is_some(), "the agents menu is open")
         });
+    }
+
+    #[test]
+    fn editor_only_commands_need_a_focused_editor() {
+        use crate::keys::Command;
+        assert_eq!(super::effective(Some(Command::CloseTab), false), None);
+        assert_eq!(
+            super::effective(Some(Command::CloseTab), true),
+            Some(Command::CloseTab)
+        );
+        assert_eq!(
+            super::effective(Some(Command::NewTerminal), false),
+            Some(Command::NewTerminal)
+        );
     }
 
     #[test]
@@ -7357,7 +9324,11 @@ mod tests {
             else {
                 panic!("one stroke: {:?}", ws.space.ink);
             };
-            assert_eq!(points.len(), 2);
+            assert_eq!(
+                points.last(),
+                Some(&ws.space.canvas.camera.to_world(Point::new(80.0, 50.0))),
+                "the pen catches up with the pointer on release"
+            );
             assert_eq!(
                 (*width, *color, *highlight),
                 (8.0, templum_canvas::Color::Red, false)

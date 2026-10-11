@@ -17,6 +17,7 @@ use gpui_kit::{
 use templum_canvas::{Block, Rect, chrome};
 
 use crate::alert::{self, Alert};
+use crate::editor;
 use crate::grid::{self, hsla};
 use crate::kanban;
 use crate::menu::Target;
@@ -93,6 +94,7 @@ pub(crate) fn render(
                     Body::Terminal(pane) => SharedString::from(pane.term.title()),
                     Body::Kanban(k) => k.title(ws),
                     Body::Note(n) => n.title(cx),
+                    Body::Editor(e) => e.title(),
                 }),
         )
         .when(live, |el| {
@@ -201,6 +203,47 @@ pub(crate) fn render(
         }
         _ => None,
     };
+    // An editor's file-tree toggle, on the left of its header (over the title: no move).
+    let tree_toggle = match body {
+        Body::Editor(e) if live => {
+            let shown = e.show_tree;
+            Some(
+                div()
+                    .id(("tree-toggle", n))
+                    .absolute()
+                    .top(px(4.0 * z))
+                    .left(px(4.0 * z))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(20.0 * z))
+                    .rounded(px(5.0 * z))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(ui.hover))
+                    .child(
+                        Icon::new(if shown {
+                            IconName::PanelLeftClose
+                        } else {
+                            IconName::PanelLeftOpen
+                        })
+                        .size(px(12.0 * z))
+                        .text_color(ui.title),
+                    )
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(if shown {
+                            "Hide the file tree"
+                        } else {
+                            "Show the file tree"
+                        })
+                        .build(window, cx)
+                    })
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_tree(id, cx)))
+                    .test_support(),
+            )
+        }
+        _ => None,
+    };
     let header = div()
         .relative()
         .w_full()
@@ -209,6 +252,7 @@ pub(crate) fn render(
         .children(dot)
         .children(boards)
         .children(preview)
+        .children(tree_toggle)
         .when(hovered, |el| el.child(fade_in(close, ("close-fade", n))));
 
     let frame = div()
@@ -247,6 +291,8 @@ pub(crate) fn render(
         Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
         // A fading note is drawn empty, like a kanban block.
         Body::Note(n) => frame.when(live, |el| el.child(note::body(ws, id, n, z, cx))),
+        // A fading editor is drawn empty, like a note.
+        Body::Editor(e) => frame.when(live, |el| el.child(editor::body(ws, id, e, z, cx))),
     }
     .test_support();
 
