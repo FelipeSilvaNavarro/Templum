@@ -8,6 +8,7 @@
 
 ## Checklist
 
+- [ ] The pull request targets `development`
 - [ ] `cargo fmt`, `cargo clippy -- -D warnings` and `cargo test` pass locally
 - [ ] Logic changes include a test
 - [ ] Docs / ADR updated if behavior or architecture changed

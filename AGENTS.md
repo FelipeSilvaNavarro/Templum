@@ -30,9 +30,10 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
 - **Tests:** every logic change ships a test that fails without it. For UI-only changes, state how you verified them.
 - **No `unsafe`:** the workspace denies it. If it is truly unavoidable, use a local `#[allow(unsafe_code)]` with a
   `// SAFETY:` comment.
-- **Two branches only:** `main` and `development`. Every change is committed on `development` (small commits,
-  each titled with an imperative sentence); never create feature branches. When a batch is ready, `development`
-  is merged into `main` through one pull request, whose title becomes the squash commit.
+- **Branches:** `main` and `development`. Commit on `development`, never on `main`, in small commits titled
+  with an imperative sentence. Contributors' pull requests target `development` and are squash-merged. The
+  maintainer opens the pull request from `development` to `main` and merges it with a **merge commit**, never a
+  squash, so both branches keep the same history.
 - **Performance:** pull requests that touch painting or `templum-terminal` run
   `cargo run --release -p templum -- --bench` (Linux) and paste its JSON line in the PR description.
   The bar is `p95_ms` <= 16.7 (see [ADR-0002](docs/adr/0002-ui-framework.md)).

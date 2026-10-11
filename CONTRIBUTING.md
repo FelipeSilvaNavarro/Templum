@@ -33,15 +33,16 @@ cargo test --workspace
 
 ## Workflow
 
-- There are two branches: `main` (released) and `development` (where everything happens). Work is committed
-  on `development` directly, in small commits whose titles are imperative sentences: "Add block snapping",
-  "Fix resize on Windows". No feature branches.
-- Contributors without access fork the repo and open a pull request against `development`.
-- When `development` is ready, it is merged into `main` through one pull request. Nobody pushes to `main`
-  directly, maintainers included. That pull request is squash-merged and its title becomes the commit message.
-- CI (`ci-ok`) must pass and a maintainer must approve.
+1. Fork the repository and branch off `development`.
+2. Keep the change small: one change per pull request.
+3. Open the pull request against `development`. CI (`ci-ok`) must pass, and the maintainer reviews it.
+4. Pull requests are squash-merged, and the title becomes the commit message. Write it as an imperative
+   sentence: "Add block snapping", "Fix resize on Windows".
+
 - Logic changes come with a test. UI changes come with a screenshot or short clip in the PR description.
 - Before writing UI code, read the GPUI lessons in [ADR-0002](docs/adr/0002-ui-framework.md#lessons-from-the-spike-read-before-writing-gpui-code).
+
+`main` only moves when the maintainer merges `development` into it.
 
 ## Big decisions
 
