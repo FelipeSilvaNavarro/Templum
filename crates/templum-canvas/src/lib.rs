@@ -20,6 +20,6 @@ pub use geometry::{Point, Rect, Size};
 pub use gesture::{Gesture, Update};
 pub use ink::{
     Color, Drawing, HIT_PX, MAX_WIDTH, MIN_POINT_DISTANCE, MIN_SHAPE, MIN_WIDTH, ShapeKind,
-    constrain,
+    constrain, simplify,
 };
 pub use snap::{Guide, SNAP_PX, Snapped, snap_move, snap_resize};

@@ -429,6 +429,8 @@ pub struct Workspace {
     pub(crate) last_shape: Option<ShapeKind>,
     /// The shapes pill is open above the toolbar.
     pub(crate) shapes_open: bool,
+    /// The drawings' paths, built once per zoom step.
+    ink_cache: Rc<RefCell<ink::Cache>>,
     /// The focused terminal's cursor blinks (painting reports it); and the blink phase.
     pub(crate) cursor_blinks: bool,
     pub(crate) blink_on: bool,
@@ -611,6 +613,7 @@ impl Workspace {
             ink_width: ink::Width::default(),
             last_shape: None,
             shapes_open: false,
+            ink_cache: Default::default(),
             cursor_blinks: false,
             blink_on: true,
             _blink: blink,
@@ -2238,6 +2241,7 @@ impl Workspace {
         let camera = self.space.view;
         let theme = self.theme.clone();
         let ui = self.ui;
+        let cache = self.ink_cache.clone();
         canvas(
             |_, _, _| {},
             move |bounds, _, window, _| {
@@ -2249,6 +2253,7 @@ impl Workspace {
                     &theme,
                     ui,
                     bounds,
+                    &mut cache.borrow_mut(),
                     window,
                 );
             },

@@ -256,6 +256,25 @@ pub fn constrain(from: Point, to: Point, kind: ShapeKind) -> Point {
     }
 }
 
+/// The points at least `min_distance` from the previous one kept, and the last one.
+pub fn simplify(points: &[Point], min_distance: f32) -> Vec<Point> {
+    let mut kept: Vec<Point> = Vec::with_capacity(points.len());
+    for p in points {
+        if kept
+            .last()
+            .is_none_or(|last| distance(*last, *p) >= min_distance)
+        {
+            kept.push(*p);
+        }
+    }
+    if let Some(end) = points.last()
+        && kept.last() != Some(end)
+    {
+        kept.push(*end);
+    }
+    kept
+}
+
 fn distance(a: Point, b: Point) -> f32 {
     ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt()
 }
@@ -370,6 +389,19 @@ mod tests {
         assert!(ellipse.hit(Point::new(200.0, 50.0), 6.0), "on the rim");
         assert!(!ellipse.hit(Point::new(100.0, 50.0), 6.0), "the center");
         assert!(!ellipse.hit(Point::new(0.0, 0.0), 6.0), "the box's corner");
+    }
+
+    #[test]
+    fn simplify_keeps_points_apart_and_both_ends() {
+        let pts: Vec<Point> = (0..=10).map(|i| Point::new(i as f32, 0.0)).collect();
+        let kept = simplify(&pts, 3.0);
+        assert_eq!(
+            kept.iter().map(|p| p.x).collect::<Vec<_>>(),
+            [0.0, 3.0, 6.0, 9.0, 10.0],
+            "the end stays, however close"
+        );
+        assert_eq!(simplify(&pts[..1], 3.0), pts[..1]);
+        assert_eq!(simplify(&pts, 0.5), pts, "all far enough apart");
     }
 
     #[test]
