@@ -116,7 +116,8 @@ pub(crate) enum Body {
     Kanban(Kanban),
     Note(Note),
     Editor(Editor),
-    Git(Git),
+    /// Boxed: its fields (the editors of its diff and commit form) outweigh the other kinds.
+    Git(Box<Git>),
 }
 
 impl Body {
@@ -217,6 +218,7 @@ impl Body {
                 .focus_handle(cx)
                 .contains_focused(window, cx),
             Body::Editor(e) => e.has_focus(window, cx),
+            Body::Git(g) => g.has_focus(window, cx),
             _ => false,
         }
     }
@@ -1202,12 +1204,12 @@ impl Workspace {
         let rect = Rect::new(at.x, at.y, git_block::SIZE.w, git_block::SIZE.h);
         let id = self.add_block(
             rect,
-            Body::Git(Git::new(
+            Body::Git(Box::new(Git::new(
                 folder.to_path_buf(),
                 git_block::Tab::Changes,
                 window,
                 cx,
-            )),
+            ))),
         );
         remember(&mut self.space.recent, folder.to_path_buf());
         self.look_up_git(id, window, cx);
@@ -1320,6 +1322,175 @@ impl Workspace {
             git.tab = tab;
             cx.notify();
         }
+    }
+
+    /// Commits what is staged with the form's message; "Committed abc1234" and the fields
+    /// clear.
+    pub(crate) fn git_commit(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git(id) else {
+            return;
+        };
+        if !git.can_commit(cx) {
+            return;
+        }
+        let (message, amend) = (git.message(cx), git.amend);
+        let Some(repo) = git.repo().cloned() else {
+            return;
+        };
+        let at = GitAt {
+            space: self.space.id.clone(),
+            block: id,
+        };
+        self.git_job(
+            at,
+            move || repo.commit(&message, amend),
+            |ws, at, result, window, cx| {
+                match result {
+                    Ok(short) => {
+                        if let Some(git) = ws.git_at(&at) {
+                            git.amend = false;
+                            let (summary, description) =
+                                (git.summary.clone(), git.description.clone());
+                            summary.update(cx, |s, cx| s.set_value("", window, cx));
+                            description.update(cx, |d, cx| d.set_value("", window, cx));
+                        }
+                        show_notification(
+                            window,
+                            cx,
+                            Notification::success(format!("Committed {short}")),
+                        );
+                    }
+                    Err(e) => notify_git_error(window, cx, &e),
+                }
+                ws.refresh_at(at, window, cx);
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Ctrl+Enter in a block's summary or description.
+    pub(crate) fn commit_from(
+        &mut self,
+        field: gpui_kit::EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self
+            .space
+            .blocks
+            .iter()
+            .find_map(|(id, b)| b.git().filter(|g| g.owns_field(field)).map(|_| *id))
+        else {
+            return;
+        };
+        self.git_commit(id, window, cx);
+    }
+
+    /// Amend on: the fields show the last commit's message; off: they clear.
+    pub(crate) fn set_amend(
+        &mut self,
+        id: BlockId,
+        on: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        git.amend = on;
+        cx.notify();
+        let (summary, description) = (git.summary.clone(), git.description.clone());
+        if !on {
+            summary.update(cx, |s, cx| s.set_value("", window, cx));
+            description.update(cx, |d, cx| d.set_value("", window, cx));
+            return;
+        }
+        let Some(repo) = git.repo().cloned() else {
+            return;
+        };
+        let at = GitAt {
+            space: self.space.id.clone(),
+            block: id,
+        };
+        self.git_job(
+            at,
+            move || repo.last_message(),
+            move |_, _, message, window, cx| {
+                let Ok(message) = message else {
+                    return;
+                };
+                let (first, rest) = message.split_once('\n').unwrap_or((&message, ""));
+                summary.update(cx, |s, cx| s.set_value(first.to_string(), window, cx));
+                description.update(cx, |d, cx| d.set_value(rest.trim().to_string(), window, cx));
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Asks the name, then the email, and writes both to the global config.
+    pub(crate) fn set_git_author(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ws = cx.entity();
+        prompt::ask_text(
+            "Your name for commits",
+            "Next",
+            "",
+            move |name, window, cx| {
+                let name = name.trim().to_string();
+                if name.is_empty() {
+                    return false;
+                }
+                let ws = ws.clone();
+                // The next dialog opens once this one has closed.
+                window.defer(cx, move |window, cx| {
+                    ws.update(cx, |ws, cx| ws.ask_git_email(id, name, window, cx))
+                });
+                true
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// The second half of Set…: the email, then both are written.
+    fn ask_git_email(
+        &mut self,
+        id: BlockId,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ws = cx.entity();
+        let program = self.config.git.program.clone();
+        prompt::ask_text(
+            "Your email for commits",
+            "Set",
+            "",
+            move |email, window, cx| {
+                let email = email.trim().to_string();
+                if email.is_empty() {
+                    return false;
+                }
+                let (name, program) = (name.clone(), program.clone());
+                ws.update(cx, |ws, cx| {
+                    ws.git_action(
+                        id,
+                        move |_| Repo::set_author(&program, &name, &email),
+                        window,
+                        cx,
+                    )
+                });
+                true
+            },
+            window,
+            cx,
+        );
     }
 
     /// Shows a row's diff on the right (read in the background).
@@ -2729,7 +2900,7 @@ impl Workspace {
                             window,
                             cx,
                         );
-                        self.add_block(rect, Body::Git(git))
+                        self.add_block(rect, Body::Git(Box::new(git)))
                     });
                     if let Some(id) = id {
                         self.look_up_git(id, window, cx);
@@ -11668,5 +11839,190 @@ mod tests {
             let paths: Vec<_> = g.status.entries.iter().map(|e| e.path.as_str()).collect();
             assert_eq!(paths, [".gitignore"], "out.o is ignored now");
         });
+    }
+
+    #[cfg(target_os = "macos")]
+    const COMMIT_KEY: &str = "cmd-enter";
+    #[cfg(not(target_os = "macos"))]
+    const COMMIT_KEY: &str = "ctrl-enter";
+
+    #[gpui_kit::test]
+    fn commit_needs_something_staged_and_a_summary_then_commits(cx: &mut TestAppContext) {
+        use crate::git_block::row_id;
+        let repo = git_repo();
+        std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        let n = id.0 as usize;
+        let disabled = |cx: &mut TestAppContext| {
+            cx.update_window(handle, |_, window, _| {
+                window.try_find(("git-commit", n)).is_none()
+            })
+            .unwrap()
+        };
+        assert!(disabled(cx), "nothing staged");
+        click_row_button(
+            handle,
+            cx,
+            row_id(id, "unstaged", 0),
+            git_button(id, "stage", "unstaged", 0),
+        );
+        assert!(disabled(cx), "no summary");
+        let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+        cx.update_window(handle, |_, window, cx| {
+            summary.update(cx, |s, cx| s.focus(window, cx));
+            window.input("Add a", cx);
+            window.render_frame(cx);
+            assert!(window.try_find(("git-commit", n)).is_some());
+            window.click(("git-commit", n), cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert!(g.status.entries.is_empty(), "committed");
+            assert!(g.status.oid.is_some());
+        });
+        assert_eq!(
+            git_run(repo.path(), &["log", "-1", "--format=%s"]),
+            "Add a\n"
+        );
+        ws.read_with(cx, |_, cx| {
+            assert_eq!(summary.read(cx).value(), "", "cleared")
+        });
+        assert_eq!(notification_count(handle, cx), 1, "Committed abc1234");
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_enter_commits_with_the_description_and_amend_fills_the_fields(cx: &mut TestAppContext) {
+        let repo = committed_repo();
+        std::fs::write(repo.path().join("b.txt"), "b\n").unwrap();
+        git_run(repo.path(), &["add", "b.txt"]);
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        let n = id.0 as usize;
+        let (summary, description) =
+            git_of(&ws, cx, id, |g| (g.summary.clone(), g.description.clone()));
+        cx.update_window(handle, |_, window, cx| {
+            summary.update(cx, |s, cx| s.focus(window, cx));
+            window.input("Add b", cx);
+            description.update(cx, |d, cx| d.focus(window, cx));
+            window.input("Why b.", cx);
+            window.render_frame(cx);
+            window.press(COMMIT_KEY, cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        // %B is the message as stored, and log ends each record with a newline.
+        assert_eq!(
+            git_run(repo.path(), &["log", "-1", "--format=%B"]).trim_end(),
+            "Add b\n\nWhy b."
+        );
+        // Amend: the fields show the last message; off again: they clear.
+        cx.update_window(handle, |_, window, cx| window.click(("git-amend", n), cx))
+            .unwrap();
+        settle(handle, cx);
+        ws.read_with(cx, |ws, cx| {
+            assert!(ws.space.git(id).unwrap().amend);
+            assert_eq!(summary.read(cx).value(), "Add b");
+            assert_eq!(description.read(cx).value(), "Why b.");
+        });
+        cx.update_window(handle, |_, window, cx| {
+            summary.update(cx, |s, cx| s.set_value("Add b, amended", window, cx));
+            window.render_frame(cx);
+            window.click(("git-commit", n), cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        assert_eq!(
+            git_run(repo.path(), &["rev-list", "--count", "HEAD"]),
+            "2\n"
+        );
+        assert_eq!(
+            git_run(repo.path(), &["log", "-1", "--format=%s"]),
+            "Add b, amended\n"
+        );
+        git_of(&ws, cx, id, |g| assert!(!g.amend, "off after the commit"));
+    }
+
+    #[gpui_kit::test]
+    fn without_an_author_commit_is_disabled_and_set_asks_for_one(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let repo = git_repo();
+        // The repository's own name and email would win over the global ones Set… writes.
+        git_run(repo.path(), &["config", "--unset", "user.name"]);
+        git_run(repo.path(), &["config", "--unset", "user.email"]);
+        // The global config may name one: hide it from this test's git.
+        let home = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let global = home.path().join("gitconfig");
+        let wrapper = home.path().join(if cfg!(windows) {
+            "git-no-global.cmd"
+        } else {
+            "git-no-global"
+        });
+        let script = if cfg!(windows) {
+            format!(
+                "@set HOME={}\r\n@set GIT_CONFIG_GLOBAL={}\r\n@git %*\r\n",
+                home.path().display(),
+                global.display()
+            )
+        } else {
+            format!(
+                "#!/bin/sh\nHOME='{}' GIT_CONFIG_GLOBAL='{}' exec git \"$@\"\n",
+                home.path().display(),
+                global.display()
+            )
+        };
+        std::fs::write(&wrapper, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        write_config(
+            config.path(),
+            &format!(
+                "[git]\nprogram = \"{}\"\n",
+                wrapper.display().to_string().replace('\\', "\\\\")
+            ),
+        );
+        std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
+        git_run(repo.path(), &["add", "a.txt"]);
+        let (handle, ws) = open_with(cx, Some(config.path().to_path_buf()));
+        let id = open_git(handle, &ws, cx, repo.path());
+        let n = id.0 as usize;
+        git_of(&ws, cx, id, |g| assert_eq!(g.author, None));
+        let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+        cx.update_window(handle, |_, window, cx| {
+            summary.update(cx, |s, cx| s.set_value("x", window, cx));
+            window.render_frame(cx);
+            assert!(window.try_find(("git-commit", n)).is_none(), "no author");
+            window.click(("git-set-author", n), cx);
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx));
+            window.input("Grace Hopper", cx);
+            window.press("enter", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        // The email's dialog opens once the name's has closed (deferred).
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx), "then the email");
+            window.input("grace@example.com", cx);
+            window.press("enter", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(
+                g.author,
+                Some(("Grace Hopper".to_string(), "grace@example.com".to_string()))
+            )
+        });
+        let written = std::fs::read_to_string(&global).unwrap();
+        assert!(written.contains("Grace Hopper"), "{written}");
     }
 }

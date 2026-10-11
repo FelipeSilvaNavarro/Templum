@@ -5,14 +5,19 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use gpui_kit::Focusable as _;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::Icon;
-use gpui_kit::component::input::{Editor as EditorView, EditorState};
+use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::input::{
+    Editor as EditorView, EditorState, Input, InputEvent, InputState, Textarea, TextareaState,
+};
 use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, MouseButton, MouseDownEvent,
-    ScrollWheelEvent, SharedString, Stateful, TestSupportExt, Window, div, px, relative,
+    AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, EntityId, MouseButton,
+    MouseDownEvent, ScrollWheelEvent, SharedString, Stateful, Subscription, TestSupportExt, Window,
+    div, px, relative,
 };
 use templum_canvas::{BlockId, Rect, Size};
 use templum_git::{Change, Entry, GitError, Operation, Repo, Status};
@@ -144,16 +149,55 @@ pub(crate) struct Git {
     pub selected: Option<(List, String)>,
     /// The diff's first hunk's line in the new file, for Open in editor.
     pub diff_line: Option<u32>,
+    pub summary: Entity<InputState>,
+    pub description: Entity<TextareaState>,
+    /// Commit replaces the last commit; the fields were filled with its message.
+    pub amend: bool,
+    /// Ctrl+Enter in either field commits.
+    _enter: Vec<Subscription>,
 }
 
 impl Git {
-    pub fn new(folder: PathBuf, tab: Tab, window: &mut Window, cx: &mut App) -> Git {
+    pub fn new(folder: PathBuf, tab: Tab, window: &mut Window, cx: &mut Context<Workspace>) -> Git {
         let diff = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language("diff")
                 .line_number(false)
                 .soft_wrap(false)
         });
+        let summary = cx.new(|cx| InputState::new(window, cx).placeholder("Summary"));
+        let description = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .rows(3)
+                .placeholder("Description")
+        });
+        let (from_summary, from_description) = (summary.entity_id(), description.entity_id());
+        let _enter = vec![
+            cx.subscribe_in(
+                &summary,
+                window,
+                move |ws, _, event: &InputEvent, window, cx| {
+                    if let InputEvent::PressEnter {
+                        secondary: true, ..
+                    } = event
+                    {
+                        ws.commit_from(from_summary, window, cx);
+                    }
+                },
+            ),
+            cx.subscribe_in(
+                &description,
+                window,
+                move |ws, _, event: &InputEvent, window, cx| {
+                    if let InputEvent::PressEnter {
+                        secondary: true, ..
+                    } = event
+                    {
+                        ws.commit_from(from_description, window, cx);
+                    }
+                },
+            ),
+        ];
         Git {
             folder,
             found: Found::Looking,
@@ -168,7 +212,49 @@ impl Git {
             diff,
             selected: None,
             diff_line: None,
+            summary,
+            description,
+            amend: false,
+            _enter,
         }
+    }
+
+    /// The keyboard is in the summary or the description.
+    pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
+        self.summary
+            .read(cx)
+            .focus_handle(cx)
+            .contains_focused(window, cx)
+            || self
+                .description
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+    }
+
+    /// The summary, then a blank line and the description when there is one.
+    pub fn message(&self, cx: &App) -> String {
+        let summary = self.summary.read(cx).value().trim().to_string();
+        let description = self.description.read(cx).value().trim().to_string();
+        if description.is_empty() {
+            summary
+        } else {
+            format!("{summary}\n\n{description}")
+        }
+    }
+
+    /// Commit is possible: something staged, a summary, an author, nothing running. With
+    /// Amend, nothing staged is fine (the message alone changes).
+    pub fn can_commit(&self, cx: &App) -> bool {
+        (self.amend || !self.status.staged().is_empty())
+            && !self.summary.read(cx).value().trim().is_empty()
+            && self.author.is_some()
+            && !self.busy
+    }
+
+    /// The summary or the description is this entity: which block a Ctrl+Enter came from.
+    pub fn owns_field(&self, field: EntityId) -> bool {
+        self.summary.entity_id() == field || self.description.entity_id() == field
     }
 
     /// The selected entry, as the last status lists it; None once it is gone.
@@ -508,11 +594,8 @@ fn changes(
     let s = &git.status;
     let lists = div()
         .id(("git-lists", n))
-        .w(px(LISTS_W * z))
-        .h_full()
-        .flex_shrink_0()
-        .border_r_1()
-        .border_color(ui.hairline)
+        .flex_1()
+        .min_h(px(0.0))
         .overflow_y_scroll()
         .child(
             div()
@@ -525,12 +608,97 @@ fn changes(
                 .child(list(ws, id, List::Unstaged, &s.unstaged(), z, cx)),
         )
         .test_support();
+    let column = div()
+        .w(px(LISTS_W * z))
+        .h_full()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .border_r_1()
+        .border_color(ui.hairline)
+        .child(lists)
+        .child(commit_form(ws, id, git, z, cx));
     div()
         .flex_1()
         .min_h(px(0.0))
         .flex()
-        .child(lists)
+        .child(column)
         .child(diff_view(ws, id, git, z, cx))
+        .into_any_element()
+}
+
+/// Summary, Description, Amend, Commit; or why committing isn't possible.
+fn commit_form(
+    ws: &Workspace,
+    id: BlockId,
+    git: &Git,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let ui = ws.ui;
+    let n = id.0 as usize;
+    let can = git.can_commit(cx);
+    let amend = git.amend;
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.0 * z))
+        .p(px(8.0 * z))
+        .border_t_1()
+        .border_color(ui.hairline)
+        .text_size(px(FONT * z))
+        .child(
+            Input::new(&git.summary)
+                .small()
+                .text_size(px(FONT * z))
+                .w_full(),
+        )
+        .child(
+            Textarea::new(&git.description)
+                .text_size(px(FONT * z))
+                .w_full(),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0 * z))
+                .child(
+                    Checkbox::new(("git-amend", n))
+                        .label("Amend the last commit")
+                        .checked(amend)
+                        .on_click(cx.listener(move |ws, on: &bool, window, cx| {
+                            ws.set_amend(id, *on, window, cx)
+                        })),
+                )
+                .child(div().flex_1())
+                .when(can, |el| {
+                    el.child(
+                        button(("git-commit", n), "Commit", ui, z)
+                            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                                ws.git_commit(id, window, cx)
+                            }))
+                            .test_support(),
+                    )
+                }),
+        )
+        .when(git.author.is_none() && git.repo().is_some(), |el| {
+            el.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.0 * z))
+                    .text_color(ui.title_dim)
+                    .child("Set user.name and user.email to commit")
+                    .child(
+                        button(("git-set-author", n), "Set…", ui, z)
+                            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                                ws.set_git_author(id, window, cx)
+                            }))
+                            .test_support(),
+                    ),
+            )
+        })
         .into_any_element()
 }
 
