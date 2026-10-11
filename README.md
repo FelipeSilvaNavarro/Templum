@@ -39,6 +39,7 @@ cargo run -p templum
 | Drag in a terminal (double-click: word, triple-click: line) | Select text |
 | Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board or Note, where you clicked |
 | Right-click a block, card, column, board or workspace tile | Its menu (copy, paste, rename, delete, close…) |
+| With a drawing tool on, drag the canvas | Draw; Shift keeps lines at 45° and makes squares and circles |
 
 | Linux / Windows | macOS | Action |
 |---|---|---|
@@ -122,7 +123,15 @@ the note's title. Notes are saved with the canvas.
 
 The bar at the bottom of the canvas holds the tools: **Select** and **Hand** (move the canvas by dragging anywhere,
 over blocks too; Esc goes back to Select), then a button for each kind of block (terminal, note, kanban board) and
-the AI agents.
+the AI agents, then the drawing tools.
+
+## Drawing
+
+The toolbar's pen, highlighter, shapes (line, arrow, rectangle, ellipse) and eraser draw on the canvas, over
+the blocks. A pill above the toolbar picks the color (seven, from the theme) and the width. Esc goes back to
+Select; then a click on a drawing selects it, a drag moves it, Delete removes it, and Ctrl+Z / Ctrl+Shift+Z
+(Cmd on macOS) undo and redo while a drawing tool is on or a drawing is selected. Drawings are saved with the
+canvas.
 
 ## Your canvas is kept
 
