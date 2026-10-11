@@ -5,6 +5,7 @@ mod block;
 mod board;
 mod config;
 mod grid;
+mod ink;
 mod kanban;
 mod keys;
 mod launcher;

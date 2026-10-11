@@ -23,8 +23,8 @@ use gpui_kit::{
     fill, point, px, size,
 };
 use templum_canvas::{
-    Block, BlockId, Camera, CameraFlight, Canvas, Drawing, Gesture, Guide, Point, Rect, Size,
-    chrome, dot_grid, dot_size,
+    Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, Point, Rect,
+    Size, chrome, dot_grid, dot_size,
 };
 use templum_terminal::{KeyInput, Notify, SelectionKind, Side, Snapshot, SpawnOptions, Terminal};
 
@@ -34,6 +34,7 @@ use crate::block;
 use crate::board::{self, Boards};
 use crate::config::{self, Config, Edit, ThemeConfig, WorkingDirectory};
 use crate::grid::CellMetrics;
+use crate::ink;
 use crate::kanban::{self, Kanban};
 use crate::keys::{self, Command, Keymap, Keys};
 use crate::menu;
@@ -146,11 +147,12 @@ impl Body {
     }
 }
 
-#[derive(Clone, Copy)]
 enum Drag {
     Canvas(Gesture),
     /// Selecting text in a block's terminal.
     Select(BlockId),
+    /// Drawing with a pen, a highlighter or a shape tool.
+    Ink(Drawing),
 }
 
 /// One canvas and everything on it: its blocks, their terminals, the focus, and what is
@@ -276,6 +278,15 @@ pub(crate) enum Tool {
     Select,
     /// Pans with any drag or wheel, over blocks too, like holding Alt.
     Hand,
+    Pen,
+    Highlighter,
+}
+
+impl Tool {
+    /// A tool that draws: it stays on, and a layer over the blocks takes the pointer.
+    pub fn draws(self) -> bool {
+        matches!(self, Tool::Pen | Tool::Highlighter)
+    }
 }
 
 /// Called at the start of every render; returning false removes it (the bench drives frames).
@@ -387,6 +398,9 @@ pub struct Workspace {
     hand: bool,
     /// The toolbar's active tool.
     pub(crate) tool: Tool,
+    /// The drawing tools' color and width.
+    pub(crate) ink_color: Color,
+    pub(crate) ink_width: ink::Width,
     /// The focused terminal's cursor blinks (painting reports it); and the blink phase.
     pub(crate) cursor_blinks: bool,
     pub(crate) blink_on: bool,
@@ -565,6 +579,8 @@ impl Workspace {
             menu: None,
             hand: false,
             tool: Tool::default(),
+            ink_color: Color::Blue,
+            ink_width: ink::Width::default(),
             cursor_blinks: false,
             blink_on: true,
             _blink: blink,
@@ -1031,6 +1047,39 @@ impl Workspace {
         self.menu = None;
         window.focus(&self.focus_handle, cx);
         cx.notify();
+    }
+
+    pub(crate) fn set_ink_color(&mut self, color: Color, cx: &mut Context<Self>) {
+        self.ink_color = color;
+        cx.notify();
+    }
+
+    pub(crate) fn set_ink_width(&mut self, width: ink::Width, cx: &mut Context<Self>) {
+        self.ink_width = width;
+        cx.notify();
+    }
+
+    /// A press on the ink layer: starts the tool's drawing at the pointer.
+    pub(crate) fn begin_ink(&mut self, e: &MouseDownEvent) {
+        self.space.pristine = false;
+        self.press = None;
+        let p = self.space.canvas.camera.to_world(self.local(e.position));
+        let drawing = match self.tool {
+            Tool::Pen => Drawing::Stroke {
+                points: vec![p],
+                width: self.ink_width.units(),
+                color: self.ink_color,
+                highlight: false,
+            },
+            Tool::Highlighter => Drawing::Stroke {
+                points: vec![p],
+                width: ink::HIGHLIGHTER_WIDTH,
+                color: self.ink_color,
+                highlight: true,
+            },
+            _ => return,
+        };
+        self.drag = Some(Drag::Ink(drawing));
     }
 
     /// Starts moving the canvas with the pointer, wherever it is (the hand, the middle button).
@@ -2046,6 +2095,36 @@ impl Workspace {
         }
     }
 
+    /// The drawings, painted above the blocks. No listeners: the pointer goes through it.
+    fn ink_layer(&self) -> impl IntoElement + use<> {
+        let drawings = self.space.ink.clone();
+        let live = match &self.drag {
+            Some(Drag::Ink(d)) => Some(d.clone()),
+            _ => None,
+        };
+        let selected = None;
+        let camera = self.space.view;
+        let theme = self.theme.clone();
+        let ui = self.ui;
+        canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                ink::paint(
+                    &drawings,
+                    live.as_ref(),
+                    selected,
+                    &camera,
+                    &theme,
+                    ui,
+                    bounds,
+                    window,
+                );
+            },
+        )
+        .absolute()
+        .size_full()
+    }
+
     fn local(&self, pos: PixelPoint<Pixels>) -> Point {
         Point::new(
             f32::from(pos.x - self.origin.x),
@@ -2070,7 +2149,7 @@ impl Workspace {
         self.drag = Gesture::resize_block(&self.space.canvas, id, p, min).map(Drag::Canvas);
     }
 
-    fn drag_to(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
+    fn drag_to(&mut self, pos: PixelPoint<Pixels>, shift: bool, cx: &mut Context<Self>) {
         let p = self.local(pos);
         match &mut self.drag {
             Some(Drag::Canvas(gesture)) => {
@@ -2090,6 +2169,13 @@ impl Workspace {
                     (self.cell_under(id, pos), self.space.terminal(id))
                 {
                     pane.term.shared().select_update(row, col, side);
+                }
+            }
+            Some(Drag::Ink(drawing)) => {
+                let world = self.space.canvas.camera.to_world(p);
+                let _ = shift;
+                if !drawing.push_point(world) {
+                    return;
                 }
             }
             None => return,
@@ -2234,6 +2320,12 @@ impl Workspace {
             if moved < CLICK_SLOP && self.space.focused.take().is_some() {
                 cx.notify();
             }
+        }
+        if let Some(Drag::Ink(drawing)) = self.drag.take()
+            && !drawing.is_empty()
+        {
+            self.space.ink.push(drawing);
+            cx.notify();
         }
         self.end_drag();
     }
@@ -2822,7 +2914,7 @@ impl Render for Workspace {
                             }
                             // Any button: the middle one pans too.
                             if e.pressed_button.is_some() {
-                                ws.drag_to(e.position, cx);
+                                ws.drag_to(e.position, e.modifiers.shift, cx);
                             } else {
                                 ws.end_drag();
                             }
@@ -2867,6 +2959,30 @@ impl Render for Workspace {
             .on_pinch(cx.listener(Self::on_pinch))
             .child(layer)
             .children(blocks)
+            // The drawings, above the blocks; with a drawing tool on, a layer over them takes the
+            // pointer.
+            .child(self.ink_layer())
+            .when(self.tool.draws(), |el| {
+                el.child(
+                    div()
+                        .id("ink-layer")
+                        .absolute()
+                        .size_full()
+                        .cursor_crosshair()
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|ws, e: &MouseDownEvent, _, cx| {
+                                ws.begin_ink(e);
+                                cx.stop_propagation();
+                                cx.notify();
+                            }),
+                        )
+                        .on_scroll_wheel(cx.listener(Self::on_background_scroll))
+                        .on_pinch(cx.listener(Self::on_pinch))
+                        .test_support(),
+                )
+            })
             // The hand: while Alt is held, a layer over the blocks takes the pointer, and a drag
             // or the wheel moves the canvas wherever it is.
             .when(hand, |el| {
@@ -6746,6 +6862,109 @@ mod tests {
         .unwrap();
         ws.read_with(cx, |ws, _| {
             assert!(ws.menu.is_some(), "the agents menu is open")
+        });
+    }
+
+    /// Drags on the empty canvas near its top-left corner, clear of the startup terminal.
+    fn draw(
+        handle: AnyWindowHandle,
+        ws: &Entity<Workspace>,
+        cx: &mut TestAppContext,
+        from: (f32, f32),
+        to: (f32, f32),
+    ) {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let o = ws.read(cx).origin;
+            let at = |p: (f32, f32)| (f32::from(o.x) + p.0, f32::from(o.y) + p.1);
+            press_with(
+                window,
+                cx,
+                MouseButton::Left,
+                Modifiers::default(),
+                at(from),
+                at(to),
+            );
+            window.render_frame(cx);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_pen_draws_a_stroke_that_comes_back_after_a_restart(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-pen", cx);
+            window.click("ink-color-red", cx);
+            window.click("ink-width-thick", cx);
+            window.render_frame(cx);
+            window.find("ink-layer");
+        })
+        .unwrap();
+        draw(handle, &ws, cx, (20.0, 20.0), (80.0, 50.0));
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.tool, super::Tool::Pen, "the pen stays on");
+            let [
+                templum_canvas::Drawing::Stroke {
+                    points,
+                    width,
+                    color,
+                    highlight,
+                },
+            ] = ws.space.ink.as_slice()
+            else {
+                panic!("one stroke: {:?}", ws.space.ink);
+            };
+            assert_eq!(points.len(), 2);
+            assert_eq!(
+                (*width, *color, *highlight),
+                (8.0, templum_canvas::Color::Red, false)
+            );
+            assert!(
+                ws.space.focused.is_some(),
+                "drawing doesn't unfocus the terminal"
+            );
+        });
+        // A press without a move is nothing.
+        draw(handle, &ws, cx, (200.0, 20.0), (200.0, 20.0));
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.ink.len(), 1));
+        cx.update_window(handle, |_, _, cx| {
+            ws.update(cx, |ws, cx| ws.save_canvas_now(cx))
+        })
+        .unwrap();
+        let (_, again) = open_in(cx, None, Some(dir.path().to_path_buf()));
+        again.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.ink.len(), 1);
+            assert_eq!(ws.space.ink[0].width(), 8.0);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn the_highlighter_is_wide_and_translucent(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-highlighter", cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find("ink-width-thin").is_none(),
+                "one width only"
+            );
+        })
+        .unwrap();
+        draw(handle, &ws, cx, (20.0, 20.0), (120.0, 20.0));
+        ws.read_with(cx, |ws, _| {
+            let [
+                templum_canvas::Drawing::Stroke {
+                    width, highlight, ..
+                },
+            ] = ws.space.ink.as_slice()
+            else {
+                panic!("one stroke");
+            };
+            assert_eq!((*width, *highlight), (crate::ink::HIGHLIGHTER_WIDTH, true));
         });
     }
 
