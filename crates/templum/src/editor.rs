@@ -3,14 +3,16 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui_kit::Focusable as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::base::{Tree, TreeEntry, TreeEntryState, TreeEvent, TreeItem, TreeState};
 use gpui_kit::component::Icon;
 use gpui_kit::component::highlighter::Language;
-use gpui_kit::component::input::{Editor as EditorView, EditorState, InputEvent};
+use gpui_kit::component::input::{
+    Editor as EditorView, EditorState, InputEvent, Position, RopeExt as _,
+};
 use gpui_kit::component::text::TextView;
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -40,6 +42,10 @@ pub(crate) const BINARY_PROBE: usize = 8 * 1024;
 /// Over this, a file opens read-only; over `TOO_BIG_OVER`, it doesn't open.
 pub(crate) const READ_ONLY_OVER: u64 = 4 * 1024 * 1024;
 pub(crate) const TOO_BIG_OVER: u64 = 32 * 1024 * 1024;
+/// How often open files are checked for changes on disk, and how long a read tree is trusted
+/// while its block is focused.
+pub(crate) const POLL: Duration = Duration::from_secs(2);
+pub(crate) const TREE_REFRESH: Duration = Duration::from_secs(2);
 
 /// The language gpui-kit highlights `path` with: by its extension, by its name for files like
 /// Makefile, "text" when it has no grammar.
@@ -157,10 +163,8 @@ pub(crate) struct Tab {
     /// Edited since it was read or saved (or gone from the disk: Save brings it back).
     pub dirty: bool,
     /// The file's modification time as last read or written; None when it is gone.
-    #[allow(dead_code)] // Read by the check for changes on disk, which comes next.
     pub mtime: Option<SystemTime>,
     /// Changed on disk while it had unsaved edits: the bar asks what to do.
-    #[allow(dead_code)]
     pub conflict: bool,
     /// A Markdown file shown rendered.
     pub preview: bool,
@@ -181,6 +185,33 @@ impl Tab {
         // Recorded so the 2-second check doesn't take Templum's own write for a change.
         self.mtime = mtime(&self.path);
         Ok(())
+    }
+
+    /// Reads the file again into the editor, keeping the cursor's line. False when it can't be
+    /// read.
+    pub fn reload(&mut self, window: &mut Window, cx: &mut App) -> bool {
+        let Ok(bytes) = std::fs::read(&self.path) else {
+            return false;
+        };
+        let raw = String::from_utf8_lossy(&bytes);
+        if let Content::Text { crlf, newline, .. } = &mut self.content {
+            *crlf = line_ending(&raw) == "\r\n";
+            *newline = raw.ends_with('\n');
+        }
+        let text = raw.replace("\r\n", "\n");
+        self.editor.update(cx, |e, cx| {
+            let line = e.cursor_position().line;
+            e.set_value(text, window, cx);
+            // Not set_cursor_position: that would take the keyboard from whatever has it.
+            let offset = e
+                .text()
+                .position_to_offset(&Position { line, character: 0 });
+            e.set_selected_range(offset..offset, cx);
+        });
+        self.dirty = false;
+        self.conflict = false;
+        self.mtime = mtime(&self.path);
+        true
     }
 
     pub fn name(&self) -> String {
@@ -573,6 +604,7 @@ fn files(
 ) -> AnyElement {
     let n = id.0 as usize;
     let ui = ws.ui;
+    let i = editor.active.unwrap_or(0);
     let markdown = editor
         .active_tab()
         .is_some_and(|t| lang_of(&t.path) == "markdown");
@@ -692,6 +724,36 @@ fn files(
                     .flex()
                     .flex_col()
                     .when(big, |el| el.child(bar(ui, z).child("Over 4 MB: read-only")))
+                    .when(tab.conflict, |el| {
+                        el.child(
+                            bar(ui, z)
+                                .id(("conflict", n))
+                                .child(
+                                    Icon::new(IconName::TriangleAlert)
+                                        .size(px(12.0 * z))
+                                        .text_color(ui.accent),
+                                )
+                                .child("Changed on disk")
+                                .child(div().flex_1())
+                                .child(
+                                    button(("reload", n), "Reload", ui, z)
+                                        .on_click(cx.listener(
+                                            move |ws, _: &ClickEvent, window, cx| {
+                                                ws.reload_tab(id, i, window, cx)
+                                            },
+                                        ))
+                                        .test_support(),
+                                )
+                                .child(
+                                    button(("keep", n), "Keep mine", ui, z)
+                                        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
+                                            ws.keep_mine(id, i, cx)
+                                        }))
+                                        .test_support(),
+                                )
+                                .test_support(),
+                        )
+                    })
                     .child(div().flex_1().min_h(px(0.0)).child(view))
                     .into_any_element()
             }
@@ -747,6 +809,13 @@ fn tab_el(
         .cursor_pointer()
         .hover(move |s| s.bg(ui.hover))
         .child(div().truncate().child(label))
+        .when(tab.conflict, |el| {
+            el.child(
+                Icon::new(IconName::TriangleAlert)
+                    .size(px(11.0 * z))
+                    .text_color(ui.accent),
+            )
+        })
         .child(
             div()
                 .id(ElementId::Name(format!("tab-close-{n}-{i}").into()))

@@ -493,6 +493,8 @@ pub struct Workspace {
     pub(crate) cursor_blinks: bool,
     pub(crate) blink_on: bool,
     _blink: Task<()>,
+    /// Checks open files for changes on disk every editor::POLL.
+    _files: Task<()>,
     _wake: Task<()>,
 }
 
@@ -601,6 +603,17 @@ impl Workspace {
                 }
             }
         });
+        let files = cx.spawn_in(window, async move |ws, cx| {
+            loop {
+                cx.background_executor().timer(editor::POLL).await;
+                if ws
+                    .update_in(cx, |ws, window, cx| ws.check_files(window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
         let flush = vec![
             cx.on_release(|ws, cx| {
                 ws.save();
@@ -675,6 +688,7 @@ impl Workspace {
             cursor_blinks: false,
             blink_on: true,
             _blink: blink,
+            _files: files,
             config,
             keymap,
             agents: effective_agents,
@@ -1340,6 +1354,68 @@ impl Workspace {
             && !tab.dirty
         {
             tab.dirty = true;
+            cx.notify();
+        }
+    }
+
+    /// Every POLL: an open file changed on disk is reloaded (clean) or flagged (edited), a
+    /// gone one is marked changed so Save brings it back; and the focused editor's tree is
+    /// read again once TREE_REFRESH has passed. Only the workspace on screen: hidden ones catch
+    /// up when shown.
+    fn check_files(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self.space.focused;
+        let mut changed = false;
+        for (id, body) in &mut self.space.blocks {
+            let Body::Editor(editor) = body else {
+                continue;
+            };
+            for tab in &mut editor.tabs {
+                let now = editor::mtime(&tab.path);
+                if now == tab.mtime {
+                    continue;
+                }
+                match (now, tab.dirty) {
+                    (None, _) => {
+                        tab.dirty = true;
+                        tab.mtime = None;
+                    }
+                    (Some(_), false) => {
+                        tab.reload(window, cx);
+                    }
+                    (Some(_), true) => {
+                        tab.conflict = true;
+                        tab.mtime = now;
+                    }
+                }
+                changed = true;
+            }
+            if focused == Some(*id) && editor.tree_read.elapsed() >= editor::TREE_REFRESH {
+                changed |= editor.refresh(cx);
+            }
+        }
+        if changed {
+            cx.notify();
+        }
+    }
+
+    /// The bar's Reload: the disk's text replaces the edits.
+    pub(crate) fn reload_tab(
+        &mut self,
+        block: BlockId,
+        i: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(tab) = self.space.editor_mut(block).and_then(|e| e.tabs.get_mut(i)) {
+            tab.reload(window, cx);
+            cx.notify();
+        }
+    }
+
+    /// The bar's Keep mine: the edits stay, the next Save writes over the disk's version.
+    pub(crate) fn keep_mine(&mut self, block: BlockId, i: usize, cx: &mut Context<Self>) {
+        if let Some(tab) = self.space.editor_mut(block).and_then(|e| e.tabs.get_mut(i)) {
+            tab.conflict = false;
             cx.notify();
         }
     }
@@ -8037,6 +8113,157 @@ mod tests {
         })
         .unwrap();
         assert_eq!(notification_count(handle, cx), before + 1);
+    }
+
+    /// Rewrites `path` as another program would, a modification time clearly later.
+    fn change_on_disk(path: &std::path::Path, text: &str) {
+        use std::time::{Duration, SystemTime};
+        std::fs::write(path, text).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(5))
+            .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_file_changed_on_disk_is_reloaded_while_clean_and_flagged_while_edited(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::component::input::Position;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "one\ntwo\nthree\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        let n = id.0 as usize;
+        click_file(handle, 0, cx);
+        let value = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+            ws.read_with(cx, |ws, cx| {
+                let tab = ws.space.editor(id).unwrap().active_tab().unwrap();
+                tab.editor.read(cx).value().to_string()
+            })
+        };
+        // The cursor on line 2 (0-based 1); a clean tab is reloaded in place, the line kept.
+        cx.update_window(handle, |_, window, cx| {
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            let editor = tab.editor.clone();
+            editor.update(cx, |e, cx| {
+                e.set_cursor_position(
+                    Position {
+                        line: 1,
+                        character: 0,
+                    },
+                    window,
+                    cx,
+                )
+            });
+        })
+        .unwrap();
+        change_on_disk(&path, "uno\ndos\ntres\n");
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.check_files(window, cx));
+            window.render_frame(cx);
+            let e = ws.read(cx).space.editor(id).unwrap();
+            let tab = e.active_tab().unwrap();
+            assert_eq!(tab.editor.read(cx).value().as_ref(), "uno\ndos\ntres\n");
+            assert_eq!(tab.editor.read(cx).cursor_position().line, 1);
+            assert!(!tab.dirty && !tab.conflict);
+        })
+        .unwrap();
+        // Edited, then changed on disk: flagged, the bar shows; Keep mine clears the flag.
+        cx.simulate_input(handle, "x");
+        assert_eq!(
+            value(&ws, cx),
+            "uno\nxdos\ntres\n",
+            "typed on the kept line"
+        );
+        change_on_disk(&path, "other\n");
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.check_files(window, cx));
+            window.render_frame(cx);
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert!(tab.conflict && tab.dirty);
+            window.find(("conflict", n));
+            window.click(("keep", n), cx);
+            window.render_frame(cx);
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert!(!tab.conflict && tab.dirty);
+            assert!(window.try_find(("conflict", n)).is_none());
+        })
+        .unwrap();
+        assert_eq!(value(&ws, cx), "uno\nxdos\ntres\n", "kept");
+        // Changed again: Reload takes the disk's text.
+        change_on_disk(&path, "newest\n");
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.check_files(window, cx));
+            window.render_frame(cx);
+            window.click(("reload", n), cx);
+            window.render_frame(cx);
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert!(!tab.conflict && !tab.dirty);
+        })
+        .unwrap();
+        assert_eq!(value(&ws, cx), "newest\n");
+        // Templum's own save is not a change on disk: nothing is reloaded or flagged.
+        cx.simulate_input(handle, "y");
+        let typed = value(&ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.press(SAVE, cx);
+            ws.update(cx, |ws, cx| ws.check_files(window, cx));
+            window.render_frame(cx);
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert!(
+                !tab.conflict && !tab.dirty,
+                "a save is not a change on disk"
+            );
+        })
+        .unwrap();
+        assert_eq!(value(&ws, cx), typed);
+        // Gone: the tab stays, marked changed, and Save brings the file back.
+        std::fs::remove_file(&path).unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.check_files(window, cx));
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert!(tab.dirty && tab.mtime.is_none());
+            window.press(SAVE, cx);
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            crate::editor::encode(&typed, false, true)
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_focused_editors_tree_is_read_again_after_two_seconds(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.space.focused = Some(id);
+                ws.check_files(window, cx);
+            });
+            let count = |cx: &mut gpui_kit::App| {
+                ws.read(cx).space.editor(id).unwrap().dirs[dir.path()].len()
+            };
+            assert_eq!(count(cx), 1, "too soon");
+            ws.update(cx, |ws, cx| {
+                let e = ws.space.editor_mut(id).unwrap();
+                e.tree_read = std::time::Instant::now()
+                    .checked_sub(crate::editor::TREE_REFRESH)
+                    .unwrap();
+                ws.check_files(window, cx);
+            });
+            assert_eq!(count(cx), 2);
+            window.render_frame(cx);
+            window.find(("entry", 1usize));
+        })
+        .unwrap();
     }
 
     fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
