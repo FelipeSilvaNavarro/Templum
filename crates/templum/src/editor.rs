@@ -574,6 +574,10 @@ pub(crate) fn button(
 ) -> Stateful<Div> {
     div()
         .id(id)
+        // A spinner can sit beside the label (the Git block's Fetch, Pull and Push).
+        .flex()
+        .items_center()
+        .gap(px(6.0 * z))
         .px(px(10.0 * z))
         .py(px(5.0 * z))
         .rounded(px(8.0 * z))

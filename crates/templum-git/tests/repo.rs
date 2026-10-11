@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use templum_git::{Change, Operation, Repo, Side};
+use templum_git::{Change, Operation, Pull, Repo, Side};
 
 /// A new repository on `main` with an author set, so commits work on a bare runner.
 fn fresh() -> (tempfile::TempDir, Repo) {
@@ -262,4 +262,98 @@ fn an_error_carries_the_command_and_stderrs_first_line() {
         err.to_string(),
         format!("{}: {}", err.command, err.first_line())
     );
+}
+
+/// `repo` with a bare `origin` that has its `main`.
+fn with_remote(repo: &Repo) -> tempfile::TempDir {
+    let remote = tempfile::tempdir().unwrap();
+    std::process::Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .current_dir(remote.path())
+        .status()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["symbolic-ref", "HEAD", "refs/heads/main"])
+        .current_dir(remote.path())
+        .status()
+        .unwrap();
+    repo.run(&[
+        "remote",
+        "add",
+        "origin",
+        &remote.path().display().to_string(),
+    ])
+    .unwrap();
+    repo.run(&["push", "-q", "-u", "origin", "main"]).unwrap();
+    remote
+}
+
+#[test]
+fn fetch_pull_and_push_against_a_local_remote() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let remote = with_remote(&repo);
+    assert_eq!(
+        repo.status().unwrap().upstream.as_deref(),
+        Some("origin/main")
+    );
+    // Another clone pushes a commit: we are behind after a fetch.
+    let other = tempfile::tempdir().unwrap();
+    let clone = Repo::init("git", other.path()).unwrap();
+    clone
+        .run(&[
+            "remote",
+            "add",
+            "origin",
+            &remote.path().display().to_string(),
+        ])
+        .unwrap();
+    clone.run(&["pull", "-q", "origin", "main"]).unwrap();
+    clone.run(&["config", "user.name", "B"]).unwrap();
+    clone
+        .run(&["config", "user.email", "b@example.com"])
+        .unwrap();
+    write(other.path(), "b.txt", "b\n");
+    clone.stage(&["b.txt"]).unwrap();
+    clone.commit("b", false).unwrap();
+    clone.run(&["push", "-q", "origin", "HEAD:main"]).unwrap();
+    repo.fetch().unwrap();
+    assert_eq!(repo.status().unwrap().behind, 1);
+    repo.pull(Pull::FastForward).unwrap();
+    assert_eq!(repo.status().unwrap().behind, 0);
+    assert!(dir.path().join("b.txt").is_file());
+    // Diverged: ff-only refuses, a merge pull works.
+    write(other.path(), "c.txt", "c\n");
+    clone.stage(&["c.txt"]).unwrap();
+    clone.commit("c", false).unwrap();
+    clone.run(&["push", "-q", "origin", "HEAD:main"]).unwrap();
+    write(dir.path(), "d.txt", "d\n");
+    repo.stage(&["d.txt"]).unwrap();
+    repo.commit("d", false).unwrap();
+    let err = repo.pull(Pull::FastForward).unwrap_err();
+    assert!(templum_git::not_fast_forward(&err.stderr), "{err}");
+    repo.pull(Pull::Merge).unwrap();
+    assert!(dir.path().join("c.txt").is_file());
+    repo.push(None).unwrap();
+    assert_eq!(repo.status().unwrap().ahead, 0);
+    // A new branch has no upstream until it is published.
+    repo.run(&["checkout", "-q", "-b", "topic"]).unwrap();
+    assert_eq!(repo.status().unwrap().upstream, None);
+    repo.push(Some("topic")).unwrap();
+    assert_eq!(
+        repo.status().unwrap().upstream.as_deref(),
+        Some("origin/topic")
+    );
+}
+
+#[test]
+fn a_remote_that_isnt_there_fails_with_the_command_in_the_error() {
+    let (_dir, repo) = fresh();
+    repo.run(&["remote", "add", "origin", "/no/such/remote"])
+        .unwrap();
+    let err = repo.fetch().unwrap_err();
+    assert_eq!(err.command, "git fetch --prune");
+    assert!(!err.needs_input());
 }

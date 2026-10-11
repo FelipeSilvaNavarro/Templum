@@ -11,10 +11,11 @@ use std::time::{Duration, Instant};
 use futures::StreamExt;
 use gpui_kit::base::motion::{MotionStatus, Transition, transition_with_status};
 use gpui_kit::base::{TreeEvent, TreeState};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{EditorState, Position};
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::notification::{Notification, NotificationDelivery};
-use gpui_kit::component::{TITLE_BAR_HEIGHT, WindowExt, window_paddings};
+use gpui_kit::component::{Sizable as _, TITLE_BAR_HEIGHT, WindowExt, window_paddings};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Anchor, AnyElement, App, Bounds, ClipboardItem, Context, DispatchPhase, ElementInputHandler,
@@ -1324,6 +1325,144 @@ impl Workspace {
         }
     }
 
+    /// Runs one of fetch, pull and push, its button spinning meanwhile.
+    fn git_sync(
+        &mut self,
+        id: BlockId,
+        which: git_block::Sync,
+        job: impl FnOnce(&Repo) -> Result<(), GitError> + Send + 'static,
+        on_err: impl FnOnce(&mut Workspace, BlockId, &GitError, &mut Window, &mut Context<Workspace>)
+        + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        if git.busy {
+            return;
+        }
+        let Some(repo) = git.repo().cloned() else {
+            return;
+        };
+        git.sync = Some(which);
+        let at = GitAt {
+            space: self.space.id.clone(),
+            block: id,
+        };
+        self.git_job(
+            at,
+            move || job(&repo),
+            move |ws, at, result, window, cx| {
+                if let Some(git) = ws.git_at(&at) {
+                    git.sync = None;
+                }
+                if let Err(e) = result {
+                    on_err(ws, at.block, &e, window, cx);
+                }
+                ws.refresh_at(at, window, cx);
+            },
+            window,
+            cx,
+        );
+    }
+
+    pub(crate) fn fetch(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        self.git_sync(
+            id,
+            git_block::Sync::Fetch,
+            |repo| repo.fetch(),
+            |_, block, e, window, cx| {
+                let ws = cx.entity();
+                notify_git_error(&ws, block, e, Vec::new(), window, cx)
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// `--ff-only`; when that isn't possible, the notification offers Merge and Rebase.
+    pub(crate) fn pull(
+        &mut self,
+        id: BlockId,
+        how: templum_git::Pull,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use templum_git::Pull;
+        self.git_sync(
+            id,
+            git_block::Sync::Pull,
+            move |repo| repo.pull(how),
+            move |_, block, e, window, cx| {
+                let ws = cx.entity();
+                let mut extra: Vec<Extra> = Vec::new();
+                if how == Pull::FastForward && templum_git::not_fast_forward(&e.stderr) {
+                    extra.push((
+                        "git-pull-merge",
+                        "Merge",
+                        Rc::new(move |ws, window, cx| ws.pull(block, Pull::Merge, window, cx)),
+                    ));
+                    extra.push((
+                        "git-pull-rebase",
+                        "Rebase",
+                        Rc::new(move |ws, window, cx| ws.pull(block, Pull::Rebase, window, cx)),
+                    ));
+                }
+                notify_git_error(&ws, block, e, extra, window, cx);
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// `git push`; a branch with no upstream asks, then `git push -u origin <branch>`.
+    pub(crate) fn push(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git(id) else {
+            return;
+        };
+        let publish = match (&git.status.upstream, &git.status.branch) {
+            (None, Some(branch)) => Some(branch.clone()),
+            _ => None,
+        };
+        let Some(branch) = publish else {
+            self.push_now(id, None, window, cx);
+            return;
+        };
+        let ws = cx.entity();
+        prompt::confirm(
+            format!("Publish {branch}?"),
+            format!("git push -u origin {branch}"),
+            "Push",
+            move |window, cx| {
+                let branch = branch.clone();
+                ws.update(cx, |ws, cx| ws.push_now(id, Some(branch), window, cx))
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn push_now(
+        &mut self,
+        id: BlockId,
+        publish: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.git_sync(
+            id,
+            git_block::Sync::Push,
+            move |repo| repo.push(publish.as_deref()),
+            |_, block, e, window, cx| {
+                let ws = cx.entity();
+                notify_git_error(&ws, block, e, Vec::new(), window, cx)
+            },
+            window,
+            cx,
+        );
+    }
+
     /// Commits what is staged with the form's message; "Committed abc1234" and the fields
     /// clear.
     pub(crate) fn git_commit(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
@@ -1360,7 +1499,10 @@ impl Workspace {
                             Notification::success(format!("Committed {short}")),
                         );
                     }
-                    Err(e) => notify_git_error(window, cx, &e),
+                    Err(e) => {
+                        let entity = cx.entity();
+                        notify_git_error(&entity, at.block, &e, Vec::new(), window, cx)
+                    }
                 }
                 ws.refresh_at(at, window, cx);
             },
@@ -1578,7 +1720,8 @@ impl Workspace {
             move || job(&repo),
             |ws, at, result, window, cx| {
                 if let Err(e) = result {
-                    notify_git_error(window, cx, &e);
+                    let entity = cx.entity();
+                    notify_git_error(&entity, at.block, &e, Vec::new(), window, cx);
                 }
                 ws.refresh_at(at, window, cx);
             },
@@ -2341,11 +2484,12 @@ impl Workspace {
         self.refresh_tree(block, cx);
     }
 
-    /// A terminal in `folder`, placed to the right of the editor block.
+    /// A terminal in `folder`, placed to the right of `block`, with `command` typed in.
     pub(crate) fn terminal_beside(
         &mut self,
         block: BlockId,
         folder: &Path,
+        command: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2355,7 +2499,14 @@ impl Workspace {
         self.space.pristine = false;
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
         let rect = self.space.canvas.place_beside(anchor, size);
-        self.spawn_block(rect, Some(folder.to_path_buf()), window, cx);
+        let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx);
+        if let (Some(id), Some(command)) = (id, command) {
+            // The shell reads it once it is ready.
+            let line = format!("{command}\r");
+            if let Some(pane) = self.space.terminal(id) {
+                pane.term.write(line.into_bytes());
+            }
+        }
         window.focus(&self.focus_handle, cx);
     }
 
@@ -4563,10 +4714,90 @@ fn refs(paths: &[String]) -> Vec<&str> {
     paths.iter().map(String::as_str).collect()
 }
 
-/// A failed git command as a notification. Task 6 adds Details and Run in a terminal.
-pub(crate) fn notify_git_error(window: &mut Window, cx: &mut App, err: &GitError) {
+/// One more button on a failed command's notification: its element id, its label, what it does.
+pub(crate) type Extra = (
+    &'static str,
+    &'static str,
+    Rc<dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>)>,
+);
+
+/// A failed git command: stderr's first line, Details for all of it, Run in a terminal (a
+/// terminal beside the block with the command typed in), and `extra`'s buttons.
+pub(crate) fn notify_git_error(
+    ws: &Entity<Workspace>,
+    block: BlockId,
+    err: &GitError,
+    extra: Vec<Extra>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     eprintln!("templum: {err}");
-    show_notification(window, cx, Notification::error(err.to_string()));
+    let (err, ws) = (err.clone(), ws.clone());
+    let notification = Notification::error(err.first_line().to_string())
+        .title(err.command.clone())
+        .autohide(false)
+        .content(move |_, _, cx| {
+            let note = cx.entity();
+            let (details, run) = (err.clone(), err.clone());
+            let (ws_run, ws_details) = (ws.clone(), ws.clone());
+            let run_note = note.clone();
+            let extras: Vec<AnyElement> = extra
+                .iter()
+                .map(|(id, label, act)| {
+                    let (ws, act, note) = (ws.clone(), act.clone(), note.clone());
+                    Button::new(*id)
+                        .label(*label)
+                        .small()
+                        .primary()
+                        .on_click(move |_, window, cx| {
+                            ws.update(cx, |ws, cx| act(ws, window, cx));
+                            note.update(cx, |n, cx| n.dismiss(window, cx));
+                        })
+                        .into_any_element()
+                })
+                .collect();
+            div()
+                .flex()
+                .gap(px(6.0))
+                .mt(px(6.0))
+                .child(
+                    Button::new("git-details")
+                        .label("Details")
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            // Read now: the caller may be updating the workspace.
+                            let mono = ws_details.read(cx).cell.font.family.clone();
+                            prompt::details(
+                                details.command.clone(),
+                                details.stderr.clone(),
+                                mono,
+                                window,
+                                cx,
+                            )
+                        }),
+                )
+                .child(
+                    Button::new("git-run")
+                        .label("Run in a terminal")
+                        .small()
+                        .on_click(move |_, window, cx| {
+                            let command = run.command.clone();
+                            ws_run.update(cx, |ws, cx| {
+                                let root = ws
+                                    .space
+                                    .git(block)
+                                    .and_then(|g| g.repo().map(|r| r.root.clone()));
+                                if let Some(root) = root {
+                                    ws.terminal_beside(block, &root, Some(&command), window, cx);
+                                }
+                            });
+                            run_note.update(cx, |n, cx| n.dismiss(window, cx));
+                        }),
+                )
+                .children(extras)
+                .into_any_element()
+        });
+    show_notification(window, cx, notification);
 }
 
 /// A saved rect made safe: None with a number that isn't finite; at least `min`.
@@ -12024,5 +12255,186 @@ mod tests {
         });
         let written = std::fs::read_to_string(&global).unwrap();
         assert!(written.contains("Grace Hopper"), "{written}");
+    }
+
+    /// A bare remote `origin` for `repo`, with its `main` pushed.
+    fn add_remote(repo: &std::path::Path) -> tempfile::TempDir {
+        let remote = tempfile::tempdir().unwrap();
+        git_run(remote.path(), &["init", "-q", "--bare"]);
+        // Clones check out its HEAD: main, not git's default branch.
+        git_run(remote.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git_run(
+            repo,
+            &[
+                "remote",
+                "add",
+                "origin",
+                &remote.path().display().to_string(),
+            ],
+        );
+        git_run(repo, &["push", "-q", "-u", "origin", "main"]);
+        remote
+    }
+
+    #[gpui_kit::test]
+    fn fetch_shows_the_counts_and_pull_fast_forwards(cx: &mut TestAppContext) {
+        let repo = committed_repo();
+        let remote = add_remote(repo.path());
+        let other = tempfile::tempdir().unwrap();
+        git_run(
+            other.path(),
+            &["clone", "-q", &remote.path().display().to_string(), "."],
+        );
+        git_run(other.path(), &["config", "user.name", "B"]);
+        git_run(other.path(), &["config", "user.email", "b@example.com"]);
+        std::fs::write(other.path().join("b.txt"), "b\n").unwrap();
+        git_run(other.path(), &["add", "b.txt"]);
+        git_run(other.path(), &["commit", "-q", "-m", "b"]);
+        git_run(other.path(), &["push", "-q"]);
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        let n = id.0 as usize;
+        git_of(&ws, cx, id, |g| {
+            assert_eq!((g.status.ahead, g.status.behind), (0, 0))
+        });
+        cx.update_window(handle, |_, window, cx| window.click(("git-fetch", n), cx))
+            .unwrap();
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.sync, Some(crate::git_block::Sync::Fetch), "a spinner");
+        });
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.sync, None);
+            assert_eq!(g.status.behind, 1);
+        });
+        cx.update_window(handle, |_, window, cx| window.click(("git-pull", n), cx))
+            .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| assert_eq!(g.status.behind, 0));
+        assert!(repo.path().join("b.txt").is_file());
+    }
+
+    #[gpui_kit::test]
+    fn push_with_no_upstream_asks_then_publishes(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let repo = committed_repo();
+        let _remote = add_remote(repo.path());
+        git_run(repo.path(), &["checkout", "-q", "-b", "topic"]);
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        let n = id.0 as usize;
+        git_of(&ws, cx, id, |g| assert_eq!(g.status.upstream, None));
+        cx.update_window(handle, |_, window, cx| {
+            window.click(("git-push", n), cx);
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx), "asks to publish");
+            window.within("dialog").click("ok", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        git_of(&ws, cx, id, |g| {
+            assert_eq!(g.status.upstream.as_deref(), Some("origin/topic"));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn a_pull_that_cant_fast_forward_offers_merge_and_rebase(cx: &mut TestAppContext) {
+        // The notification slides in: its buttons take clicks once it is at rest.
+        no_motion(cx);
+        let repo = committed_repo();
+        let remote = add_remote(repo.path());
+        let other = tempfile::tempdir().unwrap();
+        git_run(
+            other.path(),
+            &["clone", "-q", &remote.path().display().to_string(), "."],
+        );
+        git_run(other.path(), &["config", "user.name", "B"]);
+        git_run(other.path(), &["config", "user.email", "b@example.com"]);
+        std::fs::write(other.path().join("b.txt"), "b\n").unwrap();
+        git_run(other.path(), &["add", "b.txt"]);
+        git_run(other.path(), &["commit", "-q", "-m", "b"]);
+        git_run(other.path(), &["push", "-q"]);
+        std::fs::write(repo.path().join("c.txt"), "c\n").unwrap();
+        git_run(repo.path(), &["add", "c.txt"]);
+        git_run(repo.path(), &["commit", "-q", "-m", "c"]);
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        let n = id.0 as usize;
+        cx.update_window(handle, |_, window, cx| window.click(("git-pull", n), cx))
+            .unwrap();
+        settle(handle, cx);
+        assert_eq!(notification_count(handle, cx), 1);
+        cx.update_window(handle, |_, window, cx| {
+            window.click("git-pull-merge", cx);
+        })
+        .unwrap();
+        settle(handle, cx);
+        assert_eq!(
+            git_run(repo.path(), &["rev-list", "--count", "HEAD"]),
+            "4\n",
+            "a merge commit"
+        );
+        assert!(repo.path().join("b.txt").is_file());
+    }
+
+    #[cfg(unix)]
+    #[gpui_kit::test]
+    fn a_failed_command_offers_details_and_a_terminal(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        use std::time::{Duration, Instant};
+        use templum_terminal::Snapshot;
+        no_motion(cx);
+        let repo = committed_repo();
+        git_run(repo.path(), &["remote", "add", "origin", "/no/such/remote"]);
+        let (handle, ws) = open(cx);
+        let id = open_git(handle, &ws, cx, repo.path());
+        let n = id.0 as usize;
+        cx.update_window(handle, |_, window, cx| window.click(("git-fetch", n), cx))
+            .unwrap();
+        settle(handle, cx);
+        assert_eq!(notification_count(handle, cx), 1);
+        cx.update_window(handle, |_, window, cx| {
+            window.click("git-details", cx);
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx), "stderr in a dialog");
+            window.within("dialog").click("ok", cx);
+            window.render_frame(cx);
+            window.click("git-run", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let (term, rect) = ws.read_with(cx, |ws, _| {
+            let (tid, _) = ws
+                .space
+                .terminals()
+                .find(|(tid, _)| *tid != first_id_of(ws))
+                .expect("a terminal beside the block");
+            (tid, ws.space.canvas.get(tid).unwrap().rect)
+        });
+        let git = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+        assert_eq!(rect.x, git.x + git.w + templum_canvas::BESIDE);
+        // The quiet test shell (`cat`) echoes what was typed.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let shown = ws.read_with(cx, |ws, _| {
+                let mut snap = Snapshot::default();
+                snap.refresh(
+                    ws.space.terminal(term).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
+                snap.text()
+            });
+            if shown.contains("git fetch --prune") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "not typed: {shown:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn first_id_of(ws: &Workspace) -> BlockId {
+        ws.space.canvas.blocks().first().map(|b| b.id).unwrap()
     }
 }

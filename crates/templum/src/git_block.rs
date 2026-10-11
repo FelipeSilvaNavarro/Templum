@@ -11,8 +11,9 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{
     Editor as EditorView, EditorState, Input, InputEvent, InputState, Textarea, TextareaState,
 };
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{Icon, Sizable as _};
+use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, EntityId, MouseButton,
@@ -90,6 +91,14 @@ pub(crate) enum Found {
     Repo(Repo),
 }
 
+/// Which of fetch, pull and push runs: its button shows a spinner, the others are disabled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Sync {
+    Fetch,
+    Pull,
+    Push,
+}
+
 /// The three lists of the Changes tab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum List {
@@ -141,6 +150,8 @@ pub(crate) struct Git {
     pub pending: bool,
     /// Reads completed so far (the tests count them).
     pub reads: u64,
+    /// The fetch, pull or push running.
+    pub sync: Option<Sync>,
     /// Why the last read failed, shown under the top bar.
     pub error: Option<String>,
     /// The read-only diff on the right of the Changes tab, with the `diff` grammar.
@@ -208,6 +219,7 @@ impl Git {
             busy: false,
             pending: false,
             reads: 0,
+            sync: None,
             error: None,
             diff,
             selected: None,
@@ -504,7 +516,33 @@ fn repo_body(
                     .child(sync),
             )
             .child(div().flex_1())
-            // Fetch, Pull and Push come with task 6.
+            .children([Sync::Fetch, Sync::Pull, Sync::Push].map(|which| {
+                let (name, label) = match which {
+                    Sync::Fetch => ("git-fetch", "Fetch"),
+                    Sync::Pull => ("git-pull", "Pull"),
+                    Sync::Push => ("git-push", "Push"),
+                };
+                let running = git.sync == Some(which);
+                let disabled = git.busy && !running;
+                let el = button((name, n), label, ui, z)
+                    .when(running, |el| {
+                        el.child(Spinner::new().with_size(UiSize::Size(px(12.0 * z))))
+                    })
+                    .when(disabled, |el| el.opacity(0.5));
+                if disabled || running {
+                    el.test_support().into_any_element()
+                } else {
+                    el.on_click(
+                        cx.listener(move |ws, _: &ClickEvent, window, cx| match which {
+                            Sync::Fetch => ws.fetch(id, window, cx),
+                            Sync::Pull => ws.pull(id, templum_git::Pull::FastForward, window, cx),
+                            Sync::Push => ws.push(id, window, cx),
+                        }),
+                    )
+                    .test_support()
+                    .into_any_element()
+                }
+            }))
             .child(
                 icon_button(("refresh", n), IconName::RefreshCw, ui, z)
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {

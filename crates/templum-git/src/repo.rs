@@ -341,3 +341,33 @@ impl Repo {
         self.run(&[op.name(), "--continue"]).map(drop)
     }
 }
+/// How `git pull` joins the upstream's commits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pull {
+    FastForward,
+    Merge,
+    Rebase,
+}
+
+impl Repo {
+    pub fn fetch(&self) -> Result<(), GitError> {
+        self.run(&["fetch", "--prune"]).map(drop)
+    }
+
+    pub fn pull(&self, how: Pull) -> Result<(), GitError> {
+        let flag = match how {
+            Pull::FastForward => "--ff-only",
+            Pull::Merge => "--no-rebase",
+            Pull::Rebase => "--rebase",
+        };
+        self.run(&["pull", flag]).map(drop)
+    }
+
+    /// `git push`; with `publish`, `git push -u origin <branch>` for a branch with no upstream.
+    pub fn push(&self, publish: Option<&str>) -> Result<(), GitError> {
+        match publish {
+            Some(branch) => self.run(&["push", "-u", "origin", branch]).map(drop),
+            None => self.run(&["push"]).map(drop),
+        }
+    }
+}

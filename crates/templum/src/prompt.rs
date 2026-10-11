@@ -114,3 +114,30 @@ pub(crate) fn save_or_discard(
             )
     });
 }
+
+/// A dialog showing `text` in the terminal font, with OK.
+pub(crate) fn details(
+    title: impl Into<SharedString>,
+    text: String,
+    mono: SharedString,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let title = title.into();
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        alert
+            .confirm()
+            .title(title.clone())
+            .w(px(640.0))
+            .button_props(DialogButtonProps::default().show_cancel(false))
+            .child(
+                div()
+                    .id("details")
+                    .max_h(px(360.0))
+                    .overflow_y_scroll()
+                    .font_family(mono.clone())
+                    .text_size(px(12.0))
+                    .child(text.clone()),
+            )
+    });
+}

@@ -513,7 +513,7 @@ impl Items {
                         ws,
                         "Open a terminal here",
                         Some(IconName::SquareTerminal),
-                        move |ws, window, cx| ws.terminal_beside(block, &p, window, cx),
+                        move |ws, window, cx| ws.terminal_beside(block, &p, None, window, cx),
                     ));
                 }
                 if let Some(p) = path.clone() {
