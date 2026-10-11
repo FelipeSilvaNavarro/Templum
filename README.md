@@ -37,7 +37,7 @@ cargo run -p templum
 | Scroll over a terminal | Scroll its history |
 | Ctrl+scroll, or pinch | Zoom |
 | Drag in a terminal (double-click: word, triple-click: line) | Select text |
-| Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board or Note, where you clicked |
+| Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board, Note or Editor, where you clicked |
 | Right-click a block, card, column, board or workspace tile | Its menu (copy, paste, rename, delete, close…) |
 | With a drawing tool on, drag the canvas | Draw; Shift keeps lines at 45° and makes squares and circles |
 
@@ -46,6 +46,10 @@ cargo run -p templum
 | Ctrl+Shift+T | Cmd+T | New terminal |
 | Ctrl+Shift+K | Cmd+Shift+K | New kanban board block |
 | Ctrl+Shift+M | Cmd+Shift+M | New note |
+| Ctrl+Shift+E | Cmd+Shift+E | New editor (asks for a folder) |
+| Ctrl+S | Cmd+S | Save the file (in an editor) |
+| Ctrl+W | Ctrl+W | Close the file's tab (in an editor) |
+| Ctrl+G | Cmd+G | Go to line (in an editor) |
 | Ctrl+Shift+W | Cmd+W | Close the focused terminal |
 | Ctrl+Shift+C / V | Cmd+C / V | Copy / paste |
 | Ctrl+= / Ctrl+- | Cmd+= / Cmd+- | Zoom in / out |
@@ -119,10 +123,21 @@ The toolbar's note button (or Ctrl+Shift+M) puts a note on the canvas. Write Mar
 indents an item), code. The eye button at the left of its header shows it rendered, and back; the first heading is
 the note's title. Notes are saved with the canvas.
 
+## Editor
+
+The toolbar's editor button (or Ctrl+Shift+E) asks for a folder and puts an editor on it: a file tree on the
+left (folders are read when you open them), tabs of open files, and a code editor with line numbers and syntax
+highlighting for the usual languages. Ctrl+S saves (the file keeps its line endings), Ctrl+W closes the tab,
+Ctrl+F searches, Ctrl+H replaces, Ctrl+G goes to a line; Markdown files get the note's preview button. A file
+changed by another program is reloaded while you haven't edited it, and flagged with Reload / Keep mine when you
+have. Right-click the tree for new files and folders, rename, delete, reveal in the file manager, and a terminal
+in that folder beside the editor. Closing a block or quitting with the shortcut asks about unsaved files; the
+window's close button doesn't, so save first.
+
 ## The toolbar
 
 The bar at the bottom of the canvas holds the tools: **Select** and **Hand** (move the canvas by dragging anywhere,
-over blocks too; Esc goes back to Select), then a button for each kind of block (terminal, note, kanban board) and
+over blocks too; Esc goes back to Select), then a button for each kind of block (terminal, note, kanban board, editor) and
 the AI agents, then the drawing tools.
 
 ## Drawing

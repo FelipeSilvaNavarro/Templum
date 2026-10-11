@@ -690,7 +690,7 @@ app usable after it; each plan ends with its docs.
 | **1. Canvas foundations** | §1 blocks of any kind, §2 snapping, §3 toolbar, §5 notes | — | `tree-sitter-markdown`, `AllAssets` |
 | **2. Drawing** | §4 | 1 (toolbar) | — |
 | **3. Workspaces screen** | §6 | — | — |
-| **4. Editor** | §7, Settings ▸ Tools | 1 (blocks, toolbar) | `tree-sitter-languages` |
+| **4. Editor** | §7, Settings ▸ Tools | 1 (blocks, toolbar) | the curated `tree-sitter-*` list |
 | **5. Git** | §8, `templum-git` | 4 (opens files) | — |
 | **6. Docker** | §9, `templum-docker` | 1 (terminal hand-off); 4 for "Open compose file" | — |
 
@@ -713,6 +713,23 @@ from §4:
   apart (so zoomed out, a stroke is a polyline); lines up to 2 px wide get square ends, up to 6 px pointed joins.
   With 200 strokes the bench measured p95 15.4–19.7 ms on a busy machine, against 14.3–15.4 ms without them:
   the bar is not reliably held. What remains is GPUI's per-vertex cost of painting paths.
+
+Plan 4 ([../plans/2026-10-11-editor.md](../plans/2026-10-11-editor.md)) shipped on 2026-10-11. Where it differs
+from §7:
+
+- Grammars: the curated list (markdown, json, toml, yaml, diff, bash, rust, javascript, typescript, tsx, python,
+  go, html, css, c, cpp, java, lua, make), not `tree-sitter-languages`: its SQL grammar pins `cc ~1.2` against the
+  tree's `cc 1.7`. `cargo deny check` passes with the list.
+- No `find` command: gpui-kit's editor binds Ctrl+F and Ctrl+H itself, and GPUI dispatches bindings before key
+  listeners, so a Templum command would never run with the editor focused and must not run without it.
+- Tabs are Templum's own row, not gpui-kit's `TabBar`: they scale with the zoom.
+- Files are read and written on the UI thread (at most 32 MB, from the page cache); a background read comes when
+  a stall is measured.
+- Symlink cycles aren't detected: folders are read only when expanded, so a cycle just stays expandable.
+- Quitting with the shortcut asks about unsaved files; the window's close button can't (GPUI's `on_release`).
+- `open_in_editor` has no caller yet: the Git block (plan 5) is the first, and it places a new editor beside
+  itself with `Canvas::place_beside`.
+- Settings ▸ Tools comes with plan 5, with the first reader of `git.program`.
 
 ## Risks
 
