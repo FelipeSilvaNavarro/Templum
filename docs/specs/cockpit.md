@@ -726,7 +726,12 @@ from §7:
 - Files are read and written on the UI thread (at most 32 MB, from the page cache); a background read comes when
   a stall is measured.
 - Symlink cycles aren't detected: folders are read only when expanded, so a cycle just stays expandable.
-- Quitting with the shortcut asks about unsaved files; the window's close button can't (GPUI's `on_release`).
+- Unsaved files are asked about on every way out: closing a block, a workspace (its Delete…), the window
+  (`Window::on_window_should_close`, and the title bar's own ✕ on Linux), and the quit shortcut.
+- A file that isn't UTF-8 opens read-only (saving it back would replace its bytes), like one over 4 MB; a reload
+  applies the same rules, and anything that isn't a regular file (a FIFO, a device) isn't opened.
+- Tab indents per language: hard tabs for make and Go, 4 spaces for Rust, Python, C, C++, Java and Lua, 2 for the
+  rest. Renaming onto an existing name is refused.
 - `open_in_editor` has no caller yet: the Git block (plan 5) is the first, and it places a new editor beside
   itself with `Canvas::place_beside`.
 - Settings ▸ Tools comes with plan 5, with the first reader of `git.program`.

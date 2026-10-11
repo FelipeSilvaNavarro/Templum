@@ -179,6 +179,10 @@ impl Workspace {
                     .find(|s| s.id == *id)
                     .map_or_else(String::new, |s| s.name.clone()),
                 only_one: self.others.is_empty(),
+                unsaved: self
+                    .spaces()
+                    .find(|s| s.id == *id)
+                    .map_or_else(Vec::new, |s| s.unsaved(None)),
             },
         })
     }
@@ -234,6 +238,8 @@ enum Items {
         id: String,
         name: String,
         only_one: bool,
+        /// Its editors' changed files.
+        unsaved: Vec<String>,
     },
     Ink {
         index: usize,
@@ -711,7 +717,12 @@ impl Items {
                         cx.notify();
                     },
                 )),
-            Items::Space { id, name, only_one } => {
+            Items::Space {
+                id,
+                name,
+                only_one,
+                unsaved,
+            } => {
                 let delete_id = id.clone();
                 let delete_name = name.clone();
                 menu.item(item(ws, "Rename…", None, move |_, window, cx| {
@@ -737,16 +748,42 @@ impl Items {
                         move |_, window, cx| {
                             let ws = cx.entity();
                             let id = delete_id.clone();
-                            prompt::confirm(
+                            if unsaved.is_empty() {
+                                prompt::confirm(
+                                    format!("Delete {delete_name}?"),
+                                    "Its terminals will close.",
+                                    "Delete",
+                                    move |window, cx| {
+                                        ws.update(cx, |ws, cx| ws.delete_space(&id, window, cx))
+                                    },
+                                    window,
+                                    cx,
+                                );
+                                return;
+                            }
+                            // Its editors have changed files: save them, or not, first.
+                            let (saver, save_id) = (ws.clone(), id.clone());
+                            prompt::save_or_discard(
                                 format!("Delete {delete_name}?"),
-                                "Its terminals will close.",
-                                "Delete",
+                                format!(
+                                    "Its terminals will close. Unsaved: {}",
+                                    unsaved.join(", ")
+                                ),
+                                move |window, cx| {
+                                    saver.update(cx, |ws, cx| {
+                                        let saved = ws.save_spaces(Some(&save_id), window, cx);
+                                        if saved {
+                                            ws.delete_space(&save_id, window, cx);
+                                        }
+                                        saved
+                                    })
+                                },
                                 move |window, cx| {
                                     ws.update(cx, |ws, cx| ws.delete_space(&id, window, cx))
                                 },
                                 window,
                                 cx,
-                            )
+                            );
                         },
                     )
                     .disabled(only_one),

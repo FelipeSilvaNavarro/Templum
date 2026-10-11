@@ -342,6 +342,18 @@ impl Space {
         self.blocks.get_mut(&id)?.editor_mut()
     }
 
+    /// The changed files' names: of one block, or of every block of this workspace.
+    pub fn unsaved(&self, block: Option<BlockId>) -> Vec<String> {
+        self.blocks
+            .iter()
+            .filter(|(id, _)| block.is_none_or(|b| b == **id))
+            .filter_map(|(_, b)| b.editor())
+            .flat_map(|e| e.tabs.iter())
+            .filter(|t| t.dirty)
+            .map(editor::Tab::name)
+            .collect()
+    }
+
     /// The focused block's terminal, when the focused block is one.
     pub fn focused_terminal(&self) -> Option<&Pane> {
         self.focused.and_then(|id| self.terminal(id))
@@ -613,6 +625,13 @@ impl Workspace {
                     break;
                 }
             }
+        });
+        // Closing the window with unsaved files asks first, as quitting does.
+        let closing = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            closing
+                .update(cx, |ws, cx| ws.may_close(window, cx))
+                .unwrap_or(true)
         });
         let flush = vec![
             cx.on_release(|ws, cx| {
@@ -1072,8 +1091,9 @@ impl Workspace {
         let editor = self.space.editor_mut(id)?;
         editor.folder = folder.to_path_buf();
         editor.expanded.clear();
-        editor.tabs.clear();
-        editor.active = None;
+        // Changed files stay open (Save writes them where they were); the others close.
+        editor.tabs.retain(|t| t.dirty);
+        editor.active = (!editor.tabs.is_empty()).then_some(0);
         editor.refresh(cx);
         remember(&mut self.space.recent, folder.to_path_buf());
         cx.notify();
@@ -1258,10 +1278,18 @@ impl Workspace {
         ok
     }
 
-    /// Every changed tab of every workspace, on the way out; false when one failed.
-    fn save_everything(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    /// Every changed tab of the workspace `only`, or of every one; false when one failed.
+    pub(crate) fn save_spaces(
+        &mut self,
+        only: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let mut failed = None;
-        for space in std::iter::once(&mut self.space).chain(&mut self.others) {
+        for space in std::iter::once(&mut self.space)
+            .chain(&mut self.others)
+            .filter(|s| only.is_none_or(|id| s.id == id))
+        {
             for tab in space
                 .blocks
                 .values_mut()
@@ -1285,17 +1313,34 @@ impl Workspace {
         }
     }
 
-    /// The changed files' names: of one block, or of every workspace.
-    fn unsaved_names(&self, block: Option<BlockId>) -> Vec<String> {
-        std::iter::once(&self.space)
-            .chain(&self.others)
-            .flat_map(|s| s.blocks.iter())
-            .filter(|(id, _)| block.is_none_or(|b| b == **id))
-            .filter_map(|(_, b)| b.editor())
-            .flat_map(|e| e.tabs.iter())
-            .filter(|t| t.dirty)
-            .map(editor::Tab::name)
-            .collect()
+    /// Every workspace's changed files' names.
+    fn unsaved_names(&self) -> Vec<String> {
+        self.spaces().flat_map(|s| s.unsaved(None)).collect()
+    }
+
+    /// Asks before the window or Templum closes with unsaved files: Save all, Don't save or
+    /// Cancel; either of the first two quits. True when nothing is unsaved and it may close now.
+    pub(crate) fn may_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let unsaved = self.unsaved_names();
+        if unsaved.is_empty() {
+            return true;
+        }
+        let ws = cx.entity();
+        prompt::save_or_discard(
+            "Save changes before quitting?",
+            format!("Unsaved: {}", unsaved.join(", ")),
+            move |window, cx| {
+                let saved = ws.update(cx, |ws, cx| ws.save_spaces(None, window, cx));
+                if saved {
+                    cx.quit();
+                }
+                saved
+            },
+            |_, cx| cx.quit(),
+            window,
+            cx,
+        );
+        false
     }
 
     fn close_active_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1380,7 +1425,12 @@ impl Workspace {
                         tab.mtime = None;
                     }
                     (Some(_), false) => {
-                        tab.reload(window, cx);
+                        // Can't be read as it is now (over 32 MB, not a file any more): the
+                        // bar says it changed, and Reload says why.
+                        if tab.reload(window, cx).is_err() {
+                            tab.conflict = true;
+                            tab.mtime = now;
+                        }
                     }
                     (Some(_), true) => {
                         tab.conflict = true;
@@ -1407,7 +1457,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if let Some(tab) = self.space.editor_mut(block).and_then(|e| e.tabs.get_mut(i)) {
-            tab.reload(window, cx);
+            if let Err(message) = tab.reload(window, cx) {
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+            }
             cx.notify();
         }
     }
@@ -1482,6 +1535,12 @@ impl Workspace {
             return false;
         }
         let to = path.with_file_name(name);
+        if to != path && to.symlink_metadata().is_ok() && !editor::same_file(path, &to) {
+            let message = format!("{name} already exists");
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+            return false;
+        }
         if let Err(err) = std::fs::rename(path, &to) {
             let message = format!("Couldn't rename {}: {err}", path.display());
             eprintln!("templum: {message}");
@@ -2343,7 +2402,8 @@ impl Workspace {
 
     /// Closes a block. An editor with unsaved edits asks first: Save all, Don't save, Cancel.
     pub(crate) fn close(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        let unsaved = self.unsaved_names(Some(id));
+        // Only this workspace: block ids count from 0 in every one.
+        let unsaved = self.space.unsaved(Some(id));
         if unsaved.is_empty() {
             self.remove_block(id, window, cx);
             return;
@@ -3359,25 +3419,8 @@ impl Workspace {
             .take()
             .is_some_and(|at| now.duration_since(at) < QUIT_AGAIN)
         {
-            let unsaved = self.unsaved_names(None);
-            if unsaved.is_empty() {
+            if self.may_close(window, cx) {
                 cx.quit();
-            } else {
-                let ws = cx.entity();
-                prompt::save_or_discard(
-                    "Save changes before quitting?",
-                    format!("Unsaved: {}", unsaved.join(", ")),
-                    move |window, cx| {
-                        let saved = ws.update(cx, |ws, cx| ws.save_everything(window, cx));
-                        if saved {
-                            cx.quit();
-                        }
-                        saved
-                    },
-                    |_, cx| cx.quit(),
-                    window,
-                    cx,
-                );
             }
             return;
         }
@@ -8041,7 +8084,7 @@ mod tests {
                 crate::editor::Content::Text {
                     crlf: true,
                     newline: true,
-                    big: false
+                    read_only: None
                 }
             ));
             assert!(
@@ -8697,6 +8740,227 @@ mod tests {
         let (handle, ws) = open(cx);
         let shown = echo_after(GO_TO_LINE, handle, &ws, cx);
         assert!(shown.contains("^G"), "{shown:?}");
+    }
+
+    /// An editor on `dir` with `name` open and typed into, so it has unsaved edits.
+    fn dirty_tab(
+        handle: AnyWindowHandle,
+        ws: &Entity<Workspace>,
+        cx: &mut TestAppContext,
+        dir: &std::path::Path,
+    ) -> BlockId {
+        let id = open_editor(handle, ws, cx, dir);
+        click_file(handle, 0, cx);
+        cx.simulate_input(handle, "x");
+        id
+    }
+
+    #[gpui_kit::test]
+    fn closing_a_block_doesnt_ask_about_another_workspaces_files(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let (handle, ws) = open(cx);
+        let id = dirty_tab(handle, &ws, cx, dir.path());
+        // Another workspace, whose blocks count their ids from 0 again.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.new_space(window, cx);
+                while ws.space.terminal(id).is_none() {
+                    ws.new_terminal(window, cx);
+                }
+                ws.close(id, window, cx);
+            });
+            window.render_frame(cx);
+            assert!(!window.has_active_dialog(cx), "not this workspace's file");
+            assert!(ws.read(cx).space.terminal(id).is_none(), "closed");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn closing_the_window_with_unsaved_files_asks_first(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let (handle, ws) = open(cx);
+        let mut window_cx = gpui_kit::VisualTestContext::from_window(handle, cx);
+        assert!(window_cx.simulate_close(), "nothing unsaved: it closes");
+        dirty_tab(handle, &ws, cx, dir.path());
+        assert!(!window_cx.simulate_close(), "unsaved: it stays open");
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx), "and asks");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_file_that_isnt_utf8_opens_read_only_and_keeps_its_bytes(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("latin1.txt");
+        std::fs::write(&path, b"caf\xe9\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        cx.simulate_input(handle, "x");
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert!(!tab.editor.read(cx).is_editable(), "read-only");
+            assert!(!tab.dirty);
+            window.press(SAVE, cx);
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"caf\xe9\n",
+            "its bytes are kept"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn renaming_onto_an_existing_file_is_refused(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                assert!(!ws.rename_entry(id, &dir.path().join("a.txt"), "b.txt", window, cx));
+                // The same name in another case is the same file only on some disks: renaming to
+                // the same name is always allowed.
+                assert!(ws.rename_entry(id, &dir.path().join("a.txt"), "a.txt", window, cx));
+            });
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+            "b"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "a"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn deleting_a_workspace_with_unsaved_files_asks_and_can_save_them(cx: &mut TestAppContext) {
+        use gpui_kit::component::WindowExt as _;
+        no_motion(cx);
+        let data = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+        dirty_tab(handle, &ws, cx, dir.path());
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.new_space(window, cx);
+                ws.open_menu(
+                    super::menu::Target::Space("default".into()),
+                    point(px(100.0), px(100.0)),
+                    window,
+                    cx,
+                );
+            });
+            window.render_frame(cx);
+            // Rename…, Delete….
+            window.within("popup-menu").click(1usize, cx);
+            window.render_frame(cx);
+            assert!(window.has_active_dialog(cx));
+            window.within("dialog").click("save", cx);
+            window.render_frame(cx);
+            assert_eq!(ws.read(cx).others.len(), 0, "deleted");
+        })
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "xa",
+            "saved first"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_file_that_grows_past_4_mb_on_disk_turns_read_only(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.txt");
+        std::fs::write(&path, "start\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        let lines = crate::editor::READ_ONLY_OVER as usize / 2 + 1;
+        change_on_disk(&path, &"x\n".repeat(lines));
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.check_files(window, cx));
+            window.render_frame(cx);
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            assert!(!tab.editor.read(cx).is_editable(), "over 4 MB: read-only");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_makefile_indents_with_a_tab(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Makefile"), "all:\n").unwrap();
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.press("tab", cx);
+            window.render_frame(cx);
+            let tab = ws.read(cx).space.editor(id).unwrap().active_tab().unwrap();
+            let text = tab.editor.read(cx).value().to_string();
+            assert!(text.starts_with('\t'), "{text:?}");
+        })
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[gpui_kit::test]
+    fn a_fifo_in_the_tree_isnt_opened(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe");
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (handle, ws) = open(cx);
+        let id = open_editor(handle, &ws, cx, dir.path());
+        let before = notification_count(handle, cx);
+        // Reading it would wait for a writer forever, on the UI thread.
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.open_file(id, &fifo, None, window, cx));
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert!(ws.space.editor(id).unwrap().tabs.is_empty())
+        });
+        assert_eq!(notification_count(handle, cx), before + 1, "it says why");
+    }
+
+    #[gpui_kit::test]
+    fn choosing_another_folder_keeps_unsaved_tabs(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+        let (handle, ws) = open(cx);
+        let id = dirty_tab(handle, &ws, cx, dir.path());
+        cx.update_window(handle, |_, _, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.set_editor_folder(id, other.path(), cx);
+            });
+            let e = ws.read(cx).space.editor(id).unwrap();
+            assert_eq!(e.tabs.len(), 1, "the changed file stays open");
+            assert!(e.tabs[0].dirty);
+            assert_eq!(e.active, Some(0));
+        })
+        .unwrap();
     }
 
     fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {

@@ -131,8 +131,9 @@ highlighting for the usual languages. Ctrl+S saves (the file keeps its line endi
 Ctrl+F searches, Ctrl+H replaces, Ctrl+G goes to a line; Markdown files get the note's preview button. A file
 changed by another program is reloaded while you haven't edited it, and flagged with Reload / Keep mine when you
 have. Right-click the tree for new files and folders, rename, delete, reveal in the file manager, and a terminal
-in that folder beside the editor. Closing a block or quitting with the shortcut asks about unsaved files; the
-window's close button doesn't, so save first.
+in that folder beside the editor. Closing a block, a workspace or the window, or quitting, asks about unsaved
+files first. A file that isn't UTF-8, or is over 4 MB, opens read-only, so its bytes never change; Tab indents
+as the language wants it (a real tab in Makefiles and Go).
 
 ## The toolbar
 

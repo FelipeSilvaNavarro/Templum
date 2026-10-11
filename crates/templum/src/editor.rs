@@ -11,7 +11,7 @@ use gpui_kit::base::{Tree, TreeEntry, TreeEntryState, TreeEvent, TreeItem, TreeS
 use gpui_kit::component::Icon;
 use gpui_kit::component::highlighter::Language;
 use gpui_kit::component::input::{
-    Editor as EditorView, EditorState, InputEvent, Position, RopeExt as _,
+    Editor as EditorView, EditorState, InputEvent, Position, RopeExt as _, TabSize,
 };
 use gpui_kit::component::text::TextView;
 use gpui_kit::prelude::*;
@@ -69,6 +69,62 @@ pub(crate) fn lang_of(path: &Path) -> &'static str {
     }
 }
 
+/// How Tab indents in `lang`: hard tabs where the language wants them (make needs them, Go's
+/// formatter writes them), 4 spaces for the C family and friends, 2 for the rest.
+pub(crate) fn indent_of(lang: &str) -> TabSize {
+    match lang {
+        "make" | "go" => TabSize {
+            tab_size: 4,
+            hard_tabs: true,
+        },
+        "rust" | "python" | "c" | "cpp" | "java" | "lua" => TabSize {
+            tab_size: 4,
+            hard_tabs: false,
+        },
+        _ => TabSize::default(),
+    }
+}
+
+/// A file as a tab holds it, and the editor's text: refused when it isn't a regular file (a
+/// FIFO or a device would block the read) or is over `TOO_BIG_OVER`; binary when a NUL is in
+/// its first 8 KB; read-only when it is over `READ_ONLY_OVER` or isn't UTF-8.
+pub(crate) fn read_file(path: &Path) -> Result<(Content, String), String> {
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let meta = std::fs::metadata(path).map_err(|e| format!("Couldn't open {name}: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!(
+            "{name} isn't a regular file, so Templum doesn't open it"
+        ));
+    }
+    let size = meta.len();
+    if size > TOO_BIG_OVER {
+        return Err(format!("{name} is over 32 MB, so Templum doesn't open it"));
+    }
+    let bytes = std::fs::read(path).map_err(|e| format!("Couldn't read {name}: {e}"))?;
+    if is_binary(&bytes) {
+        return Ok((Content::Binary { size }, String::new()));
+    }
+    let (raw, read_only) = match String::from_utf8(bytes) {
+        Ok(text) => (
+            text,
+            (size > READ_ONLY_OVER).then_some("Over 4 MB: read-only"),
+        ),
+        Err(e) => (
+            String::from_utf8_lossy(e.as_bytes()).into_owned(),
+            Some("Not UTF-8: read-only, so its bytes stay as they are"),
+        ),
+    };
+    let content = Content::Text {
+        crlf: line_ending(&raw) == "\r\n",
+        newline: raw.ends_with('\n'),
+        read_only,
+    };
+    Ok((content, raw.replace("\r\n", "\n")))
+}
+
 pub(crate) fn is_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(BINARY_PROBE).any(|b| *b == 0)
 }
@@ -107,6 +163,24 @@ pub(crate) fn moved(path: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
     } else {
         to.join(rest)
     })
+}
+
+/// `a` and `b` name one file: a rename from one to the other only changes its name's case.
+pub(crate) fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        match (a.symlink_metadata(), b.symlink_metadata()) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+    // Windows' disks ignore case: the names differ only in it.
+    #[cfg(not(unix))]
+    {
+        a.to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy())
+    }
 }
 
 /// "812 B", "12.3 KB", "4.0 MB".
@@ -155,12 +229,12 @@ pub(crate) fn read_dir(dir: &Path) -> Vec<Entry> {
 
 /// What a tab holds.
 pub(crate) enum Content {
-    /// Text; `crlf` and `newline` are how the file ends its lines and itself; `big` is over
-    /// `READ_ONLY_OVER`, read-only.
+    /// Text; `crlf` and `newline` are how the file ends its lines and itself; `read_only` says
+    /// why it can't be edited (over `READ_ONLY_OVER`, or not UTF-8), shown above it.
     Text {
         crlf: bool,
         newline: bool,
-        big: bool,
+        read_only: Option<&'static str>,
     },
     Binary {
         size: u64,
@@ -185,9 +259,15 @@ pub(crate) struct Tab {
 
 impl Tab {
     /// Writes the editor's text to the file, whole (a temporary file renamed over it), keeping
-    /// the file's line endings. A binary tab has nothing to write.
+    /// the file's line endings. A binary or read-only tab has nothing to write: writing a file
+    /// that isn't UTF-8 back would replace its bytes.
     pub fn save(&mut self, cx: &App) -> std::io::Result<()> {
-        let Content::Text { crlf, newline, .. } = self.content else {
+        let Content::Text {
+            crlf,
+            newline,
+            read_only: None,
+        } = self.content
+        else {
             return Ok(());
         };
         let text = encode(&self.editor.read(cx).value(), crlf, newline);
@@ -199,18 +279,11 @@ impl Tab {
         Ok(())
     }
 
-    /// Reads the file again into the editor, keeping the cursor's line. False when it can't be
-    /// read.
-    pub fn reload(&mut self, window: &mut Window, cx: &mut App) -> bool {
-        let Ok(bytes) = std::fs::read(&self.path) else {
-            return false;
-        };
-        let raw = String::from_utf8_lossy(&bytes);
-        if let Content::Text { crlf, newline, .. } = &mut self.content {
-            *crlf = line_ending(&raw) == "\r\n";
-            *newline = raw.ends_with('\n');
-        }
-        let text = raw.replace("\r\n", "\n");
+    /// Reads the file again into the editor, by the same rules as opening it (size, binary,
+    /// UTF-8), keeping the cursor's line. Err says why it can't be read.
+    pub fn reload(&mut self, window: &mut Window, cx: &mut App) -> Result<(), String> {
+        let (content, text) = read_file(&self.path)?;
+        self.content = content;
         self.editor.update(cx, |e, cx| {
             let line = e.cursor_position().line;
             e.set_value(text, window, cx);
@@ -223,7 +296,7 @@ impl Tab {
         self.dirty = false;
         self.conflict = false;
         self.mtime = mtime(&self.path);
-        true
+        Ok(())
     }
 
     pub fn name(&self) -> String {
@@ -345,32 +418,12 @@ impl Editor {
             self.active = Some(i);
             return Ok(i);
         }
-        let name = path.file_name().map_or_else(
-            || path.display().to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        );
-        let size = std::fs::metadata(path)
-            .map_err(|e| format!("Couldn't open {name}: {e}"))?
-            .len();
-        if size > TOO_BIG_OVER {
-            return Err(format!("{name} is over 32 MB, so Templum doesn't open it"));
-        }
-        let bytes = std::fs::read(path).map_err(|e| format!("Couldn't read {name}: {e}"))?;
-        let (content, text) = if is_binary(&bytes) {
-            (Content::Binary { size }, String::new())
-        } else {
-            let raw = String::from_utf8_lossy(&bytes);
-            let content = Content::Text {
-                crlf: line_ending(&raw) == "\r\n",
-                newline: raw.ends_with('\n'),
-                big: size > READ_ONLY_OVER,
-            };
-            (content, raw.replace("\r\n", "\n"))
-        };
+        let (content, text) = read_file(path)?;
         let (lang, wrap) = (lang_of(path), self.wrap);
         let editor = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language(lang)
+                .tab_size(indent_of(lang))
                 .line_number(true)
                 .soft_wrap(wrap)
                 .default_value(text)
@@ -732,7 +785,7 @@ fn files(
                     .test_support()
                     .into_any_element()
             }
-            Content::Text { big, .. } => {
+            Content::Text { read_only, .. } => {
                 let view: AnyElement = if tab.preview {
                     div()
                         .id(("file-preview", n))
@@ -756,7 +809,7 @@ fn files(
                             EditorView::new(&tab.editor)
                                 .appearance(false)
                                 .bordered(false)
-                                .readonly(big)
+                                .readonly(read_only.is_some())
                                 .font_family(ws.cell.font.family.clone())
                                 .text_size(px(FONT * z))
                                 .h(relative(1.0)),
@@ -769,7 +822,7 @@ fn files(
                     .min_h(px(0.0))
                     .flex()
                     .flex_col()
-                    .when(big, |el| el.child(bar(ui, z).child("Over 4 MB: read-only")))
+                    .when_some(read_only, |el, why| el.child(bar(ui, z).child(why)))
                     .when(tab.conflict, |el| {
                         el.child(
                             bar(ui, z)
