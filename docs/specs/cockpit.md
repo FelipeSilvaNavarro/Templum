@@ -736,6 +736,25 @@ from §7:
   itself with `Canvas::place_beside`.
 - Settings ▸ Tools comes with plan 5, with the first reader of `git.program`.
 
+Plan 5 ([../plans/2026-10-11-git.md](../plans/2026-10-11-git.md)) shipped on 2026-10-11. Where it differs from §8:
+
+- The History search filters the loaded commits in Templum (subject and author, without case): `git log --grep`
+  and `--author` together mean *both* must match.
+- ↺ (discard) is on unstaged rows only; a staged row is unstaged first.
+- `Diff` is the diff's text plus the first hunk's line; nothing splits it further.
+- The title bar holds the repository's name; the branch pill, ↑↓ and Fetch / Pull / Push / ↻ are the body's first
+  row.
+- The author is read with each status; Set… asks the name, then the email, in two dialogs.
+- Unstaging uses `git reset -q --`, which works before the first commit (`git restore --staged` needs HEAD).
+- An untracked file's diff is built by Templum (the whole file as added), not by `git diff --no-index`.
+- One command at a time per block: a command asked while one runs waits and runs in turn (a commit or a stash
+  clicked during the 2-second read is never lost); fetch, pull, push and the rows' buttons are disabled meanwhile.
+- A block restored on History, Branches or Stashes reads that list at once.
+- Run in a terminal places the terminal beside the block with `Canvas::place_beside` and types the command in, as
+  the agents' resume command is; a failed command's buttons wrap, so a third one (Stash and switch, Merge, Rebase)
+  stays clickable.
+- Settings ▸ Tools has `git.program` only; `docker.program` comes with plan 6.
+
 ## Risks
 
 - **gpui-kit's editor at the canvas's zoom.** Kanban text scales by setting `text_size(px(13 × z))` on plain

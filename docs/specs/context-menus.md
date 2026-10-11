@@ -24,7 +24,7 @@ would have opened together with the block's. The canvas and the blocks had no me
 
 | Right-click on | Items |
 |---|---|
-| The empty canvas | **AI agent ▸** (the agents), **Add ▸** Terminal, Kanban board, Note, Editor. The block's top-left corner goes where you clicked. |
+| The empty canvas | **AI agent ▸** (the agents), **Add ▸** Terminal, Kanban board, Note, Editor, Git. The block's top-left corner goes where you clicked. |
 | A terminal block (header or body) | Copy (disabled without a selection), Paste, Close terminal |
 | A kanban block (header, or its empty space) | Board list (or Back to the board, while the list shows), Close |
 | A note block | Preview (or Edit), Copy all, Close |
@@ -32,6 +32,11 @@ would have opened together with the block's. The canvas and the blocks had no me
 | A file in an editor's tree | Open, Reveal in file manager, Rename…, Delete… |
 | A folder in an editor's tree | New file…, New folder…, Open a terminal here, Rename…, Delete…, Reveal in file manager |
 | An editor tree's empty space | New file…, New folder…, Refresh |
+| A Git block | Refresh, Close |
+| A row of a Git block's Changes | Stage (or Unstage), Discard changes… (unstaged rows), Open, Copy path, Ignore; a conflict: Open in editor, Use ours, Use theirs, Mark resolved, Copy path, Ignore |
+| A commit in a Git block's History | Checkout…, New branch from here…, Create tag…, Revert…, Copy hash |
+| A branch in a Git block | Rename…, Merge into *current*…, Delete…, Publish (a local branch with no upstream), Copy name |
+| A stash in a Git block | Apply, Pop, Drop…, Show |
 | The toolbar's AI agent button | The agents; the chosen one opens in the middle of the canvas |
 | A board in a block's board list | Open, Rename…, Delete… |
 | A column's title | Rename…, Add a card, Delete |

@@ -72,7 +72,7 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - `templum-terminal` gets settings as plain values (`TermOptions`, a start folder) and reports a shell's folder
   through `sysinfo`. It never reads the file.
 - The settings panel (`crates/templum/src/settings.rs`) builds gpui-kit `Settings` pages from the active `Config`
-  every frame. A change becomes a `config::Edit` (set or remove one `table.key`). The workspace applies it on the next
+  every frame; its Tools section names the programs the blocks run (`git.program`). A change becomes a `config::Edit` (set or remove one `table.key`). The workspace applies it on the next
   frame (fonts are measured with the window) and writes it with `toml_edit` 0.3 s after the last one, when the panel
   closes, and when the window closes or the app quits (`config::save_edits` keeps comments, CRLF and a BOM). It writes
   a temporary file and renames it over `config.toml` (the linked file, for a symlink), so a crash never leaves half a
@@ -82,8 +82,11 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   their output never wakes the UI. The sidebar (`sidebar.rs`) switches them by swapping. `session.rs` keeps their
   order and names in `workspaces/index.json` ([specs/workspaces.md](specs/workspaces.md)).
 - Every block's content is a `Body` in `Space::blocks`: a terminal, a kanban block, a note (`note.rs`, gpui-kit's
-  editor with the Markdown grammar) or an editor (`editor.rs`: a lazy folder model behind gpui-base's `Tree`, tabs of
-  gpui-kit `EditorState`s, files read and written on the UI thread). Adding a kind is one `Body` arm, one `session::Item` variant and one
+  editor with the Markdown grammar), an editor (`editor.rs`: a lazy folder model behind gpui-base's `Tree`, tabs of
+  gpui-kit `EditorState`s, files read and written on the UI thread) or a Git block (`git_block.rs`: the repository's
+  state read in the background by `templum-git`, one command at a time per block with the others waiting in turn,
+  the lists, the diff view and the commit form; a failed `git` is a notification that can hand the command to a
+  terminal beside the block). Adding a kind is one `Body` arm, one `session::Item` variant and one
   `menu::Items` arm ([specs/cockpit.md](specs/cockpit.md)). Blocks snap to each other's edges and centers while they
   are moved or resized (`templum-canvas`'s `snap.rs`). The toolbar (`toolbar.rs`) holds the tools;
   `workspace::Tool` is the active one. Kanban boards are app-wide (`Workspace::boards`,

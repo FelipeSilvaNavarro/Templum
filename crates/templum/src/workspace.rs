@@ -9673,6 +9673,8 @@ mod tests {
 
     #[gpui_kit::test]
     fn the_editor_shortcut_asks_for_a_folder_and_a_recent_one_opens_it(cx: &mut TestAppContext) {
+        // The dialog slides in in real time: a click on it lands once it is at rest.
+        no_motion(cx);
         let dir = tempfile::tempdir().unwrap();
         let (handle, ws) = open(cx);
         ws.update(cx, |ws, _| ws.space.recent = vec![dir.path().to_path_buf()]);
