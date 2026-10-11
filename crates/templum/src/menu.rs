@@ -43,6 +43,8 @@ pub(crate) enum Target {
     },
     /// A workspace's tile in the sidebar, by its id.
     Space(String),
+    /// A drawing, by its index in the space's ink.
+    Ink(usize),
 }
 
 /// The open menu.
@@ -144,6 +146,7 @@ impl Workspace {
                 }
             }
             Target::Card { board, card } => Items::Card { board, card },
+            Target::Ink(index) => Items::Ink { index },
             Target::Space(ref id) => Items::Space {
                 id: id.clone(),
                 name: self
@@ -201,6 +204,9 @@ enum Items {
         id: String,
         name: String,
         only_one: bool,
+    },
+    Ink {
+        index: usize,
     },
 }
 
@@ -335,6 +341,12 @@ impl Items {
                     move |ws, window, cx| ws.close(block, window, cx),
                 )),
             Items::Agents { at, agents } => agent_items(ws, menu, agents, at),
+            Items::Ink { index } => menu.item(item(
+                ws,
+                "Delete",
+                Some(IconName::Delete),
+                move |ws, _, cx| ws.delete_ink(index, cx),
+            )),
             Items::Note { block, preview } => menu
                 .item(item(
                     ws,
