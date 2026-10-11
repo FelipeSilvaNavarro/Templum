@@ -8734,7 +8734,9 @@ mod tests {
         .unwrap();
     }
 
-    #[cfg(unix)]
+    // Linux only: macOS's zsh takes Ctrl+G as send-break and shows nothing, while bash
+    // in cooked mode echoes it as ^G.
+    #[cfg(target_os = "linux")]
     #[gpui_kit::test]
     fn ctrl_g_reaches_the_terminal_without_an_editor(cx: &mut TestAppContext) {
         let (handle, ws) = open(cx);
