@@ -139,7 +139,7 @@ impl Snapshot {
     pub fn refresh(&mut self, term: &SharedTerm, palette: &Palette) -> bool {
         let heard = &term.1;
         let same_palette = self.last_palette == Some(*palette);
-        if self.taken.is_some() && same_palette && !heard.dirty.load(Ordering::Acquire) {
+        if self.taken.is_some() && same_palette && !term.dirty() {
             // Still current: it only goes stale while output waits behind a busy lock.
             self.taken = Some(Instant::now());
             self.rebuilt = 0;
@@ -218,10 +218,12 @@ impl Snapshot {
         if self.prompts.iter().any(Option::is_some) {
             let marks = heard.marks.lock().unwrap();
             let mut last = above;
+            // Every row, rebuilt or not: a row stops being a prompt's first line when the line
+            // above it joins the same prompt.
             for (row, prompt) in self.rows.iter_mut().zip(&self.prompts) {
-                if prompt.is_some() && *prompt != last {
-                    row.mark = prompt.and_then(|p| marks.get(&p).copied());
-                }
+                row.mark = prompt
+                    .filter(|_| *prompt != last)
+                    .and_then(|p| marks.get(&p).copied());
                 last = *prompt;
             }
         }
@@ -517,6 +519,33 @@ mod tests {
         assert_eq!(s.rebuilt, 1);
         assert_eq!(s.rows[0].mark, Some(Mark::Ended(Some(1))));
         assert_eq!(s.rows[1].text, "$ ls");
+    }
+
+    #[test]
+    fn a_row_that_stops_being_a_prompts_first_line_loses_its_mark() {
+        // A prompt on the second line whose command succeeded, the cursor parked below it.
+        let (term, _) = headless(20, 4);
+        feed_heard(
+            &term,
+            b"\r\n\x1b]133;A\x07$ \x1b]133;C\x07\x1b]133;D;0\x07\x1b[4;1H",
+        );
+        let p = Palette::default();
+        let mut s = Snapshot::default();
+        s.refresh(&term, &p);
+        assert_eq!(s.rows[1].mark, Some(Mark::Ended(Some(0))));
+        // The shell redraws the line above inside the same prompt (its link), and the cursor goes
+        // back below: the prompt now starts on the first line, and the second line isn't damaged.
+        feed(
+            &term,
+            b"\x1b[1;1H\x1b]8;;templum:cmd/0\x1b\\>\x1b]8;;\x1b\\\x1b[4;1H",
+        );
+        s.refresh(&term, &p);
+        let mut fresh = Snapshot::default();
+        term.touched();
+        fresh.refresh(&term, &p);
+        let marks = |s: &Snapshot| s.rows.iter().map(|r| r.mark).collect::<Vec<_>>();
+        assert_eq!(marks(&fresh)[..2], [Some(Mark::Ended(Some(0))), None]);
+        assert_eq!(marks(&s), marks(&fresh));
     }
 
     #[test]

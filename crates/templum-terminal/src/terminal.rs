@@ -237,7 +237,15 @@ impl SharedTerm {
     /// before reading the grid, so output parsed during the read isn't missed. Only painted
     /// terminals are re-armed: output off screen wakes the UI once, then waits to be painted.
     pub fn rearm(&self) {
-        self.1.pending.store(false, Ordering::Release);
+        // A swap, not a store: against the PTY thread's swap in `wake`, one of the two sees the
+        // other, so either `refresh` sees `dirty` or the PTY thread wakes the UI again. A plain
+        // store followed by the load of `dirty` can miss both (store-buffer reordering).
+        self.1.pending.swap(false, Ordering::AcqRel);
+    }
+
+    /// The grid may have changed since it was last copied out (see [`crate::Snapshot::refresh`]).
+    pub(crate) fn dirty(&self) -> bool {
+        self.1.dirty.load(Ordering::Acquire)
     }
 
     /// The UI changed the grid (a scroll, the selection, a resize): the next refresh reads it.
@@ -759,6 +767,79 @@ mod tests {
         shared.pending.store(false, Ordering::Release); // what SharedTerm::rearm does
         shared.wake();
         assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn output_racing_a_rearm_is_either_read_or_wakes_the_ui() {
+        // The UI re-arms, then `refresh` checks `dirty`; the PTY thread sets `dirty`, then
+        // `pending`. However they interleave, one sees the other: the UI reads the output, or the
+        // PTY thread wakes it again. The two threads go in lockstep, a random few spins apart.
+        use std::sync::atomic::AtomicU64;
+        fn spin(rng: &mut u64) {
+            *rng ^= *rng << 13;
+            *rng ^= *rng >> 7;
+            *rng ^= *rng << 17;
+            for _ in 0..*rng % 8 {
+                std::hint::spin_loop();
+            }
+        }
+        const ROUNDS: u64 = 200_000;
+        let woken = Arc::new(AtomicU64::new(0));
+        let w = woken.clone();
+        let shared = Arc::new(Shared::new(
+            Arc::new(move || {
+                w.fetch_add(1, Ordering::SeqCst);
+            }),
+            window_size(10, 2, (8, 16)),
+            Palette::default(),
+        ));
+        let term = SharedTerm(
+            Arc::new(FairMutex::new(Term::new(
+                Config::default(),
+                &TermSize::new(10, 2),
+                Listener(shared.clone()),
+            ))),
+            shared.clone(),
+        );
+        let (go, done) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+        let pty = {
+            let (shared, go, done) = (shared.clone(), go.clone(), done.clone());
+            std::thread::spawn(move || {
+                let mut rng = 12345;
+                for i in 1..=ROUNDS {
+                    while go.load(Ordering::Acquire) != i {
+                        std::hint::spin_loop();
+                    }
+                    spin(&mut rng);
+                    shared.wake();
+                    done.store(i, Ordering::Release);
+                }
+            })
+        };
+        let mut rng = 999;
+        let mut lost = 0;
+        for i in 1..=ROUNDS {
+            // Everything was read, and a wake-up waits to be re-armed.
+            shared.dirty.store(false, Ordering::Relaxed);
+            shared.pending.store(true, Ordering::Relaxed);
+            let before = woken.load(Ordering::SeqCst);
+            go.store(i, Ordering::Release);
+            spin(&mut rng);
+            // What a frame does: re-arm, then `refresh` asks whether the grid changed.
+            term.rearm();
+            let read = term.dirty();
+            while done.load(Ordering::Acquire) != i {
+                std::hint::spin_loop();
+            }
+            if !read && woken.load(Ordering::SeqCst) == before {
+                lost += 1;
+            }
+        }
+        pty.join().unwrap();
+        assert_eq!(
+            lost, 0,
+            "output neither read nor waking the UI, in {ROUNDS} rounds"
+        );
     }
 
     #[test]
