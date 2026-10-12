@@ -1493,7 +1493,7 @@ fn a_theme_added_after_startup_can_be_set_in_the_config(cx: &mut TestAppContext)
     std::fs::create_dir(dir.path().join("themes")).unwrap();
     std::fs::write(
         dir.path().join("themes").join("mine.toml"),
-        include_str!("../../themes/one-dark.toml"),
+        include_str!("../../../themes/one-dark.toml"),
     )
     .unwrap();
     write_config(dir.path(), "[theme]\nlight = \"mine\"\n");
