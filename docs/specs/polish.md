@@ -43,7 +43,7 @@ explains what happened. Colors still come from the active theme, so every theme 
 ## Canvas
 
 - **Fill:** the theme's `canvas` color, fully opaque.
-- **Dots:** the same lattice as before (every 24 world units, thinned 4× at a time below 16 px), but now drawn as
+- **Dots:** the same lattice as before (every 24 world units, thinned 2× at a time below 24 px), but now drawn as
   squares of `dot_size(zoom) = clamp(2 × zoom, 1.5, 3)` px centered on each lattice point, in the stronger `dot`
   color below. At most a quarter of the gap, so dots never touch.
 

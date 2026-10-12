@@ -62,8 +62,8 @@ Alacritty's format dropped into a folder, all switchable from a picker in the ti
 - Fill: the theme's `canvas` color (see [Derived colors](#derived-colors)). It is drawn at `CANVAS_ALPHA = 0.72` when
   the window is translucent, and fully opaque otherwise.
 - **Dot grid:** dots of 1 px (constant on screen) in the theme's `dot` color, every 24 world units, fixed to the
-  canvas so they move with pan and zoom. When the dots would be closer than 16 px on screen, the spacing is
-  multiplied by 4 until it is at least 16 px. At zoom 0.25 the dots are 24 px apart, and at 0.5 they are 48 px apart.
+  canvas so they move with pan and zoom. When the dots would be closer than 24 px on screen, the spacing is
+  doubled until it is at least 24 px. At zoom 0.25 and 0.5 the dots are 24 px apart, as at zoom 1.
 - The empty-canvas hint uses the theme's `hint` color.
 
 ### Blocks (continuous card)
@@ -307,7 +307,7 @@ Tests are written first, as always. Every item runs in CI on Linux, macOS and Wi
 **`templum-canvas`** (unit):
 
 - spacing is 24 at zoom 1;
-- the ×4 rule gives at least 16 px at every `ZOOM_STEPS` entry;
+- the ×2 rule gives at least 24 px at every `ZOOM_STEPS` entry, and a Full HD screen at most about 3,700 dots;
 - `first` is a multiple of the spacing;
 - after a pan, the dots keep their world positions.
 
@@ -385,5 +385,6 @@ Three pull requests, each green in CI and useful on its own:
   checked at compile time only.
 - **Readability over busy wallpapers.** Blocks are opaque, so terminal text is never affected. `CANVAS_ALPHA` is
   one constant if the canvas needs to be more opaque.
-- **Dot count at low zoom.** There are at most about 14,000 quads on a 2560×1440 screen. If the bench goes over the
-  bar, the minimum spacing goes from 16 px to 24 px.
+- **Dot count at low zoom.** With 16 px and ×4 thinning a Full HD screen drew up to 8,200 dots and the bench went
+  over the bar, so the minimum spacing is 24 px with ×2 thinning: at most about 3,700 dots on Full HD, 6,500 on
+  2560×1440, painted as one layer.

@@ -4,8 +4,9 @@ use crate::{Camera, Point};
 
 /// World units between dots at zoom 1.
 pub const DOT_SPACING: f32 = 24.0;
-/// Dots closer than this on screen are thinned out, 4× at a time.
-pub const MIN_DOT_GAP: f32 = 16.0;
+/// Dots closer than this on screen are thinned out, 2× at a time: a Full HD viewport never
+/// draws more than ~3,700 of them, and a zoom glide never jumps to a dense frame.
+pub const MIN_DOT_GAP: f32 = 24.0;
 
 /// A dot's diameter on screen: it grows with the zoom, within 1.5 and 3 px.
 pub fn dot_size(zoom: f32) -> f32 {
@@ -23,7 +24,7 @@ pub struct DotGrid {
 pub fn dot_grid(camera: &Camera) -> DotGrid {
     let mut spacing = DOT_SPACING;
     while spacing * camera.zoom() < MIN_DOT_GAP {
-        spacing *= 4.0;
+        spacing *= 2.0;
     }
     let snap = |v: f32| (v / spacing).floor() * spacing;
     DotGrid {
@@ -50,14 +51,14 @@ mod tests {
     }
 
     #[test]
-    fn dots_are_never_closer_than_16_px_nor_thinned_needlessly() {
+    fn dots_are_never_closer_than_24_px_nor_thinned_needlessly() {
         for (i, zoom) in ZOOM_STEPS.iter().enumerate() {
             let grid = dot_grid(&at_step(i, Point::default()));
             let gap = grid.spacing * zoom;
-            assert!(gap >= MIN_DOT_GAP, "zoom {zoom}: {gap} px");
+            assert!(gap >= 24.0, "zoom {zoom}: {gap} px");
             if grid.spacing > DOT_SPACING {
                 assert!(
-                    grid.spacing / 4.0 * zoom < MIN_DOT_GAP,
+                    grid.spacing / 2.0 * zoom < 24.0,
                     "zoom {zoom}: over-thinned"
                 );
             }
@@ -67,6 +68,29 @@ mod tests {
             96.0,
             "zoom 0.25"
         );
+    }
+
+    /// How many dots a 1920×1080 viewport draws at `zoom`.
+    fn dots_on_full_hd(zoom: f32) -> f32 {
+        let grid = dot_grid(&Camera::unsnapped(Point::default(), zoom));
+        let step = grid.spacing * zoom;
+        ((1920.0 / step).ceil() + 1.0) * ((1080.0 / step).ceil() + 1.0)
+    }
+
+    #[test]
+    fn a_full_hd_viewport_stays_under_3800_dots_at_every_zoom_a_flight_draws() {
+        let mut last: Option<f32> = None;
+        // 0.25 to 3.0 by 0.02: every zoom a CameraFlight can draw.
+        for k in 0..=138 {
+            let zoom = 0.25 + k as f32 * 0.02;
+            let n = dots_on_full_hd(zoom);
+            assert!(n <= 3800.0, "zoom {zoom}: {n} dots");
+            if let Some(l) = last {
+                // Thinning halves the spacing: at most 4× fewer dots from one zoom to the next.
+                assert!(n / l <= 4.5 && l / n <= 4.5, "zoom {zoom}: {l} -> {n}");
+            }
+            last = Some(n);
+        }
     }
 
     #[test]

@@ -99,28 +99,31 @@ impl Workspace {
     }
 }
 
-/// The dot grid under the blocks: round dots centered on the world lattice.
+/// The dot grid under the blocks: round dots centered on the world lattice. One layer: the
+/// dots don't overlap and share a draw order, so GPUI skips the per-primitive bounds lookup.
 fn paint_dots(camera: &Camera, color: Hsla, bounds: Bounds<Pixels>, window: &mut Window) {
     let grid = dot_grid(camera);
     let step = grid.spacing * camera.zoom();
     let d = dot_size(camera.zoom());
     let start = camera.to_screen(grid.first);
     let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-    let mut y = start.y;
-    while y < h + d {
-        let mut x = start.x;
-        while x < w + d {
-            let at = point(
-                bounds.origin.x + px(x - d / 2.0),
-                bounds.origin.y + px(y - d / 2.0),
-            );
-            window.paint_quad(
-                fill(Bounds::new(at, size(px(d), px(d))), color).corner_radii(px(d / 2.0)),
-            );
-            x += step;
+    window.paint_layer(bounds, |window| {
+        let mut y = start.y;
+        while y < h + d {
+            let mut x = start.x;
+            while x < w + d {
+                let at = point(
+                    bounds.origin.x + px(x - d / 2.0),
+                    bounds.origin.y + px(y - d / 2.0),
+                );
+                window.paint_quad(
+                    fill(Bounds::new(at, size(px(d), px(d))), color).corner_radii(px(d / 2.0)),
+                );
+                x += step;
+            }
+            y += step;
         }
-        y += step;
-    }
+    });
 }
 
 /// The snap guides: 1 px lines in the accent color, world units to screen.
