@@ -152,13 +152,13 @@ fn runs(
         bounds.origin.y - px(camera.origin.y * z),
     );
     let viewport = Size::new(f32::from(bounds.size.width), f32::from(bounds.size.height));
-    let shown = |i: &usize| visible(&drawings[*i], camera, viewport);
-    let highlights = (0..drawings.len())
-        .filter(shown)
-        .filter(|i| is_highlight(&drawings[*i]));
-    let inks = (0..drawings.len())
-        .filter(shown)
-        .filter(|i| !is_highlight(&drawings[*i]));
+    // Once per drawing: `bounds()` walks every point.
+    let shown: Vec<bool> = drawings
+        .iter()
+        .map(|d| visible(d, camera, viewport))
+        .collect();
+    let highlights = (0..drawings.len()).filter(|i| shown[*i] && is_highlight(&drawings[*i]));
+    let inks = (0..drawings.len()).filter(|i| shown[*i] && !is_highlight(&drawings[*i]));
     cache.0.resize_with(drawings.len(), || None);
     let mut out = Vec::new();
     let mut rebuilds = 0;

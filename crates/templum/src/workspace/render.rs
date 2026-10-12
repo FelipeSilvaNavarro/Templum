@@ -339,7 +339,7 @@ impl Render for Workspace {
             .children(blocks)
             // The drawings, above the blocks; with a drawing tool on, a layer over them takes the
             // pointer.
-            .child(self.ink_layer())
+            .child(self.ink_layer(cx))
             .when(self.tool.draws(), |el| {
                 el.child(
                     div()
