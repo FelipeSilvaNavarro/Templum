@@ -5370,7 +5370,8 @@ impl Workspace {
     ) {
         self.space.pristine = false;
         let p = self.local(e.position);
-        if e.modifiers.control {
+        // The hand (its tool, or Alt held) zooms without Ctrl: dragging moves the canvas.
+        if e.modifiers.control || e.modifiers.alt || self.tool == Tool::Hand {
             self.zoom_acc += match e.delta {
                 ScrollDelta::Lines(d) => d.y * 50.0,
                 ScrollDelta::Pixels(d) => f32::from(d.y),
@@ -11578,7 +11579,8 @@ mod tests {
             assert!(term.selection_text().is_none(), "no selection");
             assert!(ws.drag.is_none(), "the drag ended");
         });
-        // The wheel over the terminal pans the canvas, not the terminal's history.
+        // The wheel over the terminal zooms the canvas, like the hand tool, and leaves the
+        // terminal's history alone.
         cx.update_window(handle, |_, window, cx| {
             let body = window.find(("body", id.0 as usize)).bounds().center();
             window.dispatch_event(
@@ -11594,9 +11596,7 @@ mod tests {
             assert!(window.try_find("hand").is_none(), "gone when Alt is let go");
         })
         .unwrap();
-        ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.space.canvas.camera.origin.y, before.y - 40.0 + 60.0);
-        });
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 0.9));
     }
 
     #[gpui_kit::test]
@@ -14129,5 +14129,39 @@ mod tests {
             let two = layout(cx, git, Point::new(0.0, 680.0), 2.0);
             compare(tab.name(), &one, &two);
         }
+    }
+
+    #[gpui_kit::test]
+    fn with_the_hand_the_wheel_zooms_over_blocks_and_the_canvas(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-hand", cx);
+            window.render_frame(cx);
+            let body = window.find(("body", id.0 as usize)).bounds().center();
+            wheel(
+                window,
+                cx,
+                (f32::from(body.x), f32::from(body.y)),
+                ScrollDelta::Lines(point(0.0, 1.0)),
+                false,
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.1));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let o = ws.read(cx).origin;
+            wheel(
+                window,
+                cx,
+                (f32::from(o.x) + 30.0, f32::from(o.y) + 30.0),
+                ScrollDelta::Pixels(point(px(0.), px(-60.))),
+                false,
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.0));
     }
 }
