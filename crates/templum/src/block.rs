@@ -46,6 +46,10 @@ pub(crate) fn render(
     let id = block.id;
     let n = id.0 as usize;
     let z = ws.space.view.zoom() * look.scale;
+    // Text-heavy bodies lay out at the step the zoom is going to, not at each zoom a glide
+    // passes through: gpui-kit's editor re-measures its whole document on every font size and
+    // every wrap width. The frame still glides (`r`) and clips them.
+    let settled = ws.space.canvas.camera.zoom() * look.scale;
     let full = ws.space.view.rect_to_screen(block.rect);
     let r = Rect::new(
         full.x + full.w * (1.0 - look.scale) / 2.0,
@@ -299,11 +303,29 @@ pub(crate) fn render(
         // A fading kanban block is drawn empty: its board is still live elsewhere.
         Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
         // A fading note is drawn empty, like a kanban block.
-        Body::Note(n) => frame.when(live, |el| el.child(note::body(ws, id, n, z, cx))),
+        Body::Note(n) => frame.when(live, |el| {
+            el.child(settled_box(
+                block,
+                settled,
+                note::body(ws, id, n, settled, cx),
+            ))
+        }),
         // A fading editor is drawn empty, like a note.
-        Body::Editor(e) => frame.when(live, |el| el.child(editor::body(ws, id, e, z, cx))),
+        Body::Editor(e) => frame.when(live, |el| {
+            el.child(settled_box(
+                block,
+                settled,
+                editor::body(ws, id, e, settled, cx),
+            ))
+        }),
         // A fading Git block is drawn empty, like a note.
-        Body::Git(g) => frame.when(live, |el| el.child(git_block::body(ws, id, g, z, cx))),
+        Body::Git(g) => frame.when(live, |el| {
+            el.child(settled_box(
+                block,
+                settled,
+                git_block::body(ws, id, g, settled, cx),
+            ))
+        }),
     }
     .test_support();
 
@@ -397,6 +419,17 @@ pub(crate) fn render(
         .when(hovered, |el| el.child(fade_in(handle, ("handle-fade", n))))
         .test_support()
         .into_any_element()
+}
+
+/// A text-heavy body's box: its size at the zoom `settled` (see `render`), so its text and its
+/// wrapping stay put while a zoom glides; the frame around it clips. At rest, the frame's own
+/// inner size.
+fn settled_box(block: Block, settled: f32, body: AnyElement) -> impl IntoElement {
+    let inner = |side: f32| px((side * settled).max(0.0));
+    div()
+        .w(inner(block.rect.w - 2.0 * chrome::PAD))
+        .h(inner(block.rect.h - chrome::TITLE_H - 2.0 * chrome::PAD))
+        .child(body)
 }
 
 /// Hover-only controls fade in; they disappear at once. The wrapper covers its parent, since

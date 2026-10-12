@@ -94,9 +94,11 @@ pub(crate) fn body(
             .size_full()
             .font_family(ws.cell.font.family.clone())
             .child(
+                // On the editor itself: it sets the theme's code size on itself, over a parent's.
                 Editor::new(&note.editor)
                     .appearance(false)
                     .bordered(false)
+                    .text_size(px(FONT * z))
                     .h(relative(1.0)),
             )
             .test_support()

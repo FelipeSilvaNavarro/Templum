@@ -607,3 +607,71 @@ fn holding_alt_lights_the_hand_in_the_toolbar_until_let_go(cx: &mut TestAppConte
         )
     });
 }
+
+/// A note's text is laid out at the zoom step the camera is going to, not at the zooms a glide
+/// passes through: gpui-kit's editor re-measures its whole document on every font size.
+#[gpui_kit::test]
+fn a_notes_text_lands_on_the_zoom_step_before_the_glide_does(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.add_note_at(Point::new(40.0, 40.0), window, cx);
+            ws.space.appearing.clear();
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let (n, note) = ws.read_with(cx, |ws, _| {
+        let id = ws.space.canvas.top().unwrap();
+        let note = ws.space.blocks[&id].note().unwrap().editor.clone();
+        (id.0 as usize, note)
+    });
+    let line_height =
+        |cx: &mut TestAppContext| note.read_with(cx, |e, _| e.line_height().expect("laid out"));
+    // Its width is what the text wraps to.
+    let editor_box = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, _| {
+            window.find(("note-editor", n)).bounds().size
+        })
+        .unwrap()
+    };
+    let at_100 = line_height(cx);
+    // Two steps, the second asked mid-glide (as two wheel notches do): the target is 1.25,
+    // the glide passes through zooms in between. Called directly: the note has the keyboard.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        ws.update(cx, |ws, cx| {
+            let pivot = ws.center(window);
+            ws.zoom_to(1, pivot, cx);
+            ws.zoom_to(1, pivot, cx);
+        });
+        ws.update(cx, restart_glide);
+    })
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.canvas.camera.zoom(), 1.25);
+        let z = ws.space.view.zoom();
+        assert!(
+            ws.space.flight.is_some() && z > 1.0 && z < 1.25,
+            "mid-glide at {z}"
+        );
+    });
+    let mid_glide = (line_height(cx), editor_box(cx));
+    std::thread::sleep(crate::motion::FLIGHT + std::time::Duration::from_millis(50));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    ws.read_with(cx, |ws, _| assert!(ws.space.flight.is_none(), "landed"));
+    let landed = (line_height(cx), editor_box(cx));
+    assert!(
+        landed.0 > at_100,
+        "125% lays the text out larger: {at_100:?} -> {:?}",
+        landed.0
+    );
+    assert_eq!(
+        mid_glide, landed,
+        "mid-glide the text and its box are already at the step's size"
+    );
+}
