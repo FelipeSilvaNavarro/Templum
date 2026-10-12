@@ -767,6 +767,11 @@ Plan 5 ([../plans/2026-10-11-git.md](../plans/2026-10-11-git.md)) shipped on 202
   by "Git needs your key or password: run it in a terminal.".
 - Settings ▸ Tools has `git.program` only; `docker.program` comes with plan 6.
 
+After plan 5: the canvas zoom magnifies the editor and Git blocks like a photo, as it does terminals. Their
+gpui-kit pieces that kept a fixed size are now sized with the zoom too: the Git block's one-line fields and its
+Description, and its Amend checkbox (drawn by Templum). Code folding is off in the editor and the diffs, since
+gpui-kit's fold icons have a fixed size.
+
 ## Risks
 
 - **gpui-kit's editor at the canvas's zoom.** Kanban text scales by setting `text_size(px(13 × z))` on plain

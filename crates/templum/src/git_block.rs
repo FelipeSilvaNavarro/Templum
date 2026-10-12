@@ -10,7 +10,6 @@ use std::time::Duration;
 
 use gpui_kit::Focusable as _;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{
     Editor as EditorView, EditorState, Input, InputEvent, InputState, Textarea, TextareaState,
 };
@@ -43,6 +42,11 @@ pub(crate) const LISTS_W: f32 = 300.0;
 pub(crate) const ROW_H: f32 = 24.0;
 /// The text's size at zoom 1, world units.
 pub(crate) const FONT: f32 = 12.0;
+/// The commit form's Description, three rows high, at zoom 1.
+const DESCRIPTION_H: f32 = 78.0;
+/// A one-line field's height at zoom 1, and its padding.
+const FIELD_H: f32 = 24.0;
+
 /// How often the status is read while the block is on screen.
 pub(crate) const POLL: Duration = Duration::from_secs(2);
 /// How many commits History loads at a time.
@@ -221,6 +225,8 @@ impl Git {
                     .language("diff")
                     .line_number(false)
                     .soft_wrap(false)
+                    // Its fold icons have a fixed size, which breaks the layout at a zoom.
+                    .folding(false)
             })
         };
         let (diff, commit_diff, stash_diff) = (diff_view(), diff_view(), diff_view());
@@ -785,15 +791,12 @@ fn commit_form(
         .border_t_1()
         .border_color(ui.hairline)
         .text_size(px(FONT * z))
+        .child(field(&git.summary, z).w_full())
         .child(
-            Input::new(&git.summary)
-                .small()
-                .text_size(px(FONT * z))
-                .w_full(),
-        )
-        .child(
+            // Three rows, at the zoom: gpui-kit sizes it from the theme's fixed font otherwise.
             Textarea::new(&git.description)
                 .text_size(px(FONT * z))
+                .h(px(DESCRIPTION_H * z))
                 .w_full(),
         )
         .child(
@@ -802,12 +805,11 @@ fn commit_form(
                 .items_center()
                 .gap(px(8.0 * z))
                 .child(
-                    Checkbox::new(("git-amend", n))
-                        .label("Amend the last commit")
-                        .checked(amend)
-                        .on_click(cx.listener(move |ws, on: &bool, window, cx| {
-                            ws.set_amend(id, *on, window, cx)
-                        })),
+                    check(("git-amend", n), "Amend the last commit", amend, ui, z)
+                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                            ws.set_amend(id, !amend, window, cx)
+                        }))
+                        .test_support(),
                 )
                 .child(div().flex_1())
                 .when(can, |el| {
@@ -1265,14 +1267,7 @@ fn history(
         .flex_col()
         .border_r_1()
         .border_color(ui.hairline)
-        .child(
-            div().p(px(6.0 * z)).child(
-                Input::new(&git.search)
-                    .small()
-                    .text_size(px(FONT * z))
-                    .w_full(),
-            ),
-        )
+        .child(div().p(px(6.0 * z)).child(field(&git.search, z).w_full()))
         .child(list);
     div()
         .flex_1()
@@ -1506,12 +1501,7 @@ fn branches(
                 .items_center()
                 .gap(px(8.0 * z))
                 .p(px(6.0 * z))
-                .child(
-                    Input::new(&git.filter)
-                        .small()
-                        .text_size(px(FONT * z))
-                        .flex_1(),
-                )
+                .child(field(&git.filter, z).flex_1())
                 .child(
                     button(("git-new-branch", n), "New branch…", ui, z)
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
@@ -1648,4 +1638,47 @@ fn stashes(
         .child(left)
         .child(right)
         .into_any_element()
+}
+
+/// A one-line text field at the zoom: gpui-kit's fields keep a fixed height and padding, so
+/// they are set here with the rest of the block's sizes.
+fn field(state: &Entity<InputState>, z: f32) -> Input {
+    let input = Input::new(state)
+        .small()
+        .text_size(px(FONT * z))
+        .px(px(8.0 * z))
+        .py(px(2.0 * z));
+    // Styled's height: Input's own `h` is for multi-line fields only.
+    Styled::h(input, px(FIELD_H * z))
+}
+
+/// A checkbox and its label at the zoom (gpui-kit's has a fixed size).
+fn check(id: impl Into<ElementId>, label: &'static str, on: bool, ui: Ui, z: f32) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(px(6.0 * z))
+        .text_size(px(FONT * z))
+        .text_color(ui.title)
+        .cursor_pointer()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(14.0 * z))
+                .rounded(px(3.0 * z))
+                .border_1()
+                .border_color(if on { ui.accent } else { ui.hairline })
+                .when(on, |el| el.bg(ui.accent))
+                .when(on, |el| {
+                    el.child(
+                        Icon::new(IconName::Check)
+                            .size(px(11.0 * z))
+                            .text_color(ui.canvas),
+                    )
+                }),
+        )
+        .child(label)
 }

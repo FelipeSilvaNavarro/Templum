@@ -14020,4 +14020,114 @@ mod tests {
             });
         }
     }
+
+    /// Every element inside `block` (registered for tests), relative to the block: its
+    /// position and size.
+    fn block_layout(
+        window: &Window,
+        block: BlockId,
+    ) -> std::collections::BTreeMap<String, [f32; 4]> {
+        let id = gpui_kit::ElementId::NamedInteger("block".into(), block.0);
+        let origin = window.find(("block", block.0 as usize)).bounds().origin;
+        gpui_kit::base::test_support::snapshots(window)
+            .into_iter()
+            .filter_map(|s| {
+                let at = s.path().iter().position(|p| *p == id)?;
+                let b = s.bounds();
+                Some((
+                    format!("{:?}", &s.path()[at..]),
+                    [
+                        f32::from(b.origin.x - origin.x),
+                        f32::from(b.origin.y - origin.y),
+                        f32::from(b.size.width),
+                        f32::from(b.size.height),
+                    ],
+                ))
+            })
+            .collect()
+    }
+
+    // The canvas zoom magnifies the editor and the Git block like a photo: everything inside
+    // doubles at zoom 2, nothing keeps a fixed size or moves around (hairline borders stay
+    // 1 px, hence the few pixels of slack).
+    #[gpui_kit::test]
+    fn zooming_scales_the_editor_and_git_blocks_like_a_photo(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "fn main() {\n    println!(\"hi\");\n}\n",
+        )
+        .unwrap();
+        let repo = committed_repo();
+        std::fs::write(repo.path().join("a.txt"), "zero\none\n").unwrap();
+        let (handle, ws) = open(cx);
+        let editor = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        let git = cx
+            .update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    let id = ws
+                        .add_git_at(repo.path(), Point::new(40.0, 700.0), window, cx)
+                        .unwrap();
+                    ws.space.appearing.clear();
+                    ws.select_git_row(
+                        id,
+                        crate::git_block::List::Unstaged,
+                        "a.txt".to_string(),
+                        window,
+                        cx,
+                    );
+                    id
+                })
+            })
+            .unwrap();
+        settle(handle, cx);
+        // Each block measured with the camera on it, at zoom 1 and 2.
+        let layout = |cx: &mut TestAppContext, block: BlockId, at: Point, zoom: f32| {
+            ws.update(cx, |ws, _| {
+                ws.space.canvas.camera = Camera::at(at, zoom);
+                ws.space.view = ws.space.canvas.camera;
+            });
+            frame(handle, cx);
+            cx.update_window(handle, |_, window, _| block_layout(window, block))
+                .unwrap()
+        };
+        let compare = |name: &str,
+                       one: &std::collections::BTreeMap<String, [f32; 4]>,
+                       two: &std::collections::BTreeMap<String, [f32; 4]>| {
+            assert!(one.len() > 5, "{name}: measured {}", one.len());
+            for (key, a) in one {
+                let b = two
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{name}: gone at zoom 2: {key}"));
+                for (x1, x2) in a.iter().zip(b) {
+                    // Slack: hairlines that stay 1 px add up, more so for what sits at the
+                    // right edge. A fixed-size widget is off by its own size (14 px, 24 px…).
+                    let slack = 6.0 + x2.abs() * 0.01;
+                    assert!(
+                        (x1 * 2.0 - x2).abs() <= slack,
+                        "{name}: {key}\n zoom 1 {a:?}\n zoom 2 {b:?}"
+                    );
+                }
+            }
+        };
+        let tabs = [
+            crate::git_block::Tab::Changes,
+            crate::git_block::Tab::History,
+            crate::git_block::Tab::Branches,
+        ];
+        let one = layout(cx, editor, Point::new(0.0, 0.0), 1.0);
+        let two = layout(cx, editor, Point::new(0.0, 0.0), 2.0);
+        compare("editor", &one, &two);
+        for tab in tabs {
+            cx.update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, cx| ws.set_git_tab(git, tab, window, cx))
+            })
+            .unwrap();
+            settle(handle, cx);
+            let one = layout(cx, git, Point::new(0.0, 660.0), 1.0);
+            let two = layout(cx, git, Point::new(0.0, 680.0), 2.0);
+            compare(tab.name(), &one, &two);
+        }
+    }
 }
