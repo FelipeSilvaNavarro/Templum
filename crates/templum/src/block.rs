@@ -14,7 +14,7 @@ use gpui_kit::{
     MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt, Window, div,
     point, px,
 };
-use templum_canvas::{Block, Rect, chrome};
+use templum_canvas::{Block, Point, Rect, chrome};
 
 use crate::alert::{self, Alert};
 use crate::editor;
@@ -31,6 +31,8 @@ const TITLE_FONT: f32 = 12.0;
 const RADIUS: f32 = 10.0;
 /// The focused block's ring, outside its border.
 const RING: f32 = 2.0;
+/// The card's border (`border_1`), screen pixels: not zoomed.
+const BORDER: f32 = 1.0;
 
 /// `look` scales the block around its center (it is drawn at zoom × scale) and fades it.
 /// A block that isn't `live` is a ghost fading out: no controls, and clicks go through it.
@@ -57,6 +59,23 @@ pub(crate) fn render(
         full.w * look.scale,
         full.h * look.scale,
     );
+    // Mid-glide, a text-heavy body is pulled toward the glide's pivot so the text there stays
+    // under it, as a photo would: by how far its origin is from the pivot, times how much the
+    // two zooms differ.
+    let pull = match ws.space.flight {
+        Some((flight, _)) if settled != z => {
+            let origin = Point::new(
+                r.x + BORDER + chrome::PAD * z,
+                r.y + BORDER + (chrome::TITLE_H + chrome::PAD) * z,
+            );
+            let k = 1.0 - settled / z;
+            Point::new(
+                (flight.pivot.x - origin.x) * k,
+                (flight.pivot.y - origin.y) * k,
+            )
+        }
+        _ => Point::default(),
+    };
     let focused = live && ws.space.focused == Some(id);
     let target = Target::Block(id);
     let hovered = live && ws.space.hovered == Some(id);
@@ -307,6 +326,7 @@ pub(crate) fn render(
             el.child(settled_box(
                 block,
                 settled,
+                pull,
                 note::body(ws, id, n, settled, cx),
             ))
         }),
@@ -315,6 +335,7 @@ pub(crate) fn render(
             el.child(settled_box(
                 block,
                 settled,
+                pull,
                 editor::body(ws, id, e, settled, cx),
             ))
         }),
@@ -323,6 +344,7 @@ pub(crate) fn render(
             el.child(settled_box(
                 block,
                 settled,
+                pull,
                 git_block::body(ws, id, g, settled, cx),
             ))
         }),
@@ -422,13 +444,17 @@ pub(crate) fn render(
 }
 
 /// A text-heavy body's box: its size at the zoom `settled` (see `render`), so its text and its
-/// wrapping stay put while a zoom glides; the frame around it clips. At rest, the frame's own
-/// inner size.
-fn settled_box(block: Block, settled: f32, body: AnyElement) -> impl IntoElement {
-    let inner = |side: f32| px((side * settled).max(0.0));
+/// wrapping stay put while a zoom glides, moved by `pull` so the text under the glide's pivot
+/// stays there; the frame around it clips. At rest, exactly the frame's inner area: inside the
+/// card's border (the frame's width is) and the padding.
+fn settled_box(block: Block, settled: f32, pull: Point, body: AnyElement) -> impl IntoElement {
+    let inner = chrome::content_rect(block.rect);
     div()
-        .w(inner(block.rect.w - 2.0 * chrome::PAD))
-        .h(inner(block.rect.h - chrome::TITLE_H - 2.0 * chrome::PAD))
+        .relative()
+        .left(px(pull.x))
+        .top(px(pull.y))
+        .w(px((inner.w * settled - 2.0 * BORDER).max(0.0)))
+        .h(px((inner.h * settled).max(0.0)))
         .child(body)
 }
 

@@ -628,29 +628,30 @@ fn a_notes_text_lands_on_the_zoom_step_before_the_glide_does(cx: &mut TestAppCon
     });
     let line_height =
         |cx: &mut TestAppContext| note.read_with(cx, |e, _| e.line_height().expect("laid out"));
-    // Its width is what the text wraps to.
+    // Its width is what the text wraps to; its place, where the text is drawn.
     let editor_box = |cx: &mut TestAppContext| {
         cx.update_window(handle, |_, window, _| {
-            window.find(("note-editor", n)).bounds().size
+            window.find(("note-editor", n)).bounds()
         })
         .unwrap()
     };
     let at_100 = line_height(cx);
     // Two steps, the second asked mid-glide (as two wheel notches do): the target is 1.25,
     // the glide passes through zooms in between. Called directly: the note has the keyboard.
+    // The frame is drawn 40 ms into the glide, however long the machine took.
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         ws.update(cx, |ws, cx| {
             let pivot = ws.center(window);
             ws.zoom_to(1, pivot, cx);
             ws.zoom_to(1, pivot, cx);
+            if let Some((_, since)) = &mut ws.space.flight {
+                *since = std::time::Instant::now() - std::time::Duration::from_millis(40);
+            }
         });
-        ws.update(cx, restart_glide);
+        window.render_frame(cx);
     })
     .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(40));
-    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
-        .unwrap();
     ws.read_with(cx, |ws, _| {
         assert_eq!(ws.space.canvas.camera.zoom(), 1.25);
         let z = ws.space.view.zoom();
@@ -671,7 +672,59 @@ fn a_notes_text_lands_on_the_zoom_step_before_the_glide_does(cx: &mut TestAppCon
         landed.0
     );
     assert_eq!(
-        mid_glide, landed,
+        (mid_glide.0, mid_glide.1.size),
+        (landed.0, landed.1.size),
         "mid-glide the text and its box are already at the step's size"
     );
+    // The glide pivots on a point whose world position doesn't move: the text there stays
+    // under it, so the box is already where it lands, within a pixel (the 1 px border isn't
+    // zoomed, and layout rounds to half pixels).
+    let (a, b) = (mid_glide.1.origin, landed.1.origin);
+    assert!(
+        f32::from(a.x - b.x).abs() < 1.0 && f32::from(a.y - b.y).abs() < 1.0,
+        "the text under the pivot moved: {a:?} mid-glide, {b:?} landed"
+    );
+}
+
+/// At rest, a text-heavy body's box is the frame's inner area: inside its 1 px border and its
+/// padding, at any zoom.
+#[gpui_kit::test]
+fn a_notes_box_fills_its_frame_at_rest(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let n = cx
+        .update_window(handle, |_, window, cx| {
+            let id = ws.update(cx, |ws, cx| {
+                ws.add_note_at(Point::new(40.0, 40.0), window, cx);
+                ws.space.appearing.clear();
+                ws.space.canvas.top().unwrap()
+            });
+            window.render_frame(cx);
+            id.0 as usize
+        })
+        .unwrap();
+    for zoom in [1.0, 0.25] {
+        let (frame, inner) = cx
+            .update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, _| {
+                    let camera = ws.space.canvas.camera;
+                    ws.space.canvas.camera = Camera::at(camera.origin, zoom);
+                    ws.space.flight = None;
+                });
+                window.render_frame(cx);
+                (
+                    window.find(("body", n)).bounds(),
+                    window.find(("note-editor", n)).bounds(),
+                )
+            })
+            .unwrap();
+        let pad = templum_canvas::chrome::PAD * zoom;
+        let close = |a: gpui_kit::Pixels, b: f32| (f32::from(a) - b).abs() < 0.01;
+        assert!(
+            close(inner.origin.x, f32::from(frame.origin.x) + pad)
+                && close(inner.origin.y, f32::from(frame.origin.y) + pad)
+                && close(inner.size.width, f32::from(frame.size.width) - 2.0 * pad)
+                && close(inner.size.height, f32::from(frame.size.height) - 2.0 * pad),
+            "zoom {zoom}: frame {frame:?}, box {inner:?}"
+        );
+    }
 }
