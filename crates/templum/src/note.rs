@@ -8,8 +8,9 @@ use gpui_kit::{
     AnyElement, App, Context, Entity, ScrollWheelEvent, SharedString, TestSupportExt, Window, div,
     px, relative,
 };
-use templum_canvas::{BlockId, Size};
+use templum_canvas::{BlockId, Size, chrome};
 
+use crate::block::BORDER;
 use crate::workspace::Workspace;
 
 /// A new note's size, and the smallest one (world units).
@@ -17,6 +18,15 @@ pub(crate) const SIZE: Size = Size { w: 360.0, h: 280.0 };
 pub(crate) const MIN: Size = Size { w: 200.0, h: 140.0 };
 /// The text's size at zoom 1, world units.
 const FONT: f32 = 13.0;
+/// What gpui-kit's code editor keeps at fixed pixel sizes at any zoom: its padding
+/// (gpui-component-0.7.1 src/input/input.rs:591-600 and sizing.rs:147-166, size Medium: 6 left
+/// in a code editor, 10 right, 8 top and bottom) and, inside it, left of the text, the line
+/// numbers' margin (6) and the fold icons (18), and right of it a margin its wrap width leaves
+/// out (10) (gpui-base-0.7.1 src/input/base/element.rs:50-53, 1102-1124, 2562).
+const FIXED_LEFT: f32 = 6.0 + 6.0 + 18.0;
+const FIXED_RIGHT: f32 = 10.0 + 10.0;
+const FIXED_TOP: f32 = 8.0;
+const FIXED_BOTTOM: f32 = 8.0;
 
 /// A note block: its text lives in the editor; `preview` shows it rendered instead.
 pub(crate) struct Note {
@@ -89,17 +99,41 @@ pub(crate) fn body(
             .test_support()
             .into_any_element()
     } else {
+        // Its fixed parts would make the text start further in, wrap at other words and show
+        // fewer lines the further the canvas is zoomed out: the editor is as much larger (or
+        // smaller) and moved by its fixed left and top parts' share, so the text starts, wraps
+        // and fits as if they zoomed too. Its lines change only when the block is resized. At
+        // zoom 1, exactly the note's box.
+        let content = ws
+            .space
+            .canvas
+            .get(id)
+            .map_or(Size::default(), |b| chrome::content_rect(b.rect).size());
+        let (across, down) = (FIXED_LEFT + FIXED_RIGHT, FIXED_TOP + FIXED_BOTTOM);
         div()
             .id(("note-editor", n))
             .size_full()
             .font_family(ws.cell.font.family.clone())
             .child(
-                // On the editor itself: it sets the theme's code size on itself, over a parent's.
-                Editor::new(&note.editor)
-                    .appearance(false)
-                    .bordered(false)
-                    .text_size(px(FONT * z))
-                    .h(relative(1.0)),
+                div()
+                    .id(("note-text", n))
+                    .relative()
+                    .left(px(-FIXED_LEFT * (1.0 - z)))
+                    .top(px(-FIXED_TOP * (1.0 - z)))
+                    .w(px(
+                        ((content.w - 2.0 * BORDER - across) * z + across).max(0.0)
+                    ))
+                    .h(px(((content.h - down) * z + down).max(0.0)))
+                    .child(
+                        // On the editor itself: it sets the theme's code size on itself, over
+                        // a parent's.
+                        Editor::new(&note.editor)
+                            .appearance(false)
+                            .bordered(false)
+                            .text_size(px(FONT * z))
+                            .h(relative(1.0)),
+                    )
+                    .test_support(),
             )
             .test_support()
             .into_any_element()

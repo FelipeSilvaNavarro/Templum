@@ -32,7 +32,7 @@ const RADIUS: f32 = 10.0;
 /// The focused block's ring, outside its border.
 const RING: f32 = 2.0;
 /// The card's border (`border_1`), screen pixels: not zoomed.
-const BORDER: f32 = 1.0;
+pub(crate) const BORDER: f32 = 1.0;
 
 /// `look` scales the block around its center (it is drawn at zoom × scale) and fades it.
 /// A block that isn't `live` is a ghost fading out: no controls, and clicks go through it.

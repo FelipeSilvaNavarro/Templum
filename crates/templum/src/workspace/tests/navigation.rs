@@ -728,3 +728,57 @@ fn a_notes_box_fills_its_frame_at_rest(cx: &mut TestAppContext) {
         );
     }
 }
+
+/// A note wraps at the same words at every zoom, like a photo of it: its lines change only when
+/// the block is resized. So the same lines of its text are on screen at any zoom.
+#[gpui_kit::test]
+fn a_note_wraps_the_same_at_every_zoom(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let text: String = (1..=40)
+        .map(|i| {
+            format!("{i:02} the quick brown fox jumps over the lazy dog and keeps on running far\n")
+        })
+        .collect();
+    let (rect, note) = cx
+        .update_window(handle, |_, window, cx| {
+            let found = ws.update(cx, |ws, cx| {
+                ws.add_note_at(Point::new(40.0, 40.0), window, cx);
+                ws.space.appearing.clear();
+                let id = ws.space.canvas.top().unwrap();
+                let note = ws.space.blocks[&id].note().unwrap().editor.clone();
+                (ws.space.canvas.get(id).unwrap().rect, note)
+            });
+            found
+                .1
+                .update(cx, |e, cx| e.set_value(text.clone(), window, cx));
+            window.render_frame(cx);
+            found
+        })
+        .unwrap();
+    let mut shown = Vec::new();
+    for zoom in templum_canvas::ZOOM_STEPS {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, _| {
+                // The note's corner near the view's: on screen at any zoom.
+                let at = Point::new(rect.x - 10.0, rect.y - 10.0);
+                ws.space.canvas.camera = Camera::at(at, zoom);
+                ws.space.flight = None;
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        shown.push((zoom, note.read_with(cx, |e, _| e.visible_row_range())));
+    }
+    let at_100 = shown
+        .iter()
+        .find(|(zoom, _)| *zoom == 1.0)
+        .map(|(_, range)| range.clone())
+        .unwrap();
+    assert!(
+        at_100.as_ref().is_some_and(|r| r.end < 40),
+        "the text is longer than the note: {at_100:?}"
+    );
+    for (zoom, range) in &shown {
+        assert_eq!(range, &at_100, "lines shown at {zoom} vs 1.0: {shown:?}");
+    }
+}

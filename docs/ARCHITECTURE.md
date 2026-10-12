@@ -54,6 +54,8 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   is what is drawn. Terminals and kanban blocks glide with the view; editor, note and Git bodies are laid out
   at the camera's step, in a box of that step's size, from the first frame of the glide (gpui-kit's editor
   re-measures its whole document on every font size and wrap width), while their frames glide and clip them.
+  gpui-kit's editor keeps its padding, fold gutter and right margin at fixed pixel sizes: a note's editor box
+  makes up for them (`note.rs`), so a note wraps at the same words at every zoom, only a resize re-wraps it.
 - **Persistence (planned):** the workspace (camera + blocks: rect, cwd, shell, title) is saved as JSON in the
   platform data directory. On restore, fresh shells start in the saved directories.
 
