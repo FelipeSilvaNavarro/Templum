@@ -42,16 +42,18 @@ pub(crate) enum Section {
     Font,
     Terminal,
     Shell,
+    Tools,
     Agents,
     Shortcuts,
 }
 
 impl Section {
-    pub const ALL: [Section; 6] = [
+    pub const ALL: [Section; 7] = [
         Section::Appearance,
         Section::Font,
         Section::Terminal,
         Section::Shell,
+        Section::Tools,
         Section::Agents,
         Section::Shortcuts,
     ];
@@ -62,6 +64,7 @@ impl Section {
             Section::Font => "Font",
             Section::Terminal => "Terminal",
             Section::Shell => "Shell",
+            Section::Tools => "Tools",
             Section::Agents => "Agents",
             Section::Shortcuts => "Shortcuts",
         }
@@ -74,6 +77,7 @@ impl Section {
             Section::Font => "settings-tab-font",
             Section::Terminal => "settings-tab-terminal",
             Section::Shell => "settings-tab-shell",
+            Section::Tools => "settings-tab-tools",
             Section::Agents => "settings-tab-agents",
             Section::Shortcuts => "settings-tab-shortcuts",
         }
@@ -83,6 +87,9 @@ impl Section {
     fn note(self) -> Option<&'static str> {
         match self {
             Section::Shell => Some("Applies to new terminals"),
+            Section::Tools => {
+                Some("The programs the Git block runs. Checked when the panel opens.")
+            }
             Section::Agents => Some(
                 "The AI agents in the canvas menu. Change one of Templum's, or add your own; ↺ puts \
                  one of Templum's back as it was.",
@@ -670,6 +677,33 @@ fn rows(
                     ),
             );
             rows
+        }
+        Section::Tools => {
+            let program = ws.config.git.program.clone();
+            let changed = ws.config.git.program() != "git";
+            let version = match &ws.git_version {
+                Some(Ok(v)) => v.clone(),
+                Some(Err(e)) => format!("Not found: {e}"),
+                None => "Looking…".to_string(),
+            };
+            vec![
+                Row::new("git.program", "Git")
+                    .description(version)
+                    .control(text_input(
+                        entity,
+                        "git.program",
+                        program.clone(),
+                        set_git_program,
+                        window,
+                        cx,
+                    ))
+                    .reset(
+                        changed,
+                        remove(entity, "git", "program", |c| {
+                            c.git.program = "git".to_string()
+                        }),
+                    ),
+            ]
         }
         Section::Agents => ws
             .agents
@@ -1519,6 +1553,25 @@ pub(crate) fn join_args(args: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// The Git program typed in the panel; empty or "git" is the default (the key is removed).
+pub(crate) fn set_git_program(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
+    // Kept as typed (the field shows the config's value: trimming here would eat a space typed
+    // before the next word, as in "Program Files"); GitConfig::program trims it for use.
+    if text.trim().is_empty() || text.trim() == "git" {
+        ws.edit(
+            Edit::remove("git", "program"),
+            |c| c.git.program = "git".to_string(),
+            cx,
+        );
+    } else {
+        ws.edit(
+            Edit::set("git", "program", text),
+            |c| c.git.program = text.to_string(),
+            cx,
+        );
+    }
 }
 
 /// `shell.program`, trimmed; empty removes the key (the default shell). The typed

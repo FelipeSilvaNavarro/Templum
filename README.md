@@ -37,7 +37,7 @@ cargo run -p templum
 | Scroll over a terminal | Scroll its history |
 | Ctrl+scroll, or pinch | Zoom |
 | Drag in a terminal (double-click: word, triple-click: line) | Select text |
-| Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board, Note or Editor, where you clicked |
+| Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board, Note, Editor or Git, where you clicked |
 | Right-click a block, card, column, board or workspace tile | Its menu (copy, paste, rename, delete, close…) |
 | With a drawing tool on, drag the canvas | Draw; Shift keeps lines at 45° and makes squares and circles |
 
@@ -47,6 +47,7 @@ cargo run -p templum
 | Ctrl+Shift+K | Cmd+Shift+K | New kanban board block |
 | Ctrl+Shift+M | Cmd+Shift+M | New note |
 | Ctrl+Shift+E | Cmd+Shift+E | New editor (asks for a folder) |
+| Ctrl+Shift+G | Cmd+Shift+G | New Git block (asks for a folder) |
 | Ctrl+S | Cmd+S | Save the file (in an editor) |
 | Ctrl+W | Ctrl+W | Close the file's tab (in an editor) |
 | Ctrl+G | Cmd+G | Go to line (in an editor) |
@@ -95,7 +96,7 @@ dark = "Catppuccin Mocha"
 Press **Ctrl+,** (**Cmd+,** on macOS), or the ⚙ in the title bar, to open the settings panel on the right. It has
 Appearance (light/dark mode and themes), Font (with a preview), Terminal (cursor and
 scrollback, system notifications), Shell (for new terminals: pick one of the shells found on your computer, shell
-integration), Agents and Shortcuts. The terminals stay usable next to it, so you see each change
+integration), Tools (the `git` program), Agents and Shortcuts. The terminals stay usable next to it, so you see each change
 as you make it.
 
 - Every change applies at once and is saved to `config.toml` a moment later, keeping your comments. Numbers apply
@@ -135,10 +136,31 @@ in that folder beside the editor. Closing a block, a workspace or the window, or
 files first. A file that isn't UTF-8, or is over 4 MB, opens read-only, so its bytes never change; Tab indents
 as the language wants it (a real tab in Makefiles and Go).
 
+## Git
+
+The toolbar's Git button (or Ctrl+Shift+G) asks for a folder and puts a Git block on its repository, with what
+GitHub Desktop and the editors' Git panels do. **Changes** lists what is staged and what isn't; a row shows its
+diff, and its buttons stage, unstage, discard (after asking) or open the file in an editor beside the block.
+Below, a summary, a description, **Amend** and **Commit** (Ctrl+Enter from either field; with no author set, the
+block asks for `user.name` and `user.email`). **History** lists the commits with their files and diffs, filtered
+as you type; right-click one to check it out, make a branch or a tag from it, revert it or copy its hash.
+**Branches** checks out on a click, makes, renames, merges, deletes and publishes them, and offers **Stash and
+switch** when local changes are in the way. **Stashes** stashes, applies, pops and drops. The top bar has the
+branch, ↑↓ against its upstream, **Fetch**, **Pull** (fast-forward only; otherwise it offers Merge or Rebase) and
+**Push** (a branch with no upstream asks before publishing); while one runs, its button cancels it. During a merge, rebase, cherry-pick or revert a banner
+offers Abort and, once nothing conflicts, Continue; a conflicted file has Use ours, Use theirs and Mark resolved.
+
+Everything runs through your own `git`, in the background, without ever waiting for input: a command that fails
+shows git's message, with **Details** and **Run in a terminal**, which opens a terminal beside the block with the
+command typed in, for you to read and run, so your credential helper or SSH agent does what it does in any
+terminal. The block refreshes
+every 2 seconds while it is on screen, after each action, and when a terminal of the workspace finishes a command
+in the repository, so `git add` in a terminal shows at once. Settings ▸ Tools names the `git` program.
+
 ## The toolbar
 
 The bar at the bottom of the canvas holds the tools: **Select** and **Hand** (move the canvas by dragging anywhere,
-over blocks too; Esc goes back to Select), then a button for each kind of block (terminal, note, kanban board, editor) and
+over blocks too; Esc goes back to Select), then a button for each kind of block (terminal, note, kanban board, editor, Git) and
 the AI agents, then the drawing tools.
 
 ## Drawing
@@ -218,6 +240,9 @@ blink = false
 [terminal]
 scrollback = 10000
 notifications = true   # system notifications while Templum is in the background
+
+[git]
+program = "git"   # the Git block's program: a name on PATH, or a path
 
 [keys]
 new_terminal = "ctrl-shift-t"   # one shortcut, a list, or [] to disable

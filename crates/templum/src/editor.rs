@@ -566,9 +566,18 @@ fn gone(id: BlockId, folder: &Path, ui: Ui, z: f32, cx: &mut Context<Workspace>)
 }
 
 /// A small outlined button, at the zoom.
-fn button(id: impl Into<ElementId>, label: &'static str, ui: Ui, z: f32) -> Stateful<Div> {
+pub(crate) fn button(
+    id: impl Into<ElementId>,
+    label: &'static str,
+    ui: Ui,
+    z: f32,
+) -> Stateful<Div> {
     div()
         .id(id)
+        // A spinner can sit beside the label (the Git block's Fetch, Pull and Push).
+        .flex()
+        .items_center()
+        .gap(px(6.0 * z))
         .px(px(10.0 * z))
         .py(px(5.0 * z))
         .rounded(px(8.0 * z))

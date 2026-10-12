@@ -194,6 +194,7 @@ pub(crate) enum Item {
     Kanban(KanbanItem),
     Note(NoteItem),
     Editor(EditorItem),
+    Git(GitItem),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -221,6 +222,20 @@ pub(crate) struct EditorItem {
     /// The file tree is shown.
     #[serde(default = "shown")]
     pub tree: bool,
+}
+
+/// A Git block (docs/specs/cockpit.md, section 8).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct GitItem {
+    pub rect: SavedRect,
+    pub folder: String,
+    /// The tab shown: "changes", "history", "branches" or "stashes".
+    #[serde(default = "changes")]
+    pub tab: String,
+}
+
+fn changes() -> String {
+    "changes".to_string()
 }
 
 /// A drawing as the file holds it (docs/specs/cockpit.md, section 4): a `stroke` with `points`,
@@ -499,6 +514,25 @@ pub(crate) fn write_newest(path: &Path, text: &str, generation: u64) -> io::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_git_item_round_trips_and_its_tab_defaults_to_changes() {
+        let text = r#"{"kind":"git","rect":{"x":1,"y":2,"w":800,"h":560},"folder":"/p"}"#;
+        let item: Item = serde_json::from_str(text).unwrap();
+        let Item::Git(g) = &item else {
+            panic!("{item:?}")
+        };
+        assert_eq!(g.folder, "/p");
+        assert_eq!(g.tab, "changes");
+        let back = serde_json::to_string(&item).unwrap();
+        assert!(back.contains(r#""kind":"git""#), "{back}");
+        assert!(back.contains(r#""tab":"changes""#), "{back}");
+        let item: Item =
+            serde_json::from_str(&text.replace(r#""folder""#, r#""tab":"history","folder""#))
+                .unwrap();
+        let Item::Git(g) = item else { unreachable!() };
+        assert_eq!(g.tab, "history");
+    }
 
     fn sample() -> Saved {
         Saved {
@@ -970,6 +1004,7 @@ mod tests {
                 Item::Kanban(k) => k.rect,
                 Item::Note(n) => n.rect,
                 Item::Editor(e) => e.rect,
+                Item::Git(g) => g.rect,
             })
             .collect();
         assert!(matches!(&saved.items[1], Item::Kanban(k) if k.board == Some(3)));

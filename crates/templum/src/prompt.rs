@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::*;
@@ -113,4 +114,75 @@ pub(crate) fn save_or_discard(
                     )),
             )
     });
+}
+
+/// A dialog showing `text` in the terminal font, with OK.
+pub(crate) fn details(
+    title: impl Into<SharedString>,
+    text: String,
+    mono: SharedString,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let title = title.into();
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        alert
+            .confirm()
+            .title(title.clone())
+            .w(px(640.0))
+            .button_props(DialogButtonProps::default().show_cancel(false))
+            .child(
+                div()
+                    .id("details")
+                    .max_h(px(360.0))
+                    .overflow_y_scroll()
+                    .font_family(mono.clone())
+                    .text_size(px(12.0))
+                    .child(text.clone()),
+            )
+    });
+}
+
+/// A text field and a checkbox (`flag`, off at first). Enter or `ok` calls `apply` with the
+/// text and the checkbox; the dialog closes when it returns true.
+pub(crate) fn ask_text_and_flag<V: 'static>(
+    title: impl Into<SharedString>,
+    ok: &'static str,
+    placeholder: impl Into<SharedString>,
+    flag: &'static str,
+    apply: impl Fn(String, bool, &mut Window, &mut App) -> bool + 'static,
+    window: &mut Window,
+    cx: &mut Context<V>,
+) {
+    let title = title.into();
+    let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+    let checked = Rc::new(std::cell::Cell::new(false));
+    let apply = Rc::new(apply);
+    let (field, state) = (input.clone(), checked.clone());
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let (apply, field, state) = (apply.clone(), field.clone(), state.clone());
+        let toggle = state.clone();
+        alert
+            .confirm()
+            .title(title.clone())
+            .button_props(DialogButtonProps::default().ok_text(ok))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(Input::new(&field))
+                    .child(
+                        Checkbox::new("flag")
+                            .label(flag)
+                            .checked(state.get())
+                            .on_click(move |on, _, _| toggle.set(*on)),
+                    ),
+            )
+            .on_ok(move |_, window, cx| {
+                let text = field.read(cx).value().to_string();
+                apply(text, state.get(), window, cx)
+            })
+    });
+    input.update(cx, |input, cx| input.focus(window, cx));
 }

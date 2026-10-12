@@ -15,7 +15,9 @@ use gpui_kit::{
     div, px,
 };
 use templum_canvas::{BlockId, Point};
+use templum_git::{Branch, Commit, Entry};
 
+use crate::git_block;
 use crate::kanban;
 use crate::launcher;
 use crate::prompt;
@@ -47,6 +49,27 @@ pub(crate) enum Target {
     Space(String),
     /// A drawing, by its index in the space's ink.
     Ink(usize),
+    /// A stash in a Git block's Stashes tab, by N in `stash@{N}`.
+    GitStash {
+        block: BlockId,
+        index: usize,
+    },
+    /// A branch in a Git block's Branches tab, by its name.
+    GitBranch {
+        block: BlockId,
+        name: String,
+    },
+    /// A commit in a Git block's History, by its hash.
+    GitCommit {
+        block: BlockId,
+        hash: String,
+    },
+    /// A row of a Git block's Changes lists, by its list and its index in it.
+    GitRow {
+        block: BlockId,
+        list: git_block::List,
+        index: usize,
+    },
     /// A row of an editor's file tree (a file or a folder), or its empty space (None).
     Tree {
         block: BlockId,
@@ -135,6 +158,7 @@ impl Workspace {
                     tree: e.show_tree,
                     wrap: e.wrap,
                 },
+                Body::Git(_) => Items::Git { block },
             },
             Target::Board { block, board } => Items::Board {
                 block,
@@ -159,6 +183,45 @@ impl Workspace {
             }
             Target::Card { board, card } => Items::Card { board, card },
             Target::Ink(index) => Items::Ink { index },
+            Target::GitRow { block, list, index } => {
+                let git = self.space.git(block)?;
+                let entries = match list {
+                    git_block::List::Conflicts => git.status.conflicts(),
+                    git_block::List::Staged => git.status.staged(),
+                    git_block::List::Unstaged => git.status.unstaged(),
+                };
+                Items::GitRow {
+                    block,
+                    list,
+                    entry: (*entries.get(index)?).clone(),
+                }
+            }
+            Target::GitStash { block, index } => {
+                self.space
+                    .git(block)?
+                    .stashes
+                    .iter()
+                    .find(|s| s.index == index)?;
+                Items::GitStash { block, index }
+            }
+            Target::GitBranch { block, ref name } => {
+                let git = self.space.git(block)?;
+                Items::GitBranch {
+                    block,
+                    branch: git.branches.iter().find(|b| b.name == *name)?.clone(),
+                    current: git.status.branch.clone(),
+                }
+            }
+            Target::GitCommit { block, ref hash } => Items::GitCommit {
+                block,
+                commit: self
+                    .space
+                    .git(block)?
+                    .commits
+                    .iter()
+                    .find(|c| c.hash == *hash)?
+                    .clone(),
+            },
             Target::Tree { block, ref path } => {
                 let is_dir = path.as_ref().is_some_and(|p| p.is_dir());
                 Items::Tree {
@@ -217,6 +280,27 @@ enum Items {
         block: BlockId,
         tree: bool,
         wrap: bool,
+    },
+    Git {
+        block: BlockId,
+    },
+    GitRow {
+        block: BlockId,
+        list: git_block::List,
+        entry: Entry,
+    },
+    GitCommit {
+        block: BlockId,
+        commit: Commit,
+    },
+    GitBranch {
+        block: BlockId,
+        branch: Branch,
+        current: Option<String>,
+    },
+    GitStash {
+        block: BlockId,
+        index: usize,
     },
     Board {
         block: BlockId,
@@ -355,6 +439,12 @@ impl Items {
                             Some(IconName::FileCode),
                             move |ws, window, cx| ws.ask_editor_folder(at, window, cx),
                         ))
+                        .item(item(
+                            ws,
+                            "Git",
+                            Some(IconName::GitBranch),
+                            move |ws, window, cx| ws.ask_git_folder(at, window, cx),
+                        ))
                     },
                 )
             }
@@ -477,7 +567,7 @@ impl Items {
                         ws,
                         "Open a terminal here",
                         Some(IconName::SquareTerminal),
-                        move |ws, window, cx| ws.terminal_beside(block, &p, window, cx),
+                        move |ws, window, cx| ws.terminal_beside(block, &p, None, window, cx),
                     ));
                 }
                 if let Some(p) = path.clone() {
@@ -540,6 +630,217 @@ impl Items {
                 }
                 menu
             }
+            Items::GitRow { block, list, entry } => {
+                use git_block::List;
+                let path = entry.path.clone();
+                let mut menu = menu;
+                match list {
+                    List::Conflicts => {
+                        let (open, ours, theirs, resolved) =
+                            (path.clone(), path.clone(), path.clone(), path.clone());
+                        menu = menu
+                            .item(item(
+                                ws,
+                                "Open in editor",
+                                Some(IconName::FileCode),
+                                move |ws, window, cx| ws.open_from_git(block, &open, window, cx),
+                            ))
+                            .item(item(ws, "Use ours", None, move |ws, window, cx| {
+                                ws.resolve(block, ours.clone(), templum_git::Side::Ours, window, cx)
+                            }))
+                            .item(item(ws, "Use theirs", None, move |ws, window, cx| {
+                                ws.resolve(
+                                    block,
+                                    theirs.clone(),
+                                    templum_git::Side::Theirs,
+                                    window,
+                                    cx,
+                                )
+                            }))
+                            .item(item(
+                                ws,
+                                "Mark resolved",
+                                Some(IconName::Check),
+                                move |ws, window, cx| {
+                                    ws.stage(block, vec![resolved.clone()], window, cx)
+                                },
+                            ));
+                    }
+                    List::Staged => {
+                        let (unstage, open) = (path.clone(), path.clone());
+                        menu = menu
+                            .item(item(
+                                ws,
+                                "Unstage",
+                                Some(IconName::Minus),
+                                move |ws, window, cx| {
+                                    ws.unstage(block, vec![unstage.clone()], window, cx)
+                                },
+                            ))
+                            .item(item(
+                                ws,
+                                "Open",
+                                Some(IconName::FileCode),
+                                move |ws, window, cx| ws.open_from_git(block, &open, window, cx),
+                            ));
+                    }
+                    List::Unstaged => {
+                        let (stage, discard, open) = (path.clone(), path.clone(), path.clone());
+                        menu = menu
+                            .item(item(
+                                ws,
+                                "Stage",
+                                Some(IconName::Plus),
+                                move |ws, window, cx| {
+                                    ws.stage(block, vec![stage.clone()], window, cx)
+                                },
+                            ))
+                            .item(item(
+                                ws,
+                                "Discard changes…",
+                                Some(IconName::Undo2),
+                                move |ws, window, cx| {
+                                    ws.discard(block, vec![discard.clone()], window, cx)
+                                },
+                            ))
+                            .item(item(
+                                ws,
+                                "Open",
+                                Some(IconName::FileCode),
+                                move |ws, window, cx| ws.open_from_git(block, &open, window, cx),
+                            ));
+                    }
+                }
+                let (copy, ignore) = (path.clone(), path.clone());
+                menu.item(item(
+                    ws,
+                    "Copy path",
+                    Some(IconName::Copy),
+                    move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())),
+                ))
+                .item(item(ws, "Ignore", None, move |ws, window, cx| {
+                    ws.ignore_path(block, ignore.clone(), window, cx)
+                }))
+            }
+            Items::GitCommit { block, commit } => {
+                let (checkout, branch, tag, revert, copy) = (
+                    commit.hash.clone(),
+                    commit.hash.clone(),
+                    commit.hash.clone(),
+                    commit.hash.clone(),
+                    commit.hash.clone(),
+                );
+                menu.item(item(ws, "Checkout…", None, move |ws, window, cx| {
+                    ws.checkout_commit(block, checkout.clone(), window, cx)
+                }))
+                .item(item(
+                    ws,
+                    "New branch from here…",
+                    Some(IconName::GitBranchPlus),
+                    move |ws, window, cx| ws.branch_from(block, Some(branch.clone()), window, cx),
+                ))
+                .item(item(
+                    ws,
+                    "Create tag…",
+                    Some(IconName::Tag),
+                    move |ws, window, cx| ws.tag_commit(block, tag.clone(), window, cx),
+                ))
+                .item(item(
+                    ws,
+                    "Revert…",
+                    Some(IconName::Undo2),
+                    move |ws, window, cx| ws.revert_commit(block, revert.clone(), window, cx),
+                ))
+                .item(item(
+                    ws,
+                    "Copy hash",
+                    Some(IconName::Copy),
+                    move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())),
+                ))
+            }
+            Items::GitBranch {
+                block,
+                branch,
+                current,
+            } => {
+                let name = branch.name.clone();
+                let into = current.unwrap_or_else(|| "HEAD".to_string());
+                let mut menu = menu;
+                if !branch.remote {
+                    let rename = name.clone();
+                    menu = menu.item(item(ws, "Rename…", None, move |ws, window, cx| {
+                        ws.rename_branch(block, rename.clone(), window, cx)
+                    }));
+                }
+                if !branch.current {
+                    let merge = name.clone();
+                    menu = menu.item(item(
+                        ws,
+                        format!("Merge into {into}…"),
+                        Some(IconName::GitMerge),
+                        move |ws, window, cx| ws.merge_branch(block, merge.clone(), window, cx),
+                    ));
+                }
+                if !branch.remote && !branch.current {
+                    let delete = name.clone();
+                    menu = menu.item(item(
+                        ws,
+                        "Delete…",
+                        Some(IconName::Delete),
+                        move |ws, window, cx| {
+                            ws.delete_branch(block, delete.clone(), false, window, cx)
+                        },
+                    ));
+                }
+                if !branch.remote && branch.upstream.is_none() {
+                    let publish = name.clone();
+                    menu = menu.item(item(
+                        ws,
+                        "Publish",
+                        Some(IconName::Upload),
+                        move |ws, window, cx| ws.publish_branch(block, publish.clone(), window, cx),
+                    ));
+                }
+                menu.item(item(
+                    ws,
+                    "Copy name",
+                    Some(IconName::Copy),
+                    move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(name.clone())),
+                ))
+            }
+            Items::GitStash { block, index } => menu
+                .item(item(ws, "Apply", None, move |ws, window, cx| {
+                    ws.stash_apply(block, index, false, window, cx)
+                }))
+                .item(item(ws, "Pop", None, move |ws, window, cx| {
+                    ws.stash_apply(block, index, true, window, cx)
+                }))
+                .item(item(
+                    ws,
+                    "Drop…",
+                    Some(IconName::Delete),
+                    move |ws, window, cx| ws.stash_drop(block, index, window, cx),
+                ))
+                .item(item(
+                    ws,
+                    "Show",
+                    Some(IconName::FileDiff),
+                    move |ws, window, cx| ws.show_stash(block, index, window, cx),
+                )),
+            Items::Git { block } => menu
+                .item(item(
+                    ws,
+                    "Refresh",
+                    Some(IconName::RefreshCw),
+                    move |ws, window, cx| ws.refresh_git(block, window, cx),
+                ))
+                .separator()
+                .item(item(
+                    ws,
+                    "Close",
+                    Some(IconName::Close),
+                    move |ws, window, cx| ws.close(block, window, cx),
+                )),
             Items::Editor { block, tree, wrap } => menu
                 .item(item(
                     ws,
