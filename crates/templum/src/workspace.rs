@@ -210,6 +210,20 @@ impl Body {
         }
     }
 
+    /// The folder a terminal opened from this block starts in: a terminal's current one, an
+    /// editor's, a Git block's repository. None for a note or a kanban block.
+    pub fn folder(&self) -> Option<PathBuf> {
+        match self {
+            Body::Terminal(pane) => pane.term.cwd(),
+            Body::Editor(e) => Some(e.folder.clone()),
+            Body::Git(g) => Some(
+                g.repo()
+                    .map_or_else(|| g.folder.clone(), |r| r.root.clone()),
+            ),
+            Body::Kanban(_) | Body::Note(_) => None,
+        }
+    }
+
     /// The keyboard is inside the block.
     pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
         match self {
@@ -449,6 +463,9 @@ pub struct Workspace {
     drag: Option<Drag>,
     /// Where a press on the empty canvas started: released in place, it's a click.
     press: Option<Point>,
+    /// The block the last click on the empty canvas unfocused: a double-click's terminal starts
+    /// in its folder.
+    unfocused: Option<BlockId>,
     pub(crate) focus_handle: FocusHandle,
     /// Window position of the workspace's top-left: screen coordinates are relative to it.
     origin: PixelPoint<Pixels>,
@@ -713,6 +730,7 @@ impl Workspace {
             on_frame: None,
             drag: None,
             press: None,
+            unfocused: None,
             focus_handle,
             origin: PixelPoint::default(),
             notify,
@@ -4424,8 +4442,8 @@ impl Workspace {
         match &self.config.shell.working_directory {
             WorkingDirectory::Inherit => self
                 .space
-                .focused_terminal()
-                .and_then(|pane| pane.term.cwd()),
+                .focused
+                .and_then(|id| self.space.blocks.get(&id)?.folder()),
             WorkingDirectory::Home => None,
             WorkingDirectory::Path(path) if path.is_dir() => Some(path.clone()),
             WorkingDirectory::Path(path) => {
@@ -5036,8 +5054,11 @@ impl Workspace {
         if let Some(start) = self.press {
             let p = self.local(pos);
             let moved = (p.x - start.x).abs().max((p.y - start.y).abs());
-            if moved < CLICK_SLOP && self.space.focused.take().is_some() {
-                cx.notify();
+            if moved < CLICK_SLOP {
+                self.unfocused = self.space.focused.take();
+                if self.unfocused.is_some() {
+                    cx.notify();
+                }
             }
         }
         if let Some(Drag::Ink(mut drawing)) = self.drag.take() {
@@ -5355,6 +5376,10 @@ impl Workspace {
         }
         if e.click_count == 2 {
             let at = self.space.canvas.camera.to_world(p);
+            // The first click took the focus: the new terminal still starts in its folder.
+            if self.space.focused.is_none() {
+                self.space.focused = self.unfocused.take();
+            }
             self.add_terminal_at(at, window, cx);
         } else {
             self.drag = Some(Drag::Canvas(Gesture::pan(p)));
@@ -14184,5 +14209,69 @@ mod tests {
         ws.read_with(cx, |ws, _| {
             assert_eq!(ws.tool, super::Tool::Select, "Alt doesn't change the tool")
         });
+    }
+
+    /// The folder a terminal's program runs in, once the OS says, canonicalized.
+    fn cwd_of(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> std::path::PathBuf {
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let cwd = ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().term.cwd());
+            if let Some(cwd) = cwd {
+                return cwd.canonicalize().unwrap();
+            }
+            assert!(Instant::now() < deadline, "no cwd");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_new_terminal_starts_in_the_focused_editors_or_git_blocks_folder(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git_repo();
+        let (handle, ws) = open(cx);
+        let new_terminal = |cx: &mut TestAppContext| {
+            cx.update_window(handle, |_, window, cx| window.press(NEW, cx))
+                .unwrap();
+            ws.read_with(cx, |ws, _| ws.space.canvas.top().unwrap())
+        };
+        open_editor(handle, &ws, cx, dir.path());
+        let id = new_terminal(cx);
+        assert_eq!(cwd_of(&ws, cx, id), dir.path().canonicalize().unwrap());
+        open_git(handle, &ws, cx, repo.path());
+        let id = new_terminal(cx);
+        assert_eq!(cwd_of(&ws, cx, id), repo.path().canonicalize().unwrap());
+    }
+
+    #[gpui_kit::test]
+    fn a_double_click_on_the_canvas_opens_in_the_folder_of_the_block_it_unfocused(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let start = tempfile::tempdir().unwrap();
+        // A TOML literal string: Windows backslashes need no escaping.
+        write_config(
+            dir.path(),
+            &format!(
+                "[shell]\nworking_directory = '{}'\n",
+                start.path().display()
+            ),
+        );
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        write_config(dir.path(), "[shell]\nworking_directory = \"inherit\"\n");
+        reload(handle, &ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let o = ws.read(cx).origin;
+            let at = (f32::from(o.x) + 40.0, f32::from(o.y) + 40.0);
+            click(window, cx, at, 1);
+            click(window, cx, at, 2);
+        })
+        .unwrap();
+        let new = ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.canvas.blocks().len(), 2);
+            ws.space.canvas.top().unwrap()
+        });
+        assert_eq!(cwd_of(&ws, cx, new), start.path().canonicalize().unwrap());
     }
 }
