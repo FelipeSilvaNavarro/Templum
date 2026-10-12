@@ -36,7 +36,8 @@ use gpui_kit::{
 use workspace::Workspace;
 
 fn main() {
-    let bench = std::env::args().any(|a| a == "--bench");
+    let mixed = std::env::args().any(|a| a == "--bench-mixed");
+    let bench = mixed || std::env::args().any(|a| a == "--bench");
     gpui_kit::application()
         // Every Lucide icon, by name: the toolbar and the notes use ones outside the default set.
         .with_assets(gpui_kit::assets::AllAssets)
@@ -74,7 +75,7 @@ fn main() {
             })
             .expect("failed to open window");
             if bench {
-                bench::run(window, ws, cx);
+                bench::run(window, ws, mixed, cx);
             }
             cx.on_window_closed(|cx, _| cx.quit()).detach();
             cx.activate(true);

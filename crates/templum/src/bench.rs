@@ -1,7 +1,10 @@
 //! `templum --bench`: 20 terminals, 5 running `yes`, 200 strokes over them, 10 s of animated pan
-//! and zoom.
+//! and zoom. `templum --bench-mixed`: a canvas like an agent cockpit instead — 5 terminals
+//! redrawing a colored screen 10× a second (an agent's TUI), 3 editors, 3 Git blocks, a note and
+//! 2 kanban blocks, no strokes.
 //! Prints one JSON line (frame-interval percentiles, memory), then quits. Bar: p95 <= 16.7 ms.
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui_kit::{AnyWindowHandle, App, AppContext as _, Entity};
@@ -9,10 +12,36 @@ use templum_canvas::{Color, Drawing, Point, Rect, ZOOM_STEPS, chrome};
 
 use crate::workspace::{DEFAULT_COLS, DEFAULT_ROWS, Workspace};
 
-pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut App) {
+/// Typed into the terminals of the mixed scenario: 24 colored lines redrawn 10× a second,
+/// each with a number that changes, like an agent's interface.
+const TUI_LOOP: &[u8] = b"while :; do printf '\\033[H'; for i in $(seq 24); do printf '\\033[3%dm%5d The quick brown fox jumps over the lazy dog 0123456789 abcdefghijkl\\033[0m\\n' $((i%7+1)) $RANDOM; done; sleep 0.1; done\r";
+
+pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, mixed: bool, cx: &mut App) {
     let _ = cx.update_window(window, |_, window, cx| {
         ws.update(cx, |ws, cx| {
             let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, ws.cell.size);
+            if mixed {
+                // The folder Templum runs from: a real one for the editors and Git blocks.
+                let repo = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let mut slots =
+                    (1..).map(|i| Point::new((i % 5) as f32 * 950.0, (i / 5) as f32 * 750.0));
+                let mut next = || slots.next().expect("endless");
+                for _ in 0..4 {
+                    let p = next();
+                    ws.open(Rect::new(p.x, p.y, size.w, size.h), window, cx);
+                }
+                for _ in 0..3 {
+                    ws.add_editor_at(&repo, next(), window, cx);
+                }
+                for _ in 0..3 {
+                    ws.add_git_at(&repo, next(), window, cx);
+                }
+                ws.add_note_at(next(), window, cx);
+                for _ in 0..2 {
+                    ws.add_kanban_at(next(), window, cx);
+                }
+                return;
+            }
             for i in 1..20 {
                 let (col, row) = ((i % 5) as f32, (i / 5) as f32);
                 let rect = Rect::new(col * (size.w + 40.0), row * (size.h + 40.0), size.w, size.h);
@@ -46,8 +75,9 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut App) 
         let idle_rss = rss_mb();
         let _ = cx.update_window(window, |_, _, cx| {
             ws.update(cx, |ws, cx| {
+                let command: &[u8] = if mixed { TUI_LOOP } else { b"yes\r" };
                 for (_, pane) in ws.space.terminals().take(5) {
-                    pane.term.write(&b"yes\r"[..]);
+                    pane.term.write(command);
                 }
                 let center = ws
                     .space.canvas
