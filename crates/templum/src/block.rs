@@ -293,10 +293,12 @@ pub(crate) fn render(
         Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
         // A fading note is drawn empty, like a kanban block.
         Body::Note(n) => frame.when(live, |el| el.child(note::body(ws, id, n, z, cx))),
-        // A fading editor is drawn empty, like a note.
-        Body::Editor(e) => frame.when(live, |el| el.child(editor::body(ws, id, e, z, cx))),
-        // A fading Git block is drawn empty, like a note.
-        Body::Git(g) => frame.when(live, |el| el.child(git_block::body(ws, id, g, z, cx))),
+        // An editor and a Git block draw their contents at their real size whatever the zoom:
+        // only the frame follows the canvas, and clips them. Their gpui-kit fields, checkboxes
+        // and buttons don't scale, so scaling the rest around them broke the layout. A fading
+        // one is drawn empty, like a note.
+        Body::Editor(e) => frame.when(live, |el| el.child(editor::body(ws, id, e, 1.0, cx))),
+        Body::Git(g) => frame.when(live, |el| el.child(git_block::body(ws, id, g, 1.0, cx))),
     }
     .test_support();
 

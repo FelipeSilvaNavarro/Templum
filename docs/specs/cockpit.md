@@ -767,6 +767,11 @@ Plan 5 ([../plans/2026-10-11-git.md](../plans/2026-10-11-git.md)) shipped on 202
   by "Git needs your key or password: run it in a terminal.".
 - Settings ▸ Tools has `git.program` only; `docker.program` comes with plan 6.
 
+After plan 5, on the maintainer's call: the editor and Git blocks no longer scale their contents with the zoom.
+Their frame follows the canvas and clips them; the text, rows, fields and buttons inside keep their real size, so
+zoomed out a block shows part of its contents at a readable size, and zoomed in more of them fit. Their
+gpui-kit fields, checkboxes and buttons have fixed sizes, and scaling the rest around them broke the layout.
+
 ## Risks
 
 - **gpui-kit's editor at the canvas's zoom.** Kanban text scales by setting `text_size(px(13 × z))` on plain
