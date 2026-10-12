@@ -730,6 +730,14 @@ pub(crate) fn feed(term: &SharedTerm, bytes: &[u8]) {
     term.touched();
 }
 
+/// Feeds `bytes` as the PTY thread would: through the tap, which marks the prompts.
+#[cfg(test)]
+pub(crate) fn feed_heard(term: &SharedTerm, bytes: &[u8]) {
+    let mut scanner = crate::tap::Scanner::new();
+    let inserts = scanner.scan(bytes, &term.1);
+    feed(term, &crate::tap::rewrite(bytes, inserts));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -857,13 +865,6 @@ mod tests {
             ..p
         };
         assert_eq!(folder(gone), Some(mine), "a folder that isn't there");
-    }
-
-    /// Feeds `bytes` as the PTY thread would: through the tap, which marks the prompts.
-    fn feed_heard(term: &SharedTerm, bytes: &[u8]) {
-        let mut scanner = crate::tap::Scanner::new();
-        let inserts = scanner.scan(bytes, &term.1);
-        feed(term, &crate::tap::rewrite(bytes, inserts));
     }
 
     fn rows(term: &SharedTerm) -> Vec<(String, Option<Mark>)> {
