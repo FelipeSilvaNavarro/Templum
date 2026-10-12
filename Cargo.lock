@@ -6804,7 +6804,7 @@ dependencies = [
 
 [[package]]
 name = "templum"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "futures",
  "gpui-kit",
@@ -6821,18 +6821,18 @@ dependencies = [
 
 [[package]]
 name = "templum-canvas"
-version = "0.0.0"
+version = "0.1.0"
 
 [[package]]
 name = "templum-git"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "templum-terminal"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "polling",
