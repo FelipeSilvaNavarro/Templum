@@ -36,13 +36,19 @@ cargo test --workspace
 1. Fork the repository and branch off `development`.
 2. Keep the change small: one change per pull request.
 3. Open the pull request against `development`. CI (`ci-ok`) must pass, and the maintainer reviews it.
-4. Pull requests are squash-merged, and the title becomes the commit message. Write it as an imperative
-   sentence: "Add block snapping", "Fix resize on Windows".
+4. Pull requests are squash-merged, and the title becomes the commit message. Use
+   [Conventional Commits](https://www.conventionalcommits.org) with an imperative sentence:
+   `feat(canvas): add block snapping`, `fix(terminal): keep the cursor on resize`, `perf: …`, `docs: …`,
+   `test: …`, `refactor: …`, `chore: …`. The changelog is generated from `feat`, `fix` and `perf`, so write
+   their subject for someone who uses Templum.
 
 - Logic changes come with a test. UI changes come with a screenshot or short clip in the PR description.
 - Before writing UI code, read the GPUI lessons in [ADR-0002](docs/adr/0002-ui-framework.md#lessons-from-the-spike-read-before-writing-gpui-code).
 
-`main` only moves when the maintainer merges `development` into it.
+`main` only moves when the maintainer merges `development` into it. Releases are cut from `main` by the maintainer
+with `./publish.sh patch|minor|major` (try `--dry-run` first): it bumps the version, writes the
+[CHANGELOG](CHANGELOG.md) section, tags `vX.Y.Z` and pushes. The tag runs `.github/workflows/release.yml`, which
+builds every platform and publishes the release.
 
 ## Big decisions
 
