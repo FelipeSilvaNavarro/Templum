@@ -1,0 +1,555 @@
+//! The settings panel and its fields.
+
+use super::*;
+
+#[gpui_kit::test]
+fn the_settings_shortcut_and_buttons_open_and_close_the_panel(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(SETTINGS, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(panel_open(&ws, cx), "the shortcut opens it");
+    cx.update_window(handle, |_, window, cx| {
+        window.press(SETTINGS, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(!panel_open(&ws, cx), "and closes it");
+    settle_slide(handle, cx);
+    ws.read_with(cx, |ws, _| assert!(ws.settings.is_none(), "slid out"));
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    assert!(panel_open(&ws, cx), "the gear opens it");
+    cx.update_window(handle, |_, window, cx| window.click("settings-close", cx))
+        .unwrap();
+    assert!(!panel_open(&ws, cx), "the close button closes it");
+}
+
+#[gpui_kit::test]
+fn the_panel_opens_on_appearance_and_tabs_switch_sections(cx: &mut TestAppContext) {
+    let (handle, _ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.try_find("field-theme.mode").is_some());
+        assert!(window.try_find("shortcut-new_terminal").is_none());
+        window.click("settings-tab-shortcuts", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("shortcut-new_terminal").is_some());
+        assert!(window.try_find("field-theme.mode").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_blink_switch_edits_the_config_and_its_reset_removes_the_key(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-tab-terminal", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("reset-cursor.blink").is_none(),
+            "no reset while at the default"
+        );
+        window.click("field-cursor.blink", cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert!(ws.read(cx).config.cursor.blink, "the switch turned it on");
+        assert!(window.try_find("reset-cursor.blink").is_some());
+        window.click("reset-cursor.blink", cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert!(!ws.read(cx).config.cursor.blink, "back to the default");
+    })
+    .unwrap();
+    ws.update(cx, |ws, _| ws.save());
+    let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap_or_default();
+    assert!(!text.contains("blink"), "{text}");
+}
+
+#[gpui_kit::test]
+fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    let on = |ws: &Workspace| {
+        (
+            ws.config.shell.integration,
+            ws.config.terminal.notifications,
+        )
+    };
+    for (tab, field, reset, line) in [
+        (
+            "settings-tab-shell",
+            "field-shell.integration",
+            "reset-shell.integration",
+            "integration = false",
+        ),
+        (
+            "settings-tab-terminal",
+            "field-terminal.notifications",
+            "reset-terminal.notifications",
+            "notifications = false",
+        ),
+    ] {
+        cx.update_window(handle, |_, window, cx| {
+            window.click(tab, cx);
+            window.render_frame(cx);
+            assert!(window.try_find(reset).is_none());
+            window.click(field, cx);
+            window.render_frame(cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.update(cx, |ws, _| ws.save());
+        let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap();
+        assert!(text.contains(line), "{text}");
+        cx.update_window(handle, |_, window, cx| {
+            window.click(reset, cx);
+            window.render_frame(cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    }
+    assert_eq!(ws.read_with(cx, |ws, _| on(ws)), (true, true), "back on");
+    ws.update(cx, |ws, _| ws.save());
+    let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap();
+    assert!(
+        !text.contains("integration") && !text.contains("notifications"),
+        "{text}"
+    );
+}
+
+#[gpui_kit::test]
+fn the_shell_list_sets_the_program_and_its_arguments(cx: &mut TestAppContext) {
+    use templum_terminal::ShellOption;
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    // Two shells "found" on this computer.
+    ws.update(cx, |ws, _| {
+        ws.shells = vec![
+            ShellOption {
+                label: "Git Bash".into(),
+                program: "C:\\Git\\bin\\bash.exe".into(),
+                args: vec!["--login".into(), "-i".into()],
+            },
+            ShellOption {
+                label: "PowerShell 7".into(),
+                program: "pwsh".into(),
+                args: vec!["-NoLogo".into()],
+            },
+        ];
+        ws.default_shell = "Git Bash".into();
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-tab-shell", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("reset-shell.shell").is_none(),
+            "the default"
+        );
+        window
+            .within("field-shell.shell")
+            .click("menu-shell.shell", cx);
+        window.render_frame(cx);
+        // Default (Git Bash), Git Bash, PowerShell 7.
+        window.within("popup-menu").click(2usize, cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let shell = ws.read(cx).config.shell.clone();
+        assert_eq!(shell.program.as_deref(), Some("pwsh"));
+        assert_eq!(shell.args, ["-NoLogo"]);
+        assert!(window.try_find("reset-shell.shell").is_some());
+    })
+    .unwrap();
+    ws.update(cx, |ws, _| ws.save());
+    let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap();
+    assert!(
+        text.contains("program = \"pwsh\"") && text.contains("-NoLogo"),
+        "{text}"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.click("reset-shell.shell", cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let shell = ws.read(cx).config.shell.clone();
+        assert_eq!(
+            (shell.program, shell.args.len()),
+            (None, 0),
+            "back to the default"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn esc_closes_the_panel_only_from_inside_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(SETTINGS, cx);
+        window.render_frame(cx);
+        window.press("escape", cx);
+    })
+    .unwrap();
+    assert!(!panel_open(&ws, cx), "Esc in the panel closes it");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(SETTINGS, cx);
+    })
+    .unwrap();
+    settle_slide(handle, cx);
+    // Click the terminal's left part, clear of the panel on the right.
+    cx.update_window(handle, |_, window, cx| {
+        let (o, r) = {
+            let ws = ws.read(cx);
+            let rect = ws.space.canvas.get(id).unwrap().rect;
+            (ws.origin, ws.space.canvas.camera.rect_to_screen(rect))
+        };
+        let at = (
+            f32::from(o.x) + r.x + 20.0,
+            f32::from(o.y) + r.y + templum_canvas::chrome::TITLE_H + 20.0,
+        );
+        click(window, cx, at, 1);
+        window.render_frame(cx);
+        window.press("escape", cx);
+        let focused = ws.read(cx).focus_handle.is_focused(window);
+        assert!(focused, "keys go to the terminal");
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(id)));
+    assert!(panel_open(&ws, cx), "Esc went to the terminal");
+}
+
+#[gpui_kit::test]
+fn closing_the_panel_saves_at_once(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(SETTINGS, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.update(cx, |ws, cx| {
+        ws.edit(
+            Edit::set("cursor", "blink", true),
+            |c| c.cursor.blink = true,
+            cx,
+        )
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(SETTINGS, cx);
+    })
+    .unwrap();
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(text.contains("blink = true"), "{text}");
+}
+
+#[gpui_kit::test]
+fn a_number_applies_on_enter_or_a_step_not_while_typing(cx: &mut TestAppContext) {
+    use crate::settings::{NumberState, SCROLLBACK};
+    use gpui_kit::component::input::{InputEvent, NumberInputEvent, StepAction};
+    let (handle, ws) = open(cx);
+    let state = cx
+        .update_window(handle, |_, window, cx| {
+            let ws = ws.clone();
+            cx.new(|cx| NumberState::new(ws, &SCROLLBACK, 10_000.0, window, cx))
+        })
+        .unwrap();
+    let scrollback =
+        |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.config.terminal.scrollback);
+    // Typing "20000" passes through "2": applied, it would trim every terminal's history.
+    cx.update_window(handle, |_, window, cx| {
+        let input = state.read(cx).input.clone();
+        input.update(cx, |input, cx| input.set_value("2", window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(scrollback(cx), 10_000, "not while typing");
+    cx.update_window(handle, |_, window, cx| {
+        let input = state.read(cx).input.clone();
+        input.update(cx, |input, cx| {
+            input.set_value("20000", window, cx);
+            cx.emit(InputEvent::PressEnter {
+                secondary: false,
+                shift: false,
+            });
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(scrollback(cx), 20_000, "Enter applies it");
+    cx.update_window(handle, |_, window, cx| {
+        let input = state.read(cx).input.clone();
+        input.update(cx, |_, cx| {
+            cx.emit(NumberInputEvent::Step(StepAction::Decrement))
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(scrollback(cx), 19_000, "a step applies at once");
+}
+
+#[gpui_kit::test]
+fn a_reset_or_another_folder_choice_drops_what_was_typed(cx: &mut TestAppContext) {
+    use crate::settings::{
+        args_error, args_text, folder_hint, folder_text, set_args, set_folder, set_folder_kind,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    ws.update(cx, |ws, cx| set_args(ws, "--login \"a b", cx));
+    frame(handle, cx);
+    // What the field's "reset to default" does.
+    ws.update(cx, |ws, cx| {
+        ws.edit(Edit::remove("shell", "args"), |c| c.shell.args.clear(), cx)
+    });
+    frame(handle, cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(args_text(ws), "");
+        assert_eq!(args_error(ws), None);
+    });
+    // "~" typed, then Home chosen, then "A folder…" again (it starts at the home folder).
+    let steps: [fn(&mut Workspace, &mut Context<Workspace>); 4] = [
+        |ws, cx| set_folder_kind(ws, "folder", cx),
+        |ws, cx| set_folder(ws, "~", cx),
+        |ws, cx| set_folder_kind(ws, "home", cx),
+        |ws, cx| set_folder_kind(ws, "folder", cx),
+    ];
+    for step in steps {
+        ws.update(cx, step);
+        frame(handle, cx);
+    }
+    let home = std::env::home_dir().unwrap().display().to_string();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            folder_text(ws),
+            home,
+            "the folder in effect, not the old \"~\""
+        );
+        assert_eq!(folder_hint(ws), None);
+    });
+}
+
+#[gpui_kit::test]
+fn the_default_font_removes_the_family(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    ws.update(cx, |ws, cx| {
+        crate::settings::set_family(ws, "Some Mono", cx)
+    });
+    frame(handle, cx);
+    ws.update(cx, |ws, _| ws.save());
+    let path = dir.path().join("config.toml");
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("family = \"Some Mono\"")
+    );
+    ws.update(cx, |ws, cx| crate::settings::set_family(ws, "", cx));
+    frame(handle, cx);
+    ws.update(cx, |ws, _| {
+        assert_eq!(ws.config.font.family, None);
+        ws.save();
+    });
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("family"));
+}
+
+#[gpui_kit::test]
+fn an_unclosed_quote_waits_for_the_closing_one(cx: &mut TestAppContext) {
+    use crate::settings::set_args;
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    ws.update(cx, |ws, cx| set_args(ws, "--login \"a b", cx));
+    frame(handle, cx);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.config.shell.args.is_empty(), "not applied");
+        assert_eq!(
+            crate::settings::args_text(ws),
+            "--login \"a b",
+            "kept as typed"
+        );
+        assert_eq!(crate::settings::args_error(ws), Some("Unclosed quote"));
+    });
+    ws.update(cx, |ws, cx| set_args(ws, "--login \"a b\"", cx));
+    frame(handle, cx);
+    ws.update(cx, |ws, _| {
+        assert_eq!(ws.config.shell.args, ["--login", "a b"]);
+        assert_eq!(crate::settings::args_error(ws), None);
+        ws.save();
+    });
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(text.contains("args = [\"--login\", \"a b\"]"), "{text}");
+}
+
+#[gpui_kit::test]
+fn a_bare_tilde_waits_for_the_rest_of_the_path(cx: &mut TestAppContext) {
+    use crate::config::WorkingDirectory;
+    use crate::settings::{folder_hint, folder_text, set_folder, set_folder_kind};
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    let target = dir.path().join("work");
+    ws.update(cx, |ws, cx| set_folder_kind(ws, "folder", cx));
+    frame(handle, cx);
+    ws.update(cx, |ws, cx| set_folder(ws, "~", cx));
+    frame(handle, cx);
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            matches!(ws.config.shell.working_directory, WorkingDirectory::Path(_)),
+            "\"~\" alone doesn't switch to Home"
+        );
+        assert_eq!(folder_text(ws), "~", "kept as typed");
+        assert!(folder_hint(ws).is_some(), "and the field says why");
+    });
+    let typed = target.display().to_string();
+    ws.update(cx, |ws, cx| set_folder(ws, &typed, cx));
+    frame(handle, cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.config.shell.working_directory,
+            WorkingDirectory::Path(target.clone())
+        );
+        assert_eq!(folder_text(ws), typed);
+        assert_eq!(folder_hint(ws), None);
+    });
+    // Written now, while the temporary folder still exists.
+    ws.update(cx, |ws, _| ws.save());
+}
+
+#[gpui_kit::test]
+fn start_folder_and_program_choices_write_the_file(cx: &mut TestAppContext) {
+    use crate::settings::{set_folder_kind, set_program};
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    let path = dir.path().join("config.toml");
+    let mut check = |change: &dyn Fn(&mut Workspace, &mut Context<Workspace>), want: &str| {
+        ws.update(cx, |ws, cx| change(ws, cx));
+        frame(handle, cx);
+        ws.update(cx, |ws, _| ws.save());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains(want), "want {want:?} in {text}");
+    };
+    check(
+        &|ws, cx| set_folder_kind(ws, "home", cx),
+        "working_directory = \"~\"",
+    );
+    check(
+        &|ws, cx| set_folder_kind(ws, "inherit", cx),
+        "working_directory = \"inherit\"",
+    );
+    check(&|ws, cx| set_program(ws, "fish", cx), "program = \"fish\"");
+    ws.update(cx, |ws, cx| set_program(ws, "", cx));
+    frame(handle, cx);
+    ws.update(cx, |ws, _| ws.save());
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("program"));
+}
+
+#[gpui_kit::test]
+fn the_program_is_saved_trimmed_but_typing_keeps_its_spaces(cx: &mut TestAppContext) {
+    use crate::settings::{program_text, set_program};
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    // Halfway through typing "C:\Program Files\…".
+    ws.update(cx, |ws, cx| set_program(ws, "C:\\Program ", cx));
+    frame(handle, cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.config.shell.program.as_deref(), Some("C:\\Program"));
+        assert_eq!(
+            program_text(ws),
+            "C:\\Program ",
+            "the space stays in the field"
+        );
+    });
+    ws.update(cx, |ws, cx| set_program(ws, " fish ", cx));
+    frame(handle, cx);
+    ws.update(cx, |ws, _| ws.save());
+    let text = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(text.contains("program = \"fish\""), "{text}");
+    ws.update(cx, |ws, cx| set_program(ws, "  ", cx));
+    frame(handle, cx);
+    ws.read_with(cx, |ws, _| assert_eq!(ws.config.shell.program, None));
+}
+
+#[gpui_kit::test]
+fn the_tools_section_shows_gits_version_and_sets_the_program(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.toggle_settings(window, cx));
+    })
+    .unwrap();
+    settle(handle, cx);
+    // The panel slides in in real time: clicks land once it is at rest.
+    settle_slide(handle, cx);
+    ws.read_with(cx, |ws, _| {
+        let version = ws.git_version.clone().unwrap().unwrap();
+        assert!(version.starts_with("git version "), "{version}");
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-tab-tools", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("field-git.program").is_some());
+        assert!(
+            window.try_find("reset-git.program").is_none(),
+            "the default"
+        );
+    })
+    .unwrap();
+    // What the field calls on each change, as the shell program's tests do.
+    ws.update(cx, |ws, cx| {
+        crate::settings::set_git_program(ws, "/opt/git", cx)
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert_eq!(ws.read(cx).config.git.program, "/opt/git");
+        assert!(window.try_find("reset-git.program").is_some());
+    })
+    .unwrap();
+    ws.update(cx, |ws, _| ws.save());
+    let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap();
+    assert!(
+        text.contains("[git]") && text.contains("program = \"/opt/git\""),
+        "{text}"
+    );
+}
+
+// Re-graded from minor: a space can be typed in Settings ▸ Tools' Git field.
+#[gpui_kit::test]
+fn the_git_program_field_keeps_a_typed_space(cx: &mut TestAppContext) {
+    let (_, ws) = open(cx);
+    ws.update(cx, |ws, cx| {
+        crate::settings::set_git_program(ws, "C:\\Program ", cx)
+    });
+    ws.update(cx, |ws, _| {
+        let git = &ws.pending.as_ref().unwrap_or(&ws.config).git;
+        assert_eq!(
+            git.program, "C:\\Program ",
+            "the field shows what was typed"
+        );
+        assert_eq!(git.program(), "C:\\Program", "what runs is trimmed");
+    });
+    ws.update(cx, |ws, cx| crate::settings::set_git_program(ws, "  ", cx));
+    ws.update(cx, |ws, _| {
+        assert_eq!(
+            ws.pending.as_ref().unwrap_or(&ws.config).git.program(),
+            "git"
+        )
+    });
+}

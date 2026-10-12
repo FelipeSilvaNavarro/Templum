@@ -31,9 +31,15 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
 - **No `unsafe`:** the workspace denies it. If it is truly unavoidable, use a local `#[allow(unsafe_code)]` with a
   `// SAFETY:` comment.
 - **Branches:** `main` and `development`. Commit on `development`, never on `main`, in small commits titled
-  with an imperative sentence. Contributors' pull requests target `development` and are squash-merged. The
+  with [Conventional Commits](https://www.conventionalcommits.org) and an imperative sentence:
+  `feat(canvas): zoom with the wheel while the hand is on`, `fix(terminal): …`, `perf: …`, `docs: …`, `test: …`,
+  `refactor: …`, `ci: …`, `chore: …`. The CHANGELOG is generated from `feat`, `fix` and `perf`, so write those for
+  someone who uses Templum. Contributors' pull requests target `development` and are squash-merged. The
   maintainer opens the pull request from `development` to `main` and merges it with a **merge commit**, never a
   squash, so both branches keep the same history.
+- **Releases:** only the maintainer cuts them, from an up-to-date `main`, with `./publish.sh patch|minor|major`
+  (`--dry-run` first). It bumps the version, writes the CHANGELOG section, tags and pushes; the tag runs
+  `.github/workflows/release.yml`, which builds every platform and publishes the GitHub Release.
 - **Performance:** pull requests that touch painting or `templum-terminal` run
   `cargo run --release -p templum -- --bench` (Linux) and paste its JSON line in the PR description.
   The bar is `p95_ms` <= 16.7 (see [ADR-0002](docs/adr/0002-ui-framework.md)).

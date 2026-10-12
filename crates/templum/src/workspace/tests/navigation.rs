@@ -1,0 +1,603 @@
+//! Moving around the canvas: pan, zoom, glides, fit, the hand, Alt and the middle button.
+
+use super::*;
+
+#[gpui_kit::test]
+fn wheel_on_empty_canvas_pans_and_ctrl_wheel_zooms(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let o = ws.read(cx).origin;
+        wheel(
+            window,
+            cx,
+            (f32::from(o.x) + 30.0, f32::from(o.y) + 30.0),
+            ScrollDelta::Pixels(point(px(0.), px(100.))),
+            false,
+        );
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.canvas.camera.origin.y, -100.0)
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let o = ws.read(cx).origin;
+        wheel(
+            window,
+            cx,
+            (f32::from(o.x) + 30.0, f32::from(o.y) + 30.0),
+            ScrollDelta::Lines(point(0.0, 1.0)),
+            true,
+        );
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.1));
+}
+
+#[cfg(target_os = "macos")]
+const ZOOM_OUT: &str = "cmd--";
+#[cfg(not(target_os = "macos"))]
+const ZOOM_OUT: &str = "ctrl--";
+#[cfg(target_os = "macos")]
+const ZOOM_RESET: &str = "cmd-0";
+#[cfg(not(target_os = "macos"))]
+const ZOOM_RESET: &str = "ctrl-0";
+#[cfg(target_os = "macos")]
+const FIT: &str = "cmd-shift-1";
+#[cfg(not(target_os = "macos"))]
+const FIT: &str = "ctrl-shift-1";
+
+#[gpui_kit::test]
+fn zoom_keys_step_and_reset(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(ZOOM_IN, cx);
+        window.press(ZOOM_IN, cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.25));
+    cx.update_window(handle, |_, window, cx| {
+        window.press(ZOOM_OUT, cx);
+        window.press(ZOOM_RESET, cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.0));
+}
+
+#[gpui_kit::test]
+fn fit_all_brings_every_block_into_view(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open(
+                templum_canvas::Rect::new(5000.0, 3000.0, 600.0, 400.0),
+                window,
+                cx,
+            )
+        });
+        window.render_frame(cx);
+        window.press(FIT, cx);
+        let vp = ws.read(cx).viewport(window);
+        assert_eq!(ws.read(cx).space.canvas.visible(vp).count(), 2);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn zoom_keys_glide_to_the_step(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(ZOOM_IN, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.space.canvas.camera.zoom(),
+            1.1,
+            "the target is set at once"
+        );
+        assert!(ws.space.flight.is_some(), "the view glides");
+        assert!(
+            ws.space.view.zoom() < 1.1,
+            "drawn on the way: {}",
+            ws.space.view.zoom()
+        );
+    });
+    std::thread::sleep(crate::motion::FLIGHT + std::time::Duration::from_millis(50));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.flight.is_none(), "landed");
+        assert_eq!(ws.space.view, ws.space.canvas.camera);
+    });
+}
+
+#[gpui_kit::test]
+fn a_wheel_pan_during_a_glide_moves_the_glide_too(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(ZOOM_IN, cx);
+    })
+    .unwrap();
+    ws.update(cx, |ws, _| {
+        let (before, _) = ws.space.flight.unwrap();
+        ws.pan_by(Point::new(30.0, 0.0));
+        let (after, _) = ws.space.flight.expect("still gliding");
+        assert_eq!(
+            after.to, ws.space.canvas.camera,
+            "the glide still lands on the camera"
+        );
+        let z = before.from.zoom();
+        assert!((before.from.origin.x - after.from.origin.x - 30.0 / z).abs() < 1e-3);
+    });
+}
+
+#[gpui_kit::test]
+fn dragging_the_canvas_ends_a_glide_on_the_camera(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(ZOOM_OUT, cx);
+    })
+    .unwrap();
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.camera.pan_by(Point::new(5.0, 5.0))
+    });
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.flight.is_none());
+        assert_eq!(ws.space.view, ws.space.canvas.camera);
+    });
+}
+
+#[gpui_kit::test]
+fn fit_all_glides_then_shows_every_block(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open(
+                templum_canvas::Rect::new(5000.0, 3000.0, 600.0, 400.0),
+                window,
+                cx,
+            )
+        });
+        window.render_frame(cx);
+        window.press(FIT, cx);
+        window.render_frame(cx);
+        assert!(ws.read(cx).space.flight.is_some());
+    })
+    .unwrap();
+    std::thread::sleep(crate::motion::FLIGHT + std::time::Duration::from_millis(50));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let vp = ws.read(cx).viewport(window);
+        let ws = ws.read(cx);
+        assert_eq!(ws.space.canvas.visible_from(&ws.space.view, vp).count(), 2);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn pinch_over_a_block_zooms(cx: &mut TestAppContext) {
+    use gpui_kit::PinchEvent;
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let at = window.find(("body", id.0 as usize)).bounds().center();
+        window.dispatch_event(
+            PlatformInput::Pinch(PinchEvent {
+                position: at,
+                delta: 0.3,
+                modifiers: Modifiers::default(),
+                phase: TouchPhase::Moved,
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.1));
+}
+
+#[gpui_kit::test]
+fn panning_the_canvas_keeps_the_focused_terminal(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let before = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            ws.read(cx).space.canvas.camera.origin
+        })
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        let o = ws.read(cx).origin;
+        let from = point(o.x + px(40.), o.y + px(40.));
+        window.drag(from, point(from.x + px(100.), from.y + px(50.)), cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.focused, Some(id));
+        let after = ws.space.canvas.camera.origin;
+        assert_eq!(
+            (before.x - after.x, before.y - after.y),
+            (100.0, 50.0),
+            "it panned"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn the_hand_tool_pans_over_blocks_until_escape(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let before = ws.read_with(cx, |ws, _| {
+        (
+            ws.space.canvas.camera.origin,
+            ws.space.canvas.get(id).unwrap().rect,
+        )
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("tool-hand", cx);
+        window.render_frame(cx);
+        window.find("hand");
+        let from = window.find(("title", id.0 as usize)).bounds().center();
+        press_with(
+            window,
+            cx,
+            MouseButton::Left,
+            Modifiers::default(),
+            (f32::from(from.x), f32::from(from.y)),
+            (f32::from(from.x) + 40.0, f32::from(from.y) + 10.0),
+        );
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.tool, crate::workspace::Tool::Hand);
+        assert_eq!(ws.space.canvas.get(id).unwrap().rect, before.1, "not moved");
+        assert_ne!(ws.space.canvas.camera.origin, before.0, "panned");
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("hand").is_none(), "the layer is gone");
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.tool, crate::workspace::Tool::Select)
+    });
+}
+
+#[gpui_kit::test]
+fn holding_alt_moves_the_canvas_over_blocks(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let alt = Modifiers {
+        alt: true,
+        ..Default::default()
+    };
+    let before = ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("hand").is_none(), "not without Alt");
+        hold_alt(window, cx, true);
+        assert!(
+            window.try_find("hand").is_some(),
+            "the hand covers the canvas"
+        );
+        // A drag over the terminal: the canvas moves, nothing in the terminal is selected.
+        let body = window.find(("body", id.0 as usize)).bounds().center();
+        let from = (f32::from(body.x), f32::from(body.y));
+        press_with(
+            window,
+            cx,
+            MouseButton::Left,
+            alt,
+            from,
+            (from.0 + 100.0, from.1 + 40.0),
+        );
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let moved = ws.space.canvas.camera.origin;
+        assert_eq!((moved.x, moved.y), (before.x - 100.0, before.y - 40.0));
+        let term = ws.space.terminal(id).unwrap().term.shared();
+        assert!(term.selection_text().is_none(), "no selection");
+        assert!(ws.drag.is_none(), "the drag ended");
+    });
+    // The wheel over the terminal zooms the canvas, like the hand tool, and leaves the
+    // terminal's history alone.
+    cx.update_window(handle, |_, window, cx| {
+        let body = window.find(("body", id.0 as usize)).bounds().center();
+        window.dispatch_event(
+            PlatformInput::ScrollWheel(ScrollWheelEvent {
+                position: body,
+                delta: ScrollDelta::Pixels(point(px(0.), px(-60.))),
+                modifiers: alt,
+                touch_phase: TouchPhase::Moved,
+            }),
+            cx,
+        );
+        hold_alt(window, cx, false);
+        assert!(window.try_find("hand").is_none(), "gone when Alt is let go");
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 0.9));
+}
+
+#[gpui_kit::test]
+fn alt_let_go_elsewhere_is_noticed_at_the_next_move(cx: &mut TestAppContext) {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        hold_alt(window, cx, true);
+    })
+    .unwrap();
+    let redraw = Rc::new(Cell::new(false));
+    let seen = redraw.clone();
+    cx.update(|cx| cx.observe(&ws, move |_, _| seen.set(true)).detach());
+    // Let go while another window had the keyboard: only the next move says so, and the
+    // workspace redraws without its hand.
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: point(px(300.), px(300.)),
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert!(redraw.get(), "the move asks for a frame");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("hand").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_middle_drag_moves_the_canvas_anywhere(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let before = ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let body = window.find(("body", id.0 as usize)).bounds().center();
+        let from = (f32::from(body.x), f32::from(body.y));
+        press_with(
+            window,
+            cx,
+            MouseButton::Middle,
+            Modifiers::default(),
+            from,
+            (from.0 - 50.0, from.1),
+        );
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.canvas.camera.origin.x, before.x + 50.0);
+        assert!(ws.drag.is_none());
+    });
+}
+
+/// Every element inside `block` (registered for tests), relative to the block: its
+/// position and size.
+fn block_layout(window: &Window, block: BlockId) -> std::collections::BTreeMap<String, [f32; 4]> {
+    let id = gpui_kit::ElementId::NamedInteger("block".into(), block.0);
+    let origin = window.find(("block", block.0 as usize)).bounds().origin;
+    gpui_kit::base::test_support::snapshots(window)
+        .into_iter()
+        .filter_map(|s| {
+            let at = s.path().iter().position(|p| *p == id)?;
+            let b = s.bounds();
+            Some((
+                format!("{:?}", &s.path()[at..]),
+                [
+                    f32::from(b.origin.x - origin.x),
+                    f32::from(b.origin.y - origin.y),
+                    f32::from(b.size.width),
+                    f32::from(b.size.height),
+                ],
+            ))
+        })
+        .collect()
+}
+
+// The canvas zoom magnifies the editor and the Git block like a photo: everything inside
+// doubles at zoom 2, nothing keeps a fixed size or moves around (hairline borders stay
+// 1 px, hence the few pixels of slack).
+#[gpui_kit::test]
+fn zooming_scales_the_editor_and_git_blocks_like_a_photo(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.rs"),
+        "fn main() {\n    println!(\"hi\");\n}\n",
+    )
+    .unwrap();
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "zero\none\n").unwrap();
+    let (handle, ws) = open(cx);
+    let editor = open_editor(handle, &ws, cx, dir.path());
+    click_file(handle, 0, cx);
+    let git = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let id = ws
+                    .add_git_at(repo.path(), Point::new(40.0, 700.0), window, cx)
+                    .unwrap();
+                ws.space.appearing.clear();
+                ws.select_git_row(
+                    id,
+                    crate::git_block::List::Unstaged,
+                    "a.txt".to_string(),
+                    window,
+                    cx,
+                );
+                id
+            })
+        })
+        .unwrap();
+    settle(handle, cx);
+    // Each block measured with the camera on it, at zoom 1 and 2.
+    let layout = |cx: &mut TestAppContext, block: BlockId, at: Point, zoom: f32| {
+        ws.update(cx, |ws, _| {
+            ws.space.canvas.camera = Camera::at(at, zoom);
+            ws.space.view = ws.space.canvas.camera;
+        });
+        frame(handle, cx);
+        cx.update_window(handle, |_, window, _| block_layout(window, block))
+            .unwrap()
+    };
+    let compare = |name: &str,
+                   one: &std::collections::BTreeMap<String, [f32; 4]>,
+                   two: &std::collections::BTreeMap<String, [f32; 4]>| {
+        assert!(one.len() > 5, "{name}: measured {}", one.len());
+        for (key, a) in one {
+            let b = two
+                .get(key)
+                .unwrap_or_else(|| panic!("{name}: gone at zoom 2: {key}"));
+            for (x1, x2) in a.iter().zip(b) {
+                // Slack: hairlines that stay 1 px add up, more so for what sits at the
+                // right edge. A fixed-size widget is off by its own size (14 px, 24 px…).
+                let slack = 6.0 + x2.abs() * 0.01;
+                assert!(
+                    (x1 * 2.0 - x2).abs() <= slack,
+                    "{name}: {key}\n zoom 1 {a:?}\n zoom 2 {b:?}"
+                );
+            }
+        }
+    };
+    let tabs = [
+        crate::git_block::Tab::Changes,
+        crate::git_block::Tab::History,
+        crate::git_block::Tab::Branches,
+    ];
+    let one = layout(cx, editor, Point::new(0.0, 0.0), 1.0);
+    let two = layout(cx, editor, Point::new(0.0, 0.0), 2.0);
+    compare("editor", &one, &two);
+    for tab in tabs {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.set_git_tab(git, tab, window, cx))
+        })
+        .unwrap();
+        settle(handle, cx);
+        let one = layout(cx, git, Point::new(0.0, 660.0), 1.0);
+        let two = layout(cx, git, Point::new(0.0, 680.0), 2.0);
+        compare(tab.name(), &one, &two);
+    }
+}
+
+#[gpui_kit::test]
+fn double_clicking_a_title_frames_the_block_and_again_goes_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let (before, vp) = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let ws = ws.read(cx);
+            (ws.space.canvas.camera, ws.viewport(window))
+        })
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.double_click(("title", id.0 as usize), cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let camera = ws.space.canvas.camera;
+        assert!(camera.zoom() > before.zoom(), "bigger: {}", camera.zoom());
+        let r = camera.rect_to_screen(ws.space.canvas.get(id).unwrap().rect);
+        assert!(
+            (r.x + r.w / 2.0 - vp.w / 2.0).abs() < 1.0,
+            "centered: {r:?}"
+        );
+        assert!(
+            r.x >= 0.0 && r.y >= 0.0 && r.x + r.w <= vp.w,
+            "on screen: {r:?}"
+        );
+        assert!(
+            r.y + r.h <= vp.h - crate::toolbar::SPACE,
+            "clear of the toolbar: {r:?}"
+        );
+        assert!(ws.drag.is_none(), "a double-click doesn't move the block");
+    });
+    // The glide ends first: a title still moving isn't where the pointer goes.
+    std::thread::sleep(crate::motion::FLIGHT + std::time::Duration::from_millis(50));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.double_click(("title", id.0 as usize), cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.canvas.camera, before, "back where it was")
+    });
+}
+
+#[gpui_kit::test]
+fn with_the_hand_the_wheel_zooms_over_blocks_and_the_canvas(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("tool-hand", cx);
+        window.render_frame(cx);
+        let body = window.find(("body", id.0 as usize)).bounds().center();
+        wheel(
+            window,
+            cx,
+            (f32::from(body.x), f32::from(body.y)),
+            ScrollDelta::Lines(point(0.0, 1.0)),
+            false,
+        );
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.1));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let o = ws.read(cx).origin;
+        wheel(
+            window,
+            cx,
+            (f32::from(o.x) + 30.0, f32::from(o.y) + 30.0),
+            ScrollDelta::Pixels(point(px(0.), px(-60.))),
+            false,
+        );
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.0));
+}
+
+#[gpui_kit::test]
+fn holding_alt_lights_the_hand_in_the_toolbar_until_let_go(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let lit = |window: &Window, id: &'static str| window.find(id).selected();
+        assert_eq!(lit(window, "tool-select"), Some(true));
+        assert_eq!(lit(window, "tool-hand"), Some(false));
+        hold_alt(window, cx, true);
+        assert_eq!(lit(window, "tool-hand"), Some(true));
+        assert_eq!(lit(window, "tool-select"), Some(false));
+        hold_alt(window, cx, false);
+        assert_eq!(lit(window, "tool-select"), Some(true));
+        assert_eq!(lit(window, "tool-hand"), Some(false));
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.tool,
+            crate::workspace::Tool::Select,
+            "Alt doesn't change the tool"
+        )
+    });
+}
