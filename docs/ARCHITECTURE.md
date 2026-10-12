@@ -51,7 +51,9 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded;
   far-away blocks are drawn simplified (level of detail). A zoom glides to its step over 150 ms through
   zooms snapped to 0.02 (`templum-canvas`'s `CameraFlight`); the camera holds the target, the workspace's `view`
-  is what is drawn.
+  is what is drawn. Terminals and kanban blocks glide with the view; editor, note and Git bodies are laid out
+  at the camera's step, in a box of that step's size, from the first frame of the glide (gpui-kit's editor
+  re-measures its whole document on every font size and wrap width), while their frames glide and clip them.
 - **Persistence (planned):** the workspace (camera + blocks: rect, cwd, shell, title) is saved as JSON in the
   platform data directory. On restore, fresh shells start in the saved directories.
 

@@ -23,6 +23,20 @@
 | **10 editors** (`DaemonQuest.md`, 90 KB, open) | 1076 | 8.32 | **17.2** | 24.1 | **69** (every round) |
 | **10 notes** (`README.md` as text, soft-wrapped) | 808 | 6.67 | **36.5** | 60.0 | **88** |
 
+Results after Task 2 (3 alternating runs against the Task 1 build, medians, ms):
+
+| Blocks | p50 | p95 | p99 | max | frames |
+|---|---|---|---|---|---|
+| 10 editors, before → after | 8.66 → 6.81 | 17.59 → **13.28** | 22.86 → 18.80 | 71 → 75 | 1059 → 1202 |
+| 10 notes, before → after | 6.57 → 6.15 | 37.29 → **12.50** | 61.2 → 50.9 | 81 → 93 | 823 → 1172 |
+| 10 terminals (control) | 6.07 → 6.07 | 9.03 → 8.96 | 11.98 → 12.02 | 18 → 18 | 1568 → 1573 |
+
+Found during Task 2: a note's text never zoomed — gpui-component's `Editor` sets the theme's code size on
+itself (`gpui-component-0.7.1/src/input/editor.rs:144`), over `note.rs`'s parent `.text_size`, so only the
+note's wrap width changed with the zoom, re-wrapping the whole note every glide frame. The size now goes on the
+editor itself, as `editor.rs` does. The one whole-document re-measure per zoom step remains (max ~75–90 ms with
+10 documents of 90 KB): upstream.
+
 Why (pinned sources under `~/.cargo/registry/src/*/`):
 - The editor element sets its font every prepaint: `gpui-base-0.7.1/src/input/base/element.rs:2525-2531` (`state.display_map.set_font(font, text_size, cx)`), with `text_size` from the parent's text style — Templum's `.text_size(px(FONT * z))` (`editor.rs:805,825`, `note.rs:108`, `git_block/changes.rs:111`, `history.rs:231`, `stashes.rs:118`, `commit_form.rs:45`).
 - A new size re-measures everything: `display_map/text_wrapper.rs:337-345` (`set_font`: `if self.font.eq(&font) && self.font_size == font_size { return; } … self.update_all(…)`), `:621-623` (`update_all` = `update` over `0..text.len()`), `:365-440` (per line: `measured_wrap_boundaries` + `layout_line`, or `line_wrapper.wrap_line`). Soft-wrapped notes also recompute every wrap point, hence the worst numbers and the visible jumps.
