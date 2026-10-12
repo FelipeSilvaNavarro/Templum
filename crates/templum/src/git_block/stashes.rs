@@ -10,7 +10,7 @@ use templum_canvas::BlockId;
 
 use super::widgets::centered;
 use super::{FONT, Git, LISTS_W, ROW_H};
-use crate::editor::button;
+use crate::editor::{button, keep_rows};
 use crate::menu::Target;
 use crate::workspace::Workspace;
 
@@ -106,19 +106,22 @@ pub(super) fn stashes(
             .flex_1()
             .child("Click a stash to see its diff")
             .into_any_element(),
-        Some(_) => div()
-            .flex_1()
-            .min_w(px(0.0))
-            .child(
-                EditorView::new(&git.stash_diff)
-                    .appearance(false)
-                    .bordered(false)
-                    .readonly(true)
-                    .font_family(ws.cell.font.family.clone())
-                    .text_size(px(FONT * z))
-                    .h(relative(1.0)),
-            )
-            .into_any_element(),
+        Some(_) => {
+            keep_rows(&git.stash_diff, FONT, z, cx);
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .child(
+                    EditorView::new(&git.stash_diff)
+                        .appearance(false)
+                        .bordered(false)
+                        .readonly(true)
+                        .font_family(ws.cell.font.family.clone())
+                        .text_size(px(FONT * z))
+                        .h(relative(1.0)),
+                )
+                .into_any_element()
+        }
     };
     div()
         .flex_1()

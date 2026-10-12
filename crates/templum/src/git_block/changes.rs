@@ -14,7 +14,7 @@ use templum_git::{Change, Entry};
 use super::commit_form::commit_form;
 use super::widgets::{badge_color, bar, centered, icon_button};
 use super::{FONT, Git, LISTS_W, List, ROW_H, row_id};
-use crate::editor::button;
+use crate::editor::{button, keep_rows};
 use crate::menu::Target;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
@@ -106,6 +106,7 @@ fn diff_view(
             .into_any_element();
     };
     let open = path.clone();
+    keep_rows(&git.diff, FONT, z, cx);
     div()
         .id(("git-diff", n))
         .flex_1()

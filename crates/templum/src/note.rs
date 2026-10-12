@@ -17,7 +17,7 @@ use crate::workspace::Workspace;
 pub(crate) const SIZE: Size = Size { w: 360.0, h: 280.0 };
 pub(crate) const MIN: Size = Size { w: 200.0, h: 140.0 };
 /// The text's size at zoom 1, world units.
-const FONT: f32 = 13.0;
+pub(crate) const FONT: f32 = 13.0;
 /// What gpui-kit's code editor keeps at fixed pixel sizes at any zoom: its padding
 /// (gpui-component-0.7.1 src/input/input.rs:591-600 and sizing.rs:147-166, size Medium: 6 left
 /// in a code editor, 10 right, 8 top and bottom) and, inside it, left of the text, the line
@@ -110,6 +110,7 @@ pub(crate) fn body(
             .get(id)
             .map_or(Size::default(), |b| chrome::content_rect(b.rect).size());
         let (across, down) = (FIXED_LEFT + FIXED_RIGHT, FIXED_TOP + FIXED_BOTTOM);
+        crate::editor::keep_rows(&note.editor, FONT, z, cx);
         div()
             .id(("note-editor", n))
             .size_full()

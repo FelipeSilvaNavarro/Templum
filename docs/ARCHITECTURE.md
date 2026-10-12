@@ -51,9 +51,12 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded;
   far-away blocks are drawn simplified (level of detail). A zoom glides to its step over 150 ms through
   zooms snapped to 0.02 (`templum-canvas`'s `CameraFlight`); the camera holds the target, the workspace's `view`
-  is what is drawn. Terminals and kanban blocks glide with the view; editor, note and Git bodies are laid out
-  at the camera's step, in a box of that step's size, from the first frame of the glide (gpui-kit's editor
-  re-measures its whole document on every font size and wrap width), while their frames glide and clip them.
+  is what is drawn. Terminals and kanban blocks glide with the view. Editor, note and Git bodies glide too, but
+  only through the zooms where gpui-kit's editor rows (1.5 × the font, rounded to whole pixels by GPUI) are
+  exact, in a box of that zoom's size that their frames clip: elsewhere the rows would grow a pixel at a time
+  while the letters grow smoothly, and the text would jump. Their editors' scroll, in pixels, scales with their
+  rows (`editor::keep_rows`). Each of those zooms costs a soft-wrapped editor (a note) a re-wrap of its whole
+  text: gpui-kit re-measures it on every font size and wrap width.
   gpui-kit's editor keeps its padding, fold gutter and right margin at fixed pixel sizes: a note's editor box
   makes up for them (`note.rs`), so a note wraps at the same words at every zoom, only a resize re-wraps it.
 - **Persistence (planned):** the workspace (camera + blocks: rect, cwd, shell, title) is saved as JSON in the

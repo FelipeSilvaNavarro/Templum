@@ -48,10 +48,19 @@ pub(crate) fn render(
     let id = block.id;
     let n = id.0 as usize;
     let z = ws.space.view.zoom() * look.scale;
-    // Text-heavy bodies lay out at the step the zoom is going to, not at each zoom a glide
-    // passes through: gpui-kit's editor re-measures its whole document on every font size and
-    // every wrap width. The frame still glides (`r`) and clips them.
-    let settled = ws.space.canvas.camera.zoom() * look.scale;
+    // Bodies with gpui-kit editors glide too, but on the zooms where their rows are exact (see
+    // `exact_rows`): their rows and their letters grow together. At rest, the zoom itself.
+    let font = match body {
+        Body::Editor(_) => editor::FONT,
+        Body::Note(_) => note::FONT,
+        Body::Git(_) => git_block::FONT,
+        Body::Terminal(_) | Body::Kanban(_) => 0.0,
+    };
+    let settled = if font == 0.0 || (ws.space.flight.is_none() && look.scale == 1.0) {
+        z
+    } else {
+        exact_rows(z, font)
+    };
     let full = ws.space.view.rect_to_screen(block.rect);
     let r = Rect::new(
         full.x + full.w * (1.0 - look.scale) / 2.0,
@@ -443,10 +452,19 @@ pub(crate) fn render(
         .into_any_element()
 }
 
+/// The zoom nearest `z` at which gpui-kit's editor rows, 1.5 × their text size of `font × zoom`,
+/// are whole pixels. GPUI rounds them to whole pixels (gpui-pre-0.3.8 src/style.rs:555,
+/// gpui-component-0.7.1 src/input/editor.rs:145): at any other zoom the rows grow a pixel at a
+/// time while the letters grow smoothly, and the text below the first rows jumps.
+fn exact_rows(z: f32, font: f32) -> f32 {
+    let row = 1.5 * font;
+    (row * z).round().max(1.0) / row
+}
+
 /// A text-heavy body's box: its size at the zoom `settled` (see `render`), so its text and its
-/// wrapping stay put while a zoom glides, moved by `pull` so the text under the glide's pivot
-/// stays there; the frame around it clips. At rest, exactly the frame's inner area: inside the
-/// card's border (the frame's width is) and the padding.
+/// wrapping stay a photo of the block while a zoom glides, moved by `pull` so the text under the
+/// glide's pivot stays there; the frame around it clips. At rest, exactly the frame's inner
+/// area: inside the card's border (the frame's width is) and the padding.
 fn settled_box(block: Block, settled: f32, pull: Point, body: AnyElement) -> impl IntoElement {
     let inner = chrome::content_rect(block.rect);
     div()

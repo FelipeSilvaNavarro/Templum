@@ -608,10 +608,11 @@ fn holding_alt_lights_the_hand_in_the_toolbar_until_let_go(cx: &mut TestAppConte
     });
 }
 
-/// A note's text is laid out at the zoom step the camera is going to, not at the zooms a glide
-/// passes through: gpui-kit's editor re-measures its whole document on every font size.
+/// Mid-glide, a note's text glides with the zoom, on zooms where its rows are whole pixels: its
+/// rows, its letters and its box grow together, like a photo of it, and the text under the
+/// glide's pivot stays there.
 #[gpui_kit::test]
-fn a_notes_text_lands_on_the_zoom_step_before_the_glide_does(cx: &mut TestAppContext) {
+fn a_notes_rows_and_letters_glide_together(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
@@ -621,17 +622,27 @@ fn a_notes_text_lands_on_the_zoom_step_before_the_glide_does(cx: &mut TestAppCon
         window.render_frame(cx);
     })
     .unwrap();
-    let (n, note) = ws.read_with(cx, |ws, _| {
+    let (n, note, inner) = ws.read_with(cx, |ws, _| {
         let id = ws.space.canvas.top().unwrap();
         let note = ws.space.blocks[&id].note().unwrap().editor.clone();
-        (id.0 as usize, note)
+        let rect = ws.space.canvas.get(id).unwrap().rect;
+        (
+            id.0 as usize,
+            note,
+            templum_canvas::chrome::content_rect(rect),
+        )
     });
-    let line_height =
-        |cx: &mut TestAppContext| note.read_with(cx, |e, _| e.line_height().expect("laid out"));
-    // Its width is what the text wraps to; its place, where the text is drawn.
-    let editor_box = |cx: &mut TestAppContext| {
-        cx.update_window(handle, |_, window, _| {
-            window.find(("note-editor", n)).bounds()
+    let line_height = |cx: &mut TestAppContext| {
+        note.read_with(cx, |e, _| f32::from(e.line_height().expect("laid out")))
+    };
+    // The text's box, the frame's padded area and the frame's zoom.
+    let drawn = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            (
+                window.find(("note-editor", n)).bounds(),
+                window.find(("body", n)).bounds().origin,
+                ws.read(cx).space.view.zoom(),
+            )
         })
         .unwrap()
     };
@@ -660,30 +671,83 @@ fn a_notes_text_lands_on_the_zoom_step_before_the_glide_does(cx: &mut TestAppCon
             "mid-glide at {z}"
         );
     });
-    let mid_glide = (line_height(cx), editor_box(cx));
+    let (mid, (text, frame, z)) = (line_height(cx), drawn(cx));
     std::thread::sleep(crate::motion::FLIGHT + std::time::Duration::from_millis(50));
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
     ws.read_with(cx, |ws, _| assert!(ws.space.flight.is_none(), "landed"));
-    let landed = (line_height(cx), editor_box(cx));
+    let (landed, (_, frame_landed, z_landed)) = (line_height(cx), drawn(cx));
     assert!(
-        landed.0 > at_100,
-        "125% lays the text out larger: {at_100:?} -> {:?}",
-        landed.0
+        at_100 < mid && mid < landed,
+        "the rows glide: {at_100} at 100%, {mid} mid-glide, {landed} landed"
     );
-    assert_eq!(
-        (mid_glide.0, mid_glide.1.size),
-        (landed.0, landed.1.size),
-        "mid-glide the text and its box are already at the step's size"
-    );
-    // The glide pivots on a point whose world position doesn't move: the text there stays
-    // under it, so the box is already where it lands, within a pixel (the 1 px border isn't
-    // zoomed, and layout rounds to half pixels).
-    let (a, b) = (mid_glide.1.origin, landed.1.origin);
+    // The zoom the text is drawn at, from its box: its rows are 1.5 x its letters, exactly.
+    let s = f32::from(text.size.height) / inner.h;
     assert!(
-        f32::from(a.x - b.x).abs() < 1.0 && f32::from(a.y - b.y).abs() < 1.0,
-        "the text under the pivot moved: {a:?} mid-glide, {b:?} landed"
+        (mid - 1.5 * crate::note::FONT * s).abs() < 0.05,
+        "rows of {mid} px at zoom {s}"
     );
+    // The note's point under the pivot doesn't move on screen while the frame glides; the text
+    // drawn at `s` puts that same point on the same pixel.
+    let pad = templum_canvas::chrome::PAD;
+    for (t, f, f_landed) in [
+        (text.origin.x, frame.x, frame_landed.x),
+        (text.origin.y, frame.y, frame_landed.y),
+    ] {
+        let (t, f, f_landed) = (f32::from(t), f32::from(f) + pad * z, f32::from(f_landed));
+        let still = (f_landed + pad * z_landed - f) / (z - z_landed);
+        let off = t - f + still * (s - z);
+        assert!(off.abs() < 1.0, "the text under the pivot moved {off} px");
+    }
+}
+
+/// Zooming keeps the rows a scrolled note shows, as a photo would: its scroll is in pixels, and
+/// its rows change size with the zoom.
+#[gpui_kit::test]
+fn zooming_keeps_the_rows_a_scrolled_note_shows(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let text: String = (1..=200).map(|i| format!("line {i}\n")).collect();
+    let (rect, note) = cx
+        .update_window(handle, |_, window, cx| {
+            let found = ws.update(cx, |ws, cx| {
+                ws.add_note_at(Point::new(40.0, 40.0), window, cx);
+                ws.space.appearing.clear();
+                let id = ws.space.canvas.top().unwrap();
+                let note = ws.space.blocks[&id].note().unwrap().editor.clone();
+                (ws.space.canvas.get(id).unwrap().rect, note)
+            });
+            found
+                .1
+                .update(cx, |e, cx| e.set_value(text.clone(), window, cx));
+            window.render_frame(cx);
+            found
+        })
+        .unwrap();
+    // Scrolled to its 60th row.
+    cx.update_window(handle, |_, window, cx| {
+        note.update(cx, |e, cx| {
+            let row = e.line_height().expect("laid out");
+            e.set_scroll_offset(gpui_kit::point(gpui_kit::px(0.0), -row * 60.0), cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let top = |cx: &mut TestAppContext| {
+        note.read_with(cx, |e, _| e.visible_row_range().expect("laid out").start)
+    };
+    assert_eq!(top(cx), 60);
+    for zoom in [1.25, 0.5, 2.0, 1.0] {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, _| {
+                let at = Point::new(rect.x - 10.0, rect.y - 10.0);
+                ws.space.canvas.camera = Camera::at(at, zoom);
+                ws.space.flight = None;
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        assert_eq!(top(cx), 60, "the top row at {zoom}");
+    }
 }
 
 /// At rest, a text-heavy body's box is the frame's inner area: inside its 1 px border and its

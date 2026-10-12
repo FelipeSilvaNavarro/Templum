@@ -18,7 +18,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, MouseButton, MouseDownEvent,
     ScrollWheelEvent, SharedString, Stateful, StyleRefinement, Subscription, TestSupportExt,
-    Window, div, px, relative,
+    Window, div, point, px, relative,
 };
 use templum_canvas::{BlockId, Rect, Size};
 
@@ -516,6 +516,25 @@ impl Editor {
     }
 }
 
+/// Keeps the rows a gpui-kit editor shows when the zoom changes, as a photo would: its scroll
+/// offset is in pixels (gpui-base-0.7.1 src/input/base/state.rs:2997), so it scales with its
+/// rows, 1.5 × its font rounded (see `block::exact_rows`). Called where the editor is drawn at
+/// `font × z`, before it lays out.
+pub(crate) fn keep_rows(editor: &Entity<EditorState>, font: f32, z: f32, cx: &mut App) {
+    let row = (font * z * 1.5).round();
+    editor.update(cx, |e, cx| {
+        let Some(old) = e
+            .line_height()
+            .map(f32::from)
+            .filter(|&old| old > 0.0 && old != row)
+        else {
+            return;
+        };
+        let at = e.scroll_offset();
+        e.set_scroll_offset(point(at.x / old * row, at.y / old * row), cx);
+    });
+}
+
 /// The body below the header, at the block's zoom `z`: the tree on the left (when shown) and
 /// the files on the right.
 pub(crate) fn body(
@@ -811,6 +830,7 @@ fn files(
                         .test_support()
                         .into_any_element()
                 } else {
+                    keep_rows(&tab.editor, FONT, z, cx);
                     div()
                         .id(("code", n))
                         .size_full()
