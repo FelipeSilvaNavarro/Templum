@@ -12,7 +12,7 @@ use templum_canvas::BlockId;
 
 use super::widgets::{badge_color, centered, field};
 use super::{FONT, Git, ROW_H};
-use crate::editor::button;
+use crate::editor::{button, keep_rows};
 use crate::menu::Target;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
@@ -164,6 +164,7 @@ fn commit_details(
             .into_any_element();
     };
     let c = &shown.commit;
+    keep_rows(&git.commit_diff, FONT, z, cx);
     let files = shown.files.iter().enumerate().map(|(i, f)| {
         let path = f.path.clone();
         let active = shown.file.as_deref() == Some(&f.path);

@@ -178,6 +178,8 @@ fn paint(
     cx: &mut App,
 ) -> Option<(Bounds<Pixels>, bool)> {
     let mut snap = snapshot.borrow_mut();
+    // Re-armed before the read: output parsed during it wakes the UI again.
+    term.rearm();
     if !snap.refresh(term, &theme.palette) {
         // The PTY thread is busy: try again next frame.
         window.request_animation_frame();

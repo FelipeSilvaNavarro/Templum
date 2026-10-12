@@ -1,18 +1,52 @@
 //! `templum --bench`: 20 terminals, 5 running `yes`, 200 strokes over them, 10 s of animated pan
-//! and zoom.
+//! and zoom. `templum --bench-mixed`: a canvas like an agent cockpit instead — 5 terminals
+//! redrawing a colored screen 10× a second (an agent's TUI), 3 editors, 3 Git blocks, a note and
+//! 2 kanban blocks, no strokes.
+//! `templum --bench-zoom=<kind>`: 10 blocks of one kind (`terminal`, `editor`, `note`, `kanban`,
+//! `git`) or none (`empty`), on the folder Templum runs from; the zoom glides step by step from
+//! 25% to 200% and back, 4 steps a second, around the view's center. No pan, no output.
 //! Prints one JSON line (frame-interval percentiles, memory), then quits. Bar: p95 <= 16.7 ms.
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use gpui_kit::{AnyWindowHandle, App, AppContext as _, Entity};
-use templum_canvas::{Color, Drawing, Point, Rect, ZOOM_STEPS, chrome};
+use gpui_kit::{AnyWindowHandle, App, AppContext as _, Context, Entity, Window};
+use templum_canvas::{Camera, Color, Drawing, Point, Rect, ZOOM_STEPS, chrome};
 
-use crate::workspace::{DEFAULT_COLS, DEFAULT_ROWS, Workspace};
+use crate::board::Boards;
+use crate::workspace::{Body, DEFAULT_COLS, DEFAULT_ROWS, Workspace};
+use crate::{editor, git_block, kanban, note};
 
-pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut App) {
+/// Typed into the terminals of the mixed scenario: 24 colored lines redrawn 10× a second,
+/// each with a number that changes, like an agent's interface.
+const TUI_LOOP: &[u8] = b"while :; do printf '\\033[H'; for i in $(seq 24); do printf '\\033[3%dm%5d The quick brown fox jumps over the lazy dog 0123456789 abcdefghijkl\\033[0m\\n' $((i%7+1)) $RANDOM; done; sleep 0.1; done\r";
+
+pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, mixed: bool, cx: &mut App) {
     let _ = cx.update_window(window, |_, window, cx| {
         ws.update(cx, |ws, cx| {
             let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, ws.cell.size);
+            if mixed {
+                // The folder Templum runs from: a real one for the editors and Git blocks.
+                let repo = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let mut slots =
+                    (1..).map(|i| Point::new((i % 5) as f32 * 950.0, (i / 5) as f32 * 750.0));
+                let mut next = || slots.next().expect("endless");
+                for _ in 0..4 {
+                    let p = next();
+                    ws.open(Rect::new(p.x, p.y, size.w, size.h), window, cx);
+                }
+                for _ in 0..3 {
+                    ws.add_editor_at(&repo, next(), window, cx);
+                }
+                for _ in 0..3 {
+                    ws.add_git_at(&repo, next(), window, cx);
+                }
+                ws.add_note_at(next(), window, cx);
+                for _ in 0..2 {
+                    ws.add_kanban_at(next(), window, cx);
+                }
+                return;
+            }
             for i in 1..20 {
                 let (col, row) = ((i % 5) as f32, (i / 5) as f32);
                 let rect = Rect::new(col * (size.w + 40.0), row * (size.h + 40.0), size.w, size.h);
@@ -40,50 +74,23 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut App) 
     });
     cx.spawn(async move |cx| {
         // Let the shells start before measuring idle memory.
-        cx.background_executor()
-            .timer(Duration::from_secs(3))
-            .await;
+        cx.background_executor().timer(Duration::from_secs(3)).await;
         let idle_rss = rss_mb();
         let _ = cx.update_window(window, |_, _, cx| {
             ws.update(cx, |ws, cx| {
+                let command: &[u8] = if mixed { TUI_LOOP } else { b"yes\r" };
                 for (_, pane) in ws.space.terminals().take(5) {
-                    pane.term.write(&b"yes\r"[..]);
+                    pane.term.write(command);
                 }
                 let center = ws
-                    .space.canvas
+                    .space
+                    .canvas
                     .bounds()
                     .map(|b| Point::new(b.x + b.w / 2.0, b.y + b.h / 2.0))
                     .unwrap_or_default();
                 // The bench drives the camera: stop keeping the startup terminal centered.
                 ws.space.pristine = false;
-                let start = Instant::now();
-                let mut last: Option<Instant> = None;
-                let mut intervals: Vec<f64> = Vec::new();
-                ws.on_frame = Some(Box::new(move |ws, window, cx| {
-                    let now = Instant::now();
-                    if let Some(prev) = last {
-                        intervals.push((now - prev).as_secs_f64() * 1000.0);
-                    }
-                    last = Some(now);
-                    let t = (now - start).as_secs_f32();
-                    if t >= 10.0 {
-                        intervals.sort_by(f64::total_cmp);
-                        let p = |q: f64| percentile(&intervals, q);
-                        let json =
-                            |v: Option<f64>| v.map_or("null".to_string(), |v| format!("{v:.1}"));
-                        println!(
-                            r#"{{"frames":{},"p50_ms":{:.2},"p95_ms":{:.2},"p99_ms":{:.2},"max_ms":{:.2},"rss_mb":{},"idle_rss_mb":{}}}"#,
-                            intervals.len() + 1,
-                            p(50.0),
-                            p(95.0),
-                            p(99.0),
-                            intervals.last().copied().unwrap_or(0.0),
-                            json(rss_mb()),
-                            json(idle_rss),
-                        );
-                        cx.quit();
-                        return false;
-                    }
+                measure(ws, idle_rss, move |ws, window, cx, t| {
                     // Zoom sweeps every step back and forth (4 per second) while panning in a circle.
                     let n = ZOOM_STEPS.len();
                     let k = (t / 0.25) as usize % (2 * (n - 1));
@@ -105,14 +112,204 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut App) 
                         (cam.origin.x - want.x) * z,
                         (cam.origin.y - want.y) * z,
                     ));
-                    window.request_animation_frame();
-                    true
-                }));
+                });
                 cx.notify();
             })
         });
     })
     .detach();
+}
+
+pub(crate) fn run_zoom(window: AnyWindowHandle, ws: Entity<Workspace>, kind: String, cx: &mut App) {
+    let _ = cx.update_window(window, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            // Only the blocks measured: the startup terminal goes.
+            let startup: Vec<_> = ws.space.canvas.blocks().iter().map(|b| b.id).collect();
+            for id in startup {
+                ws.close(id, window, cx);
+            }
+            let dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let file = sample_file(&dir);
+            let size = match kind.as_str() {
+                "editor" => editor::SIZE,
+                "note" => note::SIZE,
+                "kanban" => kanban::SIZE,
+                "git" => git_block::SIZE,
+                _ => chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, ws.cell.size),
+            };
+            let readme = std::fs::read_to_string(dir.join("README.md")).unwrap_or_default();
+            let board = (kind == "kanban").then(|| sample_board(&mut ws.boards));
+            let count = if kind == "empty" { 0 } else { 10 };
+            for i in 0..count {
+                let at = Point::new(
+                    (i % 5) as f32 * (size.w + 40.0),
+                    (i / 5) as f32 * (size.h + 40.0),
+                );
+                match kind.as_str() {
+                    "editor" => {
+                        if let (Some(id), Some(file)) =
+                            (ws.add_editor_at(&dir, at, window, cx), &file)
+                        {
+                            ws.open_file(id, file, None, window, cx);
+                        }
+                    }
+                    "note" => {
+                        ws.add_note_at(at, window, cx);
+                        let id = ws.space.canvas.top().expect("just added");
+                        if let Some(note) = ws.space.blocks.get(&id).and_then(Body::note) {
+                            note.editor
+                                .update(cx, |e, cx| e.set_value(readme.clone(), window, cx));
+                        }
+                    }
+                    "kanban" => {
+                        ws.add_kanban_at(at, window, cx);
+                        let id = ws.space.canvas.top().expect("just added");
+                        if let Some(k) = ws.space.kanban_mut(id) {
+                            k.board = board;
+                        }
+                    }
+                    "git" => {
+                        ws.add_git_at(&dir, at, window, cx);
+                    }
+                    _ => {
+                        ws.open(Rect::new(at.x, at.y, size.w, size.h), window, cx);
+                        let id = ws.space.canvas.top().expect("just added");
+                        if let (Some(pane), Some(file)) = (ws.space.terminal(id), &file) {
+                            pane.term
+                                .write(format!("cat '{}'\r", file.display()).into_bytes());
+                        }
+                    }
+                }
+            }
+        })
+    });
+    cx.spawn(async move |cx| {
+        // Let the shells start, the files open and the Git blocks read.
+        cx.background_executor().timer(Duration::from_secs(3)).await;
+        let idle_rss = rss_mb();
+        let _ = cx.update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.space.pristine = false;
+                let center = ws
+                    .space
+                    .canvas
+                    .bounds()
+                    .map(|b| Point::new(b.x + b.w / 2.0, b.y + b.h / 2.0))
+                    .unwrap_or_default();
+                let vp = ws.viewport(window);
+                let low = ZOOM_STEPS[0];
+                ws.space.canvas.camera = Camera::at(
+                    Point::new(center.x - vp.w / 2.0 / low, center.y - vp.h / 2.0 / low),
+                    low,
+                );
+                ws.space.flight = None;
+                let high = ZOOM_STEPS
+                    .iter()
+                    .position(|&z| z == 2.0)
+                    .expect("200% is a step");
+                measure(ws, idle_rss, move |ws, window, cx, t| {
+                    let k = (t / 0.25) as usize % (2 * high);
+                    let target = if k <= high { k } else { 2 * high - k };
+                    let step = target as i32 - ws.space.canvas.camera.zoom_index() as i32;
+                    if step != 0 {
+                        let pivot = ws.center(window);
+                        ws.zoom_to(step, pivot, cx);
+                    }
+                });
+                cx.notify();
+            })
+        });
+    })
+    .detach();
+}
+
+/// From now on every frame calls `drive` with the seconds since now; after 10 s prints the frame
+/// intervals' percentiles and the memory as one JSON line, and quits.
+fn measure(
+    ws: &mut Workspace,
+    idle_rss: Option<f64>,
+    mut drive: impl FnMut(&mut Workspace, &mut Window, &mut Context<Workspace>, f32) + 'static,
+) {
+    let start = Instant::now();
+    let mut last: Option<Instant> = None;
+    let mut intervals: Vec<f64> = Vec::new();
+    ws.on_frame = Some(Box::new(move |ws, window, cx| {
+        let now = Instant::now();
+        if let Some(prev) = last {
+            intervals.push((now - prev).as_secs_f64() * 1000.0);
+        }
+        last = Some(now);
+        let t = (now - start).as_secs_f32();
+        if t >= 10.0 {
+            intervals.sort_by(f64::total_cmp);
+            let p = |q: f64| percentile(&intervals, q);
+            let json = |v: Option<f64>| v.map_or("null".to_string(), |v| format!("{v:.1}"));
+            println!(
+                r#"{{"frames":{},"p50_ms":{:.2},"p95_ms":{:.2},"p99_ms":{:.2},"max_ms":{:.2},"rss_mb":{},"idle_rss_mb":{}}}"#,
+                intervals.len() + 1,
+                p(50.0),
+                p(95.0),
+                p(99.0),
+                intervals.last().copied().unwrap_or(0.0),
+                json(rss_mb()),
+                json(idle_rss),
+            );
+            cx.quit();
+            return false;
+        }
+        drive(ws, window, cx, t);
+        window.request_animation_frame();
+        true
+    }));
+}
+
+/// The largest Rust, Markdown or TOML file under `dir` (not in `target` or a hidden folder): text
+/// for the editors and the terminals to show.
+fn sample_file(dir: &Path) -> Option<PathBuf> {
+    let mut best: Option<(u64, PathBuf)> = None;
+    let mut folders = vec![(dir.to_path_buf(), 0)];
+    while let Some((folder, depth)) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let name = entry.file_name();
+            if name.to_string_lossy().starts_with('.') || name == "target" {
+                continue;
+            }
+            let path = entry.path();
+            if path.is_dir() {
+                if depth < 5 {
+                    folders.push((path, depth + 1));
+                }
+            } else if path
+                .extension()
+                .is_some_and(|x| x == "rs" || x == "md" || x == "toml")
+            {
+                let len = entry.metadata().map_or(0, |m| m.len());
+                if best.as_ref().is_none_or(|(l, _)| len > *l) {
+                    best = Some((len, path));
+                }
+            }
+        }
+    }
+    best.map(|(_, path)| path)
+}
+
+/// A board with 4 cards in each of its columns.
+fn sample_board(boards: &mut Boards) -> u64 {
+    let board = boards.add_board();
+    let columns: Vec<u64> = boards
+        .board(board)
+        .map(|b| b.columns.iter().map(|c| c.id).collect())
+        .unwrap_or_default();
+    for (i, column) in columns.into_iter().enumerate() {
+        for n in 1..=4 {
+            if let Some(card) = boards.add_card(board, column) {
+                boards.edit_card(board, card, |c| {
+                    c.title = format!("Card {n} of column {}", i + 1)
+                });
+            }
+        }
+    }
+    board
 }
 
 fn percentile(sorted: &[f64], p: f64) -> f64 {

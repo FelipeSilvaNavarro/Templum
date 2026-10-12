@@ -328,6 +328,9 @@ fn open_in_editor_reuses_the_block_and_opens_the_file_at_a_line(cx: &mut TestApp
                 cx,
             );
         });
+        // The glide starts now, however long opening the file took on a slow machine: the frame
+        // below must catch it on the way.
+        ws.update(cx, restart_glide);
         window.render_frame(cx);
         let ws_now = ws.read(cx);
         let e = ws_now.space.editor(id).unwrap();

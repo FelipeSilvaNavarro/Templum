@@ -349,6 +349,26 @@ fn the_command_shortcuts_jump_between_prompts(cx: &mut TestAppContext) {
         assert!(Instant::now() < deadline, "seq never ended");
         std::thread::sleep(Duration::from_millis(50));
     }
+    // The command's end comes before bash prints its next prompt: without that prompt there is
+    // nothing below to jump to.
+    let last_line = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let mut snap = Snapshot::default();
+            snap.refresh(
+                ws.space.terminal(id).unwrap().term.shared(),
+                &ws.theme.palette,
+            );
+            let text = snap.text();
+            text.lines()
+                .rfind(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .to_string()
+        })
+    };
+    while last_line(cx) == "100" {
+        assert!(Instant::now() < deadline, "bash never printed its prompt");
+        std::thread::sleep(Duration::from_millis(50));
+    }
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.press(PREVIOUS_PROMPT, cx);
@@ -475,4 +495,72 @@ fn a_double_click_on_the_canvas_opens_in_the_folder_of_the_block_it_unfocused(
         ws.space.canvas.top().unwrap()
     });
     assert_eq!(cwd_of(&ws, cx, new), start.path().canonicalize().unwrap());
+}
+
+/// Output in a block off screen wakes the UI once and no more until the block is painted; a
+/// painted block is re-armed every frame. Scrolled back on screen, the block shows what it
+/// printed meanwhile; an off-screen terminal that exits still closes its block.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn only_painted_terminals_are_rearmed(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let shown = first_id(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(NEW, cx);
+    })
+    .unwrap();
+    let hidden = ws.read_with(cx, |ws, _| ws.space.canvas.top().unwrap());
+    assert_ne!(shown, hidden);
+    // Away: far off screen. Back: where the shown block is, on screen.
+    let park = |ws: &mut Workspace, away: bool| {
+        let home = ws.space.canvas.get(shown).unwrap().rect;
+        let rect = &mut ws.space.canvas.get_mut(hidden).unwrap().rect;
+        (rect.x, rect.y) = if away {
+            (100_000.0, 100_000.0)
+        } else {
+            (home.x, home.y)
+        };
+    };
+    ws.update(cx, |ws, _| park(ws, true));
+    let text =
+        |ws: &Workspace, id: BlockId| ws.space.terminal(id).unwrap().snapshot.borrow().text();
+    let armed = |ws: &Workspace, id: BlockId| ws.space.terminal(id).unwrap().term.shared().armed();
+    // `cat` echoes the line back: output in both terminals.
+    for id in [shown, hidden] {
+        ws.read_with(cx, |ws, _| {
+            ws.space.terminal(id).unwrap().term.write(b"x\r".to_vec())
+        });
+    }
+    until("both terminals to print", handle, &ws, cx, |ws| {
+        text(ws, shown).starts_with("x\nx") && armed(ws, shown) && !armed(ws, hidden)
+    });
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(text(ws, hidden).trim_end(), "", "never read while hidden")
+    });
+    // A few more frames: the hidden block is still waiting to be painted.
+    for _ in 0..3 {
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    }
+    ws.read_with(cx, |ws, _| {
+        assert!(!armed(ws, hidden), "the hidden block isn't re-armed")
+    });
+    // Back on screen: its first frames show what it printed.
+    ws.update(cx, |ws, _| park(ws, false));
+    until("the hidden block to catch up", handle, &ws, cx, |ws| {
+        text(ws, hidden).starts_with("x\nx") && armed(ws, hidden)
+    });
+    // Off screen again, its program exits (Ctrl-D ends `cat`): the block still closes.
+    ws.update(cx, |ws, _| park(ws, true));
+    ws.read_with(cx, |ws, _| {
+        ws.space
+            .terminal(hidden)
+            .unwrap()
+            .term
+            .write(b"\x04".to_vec())
+    });
+    until("the exited block to close", handle, &ws, cx, |ws| {
+        ws.space.terminal(hidden).is_none()
+    });
 }

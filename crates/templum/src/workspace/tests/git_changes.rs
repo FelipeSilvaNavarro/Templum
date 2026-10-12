@@ -361,3 +361,22 @@ fn the_rows_buttons_stay_while_a_read_runs(cx: &mut TestAppContext) {
     .unwrap();
     git_of(&ws, cx, id, |g| assert!(g.busy, "a read was out"));
 }
+
+/// Hundreds of changed files cost a frame only the rows on screen: the list is virtual.
+#[gpui_kit::test]
+fn a_long_changes_list_builds_only_the_rows_on_screen(cx: &mut TestAppContext) {
+    use crate::git_block::row_id;
+    let repo = git_repo();
+    for i in 0..300 {
+        std::fs::write(repo.path().join(format!("f{i:03}.txt")), "x\n").unwrap();
+    }
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    git_of(&ws, cx, id, |g| assert_eq!(g.status.unstaged().len(), 300));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(row_id(id, "unstaged", 0)).is_some());
+        assert!(window.try_find(row_id(id, "unstaged", 299)).is_none());
+    })
+    .unwrap();
+}

@@ -43,7 +43,7 @@ fn runs_a_command_and_reports_its_exit() {
     while !term.exited() {
         assert!(Instant::now() < deadline, "the command never exited");
         let _ = rx.recv_timeout(Duration::from_millis(100));
-        term.rearm();
+        term.shared().rearm();
     }
     let mut snapshot = Snapshot::default();
     snapshot.refresh(term.shared(), &Palette::default());
@@ -81,7 +81,7 @@ fn shells_start_in_the_home_directory() {
     while !term.exited() {
         assert!(Instant::now() < deadline, "the command never exited");
         std::thread::sleep(Duration::from_millis(50));
-        term.rearm();
+        term.shared().rearm();
     }
     let mut snapshot = Snapshot::default();
     snapshot.refresh(term.shared(), &Palette::default());

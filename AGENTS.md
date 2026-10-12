@@ -10,6 +10,8 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
 ## Commands
 
 - Run: `cargo run -p templum`
+- Dev builds compile the dependencies optimized (`[profile.dev.package."*"]` in `Cargo.toml`), so `cargo run` is
+  usable; performance is judged on `--release`.
 - Everything CI checks:
   `cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
 - Licenses and advisories: `cargo deny check` (install with `cargo install cargo-deny --locked`)
@@ -41,7 +43,10 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
   (`--dry-run` first). It bumps the version, writes the CHANGELOG section, tags and pushes; the tag runs
   `.github/workflows/release.yml`, which builds every platform and publishes the GitHub Release.
 - **Performance:** pull requests that touch painting or `templum-terminal` run
-  `cargo run --release -p templum -- --bench` (Linux) and paste its JSON line in the PR description.
+  `cargo run --release -p templum -- --bench` (Linux) and paste its JSON line in the PR description (and
+  `--bench-mixed`, an agent cockpit: TUIs, editors, Git, a note, kanban; and `--bench-zoom=<kind>` for a change to
+  zooming, run from a real project folder: `cd ~/Documents/github/DaemonQuest &&
+  ~/Documents/github/Templum/target/release/templum --bench-zoom=editor`).
   The bar is `p95_ms` <= 16.7 (see [ADR-0002](docs/adr/0002-ui-framework.md)).
 
 ## Before saying "done"

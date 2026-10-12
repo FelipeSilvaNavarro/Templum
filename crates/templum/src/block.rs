@@ -14,7 +14,7 @@ use gpui_kit::{
     MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt, Window, div,
     point, px,
 };
-use templum_canvas::{Block, Rect, chrome};
+use templum_canvas::{Block, Point, Rect, chrome};
 
 use crate::alert::{self, Alert};
 use crate::editor;
@@ -31,6 +31,8 @@ const TITLE_FONT: f32 = 12.0;
 const RADIUS: f32 = 10.0;
 /// The focused block's ring, outside its border.
 const RING: f32 = 2.0;
+/// The card's border (`border_1`), screen pixels: not zoomed.
+pub(crate) const BORDER: f32 = 1.0;
 
 /// `look` scales the block around its center (it is drawn at zoom × scale) and fades it.
 /// A block that isn't `live` is a ghost fading out: no controls, and clicks go through it.
@@ -46,6 +48,19 @@ pub(crate) fn render(
     let id = block.id;
     let n = id.0 as usize;
     let z = ws.space.view.zoom() * look.scale;
+    // Bodies with gpui-kit editors glide too, but on the zooms where their rows are exact (see
+    // `exact_rows`): their rows and their letters grow together. At rest, the zoom itself.
+    let font = match body {
+        Body::Editor(_) => editor::FONT,
+        Body::Note(_) => note::FONT,
+        Body::Git(_) => git_block::FONT,
+        Body::Terminal(_) | Body::Kanban(_) => 0.0,
+    };
+    let settled = if font == 0.0 || (ws.space.flight.is_none() && look.scale == 1.0) {
+        z
+    } else {
+        exact_rows(z, font)
+    };
     let full = ws.space.view.rect_to_screen(block.rect);
     let r = Rect::new(
         full.x + full.w * (1.0 - look.scale) / 2.0,
@@ -53,6 +68,23 @@ pub(crate) fn render(
         full.w * look.scale,
         full.h * look.scale,
     );
+    // Mid-glide, a text-heavy body is pulled toward the glide's pivot so the text there stays
+    // under it, as a photo would: by how far its origin is from the pivot, times how much the
+    // two zooms differ.
+    let pull = match ws.space.flight {
+        Some((flight, _)) if settled != z => {
+            let origin = Point::new(
+                r.x + BORDER + chrome::PAD * z,
+                r.y + BORDER + (chrome::TITLE_H + chrome::PAD) * z,
+            );
+            let k = 1.0 - settled / z;
+            Point::new(
+                (flight.pivot.x - origin.x) * k,
+                (flight.pivot.y - origin.y) * k,
+            )
+        }
+        _ => Point::default(),
+    };
     let focused = live && ws.space.focused == Some(id);
     let target = Target::Block(id);
     let hovered = live && ws.space.hovered == Some(id);
@@ -299,11 +331,32 @@ pub(crate) fn render(
         // A fading kanban block is drawn empty: its board is still live elsewhere.
         Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
         // A fading note is drawn empty, like a kanban block.
-        Body::Note(n) => frame.when(live, |el| el.child(note::body(ws, id, n, z, cx))),
+        Body::Note(n) => frame.when(live, |el| {
+            el.child(settled_box(
+                block,
+                settled,
+                pull,
+                note::body(ws, id, n, settled, cx),
+            ))
+        }),
         // A fading editor is drawn empty, like a note.
-        Body::Editor(e) => frame.when(live, |el| el.child(editor::body(ws, id, e, z, cx))),
+        Body::Editor(e) => frame.when(live, |el| {
+            el.child(settled_box(
+                block,
+                settled,
+                pull,
+                editor::body(ws, id, e, settled, cx),
+            ))
+        }),
         // A fading Git block is drawn empty, like a note.
-        Body::Git(g) => frame.when(live, |el| el.child(git_block::body(ws, id, g, z, cx))),
+        Body::Git(g) => frame.when(live, |el| {
+            el.child(settled_box(
+                block,
+                settled,
+                pull,
+                git_block::body(ws, id, g, settled, cx),
+            ))
+        }),
     }
     .test_support();
 
@@ -397,6 +450,30 @@ pub(crate) fn render(
         .when(hovered, |el| el.child(fade_in(handle, ("handle-fade", n))))
         .test_support()
         .into_any_element()
+}
+
+/// The zoom nearest `z` at which gpui-kit's editor rows, 1.5 × their text size of `font × zoom`,
+/// are whole pixels. GPUI rounds them to whole pixels (gpui-pre-0.3.8 src/style.rs:555,
+/// gpui-component-0.7.1 src/input/editor.rs:145): at any other zoom the rows grow a pixel at a
+/// time while the letters grow smoothly, and the text below the first rows jumps.
+fn exact_rows(z: f32, font: f32) -> f32 {
+    let row = 1.5 * font;
+    (row * z).round().max(1.0) / row
+}
+
+/// A text-heavy body's box: its size at the zoom `settled` (see `render`), so its text and its
+/// wrapping stay a photo of the block while a zoom glides, moved by `pull` so the text under the
+/// glide's pivot stays there; the frame around it clips. At rest, exactly the frame's inner
+/// area: inside the card's border (the frame's width is) and the padding.
+fn settled_box(block: Block, settled: f32, pull: Point, body: AnyElement) -> impl IntoElement {
+    let inner = chrome::content_rect(block.rect);
+    div()
+        .relative()
+        .left(px(pull.x))
+        .top(px(pull.y))
+        .w(px((inner.w * settled - 2.0 * BORDER).max(0.0)))
+        .h(px((inner.h * settled).max(0.0)))
+        .child(body)
 }
 
 /// Hover-only controls fade in; they disappear at once. The wrapper covers its parent, since

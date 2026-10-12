@@ -40,14 +40,25 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   hears the sequences vte drops: a command's start and end (OSC 133), the folder (OSC 7, 9;9), notifications (OSC 9,
   777). It passes every byte on. The UI reads what it heard each frame; a command's end or a call for attention wakes
   the UI even in a hidden workspace. See [specs/shell-integration.md](specs/shell-integration.md).
-- **Painting never waits on a terminal.** Each frame tries the lock and copies the visible cells into a snapshot;
-  if the PTY thread holds the lock, the previous snapshot is drawn. Blocking here doubled frame times in the spike.
+- **Painting never waits on a terminal.** Each frame re-arms the terminals it paints and copies the rows
+  alacritty reports as changed into a per-terminal snapshot (nothing when nothing changed); if the PTY
+  thread holds the lock, the previous snapshot is drawn and a frame is asked for. After 100 ms it waits,
+  with the unfair lock: for the parse under way, never for the PTY thread's whole read pass. Terminals
+  off screen are never re-armed, so their output can't drive frames; a shell's exit wakes the UI anyway.
+  Blocking here doubled frame times in the spike.
 - Only blocks inside the viewport are drawn.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded;
   far-away blocks are drawn simplified (level of detail). A zoom glides to its step over 150 ms through
   zooms snapped to 0.02 (`templum-canvas`'s `CameraFlight`); the camera holds the target, the workspace's `view`
-  is what is drawn.
+  is what is drawn. Terminals and kanban blocks glide with the view. Editor, note and Git bodies glide too, but
+  only through the zooms where gpui-kit's editor rows (1.5 × the font, rounded to whole pixels by GPUI) are
+  exact, in a box of that zoom's size that their frames clip: elsewhere the rows would grow a pixel at a time
+  while the letters grow smoothly, and the text would jump. Their editors' scroll, in pixels, scales with their
+  rows (`editor::keep_rows`). Each of those zooms costs a soft-wrapped editor (a note) a re-wrap of its whole
+  text: gpui-kit re-measures it on every font size and wrap width.
+  gpui-kit's editor keeps its padding, fold gutter and right margin at fixed pixel sizes: a note's editor box
+  makes up for them (`note.rs`), so a note wraps at the same words at every zoom, only a resize re-wraps it.
 - **Persistence (planned):** the workspace (camera + blocks: rect, cwd, shell, title) is saved as JSON in the
   platform data directory. On restore, fresh shells start in the saved directories.
 

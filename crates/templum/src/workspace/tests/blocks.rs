@@ -295,6 +295,13 @@ fn a_closed_block_fades_as_a_ghost_that_ignores_clicks(cx: &mut TestAppContext) 
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.press(CLOSE, cx);
+        // The fade starts now, however long a slow machine took since the key: the frame below
+        // must still draw the ghost.
+        ws.update(cx, |ws, _| {
+            for ghost in &mut ws.space.ghosts {
+                ghost.since = std::time::Instant::now();
+            }
+        });
         window.render_frame(cx);
         // Checked right after the frame that drew it: the ghost lives 0.18 s, and a slow
         // machine may spend longer than that on the clicks below.

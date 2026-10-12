@@ -29,8 +29,12 @@ pub type Notify = Arc<dyn Fn() + Send + Sync>;
 /// State shared between the PTY thread (through [`Listener`]) and the UI thread.
 pub(crate) struct Shared {
     notify: Notify,
-    /// Set by the first notification; cleared by [`Terminal::rearm`].
+    /// Set by the first notification; cleared by [`SharedTerm::rearm`].
     pending: AtomicBool,
+    /// The grid may differ from what was last copied out of it: set by the PTY thread's wake-ups
+    /// and by the UI calls that change the grid; cleared by [`crate::Snapshot::refresh`] under
+    /// the lock.
+    pub(crate) dirty: AtomicBool,
     title: Mutex<Option<String>>,
     exited: AtomicBool,
     /// Reported to CSI 14 t (text area size) queries.
@@ -52,6 +56,7 @@ impl Shared {
         Self {
             notify,
             pending: AtomicBool::new(false),
+            dirty: AtomicBool::new(true),
             title: Mutex::new(None),
             exited: AtomicBool::new(false),
             size: Mutex::new(size),
@@ -64,6 +69,7 @@ impl Shared {
     }
 
     fn wake(&self) {
+        self.dirty.store(true, Ordering::Release);
         if !self.pending.swap(true, Ordering::AcqRel) {
             (self.notify)();
         }
@@ -72,6 +78,7 @@ impl Shared {
     /// Wakes the UI even before the next re-arm: a hidden workspace's terminals are never re-armed,
     /// and a command's end or a call for attention must still reach the sidebar.
     pub(crate) fn wake_now(&self) {
+        self.dirty.store(true, Ordering::Release);
         (self.notify)();
     }
 
@@ -124,9 +131,10 @@ impl EventListener for Listener {
                 s.wake();
             }
             // Exit comes after the child's last output has been read (ChildExit comes before).
+            // Uncoalesced: a block off screen is never re-armed, and must still close.
             Event::Exit => {
                 s.exited.store(true, Ordering::Release);
-                s.wake();
+                s.wake_now();
             }
             Event::Wakeup => s.wake(),
             Event::Bell => s.attention(None),
@@ -181,15 +189,18 @@ pub enum SelectionKind {
     Line,
 }
 
+// The UI thread locks the grid unfairly: it never waits for the PTY thread's lease (held for a
+// whole read pass), only for the parse under way. See alacritty's sync.rs.
 impl SharedTerm {
     /// Applies new options to the running terminal (alacritty trims the history if needed).
     pub fn set_options(&self, options: TermOptions) {
-        self.0.lock().set_options(options.config());
+        self.0.lock_unfair().set_options(options.config());
+        self.touched();
     }
 
     /// Starts a selection at a viewport cell (row 0 = top visible line).
     pub fn select_start(&self, row: usize, col: usize, side: Side, kind: SelectionKind) {
-        let mut term = self.0.lock();
+        let mut term = self.0.lock_unfair();
         let point = grid_point(&term, row, col);
         let ty = match kind {
             SelectionKind::Simple => SelectionType::Simple,
@@ -197,26 +208,54 @@ impl SharedTerm {
             SelectionKind::Line => SelectionType::Lines,
         };
         term.selection = Some(Selection::new(ty, point, side));
+        self.touched();
     }
 
     pub fn select_update(&self, row: usize, col: usize, side: Side) {
-        let mut term = self.0.lock();
+        let mut term = self.0.lock_unfair();
         let point = grid_point(&term, row, col);
         if let Some(selection) = term.selection.as_mut() {
             selection.update(point, side);
         }
+        self.touched();
     }
 
     pub fn select_clear(&self) {
-        self.0.lock().selection = None;
+        self.0.lock_unfair().selection = None;
+        self.touched();
     }
 
     /// The selected text; None when nothing (or only an empty range) is selected.
     pub fn selection_text(&self) -> Option<String> {
         self.0
-            .lock()
+            .lock_unfair()
             .selection_to_string()
             .filter(|t| !t.is_empty())
+    }
+
+    /// Re-arms the coalesced notification: the next output wakes the UI again. Call it right
+    /// before reading the grid, so output parsed during the read isn't missed. Only painted
+    /// terminals are re-armed: output off screen wakes the UI once, then waits to be painted.
+    pub fn rearm(&self) {
+        // A swap, not a store: against the PTY thread's swap in `wake`, one of the two sees the
+        // other, so either `refresh` sees `dirty` or the PTY thread wakes the UI again. A plain
+        // store followed by the load of `dirty` can miss both (store-buffer reordering).
+        self.1.pending.swap(false, Ordering::AcqRel);
+    }
+
+    /// The grid may have changed since it was last copied out (see [`crate::Snapshot::refresh`]).
+    pub(crate) fn dirty(&self) -> bool {
+        self.1.dirty.load(Ordering::Acquire)
+    }
+
+    /// The UI changed the grid (a scroll, the selection, a resize): the next refresh reads it.
+    pub(crate) fn touched(&self) {
+        self.1.dirty.store(true, Ordering::Release);
+    }
+
+    /// False while a wake-up waits to be re-armed (tests).
+    pub fn armed(&self) -> bool {
+        !self.1.pending.load(Ordering::Acquire)
     }
 }
 
@@ -472,11 +511,6 @@ impl Terminal {
         (self.cols, self.rows)
     }
 
-    /// Re-arms the coalesced notification. Call once per frame.
-    pub fn rearm(&self) {
-        self.shared.pending.store(false, Ordering::Release);
-    }
-
     /// The shell's title (OSC 0/2), or the shell's name.
     pub fn title(&self) -> String {
         self.shared
@@ -538,14 +572,20 @@ impl Terminal {
 
     /// Sends raw input (scrolling the view back to the bottom, like any typing).
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {
-        self.term.0.lock().scroll_display(Scroll::Bottom);
+        self.term.0.lock_unfair().scroll_display(Scroll::Bottom);
+        self.term.touched();
         let _ = self.pty.send(Msg::Input(bytes.into()));
     }
 
     /// Sends a key press. Returns false for printable text, which must come through the
     /// text-input path instead (IME, dead keys).
     pub fn key(&self, input: &KeyInput) -> bool {
-        let app_cursor = self.term.0.lock().mode().contains(TermMode::APP_CURSOR);
+        let app_cursor = self
+            .term
+            .0
+            .lock_unfair()
+            .mode()
+            .contains(TermMode::APP_CURSOR);
         match encode_key(input, app_cursor) {
             Some(bytes) => {
                 self.write(bytes);
@@ -559,7 +599,7 @@ impl Terminal {
         let bracketed = self
             .term
             .0
-            .lock()
+            .lock_unfair()
             .mode()
             .contains(TermMode::BRACKETED_PASTE);
         self.write(paste_bytes(text, bracketed));
@@ -574,8 +614,9 @@ impl Terminal {
         *self.shared.size.lock().unwrap() = size;
         self.term
             .0
-            .lock()
+            .lock_unfair()
             .resize(TermSize::new(cols as usize, rows as usize));
+        self.term.touched();
         let _ = self.pty.send(Msg::Resize(size));
     }
 
@@ -587,12 +628,12 @@ impl Terminal {
     }
 
     fn jump_in(term: &SharedTerm, up: bool) -> bool {
-        let mut term = term.0.lock();
-        if term.mode().contains(TermMode::ALT_SCREEN) {
+        let mut grid = term.0.lock_unfair();
+        if grid.mode().contains(TermMode::ALT_SCREEN) {
             return false;
         }
-        let top = -(term.grid().display_offset() as i32);
-        let starts = crate::tap::prompt_lines(term.grid());
+        let top = -(grid.grid().display_offset() as i32);
+        let starts = crate::tap::prompt_lines(grid.grid());
         let target = if up {
             starts.into_iter().rfind(|&l| l < top)
         } else {
@@ -601,8 +642,11 @@ impl Terminal {
         let Some(target) = target else {
             return false;
         };
-        term.scroll_display(Scroll::Delta(top - target));
-        -(term.grid().display_offset() as i32) != top
+        grid.scroll_display(Scroll::Delta(top - target));
+        let moved = -(grid.grid().display_offset() as i32) != top;
+        drop(grid);
+        term.touched();
+        moved
     }
 
     /// Scrolls the history (positive = up). In full-screen apps that asked for it (less,
@@ -611,7 +655,7 @@ impl Terminal {
         if lines == 0 {
             return;
         }
-        let mut term = self.term.0.lock();
+        let mut term = self.term.0.lock_unfair();
         let mode = *term.mode();
         if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
             drop(term);
@@ -626,6 +670,8 @@ impl Terminal {
             ));
         } else {
             term.scroll_display(Scroll::Delta(lines));
+            drop(term);
+            self.term.touched();
         }
     }
 }
@@ -689,6 +735,15 @@ pub(crate) fn feed(term: &SharedTerm, bytes: &[u8]) {
     let mut parser: alacritty_terminal::vte::ansi::Processor =
         alacritty_terminal::vte::ansi::Processor::new();
     parser.advance(&mut *term.0.lock(), bytes);
+    term.touched();
+}
+
+/// Feeds `bytes` as the PTY thread would: through the tap, which marks the prompts.
+#[cfg(test)]
+pub(crate) fn feed_heard(term: &SharedTerm, bytes: &[u8]) {
+    let mut scanner = crate::tap::Scanner::new();
+    let inserts = scanner.scan(bytes, &term.1);
+    feed(term, &crate::tap::rewrite(bytes, inserts));
 }
 
 #[cfg(test)]
@@ -709,9 +764,82 @@ mod tests {
         shared.wake();
         shared.wake();
         assert_eq!(count.load(Ordering::SeqCst), 1);
-        shared.pending.store(false, Ordering::Release); // what Terminal::rearm does
+        shared.pending.store(false, Ordering::Release); // what SharedTerm::rearm does
         shared.wake();
         assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn output_racing_a_rearm_is_either_read_or_wakes_the_ui() {
+        // The UI re-arms, then `refresh` checks `dirty`; the PTY thread sets `dirty`, then
+        // `pending`. However they interleave, one sees the other: the UI reads the output, or the
+        // PTY thread wakes it again. The two threads go in lockstep, a random few spins apart.
+        use std::sync::atomic::AtomicU64;
+        fn spin(rng: &mut u64) {
+            *rng ^= *rng << 13;
+            *rng ^= *rng >> 7;
+            *rng ^= *rng << 17;
+            for _ in 0..*rng % 8 {
+                std::hint::spin_loop();
+            }
+        }
+        const ROUNDS: u64 = 200_000;
+        let woken = Arc::new(AtomicU64::new(0));
+        let w = woken.clone();
+        let shared = Arc::new(Shared::new(
+            Arc::new(move || {
+                w.fetch_add(1, Ordering::SeqCst);
+            }),
+            window_size(10, 2, (8, 16)),
+            Palette::default(),
+        ));
+        let term = SharedTerm(
+            Arc::new(FairMutex::new(Term::new(
+                Config::default(),
+                &TermSize::new(10, 2),
+                Listener(shared.clone()),
+            ))),
+            shared.clone(),
+        );
+        let (go, done) = (Arc::new(AtomicU64::new(0)), Arc::new(AtomicU64::new(0)));
+        let pty = {
+            let (shared, go, done) = (shared.clone(), go.clone(), done.clone());
+            std::thread::spawn(move || {
+                let mut rng = 12345;
+                for i in 1..=ROUNDS {
+                    while go.load(Ordering::Acquire) != i {
+                        std::hint::spin_loop();
+                    }
+                    spin(&mut rng);
+                    shared.wake();
+                    done.store(i, Ordering::Release);
+                }
+            })
+        };
+        let mut rng = 999;
+        let mut lost = 0;
+        for i in 1..=ROUNDS {
+            // Everything was read, and a wake-up waits to be re-armed.
+            shared.dirty.store(false, Ordering::Relaxed);
+            shared.pending.store(true, Ordering::Relaxed);
+            let before = woken.load(Ordering::SeqCst);
+            go.store(i, Ordering::Release);
+            spin(&mut rng);
+            // What a frame does: re-arm, then `refresh` asks whether the grid changed.
+            term.rearm();
+            let read = term.dirty();
+            while done.load(Ordering::Acquire) != i {
+                std::hint::spin_loop();
+            }
+            if !read && woken.load(Ordering::SeqCst) == before {
+                lost += 1;
+            }
+        }
+        pty.join().unwrap();
+        assert_eq!(
+            lost, 0,
+            "output neither read nor waking the UI, in {ROUNDS} rounds"
+        );
     }
 
     #[test]
@@ -752,6 +880,28 @@ mod tests {
         feed(&term, b"\x07");
         assert_eq!(shared.status.lock().unwrap().attention, 1);
         assert_eq!(shared.status.lock().unwrap().message, None);
+    }
+
+    #[test]
+    fn an_exit_wakes_the_ui_even_before_the_terminal_is_rearmed() {
+        // A block off screen is never re-armed: its program's exit must still reach the UI.
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = count.clone();
+        let shared = Arc::new(Shared::new(
+            Arc::new(move || {
+                c.fetch_add(1, Ordering::SeqCst);
+            }),
+            window_size(10, 2, (8, 16)),
+            Palette::default(),
+        ));
+        shared.wake();
+        Listener(shared.clone()).send_event(Event::Exit);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            2,
+            "not held back by the coalescing"
+        );
+        assert!(shared.exited.load(Ordering::Acquire));
     }
 
     #[test]
@@ -796,13 +946,6 @@ mod tests {
             ..p
         };
         assert_eq!(folder(gone), Some(mine), "a folder that isn't there");
-    }
-
-    /// Feeds `bytes` as the PTY thread would: through the tap, which marks the prompts.
-    fn feed_heard(term: &SharedTerm, bytes: &[u8]) {
-        let mut scanner = crate::tap::Scanner::new();
-        let inserts = scanner.scan(bytes, &term.1);
-        feed(term, &crate::tap::rewrite(bytes, inserts));
     }
 
     fn rows(term: &SharedTerm) -> Vec<(String, Option<Mark>)> {

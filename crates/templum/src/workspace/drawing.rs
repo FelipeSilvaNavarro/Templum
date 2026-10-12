@@ -146,28 +146,27 @@ impl Workspace {
         self.drag = Some(Drag::Ink(drawing));
     }
 
-    /// The drawings, painted above the blocks. No listeners: the pointer goes through it.
-    pub(super) fn ink_layer(&self) -> impl IntoElement + use<> {
-        let drawings = self.space.ink.clone();
-        let live = match &self.drag {
-            Some(Drag::Ink(d)) => Some(d.clone()),
-            _ => None,
-        };
-        let selected = self.space.selected_ink;
-        let camera = self.space.view;
-        let theme = self.theme.clone();
-        let ui = self.ui;
+    /// The drawings, painted above the blocks. No listeners: the pointer goes through it. It
+    /// reads the workspace when it paints: cloning every stroke into the closure each frame is
+    /// what it avoids.
+    pub(super) fn ink_layer(&self, cx: &Context<Self>) -> impl IntoElement + use<> {
+        let entity = cx.entity();
         let cache = self.ink_cache.clone();
         canvas(
             |_, _, _| {},
-            move |bounds, _, window, _| {
+            move |bounds, _, window, cx| {
+                let ws = entity.read(cx);
+                let live = match &ws.drag {
+                    Some(Drag::Ink(d)) => Some(d),
+                    _ => None,
+                };
                 ink::paint(
-                    &drawings,
-                    live.as_ref(),
-                    selected,
-                    &camera,
-                    &theme,
-                    ui,
+                    &ws.space.ink,
+                    live,
+                    ws.space.selected_ink,
+                    &ws.space.view,
+                    &ws.theme,
+                    ws.ui,
                     bounds,
                     &mut cache.borrow_mut(),
                     window,
