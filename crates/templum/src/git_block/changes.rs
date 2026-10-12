@@ -6,7 +6,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, ClickEvent, Context, Div, ElementId, MouseButton, MouseDownEvent, Stateful,
-    TestSupportExt, div, px, relative,
+    TestSupportExt, div, px, relative, uniform_list,
 };
 use templum_canvas::BlockId;
 use templum_git::{Change, Entry};
@@ -30,22 +30,46 @@ pub(super) fn changes(
     let ui = ws.ui;
     let n = id.0 as usize;
     let s = &git.status;
-    let lists = div()
-        .id(("git-lists", n))
-        .flex_1()
-        .min_h(px(0.0))
-        .overflow_y_scroll()
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .when(!s.conflicts().is_empty(), |el| {
-                    el.child(list(ws, id, List::Conflicts, &s.conflicts(), z, cx))
+    // Each list's header, then its rows, all one row tall: a virtual list builds only the ones
+    // on screen, however many files changed.
+    let mut items: Vec<(List, Option<usize>)> = Vec::new();
+    for (which, len) in [
+        (List::Conflicts, s.conflicts().len()),
+        (List::Staged, s.staged().len()),
+        (List::Unstaged, s.unstaged().len()),
+    ] {
+        if which != List::Conflicts || len > 0 {
+            items.push((which, None));
+            items.extend((0..len).map(|i| (which, Some(i))));
+        }
+    }
+    let entity = cx.entity();
+    let lists = uniform_list(("git-lists", n), items.len(), move |range, _, cx| {
+        entity.update(cx, |ws, cx| {
+            let ws = &*ws;
+            let Some(git) = ws.space.git(id) else {
+                return Vec::new();
+            };
+            let s = &git.status;
+            let (conflicts, staged, unstaged) = (s.conflicts(), s.staged(), s.unstaged());
+            range
+                .map(|ix| {
+                    let (which, i) = items[ix];
+                    let entries = match which {
+                        List::Conflicts => &conflicts,
+                        List::Staged => &staged,
+                        List::Unstaged => &unstaged,
+                    };
+                    match i {
+                        None => header(ws, id, which, entries, z, cx),
+                        Some(i) => row(ws, id, which, i, entries[i], z, cx),
+                    }
                 })
-                .child(list(ws, id, List::Staged, &s.staged(), z, cx))
-                .child(list(ws, id, List::Unstaged, &s.unstaged(), z, cx)),
-        )
-        .test_support();
+                .collect()
+        })
+    })
+    .flex_1()
+    .min_h(px(0.0));
     let column = div()
         .w(px(LISTS_W * z))
         .h_full()
@@ -116,8 +140,8 @@ fn diff_view(
         .into_any_element()
 }
 
-/// One list: its header with the count and its buttons, then a row per entry.
-fn list(
+/// A list's header: its title with the count, and its buttons.
+fn header(
     ws: &Workspace,
     id: BlockId,
     which: List,
@@ -135,6 +159,7 @@ fn list(
     let paths: Vec<String> = entries.iter().map(|e| e.path.clone()).collect();
     let disabled = ws.space.git(id).is_some_and(|g| g.acting > 0) || paths.is_empty();
     let header = div()
+        .w_full()
         .flex()
         .items_center()
         .gap(px(6.0 * z))
@@ -174,17 +199,7 @@ fn list(
                 )
             }
         });
-    div()
-        .flex()
-        .flex_col()
-        .child(header)
-        .children(
-            entries
-                .iter()
-                .enumerate()
-                .map(|(i, e)| row(ws, id, which, i, e, z, cx)),
-        )
-        .into_any_element()
+    header.into_any_element()
 }
 
 /// A text button in a list's header.
@@ -309,6 +324,7 @@ fn row(
     div()
         .id(row_id(id, which.name(), i))
         .group("git-row")
+        .w_full()
         .flex()
         .items_center()
         .gap(px(6.0 * z))
