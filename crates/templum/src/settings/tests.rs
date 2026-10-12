@@ -4,6 +4,7 @@ use super::edits::{join_args, split_args};
 use super::fields::{CURSOR, FONT_SIZE, MODE};
 use super::fonts::{is_monospace, safe_to_load};
 use super::*;
+use crate::config::Config;
 
 #[test]
 fn every_choice_reads_back_what_it_writes() {
