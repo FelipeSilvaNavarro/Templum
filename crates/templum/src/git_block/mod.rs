@@ -9,33 +9,24 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use gpui_kit::Focusable as _;
-use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{EditorState, InputEvent, InputState, TextareaState};
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
-use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, ElementId, Entity, EntityId, ScrollWheelEvent,
-    SharedString, Subscription, TestSupportExt, Window, div, px,
-};
+use gpui_kit::{App, Context, ElementId, Entity, EntityId, SharedString, Subscription, Window};
 use templum_canvas::{BlockId, Rect, Size};
 use templum_git::{Branch, Commit, CommitFile, Entry, GitError, Operation, Repo, Stash, Status};
 
-use crate::editor::button;
 use crate::session;
 use crate::workspace::Workspace;
-use branches::branches;
-use changes::changes;
-use history::history;
-use stashes::stashes;
-use widgets::{bar, centered, icon_button};
 
 mod branches;
 mod changes;
 mod commit_form;
 mod history;
 mod stashes;
+mod view;
 mod widgets;
+
+pub(crate) use view::body;
 
 /// A new Git block's size, and the smallest one (world units).
 pub(crate) const SIZE: Size = Size { w: 800.0, h: 560.0 };
@@ -406,281 +397,6 @@ impl Git {
     }
 }
 
-/// How to get `git` on this OS.
-pub(crate) fn install_hint() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "Install it with `xcode-select --install` or `brew install git`."
-    } else if cfg!(windows) {
-        "Install it with `winget install Git.Git`, or from git-scm.com."
-    } else {
-        "Install it with your package manager: `sudo pacman -S git`, `sudo apt install git`."
-    }
-}
-
 pub(crate) fn row_id(block: BlockId, list: &str, i: usize) -> ElementId {
     ElementId::Name(format!("git-row-{}-{list}-{i}", block.0).into())
-}
-
-/// The body below the header, at the block's zoom `z`.
-pub(crate) fn body(
-    ws: &Workspace,
-    id: BlockId,
-    git: &Git,
-    z: f32,
-    cx: &mut Context<Workspace>,
-) -> AnyElement {
-    let ui = ws.ui;
-    let n = id.0 as usize;
-    let content: AnyElement = if !git.folder.is_dir() {
-        centered(ui, z)
-            .child(format!("{} is gone", git.folder.display()))
-            .child(
-                button(("choose-folder", n), "Choose another folder…", ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.choose_git_folder(id, window, cx)
-                    }))
-                    .test_support(),
-            )
-            .into_any_element()
-    } else {
-        match &git.found {
-            Found::Looking => centered(ui, z)
-                .child("Looking for the repository…")
-                .into_any_element(),
-            Found::NoGit(err) => centered(ui, z)
-                .child(format!(
-                    "Couldn't run {}: {}",
-                    ws.config.git.program(),
-                    err.first_line()
-                ))
-                .child(install_hint())
-                .child(
-                    button(("retry", n), "Try again", ui, z)
-                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.look_up_git(id, window, cx)
-                        }))
-                        .test_support(),
-                )
-                .into_any_element(),
-            Found::NotARepo => centered(ui, z)
-                .child(format!("{} is not a Git repository", git.folder.display()))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(8.0 * z))
-                        .child(
-                            button(("init", n), "Initialize", ui, z)
-                                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                                    ws.init_git(id, window, cx)
-                                }))
-                                .test_support(),
-                        )
-                        .child(
-                            button(("choose-folder", n), "Choose another folder…", ui, z)
-                                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                                    ws.choose_git_folder(id, window, cx)
-                                }))
-                                .test_support(),
-                        ),
-                )
-                .into_any_element(),
-            Found::Repo(_) => repo_body(ws, id, git, z, cx),
-        }
-    };
-    // The wheel scrolls the lists and stops there; with Ctrl it zooms the canvas.
-    div()
-        .size_full()
-        .flex()
-        .flex_col()
-        .on_scroll_wheel(|e: &ScrollWheelEvent, _, cx| {
-            if !e.modifiers.control {
-                cx.stop_propagation();
-            }
-        })
-        .child(content)
-        .into_any_element()
-}
-
-/// The repository's view: the top bar, the tabs, the shown tab.
-fn repo_body(
-    ws: &Workspace,
-    id: BlockId,
-    git: &Git,
-    z: f32,
-    cx: &mut Context<Workspace>,
-) -> AnyElement {
-    let ui = ws.ui;
-    let n = id.0 as usize;
-    let s = &git.status;
-    let branch: String = match (&s.branch, &s.oid) {
-        (Some(b), _) => b.clone(),
-        (None, Some(oid)) => format!("detached at {}", &oid[..oid.len().min(7)]),
-        (None, None) => "no commits".to_string(),
-    };
-    let sync = match (&s.upstream, &s.oid) {
-        (Some(_), _) => format!("↑{} ↓{}", s.ahead, s.behind),
-        (None, Some(_)) => "no upstream".to_string(),
-        (None, None) => String::new(),
-    };
-    let top =
-        div()
-            .id(("git-top", n))
-            .flex()
-            .items_center()
-            .flex_shrink_0()
-            .gap(px(8.0 * z))
-            .h(px(32.0 * z))
-            .px(px(8.0 * z))
-            .border_b_1()
-            .border_color(ui.hairline)
-            .child(
-                div()
-                    .id(("branch", n))
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0 * z))
-                    .px(px(8.0 * z))
-                    .py(px(2.0 * z))
-                    .rounded_full()
-                    .bg(ui.card)
-                    .text_size(px(FONT * z))
-                    .text_color(ui.title)
-                    .cursor_pointer()
-                    .hover(move |st| st.bg(ui.hover))
-                    .child(
-                        Icon::new(IconName::GitBranch)
-                            .size(px(12.0 * z))
-                            .text_color(ui.title_dim),
-                    )
-                    .child(div().truncate().child(branch))
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.set_git_tab(id, Tab::Branches, window, cx)
-                    }))
-                    .test_support(),
-            )
-            .child(
-                div()
-                    .text_size(px(FONT * z))
-                    .text_color(ui.title_dim)
-                    .child(sync),
-            )
-            .child(div().flex_1())
-            .children([Sync::Fetch, Sync::Pull, Sync::Push].map(|which| {
-                let (name, label) = match which {
-                    Sync::Fetch => ("git-fetch", "Fetch"),
-                    Sync::Pull => ("git-pull", "Pull"),
-                    Sync::Push => ("git-push", "Push"),
-                };
-                let running = git.sync == Some(which);
-                let disabled = git.acting > 0 && !running;
-                // The running one spins, and a click on it cancels it.
-                let el = button((name, n), if running { "Cancel" } else { label }, ui, z)
-                    .when(running, |el| {
-                        el.child(Spinner::new().with_size(UiSize::Size(px(12.0 * z))))
-                    })
-                    .when(disabled, |el| el.opacity(0.5));
-                if disabled {
-                    el.test_support().into_any_element()
-                } else if running {
-                    el.on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.cancel_git(id, cx)))
-                        .test_support()
-                        .into_any_element()
-                } else {
-                    el.on_click(
-                        cx.listener(move |ws, _: &ClickEvent, window, cx| match which {
-                            Sync::Fetch => ws.fetch(id, window, cx),
-                            Sync::Pull => ws.pull(id, templum_git::Pull::FastForward, window, cx),
-                            Sync::Push => ws.push(id, window, cx),
-                        }),
-                    )
-                    .test_support()
-                    .into_any_element()
-                }
-            }))
-            .child(
-                icon_button(("refresh", n), IconName::RefreshCw, ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.refresh_git(id, window, cx)
-                    }))
-                    .test_support(),
-            )
-            .test_support();
-    let banner = git.operation.map(|op| {
-        let can_continue = git.status.conflicts().is_empty();
-        bar(ui, z)
-            .id(("git-banner", n))
-            .child(format!("{} in progress", capitalized(op.name())))
-            .child(div().flex_1())
-            .child(
-                button(("git-abort", n), "Abort", ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.abort_operation(id, window, cx)
-                    }))
-                    .test_support(),
-            )
-            .when(can_continue, |el| {
-                el.child(
-                    button(("git-continue", n), "Continue", ui, z)
-                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.continue_operation(id, window, cx)
-                        }))
-                        .test_support(),
-                )
-            })
-            .test_support()
-    });
-    let tabs = div()
-        .id(("git-tabs", n))
-        .flex()
-        .items_center()
-        .flex_shrink_0()
-        .h(px(28.0 * z))
-        .border_b_1()
-        .border_color(ui.hairline)
-        .children(Tab::ALL.map(|tab| {
-            let active = git.tab == tab;
-            div()
-                .id(ElementId::Name(
-                    format!("git-tab-{n}-{}", tab.name()).into(),
-                ))
-                .flex()
-                .items_center()
-                .h_full()
-                .px(px(12.0 * z))
-                .text_size(px(FONT * z))
-                .text_color(if active { ui.title } else { ui.title_dim })
-                .when(active, |el| el.bg(ui.card))
-                .cursor_pointer()
-                .hover(move |st| st.bg(ui.hover))
-                .child(tab.title())
-                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.set_git_tab(id, tab, window, cx)
-                }))
-                .test_support()
-        }));
-    let area: AnyElement = match git.tab {
-        Tab::Changes => changes(ws, id, git, z, cx),
-        Tab::History => history(ws, id, git, z, cx),
-        Tab::Branches => branches(ws, id, git, z, cx),
-        Tab::Stashes => stashes(ws, id, git, z, cx),
-    };
-    div()
-        .size_full()
-        .flex()
-        .flex_col()
-        .child(top)
-        .children(banner)
-        .when_some(git.error.clone(), |el, e| el.child(bar(ui, z).child(e)))
-        .child(tabs)
-        .child(area)
-        .into_any_element()
-}
-
-/// "merge" → "Merge".
-fn capitalized(word: &str) -> String {
-    let mut c = word.chars();
-    match c.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
-        None => String::new(),
-    }
 }
