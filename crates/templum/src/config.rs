@@ -155,7 +155,7 @@ impl Default for Shell {
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(from = "String")]
 pub(crate) enum WorkingDirectory {
-    /// The focused terminal's current folder (home when there is none).
+    /// The focused block's folder (home when it has none): see `Body::folder`.
     #[default]
     Inherit,
     Home,

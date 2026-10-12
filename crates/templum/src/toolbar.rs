@@ -20,10 +20,13 @@ use crate::workspace::{Tool, Workspace};
 const BUTTON: f32 = 32.0;
 /// Clear of the canvas's bottom edge.
 const MARGIN: f32 = 12.0;
+/// The strip at the bottom of the canvas the toolbar covers.
+pub(crate) const SPACE: f32 = BUTTON + 8.0 + MARGIN;
 
 pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
     let ui = ws.ui;
-    let tool = ws.tool;
+    // Holding Alt is the hand while it lasts.
+    let tool = if ws.hand { Tool::Hand } else { ws.tool };
     // "Terminal · Ctrl+Shift+T", or the name alone without a shortcut.
     let tip = |name: &str, command: Command| match ws.keymap.first(command) {
         Some(k) => format!("{name} · {}", keys::display(k)),
@@ -364,6 +367,7 @@ fn button(
         .rounded(px(8.0))
         .cursor_pointer()
         .when(active, |el| el.bg(ui.card))
+        .aria_selected(active)
         .hover(move |s| s.bg(ui.hover))
         .active(move |s| s.bg(ui.pressed))
         .child(

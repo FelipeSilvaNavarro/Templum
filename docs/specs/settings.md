@@ -111,7 +111,7 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
 |---|---|---|
 | Program | Text; empty means the default shell (`$SHELL`, or PowerShell on Windows) | `shell.program` (empty removes the key) |
 | Arguments | Text: separated by spaces, with `"…"` or `'…'` to keep spaces inside one argument | `shell.args` |
-| Start folder | Dropdown: Inherit from the focused terminal, Home, A folder… With "A folder…", a text field takes the path | `shell.working_directory` |
+| Start folder | Dropdown: Inherit from the focused block, Home, A folder… With "A folder…", a text field takes the path | `shell.working_directory` |
 
 **Shortcuts**
 

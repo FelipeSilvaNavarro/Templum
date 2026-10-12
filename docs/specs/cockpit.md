@@ -154,7 +154,7 @@ separated by hairlines:
 
 | Group | Buttons | What a click does |
 |---|---|---|
-| Pointer | **Select** (`mouse-pointer-2`), **Hand** (`hand`) | Select is the normal state. Hand pans with any drag or wheel, over blocks too, like holding Alt ([navigation.md](navigation.md)); it stays on until Select is clicked or Esc is pressed. |
+| Pointer | **Select** (`mouse-pointer-2`), **Hand** (`hand`) | Select is the normal state. Hand pans with any drag and zooms with the wheel, over blocks too, like holding Alt ([navigation.md](navigation.md)); it stays on until Select is clicked or Esc is pressed. |
 | Blocks | **Terminal** (`square-terminal`), **Note** (`sticky-note`), **Kanban** (`layout-dashboard`), **Editor** (`file-code-2`), **Git** (`git-branch`), **Docker** (`container`), **AI agent** (`bot`) | Adds that block at the viewport's center (cascading like a new terminal does) and focuses it. Editor and Git first ask for a folder, as agents do. AI agent opens the agents menu above the button, the same list as the canvas menu. The tool goes back to Select at once. |
 | Drawing | **Pen** (`pencil`), **Highlighter** (`highlighter`), **Shapes** (`shapes`), **Eraser** (`eraser`) | Drawing tools stay on until Select is clicked or Esc is pressed. Shapes opens a small popover above the button: Line, Arrow, Rectangle, Ellipse; the chosen one becomes the tool and the button shows its icon. |
 
@@ -178,7 +178,7 @@ separated by hairlines:
 
 - The toolbar is hidden while the settings panel is open on a window narrower than 900 px, so they don't overlap.
 - With a drawing tool or the hand on, a layer over the blocks takes the pointer, as the Alt layer does; Ctrl+wheel
-  and pinch still zoom, the wheel still pans.
+  and pinch still zoom. With a drawing tool the wheel pans; with the hand it zooms.
 
 Architecture: `toolbar.rs` (new) draws it; `Workspace::tool: Tool` (`Select`, `Hand`, `Pen`, `Highlighter`,
 `Shape(ShapeKind)`, `Eraser`) and `Workspace::ink_style: (Color, Width)`. The agents submenu builder moves from
@@ -766,6 +766,11 @@ Plan 5 ([../plans/2026-10-11-git.md](../plans/2026-10-11-git.md)) shipped on 202
 - When git would have asked for a key or a password, the notification's line is the one that says so, followed
   by "Git needs your key or password: run it in a terminal.".
 - Settings ▸ Tools has `git.program` only; `docker.program` comes with plan 6.
+
+After plan 5: the canvas zoom magnifies the editor and Git blocks like a photo, as it does terminals. Their
+gpui-kit pieces that kept a fixed size are now sized with the zoom too: the Git block's one-line fields and its
+Description, and its Amend checkbox (drawn by Templum). Code folding is off in the editor and the diffs, since
+gpui-kit's fold icons have a fixed size.
 
 ## Risks
 

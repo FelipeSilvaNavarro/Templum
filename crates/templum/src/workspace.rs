@@ -210,6 +210,20 @@ impl Body {
         }
     }
 
+    /// The folder a terminal opened from this block starts in: a terminal's current one, an
+    /// editor's, a Git block's repository. None for a note or a kanban block.
+    pub fn folder(&self) -> Option<PathBuf> {
+        match self {
+            Body::Terminal(pane) => pane.term.cwd(),
+            Body::Editor(e) => Some(e.folder.clone()),
+            Body::Git(g) => Some(
+                g.repo()
+                    .map_or_else(|| g.folder.clone(), |r| r.root.clone()),
+            ),
+            Body::Kanban(_) | Body::Note(_) => None,
+        }
+    }
+
     /// The keyboard is inside the block.
     pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
         match self {
@@ -276,6 +290,9 @@ pub(crate) struct Space {
     pub appearing: HashMap<BlockId, Instant>,
     /// Closed blocks still fading out.
     pub ghosts: Vec<Ghost>,
+    /// The block a double-click on its title framed, and the camera before: double-clicking it
+    /// again goes back there.
+    pub framed: Option<(BlockId, Camera)>,
     /// The folders agents were opened in on this canvas, newest first.
     pub recent: Vec<PathBuf>,
     /// The drawings, above the blocks.
@@ -449,6 +466,9 @@ pub struct Workspace {
     drag: Option<Drag>,
     /// Where a press on the empty canvas started: released in place, it's a click.
     press: Option<Point>,
+    /// The block the last click on the empty canvas unfocused: a double-click's terminal starts
+    /// in its folder.
+    unfocused: Option<BlockId>,
     pub(crate) focus_handle: FocusHandle,
     /// Window position of the workspace's top-left: screen coordinates are relative to it.
     origin: PixelPoint<Pixels>,
@@ -527,7 +547,7 @@ pub struct Workspace {
     /// The open right-click menu.
     pub(crate) menu: Option<menu::OpenMenu>,
     /// Alt was held at the last frame (the hand layer is drawn).
-    hand: bool,
+    pub(crate) hand: bool,
     /// The toolbar's active tool.
     pub(crate) tool: Tool,
     /// The drawing tools' color and width.
@@ -713,6 +733,7 @@ impl Workspace {
             on_frame: None,
             drag: None,
             press: None,
+            unfocused: None,
             focus_handle,
             origin: PixelPoint::default(),
             notify,
@@ -4419,13 +4440,33 @@ impl Workspace {
         }
     }
 
+    /// A double-click on a block's title: the view glides to show the block centered, as large as
+    /// fits above the toolbar; on the block it framed, back to where the view was.
+    pub(crate) fn frame_block(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(rect) = self.space.canvas.get(id).map(|b| b.rect) else {
+            return;
+        };
+        let vp = self.viewport(window);
+        let camera = self.space.canvas.camera;
+        let mut framed = camera;
+        framed.fit(rect, Size::new(vp.w, vp.h - toolbar::SPACE));
+        let to = match self.space.framed.take() {
+            Some((was, back)) if was == id && camera == framed => back,
+            _ => {
+                self.space.framed = Some((id, camera));
+                framed
+            }
+        };
+        self.fly(to, self.center(window), cx);
+    }
+
     /// Where a new terminal starts (None: the home folder).
     fn start_dir(&self, window: &mut Window, cx: &mut App) -> Option<PathBuf> {
         match &self.config.shell.working_directory {
             WorkingDirectory::Inherit => self
                 .space
-                .focused_terminal()
-                .and_then(|pane| pane.term.cwd()),
+                .focused
+                .and_then(|id| self.space.blocks.get(&id)?.folder()),
             WorkingDirectory::Home => None,
             WorkingDirectory::Path(path) if path.is_dir() => Some(path.clone()),
             WorkingDirectory::Path(path) => {
@@ -5036,8 +5077,11 @@ impl Workspace {
         if let Some(start) = self.press {
             let p = self.local(pos);
             let moved = (p.x - start.x).abs().max((p.y - start.y).abs());
-            if moved < CLICK_SLOP && self.space.focused.take().is_some() {
-                cx.notify();
+            if moved < CLICK_SLOP {
+                self.unfocused = self.space.focused.take();
+                if self.unfocused.is_some() {
+                    cx.notify();
+                }
             }
         }
         if let Some(Drag::Ink(mut drawing)) = self.drag.take() {
@@ -5355,6 +5399,10 @@ impl Workspace {
         }
         if e.click_count == 2 {
             let at = self.space.canvas.camera.to_world(p);
+            // The first click took the focus: the new terminal still starts in its folder.
+            if self.space.focused.is_none() {
+                self.space.focused = self.unfocused.take();
+            }
             self.add_terminal_at(at, window, cx);
         } else {
             self.drag = Some(Drag::Canvas(Gesture::pan(p)));
@@ -5370,7 +5418,8 @@ impl Workspace {
     ) {
         self.space.pristine = false;
         let p = self.local(e.position);
-        if e.modifiers.control {
+        // The hand (its tool, or Alt held) zooms without Ctrl: dragging moves the canvas.
+        if e.modifiers.control || e.modifiers.alt || self.tool == Tool::Hand {
             self.zoom_acc += match e.delta {
                 ScrollDelta::Lines(d) => d.y * 50.0,
                 ScrollDelta::Pixels(d) => f32::from(d.y),
@@ -11578,7 +11627,8 @@ mod tests {
             assert!(term.selection_text().is_none(), "no selection");
             assert!(ws.drag.is_none(), "the drag ended");
         });
-        // The wheel over the terminal pans the canvas, not the terminal's history.
+        // The wheel over the terminal zooms the canvas, like the hand tool, and leaves the
+        // terminal's history alone.
         cx.update_window(handle, |_, window, cx| {
             let body = window.find(("body", id.0 as usize)).bounds().center();
             window.dispatch_event(
@@ -11594,9 +11644,7 @@ mod tests {
             assert!(window.try_find("hand").is_none(), "gone when Alt is let go");
         })
         .unwrap();
-        ws.read_with(cx, |ws, _| {
-            assert_eq!(ws.space.canvas.camera.origin.y, before.y - 40.0 + 60.0);
-        });
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 0.9));
     }
 
     #[gpui_kit::test]
@@ -13986,5 +14034,312 @@ mod tests {
                 "git"
             )
         });
+    }
+
+    // The editor's gutter, background and current line follow Templum's theme, not gpui-kit's
+    // fixed white (light) or near-black (dark) editor colors.
+    #[gpui_kit::test]
+    fn the_editors_gutter_and_current_line_follow_the_theme(cx: &mut TestAppContext) {
+        use gpui_kit::component::ActiveTheme as _;
+        let (_, ws) = open(cx);
+        for dark in [true, false] {
+            let theme = ws.update(cx, |ws, cx| {
+                let theme = crate::theme::pick(&ws.themes, crate::theme::default_name(dark), "");
+                ws.apply(theme.clone(), cx);
+                theme
+            });
+            cx.update(|cx| {
+                let style = &cx.theme().highlight_theme.style;
+                assert_eq!(
+                    style.editor_background,
+                    Some(theme.ui.surface),
+                    "dark: {dark}"
+                );
+                assert_eq!(
+                    style.editor_gutter_background,
+                    Some(theme.ui.surface),
+                    "dark: {dark}"
+                );
+                assert_eq!(
+                    style.editor_active_line,
+                    Some(theme.ui.card),
+                    "dark: {dark}"
+                );
+            });
+        }
+    }
+
+    /// Every element inside `block` (registered for tests), relative to the block: its
+    /// position and size.
+    fn block_layout(
+        window: &Window,
+        block: BlockId,
+    ) -> std::collections::BTreeMap<String, [f32; 4]> {
+        let id = gpui_kit::ElementId::NamedInteger("block".into(), block.0);
+        let origin = window.find(("block", block.0 as usize)).bounds().origin;
+        gpui_kit::base::test_support::snapshots(window)
+            .into_iter()
+            .filter_map(|s| {
+                let at = s.path().iter().position(|p| *p == id)?;
+                let b = s.bounds();
+                Some((
+                    format!("{:?}", &s.path()[at..]),
+                    [
+                        f32::from(b.origin.x - origin.x),
+                        f32::from(b.origin.y - origin.y),
+                        f32::from(b.size.width),
+                        f32::from(b.size.height),
+                    ],
+                ))
+            })
+            .collect()
+    }
+
+    // The canvas zoom magnifies the editor and the Git block like a photo: everything inside
+    // doubles at zoom 2, nothing keeps a fixed size or moves around (hairline borders stay
+    // 1 px, hence the few pixels of slack).
+    #[gpui_kit::test]
+    fn zooming_scales_the_editor_and_git_blocks_like_a_photo(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "fn main() {\n    println!(\"hi\");\n}\n",
+        )
+        .unwrap();
+        let repo = committed_repo();
+        std::fs::write(repo.path().join("a.txt"), "zero\none\n").unwrap();
+        let (handle, ws) = open(cx);
+        let editor = open_editor(handle, &ws, cx, dir.path());
+        click_file(handle, 0, cx);
+        let git = cx
+            .update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    let id = ws
+                        .add_git_at(repo.path(), Point::new(40.0, 700.0), window, cx)
+                        .unwrap();
+                    ws.space.appearing.clear();
+                    ws.select_git_row(
+                        id,
+                        crate::git_block::List::Unstaged,
+                        "a.txt".to_string(),
+                        window,
+                        cx,
+                    );
+                    id
+                })
+            })
+            .unwrap();
+        settle(handle, cx);
+        // Each block measured with the camera on it, at zoom 1 and 2.
+        let layout = |cx: &mut TestAppContext, block: BlockId, at: Point, zoom: f32| {
+            ws.update(cx, |ws, _| {
+                ws.space.canvas.camera = Camera::at(at, zoom);
+                ws.space.view = ws.space.canvas.camera;
+            });
+            frame(handle, cx);
+            cx.update_window(handle, |_, window, _| block_layout(window, block))
+                .unwrap()
+        };
+        let compare = |name: &str,
+                       one: &std::collections::BTreeMap<String, [f32; 4]>,
+                       two: &std::collections::BTreeMap<String, [f32; 4]>| {
+            assert!(one.len() > 5, "{name}: measured {}", one.len());
+            for (key, a) in one {
+                let b = two
+                    .get(key)
+                    .unwrap_or_else(|| panic!("{name}: gone at zoom 2: {key}"));
+                for (x1, x2) in a.iter().zip(b) {
+                    // Slack: hairlines that stay 1 px add up, more so for what sits at the
+                    // right edge. A fixed-size widget is off by its own size (14 px, 24 px…).
+                    let slack = 6.0 + x2.abs() * 0.01;
+                    assert!(
+                        (x1 * 2.0 - x2).abs() <= slack,
+                        "{name}: {key}\n zoom 1 {a:?}\n zoom 2 {b:?}"
+                    );
+                }
+            }
+        };
+        let tabs = [
+            crate::git_block::Tab::Changes,
+            crate::git_block::Tab::History,
+            crate::git_block::Tab::Branches,
+        ];
+        let one = layout(cx, editor, Point::new(0.0, 0.0), 1.0);
+        let two = layout(cx, editor, Point::new(0.0, 0.0), 2.0);
+        compare("editor", &one, &two);
+        for tab in tabs {
+            cx.update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, cx| ws.set_git_tab(git, tab, window, cx))
+            })
+            .unwrap();
+            settle(handle, cx);
+            let one = layout(cx, git, Point::new(0.0, 660.0), 1.0);
+            let two = layout(cx, git, Point::new(0.0, 680.0), 2.0);
+            compare(tab.name(), &one, &two);
+        }
+    }
+
+    #[gpui_kit::test]
+    fn double_clicking_a_title_frames_the_block_and_again_goes_back(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        let (before, vp) = cx
+            .update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                let ws = ws.read(cx);
+                (ws.space.canvas.camera, ws.viewport(window))
+            })
+            .unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            window.double_click(("title", id.0 as usize), cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            let camera = ws.space.canvas.camera;
+            assert!(camera.zoom() > before.zoom(), "bigger: {}", camera.zoom());
+            let r = camera.rect_to_screen(ws.space.canvas.get(id).unwrap().rect);
+            assert!(
+                (r.x + r.w / 2.0 - vp.w / 2.0).abs() < 1.0,
+                "centered: {r:?}"
+            );
+            assert!(
+                r.x >= 0.0 && r.y >= 0.0 && r.x + r.w <= vp.w,
+                "on screen: {r:?}"
+            );
+            assert!(
+                r.y + r.h <= vp.h - crate::toolbar::SPACE,
+                "clear of the toolbar: {r:?}"
+            );
+            assert!(ws.drag.is_none(), "a double-click doesn't move the block");
+        });
+        // The glide ends first: a title still moving isn't where the pointer goes.
+        std::thread::sleep(crate::motion::FLIGHT + std::time::Duration::from_millis(50));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.double_click(("title", id.0 as usize), cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.canvas.camera, before, "back where it was")
+        });
+    }
+
+    #[gpui_kit::test]
+    fn with_the_hand_the_wheel_zooms_over_blocks_and_the_canvas(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-hand", cx);
+            window.render_frame(cx);
+            let body = window.find(("body", id.0 as usize)).bounds().center();
+            wheel(
+                window,
+                cx,
+                (f32::from(body.x), f32::from(body.y)),
+                ScrollDelta::Lines(point(0.0, 1.0)),
+                false,
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.1));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let o = ws.read(cx).origin;
+            wheel(
+                window,
+                cx,
+                (f32::from(o.x) + 30.0, f32::from(o.y) + 30.0),
+                ScrollDelta::Pixels(point(px(0.), px(-60.))),
+                false,
+            );
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.0));
+    }
+
+    #[gpui_kit::test]
+    fn holding_alt_lights_the_hand_in_the_toolbar_until_let_go(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let lit = |window: &Window, id: &'static str| window.find(id).selected();
+            assert_eq!(lit(window, "tool-select"), Some(true));
+            assert_eq!(lit(window, "tool-hand"), Some(false));
+            hold_alt(window, cx, true);
+            assert_eq!(lit(window, "tool-hand"), Some(true));
+            assert_eq!(lit(window, "tool-select"), Some(false));
+            hold_alt(window, cx, false);
+            assert_eq!(lit(window, "tool-select"), Some(true));
+            assert_eq!(lit(window, "tool-hand"), Some(false));
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.tool, super::Tool::Select, "Alt doesn't change the tool")
+        });
+    }
+
+    /// The folder a terminal's program runs in, once the OS says, canonicalized.
+    fn cwd_of(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> std::path::PathBuf {
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let cwd = ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().term.cwd());
+            if let Some(cwd) = cwd {
+                return cwd.canonicalize().unwrap();
+            }
+            assert!(Instant::now() < deadline, "no cwd");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_new_terminal_starts_in_the_focused_editors_or_git_blocks_folder(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git_repo();
+        let (handle, ws) = open(cx);
+        let new_terminal = |cx: &mut TestAppContext| {
+            cx.update_window(handle, |_, window, cx| window.press(NEW, cx))
+                .unwrap();
+            ws.read_with(cx, |ws, _| ws.space.canvas.top().unwrap())
+        };
+        open_editor(handle, &ws, cx, dir.path());
+        let id = new_terminal(cx);
+        assert_eq!(cwd_of(&ws, cx, id), dir.path().canonicalize().unwrap());
+        open_git(handle, &ws, cx, repo.path());
+        let id = new_terminal(cx);
+        assert_eq!(cwd_of(&ws, cx, id), repo.path().canonicalize().unwrap());
+    }
+
+    #[gpui_kit::test]
+    fn a_double_click_on_the_canvas_opens_in_the_folder_of_the_block_it_unfocused(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let start = tempfile::tempdir().unwrap();
+        // A TOML literal string: Windows backslashes need no escaping.
+        write_config(
+            dir.path(),
+            &format!(
+                "[shell]\nworking_directory = '{}'\n",
+                start.path().display()
+            ),
+        );
+        let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+        write_config(dir.path(), "[shell]\nworking_directory = \"inherit\"\n");
+        reload(handle, &ws, cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let o = ws.read(cx).origin;
+            let at = (f32::from(o.x) + 40.0, f32::from(o.y) + 40.0);
+            click(window, cx, at, 1);
+            click(window, cx, at, 2);
+        })
+        .unwrap();
+        let new = ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.canvas.blocks().len(), 2);
+            ws.space.canvas.top().unwrap()
+        });
+        assert_eq!(cwd_of(&ws, cx, new), start.path().canonicalize().unwrap());
     }
 }

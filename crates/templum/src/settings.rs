@@ -1105,7 +1105,7 @@ fn folder_kind_row(ws: &Workspace, entity: &Entity<Workspace>) -> Row {
         .control(menu_button(
             "menu-shell.working_directory",
             vec![
-                ("inherit".into(), "Inherit from the focused terminal".into()),
+                ("inherit".into(), "Inherit from the focused block".into()),
                 ("home".into(), "Home".into()),
                 ("folder".into(), "A folder…".into()),
             ],

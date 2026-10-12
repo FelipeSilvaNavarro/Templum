@@ -426,6 +426,8 @@ impl Editor {
                 .tab_size(indent_of(lang))
                 .line_number(true)
                 .soft_wrap(wrap)
+                // Its fold icons have a fixed size, which breaks the layout at a zoom.
+                .folding(false)
                 .default_value(text)
         });
         let _edits = cx.subscribe(&editor, |ws, editor, event: &InputEvent, cx| {
