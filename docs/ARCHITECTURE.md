@@ -61,6 +61,21 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - `templum-terminal` only knows a `Palette` (foreground, background, 16 ANSI colors). It never sees a theme.
 - `config.toml` holds the light and dark theme names; the picker edits it with `toml_edit`, keeping comments.
 
+## Source layout
+
+A file holds one responsibility; a module that grows past a few hundred lines becomes a folder of files. In
+`crates/templum/src`:
+
+- `workspace/`: `mod.rs` has the types (`Workspace`, `Space`, `Body`, `Tool`…) and the constructor; each other file
+  is an `impl Workspace` block for one area: `spaces.rs` (the workspaces), `blocks.rs` (adding, focusing and
+  closing blocks), `view.rs` (the camera), `input.rs` (keys and the pointer), `render.rs` (drawing a frame),
+  `drawing.rs` (the drawing tools), `persist.rs` (restoring and saving the canvas), `preferences.rs` (config,
+  themes, settings panel), `files.rs` and `file_tree.rs` (editor blocks), `git_ops.rs`, `git_changes.rs`,
+  `git_branches.rs` and `git_history.rs` (Git blocks). Methods a sibling or a test calls are `pub(super)`.
+  `workspace/tests/` holds its tests, one file per area, with the shared helpers in `tests/mod.rs`.
+- `settings/`, `git_block/` and `menu/`: the panel's sections, the Git block's tabs, and what each menu lists, each
+  in its own file behind the folder's `mod.rs`, which keeps the paths the rest of the crate uses.
+
 ## Configuration
 
 - `config.toml` is read into a typed `Config` (`crates/templum/src/config.rs`) and polled every 0.5 s. A reload
@@ -71,7 +86,7 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   their keys reach the terminal.
 - `templum-terminal` gets settings as plain values (`TermOptions`, a start folder) and reports a shell's folder
   through `sysinfo`. It never reads the file.
-- The settings panel (`crates/templum/src/settings.rs`) builds gpui-kit `Settings` pages from the active `Config`
+- The settings panel (`crates/templum/src/settings/`) builds gpui-kit `Settings` pages from the active `Config`
   every frame; its Tools section names the programs the blocks run (`git.program`). A change becomes a `config::Edit` (set or remove one `table.key`). The workspace applies it on the next
   frame (fonts are measured with the window) and writes it with `toml_edit` 0.3 s after the last one, when the panel
   closes, and when the window closes or the app quits (`config::save_edits` keeps comments, CRLF and a BOM). It writes
@@ -83,7 +98,7 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   order and names in `workspaces/index.json` ([specs/workspaces.md](specs/workspaces.md)).
 - Every block's content is a `Body` in `Space::blocks`: a terminal, a kanban block, a note (`note.rs`, gpui-kit's
   editor with the Markdown grammar), an editor (`editor.rs`: a lazy folder model behind gpui-base's `Tree`, tabs of
-  gpui-kit `EditorState`s, files read and written on the UI thread) or a Git block (`git_block.rs`: the repository's
+  gpui-kit `EditorState`s, files read and written on the UI thread) or a Git block (`git_block/`: the repository's
   state read in the background by `templum-git`, one command at a time per block with the others waiting in turn,
   the lists, the diff view and the commit form; a failed `git` is a notification that can hand the command to a
   terminal beside the block). Adding a kind is one `Body` arm, one `session::Item` variant and one
