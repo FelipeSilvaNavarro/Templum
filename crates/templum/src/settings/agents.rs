@@ -11,7 +11,7 @@ use gpui_kit::{
     AnyElement, App, ClickEvent, Context, ElementId, Entity, TestSupportExt, Window, div, px,
 };
 
-use super::Row;
+use super::row::Row;
 use crate::agents::{AgentEntry, Draft};
 use crate::grid::hsla;
 use crate::theme::Ui;
