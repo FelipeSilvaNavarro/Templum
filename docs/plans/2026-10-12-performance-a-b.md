@@ -1082,10 +1082,16 @@ Claude-Session: https://claude.ai/code/session_0163jDyGkhBsbBpn1pbYko94"
 
 Run three times each and keep the median line: `cargo run --release -p templum -- --bench`, `cargo run --release -p templum -- --bench-mixed`. Fill in:
 
-| Scenario | Baseline p50 / p95 / p99 / max | After A+B p50 / p95 / p99 / max |
+Measured 2026-10-12, after Task 6. Sequential medians drifted about 1 ms as the laptop warmed up, so
+`--bench` was run alternating the pre-plan build (41ff103) and the final one, 6 runs each:
+
+| Scenario | Before p50 / p95 / p99 / max | After A+B p50 / p95 / p99 / max |
 |---|---|---|
-| `--bench` | 8.0–9.6 / 16.5–19 / ~25 / 35–50 | |
-| `--bench-mixed` | 6.3 / 12.0 / 16 / 35 | |
+| `--bench` (6 alternating runs, medians) | 8.91 / **18.75** / 26.76 / 42.33 | 7.50 / **15.89** / 22.77 / 38.26 |
+| `--bench-mixed` (before: the investigation's 2 runs; after: 10 runs) | 6.3 / 12.0–12.3 / 15.9–16.9 / 35 | 6.12 / 11.52 / 14.21 / 34.09 |
+
+`--bench` p95 is back under the 16.7 ms bar. The mixed scenario's spikes (max ~34 ms) are the editor, Git, note
+and kanban blocks rebuilt every frame: batch C.
 
 If `--bench` p95 is still above 16.7, stop and report: the next lever is batch C (blocks as cached views), not more of this.
 
