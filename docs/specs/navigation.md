@@ -29,6 +29,13 @@ machine (Hyprland), window bindings use Super, so Alt with the mouse is free.
 A drag with the middle mouse button pans the canvas anywhere, over blocks too, with no key held. Terminals don't
 use the middle button (no paste of the primary selection yet).
 
+## Framing a block
+
+A double-click on a block's title glides the view to show the block centered, at the largest zoom step that fits
+above the toolbar. A double-click on the same title again, before the view moved, glides back to where it was.
+Like any zoom, this magnifies the block's contents: a terminal keeps its columns and rows. The title, because a
+double-click inside a terminal, an editor or a note selects a word.
+
 ## Testing
 
 **Headless UI:**
@@ -37,6 +44,7 @@ use the middle button (no paste of the primary selection yet).
   a terminal zooms the canvas; the toolbar shows the Hand on until Alt is let go; letting go of Alt removes the
   layer.
 - With the Hand tool, the wheel zooms over blocks and the empty canvas.
+- A double-click on a title frames the block above the toolbar; another goes back.
 - A middle-button drag over a terminal pans the canvas.
 
 **Manual (Hyprland):** hold Alt over a terminal and over a kanban block; drag and two-finger scroll.

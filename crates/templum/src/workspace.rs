@@ -290,6 +290,9 @@ pub(crate) struct Space {
     pub appearing: HashMap<BlockId, Instant>,
     /// Closed blocks still fading out.
     pub ghosts: Vec<Ghost>,
+    /// The block a double-click on its title framed, and the camera before: double-clicking it
+    /// again goes back there.
+    pub framed: Option<(BlockId, Camera)>,
     /// The folders agents were opened in on this canvas, newest first.
     pub recent: Vec<PathBuf>,
     /// The drawings, above the blocks.
@@ -4435,6 +4438,26 @@ impl Workspace {
             );
             self.fly(to, self.center(window), cx);
         }
+    }
+
+    /// A double-click on a block's title: the view glides to show the block centered, as large as
+    /// fits above the toolbar; on the block it framed, back to where the view was.
+    pub(crate) fn frame_block(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(rect) = self.space.canvas.get(id).map(|b| b.rect) else {
+            return;
+        };
+        let vp = self.viewport(window);
+        let camera = self.space.canvas.camera;
+        let mut framed = camera;
+        framed.fit(rect, Size::new(vp.w, vp.h - toolbar::SPACE));
+        let to = match self.space.framed.take() {
+            Some((was, back)) if was == id && camera == framed => back,
+            _ => {
+                self.space.framed = Some((id, camera));
+                framed
+            }
+        };
+        self.fly(to, self.center(window), cx);
     }
 
     /// Where a new terminal starts (None: the home folder).
@@ -14154,6 +14177,51 @@ mod tests {
             let two = layout(cx, git, Point::new(0.0, 680.0), 2.0);
             compare(tab.name(), &one, &two);
         }
+    }
+
+    #[gpui_kit::test]
+    fn double_clicking_a_title_frames_the_block_and_again_goes_back(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        let id = first_id(&ws, cx);
+        let (before, vp) = cx
+            .update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                let ws = ws.read(cx);
+                (ws.space.canvas.camera, ws.viewport(window))
+            })
+            .unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            window.double_click(("title", id.0 as usize), cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            let camera = ws.space.canvas.camera;
+            assert!(camera.zoom() > before.zoom(), "bigger: {}", camera.zoom());
+            let r = camera.rect_to_screen(ws.space.canvas.get(id).unwrap().rect);
+            assert!(
+                (r.x + r.w / 2.0 - vp.w / 2.0).abs() < 1.0,
+                "centered: {r:?}"
+            );
+            assert!(
+                r.x >= 0.0 && r.y >= 0.0 && r.x + r.w <= vp.w,
+                "on screen: {r:?}"
+            );
+            assert!(
+                r.y + r.h <= vp.h - crate::toolbar::SPACE,
+                "clear of the toolbar: {r:?}"
+            );
+            assert!(ws.drag.is_none(), "a double-click doesn't move the block");
+        });
+        // The glide ends first: a title still moving isn't where the pointer goes.
+        std::thread::sleep(crate::motion::FLIGHT + std::time::Duration::from_millis(50));
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.double_click(("title", id.0 as usize), cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.space.canvas.camera, before, "back where it was")
+        });
     }
 
     #[gpui_kit::test]

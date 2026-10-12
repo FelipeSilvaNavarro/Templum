@@ -20,6 +20,8 @@ use crate::workspace::{Tool, Workspace};
 const BUTTON: f32 = 32.0;
 /// Clear of the canvas's bottom edge.
 const MARGIN: f32 = 12.0;
+/// The strip at the bottom of the canvas the toolbar covers.
+pub(crate) const SPACE: f32 = BUTTON + 8.0 + MARGIN;
 
 pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
     let ui = ws.ui;

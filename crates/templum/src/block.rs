@@ -102,7 +102,14 @@ pub(crate) fn render(
         .when(live, |el| {
             el.on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |ws, e: &MouseDownEvent, _, _| ws.begin_move(id, e.position)),
+                cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                    // A double-click frames the block; the camera flies, so nothing moves.
+                    if e.click_count == 2 {
+                        ws.frame_block(id, window, cx);
+                    } else {
+                        ws.begin_move(id, e.position);
+                    }
+                }),
             )
         })
         .test_support();
