@@ -119,7 +119,9 @@ impl Snapshot {
         let heard = &term.1;
         let term = match term.0.try_lock_unfair() {
             Some(term) => term,
-            None if stale => term.0.lock(),
+            // Unfair: waits for the parse under way (at most MAX_LOCKED_READ bytes), not for
+            // the PTY thread's whole read pass as the fair lock would.
+            None if stale => term.0.lock_unfair(),
             None => return false,
         };
         let blinking = term.cursor_style().blinking;

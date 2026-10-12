@@ -124,9 +124,10 @@ impl EventListener for Listener {
                 s.wake();
             }
             // Exit comes after the child's last output has been read (ChildExit comes before).
+            // Uncoalesced: a block off screen is never re-armed, and must still close.
             Event::Exit => {
                 s.exited.store(true, Ordering::Release);
-                s.wake();
+                s.wake_now();
             }
             Event::Wakeup => s.wake(),
             Event::Bell => s.attention(None),
@@ -181,15 +182,17 @@ pub enum SelectionKind {
     Line,
 }
 
+// The UI thread locks the grid unfairly: it never waits for the PTY thread's lease (held for a
+// whole read pass), only for the parse under way. See alacritty's sync.rs.
 impl SharedTerm {
     /// Applies new options to the running terminal (alacritty trims the history if needed).
     pub fn set_options(&self, options: TermOptions) {
-        self.0.lock().set_options(options.config());
+        self.0.lock_unfair().set_options(options.config());
     }
 
     /// Starts a selection at a viewport cell (row 0 = top visible line).
     pub fn select_start(&self, row: usize, col: usize, side: Side, kind: SelectionKind) {
-        let mut term = self.0.lock();
+        let mut term = self.0.lock_unfair();
         let point = grid_point(&term, row, col);
         let ty = match kind {
             SelectionKind::Simple => SelectionType::Simple,
@@ -200,7 +203,7 @@ impl SharedTerm {
     }
 
     pub fn select_update(&self, row: usize, col: usize, side: Side) {
-        let mut term = self.0.lock();
+        let mut term = self.0.lock_unfair();
         let point = grid_point(&term, row, col);
         if let Some(selection) = term.selection.as_mut() {
             selection.update(point, side);
@@ -208,15 +211,27 @@ impl SharedTerm {
     }
 
     pub fn select_clear(&self) {
-        self.0.lock().selection = None;
+        self.0.lock_unfair().selection = None;
     }
 
     /// The selected text; None when nothing (or only an empty range) is selected.
     pub fn selection_text(&self) -> Option<String> {
         self.0
-            .lock()
+            .lock_unfair()
             .selection_to_string()
             .filter(|t| !t.is_empty())
+    }
+
+    /// Re-arms the coalesced notification: the next output wakes the UI again. Call it right
+    /// before reading the grid, so output parsed during the read isn't missed. Only painted
+    /// terminals are re-armed: output off screen wakes the UI once, then waits to be painted.
+    pub fn rearm(&self) {
+        self.1.pending.store(false, Ordering::Release);
+    }
+
+    /// False while a wake-up waits to be re-armed (tests).
+    pub fn armed(&self) -> bool {
+        !self.1.pending.load(Ordering::Acquire)
     }
 }
 
@@ -472,11 +487,6 @@ impl Terminal {
         (self.cols, self.rows)
     }
 
-    /// Re-arms the coalesced notification. Call once per frame.
-    pub fn rearm(&self) {
-        self.shared.pending.store(false, Ordering::Release);
-    }
-
     /// The shell's title (OSC 0/2), or the shell's name.
     pub fn title(&self) -> String {
         self.shared
@@ -538,14 +548,19 @@ impl Terminal {
 
     /// Sends raw input (scrolling the view back to the bottom, like any typing).
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {
-        self.term.0.lock().scroll_display(Scroll::Bottom);
+        self.term.0.lock_unfair().scroll_display(Scroll::Bottom);
         let _ = self.pty.send(Msg::Input(bytes.into()));
     }
 
     /// Sends a key press. Returns false for printable text, which must come through the
     /// text-input path instead (IME, dead keys).
     pub fn key(&self, input: &KeyInput) -> bool {
-        let app_cursor = self.term.0.lock().mode().contains(TermMode::APP_CURSOR);
+        let app_cursor = self
+            .term
+            .0
+            .lock_unfair()
+            .mode()
+            .contains(TermMode::APP_CURSOR);
         match encode_key(input, app_cursor) {
             Some(bytes) => {
                 self.write(bytes);
@@ -559,7 +574,7 @@ impl Terminal {
         let bracketed = self
             .term
             .0
-            .lock()
+            .lock_unfair()
             .mode()
             .contains(TermMode::BRACKETED_PASTE);
         self.write(paste_bytes(text, bracketed));
@@ -574,7 +589,7 @@ impl Terminal {
         *self.shared.size.lock().unwrap() = size;
         self.term
             .0
-            .lock()
+            .lock_unfair()
             .resize(TermSize::new(cols as usize, rows as usize));
         let _ = self.pty.send(Msg::Resize(size));
     }
@@ -587,7 +602,7 @@ impl Terminal {
     }
 
     fn jump_in(term: &SharedTerm, up: bool) -> bool {
-        let mut term = term.0.lock();
+        let mut term = term.0.lock_unfair();
         if term.mode().contains(TermMode::ALT_SCREEN) {
             return false;
         }
@@ -611,7 +626,7 @@ impl Terminal {
         if lines == 0 {
             return;
         }
-        let mut term = self.term.0.lock();
+        let mut term = self.term.0.lock_unfair();
         let mode = *term.mode();
         if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
             drop(term);
@@ -709,7 +724,7 @@ mod tests {
         shared.wake();
         shared.wake();
         assert_eq!(count.load(Ordering::SeqCst), 1);
-        shared.pending.store(false, Ordering::Release); // what Terminal::rearm does
+        shared.pending.store(false, Ordering::Release); // what SharedTerm::rearm does
         shared.wake();
         assert_eq!(count.load(Ordering::SeqCst), 2);
     }
@@ -752,6 +767,28 @@ mod tests {
         feed(&term, b"\x07");
         assert_eq!(shared.status.lock().unwrap().attention, 1);
         assert_eq!(shared.status.lock().unwrap().message, None);
+    }
+
+    #[test]
+    fn an_exit_wakes_the_ui_even_before_the_terminal_is_rearmed() {
+        // A block off screen is never re-armed: its program's exit must still reach the UI.
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = count.clone();
+        let shared = Arc::new(Shared::new(
+            Arc::new(move || {
+                c.fetch_add(1, Ordering::SeqCst);
+            }),
+            window_size(10, 2, (8, 16)),
+            Palette::default(),
+        ));
+        shared.wake();
+        Listener(shared.clone()).send_event(Event::Exit);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            2,
+            "not held back by the coalescing"
+        );
+        assert!(shared.exited.load(Ordering::Acquire));
     }
 
     #[test]

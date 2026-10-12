@@ -187,10 +187,6 @@ impl Render for Workspace {
         for id in exited {
             self.close(id, window, cx);
         }
-        // Re-arm once per frame: output is coalesced to frame rate.
-        for (_, pane) in self.space.terminals() {
-            pane.term.rearm();
-        }
         self.hear(window, cx);
 
         let vp = self.viewport(window);
