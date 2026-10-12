@@ -116,9 +116,13 @@ A file holds one responsibility; a module that grows past a few hundred lines be
 
 ## Distribution
 
-Installers are built by [`cargo-packager`](https://github.com/crabnebula-dev/cargo-packager) in
-`.github/workflows/release.yml`: `.dmg` (macOS), NSIS `.exe` and `.msi` (Windows), `.deb`, AppImage and pacman
-(Linux). Builds are unsigned for now; signing and auto-update come later.
+`./publish.sh` (on `main`) bumps the workspace version, writes the `CHANGELOG.md` section from the Conventional
+Commits since the last release, and pushes a `vX.Y.Z` tag. The tag runs `.github/workflows/release.yml`: installers
+built by [`cargo-packager`](https://github.com/crabnebula-dev/cargo-packager) (`.dmg` for macOS on Apple Silicon and
+Intel; NSIS `.exe` and `.msi` for Windows x64; `.deb` and AppImage for Linux x86_64 and ARM64, plus pacman on x86_64),
+the bare executables (`.tar.gz` on Linux, `.exe` on Windows), a `.sha256` for each file, and a GitHub Release whose
+notes are the CHANGELOG section (a `-rc.N` tag is a prerelease). Builds are unsigned for now; signing, auto-update
+and package managers (Homebrew, Scoop, Winget) come later.
 
 ## Licensing
 

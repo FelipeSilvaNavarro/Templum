@@ -255,8 +255,15 @@ Nushell, Command Prompt). The full list is in [docs/specs/config.md](docs/specs/
 
 ## Pre-built binaries
 
-There are no releases yet. When they arrive on the [releases page](https://github.com/KingDasWinx/Templum/releases),
-they will be **unsigned** at first:
+Each release on the [releases page](https://github.com/KingDasWinx/Templum/releases) has, with a `.sha256` beside
+every file:
+
+- **macOS** (Apple Silicon and Intel): `.dmg`.
+- **Windows** (x64): an installer (`-setup.exe` or `.msi`), or the portable `templum-x86_64-pc-windows-msvc.exe`.
+- **Linux** (x86_64 and ARM64): `.deb`, AppImage, or the bare executable in `templum-<target>.tar.gz`; a pacman
+  package and its `PKGBUILD` on x86_64.
+
+What changed in each one is in [CHANGELOG.md](CHANGELOG.md). The builds are **unsigned** for now:
 
 - **macOS:** right-click the app → *Open* → *Open* (only needed the first time).
 - **Windows:** on the SmartScreen prompt, click *More info* → *Run anyway*.
