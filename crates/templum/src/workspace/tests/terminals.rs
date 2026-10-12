@@ -349,6 +349,26 @@ fn the_command_shortcuts_jump_between_prompts(cx: &mut TestAppContext) {
         assert!(Instant::now() < deadline, "seq never ended");
         std::thread::sleep(Duration::from_millis(50));
     }
+    // The command's end comes before bash prints its next prompt: without that prompt there is
+    // nothing below to jump to.
+    let last_line = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let mut snap = Snapshot::default();
+            snap.refresh(
+                ws.space.terminal(id).unwrap().term.shared(),
+                &ws.theme.palette,
+            );
+            let text = snap.text();
+            text.lines()
+                .rfind(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .to_string()
+        })
+    };
+    while last_line(cx) == "100" {
+        assert!(Instant::now() < deadline, "bash never printed its prompt");
+        std::thread::sleep(Duration::from_millis(50));
+    }
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.press(PREVIOUS_PROMPT, cx);
