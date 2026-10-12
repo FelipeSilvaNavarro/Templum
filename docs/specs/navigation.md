@@ -12,7 +12,8 @@ wheel scrolls its history. Templum gets two ways to move the canvas wherever the
 ## The hand: hold Alt
 
 - While **Alt** is held (**Option** on macOS), a layer covers the canvas, blocks included, with the open-hand
-  cursor (the closed hand while dragging):
+  cursor (the closed hand while dragging), and the toolbar shows the Hand tool on; letting go shows the tool that
+  was on before:
   - a drag pans the canvas;
   - the wheel, or two fingers on a touchpad, zooms around the pointer, as the Hand tool does;
   - Ctrl+wheel and pinching zoom, as anywhere.
@@ -33,7 +34,8 @@ use the middle button (no paste of the primary selection yet).
 **Headless UI:**
 
 - With Alt held, the hand layer exists; a drag over a terminal pans the canvas and selects nothing; the wheel over
-  a terminal zooms the canvas; letting go of Alt removes the layer.
+  a terminal zooms the canvas; the toolbar shows the Hand on until Alt is let go; letting go of Alt removes the
+  layer.
 - With the Hand tool, the wheel zooms over blocks and the empty canvas.
 - A middle-button drag over a terminal pans the canvas.
 

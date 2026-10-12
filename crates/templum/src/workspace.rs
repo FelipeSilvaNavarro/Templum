@@ -527,7 +527,7 @@ pub struct Workspace {
     /// The open right-click menu.
     pub(crate) menu: Option<menu::OpenMenu>,
     /// Alt was held at the last frame (the hand layer is drawn).
-    hand: bool,
+    pub(crate) hand: bool,
     /// The toolbar's active tool.
     pub(crate) tool: Tool,
     /// The drawing tools' color and width.
@@ -14163,5 +14163,26 @@ mod tests {
         })
         .unwrap();
         ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.0));
+    }
+
+    #[gpui_kit::test]
+    fn holding_alt_lights_the_hand_in_the_toolbar_until_let_go(cx: &mut TestAppContext) {
+        let (handle, ws) = open(cx);
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let lit = |window: &Window, id: &'static str| window.find(id).selected();
+            assert_eq!(lit(window, "tool-select"), Some(true));
+            assert_eq!(lit(window, "tool-hand"), Some(false));
+            hold_alt(window, cx, true);
+            assert_eq!(lit(window, "tool-hand"), Some(true));
+            assert_eq!(lit(window, "tool-select"), Some(false));
+            hold_alt(window, cx, false);
+            assert_eq!(lit(window, "tool-select"), Some(true));
+            assert_eq!(lit(window, "tool-hand"), Some(false));
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            assert_eq!(ws.tool, super::Tool::Select, "Alt doesn't change the tool")
+        });
     }
 }
