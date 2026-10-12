@@ -1,6 +1,7 @@
 //! Tests of the settings panel's choices, numbers, slide, fonts and shell arguments.
 
 use super::edits::{join_args, split_args};
+use super::fields::{CURSOR, FONT_SIZE, MODE};
 use super::fonts::{is_monospace, safe_to_load};
 use super::*;
 
