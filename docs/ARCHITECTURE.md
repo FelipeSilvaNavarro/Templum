@@ -45,9 +45,7 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - Only blocks inside the viewport are drawn.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded;
-  far-away blocks are drawn simplified (level of detail). The editor and Git blocks are the exception: only
-  their frame follows the zoom, and their contents keep their real size, clipped by it (their gpui-kit fields
-  and buttons don't scale, so scaling the rest around them broke the layout). A zoom glides to its step over 150 ms through
+  far-away blocks are drawn simplified (level of detail). A zoom glides to its step over 150 ms through
   zooms snapped to 0.02 (`templum-canvas`'s `CameraFlight`); the camera holds the target, the workspace's `view`
   is what is drawn.
 - **Persistence (planned):** the workspace (camera + blocks: rect, cwd, shell, title) is saved as JSON in the

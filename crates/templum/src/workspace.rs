@@ -14020,36 +14020,4 @@ mod tests {
             });
         }
     }
-
-    // The editor's and the Git block's contents keep their size at every zoom: only their frame
-    // follows the canvas (its content is clipped to it).
-    #[gpui_kit::test]
-    fn the_editors_and_git_blocks_contents_keep_their_size_at_every_zoom(cx: &mut TestAppContext) {
-        use crate::git_block::row_id;
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.txt"), "a\n").unwrap();
-        let repo = git_repo();
-        std::fs::write(repo.path().join("b.txt"), "b\n").unwrap();
-        let (handle, ws) = open(cx);
-        let _editor = open_editor(handle, &ws, cx, dir.path());
-        let git = open_git(handle, &ws, cx, repo.path());
-        let sizes = |cx: &mut TestAppContext| {
-            cx.update_window(handle, |_, window, _| {
-                (
-                    window.find(("entry", 0usize)).bounds().size,
-                    window.find(row_id(git, "unstaged", 0)).bounds().size,
-                )
-            })
-            .unwrap()
-        };
-        let at_one = sizes(cx);
-        for zoom in [0.5, 2.0] {
-            ws.update(cx, |ws, _| {
-                ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), zoom);
-                ws.space.view = ws.space.canvas.camera;
-            });
-            frame(handle, cx);
-            assert_eq!(sizes(cx), at_one, "zoom {zoom}");
-        }
-    }
 }
