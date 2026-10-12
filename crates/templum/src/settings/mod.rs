@@ -3,7 +3,6 @@
 //! the workspace's state. A change goes through the workspace, which applies it on the next frame
 //! and saves it shortly after.
 
-use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -21,16 +20,28 @@ use gpui_kit::component::{Icon, Sizable as _, TITLE_BAR_HEIGHT, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Anchor, AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Entity, FontWeight,
-    MouseDownEvent, SharedString, Subscription, TestSupportExt, Window, div, font, point, px,
+    MouseDownEvent, SharedString, Subscription, TestSupportExt, Window, div, point, px,
 };
 
 use crate::agents::{AgentEntry, Draft};
 use crate::config::{self, Config, Edit, Mode, Shape, ThemeConfig, WorkingDirectory};
-use crate::grid::{self, hsla};
+use crate::grid::hsla;
 use crate::keys::Command;
 use crate::motion;
 use crate::theme::Ui;
 use crate::workspace::{Workspace, show_notification};
+
+mod edits;
+mod fonts;
+#[cfg(test)]
+mod tests;
+
+use edits::set_shell;
+pub(crate) use edits::{
+    args_error, args_text, folder_hint, folder_text, program_text, set_args, set_family,
+    set_folder, set_folder_kind, set_git_program, set_program,
+};
+pub(crate) use fonts::monospace_families;
 
 /// The panel's width, at most 60% of the canvas.
 const WIDTH: f32 = 480.0;
@@ -1439,161 +1450,6 @@ static FONT_SIZE: Number = Number {
     set: |c, v| c.font.size = v as f32,
 };
 
-/// Equal advances for "i" and "m": a monospaced font (GPUI doesn't say which fonts are).
-fn is_monospace(i: f32, m: f32) -> bool {
-    (i - m).abs() <= 0.01
-}
-
-/// The installed monospaced families, sorted. Measured when the panel opens: one advance pair
-/// per family.
-pub(crate) fn monospace_families(window: &Window) -> Vec<SharedString> {
-    let ts = window.text_system();
-    let installed = ts.all_font_names();
-    let candidates = if cfg!(any(target_os = "macos", target_os = "windows")) {
-        installed
-    } else {
-        safe_to_load(installed, fc_list_with_i_and_m())
-    };
-    candidates
-        .into_iter()
-        .filter(|name| {
-            let id = ts.resolve_font(&font(name.clone()));
-            // A family that doesn't load resolves to a fallback font: not this family.
-            let loaded = ts
-                .get_font_for_id(id)
-                .is_some_and(|f| f.family.as_ref() == name.as_str());
-            let advance = |c| ts.advance(id, px(14.0), c).map(|s| f32::from(s.width)).ok();
-            loaded
-                && matches!((advance('i'), advance('m')), (Some(i), Some(m)) if m > 0.0 && is_monospace(i, m))
-        })
-        .map(SharedString::from)
-        .collect()
-}
-
-/// The families that are safe to load on Linux. There GPUI's text system drops a loaded family's
-/// faces that have no "m" from the font database for good, and those are the emoji, symbol and
-/// script fonts other text falls back to. So only families fontconfig says have both "i" and "m"
-/// are loaded; without fc-list, only the built-in list.
-fn safe_to_load(installed: Vec<String>, with_i_and_m: Option<HashSet<String>>) -> Vec<String> {
-    installed
-        .into_iter()
-        .filter(|name| match &with_i_and_m {
-            Some(families) => families.contains(name),
-            None => grid::MONOSPACE.contains(&name.as_str()),
-        })
-        .collect()
-}
-
-/// Every family name of the fonts that have both "i" and "m", from fontconfig.
-fn fc_list_with_i_and_m() -> Option<HashSet<String>> {
-    let out = std::process::Command::new("fc-list")
-        .args([":charset=69 6d", "--format", "%{family}\n"])
-        .output()
-        .ok()?;
-    out.status.success().then(|| {
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .flat_map(|line| line.split(','))
-            .map(str::to_owned)
-            .collect()
-    })
-}
-
-/// `font.family`; "" is Default (the key is removed: the first installed font of the built-in list).
-pub(crate) fn set_family(ws: &mut Workspace, family: &str, cx: &mut Context<Workspace>) {
-    if family.is_empty() {
-        ws.edit(Edit::remove("font", "family"), |c| c.font.family = None, cx);
-    } else {
-        ws.edit(
-            Edit::set("font", "family", family),
-            |c| c.font.family = Some(family.to_string()),
-            cx,
-        );
-    }
-}
-
-/// Splits on spaces; "…" or '…' keeps spaces (and the other quote) inside one argument.
-pub(crate) fn split_args(text: &str) -> Result<Vec<String>, &'static str> {
-    let mut args = Vec::new();
-    let mut current: Option<String> = None;
-    let mut quote: Option<char> = None;
-    for c in text.chars() {
-        match quote {
-            Some(q) if c == q => quote = None,
-            Some(_) => current.get_or_insert_default().push(c),
-            None if c == '"' || c == '\'' => {
-                quote = Some(c);
-                current.get_or_insert_default();
-            }
-            None if c.is_whitespace() => args.extend(current.take()),
-            None => current.get_or_insert_default().push(c),
-        }
-    }
-    if quote.is_some() {
-        return Err("Unclosed quote");
-    }
-    args.extend(current);
-    Ok(args)
-}
-
-/// The text field's form of `args`: quoted where an argument is empty or has a space or a quote.
-pub(crate) fn join_args(args: &[String]) -> String {
-    args.iter()
-        .map(|a| {
-            if !a.is_empty() && !a.contains(|c: char| c.is_whitespace() || c == '"' || c == '\'') {
-                a.clone()
-            } else if !a.contains('"') {
-                format!("\"{a}\"")
-            } else if !a.contains('\'') {
-                format!("'{a}'")
-            } else {
-                // Both quotes: "…", each " written as "'"'" (adjacent quoted parts join up).
-                format!("\"{}\"", a.replace('"', "\"'\"'\""))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// The Git program typed in the panel; empty or "git" is the default (the key is removed).
-pub(crate) fn set_git_program(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
-    // Kept as typed (the field shows the config's value: trimming here would eat a space typed
-    // before the next word, as in "Program Files"); GitConfig::program trims it for use.
-    if text.trim().is_empty() || text.trim() == "git" {
-        ws.edit(
-            Edit::remove("git", "program"),
-            |c| c.git.program = "git".to_string(),
-            cx,
-        );
-    } else {
-        ws.edit(
-            Edit::set("git", "program", text),
-            |c| c.git.program = text.to_string(),
-            cx,
-        );
-    }
-}
-
-/// `shell.program`, trimmed; empty removes the key (the default shell). The typed
-/// text is kept as a draft, so a space typed before the rest of a path stays in the field.
-pub(crate) fn set_program(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
-    ws.drafts.insert("program", text.to_string());
-    let text = text.trim();
-    if text.is_empty() {
-        ws.edit(
-            Edit::remove("shell", "program"),
-            |c| c.shell.program = None,
-            cx,
-        );
-    } else {
-        ws.edit(
-            Edit::set("shell", "program", text),
-            |c| c.shell.program = Some(text.to_string()),
-            cx,
-        );
-    }
-}
-
 /// The shell new terminals run: the default, or one found on this computer. One set by hand that
 /// isn't in the list shows as Custom.
 fn shell_row(ws: &Workspace, entity: &Entity<Workspace>) -> Row {
@@ -1641,146 +1497,6 @@ fn shell_row(ws: &Workspace, entity: &Entity<Workspace>) -> Row {
         })
 }
 
-/// `shell.program` and `shell.args` from the list: a shell found here, or None for the default
-/// (both keys removed).
-pub(crate) fn set_shell(
-    ws: &mut Workspace,
-    shell: Option<&templum_terminal::ShellOption>,
-    cx: &mut Context<Workspace>,
-) {
-    // The text fields show what the list chose.
-    ws.drafts.remove("program");
-    ws.drafts.remove("args");
-    match shell {
-        None => {
-            ws.edit(
-                Edit::remove("shell", "program"),
-                |c| c.shell.program = None,
-                cx,
-            );
-            ws.edit(Edit::remove("shell", "args"), |c| c.shell.args.clear(), cx);
-        }
-        Some(shell) => {
-            let program = shell.program.clone();
-            ws.edit(
-                Edit::set("shell", "program", program.as_str()),
-                |c| c.shell.program = Some(program.clone()),
-                cx,
-            );
-            let args = shell.args.clone();
-            let value: toml_edit::Array = args.iter().map(String::as_str).collect();
-            ws.edit(
-                Edit::set("shell", "args", value),
-                |c| c.shell.args = args,
-                cx,
-            );
-        }
-    }
-    cx.notify();
-}
-
-/// `shell.args` from the text field. An unclosed quote waits (the field says so); the typed text
-/// is kept as a draft, so the field shows it rather than the config.
-pub(crate) fn set_args(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
-    ws.drafts.insert("args", text.to_string());
-    if let Ok(args) = split_args(text) {
-        let value: toml_edit::Array = args.iter().map(String::as_str).collect();
-        ws.edit(
-            Edit::set("shell", "args", value),
-            |c| c.shell.args = args,
-            cx,
-        );
-    }
-    cx.notify();
-}
-
-/// What the arguments field shows: the draft while it is what's in effect (or can't be yet),
-/// else the config's.
-pub(crate) fn args_text(ws: &Workspace) -> String {
-    match ws.drafts.get("args") {
-        Some(d) if split_args(d).map_or(true, |a| a == ws.config.shell.args) => d.clone(),
-        _ => join_args(&ws.config.shell.args),
-    }
-}
-
-pub(crate) fn args_error(ws: &Workspace) -> Option<&'static str> {
-    ws.drafts.get("args").and_then(|d| split_args(d).err())
-}
-
-/// The start folder dropdown: "inherit", "home" or "folder" (the home folder's path, to edit).
-pub(crate) fn set_folder_kind(ws: &mut Workspace, kind: &str, cx: &mut Context<Workspace>) {
-    // What was typed in the folder field belongs to the choice being left.
-    ws.drafts.remove("working_directory");
-    let (value, wd) = match kind {
-        "home" => ("~".to_string(), WorkingDirectory::Home),
-        "folder" => {
-            if matches!(ws.config.shell.working_directory, WorkingDirectory::Path(_)) {
-                return;
-            }
-            let Some(home) = std::env::home_dir() else {
-                return;
-            };
-            (home.display().to_string(), WorkingDirectory::Path(home))
-        }
-        _ => ("inherit".to_string(), WorkingDirectory::Inherit),
-    };
-    ws.edit(
-        Edit::set("shell", "working_directory", value),
-        |c| c.shell.working_directory = wd,
-        cx,
-    );
-}
-
-/// The folder field. "~" and "inherit" alone would switch the dropdown to Home or Inherit and
-/// hide the field mid-typing: they wait for the rest of the path.
-pub(crate) fn set_folder(ws: &mut Workspace, text: &str, cx: &mut Context<Workspace>) {
-    ws.drafts.insert("working_directory", text.to_string());
-    if matches!(text, "" | "~" | "inherit") {
-        cx.notify();
-        return;
-    }
-    let wd = WorkingDirectory::from(text.to_string());
-    ws.edit(
-        Edit::set("shell", "working_directory", text),
-        |c| c.shell.working_directory = wd,
-        cx,
-    );
-}
-
-pub(crate) fn folder_text(ws: &Workspace) -> String {
-    let current = &ws.config.shell.working_directory;
-    match ws.drafts.get("working_directory") {
-        Some(d)
-            if matches!(d.as_str(), "" | "~" | "inherit")
-                || WorkingDirectory::from(d.clone()) == *current =>
-        {
-            d.clone()
-        }
-        _ => match current {
-            WorkingDirectory::Path(p) => p.display().to_string(),
-            _ => String::new(),
-        },
-    }
-}
-
-/// Why the folder field's text isn't in effect yet (see `set_folder`).
-pub(crate) fn folder_hint(ws: &Workspace) -> Option<&'static str> {
-    match ws.drafts.get("working_directory")?.as_str() {
-        "" => Some("Not applied: type a path"),
-        "~" | "inherit" => Some("Not applied: type the rest of the path"),
-        _ => None,
-    }
-}
-
-/// What the program field shows: the draft while it is what's in effect, else the config's.
-pub(crate) fn program_text(ws: &Workspace) -> String {
-    let current = ws.config.shell.program.as_deref().unwrap_or_default();
-    match ws.drafts.get("program") {
-        Some(d) if d.trim() == current => d.clone(),
-        _ => current.to_string(),
-    }
-}
-
 fn set_theme(c: &mut Config, dark: bool, name: String) {
     if dark {
         c.theme.dark = name;
@@ -1788,6 +1504,3 @@ fn set_theme(c: &mut Config, dark: bool, name: String) {
         c.theme.light = name;
     }
 }
-
-#[cfg(test)]
-mod tests;
