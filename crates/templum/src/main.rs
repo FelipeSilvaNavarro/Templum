@@ -1,3 +1,7 @@
+// A graphical app on Windows: no console window opens behind it. Debug builds keep theirs, for
+// eprintln! and panics.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod agents;
 mod alert;
 mod bench;
