@@ -201,6 +201,13 @@ fn wheel(
     );
 }
 
+/// Restarts the camera's glide from now, so a test's next frame draws it on the way.
+fn restart_glide(ws: &mut Workspace, _: &mut Context<Workspace>) {
+    if let Some((_, since)) = &mut ws.space.flight {
+        *since = std::time::Instant::now();
+    }
+}
+
 fn first_id(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> templum_canvas::BlockId {
     ws.read_with(cx, |ws, _| ws.space.canvas.top().unwrap())
 }

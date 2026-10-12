@@ -91,6 +91,9 @@ fn zoom_keys_glide_to_the_step(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.press(ZOOM_IN, cx);
+        // The glide starts now, however long a slow machine took since the key: the frame
+        // below must catch it on the way.
+        ws.update(cx, restart_glide);
         window.render_frame(cx);
     })
     .unwrap();
@@ -169,6 +172,9 @@ fn fit_all_glides_then_shows_every_block(cx: &mut TestAppContext) {
         });
         window.render_frame(cx);
         window.press(FIT, cx);
+        // The glide starts now, however long a slow machine took since the key: the frame
+        // below must catch it on the way.
+        ws.update(cx, restart_glide);
         window.render_frame(cx);
         assert!(ws.read(cx).space.flight.is_some());
     })
