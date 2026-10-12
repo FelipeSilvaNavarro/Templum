@@ -1,6 +1,7 @@
 //! Cells copied out of a terminal for painting. Painting never waits on the PTY thread:
 //! if it holds the lock (heavy output), the previous snapshot is reused for up to MAX_STALE.
 
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use alacritty_terminal::grid::Dimensions;
@@ -107,16 +108,28 @@ pub struct Snapshot {
     pub rows: Vec<Row>,
     /// None when hidden or scrolled out of view.
     pub cursor: Option<Cursor>,
+    /// Rows copied by the last `refresh`: every row, the changed ones, or none (nothing changed).
+    pub rebuilt: usize,
     taken: Option<Instant>,
+    /// The palette the rows were resolved with: another one means every row again.
+    last_palette: Option<Palette>,
 }
 
 impl Snapshot {
-    /// Re-reads the visible grid, resolving colors with `palette`, unless the PTY thread holds the
-    /// lock, in which case the previous cells are kept (past MAX_STALE it waits). Returns false
-    /// when it kept them.
+    /// Re-reads the visible grid, resolving colors with `palette`, once the terminal changed (its
+    /// output, a scroll, the selection, a resize) or the palette did; otherwise the cells are
+    /// current and nothing is copied. If the PTY thread holds the lock, the previous cells are
+    /// kept (past MAX_STALE it waits). Returns false when it kept them.
     pub fn refresh(&mut self, term: &SharedTerm, palette: &Palette) -> bool {
-        let stale = self.taken.is_none_or(|t| t.elapsed() > MAX_STALE);
         let heard = &term.1;
+        let same_palette = self.last_palette == Some(*palette);
+        if self.taken.is_some() && same_palette && !heard.dirty.load(Ordering::Acquire) {
+            // Still current: it only goes stale while output waits behind a busy lock.
+            self.taken = Some(Instant::now());
+            self.rebuilt = 0;
+            return true;
+        }
+        let stale = self.taken.is_none_or(|t| t.elapsed() > MAX_STALE);
         let term = match term.0.try_lock_unfair() {
             Some(term) => term,
             // Unfair: waits for the parse under way (at most MAX_LOCKED_READ bytes), not for
@@ -124,6 +137,8 @@ impl Snapshot {
             None if stale => term.0.lock_unfair(),
             None => return false,
         };
+        // Cleared under the lock: output parsed after this point sets it again.
+        heard.dirty.store(false, Ordering::Release);
         let blinking = term.cursor_style().blinking;
         let screen_rows = term.screen_lines();
         let content = term.renderable_content();
@@ -203,6 +218,8 @@ impl Snapshot {
             }
         }
         self.rows.iter_mut().for_each(Row::trim);
+        self.rebuilt = screen_rows;
+        self.last_palette = Some(*palette);
         self.taken = Some(Instant::now());
         true
     }
@@ -320,6 +337,73 @@ mod tests {
         assert!(s.refresh(&term, &p));
         assert_eq!(s.rows[0].runs[0].fg, mark);
         assert_eq!(s.rows[0].bgs, vec![(Span { start: 1, len: 1 }, mark)]);
+    }
+
+    #[test]
+    fn refresh_copies_only_after_output_or_a_change_from_the_ui() {
+        use crate::{SelectionKind, Side};
+        let (term, _) = headless(20, 4);
+        feed(&term, b"abc");
+        let p = Palette::default();
+        let mut s = Snapshot::default();
+        assert!(s.refresh(&term, &p));
+        assert_eq!(s.rebuilt, 4, "the first read copies every row");
+        assert!(s.refresh(&term, &p), "nothing happened: still fresh");
+        assert_eq!(s.rebuilt, 0, "nothing happened: nothing is copied");
+        // Output (feed marks the terminal changed, as the PTY thread's wake-up does).
+        feed(&term, b"d");
+        s.refresh(&term, &p);
+        assert!(s.rebuilt > 0);
+        assert_eq!(s.rows[0].text, "abcd");
+        s.refresh(&term, &p);
+        assert_eq!(s.rebuilt, 0);
+        // A selection: alacritty's damage doesn't track it, the UI call does.
+        term.select_start(0, 0, Side::Left, SelectionKind::Simple);
+        term.select_update(0, 1, Side::Right);
+        s.refresh(&term, &p);
+        assert_eq!(s.rebuilt, 4);
+        assert_eq!(s.rows[0].selected, vec![Span { start: 0, len: 2 }]);
+        s.refresh(&term, &p);
+        assert_eq!(s.rebuilt, 0);
+        // Another palette (a theme change): the colors are resolved again at once.
+        let other = Palette {
+            ansi: [Rgb { r: 1, g: 2, b: 3 }; 16],
+            ..Palette::default()
+        };
+        feed(&term, b"\x1b[31m!");
+        s.refresh(&term, &p);
+        s.refresh(&term, &other);
+        assert_eq!(s.rebuilt, 4);
+        assert_eq!(s.rows[0].runs.last().unwrap().fg, Rgb { r: 1, g: 2, b: 3 });
+    }
+
+    #[test]
+    fn a_terminal_idle_for_a_while_never_waits_on_its_first_output() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let (term, _) = headless(20, 4);
+        let p = Palette::default();
+        let mut s = Snapshot::default();
+        s.refresh(&term, &p);
+        // Idle past MAX_STALE, painted every frame: nothing changed, the snapshot is current.
+        std::thread::sleep(MAX_STALE + Duration::from_millis(50));
+        assert!(s.refresh(&term, &p));
+        // Output, while the PTY thread holds the lock for a long parse.
+        feed(&term, b"x");
+        let (locked, wait) = mpsc::channel();
+        let pty = {
+            let term = term.clone();
+            std::thread::spawn(move || {
+                let _held = term.0.lock_unfair();
+                locked.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(300));
+            })
+        };
+        wait.recv().unwrap();
+        let start = Instant::now();
+        assert!(!s.refresh(&term, &p), "the previous cells are drawn");
+        assert!(start.elapsed() < MAX_STALE, "waited {:?}", start.elapsed());
+        pty.join().unwrap();
     }
 
     #[test]

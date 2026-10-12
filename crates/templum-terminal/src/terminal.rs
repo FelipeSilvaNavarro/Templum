@@ -29,8 +29,12 @@ pub type Notify = Arc<dyn Fn() + Send + Sync>;
 /// State shared between the PTY thread (through [`Listener`]) and the UI thread.
 pub(crate) struct Shared {
     notify: Notify,
-    /// Set by the first notification; cleared by [`Terminal::rearm`].
+    /// Set by the first notification; cleared by [`SharedTerm::rearm`].
     pending: AtomicBool,
+    /// The grid may differ from what was last copied out of it: set by the PTY thread's wake-ups
+    /// and by the UI calls that change the grid; cleared by [`crate::Snapshot::refresh`] under
+    /// the lock.
+    pub(crate) dirty: AtomicBool,
     title: Mutex<Option<String>>,
     exited: AtomicBool,
     /// Reported to CSI 14 t (text area size) queries.
@@ -52,6 +56,7 @@ impl Shared {
         Self {
             notify,
             pending: AtomicBool::new(false),
+            dirty: AtomicBool::new(true),
             title: Mutex::new(None),
             exited: AtomicBool::new(false),
             size: Mutex::new(size),
@@ -64,6 +69,7 @@ impl Shared {
     }
 
     fn wake(&self) {
+        self.dirty.store(true, Ordering::Release);
         if !self.pending.swap(true, Ordering::AcqRel) {
             (self.notify)();
         }
@@ -72,6 +78,7 @@ impl Shared {
     /// Wakes the UI even before the next re-arm: a hidden workspace's terminals are never re-armed,
     /// and a command's end or a call for attention must still reach the sidebar.
     pub(crate) fn wake_now(&self) {
+        self.dirty.store(true, Ordering::Release);
         (self.notify)();
     }
 
@@ -188,6 +195,7 @@ impl SharedTerm {
     /// Applies new options to the running terminal (alacritty trims the history if needed).
     pub fn set_options(&self, options: TermOptions) {
         self.0.lock_unfair().set_options(options.config());
+        self.touched();
     }
 
     /// Starts a selection at a viewport cell (row 0 = top visible line).
@@ -200,6 +208,7 @@ impl SharedTerm {
             SelectionKind::Line => SelectionType::Lines,
         };
         term.selection = Some(Selection::new(ty, point, side));
+        self.touched();
     }
 
     pub fn select_update(&self, row: usize, col: usize, side: Side) {
@@ -208,10 +217,12 @@ impl SharedTerm {
         if let Some(selection) = term.selection.as_mut() {
             selection.update(point, side);
         }
+        self.touched();
     }
 
     pub fn select_clear(&self) {
         self.0.lock_unfair().selection = None;
+        self.touched();
     }
 
     /// The selected text; None when nothing (or only an empty range) is selected.
@@ -227,6 +238,11 @@ impl SharedTerm {
     /// terminals are re-armed: output off screen wakes the UI once, then waits to be painted.
     pub fn rearm(&self) {
         self.1.pending.store(false, Ordering::Release);
+    }
+
+    /// The UI changed the grid (a scroll, the selection, a resize): the next refresh reads it.
+    pub(crate) fn touched(&self) {
+        self.1.dirty.store(true, Ordering::Release);
     }
 
     /// False while a wake-up waits to be re-armed (tests).
@@ -549,6 +565,7 @@ impl Terminal {
     /// Sends raw input (scrolling the view back to the bottom, like any typing).
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {
         self.term.0.lock_unfair().scroll_display(Scroll::Bottom);
+        self.term.touched();
         let _ = self.pty.send(Msg::Input(bytes.into()));
     }
 
@@ -591,6 +608,7 @@ impl Terminal {
             .0
             .lock_unfair()
             .resize(TermSize::new(cols as usize, rows as usize));
+        self.term.touched();
         let _ = self.pty.send(Msg::Resize(size));
     }
 
@@ -602,12 +620,12 @@ impl Terminal {
     }
 
     fn jump_in(term: &SharedTerm, up: bool) -> bool {
-        let mut term = term.0.lock_unfair();
-        if term.mode().contains(TermMode::ALT_SCREEN) {
+        let mut grid = term.0.lock_unfair();
+        if grid.mode().contains(TermMode::ALT_SCREEN) {
             return false;
         }
-        let top = -(term.grid().display_offset() as i32);
-        let starts = crate::tap::prompt_lines(term.grid());
+        let top = -(grid.grid().display_offset() as i32);
+        let starts = crate::tap::prompt_lines(grid.grid());
         let target = if up {
             starts.into_iter().rfind(|&l| l < top)
         } else {
@@ -616,8 +634,11 @@ impl Terminal {
         let Some(target) = target else {
             return false;
         };
-        term.scroll_display(Scroll::Delta(top - target));
-        -(term.grid().display_offset() as i32) != top
+        grid.scroll_display(Scroll::Delta(top - target));
+        let moved = -(grid.grid().display_offset() as i32) != top;
+        drop(grid);
+        term.touched();
+        moved
     }
 
     /// Scrolls the history (positive = up). In full-screen apps that asked for it (less,
@@ -641,6 +662,8 @@ impl Terminal {
             ));
         } else {
             term.scroll_display(Scroll::Delta(lines));
+            drop(term);
+            self.term.touched();
         }
     }
 }
@@ -704,6 +727,7 @@ pub(crate) fn feed(term: &SharedTerm, bytes: &[u8]) {
     let mut parser: alacritty_terminal::vte::ansi::Processor =
         alacritty_terminal::vte::ansi::Processor::new();
     parser.advance(&mut *term.0.lock(), bytes);
+    term.touched();
 }
 
 #[cfg(test)]
