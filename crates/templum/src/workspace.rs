@@ -13987,4 +13987,37 @@ mod tests {
             )
         });
     }
+
+    // The editor's gutter, background and current line follow Templum's theme, not gpui-kit's
+    // fixed white (light) or near-black (dark) editor colors.
+    #[gpui_kit::test]
+    fn the_editors_gutter_and_current_line_follow_the_theme(cx: &mut TestAppContext) {
+        use gpui_kit::component::ActiveTheme as _;
+        let (_, ws) = open(cx);
+        for dark in [true, false] {
+            let theme = ws.update(cx, |ws, cx| {
+                let theme = crate::theme::pick(&ws.themes, crate::theme::default_name(dark), "");
+                ws.apply(theme.clone(), cx);
+                theme
+            });
+            cx.update(|cx| {
+                let style = &cx.theme().highlight_theme.style;
+                assert_eq!(
+                    style.editor_background,
+                    Some(theme.ui.surface),
+                    "dark: {dark}"
+                );
+                assert_eq!(
+                    style.editor_gutter_background,
+                    Some(theme.ui.surface),
+                    "dark: {dark}"
+                );
+                assert_eq!(
+                    style.editor_active_line,
+                    Some(theme.ui.card),
+                    "dark: {dark}"
+                );
+            });
+        }
+    }
 }

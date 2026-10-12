@@ -376,6 +376,18 @@ pub(crate) fn apply_to_kit(theme: &Theme, cx: &mut App) {
         kit.accent = ui.accent;
         kit.ring = ui.accent;
         kit.selection = ui.selection;
+        // The code editor's background, line-number gutter and current line come from
+        // gpui-kit's highlight theme, fixed per mode (white, or near black): the block's card
+        // and its faint fill instead. The gutter is painted opaque over scrolled text, so it
+        // takes the card's own color.
+        let mut highlight = (*kit.highlight_theme).clone();
+        highlight.style.editor_background = Some(ui.surface);
+        highlight.style.editor_gutter_background = Some(ui.surface);
+        highlight.style.editor_active_line = Some(ui.card);
+        highlight.style.editor_foreground = Some(foreground);
+        highlight.style.editor_line_number = Some(ui.title_dim);
+        highlight.style.editor_active_line_number = Some(foreground);
+        kit.highlight_theme = std::sync::Arc::new(highlight);
     });
 }
 
