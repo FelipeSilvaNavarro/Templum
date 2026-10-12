@@ -44,7 +44,9 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
   `.github/workflows/release.yml`, which builds every platform and publishes the GitHub Release.
 - **Performance:** pull requests that touch painting or `templum-terminal` run
   `cargo run --release -p templum -- --bench` (Linux) and paste its JSON line in the PR description (and
-  `--bench-mixed`, an agent cockpit: TUIs, editors, Git, a note, kanban).
+  `--bench-mixed`, an agent cockpit: TUIs, editors, Git, a note, kanban; and `--bench-zoom=<kind>` for a change to
+  zooming, run from a real project folder: `cd ~/Documents/github/DaemonQuest &&
+  ~/Documents/github/Templum/target/release/templum --bench-zoom=editor`).
   The bar is `p95_ms` <= 16.7 (see [ADR-0002](docs/adr/0002-ui-framework.md)).
 
 ## Before saying "done"
