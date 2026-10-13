@@ -7,7 +7,9 @@ mod parse;
 mod repo;
 mod words;
 
-pub use diff::{FileDiff, Hunk, Kind, LARGE, Line, new_binary_diff, new_file_diff, parse_diff};
+pub use diff::{
+    FileDiff, Hunk, Kind, LARGE, Line, hunk_patch, new_binary_diff, new_file_diff, parse_diff,
+};
 pub use parse::{
     BRANCH_FORMAT, Branch, Change, Commit, CommitFile, Entry, LOG_DATE, LOG_FORMAT, Operation,
     STASH_FORMAT, Stash, Status, ago, needs_input, not_fast_forward, not_merged, parse_branches,

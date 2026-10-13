@@ -88,6 +88,17 @@ impl FileDiff {
     pub fn large(&self) -> bool {
         self.generated() || self.changed() > LARGE
     }
+
+    /// A hunk of it can be staged, unstaged or discarded alone. Not a new or deleted file (its
+    /// one hunk is the whole file: the file's buttons do it), nor a binary, a file too large or
+    /// one not read.
+    pub fn by_hunk(&self) -> bool {
+        self.old_path.is_some()
+            && self.new_path.is_some()
+            && !self.binary
+            && !self.too_large
+            && !self.unread
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -363,6 +374,31 @@ fn unquoted(s: &str) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
+/// The other way: a name as a patch must carry it for git to read it back.
+fn quoted(s: &str) -> String {
+    if !s.chars().any(|c| c == '"' || c == '\\' || c.is_control()) {
+        return s.to_string();
+    }
+    let mut out = String::from('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            c if c.is_control() => {
+                for b in c.to_string().bytes() {
+                    out.push_str(&format!("\\{b:03o}"));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// `"a/x" "b/x"`, `a/x "b/y"` or `"a/x" b/y`, unquoted; None when neither side is quoted.
 fn quoted_halves(rest: &str) -> Option<(String, String)> {
     if rest.starts_with('"') {
@@ -408,6 +444,32 @@ fn parse_hunk_header(rest: &str) -> Option<Hunk> {
         context: rest.trim().to_string(),
         lines: Vec::new(),
     })
+}
+
+/// Hunk `hunk` of `file` alone, as a patch `git apply` takes: on the index forward (stage), on
+/// the index reversed (unstage), on the working tree reversed (discard). It names only the
+/// file's current path, so a staged rename stays staged when one of its hunks is unstaged.
+/// None when the file can't be taken apart by hunk (`FileDiff::by_hunk`) or has no such hunk.
+pub fn hunk_patch(file: &FileDiff, hunk: usize) -> Option<String> {
+    if !file.by_hunk() {
+        return None;
+    }
+    let h = file.hunks.get(hunk)?;
+    let path = file.new_path.as_deref()?;
+    let (a, b) = (quoted(&format!("a/{path}")), quoted(&format!("b/{path}")));
+    let mut out = format!(
+        "diff --git {a} {b}\n--- {a}\n+++ {b}\n@@ -{},{} +{},{} @@\n",
+        h.old_start, h.old_len, h.new_start, h.new_len
+    );
+    for l in &h.lines {
+        out.push(l.kind.sign());
+        out.push_str(&l.text);
+        out.push('\n');
+        if l.no_newline {
+            out.push_str("\\ No newline at end of file\n");
+        }
+    }
+    Some(out)
 }
 
 /// An untracked file as a new file's diff, so the panel shows it like any other (git has no
@@ -737,5 +799,51 @@ diff --git a/old.txt \"b/caf\\303\\251 \\\\.txt\"\nsimilarity index 100%\nrename
         assert_eq!(files[2].old_path.as_deref(), Some("old.txt"));
         assert_eq!(unquoted("\"a/x\\001y\""), "a/x\u{1}y", "octal");
         assert_eq!(unquoted("a/plain"), "a/plain");
+    }
+
+    #[test]
+    fn a_hunks_patch_is_its_files_header_and_itself() {
+        let files = parse_diff(MODIFIED, usize::MAX);
+        assert!(files[0].by_hunk());
+        assert_eq!(
+            hunk_patch(&files[0], 1).unwrap(),
+            "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -20,3 +21,3 @@\n a\n-b\n+c\n d\n"
+        );
+        assert_eq!(hunk_patch(&files[0], 2), None, "no third hunk");
+    }
+
+    #[test]
+    fn a_renamed_file_patches_its_new_path_and_new_or_deleted_files_none() {
+        let text = "diff --git a/old.rs b/new.rs\nsimilarity index 90%\nrename from old.rs\nrename to new.rs\n--- a/old.rs\n+++ b/new.rs\n@@ -1,2 +1,2 @@\n x\n-y\n+z\n";
+        let renamed = &parse_diff(text, usize::MAX)[0];
+        assert_eq!(
+            hunk_patch(renamed, 0).unwrap(),
+            "diff --git a/new.rs b/new.rs\n--- a/new.rs\n+++ b/new.rs\n@@ -1,2 +1,2 @@\n x\n-y\n+z\n"
+        );
+        let new = &parse_diff(&new_file_diff("n.txt", "a\n"), usize::MAX)[0];
+        assert!(!new.by_hunk());
+        assert_eq!(hunk_patch(new, 0), None, "its file's buttons do it");
+        let gone = "diff --git a/g b/g\ndeleted file mode 100644\n--- a/g\n+++ /dev/null\n@@ -1 +0,0 @@\n-a\n";
+        assert_eq!(hunk_patch(&parse_diff(gone, usize::MAX)[0], 0), None);
+        let binary = "diff --git a/i.png b/i.png\nBinary files a/i.png and b/i.png differ\n";
+        assert_eq!(hunk_patch(&parse_diff(binary, usize::MAX)[0], 0), None);
+    }
+
+    #[test]
+    fn crlf_lines_a_missing_last_newline_and_a_quoted_name_go_back_as_they_came() {
+        let text = "diff --git a/w.txt b/w.txt\n--- a/w.txt\n+++ b/w.txt\n@@ -1,2 +1,2 @@\n a\r\n-b\r\n+c\r\n\
+diff --git \"a/we\\\"ird.txt\" \"b/we\\\"ird.txt\"\n--- \"a/we\\\"ird.txt\"\n+++ \"b/we\\\"ird.txt\"\n@@ -1 +1 @@\n-x\n\\ No newline at end of file\n+y\n\\ No newline at end of file\n";
+        let files = parse_diff(text, usize::MAX);
+        assert_eq!(
+            hunk_patch(&files[0], 0).unwrap(),
+            "diff --git a/w.txt b/w.txt\n--- a/w.txt\n+++ b/w.txt\n@@ -1,2 +1,2 @@\n a\r\n-b\r\n+c\r\n"
+        );
+        assert_eq!(
+            hunk_patch(&files[1], 0).unwrap(),
+            "diff --git \"a/we\\\"ird.txt\" \"b/we\\\"ird.txt\"\n--- \"a/we\\\"ird.txt\"\n+++ \"b/we\\\"ird.txt\"\n@@ -1,1 +1,1 @@\n-x\n\\ No newline at end of file\n+y\n\\ No newline at end of file\n"
+        );
+        assert_eq!(quoted("a/plain name.txt"), "a/plain name.txt");
+        assert_eq!(quoted("a/tab\there.txt"), "\"a/tab\\there.txt\"");
+        assert_eq!(unquoted(&quoted("a/x\u{1}y")), "a/x\u{1}y");
     }
 }

@@ -7,7 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::diff::{self, FileDiff, parse_diff};
@@ -401,6 +401,37 @@ impl Repo {
             .text(&["log", "-1", "--format=%B"])?
             .trim_end()
             .to_string())
+    }
+
+    /// `git apply` of `patch` (a `hunk_patch`): on the index with `cached`, the other way with
+    /// `reverse`. Written to a temporary file, since `run` gives git no stdin. A patch that no
+    /// longer applies (the file changed since it was read) is git's error.
+    pub fn apply_patch(&self, patch: &str, cached: bool, reverse: bool) -> Result<(), GitError> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let file = std::env::temp_dir().join(format!(
+            "templum-{}-{}.patch",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&file, patch).map_err(|e| GitError {
+            command: shown(&self.program, &["apply"]),
+            code: None,
+            stderr: format!("Couldn't write the patch: {e}"),
+            missing: false,
+        })?;
+        let path = file.to_string_lossy().into_owned();
+        // nowarn: a user's apply.whitespace=error would refuse a hunk with a trailing space.
+        let mut args = vec!["apply", "--whitespace=nowarn"];
+        if cached {
+            args.push("--cached");
+        }
+        if reverse {
+            args.push("--reverse");
+        }
+        args.push(&path);
+        let result = self.run(&args).map(drop);
+        let _ = std::fs::remove_file(&file);
+        result
     }
 }
 /// The working tree's diff: the unstaged changes, untracked files included (built with a new

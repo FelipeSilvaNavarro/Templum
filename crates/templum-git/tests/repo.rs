@@ -869,3 +869,155 @@ fn past_the_budget_untracked_files_are_listed_unread_until_asked_for() {
     assert!(!last.unread);
     assert_eq!(last.hunks[0].lines[0].text, "x");
 }
+
+/// a.txt of 30 lines committed, then lines 2, 15 and 28 changed: three hunks.
+fn three_hunks() -> (tempfile::TempDir, Repo) {
+    let (dir, repo) = fresh();
+    let lines: Vec<String> = (1..=30).map(|i| format!("line {i}\n")).collect();
+    write(dir.path(), "a.txt", &lines.concat());
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("a", false).unwrap();
+    let mut changed = lines;
+    for i in [1, 14, 27] {
+        changed[i] = format!("LINE {}\n", i + 1);
+    }
+    write(dir.path(), "a.txt", &changed.concat());
+    (dir, repo)
+}
+
+fn working(repo: &Repo) -> templum_git::WorkingDiff {
+    repo.working_diff(&repo.status().unwrap(), false, &[])
+        .unwrap()
+}
+
+#[test]
+fn stage_unstage_and_discard_one_hunk_of_three() {
+    let (dir, repo) = three_hunks();
+    let d = working(&repo);
+    assert_eq!(d.unstaged[0].hunks.len(), 3);
+    let patch = templum_git::hunk_patch(&d.unstaged[0], 1).unwrap();
+    repo.apply_patch(&patch, true, false).unwrap();
+    let d = working(&repo);
+    assert_eq!(d.staged[0].hunks.len(), 1, "the middle hunk staged");
+    let added = d.staged[0].hunks[0]
+        .lines
+        .iter()
+        .find(|l| l.kind == templum_git::Kind::Added)
+        .unwrap();
+    assert_eq!(added.text, "LINE 15");
+    assert_eq!(d.unstaged[0].hunks.len(), 2, "the other two not");
+    let patch = templum_git::hunk_patch(&d.staged[0], 0).unwrap();
+    repo.apply_patch(&patch, true, true).unwrap();
+    let d = working(&repo);
+    assert!(d.staged.is_empty(), "unstaged again");
+    assert_eq!(d.unstaged[0].hunks.len(), 3);
+    let patch = templum_git::hunk_patch(&d.unstaged[0], 2).unwrap();
+    repo.apply_patch(&patch, false, true).unwrap();
+    let text = std::fs::read_to_string(dir.path().join("a.txt")).unwrap();
+    assert!(
+        text.contains("LINE 2\n") && text.contains("LINE 15\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("line 28\n") && !text.contains("LINE 28"),
+        "the last discarded"
+    );
+}
+
+#[test]
+fn a_hunk_patch_that_no_longer_applies_is_refused() {
+    let (dir, repo) = three_hunks();
+    let patch = templum_git::hunk_patch(&working(&repo).unstaged[0], 1).unwrap();
+    // An agent changed that part since the diff was read.
+    let text = std::fs::read_to_string(dir.path().join("a.txt"))
+        .unwrap()
+        .replace("LINE 15", "other");
+    write(dir.path(), "a.txt", &text);
+    let err = repo.apply_patch(&patch, false, true).unwrap_err();
+    assert!(err.stderr.contains("does not apply"), "{err:?}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        text,
+        "untouched"
+    );
+}
+
+#[test]
+fn hunks_of_a_crlf_file_a_file_without_a_last_newline_and_a_staged_rename() {
+    let (dir, repo) = fresh();
+    let crlf: String = (1..=12).map(|i| format!("l{i}\r\n")).collect();
+    write(dir.path(), "w.txt", &crlf);
+    let twenty: String = (1..=20).map(|i| format!("{i}\n")).collect();
+    write(dir.path(), "old.txt", &twenty);
+    write(dir.path(), "n.txt", "a\nb");
+    repo.stage(&["w.txt", "old.txt", "n.txt"]).unwrap();
+    repo.commit("base", false).unwrap();
+    // CRLF: discard the second of two hunks; the endings stay.
+    write(
+        dir.path(),
+        "w.txt",
+        &crlf
+            .replace("l1\r\n", "L1\r\n")
+            .replace("l12\r\n", "L12\r\n"),
+    );
+    let d = working(&repo);
+    let w = d.unstaged.iter().find(|f| f.path() == "w.txt").unwrap();
+    assert_eq!(w.hunks.len(), 2);
+    repo.apply_patch(&templum_git::hunk_patch(w, 1).unwrap(), false, true)
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("w.txt")).unwrap(),
+        crlf.replace("l1\r\n", "L1\r\n")
+    );
+    // No newline at the end, before and after: staged as it is.
+    write(dir.path(), "n.txt", "a\nB");
+    let n = working(&repo)
+        .unstaged
+        .into_iter()
+        .find(|f| f.path() == "n.txt")
+        .unwrap();
+    repo.apply_patch(&templum_git::hunk_patch(&n, 0).unwrap(), true, false)
+        .unwrap();
+    assert_eq!(repo.run(&["show", ":n.txt"]).unwrap(), b"a\nB");
+    // A staged rename with two hunks: unstaging one keeps the rename staged.
+    repo.run(&["mv", "old.txt", "new.txt"]).unwrap();
+    // Lines 3 and 18: two hunks, far enough apart.
+    let changed: String = (1..=20)
+        .map(|i| match i {
+            3 | 18 => format!("X{i}\n"),
+            _ => format!("{i}\n"),
+        })
+        .collect();
+    write(dir.path(), "new.txt", &changed);
+    repo.stage(&["new.txt"]).unwrap();
+    let d = working(&repo);
+    let renamed = d.staged.iter().find(|f| f.path() == "new.txt").unwrap();
+    assert_eq!(renamed.status, Change::Renamed);
+    assert_eq!(renamed.hunks.len(), 2);
+    repo.apply_patch(&templum_git::hunk_patch(renamed, 1).unwrap(), true, true)
+        .unwrap();
+    let d = working(&repo);
+    let renamed = d.staged.iter().find(|f| f.path() == "new.txt").unwrap();
+    assert_eq!(renamed.status, Change::Renamed, "still a rename");
+    assert_eq!(renamed.hunks.len(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hunk_of_a_file_whose_name_git_quotes() {
+    let (dir, repo) = fresh();
+    let name = "we\"ird\tname.txt";
+    write(dir.path(), name, "a\nb\n");
+    repo.stage(&[name]).unwrap();
+    repo.commit("w", false).unwrap();
+    write(dir.path(), name, "a\nB\n");
+    let d = working(&repo);
+    assert_eq!(d.unstaged[0].path(), name);
+    repo.apply_patch(
+        &templum_git::hunk_patch(&d.unstaged[0], 0).unwrap(),
+        true,
+        false,
+    )
+    .unwrap();
+    assert_eq!(working(&repo).staged[0].path(), name);
+}
