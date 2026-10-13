@@ -650,7 +650,8 @@ impl Items {
                         },
                     ));
                 }
-                if !branch.remote && branch.upstream.is_none() {
+                // No upstream, or one deleted on the server: Publish sends it (again).
+                if !branch.remote && (branch.upstream.is_none() || branch.gone) {
                     let publish = name.clone();
                     menu = menu.item(item(
                         ws,

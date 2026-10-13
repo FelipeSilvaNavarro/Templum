@@ -298,3 +298,34 @@ fn a_comparisons_lines_offer_no_open_at_this_line(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+// Review M9: a branch whose upstream was deleted on the server can be published again.
+#[gpui_kit::test]
+fn a_branch_gone_from_the_server_offers_publish(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let repo = feature_repo(1);
+    let remote = add_remote(repo.path());
+    git_run(repo.path(), &["push", "-q", "-u", "origin", "feature"]);
+    git_run(remote.path(), &["branch", "-q", "-D", "feature"]);
+    git_run(repo.path(), &["fetch", "-q", "--prune"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    on_tab(handle, &ws, cx, id, crate::git_block::Tab::Branches);
+    git_of(&ws, cx, id, |g| {
+        assert!(g.branches[0].gone, "{:?}", g.branches[0])
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.right_click(branch_row(id, false, 0), cx);
+        window.render_frame(cx);
+        // Compare with main, Merge into main…, Rename…, Delete…, Publish, Copy name.
+        window.within("popup-menu").click(4usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(remote.path(), &["rev-parse", "feature"]),
+        git_run(repo.path(), &["rev-parse", "feature"]),
+        "published again"
+    );
+}
