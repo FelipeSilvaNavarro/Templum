@@ -335,7 +335,9 @@ impl Space {
                     Body::Editor(e) => {
                         session::LayoutBlock::Saved(session::Item::Editor(e.item(b.rect)))
                     }
-                    Body::Git(g) => session::LayoutBlock::Saved(session::Item::Git(g.item(b.rect))),
+                    Body::Git(g) => {
+                        session::LayoutBlock::Saved(session::Item::Git(g.item(b.rect, cx)))
+                    }
                 })
                 .collect(),
             focused: self

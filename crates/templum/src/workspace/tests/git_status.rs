@@ -173,11 +173,11 @@ fn new_git_asks_for_a_folder_and_a_saved_block_comes_back_on_its_tab(cx: &mut Te
         assert!(g.repo().is_some());
         assert_eq!(g.tab, crate::git_block::Tab::Branches);
     });
-    let item = ws.read_with(cx, |ws, _| {
+    let item = ws.read_with(cx, |ws, cx| {
         ws.space
             .git(id)
             .unwrap()
-            .item(Rect::new(0.0, 0.0, 1.0, 1.0))
+            .item(Rect::new(0.0, 0.0, 1.0, 1.0), cx)
     });
     assert_eq!(item.tab, "branches");
     cx.update_window(handle, |_, window, cx| {

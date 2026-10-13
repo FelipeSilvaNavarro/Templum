@@ -232,6 +232,11 @@ pub(crate) struct GitItem {
     /// The tab shown: "changes", "history", "branches" or "stashes".
     #[serde(default = "changes")]
     pub tab: String,
+    /// The commit message being written, left out when empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 fn changes() -> String {
@@ -527,11 +532,22 @@ mod tests {
         let back = serde_json::to_string(&item).unwrap();
         assert!(back.contains(r#""kind":"git""#), "{back}");
         assert!(back.contains(r#""tab":"changes""#), "{back}");
+        assert!(!back.contains("summary"), "no message, no key: {back}");
         let item: Item =
             serde_json::from_str(&text.replace(r#""folder""#, r#""tab":"history","folder""#))
                 .unwrap();
         let Item::Git(g) = item else { unreachable!() };
         assert_eq!(g.tab, "history");
+        assert_eq!((g.summary.as_str(), g.description.as_str()), ("", ""));
+        // A commit message being written comes back.
+        let mut draft = g.clone();
+        draft.summary = "Fix the build".into();
+        draft.description = "It broke.".into();
+        let back = serde_json::to_string(&Item::Git(draft.clone())).unwrap();
+        let Item::Git(g) = serde_json::from_str(&back).unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(g, draft);
     }
 
     fn sample() -> Saved {

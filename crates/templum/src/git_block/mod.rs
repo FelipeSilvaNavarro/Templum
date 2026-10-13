@@ -391,11 +391,22 @@ impl Git {
         self.name().into()
     }
 
-    pub fn item(&self, rect: Rect) -> session::GitItem {
+    /// As the canvas file holds it. The commit message being written is kept, unless Amend
+    /// filled it with the last commit's.
+    pub fn item(&self, rect: Rect, cx: &App) -> session::GitItem {
+        let draft = |text: &str| {
+            if self.amend {
+                String::new()
+            } else {
+                text.to_string()
+            }
+        };
         session::GitItem {
             rect: rect.into(),
             folder: self.folder.to_string_lossy().into_owned(),
             tab: self.tab.name().to_string(),
+            summary: draft(&self.summary.read(cx).value()),
+            description: draft(&self.description.read(cx).value()),
         }
     }
 }

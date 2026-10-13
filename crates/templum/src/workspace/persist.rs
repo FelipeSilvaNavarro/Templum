@@ -65,6 +65,10 @@ impl Workspace {
                             window,
                             cx,
                         );
+                        git.summary
+                            .update(cx, |s, cx| s.set_value(g.summary.clone(), window, cx));
+                        git.description
+                            .update(cx, |s, cx| s.set_value(g.description.clone(), window, cx));
                         self.add_block(rect, Body::Git(Box::new(git)))
                     });
                     if let Some(id) = id {

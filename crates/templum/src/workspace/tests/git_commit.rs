@@ -431,3 +431,37 @@ fn the_running_fetch_button_cancels_it(cx: &mut TestAppContext) {
         "cancelling isn't a failure"
     );
 }
+
+#[gpui_kit::test]
+fn the_commit_message_being_written_comes_back_after_a_restart(cx: &mut TestAppContext) {
+    let repo = git_repo();
+    let data = tempfile::tempdir().unwrap();
+    let json = repo.path().display().to_string().replace('\\', "\\\\");
+    write_canvas(
+        data.path(),
+        &format!(
+            r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+                  {{"kind":"git","rect":{{"x":0,"y":0,"w":800,"h":560}},"folder":"{json}",
+                    "summary":"Fix the build","description":"It broke."}}]}}"#
+        ),
+    );
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    settle(handle, cx);
+    let id = first_id(&ws, cx);
+    let item = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, cx| {
+            ws.space
+                .git(id)
+                .unwrap()
+                .item(Rect::new(0.0, 0.0, 1.0, 1.0), cx)
+        })
+    };
+    let saved = item(cx);
+    assert_eq!(
+        (saved.summary.as_str(), saved.description.as_str()),
+        ("Fix the build", "It broke.")
+    );
+    // With Amend on, the fields hold the last commit's message: not a draft to keep.
+    ws.update(cx, |ws, _| ws.space.git_mut(id).unwrap().amend = true);
+    assert_eq!(item(cx).summary, "");
+}
