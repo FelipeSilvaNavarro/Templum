@@ -9,8 +9,8 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, ElementId, MouseButton, MouseDownEvent, TestSupportExt, div,
-    px,
+    AnyElement, ClickEvent, Context, ElementId, MouseButton, MouseDownEvent, ScrollHandle,
+    TestSupportExt, div, px,
 };
 use templum_canvas::BlockId;
 use templum_git::Branch;
@@ -32,7 +32,7 @@ pub(super) fn branches(
     let n = id.0 as usize;
     let (column, right) = match &git.compare {
         Some(c) => (
-            compare_column(ws, id, c, z, cx),
+            compare_column(ws, id, c, &git.compare_scroll, z, cx),
             diff_view::panel(ws, id, git, z, cx),
         ),
         None => (
@@ -98,6 +98,7 @@ fn compare_column(
     ws: &Workspace,
     id: BlockId,
     c: &Compare,
+    scroll: &ScrollHandle,
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
@@ -207,8 +208,10 @@ fn compare_column(
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
+                .track_scroll(scroll)
                 .children(rows)
-                .children(empty),
+                .children(empty)
+                .test_support(),
         )
         .into_any_element()
 }

@@ -7,7 +7,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, Bounds, ClickEvent, Context, ElementId, Hsla, MouseButton, MouseDownEvent,
-    PathBuilder, TestSupportExt, canvas, div, fill, point, px, size, uniform_list,
+    PathBuilder, ScrollHandle, TestSupportExt, canvas, div, fill, point, px, size, uniform_list,
 };
 use templum_canvas::BlockId;
 use templum_git::Search;
@@ -30,7 +30,7 @@ pub(super) fn history(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let column = match &git.shown {
-        Some(shown) => commit_column(ws, id, shown, z, cx),
+        Some(shown) => commit_column(ws, id, shown, &git.details_scroll, z, cx),
         None => list_column(ws, id, git, z, cx),
     };
     div()
@@ -263,6 +263,7 @@ fn commit_column(
     ws: &Workspace,
     id: BlockId,
     shown: &Shown,
+    scroll: &ScrollHandle,
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
@@ -369,8 +370,10 @@ fn commit_column(
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
+                .track_scroll(scroll)
                 .child(details)
-                .children(files),
+                .children(files)
+                .test_support(),
         )
         .into_any_element()
 }

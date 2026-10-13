@@ -115,7 +115,9 @@ pub(super) fn stashes(
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
-                .children(rows),
+                .track_scroll(&git.stash_scroll)
+                .children(rows)
+                .test_support(),
         );
     div()
         .flex_1()

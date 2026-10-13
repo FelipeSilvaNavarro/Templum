@@ -11,8 +11,8 @@ use std::time::Duration;
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, ElementId, Entity, EntityId, FocusHandle, SharedString, Subscription,
-    UniformListScrollHandle, Window,
+    App, Context, ElementId, Entity, EntityId, FocusHandle, ScrollHandle, SharedString,
+    Subscription, UniformListScrollHandle, Window,
 };
 use templum_canvas::{BlockId, Rect, Size};
 use templum_git::{Branch, Commit, CommitFile, Entry, GitError, Operation, Repo, Stash, Status};
@@ -296,6 +296,12 @@ pub(crate) struct Git {
     pub focus: FocusHandle,
     /// The left column's list, scrolled by ↑ and ↓.
     pub lists_scroll: UniformListScrollHandle,
+    /// The scroll of History's commit details, of a comparison's commits and of the stashes:
+    /// kept here, as `lists_scroll` is, since GPUI keeps an element's own scroll only while it
+    /// is drawn, and far away the block is its card.
+    pub details_scroll: ScrollHandle,
+    pub compare_scroll: ScrollHandle,
+    pub stash_scroll: ScrollHandle,
     /// The left column is folded: the diff panel takes the whole width.
     pub lists_folded: bool,
     /// Every panel of the block side by side (Split) or not; the block remembers it.
@@ -419,6 +425,9 @@ impl Git {
             _filter,
             focus: cx.focus_handle(),
             lists_scroll: UniformListScrollHandle::new(),
+            details_scroll: ScrollHandle::new(),
+            compare_scroll: ScrollHandle::new(),
+            stash_scroll: ScrollHandle::new(),
             lists_folded: false,
             split: false,
             files_filter,

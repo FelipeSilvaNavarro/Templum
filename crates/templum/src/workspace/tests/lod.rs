@@ -1366,3 +1366,120 @@ fn an_editors_state_survives_being_drawn_far_away(cx: &mut TestAppContext) {
         "its undo history is there"
     );
 }
+
+/// Scrolls `list` with the wheel at 100%, draws its Git block as its card at 33%, and back: the
+/// list is where it was.
+fn a_lists_scroll_survives_a_card(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+    list: ElementId,
+    scroll: fn(&crate::git_block::Git) -> gpui_kit::ScrollHandle,
+) {
+    rest_at(handle, ws, cx, Point::new(0.0, 0.0), 1.0);
+    cx.update_window(handle, |_, window, cx| {
+        window.scroll(
+            list.clone(),
+            ScrollDelta::Pixels(point(px(0.0), px(-120.0))),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let before = git_of(ws, cx, id, |g| scroll(g).offset().y);
+    assert!(before < px(0.0), "the wheel moved {list:?}'s own scroll");
+    unfocus(handle, ws, cx);
+    rest_at(handle, ws, cx, Point::new(0.0, 0.0), 0.33);
+    assert!(
+        !shown(handle, cx, list.clone()),
+        "far away the block is its card"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx))
+    })
+    .unwrap();
+    rest_at(handle, ws, cx, Point::new(0.0, 0.0), 1.0);
+    assert!(shown(handle, cx, list.clone()));
+    let after = git_of(ws, cx, id, |g| scroll(g).offset().y);
+    assert_eq!(after, before, "{list:?} kept its scroll");
+}
+
+#[gpui_kit::test]
+fn a_commits_details_keep_their_scroll_through_a_card(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    let body: String = (1..=80)
+        .map(|i| format!("Line {i} of a long message.\n"))
+        .collect();
+    git_run(
+        repo.path(),
+        &["commit", "-q", "--allow-empty", "-m", "Long", "-m", &body],
+    );
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.set_git_tab(id, crate::git_block::Tab::History, window, cx)
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 1.0);
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-commit", 0usize), cx)
+    })
+    .unwrap();
+    settle(handle, cx);
+    let list = ElementId::from(("git-commit-details", id.0 as usize));
+    a_lists_scroll_survives_a_card(handle, &ws, cx, id, list, |g| g.details_scroll.clone());
+    git_of(&ws, cx, id, |g| {
+        assert!(g.shown.is_some(), "the commit is still shown")
+    });
+}
+
+#[gpui_kit::test]
+fn a_comparisons_commits_keep_their_scroll_through_a_card(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    git_run(repo.path(), &["checkout", "-q", "-b", "feature"]);
+    for i in 0..40 {
+        git_run(
+            repo.path(),
+            &["commit", "-q", "--allow-empty", "-m", &format!("f{i}")],
+        );
+    }
+    git_run(repo.path(), &["checkout", "-q", "main"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.compare_branch(id, "feature".to_string(), window, cx)
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    let list = ElementId::from(("git-compare-list", id.0 as usize));
+    a_lists_scroll_survives_a_card(handle, &ws, cx, id, list, |g| g.compare_scroll.clone());
+}
+
+#[gpui_kit::test]
+fn the_stashes_keep_their_scroll_through_a_card(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    for i in 0..15 {
+        std::fs::write(repo.path().join("a.txt"), format!("{i}\n")).unwrap();
+        git_run(
+            repo.path(),
+            &["stash", "push", "-q", "-m", &format!("s{i}")],
+        );
+    }
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.set_git_tab(id, crate::git_block::Tab::Stashes, window, cx)
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    let list = ElementId::from(("git-stash-list", id.0 as usize));
+    a_lists_scroll_survives_a_card(handle, &ws, cx, id, list, |g| g.stash_scroll.clone());
+}
