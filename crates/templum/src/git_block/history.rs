@@ -173,6 +173,33 @@ fn list_column(
         .border_color(ui.hairline)
         .child(field(&git.search, z).flex_1())
         .child(fold_button(id, ui, z, cx));
+    let chip = git.file.as_ref().map(|path| {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(4.0 * z))
+            .px(px(10.0 * z))
+            .py(px(2.0 * z))
+            .border_b_1()
+            .border_color(ui.hairline)
+            .text_size(px(FONT * z))
+            .text_color(ui.title_dim)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .child(format!("History of {path}")),
+            )
+            .child(
+                icon_button(("git-file-clear", n), IconName::Close, ui, z)
+                    .tooltip(|window, cx| Tooltip::new("The whole history").build(window, cx))
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.clear_file_history(id, window, cx)
+                    }))
+                    .test_support(),
+            )
+    });
     let modes = div()
         .flex()
         .items_center()
@@ -212,6 +239,7 @@ fn list_column(
     };
     column(ui, z)
         .child(top)
+        .children(chip)
         .child(modes)
         .child(body)
         .into_any_element()

@@ -244,6 +244,10 @@ pub(crate) struct Git {
     pub unpushed: Rc<std::collections::HashSet<String>>,
     /// History lists every branch, tag and remote branch.
     pub all_branches: bool,
+    /// History is narrowed to this file (from the repository's root, with '/').
+    pub file: Option<String>,
+    /// The file at each loaded commit (a rename's old path before it), in a file's history.
+    pub file_paths: Rc<Vec<CommitFile>>,
     pub search: Entity<InputState>,
     /// Where History's search looks.
     pub search_mode: templum_git::Search,
@@ -367,6 +371,8 @@ impl Git {
             graph: Rc::new(Vec::new()),
             unpushed: Rc::new(std::collections::HashSet::new()),
             all_branches: false,
+            file: None,
+            file_paths: Rc::new(Vec::new()),
             search,
             search_mode: templum_git::Search::default(),
             searched: String::new(),

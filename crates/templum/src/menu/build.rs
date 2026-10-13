@@ -235,12 +235,15 @@ impl Items {
                 };
                 let mut menu = menu;
                 if let Some(p) = path.clone().filter(|_| !is_dir) {
-                    let open = p.clone();
+                    let (open, history) = (p.clone(), p.clone());
                     menu = menu
                         .item(item(ws, "Open", None, move |ws, window, cx| {
                             ws.open_file(block, &open, None, window, cx)
                         }))
-                        .item(reveal(ws, p));
+                        .item(reveal(ws, p))
+                        .item(item(ws, "File history", None, move |ws, window, cx| {
+                            ws.history_from_tree(block, history.clone(), window, cx)
+                        }));
                 }
                 if path.is_none() || is_dir {
                     let (file_dir, folder_dir) = (dir.clone(), dir.clone());
@@ -519,6 +522,14 @@ impl Items {
                             ));
                     }
                 }
+                // A new file has no history yet.
+                if list != List::Conflicts && entry.unstaged != Some(templum_git::Change::Untracked)
+                {
+                    let history = path.clone();
+                    menu = menu.item(item(ws, "File history", None, move |ws, window, cx| {
+                        ws.file_history(block, history.clone(), window, cx)
+                    }));
+                }
                 let (copy, ignore) = (path.clone(), path.clone());
                 menu.item(item(
                     ws,
@@ -566,6 +577,7 @@ impl Items {
                 block,
                 commit,
                 undo,
+                restore,
             } => {
                 let (checkout, branch, tag, revert, copy) = (
                     commit.hash.clone(),
@@ -574,7 +586,7 @@ impl Items {
                     commit.hash.clone(),
                     commit.hash.clone(),
                 );
-                let short = commit.short.clone();
+                let (short, restore_hash) = (commit.short.clone(), commit.hash.clone());
                 let message = if commit.body.is_empty() {
                     commit.subject.clone()
                 } else {
@@ -625,13 +637,35 @@ impl Items {
                         cx.write_to_clipboard(ClipboardItem::new_string(message.clone()))
                     },
                 ))
+                .when_some(restore, |menu, then| {
+                    menu.item(item(
+                        ws,
+                        "Restore this version…",
+                        Some(IconName::Undo2),
+                        move |ws, window, cx| {
+                            ws.restore_version(
+                                block,
+                                restore_hash.clone(),
+                                then.clone(),
+                                window,
+                                cx,
+                            )
+                        },
+                    ))
+                })
             }
-            Items::GitCommitFile { path, .. } => menu.item(item(
-                ws,
-                "Copy path",
-                Some(IconName::Copy),
-                move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(path.clone())),
-            )),
+            Items::GitCommitFile { block, path, .. } => {
+                let history = path.clone();
+                menu.item(item(ws, "File history", None, move |ws, window, cx| {
+                    ws.file_history(block, history.clone(), window, cx)
+                }))
+                .item(item(
+                    ws,
+                    "Copy path",
+                    Some(IconName::Copy),
+                    move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(path.clone())),
+                ))
+            }
             Items::GitBranch {
                 block,
                 branch,

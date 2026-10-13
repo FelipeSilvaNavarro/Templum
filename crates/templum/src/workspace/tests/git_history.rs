@@ -810,3 +810,182 @@ fn delete_anyway_after_a_switch_acts_on_its_own_repository(cx: &mut TestAppConte
         "deleted in X"
     );
 }
+
+/// a.txt, renamed to b.txt, then changed; then another file. History of b.txt has three commits.
+fn renamed_repo() -> tempfile::TempDir {
+    let repo = git_repo();
+    commit_file(
+        repo.path(),
+        "a.txt",
+        "one\ntwo\nthree\nfour\nfive\n",
+        "add a",
+    );
+    git_run(repo.path(), &["mv", "a.txt", "b.txt"]);
+    git_run(repo.path(), &["commit", "-q", "-m", "rename to b"]);
+    commit_file(
+        repo.path(),
+        "b.txt",
+        "one\nTWO\nthree\nfour\nfive\n",
+        "change b",
+    );
+    commit_file(repo.path(), "o.txt", "o\n", "other");
+    repo
+}
+
+#[gpui_kit::test]
+fn file_history_follows_a_rename_and_shows_each_commits_change(cx: &mut TestAppContext) {
+    let repo = renamed_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.file_history(id, "b.txt".to_string(), window, cx)
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.tab, crate::git_block::Tab::History);
+        let subjects: Vec<_> = g.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, ["change b", "rename to b", "add a"]);
+        let paths: Vec<_> = g.file_paths.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["b.txt", "b.txt", "a.txt"]);
+        assert!(g.graph.is_empty());
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-commit", 2usize), cx)
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        let files: Vec<_> = g
+            .history_panel
+            .files
+            .iter()
+            .map(|s| s.diff.path().to_string())
+            .collect();
+        assert_eq!(
+            files,
+            ["a.txt"],
+            "the file's change in that commit, by its name then"
+        );
+    });
+    let n = id.0 as usize;
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-commit-back", n), cx);
+        window.render_frame(cx);
+        window.click(("git-file-clear", n), cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.file, None);
+        assert_eq!(g.commits.len(), 4, "the whole history again");
+    });
+}
+
+#[gpui_kit::test]
+fn restore_this_version_writes_the_old_path_to_the_new_one(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    let repo = renamed_repo();
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let id = open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.file_history(id, "b.txt".to_string(), window, cx)
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.right_click(("git-commit", 2usize), cx);
+        window.render_frame(cx);
+        // Checkout…, New branch here…, Create tag…, Revert…, Copy hash, Copy message, Restore this version….
+        window.within("popup-menu").click(6usize, cx);
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "asks first");
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("b.txt")).unwrap(),
+        "one\ntwo\nthree\nfour\nfive\n",
+        "a.txt's text then, written to b.txt"
+    );
+    assert!(
+        !repo.path().join("a.txt").exists(),
+        "the old name isn't brought back"
+    );
+    let kept = ws.read_with(cx, |ws, _| ws.trash.as_ref().unwrap().list());
+    assert_eq!(kept.len(), 1, "the version before is in Recently discarded");
+    assert_eq!(kept[0].files[0].0, "b.txt");
+}
+
+#[gpui_kit::test]
+fn file_history_from_an_editors_tree_opens_a_git_block(cx: &mut TestAppContext) {
+    let repo = renamed_repo();
+    let (handle, ws) = open(cx);
+    let editor = open_editor(handle, &ws, cx, repo.path());
+    let file = repo.path().join("b.txt");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.history_from_tree(editor, file.clone(), window, cx)
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    settle(handle, cx);
+    let git = ws.read_with(cx, |ws, _| {
+        ws.space
+            .blocks
+            .iter()
+            .find_map(|(id, b)| b.git().map(|_| *id))
+    });
+    let id = git.expect("a Git block beside the editor");
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.file.as_deref(), Some("b.txt"));
+        assert_eq!(g.commits.len(), 3);
+    });
+    // Asked again: the same block, not a second one.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.history_from_tree(editor, file.clone(), window, cx)
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    let blocks = ws.read_with(cx, |ws, _| {
+        ws.space
+            .blocks
+            .iter()
+            .filter(|(_, b)| b.git().is_some())
+            .count()
+    });
+    assert_eq!(blocks, 1);
+}
+
+#[gpui_kit::test]
+fn file_history_from_a_changes_row(cx: &mut TestAppContext) {
+    let repo = renamed_repo();
+    std::fs::write(repo.path().join("b.txt"), "changed\n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| {
+        window.right_click(crate::git_block::row_id(id, "unstaged", 0), cx);
+        window.render_frame(cx);
+        // Stage, Discard changes…, Open, File history (a new file has none).
+        window.within("popup-menu").click(3usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.tab, crate::git_block::Tab::History);
+        assert_eq!(g.file.as_deref(), Some("b.txt"));
+        assert_eq!(g.commits.len(), 3);
+    });
+}

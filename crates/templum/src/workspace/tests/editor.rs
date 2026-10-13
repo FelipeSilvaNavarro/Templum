@@ -235,8 +235,8 @@ fn a_files_menu_asks_before_deleting_it(cx: &mut TestAppContext) {
             ws.read(cx).menu.is_some(),
             "the row's menu, not the block's"
         );
-        // Open, Reveal in file manager, Rename…, Delete….
-        window.within("popup-menu").click(3usize, cx);
+        // Open, Reveal in file manager, File history, Rename…, Delete….
+        window.within("popup-menu").click(4usize, cx);
         window.render_frame(cx);
         assert!(window.has_active_dialog(cx), "Delete… asks");
     })

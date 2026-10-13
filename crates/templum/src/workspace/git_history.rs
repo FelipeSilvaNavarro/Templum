@@ -1,17 +1,25 @@
 //! A Git block's History and Stashes tabs.
 
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::SystemTime;
 
+use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
 use templum_canvas::BlockId;
 use templum_git::graph::graph;
+use templum_git::trash::{self, Kept};
 use templum_git::{Commit, CommitFile, FileDiff, GitError, HistoryQuery, Search};
 
 use crate::git_block::{self, Git, Tab, diff_view::Source};
 use crate::prompt;
 
-use super::{GitAt, Workspace};
+use super::{Extra, GitAt, Workspace, notify_with, show_notification};
+
+/// A page of History: its commits, the file at each (in a file's history), and the commits
+/// not pushed (read with the first page).
+type Page = (Vec<Commit>, Vec<CommitFile>, Option<HashSet<String>>);
 
 /// What History lists now: its branches and its search.
 fn history_query(git: &Git) -> HistoryQuery {
@@ -241,40 +249,51 @@ impl Workspace {
             return;
         };
         let q = history_query(git);
-        let asked = q.clone();
+        let file = git.file.clone();
+        let asked = (q.clone(), file.clone());
         self.git_job(
             at,
-            move || -> Result<(Vec<Commit>, Option<HashSet<String>>), GitError> {
-                let page = repo.history(&q, skip, git_block::PAGE)?;
+            move || -> Result<Page, GitError> {
+                let (page, paths) = match &file {
+                    Some(path) => repo
+                        .file_log(path, skip, git_block::PAGE)?
+                        .into_iter()
+                        .unzip(),
+                    None => (repo.history(&q, skip, git_block::PAGE)?, Vec::new()),
+                };
                 let unpushed = if skip == 0 {
                     Some(repo.unpushed()?)
                 } else {
                     None
                 };
-                Ok((page, unpushed))
+                Ok((page, paths, unpushed))
             },
             move |ws, at, read, _, _| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
                 };
-                if history_query(git) != asked {
+                if (history_query(git), git.file.clone()) != asked {
                     return;
                 }
                 match read {
-                    Ok((page, unpushed)) => {
+                    Ok((page, paths, unpushed)) => {
                         git.more = page.len() == git_block::PAGE;
-                        let mut all = if skip == 0 {
-                            Vec::new()
+                        let (mut all, mut at_each) = if skip == 0 {
+                            (Vec::new(), Vec::new())
                         } else {
-                            (*git.commits).clone()
+                            ((*git.commits).clone(), (*git.file_paths).clone())
                         };
                         all.extend(page);
-                        git.graph = Rc::new(if asked.search.is_none() {
+                        at_each.extend(paths);
+                        // A search's or a file's list lacks the parents the lanes need.
+                        let (q, file) = &asked;
+                        git.graph = Rc::new(if q.search.is_none() && file.is_none() {
                             graph(&all)
                         } else {
                             Vec::new()
                         });
                         git.commits = Rc::new(all);
+                        git.file_paths = Rc::new(at_each);
                         if let Some(u) = unpushed {
                             git.unpushed = Rc::new(u);
                         }
@@ -286,6 +305,237 @@ impl Workspace {
             window,
             cx,
         );
+    }
+
+    /// File history: History narrowed to `path`, through its renames.
+    pub(crate) fn file_history(
+        &mut self,
+        id: BlockId,
+        path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        git.tab = Tab::History;
+        git.file = Some(path);
+        git.shown = None;
+        git.history_panel.set_files(Vec::new());
+        cx.notify();
+        let at = self.here(id);
+        // A block still looking its repository up reads the list once it has found it.
+        self.refresh_lists_at(at, window, cx);
+    }
+
+    /// The file's chip ×: the whole history again.
+    pub(crate) fn clear_file_history(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        git.file = None;
+        git.file_paths = Rc::new(Vec::new());
+        git.shown = None;
+        git.history_panel.set_files(Vec::new());
+        cx.notify();
+        let at = self.here(id);
+        self.load_history(at, 0, window, cx);
+    }
+
+    /// Restore this version…: asks, then writes the file as it was in `hash` (from `then`, its
+    /// path at that commit) to its path now, after a copy of it in the trash.
+    pub(crate) fn restore_version(
+        &mut self,
+        id: BlockId,
+        hash: String,
+        then: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git(id) else {
+            return;
+        };
+        let (Some(now), Some(short)) = (
+            git.file.clone(),
+            git.commits
+                .iter()
+                .find(|c| c.hash == hash)
+                .map(|c| c.short.clone()),
+        ) else {
+            return;
+        };
+        let why = if self.trash.is_some() {
+            "The file as it is now goes to Recently discarded."
+        } else {
+            "The file as it is now is replaced. This can't be undone."
+        };
+        let (entity, at) = (cx.entity(), self.here(id));
+        prompt::confirm(
+            format!("Restore {now} as it was in {short}?"),
+            why,
+            "Restore",
+            move |window, cx| {
+                let (hash, then, now, short, at) = (
+                    hash.clone(),
+                    then.clone(),
+                    now.clone(),
+                    short.clone(),
+                    at.clone(),
+                );
+                entity.update(cx, |ws, cx| {
+                    if ws.show_git_block(&at, window, cx) {
+                        ws.restore_now(at, hash, then, now, short, window, cx)
+                    }
+                })
+            },
+            window,
+            cx,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn restore_now(
+        &mut self,
+        at: GitAt,
+        hash: String,
+        then: String,
+        now: String,
+        short: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.git_at(&at).and_then(|g| g.repo().cloned()) else {
+            return;
+        };
+        let trash = self.trash.clone();
+        let done = format!("Restored {now} from {short}");
+        let what = done.clone();
+        self.act_job(
+            at,
+            move || -> Result<Option<Kept>, String> {
+                let bytes = repo.file_at(&hash, &then).map_err(|e| e.to_string())?;
+                let paths = [now.clone()];
+                let (files, size) = trash::measure(&repo.root, &paths);
+                let kept = match trash.as_ref().filter(|_| trash::fits(files, size)) {
+                    Some(t) => Some(
+                        t.put(&repo.root, &paths, &what, SystemTime::now())
+                            .map_err(|e| {
+                                format!("Couldn't keep a copy, so nothing was restored: {e}")
+                            })?,
+                    ),
+                    None => None,
+                };
+                let full = repo.root.join(&now);
+                let written = match full.parent() {
+                    Some(dir) => std::fs::create_dir_all(dir),
+                    None => Ok(()),
+                }
+                .and_then(|_| std::fs::write(&full, bytes));
+                if let Err(e) = written {
+                    // Nothing was restored: an entry left would list a change that never was.
+                    if let (Some(t), Some(k)) = (&trash, &kept) {
+                        let _ = t.remove(&k.id);
+                    }
+                    return Err(format!("Couldn't write {now}: {e}"));
+                }
+                if let (Some(t), Some(k)) = (&trash, &kept) {
+                    let _ = t.seal(k);
+                    let _ = t.prune(SystemTime::now());
+                }
+                Ok(kept)
+            },
+            move |ws, at, result, window, cx| {
+                let entity = cx.entity();
+                match result {
+                    Ok(Some(kept)) => {
+                        let (block, entry) = (at.block, kept.id);
+                        let undo: Extra = (
+                            "git-undo",
+                            "Undo".into(),
+                            Rc::new(
+                                move |ws: &mut Workspace,
+                                      window: &mut Window,
+                                      cx: &mut Context<Workspace>| {
+                                    ws.restore_discarded(block, entry.clone(), false, window, cx)
+                                },
+                            ),
+                        );
+                        notify_with(
+                            &entity,
+                            at.clone(),
+                            Notification::success(done),
+                            vec![undo],
+                            window,
+                            cx,
+                        );
+                    }
+                    Ok(None) => show_notification(window, cx, Notification::success(done)),
+                    Err(message) => {
+                        eprintln!("templum: {message}");
+                        show_notification(window, cx, Notification::error(message));
+                    }
+                }
+                ws.after_action(at, window, cx);
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// File history (or Blame) from an editor's tree: the Git block open on the file's
+    /// repository, else a new one beside the editor; the canvas goes there.
+    pub(crate) fn history_from_tree(
+        &mut self,
+        editor: BlockId,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = templum_git::root_of(&path).map(Path::to_path_buf) else {
+            let message = format!("{} isn't in a Git repository", path.display());
+            show_notification(window, cx, Notification::warning(message));
+            return;
+        };
+        let Ok(inside) = path.strip_prefix(&root) else {
+            return;
+        };
+        let rel = inside
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        let root_real = root.canonicalize().ok();
+        let same = |a: &Path| a.canonicalize().ok() == root_real;
+        let open = self.space.blocks.iter().find_map(|(id, b)| {
+            b.git()
+                .filter(|g| g.repo().map_or(same(&g.folder), |r| same(&r.root)))
+                .map(|_| *id)
+        });
+        let id = match open {
+            Some(id) => id,
+            None => {
+                let Some(anchor) = self.space.canvas.get(editor).map(|b| b.rect) else {
+                    return;
+                };
+                let at = self
+                    .space
+                    .canvas
+                    .place_beside(anchor, git_block::SIZE)
+                    .origin();
+                let Some(id) = self.add_git_at(&root, at, window, cx) else {
+                    return;
+                };
+                id
+            }
+        };
+        self.file_history(id, rel, window, cx);
+        let space = self.space.id.clone();
+        self.reveal(&space, id, window, cx);
     }
 
     /// All branches on or off: the list read again.
@@ -390,6 +640,18 @@ impl Workspace {
                 };
                 match read {
                     Ok((commit, files, diffs)) => {
+                        // In a file's history, that file's change alone, by its name then.
+                        let then = git.file.as_ref().and_then(|_| {
+                            git.commits
+                                .iter()
+                                .position(|c| c.hash == commit.hash)
+                                .and_then(|i| git.file_paths.get(i))
+                                .map(|f| f.path.clone())
+                        });
+                        let diffs = match then {
+                            Some(then) => diffs.into_iter().filter(|d| d.path() == then).collect(),
+                            None => diffs,
+                        };
                         git.history_panel.source = Source::Range {
                             title: format!("Commit {}", commit.short),
                         };

@@ -268,10 +268,19 @@ impl Workspace {
                 let undo = s.oid.as_deref() == Some(commit.hash.as_str())
                     && s.branch.is_some()
                     && (s.upstream.is_none() || s.gone || s.ahead > 0);
+                // In a file's history: the file's path then, unless the commit deleted it.
+                let restore = git
+                    .file
+                    .as_ref()
+                    .and_then(|_| git.commits.iter().position(|c| c.hash == *hash))
+                    .and_then(|i| git.file_paths.get(i))
+                    .filter(|f| f.change != templum_git::Change::Deleted)
+                    .map(|f| f.path.clone());
                 Items::GitCommit {
                     block,
                     commit,
                     undo,
+                    restore,
                 }
             }
             Target::GitCommitFile {
@@ -438,11 +447,13 @@ enum Items {
         commit: Commit,
         /// HEAD's commit, not pushed: Undo this commit.
         undo: bool,
+        /// In a file's history, the file's path in this commit: Restore this version….
+        restore: Option<String>,
     },
-    // File history and Blame (next tasks) read `block` and `hash`.
-    #[allow(dead_code)]
     GitCommitFile {
         block: BlockId,
+        // Blame (next task) reads it.
+        #[allow(dead_code)]
         hash: String,
         path: String,
     },
