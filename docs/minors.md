@@ -235,3 +235,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **The docs don't say all of it.** `docs/specs/agents.md` doesn't list `[agents]`'s `generate` and `models`, and
   the README doesn't say Codex's models come from its `~/.codex/models_cache.json` (else one is typed). Fix: a line
   in each.
+
+## Far zoom (level of detail)
+
+- [ ] **A soft-wrapped editor tab's bars keep the wrap of the zoom they were taken at.** An editor tab's wrap width
+  keeps gpui-kit's fixed padding and line-number margin (`crates/templum/src/editor.rs`, `code` in `files`), so with
+  Soft wrap on its words wrap a little differently at each zoom; far away its bars show the rows of its last Full
+  frame, and back at 50% a word or two can move to the next row. Notes don't: their box makes up for those parts
+  (`note.rs`, `editor_box`). Fix: give the editor tab's area the note's compensation (`FIXED_LEFT`, `FIXED_RIGHT`).

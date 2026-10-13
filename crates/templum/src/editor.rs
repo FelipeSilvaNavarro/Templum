@@ -1,7 +1,7 @@
 //! An editor block: a file tree, tabs of open files and gpui-kit's code editor, on one folder.
 //! See docs/specs/cockpit.md, section 7.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -22,8 +22,10 @@ use gpui_kit::{
 };
 use templum_canvas::{BlockId, Level, Rect, Size, chrome};
 
+use crate::grid::{BAR_OPACITY, hsla};
 use crate::menu::Target;
 use crate::session;
+use crate::silhouette::{self, Far};
 use crate::theme::Ui;
 use crate::workspace::Workspace;
 
@@ -255,6 +257,8 @@ pub(crate) struct Tab {
     /// A Markdown file shown rendered.
     pub preview: bool,
     pub preview_scroll: crate::note::PreviewScroll,
+    /// Its word map, drawn far away (`silhouette.rs`).
+    pub far: RefCell<Far>,
     _edits: Subscription,
 }
 
@@ -297,6 +301,8 @@ impl Tab {
         self.dirty = false;
         self.conflict = false;
         self.mtime = mtime(&self.path);
+        // Its rows are of the old text, which may have been as long: a word map is taken again.
+        *self.far.get_mut() = Far::default();
         Ok(())
     }
 
@@ -448,6 +454,7 @@ impl Editor {
             conflict: false,
             preview: false,
             preview_scroll: crate::note::PreviewScroll::default(),
+            far: RefCell::default(),
             _edits,
         });
         self.active = Some(self.tabs.len() - 1);
@@ -628,7 +635,7 @@ fn tree_row(z: f32) -> f32 {
 }
 
 /// The body below the header, at the block's zoom `z`: the tree on the left (when shown) and
-/// the files on the right.
+/// the files on the right. Below Full the tree is its empty panel and the file its bars.
 pub(crate) fn body(
     ws: &Workspace,
     id: BlockId,
@@ -641,15 +648,31 @@ pub(crate) fn body(
     if !editor.folder.is_dir() {
         return gone(id, &editor.folder, ui, z, cx);
     }
-    let tree = editor.show_tree.then(|| tree_panel(id, editor, ui, z, cx));
+    let tree = editor.show_tree.then(|| {
+        if level == Level::Full {
+            tree_panel(id, editor, ui, z, cx)
+        } else {
+            // Its empty panel: the same width and border, no rows.
+            div()
+                .w(px(TREE_W * z))
+                .h_full()
+                .flex_shrink_0()
+                .border_r_1()
+                .border_color(ui.hairline)
+                .into_any_element()
+        }
+    });
     // The wheel scrolls the tree or the file and stops there; with Ctrl it zooms the canvas.
+    // Below Full there is nothing to scroll: the wheel moves the canvas.
     div()
         .size_full()
         .flex()
-        .on_scroll_wheel(|e: &ScrollWheelEvent, _, cx| {
-            if !e.modifiers.control {
-                cx.stop_propagation();
-            }
+        .when(level == Level::Full, |el| {
+            el.on_scroll_wheel(|e: &ScrollWheelEvent, _, cx| {
+                if !e.modifiers.control {
+                    cx.stop_propagation();
+                }
+            })
         })
         .children(tree)
         .child(files(ws, id, editor, z, level, cx))
@@ -944,23 +967,41 @@ fn files(
                         z,
                     )
                 } else {
-                    keep_rows(&tab.editor, FONT, z, cx);
-                    div()
-                        .id(("code", n))
-                        .size_full()
-                        .child(
-                            // The element sets the theme's code font and size itself, and the
-                            // read-only flag on every frame: they go on it, not on a parent.
-                            EditorView::new(&tab.editor)
-                                .appearance(false)
-                                .bordered(false)
-                                .readonly(read_only.is_some())
-                                .font_family(ws.cell.font.family.clone())
-                                .text_size(px(FONT * z))
-                                .h(relative(1.0)),
+                    let taken = silhouette::Taken {
+                        len: tab.editor.read(cx).text().len(),
+                        size: ws
+                            .space
+                            .canvas
+                            .get(id)
+                            .map_or((0.0, 0.0), |b| (b.rect.w, b.rect.h)),
+                        font: ws.cell.font.family.clone(),
+                        wrap: editor.wrap,
+                        tree: editor.show_tree,
+                    };
+                    let read_only = read_only.is_some();
+                    if level == Level::Full {
+                        tab.far.borrow_mut().full = Some((z, taken));
+                        div()
+                            .id(("code", n))
+                            .size_full()
+                            .child(code(ws, tab, read_only, z, cx))
+                            .test_support()
+                            .into_any_element()
+                    } else {
+                        // Its words as bars: no editor is built, its scroll stays as it was.
+                        silhouette::body(
+                            ("silhouette", n).into(),
+                            &tab.editor,
+                            &tab.far,
+                            taken,
+                            z,
+                            FONT,
+                            silhouette::tab_origin,
+                            hsla(ws.theme.palette.foreground, BAR_OPACITY),
+                            |cx| code(ws, tab, read_only, z, cx),
+                            cx,
                         )
-                        .test_support()
-                        .into_any_element()
+                    }
                 };
                 div()
                     .flex_1()
@@ -1010,6 +1051,21 @@ fn files(
         .flex_col()
         .child(tabs)
         .child(area)
+        .into_any_element()
+}
+
+/// The active file in gpui-kit's editor at zoom `z`, its scroll kept in rows first. The element
+/// sets the theme's code font and size itself, and the read-only flag on every frame: they go on
+/// it, not on a parent.
+fn code(ws: &Workspace, tab: &Tab, read_only: bool, z: f32, cx: &mut App) -> AnyElement {
+    keep_rows(&tab.editor, FONT, z, cx);
+    EditorView::new(&tab.editor)
+        .appearance(false)
+        .bordered(false)
+        .readonly(read_only)
+        .font_family(ws.cell.font.family.clone())
+        .text_size(px(FONT * z))
+        .h(relative(1.0))
         .into_any_element()
 }
 

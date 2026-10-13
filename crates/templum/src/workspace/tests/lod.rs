@@ -1039,3 +1039,330 @@ fn a_notes_rows_survive_being_drawn_far_away(cx: &mut TestAppContext) {
     rest_at(handle, &ws, cx, corner, 0.5);
     assert_eq!(top(cx), 60, "and at 50%");
 }
+
+/// An editor on a folder holding `files` (name, text), its first file open and focused, at rest.
+fn editor_with(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    files: &[(&str, &str)],
+) -> (tempfile::TempDir, BlockId, Entity<EditorState>) {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, text) in files {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let id = open_editor(handle, ws, cx, dir.path());
+    click_file(handle, 0, cx);
+    let state = ws.read_with(cx, |ws, _| {
+        ws.space
+            .editor(id)
+            .unwrap()
+            .active_tab()
+            .unwrap()
+            .editor
+            .clone()
+    });
+    (dir, id, state)
+}
+
+fn tab_map(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> Option<Rc<WordMap>> {
+    ws.read_with(cx, |ws, _| {
+        let tab = ws.space.editor(id).unwrap().active_tab().unwrap();
+        tab.far.borrow().map.clone()
+    })
+}
+
+/// An unfocused editor at 33% builds no gpui-kit editor and no tree rows: its file's words are
+/// bars where its code was, its tab row stays. The level changes when a glide ends: out from
+/// 50%, bars from the frame it ends (the map of its last frame); in from 33%, its code.
+#[gpui_kit::test]
+fn a_far_editor_draws_bars_where_its_code_was(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_dir, id, _) = editor_with(
+        handle,
+        &ws,
+        cx,
+        &[("a.rs", "fn main() {\n    println!(\"hi\");\n}\n")],
+    );
+    let n = id.0 as usize;
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    let code = cx
+        .update_window(handle, |_, window, _| window.find(("code", n)).bounds())
+        .unwrap();
+    unfocus(handle, &ws, cx);
+    assert!(!shown(handle, cx, ("code", n)), "no gpui-kit editor");
+    assert!(!shown(handle, cx, ("tree", n)), "the tree's panel is empty");
+    let bars = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("silhouette", n)).bounds()
+        })
+        .unwrap();
+    assert_eq!(bars, code, "bars where the code was");
+    assert!(
+        shown(handle, cx, ElementId::Name(format!("tab-{n}-0").into())),
+        "the tab row stays"
+    );
+    let words = tab_map(&ws, cx, id).expect("taken").words.len();
+    assert_eq!(words, 5, "fn, main(), {{, println!(\"hi\");, }}");
+    rest_at(handle, &ws, cx, corner, 0.5);
+    for (step, during, landed) in [(-1, "code", "silhouette"), (1, "silhouette", "code")] {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let pivot = ws.center(window);
+                ws.zoom_to(step, pivot, cx);
+            })
+        })
+        .unwrap();
+        ws.update(cx, restart_glide);
+        std::thread::sleep(Duration::from_millis(40));
+        frame(handle, cx);
+        assert!(
+            shown(handle, cx, (during, n)),
+            "mid-glide, step {step}: {during}"
+        );
+        std::thread::sleep(crate::motion::FLIGHT + Duration::from_millis(50));
+        frame(handle, cx);
+        assert!(
+            shown(handle, cx, (landed, n)) && !shown(handle, cx, (during, n)),
+            "landed, step {step}: {landed}"
+        );
+    }
+}
+
+/// Bars line up with letters at every zoom step, within 1 px: an editor tab of 1,000 lines (four
+/// digits of line numbers) scrolled 10 rows down and 6 rows' worth across, its word map taken at
+/// 50%, against its letters laid out at each step.
+#[gpui_kit::test]
+fn an_editor_tabs_bars_line_up_with_its_letters_at_every_zoom(cx: &mut TestAppContext) {
+    use crate::silhouette::{Taken, tab_origin};
+    let words: Vec<String> = (0..30).map(|j| format!("w{j}")).collect();
+    let text: String = (0..1000)
+        .map(|i| format!("line{i} {}\n", words.join(" ")))
+        .collect();
+    let (handle, ws) = open(cx);
+    let (_dir, id, state) = editor_with(handle, &ws, cx, &[("a.txt", text.as_str())]);
+    let n = id.0 as usize;
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.5);
+    cx.update_window(handle, |_, window, cx| {
+        state.update(cx, |e, cx| {
+            let row = e.line_height().unwrap();
+            e.set_scroll_offset(point(-row * 6.0, -row * 10.0), cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let map = cx
+        .update_window(handle, |_, _, cx| {
+            let taken = Taken {
+                len: text.len(),
+                size: (0.0, 0.0),
+                font: "".into(),
+                wrap: false,
+                tree: true,
+            };
+            WordMap::take(state.read(cx), 0.5, taken).expect("laid out")
+        })
+        .unwrap();
+    assert!(
+        (map.scroll.0 - 10.0).abs() < 0.01 && (map.scroll.1 - 6.0).abs() < 0.01,
+        "taken scrolled: {:?}",
+        map.scroll
+    );
+    for zoom in templum_canvas::ZOOM_STEPS {
+        rest_at(handle, &ws, cx, corner, zoom);
+        cx.update_window(handle, |_, window, cx| {
+            let origin = window.find(("code", n)).bounds().origin;
+            let e = state.read(cx);
+            let lh = f32::from(e.line_height().unwrap());
+            let cells = map.cells(tab_origin(&map, zoom), crate::editor::FONT, zoom);
+            let mut compared = 0;
+            for (word, (x, y, w, h)) in map.words.iter().zip(cells) {
+                let Some(b) = e.range_to_bounds(&word.range) else {
+                    continue;
+                };
+                if f32::from(b.size.height) > 1.5 * lh || b.size.width <= px(0.0) {
+                    continue;
+                }
+                let (x, y) = (f32::from(origin.x) + x, f32::from(origin.y) + y);
+                for (what, bar, letters) in [
+                    ("left", x, f32::from(b.origin.x)),
+                    ("right", x + w, f32::from(b.origin.x + b.size.width)),
+                    ("top", y, f32::from(b.origin.y)),
+                    ("height", h, f32::from(b.size.height)),
+                ] {
+                    assert!(
+                        (bar - letters).abs() <= 1.0,
+                        "{what} of {:?} at {zoom}: bar {bar}, letters {letters}",
+                        &text[word.range.clone()]
+                    );
+                }
+                compared += 1;
+            }
+            assert!(compared > 50, "{compared} words compared at {zoom}");
+        })
+        .unwrap();
+    }
+}
+
+/// A far editor whose file changes on disk shows the new text's bars a frame later, even when
+/// the new text is as long as the old: the reload drops its word map, one unseen Full frame lays
+/// the new text out, the next takes it.
+#[gpui_kit::test]
+fn a_far_editor_shows_its_files_new_text_after_a_frame(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (dir, id, _) = editor_with(handle, &ws, cx, &[("a.txt", "old words\n")]);
+    rest_at(handle, &ws, cx, Point::new(30.0, 30.0), 0.33);
+    unfocus(handle, &ws, cx);
+    assert_eq!(tab_map(&ws, cx, id).expect("taken").words.len(), 2);
+    // As long as before: only the reload can tell the map is stale. A later modification time.
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(dir.path().join("a.txt"), "a b c d e\n").unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.check_files(window, cx))
+    })
+    .unwrap();
+    assert!(tab_map(&ws, cx, id).is_none(), "the reload dropped the map");
+    frame(handle, cx);
+    frame(handle, cx);
+    let map = tab_map(&ws, cx, id).expect("taken again");
+    assert_eq!(map.words.len(), 5, "a, b, c, d, e");
+}
+
+/// A focused editor at 25% is Full and typing reaches it; when the focus moves to another block,
+/// it is bars on the next frame.
+#[gpui_kit::test]
+fn a_focused_far_editor_takes_typing_and_the_one_left_draws_bars(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_dir, id, state) = editor_with(handle, &ws, cx, &[("a.txt", "one\n")]);
+    let n = id.0 as usize;
+    rest_at(handle, &ws, cx, Point::new(30.0, 30.0), 0.25);
+    assert!(shown(handle, cx, ("code", n)), "focused: Full at 25%");
+    cx.update_window(handle, |_, window, cx| {
+        window.input("zz", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        state.read_with(cx, |e, _| e.value().contains("zz")),
+        "typing reaches it"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.add_note_at(Point::new(3000.0, 0.0), window, cx)
+        })
+    })
+    .unwrap();
+    frame(handle, cx);
+    assert!(shown(handle, cx, ("silhouette", n)), "left: bars");
+}
+
+/// Over a far editor the wheel moves the canvas; once it is clicked (focused: Full), the wheel
+/// scrolls its file again.
+#[gpui_kit::test]
+fn the_wheel_over_a_far_editor_moves_the_canvas(cx: &mut TestAppContext) {
+    let text: String = (0..200).map(|i| format!("line {i}\n")).collect();
+    let (handle, ws) = open(cx);
+    let (_dir, id, state) = editor_with(handle, &ws, cx, &[("a.txt", text.as_str())]);
+    let n = id.0 as usize;
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    unfocus(handle, &ws, cx);
+    let c = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("silhouette", n)).bounds().center()
+        })
+        .unwrap();
+    let at = (f32::from(c.x), f32::from(c.y));
+    let camera = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    let down = ScrollDelta::Pixels(point(px(0.0), px(-40.0)));
+    let before = camera(cx);
+    cx.update_window(handle, |_, window, cx| wheel(window, cx, at, down, false))
+        .unwrap();
+    assert_ne!(camera(cx).origin, before.origin, "the canvas moved");
+    rest_at(handle, &ws, cx, corner, 0.33);
+    cx.update_window(handle, |_, window, cx| {
+        click(window, cx, at, 1);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(shown(handle, cx, ("code", n)), "clicked: Full");
+    let (before, scroll) = (camera(cx), state.read_with(cx, |e, _| e.scroll_offset()));
+    cx.update_window(handle, |_, window, cx| {
+        wheel(window, cx, at, down, false);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(camera(cx), before, "the wheel is the editor's");
+    assert_ne!(
+        state.read_with(cx, |e, _| e.scroll_offset()),
+        scroll,
+        "its file scrolled"
+    );
+}
+
+/// An editor's state survives Full → bars → Full: its tabs and the active one, its rows on screen,
+/// its selection, its text and its undo history.
+#[gpui_kit::test]
+fn an_editors_state_survives_being_drawn_far_away(cx: &mut TestAppContext) {
+    use gpui_kit::component::input::Undo;
+    let text: String = (0..200).map(|i| format!("line {i}\n")).collect();
+    let (handle, ws) = open(cx);
+    let (_dir, id, state) = editor_with(
+        handle,
+        &ws,
+        cx,
+        &[("a.txt", text.as_str()), ("b.txt", "b\n")],
+    );
+    // b.txt opened, then a.txt shown again: two tabs, the first active.
+    click_file(handle, 1, cx);
+    click_file(handle, 0, cx);
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.5);
+    cx.update_window(handle, |_, window, cx| {
+        window.input("typed ", cx);
+        state.update(cx, |e, cx| {
+            // A selection on line 45, on screen once scrolled 40 rows down.
+            let at = e.value().find("line 45").unwrap();
+            e.set_selected_range(at..at + 4, cx);
+            let row = e.line_height().unwrap();
+            e.set_scroll_offset(point(px(0.0), -row * 40.0), cx);
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let seen = |cx: &mut TestAppContext| {
+        state.read_with(cx, |e, _| {
+            (e.visible_row_range(), e.selected_range(), e.value())
+        })
+    };
+    let before = seen(cx);
+    unfocus(handle, &ws, cx);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    assert!(shown(handle, cx, ("silhouette", id.0 as usize)));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx))
+    })
+    .unwrap();
+    rest_at(handle, &ws, cx, corner, 0.5);
+    assert_eq!(
+        seen(cx),
+        before,
+        "its rows, selection and text as they were"
+    );
+    ws.read_with(cx, |ws, _| {
+        let e = ws.space.editor(id).unwrap();
+        assert_eq!((e.tabs.len(), e.active), (2, Some(0)));
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_action(Box::new(Undo), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_ne!(
+        state.read_with(cx, |e, _| e.value()),
+        before.2,
+        "its undo history is there"
+    );
+}

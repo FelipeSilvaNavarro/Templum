@@ -15,6 +15,14 @@ use gpui_kit::{
 
 use crate::grid::bar_quad;
 
+/// gpui-kit's fixed pixels around an editor tab's text: the code editor's padding, left
+/// (`input_px().min(6)`) and top (`input_py()`, 8 at size Medium; gpui-component-0.7.1
+/// src/input/input.rs:588-602), and the margin right of the line numbers (gpui-base-0.7.1
+/// src/input/base/element.rs:51).
+const TAB_LEFT: f32 = 6.0;
+const TAB_TOP: f32 = 8.0;
+const NUMBERS_MARGIN: f32 = 6.0;
+
 /// What a word map was taken of: when any of it changes, so may the rows.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Taken {
@@ -49,6 +57,9 @@ pub(crate) struct WordMap {
     /// The scroll when it was taken, in rows: down, and across. gpui-kit's scroll is in pixels
     /// of the rows it laid out, and `editor::keep_rows` rescales it by the rows: rows keep it.
     pub scroll: (f32, f32),
+    /// The line numbers' digits' width, world units: an editor tab's text starts past them. (A
+    /// note's text starts where its box puts it: `note_origin`.)
+    pub numbers: f32,
     pub words: Vec<Word>,
 }
 
@@ -94,6 +105,7 @@ impl WordMap {
         Some(WordMap {
             taken,
             scroll: (-f32::from(scroll.y) / lh, -f32::from(scroll.x) / lh),
+            numbers: (left - NUMBERS_MARGIN) / z,
             words,
         })
     }
@@ -189,6 +201,13 @@ pub(crate) fn note_origin(_: &WordMap, s: f32) -> (f32, f32) {
     (crate::note::FIXED_LEFT * s, crate::note::FIXED_TOP * s)
 }
 
+/// Where an editor tab's text starts in its area at zoom `s`: gpui-kit's fixed padding, the line
+/// numbers (their digits scale with the text) and their fixed margin. Editor tabs have no fold
+/// gutter (`editor.rs`, `folding(false)`).
+pub(crate) fn tab_origin(map: &WordMap, s: f32) -> (f32, f32) {
+    (TAB_LEFT + map.numbers * s + NUMBERS_MARGIN, TAB_TOP)
+}
+
 /// What a note or an editor tab keeps for drawing below Full.
 #[derive(Default)]
 pub(crate) struct Far {
@@ -278,6 +297,7 @@ mod tests {
                 tree: false,
             },
             scroll,
+            numbers: 0.0,
             words,
         }
     }
@@ -337,5 +357,35 @@ mod tests {
             "an ideographic space is blank"
         );
         assert!(runs("   ").is_empty());
+    }
+
+    #[test]
+    fn an_editor_tabs_text_starts_past_its_line_numbers() {
+        // Digits 0.6 em wide at 13 px: three of them (a file under 1,000 lines), or four.
+        let three = WordMap {
+            numbers: 3.0 * 0.6 * 13.0,
+            ..map(Vec::new(), (0.0, 0.0))
+        };
+        let four = WordMap {
+            numbers: 4.0 * 0.6 * 13.0,
+            ..map(Vec::new(), (0.0, 0.0))
+        };
+        assert!(
+            (tab_origin(&three, 0.25).0 - 17.85).abs() < 1e-4,
+            "6 + 5.85 + 6"
+        );
+        assert!(
+            (tab_origin(&four, 0.25).0 - 19.8).abs() < 1e-4,
+            "6 + 7.8 + 6"
+        );
+        assert!(
+            (tab_origin(&four, 1.0).0 - 43.2).abs() < 1e-4,
+            "6 + 31.2 + 6"
+        );
+        assert_eq!(
+            tab_origin(&three, 0.5).1,
+            8.0,
+            "the top padding doesn't scale"
+        );
     }
 }
