@@ -228,7 +228,7 @@ impl Workspace {
             .space
             .focused
             .and_then(|id| self.space.git(id))
-            .and_then(|g| g.panel.selected_text());
+            .and_then(|g| g.diff().selected_text());
         let text = from_git.or_else(|| {
             self.space
                 .focused_terminal()

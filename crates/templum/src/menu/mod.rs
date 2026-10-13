@@ -255,7 +255,7 @@ impl Workspace {
                     .clone(),
             },
             Target::GitLine { block, row } => {
-                let p = &self.space.git(block)?.panel;
+                let p = self.space.git(block)?.diff();
                 let Some(git_block::diff_view::Row::Line { file, hunk, line }) = p.rows.get(row)
                 else {
                     return None;

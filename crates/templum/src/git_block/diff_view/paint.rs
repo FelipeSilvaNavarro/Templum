@@ -15,7 +15,7 @@ use gpui_kit::{
     Window, canvas, div, fill, point, px, size,
 };
 use templum_canvas::BlockId;
-use templum_git::{FileDiff, Kind};
+use templum_git::{Change, FileDiff, Kind};
 
 use super::select::display;
 use super::{Note, Row, Shaped, Shown, files_word};
@@ -104,11 +104,15 @@ fn file_row(
     let d = &s.diff;
     let (key, path) = (s.key(), d.path().to_string());
     let git = ws.space.git(id);
-    let folded = git.is_some_and(|g| g.panel.folded.contains(&key));
+    let p = git.map(|g| g.diff());
+    let folded = p.is_some_and(|p| p.folded.contains(&key));
+    let working = p.is_some_and(|p| p.working());
     let busy = git.is_some_and(|g| g.acting > 0);
     // The badge from the status (an untracked file is U there, A in its diff); the diff's own
-    // when the status hasn't caught up with the file.
-    let entry = git.and_then(|g| g.status.entries.iter().find(|e| e.path == path));
+    // when the status hasn't caught up with the file, and for a range (not the working tree).
+    let entry = git
+        .filter(|_| working)
+        .and_then(|g| g.status.entries.iter().find(|e| e.path == path));
     let change = entry
         .and_then(|e| if s.staged { e.staged } else { e.unstaged })
         .unwrap_or(d.status);
@@ -122,7 +126,8 @@ fn file_row(
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
     };
     let mut buttons: Vec<AnyElement> = Vec::new();
-    if !busy {
+    // A range is read-only; a conflicted file's choices are its regions' and its menu's.
+    if !busy && working && d.status != Change::Conflict {
         if s.staged {
             let p = path.clone();
             buttons.push(
@@ -152,6 +157,8 @@ fn file_row(
                     .into_any_element(),
             );
         }
+    }
+    if !busy && working {
         let p = path.clone();
         buttons.push(
             hover_button("open", IconName::FileCode, "Open in editor")
@@ -238,7 +245,8 @@ fn hunk_row(
     let h = &s.diff.hunks[hunk];
     let git = ws.space.git(id);
     let busy = git.is_some_and(|g| g.acting > 0);
-    let by_hunk = s.diff.by_hunk() && git.is_some_and(|g| !g.panel.ignore_ws);
+    let working = git.is_some_and(|g| g.diff().working());
+    let by_hunk = working && s.diff.by_hunk() && git.is_some_and(|g| !g.diff().ignore_ws);
     let path = s.diff.path().to_string();
     let ids = |what: &str| ElementId::Name(format!("git-hunk-{what}-{n}-{ix}").into());
     // Built at the click from the files as drawn: what the user saw is what is applied.
@@ -283,7 +291,7 @@ fn hunk_row(
             );
         }
     }
-    if !busy {
+    if !busy && working {
         let line = h.new_start.max(1);
         buttons.push(
             small(ids("open"), "Open", ui, z)
@@ -341,6 +349,9 @@ fn fold_row(
 ) -> AnyElement {
     let ui = ws.ui;
     let key = s.key();
+    // ponytail: a comparison's fold isn't expandable; read the range again with -U if people
+    // ask.
+    let working = ws.space.git(id).is_some_and(|g| g.diff().working());
     div()
         .id(("git-fold", ix))
         .w_full()
@@ -350,15 +361,17 @@ fn fold_row(
         .justify_center()
         .text_size(px(11.0 * z))
         .text_color(ui.title_dim)
-        .cursor_pointer()
-        .hover(move |st| st.bg(ui.hover))
         .child(format!(
             "⋯ {lines} unchanged line{}",
             if lines == 1 { "" } else { "s" }
         ))
-        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-            ws.show_whole(id, key.clone(), window, cx)
-        }))
+        .when(working, |el| {
+            el.cursor_pointer()
+                .hover(move |st| st.bg(ui.hover))
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.show_whole(id, key.clone(), window, cx)
+                }))
+        })
         .test_support()
         .into_any_element()
 }
@@ -377,6 +390,7 @@ fn note_row(
     let ui = ws.ui;
     let d = &s.diff;
     let (key, path) = (s.key(), d.path().to_string());
+    let working = ws.space.git(id).is_some_and(|g| g.diff().working());
     let text = match note {
         Note::Binary => format!("Binary file · {}", human(d.bytes.unwrap_or(0))),
         Note::TooLarge => "Too large to show".to_string(),
@@ -409,21 +423,21 @@ fn note_row(
                     }))
                     .test_support(),
             ),
-            Note::TooLarge => row.child(
+            Note::TooLarge if working => row.child(
                 small(("git-open-large", ix), "Open in editor", ui, z)
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                         ws.open_from_git(id, &path, window, cx)
                     }))
                     .test_support(),
             ),
-            Note::Unread => row.child(
+            Note::Unread if working => row.child(
                 small(("git-show-diff", ix), "Show diff", ui, z)
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                         ws.show_whole(id, key.clone(), window, cx)
                     }))
                     .test_support(),
             ),
-            Note::Binary | Note::Mode | Note::NoNewline => row,
+            Note::TooLarge | Note::Unread | Note::Binary | Note::Mode | Note::NoNewline => row,
         };
     row.test_support().into_any_element()
 }
@@ -478,7 +492,7 @@ fn line_row(
     let hunk_colors = ws
         .space
         .git(id)
-        .map(|g| g.panel.colors.borrow_mut().of(file, hunk, s, &theme));
+        .map(|g| g.diff().colors.borrow_mut().of(file, hunk, s, &theme));
     let (colors, marks) = match &hunk_colors {
         Some(c) => (
             Rc::new(c.lines[line].clone()),
@@ -492,7 +506,7 @@ fn line_row(
     let selection = ws
         .space
         .git(id)
-        .and_then(|g| g.panel.selection)
+        .and_then(|g| g.diff().selection)
         .and_then(|sel| sel.range_in(ix, text.len()));
     // The whole text, so the list (as wide as its widest row) scrolls to the end of it; the
     // trailing cell keeps the last glyph off the edge.
@@ -515,7 +529,7 @@ fn line_row(
         size: FONT * z,
         ui,
     };
-    let shaped = ws.space.git(id).map(|g| g.panel.shaped.clone());
+    let shaped = ws.space.git(id).map(|g| g.diff().shaped.clone());
     div()
         .id(("git-line", ix))
         .w_full()

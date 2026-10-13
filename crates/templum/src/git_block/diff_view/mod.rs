@@ -18,7 +18,7 @@ use gpui_kit::{
     Pixels, ShapedLine, TestSupportExt, UniformListScrollHandle, div, px, uniform_list,
 };
 use templum_canvas::BlockId;
-use templum_git::WorkingDiff;
+use templum_git::{FileDiff, WorkingDiff};
 
 pub(crate) use rows::{Note, Row, Shown, rows};
 
@@ -39,7 +39,21 @@ pub(crate) struct Shaped {
     pub x: Pixels,
 }
 
+/// What the panel shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+// Compare builds the Range panel; until it lands only the tests do.
+#[allow(dead_code)]
+pub(crate) enum Source {
+    /// The working tree: Changes then Staged, with their buttons (the Changes tab).
+    Working,
+    /// A read-only list of files, `title` naming it ("feature vs main · 7 commits"): no
+    /// sections, no Stage or Discard, no whole-file folds.
+    Range { title: String },
+}
+
 pub(crate) struct DiffPanel {
+    /// What it shows.
+    pub source: Source,
     /// The files shown, Changes then Staged (an Rc: the list's closure holds them).
     pub files: Rc<Vec<Shown>>,
     pub rows: Rc<Vec<Row>>,
@@ -73,6 +87,7 @@ pub(crate) struct DiffPanel {
 impl DiffPanel {
     pub fn new() -> DiffPanel {
         DiffPanel {
+            source: Source::Working,
             files: Rc::new(Vec::new()),
             rows: Rc::new(Vec::new()),
             folded: HashSet::new(),
@@ -89,6 +104,42 @@ impl DiffPanel {
             reads: 0,
             cursor: None,
         }
+    }
+
+    /// A read-only panel (`Source::Range`).
+    #[allow(dead_code)]
+    pub fn range(title: String) -> DiffPanel {
+        DiffPanel {
+            source: Source::Range { title },
+            ..DiffPanel::new()
+        }
+    }
+
+    pub fn working(&self) -> bool {
+        self.source == Source::Working
+    }
+
+    /// What the panel says with no file.
+    pub fn empty_text(&self) -> &'static str {
+        if self.working() {
+            "Nothing changed since the last commit"
+        } else {
+            "No changes"
+        }
+    }
+
+    /// A read-only list of files (`Source::Range`); false when it equals what is shown.
+    #[allow(dead_code)]
+    pub fn set_files(&mut self, files: Vec<FileDiff>) -> bool {
+        self.set_shown(
+            files
+                .into_iter()
+                .map(|diff| Shown {
+                    staged: false,
+                    diff,
+                })
+                .collect(),
+        )
     }
 
     /// The cursor's hunk row: its hunk, else the file's last one (staging one shortens the
@@ -126,6 +177,11 @@ impl DiffPanel {
                     .map(|diff| Shown { staged: true, diff }),
             )
             .collect();
+        self.set_shown(files)
+    }
+
+    /// Takes the files to show; false when they equal what is shown.
+    pub fn set_shown(&mut self, files: Vec<Shown>) -> bool {
         if *self.files == files {
             return false;
         }
@@ -142,7 +198,11 @@ impl DiffPanel {
 
     /// The rows again: after a fold, a Show diff.
     pub fn rebuild(&mut self) {
-        self.rows = Rc::new(rows(&self.files, &self.folded, &self.large_shown));
+        let mut rows = rows(&self.files, &self.folded, &self.large_shown);
+        if !self.working() {
+            rows.retain(|r| !matches!(r, Row::Section { .. }));
+        }
+        self.rows = Rc::new(rows);
         // The rows a selection named are other rows now.
         self.selection = None;
         self.dragging = false;
@@ -188,15 +248,18 @@ impl DiffPanel {
             .map(Shown::first_line)
     }
 
-    /// "Working changes · 4 files · +120 −30".
+    /// "Working changes · 4 files · +120 −30", or a range's title and its files.
     pub fn title(&self) -> String {
-        let added: u32 = self.files.iter().map(|s| s.diff.added()).sum();
-        let removed: u32 = self.files.iter().map(|s| s.diff.removed()).sum();
         let paths: HashSet<&str> = self.files.iter().map(|s| s.diff.path()).collect();
-        format!(
-            "Working changes · {} · +{added} −{removed}",
-            files_word(paths.len())
-        )
+        let files = files_word(paths.len());
+        match &self.source {
+            Source::Working => {
+                let added: u32 = self.files.iter().map(|s| s.diff.added()).sum();
+                let removed: u32 = self.files.iter().map(|s| s.diff.removed()).sum();
+                format!("Working changes · {files} · +{added} −{removed}")
+            }
+            Source::Range { title } => format!("{title} · {files}"),
+        }
     }
 
     /// The file whose rows are at the top of the scroll: the sticky title.
@@ -257,7 +320,7 @@ pub(crate) fn panel(
 ) -> AnyElement {
     let ui = ws.ui;
     let n = id.0 as usize;
-    let p = &git.panel;
+    let p = git.diff();
     let row_h = row_height(z);
     let base = p.scroll.0.borrow().base_handle.clone();
     keep_list_rows(&base, &p.last_row, row_h);
@@ -301,7 +364,7 @@ pub(crate) fn panel(
     let body: AnyElement = if p.is_empty() {
         centered(ui, z)
             .flex_1()
-            .child("Nothing changed since the last commit")
+            .child(p.empty_text())
             .into_any_element()
     } else {
         let sticky = p.top_file(row_h).map(|file| {
@@ -322,7 +385,7 @@ pub(crate) fn panel(
         let list = uniform_list(("git-panel", n), rows.len(), move |range, _, cx| {
             entity.update(cx, |ws, cx| {
                 let ws = &*ws;
-                let cursor = ws.space.git(id).and_then(|g| g.panel.cursor_row());
+                let cursor = ws.space.git(id).and_then(|g| g.diff().cursor_row());
                 range
                     .map(|ix| paint::row(ws, id, &files, &rows, ix, cursor, row_h, z, cx))
                     .collect()
@@ -343,15 +406,18 @@ pub(crate) fn panel(
             .child(list)
             .into_any_element()
     };
-    let keys = bar(ui, z)
-        .id(("git-keys", n))
-        .text_size(px(11.0 * z))
-        .child(if cfg!(target_os = "macos") {
-            "↑↓ file · [ ] hunk · s stage · u unstage · d discard · ⏎ open · c message · ⌘⏎ commit"
-        } else {
-            "↑↓ file · [ ] hunk · s stage · u unstage · d discard · ⏎ open · c message · Ctrl+⏎ commit"
-        })
-        .test_support();
+    // The keys act on the Changes tab alone.
+    let keys = p.working().then(|| {
+        bar(ui, z)
+            .id(("git-keys", n))
+            .text_size(px(11.0 * z))
+            .child(if cfg!(target_os = "macos") {
+                "↑↓ file · [ ] hunk · s stage · u unstage · d discard · ⏎ open · c message · ⌘⏎ commit"
+            } else {
+                "↑↓ file · [ ] hunk · s stage · u unstage · d discard · ⏎ open · c message · Ctrl+⏎ commit"
+            })
+            .test_support()
+    });
     div()
         .id(("git-diff", n))
         .flex_1()
@@ -360,11 +426,49 @@ pub(crate) fn panel(
         .flex_col()
         .child(header)
         .child(body)
-        .child(keys)
+        .children(keys)
         .on_mouse_up(
             MouseButton::Left,
             cx.listener(move |ws, _: &MouseUpEvent, _, cx| ws.diff_release(id, cx)),
         )
         .test_support()
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file(path: &str) -> templum_git::FileDiff {
+        templum_git::parse_diff(
+            &format!(
+                "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1 +1 @@\n-a\n+b\n"
+            ),
+            usize::MAX,
+        )
+        .pop()
+        .unwrap()
+    }
+
+    #[test]
+    fn a_range_has_no_sections_and_its_own_title() {
+        let mut p = DiffPanel::range("feature vs main · 2 commits".to_string());
+        assert!(!p.working());
+        assert_eq!(p.empty_text(), "No changes");
+        assert!(p.set_files(vec![file("x.rs"), file("y.rs")]));
+        assert!(
+            !p.set_files(vec![file("x.rs"), file("y.rs")]),
+            "the same files change nothing"
+        );
+        assert!(
+            matches!(p.rows[0], Row::File { file: 0 }),
+            "no Changes heading: {:?}",
+            p.rows[0]
+        );
+        assert!(p.rows.iter().all(|r| !matches!(r, Row::Section { .. })));
+        assert_eq!(p.title(), "feature vs main · 2 commits · 2 files");
+        let w = DiffPanel::new();
+        assert!(w.working());
+        assert_eq!(w.empty_text(), "Nothing changed since the last commit");
+    }
 }

@@ -395,10 +395,11 @@ impl Workspace {
         let Some(git) = self.space.git_mut(id) else {
             return;
         };
-        if !git.panel.folded.remove(&key) {
-            git.panel.folded.insert(key);
+        let p = git.diff_mut();
+        if !p.folded.remove(&key) {
+            p.folded.insert(key);
         }
-        git.panel.rebuild();
+        p.rebuild();
         cx.notify();
     }
 
@@ -407,16 +408,16 @@ impl Workspace {
         let Some(git) = self.space.git_mut(id) else {
             return;
         };
-        git.panel.folded = if folded {
-            git.panel
-                .files
+        let p = git.diff_mut();
+        p.folded = if folded {
+            p.files
                 .iter()
                 .map(git_block::diff_view::Shown::key)
                 .collect()
         } else {
             Default::default()
         };
-        git.panel.rebuild();
+        p.rebuild();
         cx.notify();
     }
 
@@ -442,8 +443,9 @@ impl Workspace {
         let Some(git) = self.space.git_mut(id) else {
             return;
         };
-        git.panel.large_shown.insert(key);
-        git.panel.rebuild();
+        let p = git.diff_mut();
+        p.large_shown.insert(key);
+        p.rebuild();
         cx.notify();
     }
 
@@ -461,7 +463,7 @@ impl Workspace {
         let Some(git) = self.space.git_mut(id) else {
             return;
         };
-        let p = &mut git.panel;
+        let p = git.diff_mut();
         let Some(col) = p.col_at(row, x) else {
             return;
         };
@@ -494,7 +496,7 @@ impl Workspace {
         let Some(git) = self.space.git_mut(id) else {
             return;
         };
-        let p = &mut git.panel;
+        let p = git.diff_mut();
         if !p.dragging {
             return;
         }
@@ -510,9 +512,10 @@ impl Workspace {
         let Some(git) = self.space.git_mut(id) else {
             return;
         };
-        git.panel.dragging = false;
-        if git.panel.selection.is_some_and(|s| s.is_empty()) {
-            git.panel.selection = None;
+        let p = git.diff_mut();
+        p.dragging = false;
+        if p.selection.is_some_and(|s| s.is_empty()) {
+            p.selection = None;
             cx.notify();
         }
     }
@@ -527,7 +530,8 @@ impl Workspace {
         let Some(git) = self.space.git_mut(id) else {
             return;
         };
-        git.panel.ignore_ws = !git.panel.ignore_ws;
+        let p = git.diff_mut();
+        p.ignore_ws = !p.ignore_ws;
         cx.notify();
         self.reload_git_panel(id, window, cx);
     }

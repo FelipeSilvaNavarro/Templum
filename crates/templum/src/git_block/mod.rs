@@ -441,6 +441,15 @@ impl Git {
         self.summary.entity_id() == field || self.description.entity_id() == field
     }
 
+    /// The diff panel on screen: the Changes tab's.
+    pub fn diff(&self) -> &diff_view::DiffPanel {
+        &self.panel
+    }
+
+    pub fn diff_mut(&mut self) -> &mut diff_view::DiffPanel {
+        &mut self.panel
+    }
+
     pub fn repo(&self) -> Option<&Repo> {
         match &self.found {
             Found::Repo(repo) => Some(repo),
