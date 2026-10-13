@@ -1790,3 +1790,25 @@ fn a_stashs_diff_has_its_new_files() {
         .collect();
     assert_eq!(paths, ["a.txt", "new.txt"]);
 }
+
+#[test]
+fn blame_names_each_lines_commit() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\ntwo\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let first = repo.commit("first", false).unwrap();
+    write(dir.path(), "a.txt", "one\nTWO\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let second = repo.commit("second", false).unwrap();
+    write(dir.path(), "a.txt", "one\nTWO\nthree\n");
+    let lines = repo.blame("a.txt", None).unwrap();
+    assert!(lines[0].hash.starts_with(&first));
+    assert!(lines[1].hash.starts_with(&second));
+    assert!(
+        lines[2].hash.bytes().all(|b| b == b'0'),
+        "not committed yet"
+    );
+    let then = repo.blame("a.txt", Some(&first)).unwrap();
+    assert_eq!(then.len(), 2);
+    assert_eq!(then[1].text, "two");
+}

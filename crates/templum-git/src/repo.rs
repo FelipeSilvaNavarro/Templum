@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use crate::blame::BlameLine;
 use crate::diff::{self, FileDiff, parse_diff};
 use crate::parse::{self, Branch, Change, Commit, CommitFile, Entry, Operation, Stash, Status};
 
@@ -1030,6 +1031,16 @@ impl Repo {
     /// the working tree's line endings and filters to the stored bytes.
     pub fn file_at(&self, rev: &str, path: &str) -> Result<Vec<u8>, GitError> {
         self.run(&["cat-file", "--filters", &format!("{rev}:{path}")])
+    }
+
+    /// Who last changed each line of `path`: in the working tree, or as it was in `rev`.
+    // ponytail: no size limit; a blame of a multi-megabyte file is slow but the panel's rows
+    // are virtual. Refuse past DIFF_LIMIT if one stalls the block.
+    pub fn blame(&self, path: &str, rev: Option<&str>) -> Result<Vec<BlameLine>, GitError> {
+        let mut args = vec!["blame", "--porcelain"];
+        args.extend(rev);
+        args.extend(["--", path]);
+        Ok(crate::blame::parse_blame(&self.run(&args)?))
     }
 
     pub fn commit_files(&self, hash: &str) -> Result<Vec<CommitFile>, GitError> {

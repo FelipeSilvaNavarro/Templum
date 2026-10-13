@@ -93,7 +93,8 @@ impl FileDiff {
     /// one hunk is the whole file: the file's buttons do it), nor a binary, a file too large or
     /// one not read; nor one whose text isn't UTF-8 (read with U+FFFD in place of its bytes, a
     /// patch would write those back: `git add` takes the whole file byte for byte instead);
-    /// nor a conflicted file: its hunks are the parts of its regions.
+    /// nor a conflicted file: its hunks are the parts of its regions; nor one with no added or
+    /// removed line (a blame's view, all context, is never taken apart).
     pub fn by_hunk(&self) -> bool {
         self.old_path.is_some()
             && self.new_path.is_some()
@@ -106,6 +107,11 @@ impl FileDiff {
                 .iter()
                 .flat_map(|h| &h.lines)
                 .any(|l| l.text.contains('\u{FFFD}'))
+            && self
+                .hunks
+                .iter()
+                .flat_map(|h| &h.lines)
+                .any(|l| l.kind != Kind::Context)
     }
 }
 
