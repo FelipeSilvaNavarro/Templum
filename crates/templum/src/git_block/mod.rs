@@ -13,7 +13,7 @@ use gpui_kit::component::input::{EditorState, InputEvent, InputState, TextareaSt
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, ElementId, Entity, EntityId, SharedString, Subscription, Window};
 use templum_canvas::{BlockId, Rect, Size};
-use templum_git::{Branch, Commit, CommitFile, Entry, GitError, Operation, Repo, Stash, Status};
+use templum_git::{Branch, Commit, CommitFile, GitError, Operation, Repo, Stash, Status};
 
 use crate::session;
 use crate::workspace::Workspace;
@@ -25,7 +25,7 @@ pub(crate) mod diff_view;
 mod history;
 mod stashes;
 mod view;
-mod widgets;
+pub(crate) mod widgets;
 
 pub(crate) use view::body;
 pub(crate) use widgets::field;
@@ -177,16 +177,14 @@ pub(crate) struct Git {
     pub sync: Option<Sync>,
     /// Why the last read failed, shown under the top bar.
     pub error: Option<String>,
-    /// The read-only diff on the right of the Changes tab, with the `diff` grammar.
-    pub diff: Entity<EditorState>,
+    /// The diff panel of the Changes tab.
+    pub panel: diff_view::DiffPanel,
     /// History's file diff and Stashes' diff: each tab has its own, so a 2-second read of the
     /// Changes diff never replaces what another tab shows.
     pub commit_diff: Entity<EditorState>,
     pub stash_diff: Entity<EditorState>,
     /// The row whose diff is shown.
     pub selected: Option<(List, String)>,
-    /// The diff's first hunk's line in the new file, for Open in editor.
-    pub diff_line: Option<u32>,
     pub summary: Entity<InputState>,
     pub description: Entity<TextareaState>,
     /// Commit replaces the last commit; the fields were filled with its message.
@@ -213,7 +211,7 @@ pub(crate) struct Git {
 
 impl Git {
     pub fn new(folder: PathBuf, tab: Tab, window: &mut Window, cx: &mut Context<Workspace>) -> Git {
-        let mut diff_view = || {
+        let mut editor_view = || {
             cx.new(|cx| {
                 EditorState::new(window, cx)
                     .language("diff")
@@ -223,7 +221,7 @@ impl Git {
                     .folding(false)
             })
         };
-        let (diff, commit_diff, stash_diff) = (diff_view(), diff_view(), diff_view());
+        let (commit_diff, stash_diff) = (editor_view(), editor_view());
         let summary = cx.new(|cx| InputState::new(window, cx).placeholder("Summary"));
         let description = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -286,11 +284,10 @@ impl Git {
             reads: 0,
             sync: None,
             error: None,
-            diff,
+            panel: diff_view::DiffPanel::new(),
             commit_diff,
             stash_diff,
             selected: None,
-            diff_line: None,
             summary,
             description,
             amend: false,
@@ -360,17 +357,6 @@ impl Git {
     /// The summary or the description is this entity: which block a Ctrl+Enter came from.
     pub fn owns_field(&self, field: EntityId) -> bool {
         self.summary.entity_id() == field || self.description.entity_id() == field
-    }
-
-    /// The selected entry, as the last status lists it; None once it is gone.
-    pub fn selected_entry(&self) -> Option<&Entry> {
-        let (list, path) = self.selected.as_ref()?;
-        let entries = match list {
-            List::Conflicts => self.status.conflicts(),
-            List::Staged => self.status.staged(),
-            List::Unstaged => self.status.unstaged(),
-        };
-        entries.into_iter().find(|e| e.path == *path)
     }
 
     pub fn repo(&self) -> Option<&Repo> {

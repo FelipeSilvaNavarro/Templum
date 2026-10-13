@@ -310,11 +310,9 @@ fn changing_a_git_blocks_folder_forgets_the_old_repository(cx: &mut TestAppConte
         assert!(g.status.entries.is_empty(), "{:?}", g.status.entries);
         assert!(g.selected.is_none(), "the old repository's row");
     });
-    let diff = git_of(&ws, cx, id, |g| g.diff.clone());
-    assert_eq!(
-        ws.read_with(cx, |_, cx| diff.read(cx).value().to_string()),
-        ""
-    );
+    git_of(&ws, cx, id, |g| {
+        assert!(g.panel.is_empty(), "the old repository's diff")
+    });
 }
 
 #[gpui_kit::test]

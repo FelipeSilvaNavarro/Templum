@@ -323,11 +323,8 @@ fn a_merge_in_progress_is_an_operation_and_aborting_ends_it() {
     assert_eq!(repo.operation(), Some(Operation::Merge));
     let s = repo.status().unwrap();
     assert_eq!(s.conflicts().len(), 1);
-    assert!(
-        repo.diff(s.conflicts()[0], false)
-            .unwrap()
-            .contains("<<<<<<<")
-    );
+    let file = std::fs::read_to_string(repo.root.join(&s.conflicts()[0].path)).unwrap();
+    assert!(file.contains("<<<<<<<"), "{file}");
     repo.abort(Operation::Merge).unwrap();
     assert_eq!(repo.operation(), None);
     assert!(repo.status().unwrap().entries.is_empty());

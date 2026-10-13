@@ -291,9 +291,9 @@ impl Workspace {
                     }
                     Err(e) => git.error = Some(e.to_string()),
                 }
-                // The diff follows the status (a file staged in a terminal, a file gone).
+                // The panel follows the status (a file staged in a terminal, a file gone).
                 if at.space == ws.space.id {
-                    ws.reload_git_diff(at.block, window, cx);
+                    ws.reload_git_panel(at.block, window, cx);
                 }
             },
             window,

@@ -89,3 +89,37 @@ pub(crate) fn field(state: &Entity<InputState>, z: f32) -> Input {
     // Styled's height: Input's own `h` is for multi-line fields only.
     Styled::h(input, px(FIELD_H * z))
 }
+
+/// A text button in a list's header, and the panel's.
+pub(crate) fn small(
+    id: impl Into<ElementId>,
+    label: &'static str,
+    ui: Ui,
+    z: f32,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .px(px(6.0 * z))
+        .py(px(2.0 * z))
+        .rounded(px(4.0 * z))
+        .text_size(px(11.0 * z))
+        .text_color(ui.title)
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .child(label)
+}
+
+/// A change's letter in its colored square.
+pub(crate) fn badge(ws: &Workspace, change: Change, z: f32) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .size(px(16.0 * z))
+        .rounded(px(4.0 * z))
+        .bg(badge_color(ws, change))
+        .text_size(px(10.0 * z))
+        .text_color(ws.ui.canvas)
+        .child(change.letter().to_string())
+}

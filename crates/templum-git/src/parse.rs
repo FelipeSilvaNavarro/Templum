@@ -378,19 +378,6 @@ pub fn parse_name_status(out: &[u8]) -> Vec<CommitFile> {
     files
 }
 
-/// The new file's first line of the first hunk (1-based), from `@@ -a,b +c,d @@`.
-pub fn first_hunk_line(diff: &str) -> Option<u32> {
-    diff.lines()
-        .find(|l| l.starts_with("@@ "))?
-        .split(' ')
-        .find(|part| part.starts_with('+'))?
-        .trim_start_matches('+')
-        .split(',')
-        .next()?
-        .parse()
-        .ok()
-}
-
 /// A merge, rebase, cherry-pick or revert in progress.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operation {
@@ -602,15 +589,6 @@ refs/remotes/origin/main\0origin/main\0a95aff3\0\0\0Local only\0 \n";
                 (Renamed, "new.txt", Some("old.txt")),
             ]
         );
-    }
-
-    #[test]
-    fn the_first_hunks_line_and_a_diff_without_one() {
-        let diff =
-            "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -10,3 +12,4 @@ fn x() {\n context\n+new\n";
-        assert_eq!(first_hunk_line(diff), Some(12));
-        assert_eq!(first_hunk_line("@@ -0,0 +1,2 @@\n+a\n+b\n"), Some(1));
-        assert_eq!(first_hunk_line("Binary files a/x and b/x differ\n"), None);
     }
 
     #[test]

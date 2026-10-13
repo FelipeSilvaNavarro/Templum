@@ -1,22 +1,20 @@
 //! The Git block's Changes tab: the conflicts, staged and unstaged lists, and the row's diff.
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::input::Editor as EditorView;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, Div, ElementId, MouseButton, MouseDownEvent, Stateful,
-    TestSupportExt, div, px, relative, uniform_list,
+    AnyElement, ClickEvent, Context, ElementId, MouseButton, MouseDownEvent, TestSupportExt, div,
+    px, uniform_list,
 };
 use templum_canvas::BlockId;
 use templum_git::{Change, Entry};
 
 use super::commit_form::commit_form;
-use super::widgets::{badge_color, bar, centered, icon_button};
+use super::diff_view;
+use super::widgets::{badge, icon_button, small};
 use super::{FONT, Git, LISTS_W, List, ROW_H, row_id};
-use crate::editor::{button, keep_rows};
 use crate::menu::Target;
-use crate::theme::Ui;
 use crate::workspace::Workspace;
 
 /// The Changes tab: the lists on the left, the selected row's diff on the right.
@@ -85,59 +83,7 @@ pub(super) fn changes(
         .min_h(px(0.0))
         .flex()
         .child(column)
-        .child(diff_view(ws, id, git, z, cx))
-        .into_any_element()
-}
-
-/// The selected row's diff, read-only, with Open in editor above it.
-fn diff_view(
-    ws: &Workspace,
-    id: BlockId,
-    git: &Git,
-    z: f32,
-    cx: &mut Context<Workspace>,
-) -> AnyElement {
-    let ui = ws.ui;
-    let n = id.0 as usize;
-    let Some((_, path)) = git.selected.clone() else {
-        return centered(ui, z)
-            .flex_1()
-            .child("Click a file to see its diff")
-            .into_any_element();
-    };
-    let open = path.clone();
-    keep_rows(&git.diff, FONT, z, cx);
-    div()
-        .id(("git-diff", n))
-        .flex_1()
-        .min_w(px(0.0))
-        .flex()
-        .flex_col()
-        .child(
-            bar(ui, z)
-                .child(div().truncate().text_color(ui.title).child(path))
-                .child(div().flex_1())
-                .child(
-                    button(("git-open-diff", n), "Open in editor", ui, z)
-                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.open_from_git(id, &open, window, cx)
-                        }))
-                        .test_support(),
-                ),
-        )
-        .child(
-            div().flex_1().min_h(px(0.0)).child(
-                // The element sets the theme's font and the read-only flag every frame.
-                EditorView::new(&git.diff)
-                    .appearance(false)
-                    .bordered(false)
-                    .readonly(true)
-                    .font_family(ws.cell.font.family.clone())
-                    .text_size(px(FONT * z))
-                    .h(relative(1.0)),
-            ),
-        )
-        .test_support()
+        .child(diff_view::panel(ws, id, git, z, cx))
         .into_any_element()
 }
 
@@ -201,20 +147,6 @@ fn header(
             }
         });
     header.into_any_element()
-}
-
-/// A text button in a list's header.
-fn small(id: impl Into<ElementId>, label: &'static str, ui: Ui, z: f32) -> Stateful<Div> {
-    div()
-        .id(id)
-        .px(px(6.0 * z))
-        .py(px(2.0 * z))
-        .rounded(px(4.0 * z))
-        .text_size(px(11.0 * z))
-        .text_color(ui.title)
-        .cursor_pointer()
-        .hover(move |s| s.bg(ui.hover))
-        .child(label)
 }
 
 /// A row: the status badge, the name, its folder dimmed, and on hover its buttons. A click
@@ -336,19 +268,7 @@ fn row(
         .when(selected, |el| el.bg(ui.card))
         .cursor_pointer()
         .hover(move |st| st.bg(ui.hover))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .justify_center()
-                .flex_shrink_0()
-                .size(px(16.0 * z))
-                .rounded(px(4.0 * z))
-                .bg(badge_color(ws, change))
-                .text_size(px(10.0 * z))
-                .text_color(ui.canvas)
-                .child(change.letter().to_string()),
-        )
+        .child(badge(ws, change, z))
         .child(div().truncate().child(e.name().to_string()))
         .child(
             div()

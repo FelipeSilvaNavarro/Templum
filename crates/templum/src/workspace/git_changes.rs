@@ -177,25 +177,129 @@ impl Workspace {
         );
     }
 
-    /// Shows a row's diff on the right (read in the background).
+    /// A click on the left column's row: it is marked, and the panel scrolls to that file.
     pub(crate) fn select_git_row(
         &mut self,
         id: BlockId,
         list: git_block::List,
         path: String,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        let staged = list == git_block::List::Staged;
+        if let Some(ix) = git.panel.row_of(staged, &path) {
+            git.panel
+                .scroll
+                .scroll_to_item(ix, gpui_kit::ScrollStrategy::Top);
+        }
+        git.selected = Some((list, path));
+        cx.notify();
+    }
+
+    /// Reads the whole working diff again in the background (after every status read): a
+    /// result equal to what the panel shows changes nothing.
+    pub(crate) fn reload_git_panel(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git(id) else {
+            return;
+        };
+        let Some(repo) = git.repo().cloned() else {
+            return;
+        };
+        let (status, ignore_ws, whole) = (
+            git.status.clone(),
+            git.panel.ignore_ws,
+            git.panel.whole.clone(),
+        );
+        let at = self.here(id);
+        self.git_job(
+            at,
+            move || repo.working_diff(&status, ignore_ws, &whole),
+            |ws, at, diff, _, cx| {
+                let Some(git) = ws.git_at(&at) else {
+                    return;
+                };
+                git.panel.reads += 1;
+                match diff {
+                    Ok(diff) => {
+                        if git.panel.set(diff) {
+                            cx.notify();
+                        }
+                    }
+                    Err(e) => git.error = Some(e.to_string()),
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// The file row's arrow, or the row itself: its rows show or hide.
+    pub(crate) fn toggle_fold(&mut self, id: BlockId, key: (bool, String), cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        if !git.panel.folded.remove(&key) {
+            git.panel.folded.insert(key);
+        }
+        git.panel.rebuild();
+        cx.notify();
+    }
+
+    /// Expand all (false) or Collapse all (true).
+    pub(crate) fn fold_all(&mut self, id: BlockId, folded: bool, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        git.panel.folded = if folded {
+            git.panel
+                .files
+                .iter()
+                .map(git_block::diff_view::Shown::key)
+                .collect()
+        } else {
+            Default::default()
+        };
+        git.panel.rebuild();
+        cx.notify();
+    }
+
+    /// A fold's click: the file is read again with every line as context.
+    pub(crate) fn show_whole(
+        &mut self,
+        id: BlockId,
+        key: (bool, String),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(git) = self.space.git_mut(id) else {
             return;
         };
-        git.selected = Some((list, path));
-        cx.notify();
-        self.reload_git_diff(id, window, cx);
+        if !git.panel.whole.contains(&key) {
+            git.panel.whole.push(key);
+        }
+        self.reload_git_panel(id, window, cx);
     }
 
-    /// Reads the selected row's diff again; clears it when the row is gone.
-    pub(crate) fn reload_git_diff(
+    /// Show diff on a large or generated file.
+    pub(crate) fn show_large(&mut self, id: BlockId, key: (bool, String), cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        git.panel.large_shown.insert(key);
+        git.panel.rebuild();
+        cx.notify();
+    }
+
+    /// Ignore whitespace on or off: the diff is read again with or without `-w`.
+    pub(crate) fn toggle_ignore_whitespace(
         &mut self,
         id: BlockId,
         window: &mut Window,
@@ -204,44 +308,9 @@ impl Workspace {
         let Some(git) = self.space.git_mut(id) else {
             return;
         };
-        let Some(repo) = git.repo().cloned() else {
-            return;
-        };
-        let Some(entry) = git.selected_entry().cloned() else {
-            git.selected = None;
-            git.diff_line = None;
-            if !git.diff.read(cx).value().is_empty() {
-                git.diff.update(cx, |d, cx| d.set_value("", window, cx));
-            }
-            return;
-        };
-        let staged = git
-            .selected
-            .as_ref()
-            .is_some_and(|s| s.0 == git_block::List::Staged);
-        let at = self.here(id);
-        self.git_job(
-            at,
-            move || repo.diff(&entry, staged),
-            |ws, at, diff, window, cx| {
-                let Some(git) = ws.git_at(&at) else {
-                    return;
-                };
-                let text = match diff {
-                    Ok(text) => text,
-                    Err(e) => e.to_string(),
-                };
-                git.diff_line = templum_git::first_hunk_line(&text);
-                // The same text again (the 2-second read): left alone, so the reader's place and
-                // selection stay.
-                let view = git.diff.clone();
-                if view.read(cx).value() != text {
-                    view.update(cx, |d, cx| d.set_value(text, window, cx));
-                }
-            },
-            window,
-            cx,
-        );
+        git.panel.ignore_ws = !git.panel.ignore_ws;
+        cx.notify();
+        self.reload_git_panel(id, window, cx);
     }
 
     /// Runs `job` on the block's repository in the background; its failure is a notification,
@@ -401,8 +470,8 @@ impl Workspace {
         self.git_action(id, move |repo| repo.continue_(op), window, cx);
     }
 
-    /// Opens a repository path in an editor beside the Git block, at the shown diff's first hunk
-    /// when it is the selected row.
+    /// Opens a repository path in an editor beside the Git block, at the first hunk of the
+    /// file as the panel shows it (the selected row's section, else the Changes one).
     pub(crate) fn open_from_git(
         &mut self,
         id: BlockId,
@@ -413,14 +482,34 @@ impl Workspace {
         let Some(git) = self.space.git(id) else {
             return;
         };
-        let Some(root) = git.repo().map(|r| r.root.clone()) else {
-            return;
-        };
-        let line = git
+        let staged = git
             .selected
             .as_ref()
-            .filter(|s| s.1 == path)
-            .and(git.diff_line);
+            .is_some_and(|s| s.1 == path && s.0 == git_block::List::Staged);
+        let line = git
+            .panel
+            .first_line(staged, path)
+            .or_else(|| git.panel.first_line(!staged, path));
+        self.open_from_git_at(id, path, line, window, cx);
+    }
+
+    /// Opens a repository path in an editor beside the Git block, at `line` (the camera goes
+    /// there).
+    pub(crate) fn open_from_git_at(
+        &mut self,
+        id: BlockId,
+        path: &str,
+        line: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self
+            .space
+            .git(id)
+            .and_then(|g| g.repo().map(|r| r.root.clone()))
+        else {
+            return;
+        };
         self.open_in_editor(&root, &root.join(path), line, Some(id), window, cx);
     }
 }

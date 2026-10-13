@@ -100,100 +100,36 @@ fn discard_asks_first_then_restores_the_file(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_row_shows_its_diff_and_open_in_editor_opens_the_file_beside_the_block(
-    cx: &mut TestAppContext,
-) {
-    use crate::git_block::row_id;
-    let repo = committed_repo();
-    std::fs::write(repo.path().join("a.txt"), "zero\none\n").unwrap();
-    let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    cx.update_window(handle, |_, window, cx| {
-        window.click(row_id(id, "unstaged", 0), cx)
-    })
-    .unwrap();
-    settle(handle, cx);
-    let diff = git_of(&ws, cx, id, |g| {
-        assert_eq!(g.selected.as_ref().map(|s| s.1.as_str()), Some("a.txt"));
-        assert_eq!(g.diff_line, Some(1));
-        g.diff.clone()
-    });
-    let text = ws.read_with(cx, |_, cx| diff.read(cx).value().to_string());
-    assert!(text.contains("+zero"), "{text}");
-    cx.update_window(handle, |_, window, cx| {
-        assert!(window.try_find(("git-diff", n)).is_some());
-        window.click(("git-open-diff", n), cx);
-        window.render_frame(cx);
-    })
-    .unwrap();
-    settle(handle, cx);
-    cx.update_window(handle, |_, window, cx| {
-        let ws = ws.read(cx);
-        let eid = ws
-            .space
-            .blocks
-            .iter()
-            .find_map(|(id, b)| b.editor().map(|_| *id))
-            .expect("an editor opened");
-        // The camera moved just enough to show the editor whole, above the toolbar.
-        let vp = ws.viewport(window);
-        let camera = ws.space.canvas.camera;
-        let shown = camera.rect_to_screen(ws.space.canvas.get(eid).unwrap().rect);
-        assert!(
-            shown.x >= 0.0
-                && shown.y >= 0.0
-                && shown.x + shown.w <= vp.w
-                && shown.y + shown.h <= vp.h - crate::toolbar::SPACE,
-            "{shown:?} in {vp:?}"
-        );
-    })
-    .unwrap();
-    ws.read_with(cx, |ws, cx| {
-        let (eid, e) = ws
-            .space
-            .blocks
-            .iter()
-            .find_map(|(id, b)| Some((*id, b.editor()?)))
-            .expect("an editor opened");
-        assert_eq!(e.active_tab().unwrap().name(), "a.txt");
-        assert_eq!(
-            e.active_tab()
-                .unwrap()
-                .editor
-                .read(cx)
-                .cursor_position()
-                .line,
-            0
-        );
-        let (git, editor) = (
-            ws.space.canvas.get(id).unwrap().rect,
-            ws.space.canvas.get(eid).unwrap().rect,
-        );
-        assert_eq!(editor.x, git.x + git.w + templum_canvas::BESIDE);
-        assert_eq!(editor.y, git.y);
-    });
-}
-
-#[gpui_kit::test]
 fn an_untracked_file_shows_its_content_as_added_and_a_binary_one_says_so(cx: &mut TestAppContext) {
-    use crate::git_block::row_id;
+    use crate::git_block::diff_view::{Note, Row};
+    use templum_git::Kind;
     let repo = git_repo();
     std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
     std::fs::write(repo.path().join("b.bin"), b"\0\x01").unwrap();
     let (handle, ws) = open(cx);
     let id = open_git(handle, &ws, cx, repo.path());
-    let shown = |cx: &mut TestAppContext, i: usize| {
-        cx.update_window(handle, |_, window, cx| {
-            window.click(row_id(id, "unstaged", i), cx)
-        })
-        .unwrap();
-        settle(handle, cx);
-        let diff = git_of(&ws, cx, id, |g| g.diff.clone());
-        ws.read_with(cx, |_, cx| diff.read(cx).value().to_string())
-    };
-    assert_eq!(shown(cx, 0), "+++ b/a.txt\n@@ -0,0 +1,1 @@\n+one\n");
-    assert_eq!(shown(cx, 1), "Binary file");
+    git_of(&ws, cx, id, |g| {
+        let p = &g.panel;
+        assert_eq!(p.files[0].diff.path(), "a.txt");
+        assert_eq!(p.files[1].diff.path(), "b.bin");
+        let a = &p.files[0].diff.hunks[0].lines;
+        assert_eq!(a.len(), 1);
+        assert_eq!(
+            (a[0].kind, a[0].text.as_str(), a[0].new_no),
+            (Kind::Added, "one", Some(1))
+        );
+        assert!(p.files[1].diff.binary);
+        assert!(p.rows.contains(&Row::Note {
+            file: 1,
+            note: Note::Binary
+        }));
+    });
+    let n = id.0 as usize;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("git-diff", n)).is_some());
+    })
+    .unwrap();
 }
 
 /// `main` and `topic` both changed a.txt; `git merge topic` is in progress with a conflict.
@@ -328,37 +264,6 @@ fn a_rows_menu_copies_the_path_and_ignores_the_file(cx: &mut TestAppContext) {
     git_of(&ws, cx, id, |g| {
         let paths: Vec<_> = g.status.entries.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(paths, [".gitignore"], "out.o is ignored now");
-    });
-}
-
-#[gpui_kit::test]
-fn the_changes_diff_isnt_reset_by_a_read_that_changes_nothing(cx: &mut TestAppContext) {
-    use crate::git_block::row_id;
-    use gpui_kit::component::input::Position;
-    let repo = committed_repo();
-    std::fs::write(repo.path().join("a.txt"), "zero\none\n").unwrap();
-    let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    cx.update_window(handle, |_, window, cx| {
-        window.click(row_id(id, "unstaged", 0), cx)
-    })
-    .unwrap();
-    settle(handle, cx);
-    let diff = git_of(&ws, cx, id, |g| g.diff.clone());
-    cx.update_window(handle, |_, window, cx| {
-        diff.update(cx, |d, cx| {
-            d.set_cursor_position(Position::new(2, 0), window, cx)
-        })
-    })
-    .unwrap();
-    cx.executor().advance_clock(crate::git_block::POLL);
-    settle(handle, cx);
-    ws.read_with(cx, |_, cx| {
-        assert_eq!(
-            diff.read(cx).cursor_position().line,
-            2,
-            "where the reader left it"
-        )
     });
 }
 

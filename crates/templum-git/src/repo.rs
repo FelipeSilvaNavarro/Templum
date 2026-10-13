@@ -61,13 +61,6 @@ impl std::error::Error for GitError {}
 /// 4 MB editable, too).
 pub const DIFF_LIMIT: usize = 4 * 1024 * 1024;
 
-fn too_large(bytes: u64) -> String {
-    format!(
-        "Too large to show ({:.1} MB)",
-        bytes as f64 / (1024.0 * 1024.0)
-    )
-}
-
 #[derive(Clone, Debug)]
 pub struct Repo {
     program: String,
@@ -387,47 +380,6 @@ impl Repo {
         bytes.extend_from_slice(line.as_bytes());
         bytes.push(b'\n');
         std::fs::write(file, bytes)
-    }
-
-    /// The entry's diff as `git diff` prints it: the index against HEAD for `staged`, else the
-    /// working tree against the index. An untracked file is shown whole as added, a binary
-    /// one says "Binary file".
-    pub fn diff(&self, entry: &Entry, staged: bool) -> Result<String, GitError> {
-        if entry.unstaged == Some(Change::Untracked) {
-            let path = self.root.join(&entry.path);
-            let size = std::fs::metadata(&path).map_or(0, |m| m.len());
-            if size > DIFF_LIMIT as u64 {
-                return Ok(too_large(size));
-            }
-            let bytes = std::fs::read(path).unwrap_or_default();
-            if bytes.iter().take(8 * 1024).any(|b| *b == 0) {
-                return Ok("Binary file".to_string());
-            }
-            let text = String::from_utf8_lossy(&bytes);
-            let lines: Vec<&str> = text.lines().collect();
-            let mut out = format!("+++ b/{}\n@@ -0,0 +1,{} @@\n", entry.path, lines.len());
-            for line in lines {
-                out.push('+');
-                out.push_str(line);
-                out.push('\n');
-            }
-            return Ok(out);
-        }
-        let mut args = vec!["diff", "--no-color", "-M"];
-        if staged {
-            args.push("--cached");
-        }
-        args.push("--");
-        if let Some(from) = &entry.from {
-            args.push(from);
-        }
-        args.push(&entry.path);
-        let text = self.text(&args)?;
-        Ok(if text.len() > DIFF_LIMIT {
-            too_large(text.len() as u64)
-        } else {
-            text
-        })
     }
 
     /// `git commit -m message` (`--amend` with `amend`): the new commit's short hash.
