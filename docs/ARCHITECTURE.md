@@ -85,7 +85,9 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   `git_branches.rs` and `git_history.rs` (Git blocks). Methods a sibling or a test calls are `pub(super)`.
   `workspace/tests/` holds its tests, one file per area, with the shared helpers in `tests/mod.rs`.
 - `settings/`, `git_block/` and `menu/`: the panel's sections, the Git block's tabs, and what each menu lists, each
-  in its own file behind the folder's `mod.rs`, which keeps the paths the rest of the crate uses.
+  in its own file behind the folder's `mod.rs`, which keeps the paths the rest of the crate uses. `git_block/diff_view/`
+  holds the diff panel: its rows model (`rows.rs`, pure), the highlight cache, the selection, and the rows
+  painted on a canvas in the terminal's font.
 
 ## Configuration
 

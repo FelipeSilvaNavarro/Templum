@@ -741,3 +741,33 @@ fn the_sticky_title_names_the_file_at_the_top_of_the_scroll(cx: &mut TestAppCont
     })
     .unwrap();
 }
+
+/// The rows are whole pixels at every zoom step, 1.5 × the text: the panel scales like a photo,
+/// as an editor's rows do.
+#[gpui_kit::test]
+fn the_rows_are_whole_pixels_at_every_zoom(cx: &mut TestAppContext) {
+    use templum_canvas::{Camera, ZOOM_STEPS};
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "zero\none\n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let row = line_row(&ws, cx, id, "zero");
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    for zoom in ZOOM_STEPS {
+        let height = cx
+            .update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, _| {
+                    // The block's corner near the view's: on screen at any zoom.
+                    ws.space.canvas.camera =
+                        Camera::at(Point::new(rect.x - 10.0, rect.y - 10.0), zoom);
+                    ws.space.flight = None;
+                });
+                window.render_frame(cx);
+                f32::from(window.find(("git-line", row)).bounds().size.height)
+            })
+            .unwrap();
+        let want = crate::git_block::diff_view::row_height(zoom);
+        assert_eq!(height, want, "at {zoom}");
+        assert_eq!(want, want.round(), "whole pixels at {zoom}");
+    }
+}

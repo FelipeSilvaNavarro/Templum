@@ -38,7 +38,8 @@ use workspace::Workspace;
 fn main() {
     let mixed = std::env::args().any(|a| a == "--bench-mixed");
     let zoom = std::env::args().find_map(|a| a.strip_prefix("--bench-zoom=").map(str::to_string));
-    let bench = mixed || zoom.is_some() || std::env::args().any(|a| a == "--bench");
+    let git = std::env::args().any(|a| a == "--bench-git");
+    let bench = mixed || zoom.is_some() || git || std::env::args().any(|a| a == "--bench");
     gpui_kit::application()
         // Every Lucide icon, by name: the toolbar and the notes use ones outside the default set.
         .with_assets(gpui_kit::assets::AllAssets)
@@ -77,6 +78,8 @@ fn main() {
             .expect("failed to open window");
             if let Some(kind) = zoom {
                 bench::run_zoom(window, ws, kind, cx);
+            } else if git {
+                bench::run_git(window, ws, cx);
             } else if bench {
                 bench::run(window, ws, mixed, cx);
             }
