@@ -9,9 +9,6 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
 
 ## Diff panel
 
-- [ ] **A pure deletion's hunk is titled "Line 0".** `Hunk::title` (`crates/templum-git/src/diff.rs:123`) uses the
-  new side; a deleted file, or any hunk with `new_len == 0`, has `new_start` 0. Fix: when `new_len` is 0, name the
-  old side ("Lines 12–20" of `old_start`/`old_len`).
 - [ ] **An empty new file gets an empty "Line 1" hunk row.** `new_file_diff` makes `@@ -0,0 +1,0 @@` for an empty
   file, drawn as a hunk with no lines. Fix: no hunk for an empty file; a note row "Empty file".
 - [ ] **An untracked nested repository shows an empty name.** `status -uall` lists it as `dir/`, and the file row's
@@ -26,13 +23,18 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
 - [ ] **The diff keeps its colors after a theme switch.** The highlight cache is cleared only when the diff changes
   (`crates/templum/src/git_block/diff_view/mod.rs:137`); a light/dark switch keeps the old syntax colors until then.
   Fix: clear every Git block's `panel.colors` where the theme is applied.
-- [ ] **The sticky title makes the list jump.** The bar exists only while a file is at the top
-  (`crates/templum/src/git_block/diff_view/mod.rs:307`), so the list shifts by the bar's height each time a section
-  heading reaches the top. Fix: always draw the bar (empty when no file is at the top).
 - [ ] **Any change re-reads everything: the selection and every hunk's colors go.** `DiffPanel::set`
   (`crates/templum/src/git_block/diff_view/mod.rs:137-138`) clears both whenever any file changed, so while an agent
   is writing, a selection vanishes every 2 seconds. Fix: key the colors by (section, path, hunk header) instead of
   indices, and keep a selection whose rows still hold the same lines.
+- [ ] **A blame's panel shows Ignore whitespace, which changes nothing.** The header keeps the button for every
+  source (`crates/templum/src/git_block/diff_view/mod.rs`, `panel`); with a blame shown, `reload_shown_diff` has no
+  commit to read again, so the button lights up and the lines stay. Fix: hide it for `Source::Blame`, or read the
+  blame again with `git blame -w`.
+- [ ] **In Split, a press on an empty right cell selects on the left.** `DiffPanel::side_at`
+  (`crates/templum/src/git_block/diff_view/mod.rs`) reads the side from the right cell as painted; an empty cell has
+  none, so the selection starts at the end of the left text and a drag selects left lines. Fix: decide the side from
+  the row's origin and the half's width, not from a painted cell.
 
 ## Hunks and the keyboard
 
@@ -108,6 +110,44 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   `resolve_region` and `resolve_file` (`crates/templum/src/workspace/git_conflicts.rs:88,141`, at 150c656) write
   the file with no copy and no question, where the trash rule (docs/specs/git.md, "When a copy can't be kept") asks
   first. Fix: ask as discards do ("This can't be undone").
+
+## History
+
+- [ ] **Load more in a file's history reads the earlier pages again.** `--skip` with `--follow` counts commits that
+  don't touch the file (git 2.55), so `Repo::file_log` (`crates/templum-git/src/repo.rs`) reads the first
+  `skip + count` entries and drops `skip` of them. A file with thousands of commits makes each Load more slower.
+  Fix: remember where the last page ended (its commit and the path then) and go on from there with
+  `git log --follow <hash>^ -- <path then>`.
+- [ ] **File history and Blame are offered where git can't answer.** `menu/build.rs` leaves them out only for an
+  untracked row: a staged new file (no history, "no such path in HEAD" for a blame), a file deleted in the working
+  tree, and an untracked file in an editor's tree all end in an error under the top bar. Fix: leave the items out
+  there, or blame those files at HEAD.
+- [ ] **A Code search trims its text.** `run_search` (`crates/templum/src/workspace/git_history.rs`) trims the field,
+  so `"fn "` searches `-Sfn`. Fix: trim only to decide whether the search is empty.
+- [ ] **Two search-state slips.** `set_search_mode` runs the last searched text again, not the field's; and typing a
+  character then deleting it (no search on) reads page 1 again, losing the pages Load more added. Fix: run with the
+  field's text; skip a clear when nothing was searched.
+- [ ] **In a file's history, a commit's other files look clickable and do nothing.** The panel holds that file's
+  change alone, so `show_commit_file` finds no row for the others. Fix: dim them, or open that commit whole.
+- [ ] **Restore this version… takes the old path's attributes.** `Repo::file_at` (`crates/templum-git/src/repo.rs`)
+  runs `cat-file --filters <rev>:<then>`, so a rename that changed the extension gets the old name's line-ending
+  rules. Fix: `--path=<now>`.
+- [ ] **Restore this version… over a symbolic link, or a file past the trash's cap.** `restore_now` writes through
+  a link at the path (the trash keeps only the link), and over 100 MB keeps no copy though the question said the file
+  goes to Recently discarded. Fix: refuse a link; word the question from `trash::fits`, as discards do.
+- [ ] **A restored file that was gone comes back without its executable bit.** `restore_now` writes plain bytes.
+  Fix: read the mode from `git ls-tree` and set it.
+- [ ] **History goes back to its first page after every action.** `refresh_lists_at` reads page 1 again (older than
+  batch 5), so the pages Load more added go after a commit, a fetch or a switch. Fix: read as many commits as are
+  loaded.
+
+## Stashes
+
+- [ ] **The stash shown keeps its index after a drop.** `stash_shown` is `stash@{N}`'s N (older than batch 5): after a
+  drop in a terminal, N names the next stash while the panel still shows the old one. Fix: keep the stash's hash.
+- [ ] **A stash's diff ignores `diff.srcPrefix` and `diff.dstPrefix`.** `Repo::stash_diff` resets `diff.noprefix` and
+  `diff.mnemonicPrefix` (git 2.55 mangles `--src-prefix` with `--include-untracked`) but not the two prefix settings of
+  git 2.45+. Fix: `-c diff.srcPrefix=a/ -c diff.dstPrefix=b/`, checked against the same mangling.
 
 ## Trash and discards
 

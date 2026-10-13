@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use gpui_kit::component::input::{EditorState, InputEvent, InputState, TextareaState};
+use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Context, ElementId, Entity, EntityId, FocusHandle, SharedString, Subscription,
@@ -53,6 +53,12 @@ pub(crate) const FONT: f32 = 12.0;
 pub(crate) const POLL: Duration = Duration::from_secs(2);
 /// How many commits History loads at a time.
 pub(crate) const PAGE: usize = 200;
+/// Past this many lanes the graph is cut (the commit's dot on the last one).
+// ponytail: a history with more than 6 branches open at once draws 6; a horizontal scroll of the
+// graph if people meet it.
+pub(crate) const MAX_LANES: usize = 6;
+/// A lane's width, world units.
+pub(crate) const LANE_W: f32 = 12.0;
 /// Past this many characters a summary is longer than `git log --oneline` shows well.
 pub(crate) const SUMMARY_MAX: usize = 72;
 
@@ -74,7 +80,7 @@ pub(crate) struct Compare {
 pub(crate) struct Shown {
     pub commit: Commit,
     pub files: Vec<CommitFile>,
-    /// The file whose diff is shown.
+    /// The file last clicked: the panel scrolled to it.
     pub file: Option<String>,
 }
 
@@ -217,10 +223,10 @@ pub(crate) struct Git {
     pub panel: diff_view::DiffPanel,
     /// The Branches tab's comparison, while one shows.
     pub compare: Option<Compare>,
-    /// History's file diff and Stashes' diff: each tab has its own, so a 2-second read of the
-    /// Changes diff never replaces what another tab shows.
-    pub commit_diff: Entity<EditorState>,
-    pub stash_diff: Entity<EditorState>,
+    /// History's diff panel: the commit shown, or a file's blame.
+    pub history_panel: diff_view::DiffPanel,
+    /// Stashes' diff panel: the stash shown.
+    pub stash_panel: diff_view::DiffPanel,
     /// The row whose diff is shown.
     pub selected: Option<(List, String)>,
     pub summary: Entity<InputState>,
@@ -233,8 +239,29 @@ pub(crate) struct Git {
     pub commits: Rc<Vec<Commit>>,
     /// The last page was full: Load more shows.
     pub more: bool,
+    /// The loaded commits' graph, one row per commit; empty while the list is filtered (a search,
+    /// a file's history: their parents aren't in it).
+    pub graph: Rc<Vec<templum_git::graph::GraphRow>>,
+    /// HEAD's commits not on its upstream: History's "not pushed" mark.
+    pub unpushed: Rc<std::collections::HashSet<String>>,
+    /// History lists every branch, tag and remote branch.
+    pub all_branches: bool,
+    /// History is narrowed to this file (from the repository's root, with '/').
+    pub file: Option<String>,
+    /// The file at each loaded commit (a rename's old path before it), in a file's history.
+    pub file_paths: Rc<Vec<CommitFile>>,
+    /// History's panel shows `file`'s blame while no commit is shown.
+    pub blame: bool,
+    /// The commit it is blamed at; None: the working file.
+    pub blame_at: Option<String>,
     pub search: Entity<InputState>,
+    /// Where History's search looks.
+    pub search_mode: templum_git::Search,
+    /// The text History's list was read with; empty: no search.
+    pub searched: String,
     pub shown: Option<Shown>,
+    /// The commit clicked, until another place is asked for: a read for any other is dropped.
+    pub showing: Option<String>,
     /// A list read was asked while a command ran.
     pub pending_lists: bool,
     pub branches: Vec<Branch>,
@@ -252,6 +279,8 @@ pub(crate) struct Git {
     pub lists_scroll: UniformListScrollHandle,
     /// The left column is folded: the diff panel takes the whole width.
     pub lists_folded: bool,
+    /// Every panel of the block side by side (Split) or not; the block remembers it.
+    pub split: bool,
     /// Filter files, over the Changes tab's lists (shown past FILTER_PAST files).
     pub files_filter: Entity<InputState>,
     _files_filter: Subscription,
@@ -260,17 +289,6 @@ pub(crate) struct Git {
 
 impl Git {
     pub fn new(folder: PathBuf, tab: Tab, window: &mut Window, cx: &mut Context<Workspace>) -> Git {
-        let mut editor_view = || {
-            cx.new(|cx| {
-                EditorState::new(window, cx)
-                    .language("diff")
-                    .line_number(false)
-                    .soft_wrap(false)
-                    // Its fold icons have a fixed size, which breaks the layout at a zoom.
-                    .folding(false)
-            })
-        };
-        let (commit_diff, stash_diff) = (editor_view(), editor_view());
         let summary = cx.new(|cx| InputState::new(window, cx).placeholder("Summary"));
         let description = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -304,13 +322,20 @@ impl Git {
                 },
             ),
         ];
-        let search =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search subject or author"));
-        let _search = cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify()
-            }
-        });
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search, then Enter"));
+        let from_search = search.entity_id();
+        let _search = cx.subscribe_in(
+            &search,
+            window,
+            move |ws, field, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { .. } => ws.search_from(from_search, window, cx),
+                // Cleared: the whole history back, without waiting for Enter.
+                InputEvent::Change if field.read(cx).value().trim().is_empty() => {
+                    ws.search_from(from_search, window, cx)
+                }
+                _ => {}
+            },
+        );
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter branches"));
         let _filter = cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
@@ -343,8 +368,10 @@ impl Git {
             default_branch: None,
             panel: diff_view::DiffPanel::new(),
             compare: None,
-            commit_diff,
-            stash_diff,
+            history_panel: diff_view::DiffPanel::range(String::new())
+                .with_hint("Click a commit to see its changes"),
+            stash_panel: diff_view::DiffPanel::range(String::new())
+                .with_hint("Click a stash to see its changes"),
             selected: None,
             summary,
             description,
@@ -352,8 +379,18 @@ impl Git {
             _enter,
             commits: Rc::new(Vec::new()),
             more: false,
+            graph: Rc::new(Vec::new()),
+            unpushed: Rc::new(std::collections::HashSet::new()),
+            all_branches: false,
+            file: None,
+            file_paths: Rc::new(Vec::new()),
+            blame: false,
+            blame_at: None,
             search,
+            search_mode: templum_git::Search::default(),
+            searched: String::new(),
             shown: None,
+            showing: None,
             pending_lists: false,
             branches: Vec::new(),
             stashes: Vec::new(),
@@ -364,25 +401,11 @@ impl Git {
             focus: cx.focus_handle(),
             lists_scroll: UniformListScrollHandle::new(),
             lists_folded: false,
+            split: false,
             files_filter,
             _files_filter,
             _search,
         }
-    }
-
-    /// The commits matching the search (subject or author, without case): their indices.
-    pub fn filtered(&self, cx: &App) -> Vec<usize> {
-        let query = self.search.read(cx).value().trim().to_lowercase();
-        self.commits
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| {
-                query.is_empty()
-                    || c.subject.to_lowercase().contains(&query)
-                    || c.author.to_lowercase().contains(&query)
-            })
-            .map(|(i, _)| i)
-            .collect()
     }
 
     /// The summary, then a blank line and the description when there is one.
@@ -475,19 +498,49 @@ impl Git {
         self.summary.entity_id() == field || self.description.entity_id() == field
     }
 
-    /// The diff panel on screen: the comparison's while the Branches tab shows one, else the
-    /// Changes tab's.
+    /// The diff panel on screen: each tab its own (the Branches tab's is the comparison's while
+    /// one shows), so a 2-second read of the working changes never touches another tab's.
     pub fn diff(&self) -> &diff_view::DiffPanel {
-        match (&self.compare, self.tab) {
-            (Some(c), Tab::Branches) => &c.panel,
+        match (self.tab, &self.compare) {
+            (Tab::History, _) => &self.history_panel,
+            (Tab::Stashes, _) => &self.stash_panel,
+            (Tab::Branches, Some(c)) => &c.panel,
             _ => &self.panel,
         }
     }
 
     pub fn diff_mut(&mut self) -> &mut diff_view::DiffPanel {
-        match (&mut self.compare, self.tab) {
-            (Some(c), Tab::Branches) => &mut c.panel,
+        match (self.tab, &mut self.compare) {
+            (Tab::History, _) => &mut self.history_panel,
+            (Tab::Stashes, _) => &mut self.stash_panel,
+            (Tab::Branches, Some(c)) => &mut c.panel,
             _ => &mut self.panel,
+        }
+    }
+
+    /// History leaves the commit shown (or being read): the list again, the panel empty unless
+    /// it shows the file's blame.
+    pub fn hide_shown(&mut self) {
+        self.shown = None;
+        self.showing = None;
+        if !self.blame {
+            self.history_panel.clear();
+        }
+    }
+
+    /// Split on or off, for every panel of the block.
+    pub fn set_split(&mut self, on: bool) {
+        self.split = on;
+        let panels = [
+            &mut self.panel,
+            &mut self.history_panel,
+            &mut self.stash_panel,
+        ]
+        .into_iter()
+        .chain(self.compare.as_mut().map(|c| &mut c.panel));
+        for p in panels {
+            p.split = on;
+            p.rebuild();
         }
     }
 
@@ -553,6 +606,11 @@ impl Git {
             description: draft(&self.description.read(cx).value()),
             lists: if self.lists_folded {
                 "folded".to_string()
+            } else {
+                String::new()
+            },
+            diff: if self.split {
+                "split".to_string()
             } else {
                 String::new()
             },

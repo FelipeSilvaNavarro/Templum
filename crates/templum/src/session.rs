@@ -247,6 +247,9 @@ pub(crate) struct GitItem {
     /// "folded": the left column is folded. Left out when it isn't.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub lists: String,
+    /// "split": the diff panels are side by side. Left out when they aren't.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub diff: String,
 }
 
 fn changes() -> String {
@@ -561,6 +564,11 @@ mod tests {
         assert!(back.contains(r#""tab":"changes""#), "{back}");
         assert!(!back.contains("summary"), "no message, no key: {back}");
         assert!(!back.contains("lists"), "not folded, no key: {back}");
+        assert!(!back.contains(r#""diff""#), "unified, no key: {back}");
+        let mut split = g.clone();
+        split.diff = "split".into();
+        let back = serde_json::to_string(&Item::Git(split)).unwrap();
+        assert!(back.contains(r#""diff":"split""#), "{back}");
         let item: Item =
             serde_json::from_str(&text.replace(r#""folder""#, r#""tab":"history","folder""#))
                 .unwrap();

@@ -4,7 +4,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use templum_git::{Back, Change, Operation, Pull, Repo, Side, Synced, clone_name, clone_target};
+use templum_git::{
+    Back, Change, HistoryQuery, Operation, Pull, Repo, Search, Side, Synced, clone_name,
+    clone_target,
+};
 
 /// A new repository on `main` with an author set, so commits work on a bare runner.
 fn fresh() -> (tempfile::TempDir, Repo) {
@@ -477,7 +480,9 @@ fn a_remote_that_isnt_there_fails_with_the_command_in_the_error() {
 fn log_files_diffs_tags_branches_and_reverts() {
     let (dir, repo) = fresh();
     assert!(
-        repo.log(0, 10).unwrap().is_empty(),
+        repo.history(&HistoryQuery::default(), 0, 10)
+            .unwrap()
+            .is_empty(),
         "no commits: an empty log, not an error"
     );
     write(dir.path(), "a.txt", "one\n");
@@ -487,7 +492,7 @@ fn log_files_diffs_tags_branches_and_reverts() {
     write(dir.path(), "b.txt", "b\n");
     repo.stage(&["a.txt", "b.txt"]).unwrap();
     repo.commit("Second\n\nWith a body.", false).unwrap();
-    let log = repo.log(0, 10).unwrap();
+    let log = repo.history(&HistoryQuery::default(), 0, 10).unwrap();
     assert_eq!(log.len(), 2);
     assert_eq!(log[0].subject, "Second");
     assert_eq!(log[0].body, "With a body.");
@@ -499,23 +504,30 @@ fn log_files_diffs_tags_branches_and_reverts() {
     );
     assert_eq!(log[1].short, first);
     assert!(log[1].parents.is_empty());
-    assert_eq!(repo.log(1, 10).unwrap().len(), 1, "skip");
-    assert_eq!(repo.log(0, 1).unwrap().len(), 1, "count");
+    assert_eq!(
+        repo.history(&HistoryQuery::default(), 1, 10).unwrap().len(),
+        1,
+        "skip"
+    );
+    assert_eq!(
+        repo.history(&HistoryQuery::default(), 0, 1).unwrap().len(),
+        1,
+        "count"
+    );
     let files = repo.commit_files(&log[0].hash).unwrap();
     let got: Vec<_> = files.iter().map(|f| (f.change, f.path.as_str())).collect();
     assert_eq!(got, [(Change::Modified, "a.txt"), (Change::Added, "b.txt")]);
-    let diff = repo.commit_diff(&log[0].hash, &files[0]).unwrap();
-    assert!(diff.contains("+two"), "{diff}");
+    let diff = repo.commit_changes(&log[0].hash, false).unwrap();
+    assert_eq!(diff[0].path(), "a.txt");
+    assert!(diff[0].hunks[0].lines.iter().any(|l| l.text == "two"));
     let root = repo.commit_files(&log[1].hash).unwrap();
     assert_eq!(root.len(), 1, "a root commit's files");
-    assert!(
-        repo.commit_diff(&log[1].hash, &root[0])
-            .unwrap()
-            .contains("+one")
-    );
+    let diff = repo.commit_changes(&log[1].hash, false).unwrap();
+    assert_eq!(diff[0].path(), "a.txt");
+    assert!(diff[0].hunks[0].lines.iter().any(|l| l.text == "one"));
     repo.tag("v1", &log[1].hash).unwrap();
     assert!(
-        repo.log(0, 10).unwrap()[1]
+        repo.history(&HistoryQuery::default(), 0, 10).unwrap()[1]
             .refs
             .contains(&"tag: v1".to_string())
     );
@@ -529,7 +541,7 @@ fn log_files_diffs_tags_branches_and_reverts() {
     repo.revert(&log[0].hash).unwrap();
     assert!(!dir.path().join("b.txt").exists(), "reverted");
     assert!(
-        repo.log(0, 1).unwrap()[0]
+        repo.history(&HistoryQuery::default(), 0, 1).unwrap()[0]
             .subject
             .starts_with("Revert \"Second\"")
     );
@@ -623,7 +635,7 @@ fn stashes_are_listed_shown_applied_popped_and_dropped() {
     assert_eq!(s.len(), 1);
     assert_eq!(s[0].index, 0);
     assert_eq!(s[0].message, "On main: my work");
-    assert!(repo.stash_show(&s[0]).unwrap().contains("+changed"));
+    assert_eq!(repo.stash_diff(&s[0], false).unwrap()[0].added(), 1);
     repo.stash_apply(&s[0]).unwrap();
     assert_eq!(
         std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
@@ -1626,6 +1638,192 @@ fn a_comparison_is_what_the_branch_has_and_a_commits_own_diff() {
         merged[0].path(),
         "a.txt",
         "what the merge brought onto feat"
+    );
+}
+
+/// A commit with no change, its dates set (seconds since 1970).
+fn commit_at(repo: &Repo, message: &str, seconds: u64) {
+    let date = format!("{seconds} +0000");
+    let ok = std::process::Command::new("git")
+        .args(["commit", "-q", "--allow-empty", "-m", message])
+        .current_dir(&repo.root)
+        .env("GIT_COMMITTER_DATE", &date)
+        .env("GIT_AUTHOR_DATE", &date)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+}
+
+#[test]
+fn history_is_in_date_order_even_with_a_skewed_clock() {
+    let (_dir, repo) = fresh();
+    commit_at(&repo, "P", 1_000_000_200);
+    repo.run(&["checkout", "-q", "-b", "side"]).unwrap();
+    commit_at(&repo, "S", 1_000_000_300);
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    // A child older than its parent: git's default order would show P before A.
+    commit_at(&repo, "A", 1_000_000_050);
+    repo.run(&["merge", "-q", "--no-ff", "--no-edit", "side"])
+        .unwrap();
+    let subjects: Vec<String> = repo
+        .history(&HistoryQuery::default(), 0, 10)
+        .unwrap()
+        .into_iter()
+        .map(|c| c.subject)
+        .collect();
+    assert_eq!(subjects[1..], ["S", "A", "P"], "{subjects:?}");
+}
+
+#[test]
+fn all_branches_and_the_three_searches() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.rs", "fn main() {}\n");
+    repo.stage(&["a.rs"]).unwrap();
+    repo.commit("Add main", false).unwrap();
+    repo.run(&["checkout", "-q", "-b", "side"]).unwrap();
+    write(dir.path(), "a.rs", "fn main() { helper(); }\n");
+    repo.stage(&["a.rs"]).unwrap();
+    repo.commit("Call the helper (wip", false).unwrap();
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    let q = |all: bool, search: Option<(Search, &str)>| HistoryQuery {
+        all,
+        search: search.map(|(s, t)| (s, t.to_string())),
+    };
+    let subjects = |q: HistoryQuery| -> Vec<String> {
+        repo.history(&q, 0, 10)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.subject)
+            .collect()
+    };
+    assert_eq!(subjects(q(false, None)), ["Add main"], "HEAD's history");
+    assert_eq!(subjects(q(true, None)).len(), 2, "every branch");
+    assert_eq!(
+        subjects(q(true, Some((Search::Message, "HELPER (WIP")))),
+        ["Call the helper (wip"],
+        "fixed text, no case"
+    );
+    assert_eq!(
+        subjects(q(true, Some((Search::Author, "ada lov")))).len(),
+        2
+    );
+    assert_eq!(
+        subjects(q(true, Some((Search::Code, "helper()")))),
+        ["Call the helper (wip"],
+        "added or removed text"
+    );
+    assert!(
+        subjects(q(true, Some((Search::Message, "[nothing")))).is_empty(),
+        "a bracket is just a bracket"
+    );
+}
+
+#[test]
+fn a_files_log_follows_its_renames() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\ntwo\nthree\nfour\nfive\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("add a", false).unwrap();
+    repo.run(&["mv", "a.txt", "b.txt"]).unwrap();
+    repo.commit("rename to b", false).unwrap();
+    write(dir.path(), "b.txt", "one\nTWO\nthree\nfour\nfive\n");
+    repo.stage(&["b.txt"]).unwrap();
+    repo.commit("change b", false).unwrap();
+    write(dir.path(), "other.txt", "x\n");
+    repo.stage(&["other.txt"]).unwrap();
+    repo.commit("other", false).unwrap();
+    let log = repo.file_log("b.txt", 0, 10).unwrap();
+    let got: Vec<(&str, &str, Option<&str>)> = log
+        .iter()
+        .map(|(c, f)| (c.subject.as_str(), f.path.as_str(), f.from.as_deref()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("change b", "b.txt", None),
+            ("rename to b", "b.txt", Some("a.txt")),
+            ("add a", "a.txt", None)
+        ]
+    );
+    assert_eq!(repo.file_log("b.txt", 1, 10).unwrap().len(), 2, "skip");
+    // The file as it was in its first commit, from its old name.
+    let first = &log[2].0.hash;
+    assert_eq!(
+        repo.file_at(first, "a.txt").unwrap(),
+        b"one\ntwo\nthree\nfour\nfive\n"
+    );
+    assert_eq!(repo.commit_info(first).unwrap().subject, "add a");
+}
+
+#[test]
+fn the_commits_not_pushed_are_head_s_past_the_upstream() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    assert!(repo.unpushed().unwrap().is_empty(), "no upstream");
+    let _remote = with_remote(&repo);
+    write(dir.path(), "a.txt", "two\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("two", false).unwrap();
+    let head = repo.head().unwrap();
+    assert_eq!(repo.unpushed().unwrap(), [head].into_iter().collect());
+}
+
+#[test]
+fn a_stashs_diff_has_its_new_files() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    write(dir.path(), "a.txt", "changed\n");
+    write(dir.path(), "new.txt", "n\n");
+    repo.stash_push("mine", true).unwrap();
+    let s = repo.stashes().unwrap();
+    let paths: Vec<String> = repo
+        .stash_diff(&s[0], false)
+        .unwrap()
+        .iter()
+        .map(|f| f.path().to_string())
+        .collect();
+    assert_eq!(paths, ["a.txt", "new.txt"]);
+}
+
+#[test]
+fn blame_names_each_lines_commit() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\ntwo\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let first = repo.commit("first", false).unwrap();
+    write(dir.path(), "a.txt", "one\nTWO\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let second = repo.commit("second", false).unwrap();
+    write(dir.path(), "a.txt", "one\nTWO\nthree\n");
+    let lines = repo.blame("a.txt", None).unwrap();
+    assert!(lines[0].hash.starts_with(&first));
+    assert!(lines[1].hash.starts_with(&second));
+    assert!(
+        lines[2].hash.bytes().all(|b| b == b'0'),
+        "not committed yet"
+    );
+    let then = repo.blame("a.txt", Some(&first)).unwrap();
+    assert_eq!(then.len(), 2);
+    assert_eq!(then[1].text, "two");
+}
+
+// Final review, I5: a version restored takes the working tree's line endings.
+#[test]
+fn a_file_then_has_the_working_trees_line_endings() {
+    let (dir, repo) = fresh();
+    write(dir.path(), ".gitattributes", "*.txt eol=crlf\n");
+    write(dir.path(), "a.txt", "one\ntwo\n");
+    repo.stage(&[".gitattributes", "a.txt"]).unwrap();
+    repo.commit("add a", false).unwrap();
+    assert_eq!(
+        repo.file_at("HEAD", "a.txt").unwrap(),
+        b"one\r\ntwo\r\n",
+        "as a checkout writes it"
     );
 }
 

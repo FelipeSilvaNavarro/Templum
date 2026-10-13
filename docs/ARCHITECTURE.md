@@ -11,7 +11,7 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 | `templum` | bin | Window, event loop, rendering, input, wiring | **Yes, the only one** (`gpui-kit`) |
 | `templum-canvas` | lib | Pure model: camera (pan, zoom), blocks, hit-testing, snapping, layout (de)serialization | No |
 | `templum-terminal` | lib | Wraps `alacritty_terminal`: shell in a PTY, input, resize, key encoding, events | No |
-| `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values, finds conflict regions by their markers (`conflict.rs`), keeps the trash of discarded changes, and asks an AI agent for a commit message (`message.rs`) | No |
+| `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values, finds conflict regions by their markers (`conflict.rs`), lays History's commits out in lanes from their parents (`graph.rs`), turns a blame into the diff panel's rows (`blame.rs`), keeps the trash of discarded changes, and asks an AI agent for a commit message (`message.rs`) | No |
 
 All four crates exist. New library crates are created together with the first real code that needs
 them, never as empty scaffolding. The behavior of the current version is specified in
@@ -89,9 +89,12 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   `workspace/tests/` holds its tests, one file per area, with the shared helpers in `tests/mod.rs`.
 - `settings/`, `git_block/` and `menu/`: the panel's sections, the Git block's tabs, and what each menu lists, each
   in its own file behind the folder's `mod.rs`, which keeps the paths the rest of the crate uses. `git_block/diff_view/`
-  holds the diff panel: its rows model (`rows.rs`, pure), the highlight cache, the selection, and the rows
-  painted on a canvas in the terminal's font; it shows the working changes or a read-only list of files (a
-  comparison). `git_block/words.rs` holds the Git words' tooltips and the sentences the block says;
+  holds the diff panel: its rows model (`rows.rs`, pure; Split's pairs too), the highlight cache, the selection,
+  and the rows painted on a canvas in the terminal's font, unified or side by side; it shows the working changes,
+  a read-only list of files (a comparison, a commit, a stash) or a blame. Each tab has its own panel (Changes',
+  History's, Stashes', a comparison's: `Git::diff()` picks the one on screen), so the 2-second read of the
+  working changes never touches another tab's. `git_block/history.rs` draws History's left column: the commits
+  with their graph, or the commit shown. `git_block/words.rs` holds the Git words' tooltips and the sentences the block says;
   `git_block/switcher.rs` the branch switcher.
 
 ## Configuration

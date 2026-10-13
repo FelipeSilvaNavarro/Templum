@@ -1,7 +1,7 @@
 # The Git block, second version
 
 - **Date:** 2026-10-13
-- **Status:** Design approved; batches 1 to 4 and 6 implemented, 5 not yet
+- **Status:** Design approved; all six batches implemented
 - **Replaces:** [cockpit.md](cockpit.md), section 8 (the Git block it describes is what this one starts from)
 - **Builds on:** [context-menus.md](context-menus.md), [agents.md](agents.md), [config.md](config.md)
 
@@ -123,7 +123,9 @@ parent), **a stash**, and **a comparison** of two branches.
   **file's language colors**, a soft green or red background from the theme's ANSI colors, and **changed words**
   with a stronger background (a removed line paired with an added one in the same hunk).
 - **Split mode:** removed lines on the left, added on the right, paired row by row; an addition with no removal
-  leaves the left cell empty, and the other way round.
+  leaves the left cell empty, and the other way round. A conflicted file and a blame stay unified (their parts
+  aren't an old and a new side), and "No newline at end of file" isn't shown in Split. Each side is at most half
+  the panel, so the added side is always in view; a longer line is cut at its side (Unified shows it whole).
 - **Unchanged stretches** longer than 6 lines (3 of context on each side) fold into "⋯ 40 unchanged lines"; a click
   shows the whole file's diff (`-U` with the file's length).
 - **Special files:** a rename shows "old.rs → new.rs"; a binary "Binary file · 12 KB"; a new or deleted file all
@@ -299,15 +301,21 @@ on it. A clone that wants credentials fails with **Run in a terminal**, as other
 - **Right-click a commit:** Checkout…, New branch here…, Create tag…, Revert…, **Undo this commit** (the newest,
   not pushed), Copy hash, Copy message.
 - **Search** runs in git, not over the loaded commits, in three modes: **Message** (`--grep -i`), **Author**
-  (`--author -i`), **Code** (`-S`: commits that added or removed a text).
+  (`--author -i`), **Code** (`-S`: commits that added or removed a text). It runs on Enter, and again when the
+  field is cleared (the whole history back); the text is taken as written (`-F`). A search hides the graph: its
+  commits' parents aren't in the list.
 - **File history:** right-click a file (in Changes, in a commit's files, in an editor's tree) → **File history**:
   History narrowed to it (`git log --follow --name-status -- path`, so each commit knows the file's path at that
-  time, before a rename), the panel showing that file's change in each commit. **Restore this version…** writes
-  the file as it was in that commit (`git show rev:<path then>`, written to the path now), after a copy in the
-  trash.
+  time, before a rename), the panel showing that file's change in each commit: a commit clicked there shows that
+  file's change alone, by its name then (the commit's other files are in the left column). A file's history has
+  no search and no All branches (`--follow` follows one file). **Restore this
+  version…** writes the file as it was in that commit (`git show rev:<path then>`, written to the path now), after
+  a copy in the trash.
 - **Blame:** right-click a file → **Blame**: the panel shows the whole file with the diff's rows (colors,
-  selection) and, on the left of each group of lines from one commit, its author, date and short hash
-  (`git blame --porcelain`). A click on a group opens that commit.
+  selection) and, for each group of lines from one commit, its author, date and short hash
+  (`git blame --porcelain`). The panel's rows are one column of text, so they are a heading row above the group
+  ("a1b2c3d · Ada Lovelace · 3 d ago · Subject"; "Not committed yet" for lines not committed). A click on a
+  group's heading opens that commit (none for the lines not committed).
 
 ## 7. Commit messages from an agent
 

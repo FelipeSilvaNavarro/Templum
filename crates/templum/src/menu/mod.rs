@@ -60,6 +60,12 @@ pub(crate) enum Target {
         block: BlockId,
         hash: String,
     },
+    /// A file of the commit shown in a Git block's History.
+    GitCommitFile {
+        block: BlockId,
+        hash: String,
+        path: String,
+    },
     /// The ▾ beside a Git block's Commit button.
     GitCommitMenu(BlockId),
     /// The ⚙ beside a Git block's Generate ✨.
@@ -265,23 +271,59 @@ impl Workspace {
                     base: git.default_branch.clone(),
                 }
             }
-            Target::GitCommit { block, ref hash } => Items::GitCommit {
+            Target::GitCommit { block, ref hash } => {
+                let git = self.space.git(block)?;
+                let commit = git.commits.iter().find(|c| c.hash == *hash)?.clone();
+                let s = &git.status;
+                // The newest commit of a branch, not on its upstream: it can be taken back.
+                let undo = s.oid.as_deref() == Some(commit.hash.as_str())
+                    && s.branch.is_some()
+                    && (s.upstream.is_none() || s.gone || s.ahead > 0);
+                // In a file's history: the file's path then, unless the commit deleted it.
+                let restore = git
+                    .file
+                    .as_ref()
+                    .and_then(|_| git.commits.iter().position(|c| c.hash == *hash))
+                    .and_then(|i| git.file_paths.get(i))
+                    .filter(|f| f.change != templum_git::Change::Deleted)
+                    .map(|f| f.path.clone());
+                Items::GitCommit {
+                    block,
+                    commit,
+                    undo,
+                    restore,
+                }
+            }
+            Target::GitCommitFile {
                 block,
-                commit: self
-                    .space
-                    .git(block)?
-                    .commits
-                    .iter()
-                    .find(|c| c.hash == *hash)?
-                    .clone(),
+                ref hash,
+                ref path,
+            } => Items::GitCommitFile {
+                block,
+                hash: hash.clone(),
+                path: path.clone(),
             },
             Target::GitLine { block, row } => {
+                use git_block::diff_view::Row;
                 let p = self.space.git(block)?.diff();
-                let Some(git_block::diff_view::Row::Line { file, hunk, line }) = p.rows.get(row)
-                else {
-                    return None;
+                let (file, hunk, line) = match *p.rows.get(row)? {
+                    Row::Line { file, hunk, line } => (file, hunk, line),
+                    // A pair: the selection's side, else the new line, else the old one.
+                    Row::Pair {
+                        file,
+                        hunk,
+                        old,
+                        new,
+                    } => {
+                        let side = match (p.selection.is_some(), p.split_right) {
+                            (true, true) => new,
+                            (true, false) => old,
+                            (false, _) => None,
+                        };
+                        (file, hunk, side.or(new).or(old)?)
+                    }
+                    _ => return None,
                 };
-                let (file, hunk, line) = (*file, *hunk, *line);
                 let s = &p.files[file];
                 let h = &s.diff.hunks[hunk];
                 let l = &h.lines[line];
@@ -435,6 +477,15 @@ enum Items {
     GitCommit {
         block: BlockId,
         commit: Commit,
+        /// HEAD's commit, not pushed: Undo this commit.
+        undo: bool,
+        /// In a file's history, the file's path in this commit: Restore this version….
+        restore: Option<String>,
+    },
+    GitCommitFile {
+        block: BlockId,
+        hash: String,
+        path: String,
     },
     GitBranch {
         block: BlockId,

@@ -235,12 +235,18 @@ impl Items {
                 };
                 let mut menu = menu;
                 if let Some(p) = path.clone().filter(|_| !is_dir) {
-                    let open = p.clone();
+                    let (open, history, blame) = (p.clone(), p.clone(), p.clone());
                     menu = menu
                         .item(item(ws, "Open", None, move |ws, window, cx| {
                             ws.open_file(block, &open, None, window, cx)
                         }))
-                        .item(reveal(ws, p));
+                        .item(reveal(ws, p))
+                        .item(item(ws, "File history", None, move |ws, window, cx| {
+                            ws.history_from_tree(block, history.clone(), false, window, cx)
+                        }))
+                        .item(item(ws, "Blame", None, move |ws, window, cx| {
+                            ws.history_from_tree(block, blame.clone(), true, window, cx)
+                        }));
                 }
                 if path.is_none() || is_dir {
                     let (file_dir, folder_dir) = (dir.clone(), dir.clone());
@@ -546,6 +552,18 @@ impl Items {
                             ));
                     }
                 }
+                // A new file has no history yet.
+                if list != List::Conflicts && entry.unstaged != Some(templum_git::Change::Untracked)
+                {
+                    let (history, blame) = (path.clone(), path.clone());
+                    menu = menu
+                        .item(item(ws, "File history", None, move |ws, window, cx| {
+                            ws.file_history(block, history.clone(), window, cx)
+                        }))
+                        .item(item(ws, "Blame", None, move |ws, window, cx| {
+                            ws.blame_file(block, blame.clone(), None, window, cx)
+                        }));
+                }
                 let (copy, ignore) = (path.clone(), path.clone());
                 menu.item(item(
                     ws,
@@ -594,7 +612,12 @@ impl Items {
                     ))
                 })
             }
-            Items::GitCommit { block, commit } => {
+            Items::GitCommit {
+                block,
+                commit,
+                undo,
+                restore,
+            } => {
                 let (checkout, branch, tag, revert, copy) = (
                     commit.hash.clone(),
                     commit.hash.clone(),
@@ -602,12 +625,18 @@ impl Items {
                     commit.hash.clone(),
                     commit.hash.clone(),
                 );
+                let (short, restore_hash) = (commit.short.clone(), commit.hash.clone());
+                let message = if commit.body.is_empty() {
+                    commit.subject.clone()
+                } else {
+                    format!("{}\n\n{}", commit.subject, commit.body)
+                };
                 menu.item(item(ws, "Checkout…", None, move |ws, window, cx| {
                     ws.checkout_commit(block, checkout.clone(), window, cx)
                 }))
                 .item(item(
                     ws,
-                    "New branch from here…",
+                    "New branch here…",
                     Some(IconName::GitBranchPlus),
                     move |ws, window, cx| ws.branch_from(block, Some(branch.clone()), window, cx),
                 ))
@@ -623,11 +652,60 @@ impl Items {
                     Some(IconName::Undo2),
                     move |ws, window, cx| ws.revert_commit(block, revert.clone(), window, cx),
                 ))
+                .when(undo, |menu| {
+                    menu.item(item(
+                        ws,
+                        "Undo this commit",
+                        Some(IconName::Undo2),
+                        move |ws, window, cx| {
+                            ws.undo_commit(block, short.clone(), None, window, cx)
+                        },
+                    ))
+                })
                 .item(item(
                     ws,
                     "Copy hash",
                     Some(IconName::Copy),
                     move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())),
+                ))
+                .item(item(
+                    ws,
+                    "Copy message",
+                    Some(IconName::Copy),
+                    move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(message.clone()))
+                    },
+                ))
+                .when_some(restore, |menu, then| {
+                    menu.item(item(
+                        ws,
+                        "Restore this version…",
+                        Some(IconName::Undo2),
+                        move |ws, window, cx| {
+                            ws.restore_version(
+                                block,
+                                restore_hash.clone(),
+                                then.clone(),
+                                window,
+                                cx,
+                            )
+                        },
+                    ))
+                })
+            }
+            Items::GitCommitFile { block, hash, path } => {
+                let (history, blame) = (path.clone(), path.clone());
+                menu.item(item(ws, "File history", None, move |ws, window, cx| {
+                    ws.file_history(block, history.clone(), window, cx)
+                }))
+                .item(item(ws, "Blame", None, move |ws, window, cx| {
+                    ws.blame_file(block, blame.clone(), Some(hash.clone()), window, cx)
+                }))
+                .item(item(
+                    ws,
+                    "Copy path",
+                    Some(IconName::Copy),
+                    move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(path.clone())),
                 ))
             }
             Items::GitBranch {

@@ -224,37 +224,85 @@ pub struct Commit {
     pub body: String,
 }
 
+/// One `LOG_FORMAT` record (its ten fields); None for anything else.
+pub(crate) fn commit_of(record: &str) -> Option<Commit> {
+    let f: Vec<&str> = record.splitn(10, '\x1f').collect();
+    if f.len() < 10 {
+        return None;
+    }
+    let list = |s: &str| -> Vec<String> {
+        s.split(", ")
+            .filter(|r| !r.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    Some(Commit {
+        hash: f[0].to_string(),
+        short: f[1].to_string(),
+        author: f[2].to_string(),
+        email: f[3].to_string(),
+        time: f[4].parse().unwrap_or(0),
+        date: f[5].to_string(),
+        parents: f[6]
+            .split(' ')
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect(),
+        refs: list(f[7]),
+        subject: f[8].to_string(),
+        body: f[9].trim_end().to_string(),
+    })
+}
+
 pub fn parse_log(out: &[u8]) -> Vec<Commit> {
-    records(out)
-        .filter_map(|record| {
-            let f: Vec<&str> = record.splitn(10, '\x1f').collect();
-            if f.len() < 10 {
-                return None;
+    records(out).filter_map(commit_of).collect()
+}
+
+/// `git log -z --follow --name-status --format=LOG_FORMAT -- path`: each commit with the file
+/// as it was in it (a rename's old path in `from`). After each record git prints "\n" and the
+/// status, then one path (two for a rename or a copy); a merge prints none, and keeps the path
+/// of the commit after it in the list.
+pub fn parse_file_log(out: &[u8], path: &str) -> Vec<(Commit, CommitFile)> {
+    let mut entries = Vec::new();
+    let mut now = path.to_string();
+    let mut fields = records(out).peekable();
+    while let Some(record) = fields.next() {
+        let Some(commit) = commit_of(record.trim_start_matches('\n')) else {
+            continue;
+        };
+        let mut file = CommitFile {
+            change: Change::Modified,
+            path: now.clone(),
+            from: None,
+        };
+        let status = fields
+            .peek()
+            .filter(|f| !f.contains('\x1f'))
+            .map(|f| f.trim_start_matches('\n').to_string());
+        if let Some(code) = status {
+            fields.next();
+            if let Some(change) = code.bytes().next().and_then(Change::of) {
+                let first = fields.next().unwrap_or("").to_string();
+                file = if change == Change::Renamed || code.starts_with('C') {
+                    CommitFile {
+                        change,
+                        path: fields.next().unwrap_or("").to_string(),
+                        from: Some(first),
+                    }
+                } else {
+                    CommitFile {
+                        change,
+                        path: first,
+                        from: None,
+                    }
+                };
             }
-            let list = |s: &str| -> Vec<String> {
-                s.split(", ")
-                    .filter(|r| !r.is_empty())
-                    .map(str::to_string)
-                    .collect()
-            };
-            Some(Commit {
-                hash: f[0].to_string(),
-                short: f[1].to_string(),
-                author: f[2].to_string(),
-                email: f[3].to_string(),
-                time: f[4].parse().unwrap_or(0),
-                date: f[5].to_string(),
-                parents: f[6]
-                    .split(' ')
-                    .filter(|p| !p.is_empty())
-                    .map(str::to_string)
-                    .collect(),
-                refs: list(f[7]),
-                subject: f[8].to_string(),
-                body: f[9].trim_end().to_string(),
-            })
-        })
-        .collect()
+        }
+        // Older commits knew it by its name before this one's rename.
+        now = file.from.clone().unwrap_or_else(|| file.path.clone());
+        entries.push((commit, file));
+    }
+    entries
 }
 
 /// `git for-each-ref --format=BRANCH_FORMAT refs/heads refs/remotes`: one line per ref, fields

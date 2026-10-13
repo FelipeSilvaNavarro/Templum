@@ -67,6 +67,7 @@ impl Workspace {
                             cx,
                         );
                         git.lists_folded = g.lists == "folded";
+                        git.set_split(g.diff == "split");
                         git.summary
                             .update(cx, |s, cx| s.set_value(g.summary.clone(), window, cx));
                         git.description

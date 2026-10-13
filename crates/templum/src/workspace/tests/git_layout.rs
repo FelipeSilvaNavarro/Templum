@@ -66,13 +66,16 @@ fn a_folded_block_comes_back_folded_and_a_small_one_grows_to_the_minimum(cx: &mu
         data.path(),
         &format!(
             r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
-                  {{"kind":"git","rect":{{"x":0,"y":0,"w":500,"h":350}},"folder":"{json}","lists":"folded"}}]}}"#
+                  {{"kind":"git","rect":{{"x":0,"y":0,"w":500,"h":350}},"folder":"{json}","lists":"folded","diff":"split"}}]}}"#
         ),
     );
     let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
     settle(handle, cx);
     let id = first_id(&ws, cx);
-    git_of(&ws, cx, id, |g| assert!(g.lists_folded));
+    git_of(&ws, cx, id, |g| {
+        assert!(g.lists_folded);
+        assert!(g.split && g.panel.split, "Split comes back too");
+    });
     ws.read_with(cx, |ws, _| {
         let r = ws.space.canvas.get(id).unwrap().rect;
         assert_eq!((r.w, r.h), (640.0, 420.0));

@@ -10,19 +10,19 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Bounds, ClickEvent, Context, Div, ElementId, Font, Hsla, MouseButton,
-    MouseDownEvent, MouseMoveEvent, Pixels, SharedString, TestSupportExt, TextAlign, TextRun,
-    Window, canvas, div, fill, point, px, size,
+    AnyElement, App, Bounds, ClickEvent, ContentMask, Context, Div, ElementId, Font, Hsla,
+    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, SharedString, Stateful, TestSupportExt,
+    TextAlign, TextRun, Window, canvas, div, fill, point, px, size,
 };
 use templum_canvas::BlockId;
 use templum_git::conflict::Take;
 use templum_git::{Change, FileDiff, Kind};
 
 use super::select::display;
-use super::{Note, Row, Shaped, Shown, files_word};
+use super::{Note, Row, Shaped, Shown, Source, files_word};
 use crate::editor::human;
 use crate::git_block::widgets::{badge, icon_button, small};
-use crate::git_block::{FONT, words};
+use crate::git_block::{FONT, LISTS_W, words};
 use crate::grid::hsla;
 use crate::menu::Target;
 use crate::theme::Ui;
@@ -64,6 +64,24 @@ pub(super) fn row(
         Row::Region { file, region } => {
             region_row(ws, id, &files[*file], *region, ix, row_h, z, cx)
         }
+        Row::Pair {
+            file,
+            hunk,
+            old,
+            new,
+        } => pair_row(
+            ws,
+            id,
+            &files[*file],
+            *file,
+            *hunk,
+            *old,
+            *new,
+            ix,
+            row_h,
+            z,
+            cx,
+        ),
     }
 }
 
@@ -342,6 +360,15 @@ fn hunk_row(
     let busy = git.is_some_and(|g| g.acting > 0);
     let working = git.is_some_and(|g| g.diff().working());
     let by_hunk = working && s.diff.by_hunk() && git.is_some_and(|g| !g.diff().ignore_ws);
+    // A blame's group: its heading names the commit, and a click opens it (none for the lines
+    // not committed yet).
+    let blame = git.and_then(|g| match &g.diff().source {
+        Source::Blame { hashes, .. } => Some(hashes.get(hunk).cloned().unwrap_or_default()),
+        _ => None,
+    });
+    let opens = blame
+        .clone()
+        .filter(|h| !h.is_empty() && !h.bytes().all(|b| b == b'0'));
     let path = s.diff.path().to_string();
     let ids = |what: &str| ElementId::Name(format!("git-hunk-{what}-{n}-{ix}").into());
     // A conflict region's part: named after its marker's label, with Use this.
@@ -437,12 +464,18 @@ fn hunk_row(
                 .min_w(px(0.0))
                 .truncate()
                 .font_family(ws.cell.font.family.clone())
-                .child(if part {
+                .child(if part || blame.is_some() {
                     h.context.clone()
                 } else {
                     format!("@@ {}", h.title())
                 }),
         )
+        .when_some(opens, |el, hash| {
+            el.cursor_pointer()
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.show_commit(id, hash.clone(), window, cx)
+                }))
+        })
         .child({
             let tools = div().flex().gap(px(4.0 * z)).children(buttons);
             if on_cursor {
@@ -600,8 +633,10 @@ pub(super) struct LinePaint {
     pub ui: Ui,
 }
 
+/// What a line of the panel paints: its text, numbers, colors and selection. In Split, the
+/// selection shows on the side it was made on.
 #[allow(clippy::too_many_arguments)]
-fn line_row(
+fn line_paint(
     ws: &Workspace,
     id: BlockId,
     s: &Shown,
@@ -609,10 +644,11 @@ fn line_row(
     hunk: usize,
     line: usize,
     ix: usize,
+    right: bool,
     row_h: f32,
     z: f32,
     cx: &mut Context<Workspace>,
-) -> AnyElement {
+) -> LinePaint {
     let ui = ws.ui;
     let l = &s.diff.hunks[hunk].lines[line];
     let ansi = &ws.theme.palette.ansi;
@@ -634,17 +670,14 @@ fn line_row(
         None => (Rc::new(Vec::new()), Rc::new(Vec::new())),
     };
     let text: SharedString = display(&l.text).into();
-    // The cell was measured at the terminal's size: its advance at the panel's.
-    let paint_cw = ws.cell.size.w * FONT / ws.cell.font_size * z;
     let selection = ws
         .space
         .git(id)
-        .and_then(|g| g.diff().selection)
+        .map(|g| g.diff())
+        .filter(|p| !p.split || p.split_right == right)
+        .and_then(|p| p.selection)
         .and_then(|sel| sel.range_in(ix, text.len()));
-    // The whole text, so the list (as wide as its widest row) scrolls to the end of it; the
-    // trailing cell keeps the last glyph off the edge.
-    let width = paint_cw * (super::text_columns(s.digits()) + text.chars().count() + 1) as f32;
-    let paint = LinePaint {
+    LinePaint {
         text,
         digits: s.digits(),
         old_no: l.old_no,
@@ -657,13 +690,65 @@ fn line_row(
         selection,
         font: ws.cell.font.clone(),
         // The cell was measured at the terminal's size: scale its advance to the panel's.
-        cw: paint_cw,
+        cw: ws.cell.size.w * FONT / ws.cell.font_size * z,
         row_h,
         size: FONT * z,
         ui,
-    };
+    }
+}
+
+/// A line row's mouse: press and drag select, right-click opens its menu.
+fn line_mouse(
+    el: Stateful<Div>,
+    id: BlockId,
+    ix: usize,
+    cx: &mut Context<Workspace>,
+) -> Stateful<Div> {
+    el.on_mouse_down(
+        MouseButton::Left,
+        cx.listener(move |ws, e: &MouseDownEvent, _, cx| {
+            ws.diff_press(id, ix, e.position.x, e.click_count, cx)
+        }),
+    )
+    .on_mouse_move(cx.listener(move |ws, e: &MouseMoveEvent, _, cx| {
+        if e.pressed_button == Some(MouseButton::Left) {
+            ws.diff_drag(id, ix, e.position.x, cx)
+        }
+    }))
+    .on_mouse_down(
+        MouseButton::Right,
+        cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+            ws.open_menu(
+                Target::GitLine { block: id, row: ix },
+                e.position,
+                window,
+                cx,
+            );
+            cx.stop_propagation();
+        }),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn line_row(
+    ws: &Workspace,
+    id: BlockId,
+    s: &Shown,
+    file: usize,
+    hunk: usize,
+    line: usize,
+    ix: usize,
+    row_h: f32,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let paint = line_paint(ws, id, s, file, hunk, line, ix, false, row_h, z, cx);
+    // The whole text, so the list (as wide as its widest row) scrolls to the end of it; the
+    // trailing cell keeps the last glyph off the edge.
+    let width =
+        paint.cw * (super::text_columns(s.digits()) + paint.text.chars().count() + 1) as f32;
     let shaped = ws.space.git(id).map(|g| g.diff().shaped.clone());
-    div()
+    let row = div()
         .id(("git-line", ix))
         .w_full()
         .min_w(px(width))
@@ -674,35 +759,105 @@ fn line_row(
                 move |bounds, _, window, cx| {
                     let (line, x) = paint_line(&paint, bounds, window, cx);
                     if let Some(shaped) = &shaped {
-                        shaped.borrow_mut().insert(ix, Shaped { line, x });
+                        let left = bounds.origin.x;
+                        shaped
+                            .borrow_mut()
+                            .insert((ix, false), Shaped { line, x, left });
                     }
                 },
             )
             .size_full(),
-        )
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |ws, e: &MouseDownEvent, _, cx| {
-                ws.diff_press(id, ix, e.position.x, e.click_count, cx)
-            }),
-        )
-        .on_mouse_move(cx.listener(move |ws, e: &MouseMoveEvent, _, cx| {
-            if e.pressed_button == Some(MouseButton::Left) {
-                ws.diff_drag(id, ix, e.position.x, cx)
+        );
+    line_mouse(row, id, ix, cx)
+        .test_support()
+        .into_any_element()
+}
+
+/// Split: the old line in the left half (its old number), the new one in the right half (its
+/// new number), an empty cell dimmed; each half `half` columns wide.
+#[allow(clippy::too_many_arguments)]
+fn pair_row(
+    ws: &Workspace,
+    id: BlockId,
+    s: &Shown,
+    file: usize,
+    hunk: usize,
+    old: Option<usize>,
+    new: Option<usize>,
+    ix: usize,
+    row_h: f32,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let git = ws.space.git(id);
+    let half = git.map_or(0, |g| g.diff().half);
+    let cw = ws.cell.size.w * FONT / ws.cell.font_size * z;
+    // The panel's width: the block's, less the left column while it shows.
+    let lists = if git.is_some_and(|g| g.lists_folded) {
+        0.0
+    } else {
+        LISTS_W
+    };
+    let panel_w = ws
+        .space
+        .canvas
+        .get(id)
+        .map_or(f32::INFINITY, |b| (b.rect.w - lists) * z);
+    // ponytail: a side is at most half the panel, so the added side is always in view; a line
+    // longer than that is cut at its side (Unified shows it whole). Scroll each side alone if
+    // people need the end of long lines side by side.
+    let half_w = px((cw * half as f32).min((panel_w / 2.0).floor()));
+    let mut side = |line: Option<usize>, right: bool| {
+        line.map(|l| {
+            let mut p = line_paint(ws, id, s, file, hunk, l, ix, right, row_h, z, cx);
+            if right {
+                p.old_no = None
+            } else {
+                p.new_no = None
             }
-        }))
-        .on_mouse_down(
-            MouseButton::Right,
-            cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
-                ws.open_menu(
-                    Target::GitLine { block: id, row: ix },
-                    e.position,
-                    window,
-                    cx,
-                );
-                cx.stop_propagation();
-            }),
-        )
+            p
+        })
+    };
+    let (left, right) = (side(old, false), side(new, true));
+    let empty = ws.ui.hover;
+    let shaped = ws.space.git(id).map(|g| g.diff().shaped.clone());
+    let row = div()
+        .id(("git-pair", ix))
+        .w_full()
+        .min_w(half_w * 2.0)
+        .h(px(row_h))
+        .child(
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, cx| {
+                    for (paint, right, x0) in [
+                        (left.as_ref(), false, bounds.origin.x),
+                        (right.as_ref(), true, bounds.origin.x + half_w),
+                    ] {
+                        let cell = Bounds::new(
+                            point(x0, bounds.origin.y),
+                            size(half_w, bounds.size.height),
+                        );
+                        match paint {
+                            Some(p) => {
+                                let mask = ContentMask { bounds: cell };
+                                let (line, x) = window.with_content_mask(Some(mask), |window| {
+                                    paint_line(p, cell, window, cx)
+                                });
+                                if let Some(shaped) = &shaped {
+                                    shaped
+                                        .borrow_mut()
+                                        .insert((ix, right), Shaped { line, x, left: x0 });
+                                }
+                            }
+                            None => window.paint_quad(fill(cell, empty)),
+                        }
+                    }
+                },
+            )
+            .size_full(),
+        );
+    line_mouse(row, id, ix, cx)
         .test_support()
         .into_any_element()
 }

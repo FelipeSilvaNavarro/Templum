@@ -464,6 +464,10 @@ impl Workspace {
             return;
         };
         let p = git.diff_mut();
+        // Split: the press picks the side; a drag keeps it (a selection stays on one side).
+        if p.split {
+            p.split_right = p.side_at(row, x);
+        }
         let Some(col) = p.col_at(row, x) else {
             return;
         };
@@ -520,6 +524,14 @@ impl Workspace {
         }
     }
 
+    /// Unified or Split, for every panel of the block.
+    pub(crate) fn set_split(&mut self, id: BlockId, on: bool, cx: &mut Context<Self>) {
+        if let Some(git) = self.space.git_mut(id) {
+            git.set_split(on);
+            cx.notify();
+        }
+    }
+
     /// Ignore whitespace on or off: the diff is read again with or without `-w`.
     pub(crate) fn toggle_ignore_whitespace(
         &mut self,
@@ -532,15 +544,8 @@ impl Workspace {
         };
         let p = git.diff_mut();
         p.ignore_ws = !p.ignore_ws;
-        // What shows is read again: the comparison, or the working changes.
-        let comparing = git.tab == git_block::Tab::Branches && git.compare.is_some();
         cx.notify();
-        if comparing {
-            let at = self.here(id);
-            self.load_compare(at, window, cx);
-        } else {
-            self.reload_git_panel(id, window, cx);
-        }
+        self.reload_shown_diff(id, window, cx);
     }
 
     /// Runs `job` on the block's repository in the background; its failure is a notification,

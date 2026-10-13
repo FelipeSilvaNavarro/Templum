@@ -7,7 +7,7 @@
 //! 25% to 200% and back, 4 steps a second, around the view's center. No pan, no output.
 //! `templum --bench-git`: one Git block on a repository made in the temp folder, 5 files with
 //! 1,000 changed lines each (a 5,000-line diff); the panel scrolls 400 rows a second while the
-//! zoom glides between 50% and 200%. Bar: p95 <= 16.7 ms.
+//! zoom glides between 50% and 200%, Unified for 5 s then Split. Bar: p95 <= 16.7 ms.
 //! Prints one JSON line (frame-interval percentiles, memory), then quits. Bar: p95 <= 16.7 ms.
 
 use std::path::{Path, PathBuf};
@@ -266,6 +266,10 @@ pub(crate) fn run_git(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut A
                 let step_of = |z: f32| ZOOM_STEPS.iter().position(|&s| s == z).expect("a step");
                 let (low, high) = (step_of(0.5), step_of(2.0));
                 measure(ws, idle_rss, move |ws, window, cx, t| {
+                    // Unified for 5 s, then Split.
+                    if t >= 5.0 && ws.space.git(id).is_some_and(|g| !g.split) {
+                        ws.set_split(id, true, cx);
+                    }
                     // The panel scrolls 400 rows a second, wrapping around.
                     if let Some(git) = ws.space.git(id) {
                         let rows = git.panel.rows.len().max(1);

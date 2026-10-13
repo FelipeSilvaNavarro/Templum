@@ -730,6 +730,16 @@ fn the_sticky_title_names_the_file_at_the_top_of_the_scroll(cx: &mut TestAppCont
             None,
             "a section heading at the top"
         );
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("git-sticky", n)).is_some(),
+            "drawn with no file at the top too: the list never jumps"
+        );
+    })
+    .unwrap();
+    git_of(&ws, cx, id, |g| {
         // Heading, then 12 rows per file (its row, its hunk, 10 lines): row 15 is inside f01.
         let base = g.panel.scroll.0.borrow().base_handle.clone();
         base.set_offset(point(px(0.0), px(-15.0 * row_h)));
