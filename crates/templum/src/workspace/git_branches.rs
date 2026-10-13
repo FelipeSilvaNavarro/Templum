@@ -7,7 +7,7 @@ use gpui_kit::{Context, Window};
 use templum_canvas::BlockId;
 use templum_git::{GitError, Repo};
 
-use crate::git_block;
+use crate::git_block::{self, words};
 use crate::prompt;
 
 use super::{Extra, GitAt, Workspace, notify_git_error};
@@ -135,27 +135,72 @@ impl Workspace {
             self.here(id),
             move || repo.delete_branch(&job_name, force),
             move |ws, at, result, window, cx| {
-                if let Err(e) = result {
-                    let entity = cx.entity();
-                    let block = at.block;
-                    let mut extra: Vec<Extra> = Vec::new();
-                    if !force && templum_git::not_merged(&e.stderr) {
-                        let name = name.clone();
-                        extra.push((
-                            "git-delete-force",
-                            "Delete anyway".into(),
-                            Rc::new(move |ws, window, cx| {
-                                ws.delete_branch(block, name.clone(), true, window, cx)
-                            }),
-                        ));
+                match result {
+                    Err(e) if !force && templum_git::not_merged(&e.stderr) => {
+                        ws.ask_delete_anyway(at.clone(), name.clone(), window, cx)
                     }
-                    notify_git_error(&entity, at.clone(), &e, extra, window, cx);
+                    Err(e) => {
+                        let entity = cx.entity();
+                        notify_git_error(&entity, at.clone(), &e, Vec::new(), window, cx);
+                    }
+                    Ok(()) => {}
                 }
                 ws.after_action(at, window, cx);
             },
             window,
             cx,
         );
+    }
+
+    /// `git branch -d` refused: counts what only that branch has, then asks to force it. The
+    /// answer acts on the block it is about, in its own workspace (`show_git_block`).
+    pub(super) fn ask_delete_anyway(
+        &mut self,
+        at: GitAt,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.git_at(&at).and_then(|g| g.repo().cloned()) else {
+            return;
+        };
+        let counted = name.clone();
+        self.git_job(
+            at,
+            move || repo.unmerged_count(&counted),
+            move |_, at, count, window, cx| {
+                let n = count.unwrap_or(0);
+                let entity = cx.entity();
+                prompt::confirm(
+                    format!("Delete {name} anyway?"),
+                    format!(
+                        "Its {} not merged anywhere will be lost.",
+                        words::commits(n)
+                    ),
+                    "Delete",
+                    move |window, cx| {
+                        let (name, at) = (name.clone(), at.clone());
+                        entity.update(cx, |ws, cx| {
+                            if ws.show_git_block(&at, window, cx) {
+                                ws.delete_now(at.block, name, true, window, cx)
+                            }
+                        })
+                    },
+                    window,
+                    cx,
+                );
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// The Branches tab's Remote heading: its rows show or hide.
+    pub(crate) fn toggle_remote_branches(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        if let Some(git) = self.space.git_mut(id) {
+            git.remote_folded = !git.remote_folded;
+            cx.notify();
+        }
     }
 
     /// The Branches tab's Publish: `git push -u <remote> <name>`, the remote by Publish's rule.

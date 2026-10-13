@@ -225,6 +225,8 @@ pub(crate) struct Git {
     pub stash_shown: Option<usize>,
     /// The Branches tab's filter.
     pub filter: Entity<InputState>,
+    /// The Branches tab's remote branches are folded.
+    pub remote_folded: bool,
     _filter: Subscription,
     /// The block's own keyboard focus (not a field's): its keys act while it has it.
     pub focus: FocusHandle,
@@ -337,6 +339,7 @@ impl Git {
             stashes: Vec::new(),
             stash_shown: None,
             filter,
+            remote_folded: true,
             _filter,
             focus: cx.focus_handle(),
             lists_scroll: UniformListScrollHandle::new(),

@@ -299,6 +299,7 @@ fn new_branch_creates_and_checks_out_and_a_bad_name_is_refused(cx: &mut TestAppC
 
 #[gpui_kit::test]
 fn a_branchs_menu_renames_merges_publishes_and_deletes_asking_to_force(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
     no_motion(cx);
     let repo = committed_repo();
     let _remote = add_remote(repo.path());
@@ -345,14 +346,25 @@ fn a_branchs_menu_renames_merges_publishes_and_deletes_asking_to_force(cx: &mut 
     git_of(&ws, cx, id, |g| {
         assert_eq!(g.branches.len(), 3, "not merged: still there")
     });
-    assert_eq!(notification_count(handle, cx), 1);
+    // "Delete feature anyway?": not now.
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.has_active_dialog(cx), "asks again, with the count");
+        window.within("dialog").click("cancel", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
     menu(cx, 0, 3);
     settle(handle, cx);
     git_of(&ws, cx, id, |g| {
         assert_eq!(g.branches[0].upstream.as_deref(), Some("origin/feature"))
     });
-    cx.update_window(handle, |_, window, cx| window.click("git-delete-force", cx))
-        .unwrap();
+    // Published: merged into its upstream, so `git branch -d` takes it.
+    menu(cx, 0, 2);
+    cx.update_window(handle, |_, window, cx| {
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
     settle(handle, cx);
     git_of(&ws, cx, id, |g| {
         assert!(
@@ -367,6 +379,9 @@ fn a_branchs_menu_renames_merges_publishes_and_deletes_asking_to_force(cx: &mut 
     });
     assert_eq!(remote_rows, 2);
     cx.update_window(handle, |_, window, cx| {
+        // The remote rows are folded at first.
+        window.click(("git-remote-fold", id.0 as usize), cx);
+        window.render_frame(cx);
         window.right_click(branch_row(id, true, 0), cx);
         window.render_frame(cx);
         // Merge into main…, Copy name.
@@ -514,6 +529,7 @@ fn repo_with_unmerged_feature() -> tempfile::TempDir {
 // Final review, C2: a notification's buttons act on its own block, in its own workspace.
 #[gpui_kit::test]
 fn delete_anyway_after_a_switch_acts_on_its_own_repository(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
     no_motion(cx);
     let (x, y) = (repo_with_unmerged_feature(), repo_with_unmerged_feature());
     let (handle, ws) = open(cx);
@@ -525,7 +541,13 @@ fn delete_anyway_after_a_switch_acts_on_its_own_repository(cx: &mut TestAppConte
     })
     .unwrap();
     settle(handle, cx);
-    assert_eq!(notification_count(handle, cx), 1, "refused: not merged");
+    cx.update_window(handle, |_, window, cx| {
+        assert!(
+            window.has_active_dialog(cx),
+            "refused: not merged, asks again"
+        )
+    })
+    .unwrap();
     // A new workspace whose first block takes id 0, like X's terminal: Y's Git block gets
     // X's id.
     cx.update_window(handle, |_, window, cx| {
@@ -538,8 +560,11 @@ fn delete_anyway_after_a_switch_acts_on_its_own_repository(cx: &mut TestAppConte
     settle(handle, cx);
     let in_y = open_git(handle, &ws, cx, y.path());
     assert_eq!(in_y, in_x, "block ids repeat across workspaces");
-    cx.update_window(handle, |_, window, cx| window.click("git-delete-force", cx))
-        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
     settle(handle, cx);
     assert!(
         !git_run(y.path(), &["branch", "--list", "feature"]).is_empty(),
