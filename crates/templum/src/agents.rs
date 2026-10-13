@@ -145,6 +145,8 @@ impl Draft {
                     command: (command != agent.command()).then(|| command.to_string()),
                     resume: (resume != default_resume).then(|| resume.to_string()),
                     show: (!self.show).then_some(false),
+                    generate: None,
+                    models: None,
                 }
             }
             None => AgentConfig {
@@ -152,6 +154,8 @@ impl Draft {
                 command: Some(command.to_string()),
                 resume: (!resume.is_empty()).then(|| resume.to_string()),
                 show: (!self.show).then_some(false),
+                generate: None,
+                models: None,
             },
         };
         (config != AgentConfig::default()).then_some(config)
