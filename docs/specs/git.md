@@ -129,10 +129,13 @@ parent), **a stash**, and **a comparison** of two branches.
 - **Special files:** a rename shows "old.rs → new.rs"; a binary "Binary file · 12 KB"; a new or deleted file all
   green or all red; a mode change says so; "No newline at end of file" shows dimmed. An untracked file has no
   diff in git: the block builds one with a new file's headers (`diff --git`, `new file mode`, `--- /dev/null`),
-  all green, and its only action is Stage on the file row (no hunk buttons).
+  all green; its file row has Stage, Discard (asks first: the file is deleted) and Open in editor, and no hunk
+  buttons.
 - **Large and generated files** fold by default with **Show diff**: more than 2,000 changed lines, and
   `Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `*.min.js`, `*.min.css`, `*.map`. Over
-  `DIFF_LIMIT` (4 MB) a file says "Too large to show" with Open in editor.
+  `DIFF_LIMIT` (4 MB) a file says "Too large to show" with Open in editor. One read takes at most 200 new
+  (untracked) files and 4 MB of them: past that, a new file's row says "New file · 12 KB · not read yet" with
+  **Show diff** (an agent's build or an unpacked folder can be thousands of files).
 - **Selecting text:** click and drag selects across lines (in Split mode, within one side); a double-click selects
   a word, a triple-click a line. A point maps to a row by the row height and to a byte in it by the shaped line
   (`ShapedLine::closest_index_for_x`, gpui-pre-0.3.8 src/text_system/line_layout.rs:78), so tabs (drawn as 4

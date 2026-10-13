@@ -279,6 +279,8 @@ fn note_row(
             let (old, new) = d.mode.clone().unwrap_or_default();
             format!("Mode {old} → {new}")
         }
+        Note::NoNewline => "No newline at end of file".to_string(),
+        Note::Unread => format!("New file · {} · not read yet", human(d.bytes.unwrap_or(0))),
     };
     let row = div()
         .id(("git-note", ix))
@@ -307,7 +309,14 @@ fn note_row(
                     }))
                     .test_support(),
             ),
-            Note::Binary | Note::Mode => row,
+            Note::Unread => row.child(
+                small(("git-show-diff", ix), "Show diff", ui, z)
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.show_whole(id, key.clone(), window, cx)
+                    }))
+                    .test_support(),
+            ),
+            Note::Binary | Note::Mode | Note::NoNewline => row,
         };
     row.test_support().into_any_element()
 }
@@ -371,11 +380,16 @@ fn line_row(
         None => (Rc::new(Vec::new()), Rc::new(Vec::new())),
     };
     let text: SharedString = display(&l.text).into();
+    // The cell was measured at the terminal's size: its advance at the panel's.
+    let paint_cw = ws.cell.size.w * FONT / ws.cell.font_size * z;
     let selection = ws
         .space
         .git(id)
         .and_then(|g| g.panel.selection)
         .and_then(|sel| sel.range_in(ix, text.len()));
+    // The whole text, so the list (as wide as its widest row) scrolls to the end of it; the
+    // trailing cell keeps the last glyph off the edge.
+    let width = paint_cw * (super::text_columns(s.digits()) + text.chars().count() + 1) as f32;
     let paint = LinePaint {
         text,
         digits: s.digits(),
@@ -389,7 +403,7 @@ fn line_row(
         selection,
         font: ws.cell.font.clone(),
         // The cell was measured at the terminal's size: scale its advance to the panel's.
-        cw: ws.cell.size.w * FONT / ws.cell.font_size * z,
+        cw: paint_cw,
         row_h,
         size: FONT * z,
         ui,
@@ -398,6 +412,7 @@ fn line_row(
     div()
         .id(("git-line", ix))
         .w_full()
+        .min_w(px(width))
         .h(px(row_h))
         .child(
             canvas(

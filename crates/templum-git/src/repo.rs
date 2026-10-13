@@ -411,6 +411,11 @@ pub struct WorkingDiff {
     pub staged: Vec<FileDiff>,
 }
 
+/// What one read of the working diff takes of the untracked files, at most: past either, a
+/// file is listed unread (`FileDiff::unread`) until it is asked for in `whole`.
+const UNTRACKED_FILES: usize = 200;
+const UNTRACKED_BYTES: u64 = DIFF_LIMIT as u64;
+
 /// More context lines than any file has: git shows the file whole.
 const WHOLE: &str = "-U999999999";
 
@@ -425,12 +430,31 @@ impl Repo {
         whole: &[(bool, String)],
     ) -> Result<WorkingDiff, GitError> {
         let mut unstaged = self.side_diff(false, ignore_whitespace, whole)?;
+        // An agent can make thousands of new files (a build, an unpacked folder): one read
+        // takes the first ones, the others are listed unread until asked for.
+        let (mut read, mut bytes) = (0, 0u64);
         for e in status
             .entries
             .iter()
             .filter(|e| e.unstaged == Some(Change::Untracked))
         {
-            unstaged.push(self.untracked_diff(&e.path));
+            let size = std::fs::metadata(self.root.join(&e.path)).map_or(0, |m| m.len());
+            let asked = whole.iter().any(|(staged, p)| !staged && *p == e.path);
+            // Over DIFF_LIMIT it is never read (Too large to show): it costs nothing.
+            let huge = size > DIFF_LIMIT as u64;
+            if huge || asked || (read < UNTRACKED_FILES && bytes + size <= UNTRACKED_BYTES) {
+                if !huge {
+                    read += 1;
+                    bytes += size;
+                }
+                unstaged.push(self.untracked_diff(&e.path));
+            } else {
+                let mut file = FileDiff::empty();
+                file.new_path = Some(e.path.clone());
+                file.status = Change::Added;
+                file.unread = true;
+                unstaged.push(file);
+            }
         }
         let staged = self.side_diff(true, ignore_whitespace, whole)?;
         let mut all = WorkingDiff { unstaged, staged };
@@ -518,7 +542,7 @@ impl Repo {
             return;
         };
         file.bytes = Some(meta.len());
-        if file.binary || file.too_large || meta.len() > DIFF_LIMIT as u64 {
+        if file.binary || file.too_large || file.unread || meta.len() > DIFF_LIMIT as u64 {
             return;
         }
         // ponytail: reads every changed file on each poll to count its lines; cache by mtime

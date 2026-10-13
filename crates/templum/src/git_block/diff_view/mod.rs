@@ -13,8 +13,8 @@ use std::rc::Rc;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, MouseButton, MouseUpEvent, Pixels, ShapedLine, TestSupportExt,
-    UniformListScrollHandle, div, px, uniform_list,
+    AnyElement, ClickEvent, Context, ListHorizontalSizingBehavior, MouseButton, MouseUpEvent,
+    Pixels, ShapedLine, TestSupportExt, UniformListScrollHandle, div, px, uniform_list,
 };
 use templum_canvas::BlockId;
 use templum_git::WorkingDiff;
@@ -61,6 +61,8 @@ pub(crate) struct DiffPanel {
     pub dragging: bool,
     /// The hunks' colors, built on first draw (a RefCell: the rows are built from `&Workspace`).
     pub colors: RefCell<highlight::Highlights>,
+    /// The row with the most columns: the list is as wide as it, and scrolls sideways.
+    pub widest: usize,
     /// Diffs taken so far (the tests count them).
     pub reads: u64,
 }
@@ -80,6 +82,7 @@ impl DiffPanel {
             selection: None,
             dragging: false,
             colors: RefCell::new(highlight::Highlights::default()),
+            widest: 0,
             reads: 0,
         }
     }
@@ -117,6 +120,29 @@ impl DiffPanel {
     /// The rows again: after a fold, a Show diff.
     pub fn rebuild(&mut self) {
         self.rows = Rc::new(rows(&self.files, &self.folded, &self.large_shown));
+        // The rows a selection named are other rows now.
+        self.selection = None;
+        self.dragging = false;
+        self.widest = (0..self.rows.len())
+            .max_by_key(|&ix| self.columns(ix))
+            .unwrap_or(0);
+    }
+
+    /// How many columns a row's text takes: a line row's numbers, sign and text; other rows
+    /// fit the panel.
+    pub fn columns(&self, row: usize) -> usize {
+        match self.rows.get(row) {
+            Some(Row::Line { file, hunk, line }) => {
+                let s = &self.files[*file];
+                // ponytail: a wide character (CJK) counts as one column, so such a line can
+                // still be cut by a few cells; measure with the shaped text if it matters.
+                text_columns(s.digits())
+                    + select::display(&s.diff.hunks[*hunk].lines[*line].text)
+                        .chars()
+                        .count()
+            }
+            _ => 0,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -182,6 +208,11 @@ impl DiffPanel {
         let sel = self.selection.filter(|s| !s.is_empty())?;
         Some(select::selected_text(&self.rows, &self.files, &sel)).filter(|t| !t.is_empty())
     }
+}
+
+/// The columns before a line's text: [1][old][1][new][1][sign][1].
+pub(crate) fn text_columns(digits: usize) -> usize {
+    2 * digits + 5
 }
 
 /// "1 file", "4 files".
@@ -267,6 +298,9 @@ pub(crate) fn panel(
             })
         })
         .track_scroll(&p.scroll)
+        // As wide as the widest row: a long line is read by scrolling sideways (shift+wheel).
+        .with_horizontal_sizing_behavior(ListHorizontalSizingBehavior::Unconstrained)
+        .with_width_from_item(Some(p.widest))
         .flex_1()
         .min_h(px(0.0));
         div()

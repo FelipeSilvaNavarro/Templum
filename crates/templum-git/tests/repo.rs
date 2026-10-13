@@ -843,3 +843,29 @@ fn a_users_diff_prefixes_and_external_diff_are_overridden() {
     assert_eq!(d.unstaged[0].old_path.as_deref(), Some("a.txt"));
     assert_eq!(d.unstaged[0].added(), 1);
 }
+
+#[test]
+fn past_the_budget_untracked_files_are_listed_unread_until_asked_for() {
+    let (dir, repo) = fresh();
+    // An agent unpacked a folder with no .gitignore: more new files than one read takes.
+    for i in 0..205 {
+        write(dir.path(), &format!("out/f{i:03}.txt"), "x\n");
+    }
+    let s = repo.status().unwrap();
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    assert_eq!(d.unstaged.len(), 205, "every file is listed");
+    let read = d.unstaged.iter().filter(|f| !f.unread).count();
+    assert_eq!(read, 200);
+    let last = d.unstaged.last().unwrap();
+    assert_eq!(last.path(), "out/f204.txt");
+    assert!(last.unread && last.hunks.is_empty());
+    assert_eq!(last.bytes, Some(2), "its size, from the folder");
+    assert_eq!(last.lines, None, "not read, not counted");
+    // Asked for (Show diff): read whatever the budget says.
+    let d = repo
+        .working_diff(&s, false, &[(false, "out/f204.txt".to_string())])
+        .unwrap();
+    let last = d.unstaged.last().unwrap();
+    assert!(!last.unread);
+    assert_eq!(last.hunks[0].lines[0].text, "x");
+}

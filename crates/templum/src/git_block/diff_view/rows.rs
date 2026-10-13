@@ -69,6 +69,10 @@ pub(crate) enum Note {
     /// Large or generated: folded until Show diff.
     Large,
     Mode,
+    /// "No newline at end of file", after the line it is about.
+    NoNewline,
+    /// An untracked file not read yet (past what one read takes): Show diff reads it.
+    Unread,
 }
 
 impl Row {
@@ -114,6 +118,13 @@ pub(crate) fn rows(
                 continue;
             }
             let d = &shown.diff;
+            if d.unread {
+                rows.push(Row::Note {
+                    file,
+                    note: Note::Unread,
+                });
+                continue;
+            }
             if d.too_large {
                 rows.push(Row::Note {
                     file,
@@ -149,7 +160,15 @@ pub(crate) fn rows(
                     rows.push(Row::Fold { file, lines: gap });
                 }
                 rows.push(Row::Hunk { file, hunk });
-                rows.extend((0..h.lines.len()).map(|line| Row::Line { file, hunk, line }));
+                for (line, l) in h.lines.iter().enumerate() {
+                    rows.push(Row::Line { file, hunk, line });
+                    if l.no_newline {
+                        rows.push(Row::Note {
+                            file,
+                            note: Note::NoNewline,
+                        });
+                    }
+                }
                 shown_to = h.old_start + h.old_len.saturating_sub(1);
             }
             if let (Some(last), Some(total)) = (d.hunks.last(), d.lines) {
@@ -372,6 +391,56 @@ mod tests {
         let large_shown: HashSet<_> = [files[3].key()].into_iter().collect();
         let got = rows(&files, &HashSet::new(), &large_shown);
         assert!(matches!(got[9], Hunk { file: 3, hunk: 0 }));
+    }
+
+    #[test]
+    fn a_line_without_a_newline_is_followed_by_a_note() {
+        let text = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-b\n\\ No newline at end of file\n+b\n";
+        let files = [shown(false, text, None)];
+        let got = rows(&files, &HashSet::new(), &HashSet::new());
+        use Row::*;
+        assert_eq!(
+            got,
+            [
+                Section {
+                    staged: false,
+                    files: 1
+                },
+                File { file: 0 },
+                Hunk { file: 0, hunk: 0 },
+                Line {
+                    file: 0,
+                    hunk: 0,
+                    line: 0
+                },
+                Note {
+                    file: 0,
+                    note: super::Note::NoNewline
+                },
+                Line {
+                    file: 0,
+                    hunk: 0,
+                    line: 1
+                },
+            ],
+            "the old b had no newline; the new one has"
+        );
+    }
+
+    #[test]
+    fn an_unread_new_file_says_so() {
+        let mut unread = shown(false, &templum_git::new_file_diff("n.txt", "a\n"), None);
+        unread.diff.hunks.clear();
+        unread.diff.unread = true;
+        let got = rows(&[unread], &HashSet::new(), &HashSet::new());
+        assert_eq!(
+            got[2],
+            Row::Note {
+                file: 0,
+                note: Note::Unread
+            }
+        );
+        assert_eq!(got.len(), 3);
     }
 
     #[test]

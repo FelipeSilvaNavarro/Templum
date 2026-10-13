@@ -24,6 +24,9 @@ pub struct FileDiff {
     /// file is gone or wasn't counted.
     pub bytes: Option<u64>,
     pub lines: Option<u32>,
+    /// An untracked file past what one read takes (`Repo::working_diff`): listed, not read,
+    /// until asked for.
+    pub unread: bool,
 }
 
 impl FileDiff {
@@ -38,6 +41,7 @@ impl FileDiff {
             too_large: false,
             bytes: None,
             lines: None,
+            unread: false,
         }
     }
 

@@ -771,3 +771,108 @@ fn the_rows_are_whole_pixels_at_every_zoom(cx: &mut TestAppContext) {
         assert_eq!(want, want.round(), "whole pixels at {zoom}");
     }
 }
+
+#[gpui_kit::test]
+fn folding_drops_the_selection_so_copy_never_takes_other_lines(cx: &mut TestAppContext) {
+    use crate::git_block::diff_view::select::{Pos, Selection};
+    let repo = mixed_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let two = line_row(&ws, cx, id, "two");
+    ws.update(cx, |ws, cx| {
+        ws.space.git_mut(id).unwrap().panel.selection = Some(Selection {
+            anchor: Pos { row: two, col: 0 },
+            head: Pos { row: two, col: 3 },
+        });
+        assert_eq!(
+            ws.space.git(id).unwrap().panel.selected_text().as_deref(),
+            Some("two")
+        );
+        ws.fold_all(id, true, cx);
+    });
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.panel.selection, None, "the rows it named are gone");
+        assert_eq!(g.panel.selected_text(), None);
+    });
+    let _ = handle;
+}
+
+#[gpui_kit::test]
+fn a_long_line_is_drawn_whole_and_the_panel_scrolls_sideways(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    let long = "x".repeat(300);
+    std::fs::write(repo.path().join("a.txt"), format!("{long}\none\n")).unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    let row = line_row(&ws, cx, id, &long);
+    let cw = ws.read_with(cx, |ws, _| {
+        ws.cell.size.w * crate::git_block::FONT / ws.cell.font_size
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let panel = window.find(("git-diff", n)).bounds();
+        let line = window.find(("git-line", row)).bounds();
+        assert!(
+            f32::from(line.size.width) >= cw * 300.0,
+            "the row holds the whole text: {line:?}"
+        );
+        assert!(
+            line.size.width > panel.size.width,
+            "wider than the panel: it scrolls"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn show_diff_reads_a_new_file_left_unread(cx: &mut TestAppContext) {
+    use crate::git_block::diff_view::Note;
+    let repo = git_repo();
+    for i in 0..201 {
+        std::fs::write(repo.path().join(format!("f{i:03}.txt")), "x\n").unwrap();
+    }
+    // A staged file: its section follows, so the note isn't the list's last row (at the
+    // block's clipped edge).
+    std::fs::write(repo.path().join("z.txt"), "z\n").unwrap();
+    git_run(repo.path(), &["add", "z.txt"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let ix = git_of(&ws, cx, id, |g| {
+        g.panel
+            .rows
+            .iter()
+            .position(|r| {
+                matches!(
+                    r,
+                    Row::Note {
+                        note: Note::Unread,
+                        ..
+                    }
+                )
+            })
+            .expect("the 201st file is unread")
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, _| {
+            let g = ws.space.git(id).unwrap();
+            g.panel
+                .scroll
+                .scroll_to_item(ix, gpui_kit::ScrollStrategy::Top);
+        });
+        window.render_frame(cx);
+        window.click(("git-show-diff", ix), cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        let f = g
+            .panel
+            .files
+            .iter()
+            .find(|s| s.diff.path() == "f200.txt")
+            .unwrap();
+        assert!(!f.diff.unread);
+        assert_eq!(f.diff.hunks[0].lines[0].text, "x");
+    });
+}

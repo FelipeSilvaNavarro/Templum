@@ -74,7 +74,11 @@ pub(crate) fn to_source(text: &str, range: Range<usize>) -> Range<usize> {
 /// there, else `col..col`.
 pub(crate) fn word_at(display: &str, col: usize) -> Range<usize> {
     let word = |c: char| c.is_alphanumeric() || c == '_';
-    let col = col.min(display.len());
+    // A column from the last frame can fall inside a character of the current text.
+    let mut col = col.min(display.len());
+    while !display.is_char_boundary(col) {
+        col -= 1;
+    }
     let start = display[..col]
         .char_indices()
         .rev()
@@ -135,6 +139,15 @@ mod tests {
             "the \\r is not in the display text"
         );
         assert_eq!(to_source("café", 0..5), 0..5);
+    }
+
+    #[test]
+    fn word_at_never_slices_inside_a_character() {
+        // A column from the last frame's shaped line can fall inside a character of the
+        // current text (the diff changed in between): it is taken back to the boundary.
+        assert_eq!(word_at("é x", 1), 0..2);
+        assert_eq!(word_at("日本", 4), 0..6);
+        assert_eq!(word_at("a", 9), 0..1, "past the end");
     }
 
     #[test]
