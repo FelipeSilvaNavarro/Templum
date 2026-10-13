@@ -66,6 +66,8 @@ pub(crate) enum Target {
         list: git_block::List,
         index: usize,
     },
+    /// The terminals working in a Git block's repository (its top bar).
+    GitTerminals(BlockId),
     /// A row of an editor's file tree (a file or a folder), or its empty space (None).
     Tree {
         block: BlockId,
@@ -164,7 +166,10 @@ impl Workspace {
                     wrap: e.wrap,
                     send: self.send_to_menu(e.to_send(cx).unwrap_or_default()),
                 },
-                Body::Git(_) => Items::Git { block },
+                body @ Body::Git(_) => Items::Git {
+                    block,
+                    folder: body.folder(),
+                },
             },
             Target::Board { block, board } => Items::Board {
                 block,
@@ -236,6 +241,9 @@ impl Workspace {
                     .find(|c| c.hash == *hash)?
                     .clone(),
             },
+            Target::GitTerminals(block) => Items::Reveal {
+                terminals: self.terminal_list(Some(&self.space.git(block)?.repo()?.root)),
+            },
             Target::Tree { block, ref path } => {
                 let is_dir = path.as_ref().is_some_and(|p| p.is_dir());
                 Items::Tree {
@@ -305,6 +313,8 @@ enum Items {
     },
     Git {
         block: BlockId,
+        /// Its repository's root (its folder while there is none).
+        folder: Option<PathBuf>,
     },
     GitRow {
         block: BlockId,
@@ -350,6 +360,10 @@ enum Items {
     },
     Ink {
         index: usize,
+    },
+    /// Terminals to show, one item each.
+    Reveal {
+        terminals: Vec<(BlockId, String)>,
     },
     Tree {
         block: BlockId,

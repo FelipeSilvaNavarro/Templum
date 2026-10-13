@@ -554,7 +554,7 @@ impl Items {
                     Some(IconName::FileDiff),
                     move |ws, window, cx| ws.show_stash(block, index, window, cx),
                 )),
-            Items::Git { block } => menu
+            Items::Git { block, folder } => menu
                 .item(item(
                     ws,
                     "Change folder…",
@@ -567,6 +567,19 @@ impl Items {
                     Some(IconName::RefreshCw),
                     move |ws, window, cx| ws.refresh_git(block, window, cx),
                 ))
+                .when_some(folder.filter(|f| f.is_dir()), |menu, folder| {
+                    menu.item(item(
+                        ws,
+                        "Open a terminal here",
+                        Some(IconName::SquareTerminal),
+                        move |ws, window, cx| {
+                            if let Some(id) = ws.terminal_beside(block, &folder, None, window, cx) {
+                                let space = ws.space.id.clone();
+                                ws.reveal(&space, id, window, cx);
+                            }
+                        },
+                    ))
+                })
                 .separator()
                 .item(item(
                     ws,
@@ -614,6 +627,12 @@ impl Items {
                     Some(IconName::Close),
                     move |ws, window, cx| ws.close(block, window, cx),
                 )),
+            Items::Reveal { terminals } => {
+                terminal_items(ws, menu, &terminals, |ws, id, window, cx| {
+                    let space = ws.space.id.clone();
+                    ws.reveal(&space, id, window, cx);
+                })
+            }
             Items::Ink { index } => menu.item(item(
                 ws,
                 "Delete",

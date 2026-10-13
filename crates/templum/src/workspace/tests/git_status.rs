@@ -316,3 +316,52 @@ fn changing_a_git_blocks_folder_forgets_the_old_repository(cx: &mut TestAppConte
         ""
     );
 }
+
+#[gpui_kit::test]
+fn a_git_block_opens_terminals_in_its_repository_and_lists_them(cx: &mut TestAppContext) {
+    let repo = git_repo();
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| {
+        window.right_click(("title", id.0 as usize), cx);
+        window.render_frame(cx);
+        // Change folder…, Refresh, Open a terminal here, —, Close.
+        window.within("popup-menu").click(2usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let term = ws.read_with(cx, |ws, _| {
+        let term = ws.space.focused.unwrap();
+        assert!(ws.space.terminal(term).is_some() && term != first);
+        let rect = |b| ws.space.canvas.get(b).unwrap().rect;
+        assert_eq!(
+            rect(term).x,
+            rect(id).x + rect(id).w + templum_canvas::BESIDE
+        );
+        term
+    });
+    assert_eq!(
+        folder_of(&ws, term, cx),
+        repo.path().canonicalize().unwrap()
+    );
+    // The top bar counts it (not the first terminal, elsewhere); choosing it shows it.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.space.canvas.camera = Camera::default();
+            ws.space.flight = None;
+            ws.focus_block(id, window, cx);
+        });
+        window.render_frame(cx);
+        window.click(("git-terminals", id.0 as usize), cx);
+        window.render_frame(cx);
+        window.within("popup-menu").click(0usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.focused, Some(term));
+        let root = ws.space.git(id).unwrap().repo().unwrap().root.clone();
+        assert_eq!(ws.terminal_list(Some(&root)).len(), 1);
+    });
+}

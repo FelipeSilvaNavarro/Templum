@@ -99,6 +99,16 @@ pub(crate) struct Pane {
     pub seen: templum_terminal::Inspection,
 }
 
+impl Pane {
+    /// Its folder, as last seen, is `root` or inside it.
+    pub fn works_in(&self, root: &std::path::Path) -> bool {
+        self.seen
+            .folder
+            .as_ref()
+            .is_some_and(|f| f.starts_with(root))
+    }
+}
+
 /// A Git block of any workspace: block ids count from 0 in every one, so a result that comes
 /// back after a switch still finds its block.
 #[derive(Clone, Debug)]

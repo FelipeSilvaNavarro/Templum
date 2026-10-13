@@ -105,14 +105,7 @@ impl Workspace {
         let mut found: Vec<_> = self
             .space
             .terminals()
-            .filter(|(_, pane)| {
-                root.is_none_or(|root| {
-                    pane.seen
-                        .folder
-                        .as_ref()
-                        .is_some_and(|f| f.starts_with(root))
-                })
-            })
+            .filter(|(_, pane)| root.is_none_or(|root| pane.works_in(root)))
             .map(|(id, pane)| {
                 let agent = pane.seen.agent.as_ref().map(|agent| {
                     self.agents

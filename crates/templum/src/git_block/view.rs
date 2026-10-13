@@ -2,6 +2,7 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -16,6 +17,7 @@ use super::stashes::stashes;
 use super::widgets::{bar, centered, icon_button};
 use super::{FONT, Found, Git, Sync, Tab};
 use crate::editor::button;
+use crate::menu::Target;
 use crate::workspace::Workspace;
 
 /// How to get `git` on this OS.
@@ -130,6 +132,13 @@ fn repo_body(
         (None, Some(_)) => "no upstream".to_string(),
         (None, None) => String::new(),
     };
+    // The terminals working in the repository, as their last snapshot saw them: cheap.
+    let terminals = git.repo().map_or(0, |repo| {
+        ws.space
+            .terminals()
+            .filter(|(_, pane)| pane.works_in(&repo.root))
+            .count()
+    });
     let top =
         div()
             .id(("git-top", n))
@@ -172,6 +181,36 @@ fn repo_body(
                     .text_color(ui.title_dim)
                     .child(sync),
             )
+            .when(terminals > 0, |el| {
+                el.child(
+                    div()
+                        .id(("git-terminals", n))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0 * z))
+                        .px(px(8.0 * z))
+                        .py(px(2.0 * z))
+                        .rounded_full()
+                        .bg(ui.card)
+                        .text_size(px(FONT * z))
+                        .text_color(ui.title)
+                        .cursor_pointer()
+                        .hover(move |st| st.bg(ui.hover))
+                        .child(
+                            Icon::new(IconName::SquareTerminal)
+                                .size(px(12.0 * z))
+                                .text_color(ui.title_dim),
+                        )
+                        .child(terminals.to_string())
+                        .tooltip(|window, cx| {
+                            Tooltip::new("Terminals in this repository").build(window, cx)
+                        })
+                        .on_click(cx.listener(move |ws, e: &ClickEvent, window, cx| {
+                            ws.open_menu(Target::GitTerminals(id), e.position(), window, cx)
+                        }))
+                        .test_support(),
+                )
+            })
             .child(div().flex_1())
             .children([Sync::Fetch, Sync::Pull, Sync::Push].map(|which| {
                 let (name, label) = match which {
