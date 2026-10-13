@@ -1,6 +1,7 @@
 //! The Git block's changes: staging, discarding, diffs and conflicts.
 
 use super::*;
+use gpui_kit::Focusable;
 
 #[gpui_kit::test]
 fn the_plus_button_stages_and_minus_unstages(cx: &mut TestAppContext) {
@@ -124,6 +125,28 @@ fn a_row_shows_its_diff_and_open_in_editor_opens_the_file_beside_the_block(
         assert!(window.try_find(("git-diff", n)).is_some());
         window.click(("git-open-diff", n), cx);
         window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        let ws = ws.read(cx);
+        let eid = ws
+            .space
+            .blocks
+            .iter()
+            .find_map(|(id, b)| b.editor().map(|_| *id))
+            .expect("an editor opened");
+        // The camera moved just enough to show the editor whole, above the toolbar.
+        let vp = ws.viewport(window);
+        let camera = ws.space.canvas.camera;
+        let shown = camera.rect_to_screen(ws.space.canvas.get(eid).unwrap().rect);
+        assert!(
+            shown.x >= 0.0
+                && shown.y >= 0.0
+                && shown.x + shown.w <= vp.w
+                && shown.y + shown.h <= vp.h - crate::toolbar::SPACE,
+            "{shown:?} in {vp:?}"
+        );
     })
     .unwrap();
     ws.read_with(cx, |ws, cx| {
@@ -379,4 +402,60 @@ fn a_long_changes_list_builds_only_the_rows_on_screen(cx: &mut TestAppContext) {
         assert!(window.try_find(row_id(id, "unstaged", 299)).is_none());
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn opening_a_file_from_a_git_row_gives_its_editor_the_keyboard(cx: &mut TestAppContext) {
+    use crate::git_block::row_id;
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "zero\none\n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let editor_has_keyboard = |cx: &mut TestAppContext, how: &str| {
+        cx.update_window(handle, |_, window, cx| {
+            let ws = ws.read(cx);
+            let (eid, e) = ws
+                .space
+                .blocks
+                .iter()
+                .find_map(|(id, b)| Some((*id, b.editor()?)))
+                .expect("an editor opened");
+            assert_eq!(ws.space.focused, Some(eid), "{how}: the editor is focused");
+            assert!(
+                e.active_tab()
+                    .unwrap()
+                    .editor
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window),
+                "{how}: the file has the keyboard"
+            );
+        })
+        .unwrap();
+    };
+    // The row's Open button.
+    click_row_button(
+        handle,
+        cx,
+        row_id(id, "unstaged", 0),
+        git_button(id, "open", "unstaged", 0),
+    );
+    editor_has_keyboard(cx, "row button");
+    // The row's menu: Stage, Discard changes…, Open.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            // Back to where the Git block shows: the editor's reveal moved the camera.
+            ws.space.canvas.camera = Camera::default();
+            ws.space.flight = None;
+            ws.focus_block(id, window, cx);
+        });
+        window.render_frame(cx);
+        window.right_click(row_id(id, "unstaged", 0), cx);
+        window.render_frame(cx);
+        window.within("popup-menu").click(2usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    editor_has_keyboard(cx, "row menu");
 }

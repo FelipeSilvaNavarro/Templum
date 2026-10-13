@@ -12,7 +12,8 @@ use crate::toolbar;
 use super::Workspace;
 
 impl Workspace {
-    /// Shows a block: its workspace, then the block focused, the camera on it if it was off screen.
+    /// Shows a block: its workspace, then the block focused, the camera moved just enough to show
+    /// it whole above the toolbar.
     pub(crate) fn reveal(
         &mut self,
         space: &str,
@@ -29,17 +30,12 @@ impl Workspace {
         };
         self.focus_block(block, window, cx);
         let vp = self.viewport(window);
-        let camera = self.space.canvas.camera;
-        let shown = camera.rect_to_screen(rect);
-        if shown.x + shown.w < 0.0 || shown.y + shown.h < 0.0 || shown.x > vp.w || shown.y > vp.h {
-            let z = camera.zoom();
-            let mut to = camera;
-            to.origin = Point::new(
-                rect.x + rect.w / 2.0 - vp.w / 2.0 / z,
-                rect.y + rect.h / 2.0 - vp.h / 2.0 / z,
-            );
-            self.fly(to, self.center(window), cx);
-        }
+        let to = self
+            .space
+            .canvas
+            .camera
+            .reveal(rect, Size::new(vp.w, vp.h - toolbar::SPACE));
+        self.fly(to, self.center(window), cx);
     }
 
     /// A double-click on a block's title: the view glides to show the block centered, as large as
