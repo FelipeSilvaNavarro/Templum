@@ -1,15 +1,25 @@
 //! A Git block's History and Stashes tabs.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use gpui_kit::{Context, Window};
 use templum_canvas::BlockId;
-use templum_git::{Commit, CommitFile, FileDiff, GitError};
+use templum_git::graph::graph;
+use templum_git::{Commit, CommitFile, FileDiff, GitError, HistoryQuery};
 
-use crate::git_block::{self, Tab, diff_view::Source};
+use crate::git_block::{self, Git, Tab, diff_view::Source};
 use crate::prompt;
 
 use super::{GitAt, Workspace};
+
+/// What History lists now.
+fn history_query(git: &Git) -> HistoryQuery {
+    HistoryQuery {
+        all: git.all_branches,
+        search: None,
+    }
+}
 
 impl Workspace {
     pub(crate) fn load_stashes(&mut self, at: GitAt, window: &mut Window, cx: &mut Context<Self>) {
@@ -214,7 +224,9 @@ impl Workspace {
         }
     }
 
-    /// Loads a page of History: the first page replaces the list, a later one extends it.
+    /// Loads a page of History: the first replaces the list (and reads which commits aren't
+    /// pushed), a later one extends it; the graph is laid out again over the whole list, so its
+    /// lanes go on. A result for a query changed meanwhile is dropped.
     pub(crate) fn load_history(
         &mut self,
         at: GitAt,
@@ -222,18 +234,34 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.git_at(&at).and_then(|g| g.repo().cloned()) else {
+        let Some(git) = self.git_at(&at) else {
             return;
         };
+        let Some(repo) = git.repo().cloned() else {
+            return;
+        };
+        let q = history_query(git);
+        let asked = q.clone();
         self.git_job(
             at,
-            move || repo.history(&templum_git::HistoryQuery::default(), skip, git_block::PAGE),
-            move |ws, at, log, _, _| {
+            move || -> Result<(Vec<Commit>, Option<HashSet<String>>), GitError> {
+                let page = repo.history(&q, skip, git_block::PAGE)?;
+                let unpushed = if skip == 0 {
+                    Some(repo.unpushed()?)
+                } else {
+                    None
+                };
+                Ok((page, unpushed))
+            },
+            move |ws, at, read, _, _| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
                 };
-                match log {
-                    Ok(page) => {
+                if history_query(git) != asked {
+                    return;
+                }
+                match read {
+                    Ok((page, unpushed)) => {
                         git.more = page.len() == git_block::PAGE;
                         let mut all = if skip == 0 {
                             Vec::new()
@@ -241,7 +269,15 @@ impl Workspace {
                             (*git.commits).clone()
                         };
                         all.extend(page);
+                        git.graph = Rc::new(if asked.search.is_none() {
+                            graph(&all)
+                        } else {
+                            Vec::new()
+                        });
                         git.commits = Rc::new(all);
+                        if let Some(u) = unpushed {
+                            git.unpushed = Rc::new(u);
+                        }
                         git.error = None;
                     }
                     Err(e) => git.error = Some(e.to_string()),
@@ -250,6 +286,23 @@ impl Workspace {
             window,
             cx,
         );
+    }
+
+    /// All branches on or off: the list read again.
+    pub(crate) fn toggle_all_branches(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        git.all_branches = !git.all_branches;
+        git.shown = None;
+        cx.notify();
+        let at = self.here(id);
+        self.load_history(at, 0, window, cx);
     }
 
     /// A commit clicked (in the list, or a blame's group): the left column shows its message

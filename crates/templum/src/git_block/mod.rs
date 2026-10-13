@@ -53,6 +53,12 @@ pub(crate) const FONT: f32 = 12.0;
 pub(crate) const POLL: Duration = Duration::from_secs(2);
 /// How many commits History loads at a time.
 pub(crate) const PAGE: usize = 200;
+/// Past this many lanes the graph is cut (the commit's dot on the last one).
+// ponytail: a history with more than 6 branches open at once draws 6; a horizontal scroll of the
+// graph if people meet it.
+pub(crate) const MAX_LANES: usize = 6;
+/// A lane's width, world units.
+pub(crate) const LANE_W: f32 = 12.0;
 /// Past this many characters a summary is longer than `git log --oneline` shows well.
 pub(crate) const SUMMARY_MAX: usize = 72;
 
@@ -231,6 +237,13 @@ pub(crate) struct Git {
     pub commits: Rc<Vec<Commit>>,
     /// The last page was full: Load more shows.
     pub more: bool,
+    /// The loaded commits' graph, one row per commit; empty while the list is filtered (a search,
+    /// a file's history: their parents aren't in it).
+    pub graph: Rc<Vec<templum_git::graph::GraphRow>>,
+    /// HEAD's commits not on its upstream: History's "not pushed" mark.
+    pub unpushed: Rc<std::collections::HashSet<String>>,
+    /// History lists every branch, tag and remote branch.
+    pub all_branches: bool,
     pub search: Entity<InputState>,
     pub shown: Option<Shown>,
     /// A list read was asked while a command ran.
@@ -340,6 +353,9 @@ impl Git {
             _enter,
             commits: Rc::new(Vec::new()),
             more: false,
+            graph: Rc::new(Vec::new()),
+            unpushed: Rc::new(std::collections::HashSet::new()),
+            all_branches: false,
             search,
             shown: None,
             pending_lists: false,

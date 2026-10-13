@@ -8,14 +8,16 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, ElementId, MouseButton, MouseDownEvent, TestSupportExt, div,
-    px, uniform_list,
+    AnyElement, Bounds, ClickEvent, Context, ElementId, Hsla, MouseButton, MouseDownEvent,
+    PathBuilder, TestSupportExt, canvas, div, fill, point, px, size, uniform_list,
 };
 use templum_canvas::BlockId;
+use templum_git::graph::GraphRow;
 
-use super::widgets::{badge, bar, field, icon_button};
-use super::{FONT, Git, LISTS_W, ROW_H, Shown, diff_view};
+use super::widgets::{badge, bar, field, icon_button, small};
+use super::{FONT, Git, LANE_W, LISTS_W, MAX_LANES, ROW_H, Shown, diff_view};
 use crate::editor::button;
+use crate::grid::hsla;
 use crate::menu::Target;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
@@ -60,6 +62,9 @@ fn list_column(
         .map_or(0, |d| d.as_secs() as i64);
     let mono = ws.cell.font.family.clone();
     let rows = filtered.len() + usize::from(more);
+    let (graph, unpushed) = (git.graph.clone(), git.unpushed.clone());
+    let lanes = graph.iter().map(|r| r.width).max().unwrap_or(0);
+    let palette = [4, 2, 3, 5, 6, 1].map(|i| hsla(ws.theme.palette.ansi[i], 1.0));
     let list = uniform_list(("git-history", n), rows, move |range, _, _| {
         range
             .map(|ix| {
@@ -78,6 +83,7 @@ fn list_column(
                         .into_any_element();
                 }
                 let c = &commits[filtered[ix]];
+                let not_pushed = unpushed.contains(&c.hash);
                 let (open, menu, hash) = (entity.clone(), entity.clone(), c.hash.clone());
                 let menu_hash = hash.clone();
                 div()
@@ -91,6 +97,9 @@ fn list_column(
                     .text_color(ui.title)
                     .cursor_pointer()
                     .hover(move |st| st.bg(ui.hover))
+                    .when_some(graph.get(filtered[ix]), |el, g| {
+                        el.child(graph_cell(g, lanes, palette, z))
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -127,7 +136,10 @@ fn list_column(
                                     )
                                     .child(
                                         div().flex_shrink_0().child(templum_git::ago(now, c.time)),
-                                    ),
+                                    )
+                                    .when(not_pushed, |el| {
+                                        el.child(div().flex_shrink_0().child("not pushed"))
+                                    }),
                             ),
                     )
                     .on_click(move |_: &ClickEvent, window, cx| {
@@ -163,7 +175,28 @@ fn list_column(
         .border_color(ui.hairline)
         .child(field(&git.search, z).flex_1())
         .child(fold_button(id, ui, z, cx));
-    column(ui, z).child(top).child(list).into_any_element()
+    let modes = div()
+        .flex()
+        .items_center()
+        .gap(px(4.0 * z))
+        .px(px(6.0 * z))
+        .py(px(4.0 * z))
+        .border_b_1()
+        .border_color(ui.hairline)
+        .child(div().flex_1())
+        .child(
+            small(("git-all-branches", n), "All branches", ui, z)
+                .when(git.all_branches, |el| el.bg(ui.card))
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.toggle_all_branches(id, window, cx)
+                }))
+                .test_support(),
+        );
+    column(ui, z)
+        .child(top)
+        .child(modes)
+        .child(list)
+        .into_any_element()
 }
 
 /// The commit shown: ← back to the list, its message, author and date, and its files (a click
@@ -309,6 +342,51 @@ fn fold_button(
     .tooltip(|window, cx| Tooltip::new("Fold the lists").build(window, cx))
     .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(id, cx)))
     .test_support()
+}
+
+/// A row's graph: its lines (top to middle, middle to bottom) and its commit's dot, each lane
+/// in a color of the terminal's palette, as wide as the widest row's lanes (at most MAX_LANES).
+fn graph_cell(row: &GraphRow, lanes: usize, palette: [Hsla; 6], z: f32) -> impl IntoElement {
+    let row = row.clone();
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let lane_w = LANE_W * z;
+            let x = |lane: usize| bounds.origin.x + px(lane_w * (lane as f32 + 0.5));
+            let top = bounds.origin.y;
+            let mid = top + bounds.size.height / 2.0;
+            let bottom = top + bounds.size.height;
+            let color = |lane: usize| palette[lane % palette.len()];
+            let lines = row
+                .up
+                .iter()
+                .map(|&(a, b)| (a, b, top, mid, a))
+                .chain(row.down.iter().map(|&(a, b)| (a, b, mid, bottom, b)));
+            for (a, b, y0, y1, hue) in lines {
+                if a >= MAX_LANES || b >= MAX_LANES {
+                    continue;
+                }
+                let mut path = PathBuilder::stroke(px(1.5 * z));
+                path.move_to(point(x(a), y0));
+                path.line_to(point(x(b), y1));
+                if let Ok(path) = path.build() {
+                    window.paint_path(path, color(hue));
+                }
+            }
+            let lane = row.lane.min(MAX_LANES - 1);
+            let r = px(3.5 * z);
+            window.paint_quad(
+                fill(
+                    Bounds::new(point(x(lane) - r, mid - r), size(r * 2.0, r * 2.0)),
+                    color(lane),
+                )
+                .corner_radii(r),
+            );
+        },
+    )
+    .w(px(LANE_W * z * lanes.min(MAX_LANES) as f32))
+    .h_full()
+    .flex_shrink_0()
 }
 
 /// "HEAD -> main" is HEAD and main; "tag: v1" is a tag; the rest are branches.

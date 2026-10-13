@@ -104,25 +104,47 @@ fn the_search_filters_by_subject_and_author_without_case(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
-fn load_more_appends_the_next_page(cx: &mut TestAppContext) {
+fn load_more_continues_the_lanes(cx: &mut TestAppContext) {
     use crate::git_block::PAGE;
     let repo = committed_repo();
+    git_run(repo.path(), &["checkout", "-q", "-b", "side"]);
+    let old = std::process::Command::new("git")
+        .args(["commit", "-q", "--allow-empty", "-m", "side"])
+        .current_dir(repo.path())
+        .env("GIT_COMMITTER_DATE", "1000000000 +0000")
+        .env("GIT_AUTHOR_DATE", "1000000000 +0000")
+        .status()
+        .unwrap();
+    assert!(old.success());
+    git_run(repo.path(), &["checkout", "-q", "main"]);
     for i in 0..PAGE {
         git_run(
             repo.path(),
             &["commit", "-q", "--allow-empty", "-m", &format!("c{i}")],
         );
     }
+    git_run(
+        repo.path(),
+        &["merge", "-q", "--no-ff", "--no-edit", "side"],
+    );
     let (handle, ws) = open(cx);
     let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
     let n = id.0 as usize;
-    git_of(&ws, cx, id, |g| {
+    let first = git_of(&ws, cx, id, |g| {
         assert_eq!(g.commits.len(), PAGE);
-        assert!(g.more);
+        assert_eq!(g.graph.len(), PAGE);
+        assert_eq!(
+            g.graph[0].down,
+            [(0, 0), (0, 1)],
+            "the merge opens side's lane"
+        );
+        assert!(
+            g.graph[PAGE - 1].up.contains(&(1, 1)),
+            "still open at the page's end"
+        );
+        (*g.graph).clone()
     });
-    // The list is virtual: Load more is drawn once the end is scrolled into view.
     cx.update_window(handle, |_, window, cx| {
-        // Over a row: the wheel reaches the list around it.
         window.scroll(
             ("git-commit", 0usize),
             ScrollDelta::Pixels(point(px(0.0), px(-100_000.0))),
@@ -135,9 +157,52 @@ fn load_more_appends_the_next_page(cx: &mut TestAppContext) {
     .unwrap();
     settle(handle, cx);
     git_of(&ws, cx, id, |g| {
-        assert_eq!(g.commits.len(), PAGE + 1);
-        assert!(!g.more);
-        assert_eq!(g.commits[PAGE].subject, "First");
+        assert_eq!(g.commits.len(), PAGE + 3, "c0, side, First");
+        assert_eq!(
+            g.graph[..PAGE],
+            first[..],
+            "the first page's lanes don't move"
+        );
+        assert!(
+            g.graph[PAGE].up.contains(&(1, 1)),
+            "side's lane runs on into the second page: {:?}",
+            g.graph[PAGE]
+        );
+        let side = g.commits.iter().position(|c| c.subject == "side").unwrap();
+        assert_eq!(
+            g.graph[side].lane, 1,
+            "side's commit is in the lane opened for it"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn all_branches_and_the_commits_not_pushed(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    let _remote = add_remote(repo.path());
+    git_run(repo.path(), &["branch", "other"]);
+    git_run(repo.path(), &["checkout", "-q", "other"]);
+    commit_file(repo.path(), "o.txt", "o\n", "On other");
+    git_run(repo.path(), &["checkout", "-q", "main"]);
+    commit_file(repo.path(), "b.txt", "b\n", "Not pushed");
+    let (handle, ws) = open(cx);
+    let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
+    let n = id.0 as usize;
+    git_of(&ws, cx, id, |g| {
+        let subjects: Vec<_> = g.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, ["Not pushed", "First"]);
+        assert!(g.unpushed.contains(&g.commits[0].hash));
+        assert!(!g.unpushed.contains(&g.commits[1].hash), "on origin/main");
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-all-branches", n), cx)
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert!(g.all_branches);
+        assert_eq!(g.commits.len(), 3, "other's commit too");
+        assert_eq!(g.graph.len(), 3);
     });
 }
 
