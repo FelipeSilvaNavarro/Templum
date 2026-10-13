@@ -4,8 +4,8 @@
 use gpui_kit::{Context, KeyDownEvent, ScrollStrategy, Window};
 use templum_canvas::BlockId;
 
-use crate::git_block::List;
 use crate::git_block::diff_view::Row;
+use crate::git_block::{List, Tab};
 
 use super::Workspace;
 
@@ -29,8 +29,9 @@ impl Workspace {
         let Some(git) = self.space.git(id) else {
             return;
         };
-        // A field has the keyboard: its letters are typing.
-        if !git.focus.is_focused(window) {
+        // A field has the keyboard: its letters are typing. Another tab shows: the files and
+        // hunks the keys act on aren't on screen.
+        if !git.focus.is_focused(window) || git.tab != Tab::Changes {
             return;
         }
         let summary = git.summary.clone();
@@ -51,7 +52,15 @@ impl Workspace {
                 "u" => self.key_stage(id, true, window, cx),
                 "d" => self.key_discard(id, window, cx),
                 "enter" => self.key_open(id, window, cx),
-                "c" => summary.update(cx, |s, cx| s.focus(window, cx)),
+                "c" => {
+                    // The summary is in the left column: shown first, so the keyboard goes to
+                    // a field that is drawn.
+                    if let Some(git) = self.space.git_mut(id) {
+                        git.lists_folded = false;
+                    }
+                    cx.notify();
+                    summary.update(cx, |s, cx| s.focus(window, cx))
+                }
                 _ => return,
             }
         }

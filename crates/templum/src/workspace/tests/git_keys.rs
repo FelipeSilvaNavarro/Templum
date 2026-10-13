@@ -182,3 +182,44 @@ fn a_field_with_the_keyboard_keeps_the_letters(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn on_another_tab_the_keys_leave_the_changes_alone(cx: &mut TestAppContext) {
+    let repo = three_hunk_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    focus(handle, &ws, cx, id);
+    press(handle, cx, "down");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.set_git_tab(id, crate::git_block::Tab::History, window, cx)
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    focus(handle, &ws, cx, id);
+    press(handle, cx, "s");
+    assert_eq!(
+        staged(&repo),
+        "",
+        "History shows: the hidden selection isn't staged"
+    );
+}
+
+#[gpui_kit::test]
+fn c_with_the_lists_folded_unfolds_them_for_the_summary(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    ws.update(cx, |ws, cx| ws.toggle_lists(id, cx));
+    focus(handle, &ws, cx, id);
+    press(handle, cx, "c");
+    git_of(&ws, cx, id, |g| {
+        assert!(!g.lists_folded, "the summary is drawn")
+    });
+    cx.update_window(handle, |_, window, cx| {
+        assert!(summary.read(cx).focus_handle(cx).is_focused(window));
+    })
+    .unwrap();
+}
