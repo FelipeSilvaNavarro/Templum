@@ -406,6 +406,18 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
+        // Ctrl+Z on a kanban block undoes the last board change.
+        if undo_key(k, cfg!(target_os = "macos")) == Some(false)
+            && self
+                .space
+                .focused
+                .and_then(|id| self.space.blocks.get(&id))
+                .is_some_and(|b| b.kanban().is_some())
+            && self.undo_boards(cx)
+        {
+            cx.stop_propagation();
+            return;
+        }
         if let Some(to) = workspace_digit(&e.keystroke, cfg!(target_os = "macos"))
             && to <= self.others.len()
         {

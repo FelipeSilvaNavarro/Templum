@@ -163,6 +163,7 @@ fn the_canvas_menu_opens_an_agent_in_a_recent_folder(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn the_innermost_menu_opens_and_acts_on_what_was_clicked(cx: &mut TestAppContext) {
+    no_motion(cx);
     let (handle, ws) = open(cx);
     let terminal = first_id(&ws, cx);
     let (block, board, card) = cx
@@ -185,8 +186,14 @@ fn the_innermost_menu_opens_and_acts_on_what_was_clicked(cx: &mut TestAppContext
         window.right_click(card_el, cx);
         window.render_frame(cx);
         // Open, Send to ▸, —, Delete card: the card's menu, not its block's (Board list, —,
-        // Close).
+        // Close). It asks first.
         window.within("popup-menu").click(3usize, cx);
+    })
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.within("dialog").click("ok", cx);
         window.render_frame(cx);
         let ws = ws.read(cx);
         assert!(ws.boards.card(board, card).is_none(), "the card went");

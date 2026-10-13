@@ -73,6 +73,8 @@ const MAX_ROWS: u16 = 1000;
 const CLICK_SLOP: f32 = 4.0;
 /// Drawing changes kept for undo, per workspace.
 pub(crate) const INK_UNDO: usize = 50;
+/// Board changes kept for undo, for the whole app (the boards are).
+pub(crate) const BOARD_UNDO: usize = 50;
 /// Cursor blink half-period.
 const BLINK: Duration = Duration::from_millis(500);
 /// Quitting takes a second press of its shortcut within this long.
@@ -157,7 +159,6 @@ impl Body {
         }
     }
 
-    #[cfg(test)]
     pub fn kanban(&self) -> Option<&Kanban> {
         match self {
             Body::Kanban(kanban) => Some(kanban),
@@ -502,6 +503,8 @@ pub struct Workspace {
     pub(crate) active: usize,
     /// Every kanban board, shown by kanban blocks in any workspace.
     pub(crate) boards: Boards,
+    /// `boards` before each change, newest last, at most BOARD_UNDO (see `edit_boards`).
+    boards_undo: Vec<Boards>,
     /// The boards as last read or written, to write only what changed.
     boards_saved: Option<Boards>,
     /// `boards.json`, or the workspace list, couldn't be read: kept as it is this session.
@@ -774,6 +777,7 @@ impl Workspace {
             others: Vec::new(),
             active: 0,
             boards: Boards::default(),
+            boards_undo: Vec::new(),
             boards_saved: None,
             boards_frozen: false,
             index_frozen: false,

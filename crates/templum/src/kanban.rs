@@ -2,6 +2,9 @@
 //! and the dialog of an open card. Everything is drawn at the block's zoom `z`, like a
 //! terminal's text. See docs/specs/kanban.md.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui_kit::assets::IconName;
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
@@ -13,7 +16,7 @@ use gpui_kit::{
 };
 use templum_canvas::{BlockId, Size};
 
-use crate::board::{Board, Card, Column, Label};
+use crate::board::{Board, Boards, Card, Column, Label};
 use crate::grid::hsla;
 use crate::menu::Target;
 use crate::theme::Ui;
@@ -258,7 +261,7 @@ fn board_view(
         .child(Icon::new(IconName::Plus).size(px(14.0 * z)))
         .child("Add a column")
         .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
-            ws.boards.add_column(board_id);
+            ws.edit_boards(|b| b.add_column(board_id));
             cx.notify();
         }))
         .test_support();
@@ -329,6 +332,8 @@ fn column_view(
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                // Its block first, so Ctrl+Z after the menu undoes on the board.
+                ws.focus_block(BlockId(n as u64), window, cx);
                 let target = Target::Column { board, column: col };
                 ws.open_menu(target, e.position, window, cx);
                 cx.stop_propagation();
@@ -375,11 +380,11 @@ fn column_view(
         .drag_over::<ColumnDrag>(move |s, _, _, _| s.border_color(ui.accent))
         // A card dropped on the column's empty space goes to its end.
         .on_drop(cx.listener(move |ws, drag: &CardDrag, _, cx| {
-            ws.boards.move_card(drag.board, drag.card, col, None);
+            ws.edit_boards(|b| b.move_card(drag.board, drag.card, col, None));
             cx.notify();
         }))
         .on_drop(cx.listener(move |ws, drag: &ColumnDrag, _, cx| {
-            ws.boards.move_column(drag.board, drag.column, col);
+            ws.edit_boards(|b| b.move_column(drag.board, drag.column, col));
             cx.notify();
         }))
         // A vertical wheel scrolls the cards, never the columns sideways.
@@ -479,7 +484,7 @@ fn card_view(
         })
         // Dropped on a card, a card takes its place; the column doesn't get the drop too.
         .on_drop(cx.listener(move |ws, drag: &CardDrag, _, cx| {
-            ws.boards.move_card(drag.board, drag.card, column, Some(id));
+            ws.edit_boards(|b| b.move_card(drag.board, drag.card, column, Some(id)));
             cx.stop_propagation();
             cx.notify();
         }))
@@ -491,6 +496,7 @@ fn card_view(
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                ws.focus_block(BlockId(n as u64), window, cx);
                 ws.open_menu(Target::Card { board, card: id }, e.position, window, cx);
                 cx.stop_propagation();
             }),
@@ -507,11 +513,20 @@ pub(crate) fn add_card(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    if let Some(card) = ws.boards.add_card(board, column)
+    if let Some(card) = ws.edit_boards(|b| b.add_card(board, column))
         && let Some(current) = ws.boards.card(board, card).cloned()
     {
         cx.notify();
         open_card(board, current, true, window, cx);
+    }
+}
+
+/// A change typed in a card's dialog: the first one keeps the boards for undo.
+fn edit_typed(ws: &mut Workspace, typed: &Cell<bool>, f: impl FnOnce(&mut Boards)) {
+    if typed.replace(true) {
+        f(&mut ws.boards);
+    } else {
+        ws.edit_boards(f);
     }
 }
 
@@ -534,14 +549,16 @@ pub(crate) fn open_card(
             .default_value(current.description)
     });
     // Subscribed through the app: the workspace these update isn't leased, and they need no
-    // window. Enter in the title confirms the dialog by itself.
+    // window. Enter in the title confirms the dialog by itself. The dialog's typing is one undo
+    // step for the board (its fields undo each key): taken at its first change.
+    let typed = Rc::new(Cell::new(false));
     {
-        let ws = ws.clone();
+        let (ws, typed) = (ws.clone(), typed.clone());
         App::subscribe(cx, &title, move |input, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
                 let text = input.read(cx).value().to_string();
                 ws.update(cx, |ws, cx| {
-                    ws.boards.edit_card(board, card, |c| c.title = text);
+                    edit_typed(ws, &typed, |b| b.edit_card(board, card, |c| c.title = text));
                     cx.notify();
                 })
             }
@@ -554,7 +571,9 @@ pub(crate) fn open_card(
             if let InputEvent::Change = event {
                 let text = input.read(cx).value().to_string();
                 ws.update(cx, |ws, cx| {
-                    ws.boards.edit_card(board, card, |c| c.description = text);
+                    edit_typed(ws, &typed, |b| {
+                        b.edit_card(board, card, |c| c.description = text)
+                    });
                     cx.notify();
                 })
             }
@@ -591,7 +610,7 @@ pub(crate) fn open_card(
                 .cursor_pointer()
                 .on_click(move |_: &ClickEvent, _, cx| {
                     ws.update(cx, |ws, cx| {
-                        ws.boards.toggle_label(board, card, label);
+                        ws.edit_boards(|b| b.toggle_label(board, card, label));
                         cx.notify();
                     })
                 })
@@ -611,7 +630,7 @@ pub(crate) fn open_card(
                 .child("Delete card")
                 .on_click(move |_: &ClickEvent, window, cx| {
                     ws.update(cx, |ws, cx| {
-                        ws.boards.remove_card(board, card);
+                        ws.edit_boards(|b| b.remove_card(board, card));
                         cx.notify();
                     });
                     window.close_dialog(cx);

@@ -756,7 +756,7 @@ impl Items {
                                 return false;
                             }
                             ws.update(cx, |ws, cx| {
-                                ws.boards.rename_column(board, column, &title);
+                                ws.edit_boards(|b| b.rename_column(board, column, &title));
                                 cx.notify();
                             });
                             true
@@ -778,7 +778,7 @@ impl Items {
                     Some(IconName::Delete),
                     move |ws, window, cx| {
                         if n == 0 {
-                            ws.boards.remove_column(board, column);
+                            ws.edit_boards(|b| b.remove_column(board, column));
                             cx.notify();
                             return;
                         }
@@ -789,7 +789,7 @@ impl Items {
                             "Delete",
                             move |_, cx| {
                                 entity.update(cx, |ws, cx| {
-                                    ws.boards.remove_column(board, column);
+                                    ws.edit_boards(|b| b.remove_column(board, column));
                                     cx.notify();
                                 })
                             },
@@ -810,9 +810,25 @@ impl Items {
                     ws,
                     "Delete card",
                     Some(IconName::Delete),
-                    move |ws, _, cx| {
-                        ws.boards.remove_card(board, card);
-                        cx.notify();
+                    move |ws, window, cx| {
+                        let title = ws
+                            .boards
+                            .card(board, card)
+                            .map_or_else(String::new, |c| c.title.clone());
+                        let ws = cx.entity();
+                        prompt::confirm(
+                            "Delete this card?",
+                            title,
+                            "Delete",
+                            move |_, cx| {
+                                ws.update(cx, |ws, cx| {
+                                    ws.edit_boards(|b| b.remove_card(board, card));
+                                    cx.notify();
+                                })
+                            },
+                            window,
+                            cx,
+                        );
                     },
                 )),
             Items::Space {
@@ -897,7 +913,7 @@ fn rename_board(ws: &Entity<Workspace>, board: u64, text: &str, cx: &mut App) ->
         return false;
     }
     ws.update(cx, |ws, cx| {
-        ws.boards.rename_board(board, name);
+        ws.edit_boards(|b| b.rename_board(board, name));
         cx.notify();
     });
     true

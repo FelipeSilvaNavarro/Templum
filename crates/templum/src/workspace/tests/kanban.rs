@@ -238,3 +238,145 @@ fn kanban_blocks_and_boards_come_back(cx: &mut TestAppContext) {
         assert_eq!(ws.space.terminals().count(), 1, "and the terminal");
     });
 }
+
+/// A kanban block on a new board with one card in its first column: (block, board, card).
+fn board_with_a_card(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> (BlockId, u64, u64) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.add_kanban_at(Point::new(900.0, 0.0), window, cx);
+            let block = ws.space.canvas.top().unwrap();
+            ws.new_board(block, cx);
+            let board = ws.space.kanban(block).unwrap().board.unwrap();
+            let todo = ws.boards.board(board).unwrap().columns[0].id;
+            let card = ws.edit_boards(|b| b.add_card(board, todo)).unwrap();
+            ws.space.appearing.clear();
+            (block, board, card)
+        })
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn deleting_a_card_from_its_menu_asks_first(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (block, board, card) = board_with_a_card(handle, &ws, cx);
+    let delete = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let el = gpui_kit::ElementId::Name(format!("card-{}-{card}", block.0).into());
+            window.right_click(el, cx);
+            window.render_frame(cx);
+            // Open, Send to ▸, —, Delete card.
+            window.within("popup-menu").click(3usize, cx);
+        })
+        .unwrap();
+        // The menu fades out for a moment: a click meanwhile would land on it.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    };
+    delete(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "it asks");
+        window.within("dialog").click("cancel", cx);
+        window.render_frame(cx);
+        assert!(ws.read(cx).boards.card(board, card).is_some(), "kept");
+    })
+    .unwrap();
+    delete(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+        assert!(ws.read(cx).boards.card(board, card).is_none(), "deleted");
+    })
+    .unwrap();
+}
+
+#[cfg(target_os = "macos")]
+const UNDO: &str = "cmd-z";
+#[cfg(not(target_os = "macos"))]
+const UNDO: &str = "ctrl-z";
+
+/// Ctrl+Z with a kanban block focused undoes the last board change; with a terminal focused,
+/// the boards are left alone (the key is the terminal's).
+#[gpui_kit::test]
+fn ctrl_z_undoes_board_changes_in_a_focused_kanban(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let terminal = first_id(&ws, cx);
+    let (block, board, card) = board_with_a_card(handle, &ws, cx);
+    let press_undo = |cx: &mut TestAppContext, focus: BlockId| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.focus_block(focus, window, cx));
+            window.press(UNDO, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    ws.update(cx, |ws, _| ws.edit_boards(|b| b.remove_card(board, card)));
+    press_undo(cx, terminal);
+    assert!(ws.read_with(cx, |ws, _| ws.boards.card(board, card).is_none()));
+    press_undo(cx, block);
+    assert!(
+        ws.read_with(cx, |ws, _| ws.boards.card(board, card).is_some()),
+        "the card is back"
+    );
+}
+
+/// Typing in a card's dialog is one undo step of its own: Ctrl+Z undoes it, not the change
+/// before it.
+#[gpui_kit::test]
+fn a_card_dialogs_typing_is_one_undo_step(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (block, board, first) = board_with_a_card(handle, &ws, cx);
+    let second = ws.update(cx, |ws, _| {
+        let todo = ws.boards.board(board).unwrap().columns[0].id;
+        let second = ws.edit_boards(|b| b.add_card(board, todo)).unwrap();
+        ws.edit_boards(|b| b.remove_card(board, first));
+        second
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let current = ws.boards.card(board, second).cloned().unwrap();
+            crate::kanban::open_card(board, current, true, window, cx);
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.simulate_input(handle, "Renamed");
+    cx.update_window(handle, |_, window, cx| {
+        window.close_dialog(cx);
+        window.render_frame(cx);
+        ws.update(cx, |ws, cx| ws.focus_block(block, window, cx));
+        window.press(UNDO, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.boards.card(board, second).unwrap().title, "New card");
+        assert!(
+            ws.boards.card(board, first).is_none(),
+            "the removal before stays"
+        );
+    });
+}
+
+/// Undoing never hands out an id twice: a block or a file may still name an undone board.
+#[gpui_kit::test]
+fn undoing_a_new_board_keeps_its_id_taken(cx: &mut TestAppContext) {
+    let (_handle, ws) = open(cx);
+    ws.update(cx, |ws, cx| {
+        let board = ws.edit_boards(crate::board::Boards::add_board);
+        assert!(ws.undo_boards(cx));
+        assert!(ws.boards.board(board).is_none());
+        let again = ws.edit_boards(crate::board::Boards::add_board);
+        assert_ne!(again, board);
+    });
+}

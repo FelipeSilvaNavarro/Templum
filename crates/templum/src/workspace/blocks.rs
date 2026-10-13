@@ -10,14 +10,15 @@ use templum_canvas::{BlockId, Point, Rect, chrome};
 use templum_terminal::{SpawnOptions, Terminal};
 
 use crate::alert::{self, Alert};
+use crate::board::Boards;
 use crate::config::WorkingDirectory;
 use crate::kanban::{self, Kanban};
 use crate::note::{self, Note};
 use crate::prompt;
 
 use super::{
-    AGENT_COLS, AGENT_ROWS, Body, DEFAULT_COLS, DEFAULT_ROWS, Ghost, Pane, Workspace, remember,
-    show_notification,
+    AGENT_COLS, AGENT_ROWS, BOARD_UNDO, Body, DEFAULT_COLS, DEFAULT_ROWS, Ghost, Pane, Workspace,
+    remember, show_notification,
 };
 
 impl Workspace {
@@ -53,6 +54,32 @@ impl Workspace {
         note.focus(window, cx);
         self.add_block(rect, Body::Note(note));
         cx.notify();
+    }
+
+    /// Changes the boards with `f`, keeping them as they were for Ctrl+Z (when it changed
+    /// them).
+    pub(crate) fn edit_boards<R>(&mut self, f: impl FnOnce(&mut Boards) -> R) -> R {
+        let before = self.boards.clone();
+        let result = f(&mut self.boards);
+        if self.boards != before {
+            self.boards_undo.push(before);
+            if self.boards_undo.len() > BOARD_UNDO {
+                self.boards_undo.remove(0);
+            }
+        }
+        result
+    }
+
+    /// Ctrl+Z on a kanban block: the boards as before their last change. False: nothing to undo.
+    pub(super) fn undo_boards(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(mut before) = self.boards_undo.pop() else {
+            return false;
+        };
+        // Ids are never handed out twice: a block or a file may still name an undone board.
+        before.next_id = before.next_id.max(self.boards.next_id);
+        self.boards = before;
+        cx.notify();
+        true
     }
 
     /// Tints a note's card with `color` (None: the blocks' own).
@@ -307,13 +334,13 @@ impl Workspace {
 
     /// A new board, shown in `block`.
     pub(crate) fn new_board(&mut self, block: BlockId, cx: &mut Context<Self>) {
-        let board = self.boards.add_board();
+        let board = self.edit_boards(Boards::add_board);
         self.show_board(block, board, cx);
     }
 
     /// Deletes a board and its cards; the blocks that showed it show the board list.
     pub(crate) fn delete_board(&mut self, board: u64, cx: &mut Context<Self>) {
-        self.boards.remove_board(board);
+        self.edit_boards(|b| b.remove_board(board));
         cx.notify();
     }
 
