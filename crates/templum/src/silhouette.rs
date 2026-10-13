@@ -84,6 +84,12 @@ impl WordMap {
         let left = state
             .range_to_bounds(&(start..start))
             .map_or(0.0, |b| f32::from(b.origin.x - origin.x));
+        // Only the words on screen, and as far again past its right and bottom edges (a map
+        // may be drawn at a zoom that shows a little more): each word costs gpui-kit a walk
+        // from its line's start, and a minified file's line has thousands.
+        let view = state.input_bounds();
+        let right = f32::from(view.right() + view.size.width - origin.x);
+        let bottom = f32::from(view.bottom() + view.size.height - origin.y) / lh;
         let mut words = Vec::new();
         let mut at = start;
         'lines: for line in text[start..].split('\n') {
@@ -93,6 +99,15 @@ impl WordMap {
                 else {
                     break 'lines;
                 };
+                if let Some(&(row, x0, _)) = parts.first() {
+                    if row as f32 > bottom {
+                        break 'lines;
+                    }
+                    // The rest of this line is further right.
+                    if x0 > right {
+                        break;
+                    }
+                }
                 words.extend(parts.into_iter().map(|(row, x0, x1)| Word {
                     range: range.clone(),
                     row,

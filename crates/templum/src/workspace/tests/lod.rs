@@ -1623,3 +1623,25 @@ fn the_stashes_keep_their_scroll_through_a_card(cx: &mut TestAppContext) {
     let list = ElementId::from(("git-stash-list", n));
     a_lists_scroll_survives_a_card(handle, &ws, cx, id, list, row);
 }
+
+/// Taking a word map walks what is on screen, not the whole text: a minified file's long line,
+/// or a long paragraph soft-wrapped in a note, gets bars for its words near the view only (each
+/// word costs gpui-kit a walk from its line's start).
+#[gpui_kit::test]
+fn a_word_map_takes_only_the_words_near_the_view(cx: &mut TestAppContext) {
+    let words: String = (0..2000).map(|i| format!("w{i} ")).collect();
+    let text = format!("{words}\n");
+    let (handle, ws) = open(cx);
+    let (_dir, editor, _) = editor_with(handle, &ws, cx, &[("a.txt", text.as_str())]);
+    let (note, _) = note_with(handle, &ws, cx, Point::new(40.0, 1000.0), &text);
+    let corner = Point::new(30.0, 30.0);
+    // Both Full at 50% (the note was focused last, the editor is on screen), then far.
+    rest_at(handle, &ws, cx, corner, 0.5);
+    unfocus(handle, &ws, cx);
+    rest_at(handle, &ws, cx, corner, 0.5);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    let mapped = tab_map(&ws, cx, editor).expect("the editor's").words.len();
+    assert!(mapped > 0 && mapped < 200, "the editor: {mapped} words");
+    let mapped = note_map(&ws, cx, note).expect("the note's").words.len();
+    assert!(mapped > 0 && mapped < 600, "the note: {mapped} words");
+}
