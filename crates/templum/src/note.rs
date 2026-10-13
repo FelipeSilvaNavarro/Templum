@@ -1,12 +1,14 @@
 //! A note block: Markdown text, edited in gpui-kit's editor (tree-sitter highlights it) or shown
 //! rendered. Its title is its first heading. See docs/specs/cockpit.md, section 5.
 
-use gpui_kit::component::input::{Editor, EditorState};
+use std::ops::Range;
+
+use gpui_kit::component::input::{Editor, EditorState, Enter};
 use gpui_kit::component::text::TextView;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Context, Entity, ScrollWheelEvent, SharedString, TestSupportExt, Window, div,
-    px, relative,
+    AnyElement, App, Context, Entity, Focusable as _, KeyDownEvent, Keystroke, ScrollWheelEvent,
+    SharedString, TestSupportExt, Window, div, px, relative,
 };
 use templum_canvas::{BlockId, Size, chrome};
 
@@ -158,6 +160,7 @@ pub(crate) fn body(
             .into_any_element()
     };
     // The wheel scrolls the note and stops there; with Ctrl it zooms the canvas.
+    let (enter, key) = (note.editor.clone(), note.editor.clone());
     div()
         .size_full()
         .text_size(px(FONT * z))
@@ -166,13 +169,235 @@ pub(crate) fn body(
                 cx.stop_propagation();
             }
         })
+        // Markdown keys, in the note's own text only (not its search field): before the editor
+        // takes Enter, which it binds; Ctrl+B and Ctrl+I it doesn't.
+        .when(!note.preview, |el| {
+            el.capture_action(move |e: &Enter, window, cx| {
+                let done = enter.update(cx, |state, cx| {
+                    state.focus_handle(cx).is_focused(window)
+                        && !e.shift
+                        && if e.secondary {
+                            tick(state, window, cx)
+                        } else {
+                            continue_list(state, window, cx)
+                        }
+                });
+                if done {
+                    cx.stop_propagation();
+                }
+            })
+            .on_key_down(move |e: &KeyDownEvent, window, cx| {
+                let Some(marker) = emphasis(&e.keystroke) else {
+                    return;
+                };
+                let done = key.update(cx, |state, cx| {
+                    let focused = state.focus_handle(cx).is_focused(window);
+                    if focused {
+                        emphasize(state, marker, window, cx);
+                    }
+                    focused
+                });
+                if done {
+                    cx.stop_propagation();
+                }
+            })
+        })
         .child(inner)
         .into_any_element()
+}
+
+/// The byte range of the line holding byte `at` of `text`.
+fn line_at(text: &str, at: usize) -> Range<usize> {
+    let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+    start..end
+}
+
+/// Enter on a list item: the next item starts on the new line; on an empty item the list
+/// ends. False (a plain Enter) anywhere else, or with text selected.
+fn continue_list(
+    state: &mut EditorState,
+    window: &mut Window,
+    cx: &mut Context<EditorState>,
+) -> bool {
+    if !state.selected_range().is_empty() {
+        return false;
+    }
+    let text = state.value().to_string();
+    let at = state.cursor();
+    let line = line_at(&text, at);
+    let Some(next) = next_item(&text[line.clone()], at - line.start) else {
+        return false;
+    };
+    // The main cursor only: gpui-kit's replace types at every cursor (setting the range drops
+    // the others).
+    if next.is_empty() {
+        state.set_selected_range(line, cx);
+        state.replace("", window, cx);
+    } else {
+        state.set_selected_range(at..at, cx);
+        state.replace(format!("\n{next}"), window, cx);
+    }
+    true
+}
+
+/// Ctrl+Enter: the cursor's line becomes a task, or its box is ticked or unticked.
+fn tick(state: &mut EditorState, window: &mut Window, cx: &mut Context<EditorState>) -> bool {
+    let text = state.value().to_string();
+    let at = state.cursor();
+    let line = line_at(&text, at);
+    let new = toggle_task(&text[line.clone()]);
+    // The text after the box keeps the cursor where it was.
+    let cursor = (at + new.len())
+        .saturating_sub(line.len())
+        .clamp(line.start, line.start + new.len());
+    state.set_selected_range(line, cx);
+    state.replace(new, window, cx);
+    state.set_selected_range(cursor..cursor, cx);
+    true
+}
+
+/// `marker` around the selection, or a pair with the cursor between.
+fn emphasize(
+    state: &mut EditorState,
+    marker: &str,
+    window: &mut Window,
+    cx: &mut Context<EditorState>,
+) {
+    let range = state.selected_range();
+    let selected = state.value()[range.clone()].to_string();
+    // The main selection only (see `continue_list`).
+    state.set_selected_range(range.clone(), cx);
+    state.replace(format!("{marker}{selected}{marker}"), window, cx);
+    if selected.is_empty() {
+        let at = range.start + marker.len();
+        state.set_selected_range(at..at, cx);
+    }
+}
+
+/// A list item's indent and marker (`- `, `* `, `+ `, `1. `, `1) `, `- [ ] `), their length in
+/// bytes, and the next item's.
+fn item_prefix(line: &str) -> Option<(usize, String)> {
+    let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
+    let rest = &line[indent..];
+    let (len, next) = match ["- ", "* ", "+ "].into_iter().find(|b| rest.starts_with(b)) {
+        Some(bullet) => {
+            let task = ["[ ] ", "[x] ", "[X] "]
+                .iter()
+                .any(|t| rest[2..].starts_with(t));
+            if task {
+                (6, format!("{bullet}[ ] "))
+            } else {
+                (2, bullet.to_string())
+            }
+        }
+        None => {
+            let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+            let n: u64 = rest[..digits].parse().ok()?;
+            let sep = rest[digits..]
+                .chars()
+                .next()
+                .filter(|c| matches!(c, '.' | ')'))?;
+            if !rest[digits + 1..].starts_with(' ') {
+                return None;
+            }
+            (digits + 2, format!("{}{sep} ", n + 1))
+        }
+    };
+    Some((indent + len, format!("{}{next}", &line[..indent])))
+}
+
+/// What Enter on `line`, the cursor at its byte `at`, types after the line break: the next
+/// item's start, or "" when the item is empty (the list ends). None: not after a marker.
+fn next_item(line: &str, at: usize) -> Option<String> {
+    let (len, next) = item_prefix(line)?;
+    if at < len {
+        return None;
+    }
+    Some(if line[len..].trim().is_empty() {
+        String::new()
+    } else {
+        next
+    })
+}
+
+/// A task's box ticked or unticked; a list item or a plain line made a task.
+fn toggle_task(line: &str) -> String {
+    let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
+    let (head, rest) = line.split_at(indent);
+    for bullet in ["- ", "* ", "+ "] {
+        if let Some(after) = rest.strip_prefix(bullet) {
+            if let Some(text) = after.strip_prefix("[ ]") {
+                return format!("{head}{bullet}[x]{text}");
+            }
+            if let Some(text) = after
+                .strip_prefix("[x]")
+                .or_else(|| after.strip_prefix("[X]"))
+            {
+                return format!("{head}{bullet}[ ]{text}");
+            }
+            return format!("{head}{bullet}[ ] {after}");
+        }
+    }
+    format!("{head}- [ ] {rest}")
+}
+
+/// Ctrl+B (bold) and Ctrl+I (italic), Cmd on macOS: their Markdown marker.
+fn emphasis(k: &Keystroke) -> Option<&'static str> {
+    let m = &k.modifiers;
+    if !m.secondary() || m.alt || m.shift || m.function {
+        return None;
+    }
+    match k.key.as_str() {
+        "b" => Some("**"),
+        "i" => Some("*"),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enter_continues_bullets_numbers_and_tasks() {
+        assert_eq!(next_item("- a", 3).as_deref(), Some("- "));
+        assert_eq!(next_item("  * a", 5).as_deref(), Some("  * "));
+        assert_eq!(next_item("9. a", 4).as_deref(), Some("10. "));
+        assert_eq!(next_item("1) a", 4).as_deref(), Some("2) "));
+        assert_eq!(next_item("- [x] done", 10).as_deref(), Some("- [ ] "));
+        assert_eq!(next_item("- a", 1), None, "inside the marker");
+        assert_eq!(next_item("plain", 5), None);
+        assert_eq!(next_item("1.5 kg", 6), None);
+    }
+
+    #[test]
+    fn enter_on_an_empty_item_ends_the_list() {
+        assert_eq!(next_item("- ", 2).as_deref(), Some(""));
+        assert_eq!(next_item("- [ ] ", 6).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn ctrl_enter_toggles_a_task() {
+        assert_eq!(toggle_task("- [ ] a"), "- [x] a");
+        assert_eq!(toggle_task("  - [x] a"), "  - [ ] a");
+        assert_eq!(toggle_task("* a"), "* [ ] a");
+        assert_eq!(toggle_task("buy milk"), "- [ ] buy milk");
+    }
+
+    #[test]
+    fn emphasis_keys() {
+        let k = |s: &str| Keystroke::parse(s).unwrap();
+        let (bold, italic) = if cfg!(target_os = "macos") {
+            ("cmd-b", "cmd-i")
+        } else {
+            ("ctrl-b", "ctrl-i")
+        };
+        assert_eq!(emphasis(&k(bold)), Some("**"));
+        assert_eq!(emphasis(&k(italic)), Some("*"));
+        assert_eq!(emphasis(&k("b")), None);
+        assert_eq!(emphasis(&k(&format!("shift-{bold}"))), None);
+    }
 
     #[test]
     fn the_title_is_the_first_heading_or_note() {

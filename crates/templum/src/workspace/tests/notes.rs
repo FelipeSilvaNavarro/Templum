@@ -313,3 +313,77 @@ fn the_note_menu_colors_the_note(cx: &mut TestAppContext) {
         );
     });
 }
+
+/// Markdown keys in a note: Enter continues a list and ends it on an empty item, Ctrl+Enter
+/// ticks a task, Ctrl+B wraps the cursor in bold markers.
+#[gpui_kit::test]
+fn a_note_continues_lists_ticks_tasks_and_bolds(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = new_note(handle, &ws, cx);
+    let text = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, cx| ws.space.blocks[&id].note().unwrap().text(cx))
+    };
+    let press = |cx: &mut TestAppContext, key: &str| {
+        cx.update_window(handle, |_, window, cx| {
+            window.press(key, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    let secondary = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    cx.simulate_input(handle, "- a");
+    press(cx, "enter");
+    assert_eq!(text(cx), "- a\n- ");
+    press(cx, "enter");
+    assert_eq!(text(cx), "- a\n", "an empty item ends the list");
+    cx.simulate_input(handle, "x");
+    press(cx, &format!("{secondary}-enter"));
+    assert_eq!(text(cx), "- a\n- [ ] x");
+    press(cx, &format!("{secondary}-enter"));
+    assert_eq!(text(cx), "- a\n- [x] x");
+    press(cx, &format!("{secondary}-b"));
+    cx.simulate_input(handle, "b");
+    assert_eq!(text(cx), "- a\n- [x] x**b**");
+}
+
+/// With several cursors, Enter continues the list at the main cursor only: gpui-kit would
+/// type the same item at every cursor.
+#[gpui_kit::test]
+fn enter_with_several_cursors_continues_one_list_item(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = new_note(handle, &ws, cx);
+    cx.simulate_input(handle, "- a");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("enter", cx);
+        window.press("backspace", cx);
+        window.press("backspace", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.simulate_input(handle, "plain");
+    let editor = ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&id].note().unwrap().editor.clone()
+    });
+    let text = |cx: &mut TestAppContext| editor.read_with(cx, |e, _| e.value().to_string());
+    assert_eq!(text(cx), "- a\nplain");
+    cx.update_window(handle, |_, window, cx| {
+        // The cursor after "- a", one more below it.
+        editor.update(cx, |e, cx| e.set_selected_range(3..3, cx));
+        let below = if cfg!(target_os = "macos") {
+            "cmd-alt-down"
+        } else if cfg!(windows) {
+            "ctrl-alt-down"
+        } else {
+            "shift-alt-down"
+        };
+        window.press(below, cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(text(cx), "- a\n- \nplain");
+}
