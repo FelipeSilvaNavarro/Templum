@@ -15,6 +15,16 @@ use super::{
     Extra, GitAt, Workspace, notify_git_error, notify_git_failure, notify_with, show_notification,
 };
 
+/// What Undo commit found.
+enum Undone {
+    /// Taken back: its message, for the fields.
+    Done(String),
+    /// On the upstream: Revert… instead.
+    Pushed,
+    /// HEAD isn't that commit any more.
+    Moved,
+}
+
 impl Workspace {
     /// Commits with the form's message: what is staged, or every change (`Git::commit_all`).
     /// "Committed abc1234" with Undo commit, and the fields clear; with `push`, then pushes (a
@@ -43,14 +53,16 @@ impl Workspace {
                 if all {
                     repo.stage_all()?;
                 }
-                repo.commit(&message, amend)
+                // An Amend's Undo goes back to the commit it replaces: read it before.
+                let replaced = if amend { Some(repo.head()?) } else { None };
+                Ok::<_, GitError>((repo.commit(&message, amend)?, replaced))
             },
             move |ws, at, result, window, cx| {
                 let entity = cx.entity();
                 // Only a commit that happened is pushed.
                 let mut pushed = false;
                 match result {
-                    Ok(short) => {
+                    Ok((short, replaced)) => {
                         if let Some(git) = ws.git_at(&at) {
                             git.amend = false;
                             let (summary, description) =
@@ -72,7 +84,13 @@ impl Workspace {
                                     move |ws: &mut Workspace,
                                           window: &mut Window,
                                           cx: &mut Context<Workspace>| {
-                                        ws.undo_commit(block, short.clone(), amend, window, cx)
+                                        ws.undo_commit(
+                                            block,
+                                            short.clone(),
+                                            replaced.clone(),
+                                            window,
+                                            cx,
+                                        )
                                     },
                                 ),
                             );
@@ -179,7 +197,7 @@ impl Workspace {
         &mut self,
         id: BlockId,
         short: String,
-        amended: bool,
+        replaced: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -189,21 +207,34 @@ impl Workspace {
         let job_short = short.clone();
         self.act_job(
             self.here(id),
-            move || -> Result<Option<String>, GitError> {
-                if repo.on_upstream(&job_short)? {
-                    return Ok(None);
+            move || -> Result<Undone, GitError> {
+                // A commit made since: it is never the one taken back, pushed or not.
+                if !repo.head().is_ok_and(|h| h.starts_with(&job_short)) {
+                    return Ok(Undone::Moved);
                 }
-                repo.undo_commit(&job_short, amended).map(Some)
+                if repo.on_upstream(&job_short)? {
+                    return Ok(Undone::Pushed);
+                }
+                Ok(repo
+                    .undo_commit(&job_short, replaced.as_deref())?
+                    .map_or(Undone::Moved, Undone::Done))
             },
             move |ws, at, result, window, cx| {
                 match result {
-                    Ok(Some(message)) => {
+                    Ok(Undone::Done(message)) => {
                         if let Some(git) = ws.git_at(&at) {
                             git.amend = false;
                         }
                         ws.fill_message(&at, &message, window, cx);
                     }
-                    Ok(None) => {
+                    Ok(Undone::Moved) => {
+                        let message = format!(
+                            "A commit was made since {short}; Undo commit only takes back the last commit."
+                        );
+                        eprintln!("templum: {message}");
+                        show_notification(window, cx, Notification::error(message));
+                    }
+                    Ok(Undone::Pushed) => {
                         let (entity, block) = (cx.entity(), at.block);
                         prompt::confirm(
                             format!("Revert {short}?"),

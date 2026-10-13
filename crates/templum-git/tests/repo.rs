@@ -1036,7 +1036,7 @@ fn undo_commit_takes_the_last_commit_back_and_keeps_its_changes_staged() {
     repo.stage(&["a.txt"]).unwrap();
     // The repository's first commit has no parent: HEAD goes away, the file stays staged.
     let first = repo.commit("First", false).unwrap();
-    assert_eq!(repo.undo_commit(&first, false).unwrap(), "First");
+    assert_eq!(repo.undo_commit(&first, None).unwrap().unwrap(), "First");
     let s = repo.status().unwrap();
     assert_eq!(s.oid, None, "no commit again");
     assert_eq!(s.entries[0].staged, Some(Change::Added));
@@ -1045,7 +1045,7 @@ fn undo_commit_takes_the_last_commit_back_and_keeps_its_changes_staged() {
     repo.stage(&["a.txt"]).unwrap();
     let second = repo.commit("Second\n\nWhy it changed.", false).unwrap();
     assert_eq!(
-        repo.undo_commit(&second, false).unwrap(),
+        repo.undo_commit(&second, None).unwrap().unwrap(),
         "Second\n\nWhy it changed."
     );
     assert_eq!(head(&repo), first);
@@ -1058,12 +1058,17 @@ fn undo_commit_takes_the_last_commit_back_and_keeps_its_changes_staged() {
     let second = repo.commit("Second", false).unwrap();
     write(dir.path(), "a.txt", "three\n");
     repo.stage(&["a.txt"]).unwrap();
+    let replaced = repo.head().unwrap();
     let amended = repo.commit("Second, amended", true).unwrap();
-    assert_eq!(repo.undo_commit(&amended, true).unwrap(), "Second, amended");
+    assert_eq!(
+        repo.undo_commit(&amended, Some(&replaced))
+            .unwrap()
+            .unwrap(),
+        "Second, amended"
+    );
     assert_eq!(head(&repo), second);
     // HEAD moved since (a terminal committed again): refused, nothing taken back.
-    let err = repo.undo_commit(&first, false).unwrap_err();
-    assert!(err.stderr.contains("no longer"), "{err:?}");
+    assert_eq!(repo.undo_commit(&first, None).unwrap(), None);
     assert_eq!(head(&repo), second);
 }
 
@@ -1126,4 +1131,43 @@ fn a_file_that_isnt_utf8_has_no_hunk_patch() {
         None,
         "a patch from the lossy text would write U+FFFD over \\xe9"
     );
+}
+
+#[test]
+fn undoing_an_amend_after_a_later_commit_was_undone_lands_on_the_replaced_commit() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let x = repo.commit("X", false).unwrap();
+    write(dir.path(), "a.txt", "two\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let replaced = repo.head().unwrap();
+    let x2 = repo.commit("X, amended", true).unwrap();
+    write(dir.path(), "a.txt", "three\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let y = repo.commit("Y", false).unwrap();
+    repo.undo_commit(&y, None).unwrap().unwrap();
+    assert_eq!(head(&repo), x2);
+    // HEAD@{1} is Y now: the amend's Undo must go back to X, not forward to Y.
+    repo.undo_commit(&x2, Some(&replaced)).unwrap().unwrap();
+    assert_eq!(head(&repo), x);
+}
+
+#[test]
+fn an_upstream_gone_from_the_server_isnt_one() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("a", false).unwrap();
+    let _remote = with_remote(&repo);
+    repo.run(&["switch", "-q", "-c", "topic"]).unwrap();
+    write(dir.path(), "a.txt", "two\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let mine = repo.commit("b", false).unwrap();
+    repo.run(&["push", "-q", "-u", "origin", "topic"]).unwrap();
+    // The pull request was merged and its branch deleted; a fetch prunes it.
+    repo.run(&["push", "-q", "origin", "--delete", "topic"])
+        .unwrap();
+    repo.run(&["fetch", "-q", "--prune"]).unwrap();
+    assert!(!repo.on_upstream(&mine).unwrap());
 }

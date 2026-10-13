@@ -627,3 +627,43 @@ fn undo_commit_once_pushed_offers_a_revert_instead(cx: &mut TestAppContext) {
         "a new commit undoes it; the pushed one stays"
     );
 }
+
+#[gpui_kit::test]
+fn undo_commit_after_another_commit_refuses_without_a_command_to_run(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    git_run(repo.path(), &["add", "a.txt"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    cx.update_window(handle, |_, window, cx| {
+        summary.update(cx, |s, cx| s.set_value("Mine", window, cx));
+        window.render_frame(cx);
+        window.click(("git-commit", n), cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    // A terminal commits again before Undo commit is clicked.
+    git_run(
+        repo.path(),
+        &["commit", "-q", "--allow-empty", "-m", "Theirs"],
+    );
+    let before = git_run(repo.path(), &["rev-parse", "HEAD"]);
+    cx.update_window(handle, |_, window, cx| window.click("git-undo-commit", cx))
+        .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["rev-parse", "HEAD"]),
+        before,
+        "nothing taken back"
+    );
+    cx.update_window(handle, |_, window, _| {
+        assert!(
+            window.try_find("git-run").is_none(),
+            "no git command to run: the refusal is Templum's, not git's"
+        )
+    })
+    .unwrap();
+}

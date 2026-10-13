@@ -409,46 +409,67 @@ impl Repo {
     }
 
     /// The commit `short` is on the current branch's upstream: pushed, so it can't be taken
-    /// back for others. False with no upstream, and on a detached HEAD.
+    /// back for others. False with no upstream, one gone from the server (its branch deleted
+    /// and pruned), and on a detached HEAD.
     pub fn on_upstream(&self, short: &str) -> Result<bool, GitError> {
+        if self.run(&["rev-parse", "--verify", "-q", "@{u}"]).is_err() {
+            return Ok(false);
+        }
         match self.run(&["merge-base", "--is-ancestor", short, "@{u}"]) {
             Ok(_) => Ok(true),
             Err(e) if e.code == Some(1) => Ok(false),
-            Err(e)
-                if e.stderr.contains("no upstream")
-                    || e.stderr.contains("does not point to a branch") =>
-            {
-                Ok(false)
-            }
             Err(e) => Err(e),
         }
     }
 
+    /// HEAD's full hash (an error before the first commit).
+    pub fn head(&self) -> Result<String, GitError> {
+        Ok(self
+            .text(&["rev-parse", "--verify", "HEAD"])?
+            .trim()
+            .to_string())
+    }
+
     /// Takes the last commit back, its changes left staged, and gives its message (for the
-    /// fields). `short` must still be HEAD: a commit made since is never the one undone. After an
-    /// Amend (`amended`) the commit the amend replaced comes back (`HEAD@{1}`); the repository's
-    /// first commit has no parent, so HEAD goes (`update-ref -d`).
-    pub fn undo_commit(&self, short: &str, amended: bool) -> Result<String, GitError> {
-        let now = self
-            .text(&["rev-parse", "--verify", "-q", "HEAD"])
-            .unwrap_or_default();
-        if short.is_empty() || !now.trim().starts_with(short) {
-            return Err(GitError {
-                command: shown(&self.program, &["reset", "--soft", "HEAD~1"]),
-                code: None,
-                stderr: format!("error: the last commit is no longer {short}"),
-                missing: false,
-            });
+    /// fields); None, with nothing done, when HEAD isn't `short` any more: a commit made since is
+    /// never the one undone. HEAD goes back to `replaced` after an Amend (the commit it replaced,
+    /// read before the amend), else to the parent; the repository's first commit has none, so
+    /// the branch goes. `update-ref` moves it only from the commit checked here (a commit made
+    /// in between is never lost) and leaves the index, as a soft reset does.
+    pub fn undo_commit(
+        &self,
+        short: &str,
+        replaced: Option<&str>,
+    ) -> Result<Option<String>, GitError> {
+        let Ok(head) = self.head() else {
+            return Ok(None);
+        };
+        if short.is_empty() || !head.starts_with(short) {
+            return Ok(None);
         }
-        let message = self.last_message()?;
-        if amended {
-            self.run(&["reset", "-q", "--soft", "HEAD@{1}"])?;
-        } else if self.run(&["rev-parse", "--verify", "-q", "HEAD~1"]).is_ok() {
-            self.run(&["reset", "-q", "--soft", "HEAD~1"])?;
-        } else {
-            self.run(&["update-ref", "-d", "HEAD"])?;
-        }
-        Ok(message)
+        let message = self
+            .text(&["log", "-1", "--format=%B", &head])?
+            .trim_end()
+            .to_string();
+        let target = match replaced {
+            Some(r) => Some(r.to_string()),
+            None => self
+                .text(&["rev-parse", "--verify", "-q", &format!("{head}~1")])
+                .ok()
+                .map(|t| t.trim().to_string()),
+        };
+        match target {
+            Some(t) => self.run(&[
+                "update-ref",
+                "-m",
+                "templum: undo commit",
+                "HEAD",
+                &t,
+                &head,
+            ])?,
+            None => self.run(&["update-ref", "-d", "HEAD", &head])?,
+        };
+        Ok(Some(message))
     }
 
     /// `git apply` of `patch` (a `hunk_patch`): on the index with `cached`, the other way with
