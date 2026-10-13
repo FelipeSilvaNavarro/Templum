@@ -276,3 +276,237 @@ fn the_colors_are_kept_across_a_read_that_changes_nothing_and_dropped_on_a_chang
     });
     assert!(!std::rc::Rc::ptr_eq(&first, &after), "built again");
 }
+
+/// A window x inside the text of a line row: just past the number columns.
+fn text_x(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    row: gpui_kit::Bounds<gpui_kit::Pixels>,
+    digits: usize,
+) -> f32 {
+    let cw = ws.read_with(cx, |ws, _| {
+        ws.cell.size.w * crate::git_block::FONT / ws.cell.font_size
+    });
+    f32::from(row.origin.x) + cw * (2 * digits + 5) as f32 + 1.0
+}
+
+#[gpui_kit::test]
+fn dragging_selects_lines_and_copy_puts_their_source_text_on_the_clipboard(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::{point, px};
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "zero\none\n\ttwo\n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let (zero, two) = (
+        line_row(&ws, cx, id, "zero"),
+        line_row(&ws, cx, id, "\ttwo"),
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let (a, b) = (
+            window.find(("git-line", zero)).bounds(),
+            window.find(("git-line", two)).bounds(),
+        );
+        // From the left edge of the first row (before the text: byte 0) to the right edge of
+        // the last (past it: the end).
+        window.drag(
+            point(a.origin.x + px(1.0), a.center().y),
+            point(b.origin.x + b.size.width - px(1.0), b.center().y),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(
+            g.panel.selected_text().as_deref(),
+            Some("zero\none\n\ttwo"),
+            "tabs come back"
+        );
+        assert!(!g.panel.dragging, "released");
+    });
+    // The block has the focus (the press focused it): the copy shortcut copies the selection.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx));
+        ws.update(cx, |ws, cx| ws.copy_selection(cx));
+    })
+    .unwrap();
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+        Some("zero\none\n\ttwo")
+    );
+}
+
+#[gpui_kit::test]
+fn a_double_click_selects_a_word_and_a_triple_click_the_line(cx: &mut TestAppContext) {
+    use gpui_kit::{
+        Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput, point, px,
+    };
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "one\nfoo_bar baz\n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let row = line_row(&ws, cx, id, "foo_bar baz");
+    let digits = git_of(&ws, cx, id, |g| g.panel.files[0].digits());
+    let bounds = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.find(("git-line", row)).bounds()
+        })
+        .unwrap();
+    let x = text_x(&ws, cx, bounds, digits);
+    let press = |cx: &mut TestAppContext, count: usize| {
+        cx.update_window(handle, |_, window, cx| {
+            let position = point(px(x), bounds.center().y);
+            let modifiers = Modifiers::default();
+            window.dispatch_event(
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position,
+                    modifiers,
+                    click_count: count,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position,
+                    modifiers,
+                    click_count: count,
+                }),
+                cx,
+            );
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    press(cx, 2);
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.panel.selected_text().as_deref(), Some("foo_bar"))
+    });
+    press(cx, 3);
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.panel.selected_text().as_deref(), Some("foo_bar baz"))
+    });
+    // One click alone selects nothing.
+    press(cx, 1);
+    git_of(&ws, cx, id, |g| assert!(g.panel.selection.is_none()));
+}
+
+#[gpui_kit::test]
+fn the_lines_menu_copies_the_line_the_hunk_and_opens_the_editor_there(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "one\ntwo\n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let row = line_row(&ws, cx, id, "two");
+    // Copy (disabled), Copy line, Copy hunk, Send to ▸ (the startup terminal), —, Open in editor
+    // at this line. A separator counts as an index.
+    cx.update_window(handle, |_, window, cx| {
+        window.right_click(("git-line", row), cx);
+        window.render_frame(cx);
+        window.within("popup-menu").click(1usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+        Some("two")
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.right_click(("git-line", row), cx);
+        window.render_frame(cx);
+        window.within("popup-menu").click(2usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|c| c.text()).as_deref(),
+        Some(" one\n+two")
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.right_click(("git-line", row), cx);
+        window.render_frame(cx);
+        window.within("popup-menu").click(5usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    ws.read_with(cx, |ws, cx| {
+        let e = ws
+            .space
+            .blocks
+            .values()
+            .find_map(|b| b.editor())
+            .expect("an editor opened");
+        assert_eq!(e.active_tab().unwrap().name(), "a.txt");
+        assert_eq!(
+            e.active_tab()
+                .unwrap()
+                .editor
+                .read(cx)
+                .cursor_position()
+                .line,
+            1,
+            "line 2"
+        );
+    });
+}
+
+/// Send to ▸ types the selection into the chosen terminal (as the note's does, tests/notes.rs).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn send_to_types_the_selection_into_a_terminal(cx: &mut TestAppContext) {
+    use gpui_kit::{point, px};
+    use std::time::{Duration, Instant};
+    use templum_terminal::Snapshot;
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "one\ntwo\n").unwrap();
+    let (handle, ws) = open(cx);
+    let terminal = first_id(&ws, cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let row = line_row(&ws, cx, id, "two");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let b = window.find(("git-line", row)).bounds();
+        window.drag(
+            point(b.origin.x + px(1.0), b.center().y),
+            point(b.origin.x + b.size.width - px(1.0), b.center().y),
+            cx,
+        );
+        window.render_frame(cx);
+        window.right_click(("git-line", row), cx);
+        window.render_frame(cx);
+        // Copy, Copy line, Copy hunk, Send to ▸, —, Open in editor at this line.
+        window.within("popup-menu").click(3usize, cx);
+        window.render_frame(cx);
+        window
+            .within("submenu")
+            .within("popup-menu")
+            .click(0usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(terminal)));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let shown = ws.read_with(cx, |ws, _| {
+            let mut snap = Snapshot::default();
+            snap.refresh(
+                ws.space.terminal(terminal).unwrap().term.shared(),
+                &ws.theme.palette,
+            );
+            snap.text()
+        });
+        if shown.contains("two") {
+            assert!(!shown.contains("one"), "only the selection: {shown:?}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "not typed: {shown:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}

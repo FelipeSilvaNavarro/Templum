@@ -450,6 +450,38 @@ impl Items {
                     ws.ignore_path(block, ignore.clone(), window, cx)
                 }))
             }
+            Items::GitLine {
+                block,
+                path,
+                line,
+                selection,
+                line_text,
+                hunk_text,
+                send,
+            } => {
+                let has = selection.is_some();
+                let copy = selection.unwrap_or_default();
+                let menu = menu
+                    .item(
+                        item(ws, "Copy", Some(IconName::Copy), move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                        })
+                        .disabled(!has),
+                    )
+                    .item(item(ws, "Copy line", None, move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(line_text.clone()))
+                    }))
+                    .item(item(ws, "Copy hunk", None, move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(hunk_text.clone()))
+                    }));
+                let menu = send_to(ws, menu, send, window, cx);
+                menu.separator().item(item(
+                    ws,
+                    "Open in editor at this line",
+                    Some(IconName::FileCode),
+                    move |ws, window, cx| ws.open_from_git_at(block, &path, Some(line), window, cx),
+                ))
+            }
             Items::GitCommit { block, commit } => {
                 let (checkout, branch, tag, revert, copy) = (
                     commit.hash.clone(),

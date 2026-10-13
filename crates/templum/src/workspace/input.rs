@@ -222,11 +222,18 @@ impl Workspace {
         }
     }
 
+    /// Copies the focused terminal's selection, or the focused Git block's diff selection.
     pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
-        let text = self
+        let from_git = self
             .space
-            .focused_terminal()
-            .and_then(|pane| pane.term.shared().selection_text());
+            .focused
+            .and_then(|id| self.space.git(id))
+            .and_then(|g| g.panel.selected_text());
+        let text = from_git.or_else(|| {
+            self.space
+                .focused_terminal()
+                .and_then(|pane| pane.term.shared().selection_text())
+        });
         if let Some(text) = text {
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         }

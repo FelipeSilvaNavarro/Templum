@@ -13,8 +13,8 @@ use std::rc::Rc;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, Pixels, ShapedLine, TestSupportExt, UniformListScrollHandle,
-    div, px, uniform_list,
+    AnyElement, ClickEvent, Context, MouseButton, MouseUpEvent, Pixels, ShapedLine, TestSupportExt,
+    UniformListScrollHandle, div, px, uniform_list,
 };
 use templum_canvas::BlockId;
 use templum_git::WorkingDiff;
@@ -33,8 +33,6 @@ pub(crate) fn row_height(z: f32) -> f32 {
 
 /// A line row as it was last painted: its shaped text and where the text starts, so the
 /// mouse maps a point to a byte (`ShapedLine::closest_index_for_x`).
-// ponytail: read by the selection (plan Task 7), which removes this allow.
-#[allow(dead_code)]
 pub(crate) struct Shaped {
     pub line: ShapedLine,
     pub x: Pixels,
@@ -57,6 +55,10 @@ pub(crate) struct DiffPanel {
     pub last_row: Cell<f32>,
     /// The line rows painted in the last frame, by row index.
     pub shaped: Rc<RefCell<HashMap<usize, Shaped>>>,
+    /// The text selected in the line rows.
+    pub selection: Option<select::Selection>,
+    /// The mouse is down since a press on a line row.
+    pub dragging: bool,
     /// The hunks' colors, built on first draw (a RefCell: the rows are built from `&Workspace`).
     pub colors: RefCell<highlight::Highlights>,
     /// Diffs taken so far (the tests count them).
@@ -75,6 +77,8 @@ impl DiffPanel {
             scroll: UniformListScrollHandle::new(),
             last_row: Cell::new(0.0),
             shaped: Rc::new(RefCell::new(HashMap::new())),
+            selection: None,
+            dragging: false,
             colors: RefCell::new(highlight::Highlights::default()),
             reads: 0,
         }
@@ -105,6 +109,7 @@ impl DiffPanel {
         self.whole.retain(|k| keys.contains(k));
         self.files = Rc::new(files);
         self.colors.borrow_mut().clear();
+        self.selection = None;
         self.rebuild();
         true
     }
@@ -152,6 +157,30 @@ impl DiffPanel {
         self.rows
             .get(top.min(self.rows.len().checked_sub(1)?))?
             .file()
+    }
+
+    /// The byte of row `row`'s display text under window x `x`, from the row as it was last
+    /// painted; None for a row that isn't a line, or wasn't painted.
+    pub fn col_at(&self, row: usize, x: Pixels) -> Option<usize> {
+        let shaped = self.shaped.borrow();
+        let s = shaped.get(&row)?;
+        Some(s.line.closest_index_for_x(x - s.x))
+    }
+
+    /// A line row's display text.
+    pub fn display_of(&self, row: usize) -> Option<String> {
+        let Row::Line { file, hunk, line } = self.rows.get(row)? else {
+            return None;
+        };
+        Some(select::display(
+            &self.files[*file].diff.hunks[*hunk].lines[*line].text,
+        ))
+    }
+
+    /// What Copy puts on the clipboard; None without a selection.
+    pub fn selected_text(&self) -> Option<String> {
+        let sel = self.selection.filter(|s| !s.is_empty())?;
+        Some(select::selected_text(&self.rows, &self.files, &sel)).filter(|t| !t.is_empty())
     }
 }
 
@@ -257,6 +286,10 @@ pub(crate) fn panel(
         .flex_col()
         .child(header)
         .child(body)
+        .on_mouse_up(
+            MouseButton::Left,
+            cx.listener(move |ws, _: &MouseUpEvent, _, cx| ws.diff_release(id, cx)),
+        )
         .test_support()
         .into_any_element()
 }

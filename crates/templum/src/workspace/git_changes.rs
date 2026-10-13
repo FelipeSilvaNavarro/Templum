@@ -298,6 +298,76 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The mouse went down on a line row: one click starts a selection there, two select the
+    /// word, three the line.
+    pub(crate) fn diff_press(
+        &mut self,
+        id: BlockId,
+        row: usize,
+        x: gpui_kit::Pixels,
+        clicks: usize,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::git_block::diff_view::select::{Pos, Selection, word_at};
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        let p = &mut git.panel;
+        let Some(col) = p.col_at(row, x) else {
+            return;
+        };
+        let text = p.display_of(row).unwrap_or_default();
+        let (a, b) = match clicks {
+            2 => {
+                let r = word_at(&text, col);
+                (r.start, r.end)
+            }
+            n if n >= 3 => (0, text.len()),
+            _ => (col, col),
+        };
+        p.selection = Some(Selection {
+            anchor: Pos { row, col: a },
+            head: Pos { row, col: b },
+        });
+        p.dragging = clicks == 1;
+        cx.notify();
+    }
+
+    /// The mouse moved over a line row with the button down: the selection's head follows.
+    pub(crate) fn diff_drag(
+        &mut self,
+        id: BlockId,
+        row: usize,
+        x: gpui_kit::Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::git_block::diff_view::select::Pos;
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        let p = &mut git.panel;
+        if !p.dragging {
+            return;
+        }
+        let (Some(col), Some(sel)) = (p.col_at(row, x), p.selection.as_mut()) else {
+            return;
+        };
+        sel.head = Pos { row, col };
+        cx.notify();
+    }
+
+    /// The mouse came up: a selection that never moved is no selection.
+    pub(crate) fn diff_release(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        git.panel.dragging = false;
+        if git.panel.selection.is_some_and(|s| s.is_empty()) {
+            git.panel.selection = None;
+            cx.notify();
+        }
+    }
+
     /// Ignore whitespace on or off: the diff is read again with or without `-w`.
     pub(crate) fn toggle_ignore_whitespace(
         &mut self,

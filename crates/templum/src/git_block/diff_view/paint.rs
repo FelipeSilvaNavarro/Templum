@@ -10,8 +10,9 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Bounds, ClickEvent, Context, Div, ElementId, Font, Hsla, MouseButton, Pixels,
-    SharedString, TestSupportExt, TextAlign, TextRun, Window, canvas, div, fill, point, px, size,
+    AnyElement, App, Bounds, ClickEvent, Context, Div, ElementId, Font, Hsla, MouseButton,
+    MouseDownEvent, MouseMoveEvent, Pixels, SharedString, TestSupportExt, TextAlign, TextRun,
+    Window, canvas, div, fill, point, px, size,
 };
 use templum_canvas::BlockId;
 use templum_git::{FileDiff, Kind};
@@ -22,6 +23,7 @@ use crate::editor::human;
 use crate::git_block::FONT;
 use crate::git_block::widgets::{badge, icon_button, small};
 use crate::grid::hsla;
+use crate::menu::Target;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
 
@@ -368,8 +370,14 @@ fn line_row(
         ),
         None => (Rc::new(Vec::new()), Rc::new(Vec::new())),
     };
+    let text: SharedString = display(&l.text).into();
+    let selection = ws
+        .space
+        .git(id)
+        .and_then(|g| g.panel.selection)
+        .and_then(|sel| sel.range_in(ix, text.len()));
     let paint = LinePaint {
-        text: display(&l.text).into(),
+        text,
         digits: s.digits(),
         old_no: l.old_no,
         new_no: l.new_no,
@@ -378,7 +386,7 @@ fn line_row(
         colors,
         marks,
         mark,
-        selection: None,
+        selection,
         font: ws.cell.font.clone(),
         // The cell was measured at the terminal's size: scale its advance to the panel's.
         cw: ws.cell.size.w * FONT / ws.cell.font_size * z,
@@ -402,6 +410,29 @@ fn line_row(
                 },
             )
             .size_full(),
+        )
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |ws, e: &MouseDownEvent, _, cx| {
+                ws.diff_press(id, ix, e.position.x, e.click_count, cx)
+            }),
+        )
+        .on_mouse_move(cx.listener(move |ws, e: &MouseMoveEvent, _, cx| {
+            if e.pressed_button == Some(MouseButton::Left) {
+                ws.diff_drag(id, ix, e.position.x, cx)
+            }
+        }))
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                ws.open_menu(
+                    Target::GitLine { block: id, row: ix },
+                    e.position,
+                    window,
+                    cx,
+                );
+                cx.stop_propagation();
+            }),
         )
         .test_support()
         .into_any_element()

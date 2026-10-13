@@ -68,6 +68,11 @@ pub(crate) enum Target {
     },
     /// The terminals working in a Git block's repository (its top bar).
     GitTerminals(BlockId),
+    /// A line row of a Git block's diff panel, by its row index.
+    GitLine {
+        block: BlockId,
+        row: usize,
+    },
     /// A row of an editor's file tree (a file or a folder), or its empty space (None).
     Tree {
         block: BlockId,
@@ -242,6 +247,39 @@ impl Workspace {
                     .find(|c| c.hash == *hash)?
                     .clone(),
             },
+            Target::GitLine { block, row } => {
+                let p = &self.space.git(block)?.panel;
+                let Some(git_block::diff_view::Row::Line { file, hunk, line }) = p.rows.get(row)
+                else {
+                    return None;
+                };
+                let (file, hunk, line) = (*file, *hunk, *line);
+                let s = &p.files[file];
+                let h = &s.diff.hunks[hunk];
+                let l = &h.lines[line];
+                let hunk_text = h
+                    .lines
+                    .iter()
+                    .map(|l| {
+                        format!(
+                            "{}{}",
+                            l.kind.sign(),
+                            l.text.strip_suffix('\r').unwrap_or(&l.text)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let selection = p.selected_text();
+                Items::GitLine {
+                    block,
+                    path: s.diff.path().to_string(),
+                    line: l.new_no.unwrap_or(h.new_start.max(1)),
+                    send: self.send_to_menu(selection.clone().unwrap_or_else(|| hunk_text.clone())),
+                    selection,
+                    line_text: l.text.strip_suffix('\r').unwrap_or(&l.text).to_string(),
+                    hunk_text,
+                }
+            }
             Target::GitTerminals(block) => Items::Reveal {
                 terminals: self.terminal_list(Some(&self.space.git(block)?.repo()?.root)),
             },
@@ -335,6 +373,18 @@ enum Items {
     GitStash {
         block: BlockId,
         index: usize,
+    },
+    GitLine {
+        block: BlockId,
+        path: String,
+        /// Where Open in editor goes: the line's new number, else its hunk's first.
+        line: u32,
+        /// The panel's selection, for Copy.
+        selection: Option<String>,
+        line_text: String,
+        hunk_text: String,
+        /// The selection, else the hunk.
+        send: SendTo,
     },
     Board {
         block: BlockId,
