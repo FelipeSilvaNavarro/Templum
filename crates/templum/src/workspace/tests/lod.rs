@@ -184,3 +184,147 @@ fn a_git_blocks_level_changes_when_a_glide_ends(cx: &mut TestAppContext) {
         );
     }
 }
+
+/// Below Full a title is a label: 12 px text and an 8 px status dot at any zoom, 4 px in from the
+/// card's border. At 100% the header is as it was.
+#[gpui_kit::test]
+fn a_far_title_is_a_label_of_a_fixed_size(cx: &mut TestAppContext) {
+    use crate::alert::Alert;
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    unfocus(handle, &ws, cx);
+    // News nobody looked at: the dot shows.
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().alert = Some(Alert::Attention(None))
+    });
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    let corner = Point::new(rect.x - 10.0, rect.y - 10.0);
+    let bounds = |cx: &mut TestAppContext, el: (&'static str, usize)| {
+        cx.update_window(handle, |_, window, _| window.find(el).bounds())
+            .unwrap()
+    };
+    rest_at(handle, &ws, cx, corner, 1.0);
+    let block = bounds(cx, ("block", n));
+    assert_eq!(
+        bounds(cx, ("status", n)).size,
+        size(px(7.0), px(7.0)),
+        "the header's dot"
+    );
+    assert_eq!(
+        bounds(cx, ("title", n)).size.width,
+        block.size.width - px(2.0),
+        "the header's title spans the card"
+    );
+    let text_at_100 = bounds(cx, ("title-text", n)).size.height;
+    for zoom in [0.33, 0.25] {
+        rest_at(handle, &ws, cx, corner, zoom);
+        let (block, title) = (bounds(cx, ("block", n)), bounds(cx, ("title", n)));
+        let (text, dot) = (bounds(cx, ("title-text", n)), bounds(cx, ("status", n)));
+        assert_eq!(dot.size, size(px(8.0), px(8.0)), "an 8 px dot at {zoom}");
+        assert_eq!(
+            text.size.height, text_at_100,
+            "12 px text at {zoom}, as at 100%"
+        );
+        let inset =
+            |a: gpui_kit::Pixels, b: gpui_kit::Pixels| (f32::from(a - b) - 5.0).abs() < 0.01;
+        assert!(
+            inset(title.origin.x, block.origin.x) && inset(title.origin.y, block.origin.y),
+            "1 px border and 4 px in at {zoom}: {title:?} in {block:?}"
+        );
+        assert!(
+            title.size.width <= block.size.width - px(10.0),
+            "inside the card at {zoom}"
+        );
+        assert!(
+            dot.origin.x > title.origin.x && dot.right() < title.right(),
+            "the dot is in the label at {zoom}"
+        );
+    }
+}
+
+/// A press on a far label moves the block and focuses it, and starts no selection in the terminal
+/// under it; a right-click opens the block's menu; a double-click frames the block.
+#[gpui_kit::test]
+fn a_far_label_moves_opens_the_menu_and_frames(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    unfocus(handle, &ws, cx);
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 10.0, rect.y - 10.0),
+        0.25,
+    );
+    let c = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("title", n)).bounds().center()
+        })
+        .unwrap();
+    let at = (f32::from(c.x), f32::from(c.y));
+    cx.update_window(handle, |_, window, cx| {
+        press_with(
+            window,
+            cx,
+            MouseButton::Left,
+            Modifiers::default(),
+            at,
+            (at.0 + 40.0, at.1),
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let moved = ws.space.canvas.get(id).unwrap().rect;
+        assert!(
+            moved.x > rect.x + 100.0,
+            "40 px at 25%: {rect:?} -> {moved:?}"
+        );
+        assert_eq!(ws.space.focused, Some(id), "and focused");
+        let term = ws.space.terminal(id).unwrap().term.shared();
+        assert!(
+            term.selection_text().is_none(),
+            "no selection under the label"
+        );
+    });
+    cx.update_window(handle, |_, window, cx| window.right_click(("title", n), cx))
+        .unwrap();
+    ws.update(cx, |ws, _| {
+        assert!(ws.menu.is_some(), "its menu");
+        ws.menu = None;
+    });
+    frame(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.double_click(("title", n), cx)
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let z = ws.space.canvas.camera.zoom();
+        assert!(z > 0.25, "framed: the camera flies to {z}");
+    });
+}
+
+/// The header's small buttons (a note's preview eye here) hide behind a far label.
+#[gpui_kit::test]
+fn the_headers_buttons_hide_behind_a_far_label(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let note = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.add_note_at(Point::new(5000.0, 0.0), window, cx);
+                ws.space.appearing.clear();
+                ws.space.canvas.top().unwrap().0 as usize
+            })
+        })
+        .unwrap();
+    rest_at(handle, &ws, cx, Point::new(4990.0, -10.0), 1.0);
+    assert!(shown(handle, cx, ("preview", note)));
+    rest_at(handle, &ws, cx, Point::new(4990.0, -10.0), 0.25);
+    assert!(
+        !shown(handle, cx, ("preview", note)),
+        "the label sits there"
+    );
+}

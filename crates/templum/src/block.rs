@@ -36,6 +36,10 @@ pub(crate) const BORDER: f32 = 1.0;
 /// How thick the strips along a block's edges that resize it are, screen pixels, at most: thinner
 /// when zoomed out, so the title stays easy to grab.
 const EDGE: f32 = 6.0;
+/// Below Full a title is a label this far in from the card's border, and a terminal's status
+/// dot in it is this wide: screen pixels, never zoomed.
+const LABEL_IN: f32 = 4.0;
+const DOT: f32 = 8.0;
 
 /// `look` scales the block around its center (it is drawn at zoom × scale) and fades it.
 /// A block that isn't `live` is a ghost fading out: no controls, and clicks go through it.
@@ -121,43 +125,102 @@ pub(crate) fn render(
         });
     }
 
-    let title = div()
-        .id(("title", n))
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        // Clear of the close button on the right, and centered.
-        .px(px(28.0 * z))
-        .overflow_hidden()
-        .child(
-            div()
-                .truncate()
-                .text_size(px(TITLE_FONT * z))
-                .text_color(if focused { ui.title } else { ui.title_dim })
-                .child(match body {
-                    Body::Terminal(pane) => SharedString::from(pane.term.title()),
-                    Body::Kanban(k) => k.title(ws),
-                    Body::Note(n) => n.title(cx),
-                    Body::Editor(e) => e.title(),
-                    Body::Git(g) => g.title(),
-                }),
-        )
-        .when(live, |el| {
-            el.on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
-                    // A double-click frames the block; the camera flies, so nothing moves.
-                    if e.click_count == 2 {
-                        ws.frame_block(id, window, cx);
-                    } else {
-                        ws.begin_move(id, e.position);
-                    }
-                }),
-            )
+    // The card's background, a note's tint included; a label sits on it too.
+    let bg = match body {
+        Body::Note(note) => note
+            .color
+            .map_or(ws.ui.surface, |color| ws.theme.note_bg(color)),
+        _ => ws.ui.surface,
+    };
+    // Below Full the title is a label: never scaled, at the card's top-left corner, over the
+    // header and the top of the body (docs/specs/level-of-detail.md, section 2).
+    let labeled = templum_canvas::level(TITLE_FONT, ws.space.rest) != Level::Full;
+    let title_text = div()
+        .id(("title-text", n))
+        .truncate()
+        .when(labeled, |el| el.min_w(px(0.0)))
+        .text_size(px(TITLE_FONT * if labeled { 1.0 } else { z }))
+        .text_color(if focused { ui.title } else { ui.title_dim })
+        .child(match body {
+            Body::Terminal(pane) => SharedString::from(pane.term.title()),
+            Body::Kanban(k) => k.title(ws),
+            Body::Note(n) => n.title(cx),
+            Body::Editor(e) => e.title(),
+            Body::Git(g) => g.title(),
         })
         .test_support();
+    // A terminal's state: on the left of its header, or in its label.
+    let dot = match body {
+        Body::Terminal(pane) if live => status_dot(ws, pane).map(|(color, text)| {
+            div()
+                .id(("status", n))
+                .flex_shrink_0()
+                .size(px(if labeled { DOT } else { 7.0 * z }))
+                .rounded_full()
+                .bg(color)
+                .when(!labeled, |el| {
+                    el.absolute()
+                        .top(px((chrome::TITLE_H - 7.0) / 2.0 * z))
+                        .left(px(12.0 * z))
+                })
+                .tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
+                .test_support()
+        }),
+        _ => None,
+    };
+    let (label_dot, header_dot) = if labeled { (dot, None) } else { (None, dot) };
+    let title = if labeled {
+        div()
+            .id(("title", n))
+            .absolute()
+            .top(px(LABEL_IN))
+            .left(px(LABEL_IN))
+            .max_w(px((r.w - 2.0 * BORDER - 2.0 * LABEL_IN).max(0.0)))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(6.0))
+            .py(px(2.0))
+            .overflow_hidden()
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(ui.hairline)
+            .bg(bg)
+            .children(label_dot)
+            .child(title_text)
+    } else {
+        div()
+            .id(("title", n))
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            // Clear of the close button on the right, and centered.
+            .px(px(28.0 * z))
+            .overflow_hidden()
+            .child(title_text)
+    }
+    .when(live, |el| {
+        el.on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                // A double-click frames the block; the camera flies, so nothing moves.
+                if e.click_count == 2 {
+                    ws.frame_block(id, window, cx);
+                } else {
+                    ws.begin_move(id, e.position);
+                }
+                // A label lies over the body: it takes the press itself, so a terminal under it
+                // starts no selection, and it focuses the block as the card would.
+                if labeled {
+                    ws.focus_block(id, window, cx);
+                    cx.stop_propagation();
+                }
+            }),
+        )
+    })
+    .test_support();
 
     // Painted over the title: pressing it never starts a move.
     let close = div()
@@ -180,26 +243,9 @@ pub(crate) fn render(
         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.close(id, window, cx)))
         .test_support();
 
-    // A terminal's state, on the left of its header.
-    let dot = match body {
-        Body::Terminal(pane) if live => status_dot(ws, pane).map(|(color, text)| {
-            div()
-                .id(("status", n))
-                .absolute()
-                .top(px((chrome::TITLE_H - 7.0) / 2.0 * z))
-                .left(px(12.0 * z))
-                .size(px(7.0 * z))
-                .rounded_full()
-                .bg(color)
-                .tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
-                .test_support()
-        }),
-        _ => None,
-    };
-
     // A kanban block's board list, on the left of its header (over the title: no move).
     let boards = match body {
-        Body::Kanban(_) if live => Some(
+        Body::Kanban(_) if live && !labeled => Some(
             div()
                 .id(("boards", n))
                 .absolute()
@@ -225,7 +271,7 @@ pub(crate) fn render(
     };
     // A note's preview toggle, on the left of its header (over the title: no move).
     let preview = match body {
-        Body::Note(note) if live => {
+        Body::Note(note) if live && !labeled => {
             let on = note.preview;
             Some(
                 div()
@@ -259,7 +305,7 @@ pub(crate) fn render(
     };
     // An editor's file-tree toggle, on the left of its header (over the title: no move).
     let tree_toggle = match body {
-        Body::Editor(e) if live => {
+        Body::Editor(e) if live && !labeled => {
             let shown = e.show_tree;
             Some(
                 div()
@@ -326,7 +372,7 @@ pub(crate) fn render(
         .h(px(chrome::TITLE_H * z))
         .child(title)
         .children(top_zones)
-        .children(dot)
+        .children(header_dot)
         .children(boards)
         .children(preview)
         .children(tree_toggle)
@@ -456,12 +502,7 @@ pub(crate) fn render(
         } else {
             ui.hairline.lerp(&ui.hover_border, lift)
         })
-        .bg(match body {
-            Body::Note(note) => note
-                .color
-                .map_or(ws.ui.surface, |color| ws.theme.note_bg(color)),
-            _ => ws.ui.surface,
-        })
+        .bg(bg)
         .shadow(shadows)
         .overflow_hidden()
         .when(live, |el| {
@@ -499,8 +540,14 @@ pub(crate) fn render(
                     }),
                 )
         })
-        .child(header)
-        .child(content)
+        .map(|el| {
+            // A label lies over the top of the body: the header is drawn after it then.
+            if labeled {
+                el.child(content).child(header)
+            } else {
+                el.child(header).child(content)
+            }
+        })
         .children(other_zones)
         .when(hovered, |el| el.child(fade_in(handle, ("handle-fade", n))))
         .test_support()
