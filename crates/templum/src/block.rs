@@ -150,6 +150,7 @@ pub(crate) fn render(
             Body::Kanban(k) => k.title(ws),
             Body::Note(n) => n.title(cx),
             Body::Editor(e) => e.title(),
+            Body::Git(g) if labeled => format!("Git · {}", g.title()).into(),
             Body::Git(g) => g.title(),
         })
         .test_support();
