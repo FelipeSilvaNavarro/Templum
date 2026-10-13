@@ -9,7 +9,7 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 | Crate | Kind | Responsibility | May depend on the UI framework? |
 |---|---|---|---|
 | `templum` | bin | Window, event loop, rendering, input, wiring | **Yes, the only one** (`gpui-kit`) |
-| `templum-canvas` | lib | Pure model: camera (pan, zoom), blocks, hit-testing, snapping, layout (de)serialization | No |
+| `templum-canvas` | lib | Pure model: camera (pan, zoom), blocks, hit-testing, snapping, level of detail, layout (de)serialization | No |
 | `templum-terminal` | lib | Wraps `alacritty_terminal`: shell in a PTY, input, resize, key encoding, events | No |
 | `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values, finds conflict regions by their markers (`conflict.rs`), lays History's commits out in lanes from their parents (`graph.rs`), turns a blame into the diff panel's rows (`blame.rs`), keeps the trash of discarded changes, and asks an AI agent for a commit message (`message.rs`) | No |
 
@@ -48,8 +48,14 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   Blocking here doubled frame times in the spike.
 - Only blocks inside the viewport are drawn.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
-  rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded;
-  far-away blocks are drawn simplified (level of detail). A zoom glides to its step over 150 ms through
+  rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.
+  Far away, each block is drawn at a level of detail picked by its text's size on screen at the zoom the camera
+  last came to rest at (`Space::rest`; `templum-canvas`'s `lod.rs`), so a level never changes mid-glide: Full
+  while the text is 5.5 px or more; Silhouette under it, where a terminal paints bars of its text's colors on the
+  letters' cells, an editor or a note bars of the words gpui-kit laid out in its last Full frame
+  (`silhouette.rs`), and a Git block is its card; Card under 2.5 px. The block worked in (focused, or holding the
+  keyboard) is always Full, and below Full a title is a fixed-size label (specs/level-of-detail.md).
+  A zoom glides to its step over 150 ms through
   zooms snapped to 0.02 (`templum-canvas`'s `CameraFlight`); the camera holds the target, the workspace's `view`
   is what is drawn. Terminals and kanban blocks glide with the view. Editor, note and Git bodies glide too, but
   only through the zooms where gpui-kit's editor rows (1.5 × the font, rounded to whole pixels by GPUI) are

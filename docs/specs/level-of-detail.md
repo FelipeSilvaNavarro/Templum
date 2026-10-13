@@ -1,7 +1,7 @@
 # Level of detail at far zoom
 
 - **Date:** 2026-10-13
-- **Status:** Design approved
+- **Status:** Implemented
 - **Builds on:** [ARCHITECTURE.md](../ARCHITECTURE.md) (Zoom), [ADR-0002](../adr/0002-ui-framework.md),
   [navigation.md](navigation.md), [walking-skeleton.md](walking-skeleton.md) (which lists this under "Later")
 
@@ -54,7 +54,7 @@ every zoom.
 
 | Text | Size at zoom 1 | Where |
 |---|---|---|
-| A terminal's grid | `font.size`: 14 by default, 6 to 72 | `config.rs:72-88`, `settings/fields.rs:155-163`, `ws.cell.font_size` (`grid.rs:29-36`) |
+| A terminal's grid | `font.size`: 14 by default, 6 to 72 | `config.rs:73-88`, `340-346`, `settings/fields.rs:155-163`, `ws.cell.font_size` (`grid.rs:29-36`) |
 | An editor's file, a note | 13 | `editor.rs:38`, `note.rs:25` |
 | A Git block | 12 | `git_block/mod.rs:50` |
 | A kanban block (its card and column titles) | 13 | `kanban.rs:310`, `kanban.rs:467` |
@@ -298,8 +298,8 @@ Every block's state lives in its `Body`, not in what is drawn, so Full → Silho
 | A terminal's scrollback position and selection | alacritty's `Term`, the snapshot | Kept: the bars are drawn at the same position. |
 | A terminal's find field | `Pane::find` (`workspace/mod.rs:113-114`) | Kept, hidden below Full. |
 | A Git block's tab, selected row, diff and list scrolls, fields | `Git` (`git_block/mod.rs:207-307`), with explicit scroll handles | Kept. |
-| The scroll of a Git block's comparison list, commit details, stash list and recently discarded list | GPUI element state (`git_block/branches.rs:205-210`, `history.rs:366-372`, `stashes.rs:113-118`, `discarded.rs:38`) | GPUI keeps an element's state only while it is drawn (`window.rs:1145-1152`, `7176-7189`): these reset today when the block leaves the screen, and a Card would reset them without the block leaving. **These four get scroll handles stored in `Git`**, as its lists already have. |
-| A kanban column's scroll | GPUI element state (`kanban.rs:202`, `277`, `403`) | Drawn in full at the Silhouette level, so kept; reset at the Card level, as off screen today. A minor for [minors.md](../minors.md). |
+| The scroll of a Git block's comparison list, commit details and stash list | GPUI element state (`git_block/branches.rs:205-210`, `history.rs:366-372`, `stashes.rs:113-118`) | GPUI keeps an element's state only while it is drawn (`window.rs:1145-1152`, `7176-7189`): these reset today when the block leaves the screen, and a Card would reset them without the block leaving. **These three get scroll handles stored in `Git`**, as its lists already have. "Recently discarded" is a dialog the window draws (`git_block/discarded.rs`): it keeps its scroll at every level. |
+| A kanban column's scroll | GPUI element state (`kanban.rs:202`, `277`, `403`) | Drawn in full at the Silhouette level, so kept; a kanban block never reaches the Card level with today's steps (13 px is 3.25 px at 25%). |
 
 ## 6. Cost
 
@@ -450,8 +450,7 @@ The plan that implements this updates:
   three levels, picked by the text's size on screen when the camera rests, the focused block always Full), and the
   `templum-canvas` row of the crates table gains "level of detail";
 - `docs/specs/walking-skeleton.md:35`: the "level-of-detail drawing at low zoom" item leaves "Later" and points here;
-- `CLAUDE.md`'s performance rule (`:48`): `--bench-far` for changes to drawing at far zoom;
-- `docs/minors.md`: the kanban column scroll at the Card level.
+- `CLAUDE.md`'s performance rule (`:48`): `--bench-far` for changes to drawing at far zoom.
 
 ## Delivery
 
