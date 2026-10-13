@@ -622,3 +622,48 @@ fn go_to_waiting_visits_each_waiting_terminal_then_says_none(cx: &mut TestAppCon
     assert_eq!(press(cx), (there.0, Some(there.1)), "none left: it stays");
     assert_eq!(notification_count(handle, cx), notes + 1, "and says so");
 }
+
+/// Shift+Enter sends ESC CR (a newline in Claude Code and Codex) only where an agent runs; a
+/// shell gets Enter. `cat` echoes ESC as "^[".
+#[cfg(unix)]
+#[gpui_kit::test]
+fn shift_enter_is_a_newline_only_in_an_agent(cx: &mut TestAppContext) {
+    use std::time::{Duration, Instant};
+    use templum_terminal::Snapshot;
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let shown_after = |cx: &mut TestAppContext, mark: &str| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("shift-enter", cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            let term = &ws.space.terminal(id).unwrap().term;
+            term.write(format!("{mark}\r").into_bytes())
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let shown = ws.read_with(cx, |ws, _| {
+                let mut snap = Snapshot::default();
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
+                snap.text()
+            });
+            if shown.contains(mark) {
+                return shown;
+            }
+            assert!(Instant::now() < deadline, "no echo: {shown:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let shell = shown_after(cx, "x");
+    assert!(!shell.contains("^["), "a shell gets Enter: {shell:?}");
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into())
+    });
+    let agent = shown_after(cx, "y");
+    assert!(agent.contains("^["), "an agent gets ESC CR: {agent:?}");
+}

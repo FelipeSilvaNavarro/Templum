@@ -359,12 +359,16 @@ impl Workspace {
             return;
         };
         let k = &e.keystroke;
+        // Shift+Enter starts a new line in an agent (Claude Code, Codex): ESC CR, as Alt+Enter
+        // sends. A shell still gets Enter.
+        let newline = k.key == "enter" && k.modifiers.shift && pane.seen.agent.is_some();
         let input = KeyInput {
             key: &k.key,
             key_char: k.key_char.as_deref(),
             ctrl: k.modifiers.control,
-            alt: k.modifiers.alt
-                && !option_types_text(&k.key, k.key_char.as_deref(), cfg!(target_os = "macos")),
+            alt: newline
+                || k.modifiers.alt
+                    && !option_types_text(&k.key, k.key_char.as_deref(), cfg!(target_os = "macos")),
             shift: k.modifiers.shift,
         };
         if pane.term.key(&input) {
