@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use templum_git::{Back, Change, Operation, Pull, Repo, Side, clone_name, clone_target};
+use templum_git::{Back, Change, Operation, Pull, Repo, Side, Synced, clone_name, clone_target};
 
 /// A new repository on `main` with an author set, so commits work on a bare runner.
 fn fresh() -> (tempfile::TempDir, Repo) {
@@ -1473,4 +1473,112 @@ fn a_remote_branch_makes_its_tracking_branch_or_goes_to_the_local_one() {
     repo.switch("origin/feat", true, None).unwrap();
     assert_eq!(repo.status().unwrap().branch.as_deref(), Some("feat"));
     assert!(dir.path().join("b.txt").is_file());
+}
+
+/// `repo` (main, a.txt) with an origin, and a second clone of it whose commits `repo` can get.
+fn with_other(repo: &Repo) -> (tempfile::TempDir, tempfile::TempDir, Repo) {
+    let remote = with_remote(repo);
+    let other_dir = tempfile::tempdir().unwrap();
+    let other = Repo::clone_into(
+        "git",
+        &remote.path().display().to_string(),
+        &other_dir.path().join("o"),
+        None,
+    )
+    .unwrap();
+    for args in [
+        ["config", "user.name", "Grace"].as_slice(),
+        &["config", "user.email", "grace@example.com"],
+        &["config", "commit.gpgsign", "false"],
+    ] {
+        other.run(args).unwrap();
+    }
+    (remote, other_dir, other)
+}
+
+fn commit_file(repo: &Repo, name: &str) {
+    write(&repo.root, name, name);
+    repo.stage(&[name]).unwrap();
+    repo.commit(name, false).unwrap();
+}
+
+#[test]
+fn sync_gets_and_sends_and_counts_both() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let (_remote, _o, other) = with_other(&repo);
+    assert_eq!(
+        repo.sync().unwrap(),
+        Synced::Done { got: 0, sent: 0 },
+        "up to date"
+    );
+    for n in ["b", "c", "d"] {
+        commit_file(&other, n);
+    }
+    other.push().unwrap();
+    assert_eq!(repo.sync().unwrap(), Synced::Done { got: 3, sent: 0 });
+    assert!(dir.path().join("d").is_file());
+    commit_file(&repo, "e");
+    commit_file(&repo, "f");
+    assert_eq!(repo.sync().unwrap(), Synced::Done { got: 0, sent: 2 });
+    let s = repo.status().unwrap();
+    assert_eq!((s.ahead, s.behind), (0, 0));
+}
+
+#[test]
+fn diverged_sync_changes_nothing_until_joined() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let (_remote, _o, other) = with_other(&repo);
+    commit_file(&other, "theirs");
+    other.push().unwrap();
+    commit_file(&repo, "mine");
+    let head = repo.head().unwrap();
+    assert_eq!(
+        repo.sync().unwrap(),
+        Synced::Diverged {
+            ahead: 1,
+            behind: 1
+        }
+    );
+    assert_eq!(repo.head().unwrap(), head, "nothing joined yet");
+    // Uncommitted changes don't stop the rebase (--autostash).
+    write(dir.path(), "a.txt", "dirty\n");
+    assert_eq!(
+        repo.sync_join(true).unwrap(),
+        Synced::Done { got: 1, sent: 1 }
+    );
+    let log = repo.run(&["log", "--format=%s"]).unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&log),
+        "mine\ntheirs\none\n",
+        "mine on top, no merge commit"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "dirty\n"
+    );
+}
+
+#[test]
+fn diverged_sync_joined_by_a_merge() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let (_remote, _o, other) = with_other(&repo);
+    commit_file(&other, "theirs");
+    other.push().unwrap();
+    commit_file(&repo, "mine");
+    repo.sync().unwrap();
+    assert_eq!(
+        repo.sync_join(false).unwrap(),
+        Synced::Done { got: 1, sent: 2 },
+        "mine and the merge"
+    );
+    assert_eq!(repo.status().unwrap().ahead, 0);
 }

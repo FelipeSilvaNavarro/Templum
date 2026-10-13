@@ -799,6 +799,52 @@ impl Repo {
     }
 }
 
+/// What Sync did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Synced {
+    /// Got `got` commits from the server, sent `sent`.
+    Done { got: u32, sent: u32 },
+    /// Both sides have new commits: nothing was changed; `sync_join` joins them.
+    Diverged { ahead: u32, behind: u32 },
+}
+
+impl Repo {
+    /// Sync: fetch, then a fast-forward to the upstream when it has new commits, then a push
+    /// when this branch has new ones. The counts are the status's after the fetch (what each
+    /// side has that the other hasn't). Both new: nothing is joined.
+    pub fn sync(&self) -> Result<Synced, GitError> {
+        self.fetch()?;
+        let s = self.status()?;
+        let (sent, got) = (s.ahead, s.behind);
+        if sent > 0 && got > 0 {
+            return Ok(Synced::Diverged {
+                ahead: sent,
+                behind: got,
+            });
+        }
+        if got > 0 {
+            self.run(&["merge", "--ff-only", "-q", "@{u}"])?;
+        }
+        if sent > 0 {
+            self.push()?;
+        }
+        Ok(Synced::Done { got, sent })
+    }
+
+    /// A diverged Sync, joined: the user's commits put on top (`rebase`) or a merge, either one
+    /// with `--autostash` (a rebase refuses to start over uncommitted changes), then the push.
+    pub fn sync_join(&self, rebase: bool) -> Result<Synced, GitError> {
+        let got = self.status()?.behind;
+        let how = if rebase { "--rebase" } else { "--no-rebase" };
+        self.run(&["pull", how, "--autostash"])?;
+        let sent = self.status()?.ahead;
+        if sent > 0 {
+            self.push()?;
+        }
+        Ok(Synced::Done { got, sent })
+    }
+}
+
 impl Repo {
     /// `count` commits of HEAD's history after the first `skip`, newest first. Before the
     /// first commit: none.

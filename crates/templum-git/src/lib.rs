@@ -17,7 +17,7 @@ pub use parse::{
     parse_log, parse_name_status, parse_stashes, parse_status,
 };
 pub use repo::{
-    Back, DIFF_LIMIT, GitError, Pull, Repo, Side, WorkingDiff, clone_name, clone_target, left_on,
-    root_of,
+    Back, DIFF_LIMIT, GitError, Pull, Repo, Side, Synced, WorkingDiff, clone_name, clone_target,
+    left_on, root_of,
 };
 pub use words::changed;
