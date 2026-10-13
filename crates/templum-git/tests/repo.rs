@@ -699,3 +699,19 @@ fn a_cancelled_command_is_killed_and_says_so() {
     );
     assert!(repo.status().is_ok(), "the repo itself still answers");
 }
+
+#[test]
+fn root_of_finds_the_nearest_git_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(repo.join("src/sub")).unwrap();
+    let file = repo.join("src/sub/a.rs");
+    assert_eq!(templum_git::root_of(&file), Some(repo.as_path()));
+    // A worktree's or a submodule's .git is a file.
+    let module = repo.join("src/sub");
+    std::fs::write(module.join(".git"), "gitdir: ../../.git/modules/sub").unwrap();
+    assert_eq!(templum_git::root_of(&file), Some(module.as_path()));
+    let outside = dir.path().join("loose.txt");
+    assert_eq!(templum_git::root_of(&outside), None);
+}

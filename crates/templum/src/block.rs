@@ -337,7 +337,15 @@ pub(crate) fn render(
                 el.cursor_text()
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |ws, e: &MouseDownEvent, _, _| ws.begin_select(id, e)),
+                        cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                            // Ctrl+click (Cmd on macOS) opens a path or a link; the block's own
+                            // press would take the keyboard back from the editor it opened.
+                            if e.modifiers.secondary() && ws.open_link(id, e, window, cx) {
+                                cx.stop_propagation();
+                            } else {
+                                ws.begin_select(id, e);
+                            }
+                        }),
                     )
                     .on_scroll_wheel(cx.listener(move |ws, e: &ScrollWheelEvent, _, cx| {
                         ws.scroll_terminal(id, e, cx)

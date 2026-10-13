@@ -671,3 +671,9 @@ impl Repo {
         self.text(&["stash", "show", "-p", "--no-color", &name])
     }
 }
+
+/// The work tree holding `file`, without running git: the nearest folder above it with a `.git`
+/// (a folder, or a file in a worktree or a submodule).
+pub fn root_of(file: &Path) -> Option<&Path> {
+    file.ancestors().skip(1).find(|d| d.join(".git").exists())
+}

@@ -9,7 +9,7 @@ use gpui_kit::{
     Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, UTF16Selection, Window, px,
 };
 use templum_canvas::{BlockId, Drawing, Edges, Gesture, Point, STRING_PX, chrome, constrain};
-use templum_terminal::{KeyInput, SelectionKind, Side};
+use templum_terminal::{KeyInput, SelectionKind, Side, Target};
 
 use crate::keys::{self, Command};
 use crate::menu;
@@ -181,6 +181,45 @@ impl Workspace {
         };
         pane.term.shared().select_start(row, col, side, kind);
         self.drag = Some(Drag::Select(id));
+    }
+
+    /// Opens the link under a press in a terminal: a URL in the browser, a file in an editor
+    /// beside the terminal (at its line), its repository's root as the editor's folder. False
+    /// when there is none (or the file isn't there).
+    pub(crate) fn open_link(
+        &mut self,
+        id: BlockId,
+        e: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((row, col, _)) = self.cell_under(id, e.position) else {
+            return false;
+        };
+        let Some(pane) = self.space.terminal(id) else {
+            return false;
+        };
+        match pane.term.shared().link_at(row, col) {
+            Some(Target::Url(url)) => {
+                cx.open_url(&url);
+                true
+            }
+            Some(Target::File { path, line }) => {
+                let home = std::env::home_dir();
+                let Some(file) =
+                    templum_terminal::resolve(&path, pane.term.cwd().as_deref(), home.as_deref())
+                else {
+                    return false;
+                };
+                let Some(folder) = templum_git::root_of(&file).or(file.parent()) else {
+                    return false;
+                };
+                let folder = folder.to_path_buf();
+                self.open_in_editor(&folder, &file, line, Some(id), window, cx);
+                true
+            }
+            None => false,
+        }
     }
 
     pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {

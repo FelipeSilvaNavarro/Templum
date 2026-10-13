@@ -771,6 +771,155 @@ fn the_find_field_selects_what_it_finds_and_esc_gives_the_terminal_back(cx: &mut
     );
 }
 
+/// A press with Ctrl (Cmd on macOS) at a terminal's cell `(row, col)`.
+#[cfg(unix)]
+fn ctrl_click_cell(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+    (row, col): (usize, usize),
+) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let body = window.find(("body", id.0 as usize)).bounds();
+        let (cell, z) = {
+            let ws = ws.read(cx);
+            (ws.cell.size, ws.space.view.zoom())
+        };
+        let pad = templum_canvas::chrome::PAD * z;
+        let position = point(
+            body.origin.x + px(pad + (col as f32 + 0.5) * cell.w * z),
+            body.origin.y + px(pad + (row as f32 + 0.5) * cell.h * z),
+        );
+        let modifiers = Modifiers::secondary_key();
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers,
+                click_count: 1,
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+/// Writes `text` into the terminal (cat shows it) and waits until `shown` is on screen.
+#[cfg(unix)]
+fn shown_in(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId, text: &str, shown: &str) {
+    use std::time::{Duration, Instant};
+    use templum_terminal::Snapshot;
+    ws.read_with(cx, |ws, _| {
+        ws.space
+            .terminal(id)
+            .unwrap()
+            .term
+            .write(text.as_bytes().to_vec())
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let screen = ws.read_with(cx, |ws, _| {
+            let mut snap = Snapshot::default();
+            snap.refresh(
+                ws.space.terminal(id).unwrap().term.shared(),
+                &ws.theme.palette,
+            );
+            snap.text()
+        });
+        if screen.contains(shown) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{screen:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Ctrl+click on `main.rs:2` printed in a terminal opens the file beside it at line 2, in an
+/// editor on the repository.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn ctrl_click_on_a_path_opens_it_beside_the_terminal_at_its_line(cx: &mut TestAppContext) {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+    std::fs::create_dir_all(repo.path().join("src")).unwrap();
+    std::fs::write(repo.path().join("src/main.rs"), "one\ntwo\nthree\n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let rect = templum_canvas::Rect::new(40.0, 40.0, 600.0, 300.0);
+                let id = ws
+                    .spawn_block(rect, Some(repo.path().join("src")), window, cx)
+                    .unwrap();
+                ws.space.appearing.clear();
+                id
+            })
+        })
+        .unwrap();
+    shown_in(&ws, cx, id, "main.rs:2\r", "main.rs:2\nmain.rs:2");
+    ctrl_click_cell(handle, &ws, cx, id, (0, 2));
+    ws.read_with(cx, |ws, cx| {
+        let (eid, e) = ws
+            .space
+            .blocks
+            .iter()
+            .find_map(|(id, b)| Some((*id, b.editor()?)))
+            .expect("an editor opened");
+        assert_eq!(
+            e.folder.canonicalize().unwrap(),
+            repo.path().canonicalize().unwrap(),
+            "the repository, not the terminal's folder"
+        );
+        let tab = e.active_tab().unwrap();
+        assert_eq!(tab.name(), "main.rs");
+        assert_eq!(tab.editor.read(cx).cursor_position().line, 1);
+        let rect = |b| ws.space.canvas.get(b).unwrap().rect;
+        assert_eq!(
+            rect(eid).x,
+            rect(id).x + rect(id).w + templum_canvas::BESIDE
+        );
+        assert_eq!(ws.space.focused, Some(eid));
+        assert!(
+            ws.space
+                .terminal(id)
+                .unwrap()
+                .term
+                .shared()
+                .selection_text()
+                .is_none()
+        );
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn ctrl_click_on_a_url_opens_the_browser(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    shown_in(
+        &ws,
+        cx,
+        id,
+        "see https://example.com/x\r",
+        "x\nsee https://example.com/x",
+    );
+    ctrl_click_cell(handle, &ws, cx, id, (0, 8));
+    assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/x"));
+}
+
 /// The terminal's paste shortcut pastes into its find field, not into the shell.
 #[gpui_kit::test]
 fn the_paste_shortcut_pastes_into_the_find_field(cx: &mut TestAppContext) {

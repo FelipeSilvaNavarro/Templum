@@ -260,7 +260,7 @@ impl SharedTerm {
 }
 
 /// A viewport cell, clamped to the grid, as a grid point (accounting for scrollback).
-fn grid_point(term: &Term<Listener>, row: usize, col: usize) -> GridPoint {
+pub(crate) fn grid_point(term: &Term<Listener>, row: usize, col: usize) -> GridPoint {
     let row = row.min(term.screen_lines() - 1);
     let col = col.min(term.columns() - 1);
     viewport_to_point(
