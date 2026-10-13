@@ -626,3 +626,56 @@ fn going_to_a_far_waiting_terminal_draws_it_in_full(cx: &mut TestAppContext) {
     .unwrap();
     assert!(!shown(handle, cx, ("silhouette", n)), "gone to: Full");
 }
+
+/// Below Full, rendered Markdown is an empty area: a note shown rendered is its tinted card, an
+/// editor's Markdown file keeps its tab row. A kanban block is drawn in full there.
+#[gpui_kit::test]
+fn far_rendered_markdown_is_left_out_and_kanban_drawn_in_full(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.md"), "# Hello\n\nSome *words*.\n").unwrap();
+    let (handle, ws) = open(cx);
+    let editor = open_editor(handle, &ws, cx, dir.path());
+    click_file(handle, 0, cx);
+    let (note, kanban) = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.toggle_file_preview(editor, window, cx);
+                ws.add_note_at(Point::new(40.0, 900.0), window, cx);
+                let note = ws.space.canvas.top().unwrap();
+                ws.toggle_preview(note, window, cx);
+                ws.add_kanban_at(Point::new(1200.0, 40.0), window, cx);
+                let kanban = ws.space.canvas.top().unwrap();
+                ws.space.appearing.clear();
+                (note.0 as usize, kanban.0 as usize)
+            })
+        })
+        .unwrap();
+    let e = editor.0 as usize;
+    unfocus(handle, &ws, cx);
+    rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 0.5);
+    assert!(
+        shown(handle, cx, ("note-preview", note)),
+        "the note rendered at 50%"
+    );
+    assert!(
+        shown(handle, cx, ("file-preview", e)),
+        "the file rendered at 50%"
+    );
+    rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 0.33);
+    assert!(
+        !shown(handle, cx, ("note-preview", note)),
+        "the note is its card"
+    );
+    assert!(
+        !shown(handle, cx, ("file-preview", e)),
+        "the file's area is empty"
+    );
+    assert!(
+        shown(handle, cx, ElementId::Name(format!("tab-{e}-0").into())),
+        "the tab row stays"
+    );
+    assert!(
+        shown(handle, cx, ("board-list", kanban)),
+        "the kanban block is drawn in full"
+    );
+}

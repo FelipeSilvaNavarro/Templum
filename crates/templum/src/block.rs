@@ -445,7 +445,9 @@ pub(crate) fn render(
             // A fading kanban block is drawn empty: its board is still live elsewhere.
             Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
             // A fading note is drawn empty, like a kanban block.
-            Body::Note(n) => frame.when(live, |el| {
+            // Below Full a note shown rendered is its tinted card, empty: gpui-kit's Markdown view
+            // has no layout to draw bars from.
+            Body::Note(n) => frame.when(live && !(n.preview && level != Level::Full), |el| {
                 el.child(settled_box(
                     block,
                     settled,
@@ -459,7 +461,7 @@ pub(crate) fn render(
                     block,
                     settled,
                     pull,
-                    editor::body(ws, id, e, settled, cx),
+                    editor::body(ws, id, e, settled, level, cx),
                 ))
             }),
             // A fading Git block is drawn empty, like a note. Below Full it is its card: its body is

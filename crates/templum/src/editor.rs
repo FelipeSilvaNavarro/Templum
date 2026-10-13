@@ -20,7 +20,7 @@ use gpui_kit::{
     ScrollHandle, ScrollWheelEvent, SharedString, Stateful, StyleRefinement, Subscription,
     TestSupportExt, Window, div, point, px, relative,
 };
-use templum_canvas::{BlockId, Rect, Size, chrome};
+use templum_canvas::{BlockId, Level, Rect, Size, chrome};
 
 use crate::menu::Target;
 use crate::session;
@@ -634,6 +634,7 @@ pub(crate) fn body(
     id: BlockId,
     editor: &Editor,
     z: f32,
+    level: Level,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
@@ -651,7 +652,7 @@ pub(crate) fn body(
             }
         })
         .children(tree)
-        .child(files(ws, id, editor, z, cx))
+        .child(files(ws, id, editor, z, level, cx))
         .into_any_element()
 }
 
@@ -830,6 +831,7 @@ fn files(
     id: BlockId,
     editor: &Editor,
     z: f32,
+    level: Level,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let n = id.0 as usize;
@@ -927,7 +929,11 @@ fn files(
                     .into_any_element()
             }
             Content::Text { read_only, .. } => {
-                let view: AnyElement = if tab.preview {
+                let view: AnyElement = if tab.preview && level != Level::Full {
+                    // Below Full, rendered Markdown is an empty area: no layout to draw bars
+                    // from, and everything around it stays in place.
+                    div().into_any_element()
+                } else if tab.preview {
                     crate::note::preview(
                         ("file-preview", n).into(),
                         ("file-markdown", n).into(),
