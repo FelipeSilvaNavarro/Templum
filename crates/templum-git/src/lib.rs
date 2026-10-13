@@ -5,6 +5,7 @@
 mod diff;
 mod parse;
 mod repo;
+pub mod trash;
 mod words;
 
 pub use diff::{
