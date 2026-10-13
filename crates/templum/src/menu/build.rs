@@ -562,7 +562,11 @@ impl Items {
                     move |ws, window, cx| ws.open_from_git_at(block, &path, Some(line), window, cx),
                 ))
             }
-            Items::GitCommit { block, commit } => {
+            Items::GitCommit {
+                block,
+                commit,
+                undo,
+            } => {
                 let (checkout, branch, tag, revert, copy) = (
                     commit.hash.clone(),
                     commit.hash.clone(),
@@ -570,12 +574,18 @@ impl Items {
                     commit.hash.clone(),
                     commit.hash.clone(),
                 );
+                let short = commit.short.clone();
+                let message = if commit.body.is_empty() {
+                    commit.subject.clone()
+                } else {
+                    format!("{}\n\n{}", commit.subject, commit.body)
+                };
                 menu.item(item(ws, "Checkout…", None, move |ws, window, cx| {
                     ws.checkout_commit(block, checkout.clone(), window, cx)
                 }))
                 .item(item(
                     ws,
-                    "New branch from here…",
+                    "New branch here…",
                     Some(IconName::GitBranchPlus),
                     move |ws, window, cx| ws.branch_from(block, Some(branch.clone()), window, cx),
                 ))
@@ -591,13 +601,37 @@ impl Items {
                     Some(IconName::Undo2),
                     move |ws, window, cx| ws.revert_commit(block, revert.clone(), window, cx),
                 ))
+                .when(undo, |menu| {
+                    menu.item(item(
+                        ws,
+                        "Undo this commit",
+                        Some(IconName::Undo2),
+                        move |ws, window, cx| {
+                            ws.undo_commit(block, short.clone(), None, window, cx)
+                        },
+                    ))
+                })
                 .item(item(
                     ws,
                     "Copy hash",
                     Some(IconName::Copy),
                     move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())),
                 ))
+                .item(item(
+                    ws,
+                    "Copy message",
+                    Some(IconName::Copy),
+                    move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(message.clone()))
+                    },
+                ))
             }
+            Items::GitCommitFile { path, .. } => menu.item(item(
+                ws,
+                "Copy path",
+                Some(IconName::Copy),
+                move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(path.clone())),
+            )),
             Items::GitBranch {
                 block,
                 branch,

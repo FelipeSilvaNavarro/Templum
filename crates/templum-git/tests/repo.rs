@@ -517,15 +517,14 @@ fn log_files_diffs_tags_branches_and_reverts() {
     let files = repo.commit_files(&log[0].hash).unwrap();
     let got: Vec<_> = files.iter().map(|f| (f.change, f.path.as_str())).collect();
     assert_eq!(got, [(Change::Modified, "a.txt"), (Change::Added, "b.txt")]);
-    let diff = repo.commit_diff(&log[0].hash, &files[0]).unwrap();
-    assert!(diff.contains("+two"), "{diff}");
+    let diff = repo.commit_changes(&log[0].hash, false).unwrap();
+    assert_eq!(diff[0].path(), "a.txt");
+    assert!(diff[0].hunks[0].lines.iter().any(|l| l.text == "two"));
     let root = repo.commit_files(&log[1].hash).unwrap();
     assert_eq!(root.len(), 1, "a root commit's files");
-    assert!(
-        repo.commit_diff(&log[1].hash, &root[0])
-            .unwrap()
-            .contains("+one")
-    );
+    let diff = repo.commit_changes(&log[1].hash, false).unwrap();
+    assert_eq!(diff[0].path(), "a.txt");
+    assert!(diff[0].hunks[0].lines.iter().any(|l| l.text == "one"));
     repo.tag("v1", &log[1].hash).unwrap();
     assert!(
         repo.history(&HistoryQuery::default(), 0, 10).unwrap()[1]

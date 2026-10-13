@@ -60,6 +60,12 @@ pub(crate) enum Target {
         block: BlockId,
         hash: String,
     },
+    /// A file of the commit shown in a Git block's History.
+    GitCommitFile {
+        block: BlockId,
+        hash: String,
+        path: String,
+    },
     /// The ▾ beside a Git block's Commit button.
     GitCommitMenu(BlockId),
     /// A row of a Git block's Changes lists, by its list and its index in it.
@@ -254,15 +260,28 @@ impl Workspace {
                     base: git.default_branch.clone(),
                 }
             }
-            Target::GitCommit { block, ref hash } => Items::GitCommit {
+            Target::GitCommit { block, ref hash } => {
+                let git = self.space.git(block)?;
+                let commit = git.commits.iter().find(|c| c.hash == *hash)?.clone();
+                let s = &git.status;
+                // The newest commit of a branch, not on its upstream: it can be taken back.
+                let undo = s.oid.as_deref() == Some(commit.hash.as_str())
+                    && s.branch.is_some()
+                    && (s.upstream.is_none() || s.gone || s.ahead > 0);
+                Items::GitCommit {
+                    block,
+                    commit,
+                    undo,
+                }
+            }
+            Target::GitCommitFile {
                 block,
-                commit: self
-                    .space
-                    .git(block)?
-                    .commits
-                    .iter()
-                    .find(|c| c.hash == *hash)?
-                    .clone(),
+                ref hash,
+                ref path,
+            } => Items::GitCommitFile {
+                block,
+                hash: hash.clone(),
+                path: path.clone(),
             },
             Target::GitLine { block, row } => {
                 let p = self.space.git(block)?.diff();
@@ -417,6 +436,15 @@ enum Items {
     GitCommit {
         block: BlockId,
         commit: Commit,
+        /// HEAD's commit, not pushed: Undo this commit.
+        undo: bool,
+    },
+    // File history and Blame (next tasks) read `block` and `hash`.
+    #[allow(dead_code)]
+    GitCommitFile {
+        block: BlockId,
+        hash: String,
+        path: String,
     },
     GitBranch {
         block: BlockId,

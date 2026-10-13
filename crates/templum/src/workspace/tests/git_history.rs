@@ -55,19 +55,30 @@ fn history_lists_the_commits_newest_first_and_shows_one_with_its_files(cx: &mut 
         let shown = g.shown.as_ref().expect("shown");
         assert_eq!(shown.commit.subject, "Third");
         assert_eq!(shown.files.len(), 1);
-        assert_eq!(shown.files[0].path, "a.txt");
+        let p = g.diff();
+        assert_eq!(p.title(), format!("Commit {} · 1 file", shown.commit.short));
+        assert!(
+            p.files[0].diff.hunks[0]
+                .lines
+                .iter()
+                .any(|l| l.text == "two"),
+            "its whole diff"
+        );
     });
     cx.update_window(handle, |_, window, cx| {
         window.click(
             gpui_kit::ElementId::Name(format!("git-commit-file-{n}-0").into()),
             cx,
-        )
+        );
+        window.render_frame(cx);
+        window.click(("git-commit-back", n), cx);
+        window.render_frame(cx);
     })
     .unwrap();
-    settle(handle, cx);
-    let diff = git_of(&ws, cx, id, |g| g.commit_diff.clone());
-    let text = ws.read_with(cx, |_, cx| diff.read(cx).value().to_string());
-    assert!(text.contains("+two"), "{text}");
+    git_of(&ws, cx, id, |g| {
+        assert!(g.shown.is_none(), "back to the list");
+        assert!(g.history_panel.files.is_empty());
+    });
 }
 
 #[gpui_kit::test]
@@ -139,7 +150,8 @@ fn a_commits_menu_branches_from_it_tags_it_and_copies_its_hash(cx: &mut TestAppC
     let (handle, ws) = open(cx);
     let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
     let first = git_of(&ws, cx, id, |g| g.commits[1].hash.clone());
-    // Checkout…, New branch from here…, Create tag…, Revert…, Copy hash.
+    // Checkout…, New branch here…, Create tag…, Revert…, [Undo this commit: HEAD, not pushed],
+    // Copy hash, Copy message.
     let menu = |cx: &mut TestAppContext, row: usize, item: usize| {
         cx.update_window(handle, |_, window, cx| {
             window.right_click(("git-commit", row), cx);
@@ -182,12 +194,61 @@ fn a_commits_menu_branches_from_it_tags_it_and_copies_its_hash(cx: &mut TestAppC
             g.commits[0].refs
         );
     });
-    menu(cx, 0, 4);
+    // Row 0 is `first` now (feat points at it), HEAD with no upstream: Undo this commit is 4.
+    menu(cx, 0, 5);
     let text = cx
         .read_from_clipboard()
         .and_then(|c| c.text())
         .unwrap_or_default();
     assert_eq!(text, first);
+}
+
+#[gpui_kit::test]
+fn undo_this_commit_from_history_puts_it_back(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    commit_file(repo.path(), "b.txt", "b\n", "Second\n\nWhy.");
+    let (handle, ws) = open(cx);
+    let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
+    cx.update_window(handle, |_, window, cx| {
+        window.right_click(("git-commit", 0usize), cx);
+        window.render_frame(cx);
+        // Checkout…, New branch here…, Create tag…, Revert…, Undo this commit.
+        window.within("popup-menu").click(4usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["rev-list", "--count", "HEAD"]),
+        "1\n"
+    );
+    let summary = git_of(&ws, cx, id, |g| {
+        assert_eq!(g.status.staged().len(), 1, "its changes stay staged");
+        g.summary.clone()
+    });
+    ws.read_with(cx, |_, cx| assert_eq!(summary.read(cx).value(), "Second"));
+}
+
+#[gpui_kit::test]
+fn copy_message_copies_the_subject_and_the_body(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    let _remote = add_remote(repo.path());
+    commit_file(repo.path(), "b.txt", "b\n", "Second\n\nWhy it is.");
+    git_run(repo.path(), &["push", "-q"]);
+    let (handle, ws) = open(cx);
+    let _id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
+    cx.update_window(handle, |_, window, cx| {
+        window.right_click(("git-commit", 0usize), cx);
+        window.render_frame(cx);
+        // Pushed: no Undo. Checkout…, New branch here…, Create tag…, Revert…, Copy hash, Copy message.
+        window.within("popup-menu").click(5usize, cx);
+    })
+    .unwrap();
+    let text = cx
+        .read_from_clipboard()
+        .and_then(|c| c.text())
+        .unwrap_or_default();
+    assert_eq!(text, "Second\n\nWhy it is.");
 }
 
 /// Reads asked while another runs wait for it (spec §8: one at a time per block, the second
@@ -550,13 +611,11 @@ fn a_commits_file_diff_survives_the_two_second_read(cx: &mut TestAppContext) {
     })
     .unwrap();
     settle(handle, cx);
-    let diff = git_of(&ws, cx, id, |g| g.commit_diff.clone());
-    let text =
-        |cx: &mut TestAppContext| ws.read_with(cx, |_, cx| diff.read(cx).value().to_string());
-    assert!(text(cx).contains("+two"));
+    let files = |cx: &mut TestAppContext| git_of(&ws, cx, id, |g| g.history_panel.files.len());
+    assert_eq!(files(cx), 1);
     cx.executor().advance_clock(crate::git_block::POLL);
     settle(handle, cx);
-    assert!(text(cx).contains("+two"), "still shown: {:?}", text(cx));
+    assert_eq!(files(cx), 1, "still shown");
 }
 
 /// `main` with one commit, and `feature` one commit ahead of it (unmerged).

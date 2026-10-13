@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use gpui_kit::component::input::{EditorState, InputEvent, InputState, TextareaState};
+use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, Context, ElementId, Entity, EntityId, FocusHandle, SharedString, Subscription,
@@ -74,7 +74,7 @@ pub(crate) struct Compare {
 pub(crate) struct Shown {
     pub commit: Commit,
     pub files: Vec<CommitFile>,
-    /// The file whose diff is shown.
+    /// The file last clicked: the panel scrolled to it.
     pub file: Option<String>,
 }
 
@@ -215,9 +215,6 @@ pub(crate) struct Git {
     pub panel: diff_view::DiffPanel,
     /// The Branches tab's comparison, while one shows.
     pub compare: Option<Compare>,
-    /// History's file diff: each tab has its own, so a 2-second read of the Changes diff never
-    /// replaces what another tab shows.
-    pub commit_diff: Entity<EditorState>,
     /// History's diff panel: the commit shown, or a file's blame.
     pub history_panel: diff_view::DiffPanel,
     /// Stashes' diff panel: the stash shown.
@@ -261,14 +258,6 @@ pub(crate) struct Git {
 
 impl Git {
     pub fn new(folder: PathBuf, tab: Tab, window: &mut Window, cx: &mut Context<Workspace>) -> Git {
-        let commit_diff = cx.new(|cx| {
-            EditorState::new(window, cx)
-                .language("diff")
-                .line_number(false)
-                .soft_wrap(false)
-                // Its fold icons have a fixed size, which breaks the layout at a zoom.
-                .folding(false)
-        });
         let summary = cx.new(|cx| InputState::new(window, cx).placeholder("Summary"));
         let description = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -340,7 +329,6 @@ impl Git {
             default_branch: None,
             panel: diff_view::DiffPanel::new(),
             compare: None,
-            commit_diff,
             history_panel: diff_view::DiffPanel::range(String::new())
                 .with_hint("Click a commit to see its changes"),
             stash_panel: diff_view::DiffPanel::range(String::new())

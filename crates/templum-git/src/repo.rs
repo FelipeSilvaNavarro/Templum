@@ -1057,25 +1057,6 @@ impl Repo {
         Ok(parse::parse_name_status(&out))
     }
 
-    /// One file's diff in a commit.
-    pub fn commit_diff(&self, hash: &str, file: &CommitFile) -> Result<String, GitError> {
-        let mut args = vec![
-            "diff-tree",
-            "--root",
-            "--no-commit-id",
-            "-p",
-            "-M",
-            "--no-color",
-            hash,
-            "--",
-        ];
-        if let Some(from) = &file.from {
-            args.push(from);
-        }
-        args.push(&file.path);
-        self.text(&args)
-    }
-
     /// Detached at `hash`.
     pub fn checkout_commit(&self, hash: &str) -> Result<(), GitError> {
         self.run(&["checkout", "-q", "--detach", hash]).map(drop)

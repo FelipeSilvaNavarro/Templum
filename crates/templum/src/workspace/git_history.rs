@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use gpui_kit::{Context, Window};
 use templum_canvas::BlockId;
+use templum_git::{Commit, CommitFile, FileDiff, GitError};
 
 use crate::git_block::{self, Tab, diff_view::Source};
 use crate::prompt;
@@ -183,7 +184,7 @@ impl Workspace {
     }
 
     /// The diff on screen, read again (Ignore whitespace changed): the working changes, the
-    /// comparison, or the stash shown.
+    /// comparison, the commit shown, or the stash shown.
     pub(crate) fn reload_shown_diff(
         &mut self,
         id: BlockId,
@@ -194,6 +195,12 @@ impl Workspace {
             return;
         };
         match git.tab {
+            Tab::History => {
+                if let Some(shown) = &git.shown {
+                    let hash = shown.commit.hash.clone();
+                    self.show_commit(id, hash, window, cx)
+                }
+            }
             Tab::Stashes => {
                 if let Some(index) = git.stash_shown {
                     self.show_stash(id, index, window, cx)
@@ -245,7 +252,8 @@ impl Workspace {
         );
     }
 
-    /// Shows a commit's message and files on the right of History.
+    /// A commit clicked (in the list, or a blame's group): the left column shows its message
+    /// and files, the panel its whole diff (against its first parent).
     pub(crate) fn show_commit(
         &mut self,
         id: BlockId,
@@ -256,74 +264,73 @@ impl Workspace {
         let Some(git) = self.space.git(id) else {
             return;
         };
-        let Some(commit) = git.commits.iter().find(|c| c.hash == hash).cloned() else {
-            return;
-        };
         let Some(repo) = git.repo().cloned() else {
             return;
         };
-        let files_of = hash.clone();
+        let loaded = git.commits.iter().find(|c| c.hash == hash).cloned();
+        let ignore_ws = git.history_panel.ignore_ws;
         self.git_job(
             self.here(id),
-            move || repo.commit_files(&files_of),
-            move |ws, at, files, window, cx| {
+            move || -> Result<(Commit, Vec<CommitFile>, Vec<FileDiff>), GitError> {
+                let commit = match loaded {
+                    Some(c) => c,
+                    None => repo.commit_info(&hash)?,
+                };
+                Ok((
+                    commit,
+                    repo.commit_files(&hash)?,
+                    repo.commit_changes(&hash, ignore_ws)?,
+                ))
+            },
+            move |ws, at, read, _, cx| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
                 };
-                match files {
-                    Ok(files) => {
+                match read {
+                    Ok((commit, files, diffs)) => {
+                        git.history_panel.source = Source::Range {
+                            title: format!("Commit {}", commit.short),
+                        };
+                        git.history_panel.set_files(diffs);
                         git.shown = Some(git_block::Shown {
                             commit,
                             files,
                             file: None,
                         });
-                        let view = git.commit_diff.clone();
-                        view.update(cx, |d, cx| d.set_value("", window, cx));
+                        git.error = None;
                     }
                     Err(e) => git.error = Some(e.to_string()),
                 }
+                cx.notify();
             },
             window,
             cx,
         );
     }
 
-    /// Shows one file's diff in the shown commit.
-    pub(crate) fn show_commit_file(
-        &mut self,
-        id: BlockId,
-        path: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// The commit column's ←: back to the list, the panel empty.
+    pub(crate) fn hide_commit(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        if let Some(git) = self.space.git_mut(id) {
+            git.shown = None;
+            git.history_panel.set_files(Vec::new());
+            cx.notify();
+        }
+    }
+
+    /// A file of the commit shown: the panel scrolls to it.
+    pub(crate) fn show_commit_file(&mut self, id: BlockId, path: String, cx: &mut Context<Self>) {
         let Some(git) = self.space.git_mut(id) else {
             return;
         };
-        let Some(shown) = &mut git.shown else {
-            return;
-        };
-        let Some(file) = shown.files.iter().find(|f| f.path == path).cloned() else {
-            return;
-        };
-        shown.file = Some(path);
-        let hash = shown.commit.hash.clone();
-        let Some(repo) = git.repo().cloned() else {
-            return;
-        };
-        self.git_job(
-            self.here(id),
-            move || repo.commit_diff(&hash, &file),
-            |ws, at, diff, window, cx| {
-                let Some(git) = ws.git_at(&at) else {
-                    return;
-                };
-                let text = diff.unwrap_or_else(|e| e.to_string());
-                let view = git.commit_diff.clone();
-                view.update(cx, |d, cx| d.set_value(text, window, cx));
-            },
-            window,
-            cx,
-        );
+        if let Some(ix) = git.history_panel.row_of(false, &path) {
+            git.history_panel
+                .scroll
+                .scroll_to_item(ix, gpui_kit::ScrollStrategy::Top);
+        }
+        if let Some(shown) = git.shown.as_mut() {
+            shown.file = Some(path);
+        }
+        cx.notify();
     }
 
     /// Checkout… on a commit: warns about the detached state first.
