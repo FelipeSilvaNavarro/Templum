@@ -30,6 +30,9 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
   [ADR-0002](docs/adr/0002-ui-framework.md) instead of guessing APIs. The `spike/gpui` branch has a working
   canvas-of-terminals prototype to learn from.
 - **Tests:** every logic change ships a test that fails without it. For UI-only changes, state how you verified them.
+- **Minor issues left for later:** every minor deferred by a review, a plan or a fix goes into
+  [docs/minors.md](docs/minors.md), under its area, with where it is, what a person sees and a way to fix it. When one
+  is fixed, delete its entry in the same commit as the fix.
 - **No `unsafe`:** the workspace denies it. If it is truly unavoidable, use a local `#[allow(unsafe_code)]` with a
   `// SAFETY:` comment.
 - **Branches:** `main` and `development`. Commit on `development`, never on `main`, in small commits titled
