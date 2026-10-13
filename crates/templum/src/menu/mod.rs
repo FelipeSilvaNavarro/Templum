@@ -452,8 +452,6 @@ enum Items {
     },
     GitCommitFile {
         block: BlockId,
-        // Blame (next task) reads it.
-        #[allow(dead_code)]
         hash: String,
         path: String,
     },

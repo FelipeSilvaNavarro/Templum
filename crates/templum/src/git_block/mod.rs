@@ -248,6 +248,10 @@ pub(crate) struct Git {
     pub file: Option<String>,
     /// The file at each loaded commit (a rename's old path before it), in a file's history.
     pub file_paths: Rc<Vec<CommitFile>>,
+    /// History's panel shows `file`'s blame while no commit is shown.
+    pub blame: bool,
+    /// The commit it is blamed at; None: the working file.
+    pub blame_at: Option<String>,
     pub search: Entity<InputState>,
     /// Where History's search looks.
     pub search_mode: templum_git::Search,
@@ -373,6 +377,8 @@ impl Git {
             all_branches: false,
             file: None,
             file_paths: Rc::new(Vec::new()),
+            blame: false,
+            blame_at: None,
             search,
             search_mode: templum_git::Search::default(),
             searched: String::new(),

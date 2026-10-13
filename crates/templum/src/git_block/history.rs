@@ -192,6 +192,14 @@ fn list_column(
                     .child(format!("History of {path}")),
             )
             .child(
+                small(("git-blame-toggle", n), "Blame", ui, z)
+                    .when(git.blame, |el| el.bg(ui.card))
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.toggle_blame(id, window, cx)
+                    }))
+                    .test_support(),
+            )
+            .child(
                 icon_button(("git-file-clear", n), IconName::Close, ui, z)
                     .tooltip(|window, cx| Tooltip::new("The whole history").build(window, cx))
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
@@ -300,22 +308,25 @@ fn commit_column(
                 .test_support()
         })
         .collect::<Vec<_>>();
-    let top = bar(ui, z)
-        .child(
-            icon_button(("git-commit-back", n), IconName::ArrowLeft, ui, z)
-                .tooltip(|window, cx| Tooltip::new("Back to the commits").build(window, cx))
-                .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.hide_commit(id, cx)))
-                .test_support(),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w(px(0.0))
-                .truncate()
-                .text_color(ui.title)
-                .child(format!("Commit {}", c.short)),
-        )
-        .child(fold_button(id, ui, z, cx));
+    let top =
+        bar(ui, z)
+            .child(
+                icon_button(("git-commit-back", n), IconName::ArrowLeft, ui, z)
+                    .tooltip(|window, cx| Tooltip::new("Back to the commits").build(window, cx))
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.hide_commit(id, window, cx)
+                    }))
+                    .test_support(),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
+                    .text_color(ui.title)
+                    .child(format!("Commit {}", c.short)),
+            )
+            .child(fold_button(id, ui, z, cx));
     let details = div()
         .flex()
         .flex_col()

@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
@@ -320,6 +320,8 @@ impl Workspace {
         };
         git.tab = Tab::History;
         git.file = Some(path);
+        git.blame = false;
+        git.blame_at = None;
         git.shown = None;
         git.history_panel.set_files(Vec::new());
         cx.notify();
@@ -340,6 +342,8 @@ impl Workspace {
         };
         git.file = None;
         git.file_paths = Rc::new(Vec::new());
+        git.blame = false;
+        git.blame_at = None;
         git.shown = None;
         git.history_panel.set_files(Vec::new());
         cx.notify();
@@ -493,6 +497,7 @@ impl Workspace {
         &mut self,
         editor: BlockId,
         path: PathBuf,
+        blame: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -533,7 +538,11 @@ impl Workspace {
                 id
             }
         };
-        self.file_history(id, rel, window, cx);
+        if blame {
+            self.blame_file(id, rel, None, window, cx);
+        } else {
+            self.file_history(id, rel, window, cx);
+        }
         let space = self.space.id.clone();
         self.reveal(&space, id, window, cx);
     }
@@ -672,13 +681,122 @@ impl Workspace {
         );
     }
 
-    /// The commit column's ←: back to the list, the panel empty.
-    pub(crate) fn hide_commit(&mut self, id: BlockId, cx: &mut Context<Self>) {
-        if let Some(git) = self.space.git_mut(id) {
-            git.shown = None;
+    /// The commit column's ←: back to the list, the panel empty (or the file's blame again).
+    pub(crate) fn hide_commit(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        git.shown = None;
+        let blame = git.blame;
+        if !blame {
             git.history_panel.set_files(Vec::new());
-            cx.notify();
         }
+        cx.notify();
+        if blame {
+            let at = self.here(id);
+            self.load_blame(at, window, cx);
+        }
+    }
+
+    /// Blame: History narrowed to the file, its panel showing who last changed each line (at
+    /// `rev`, or in the working tree). A block still looking its repository up reads it once
+    /// found (`refresh_lists_at` loads the blame while `blame` is on).
+    pub(crate) fn blame_file(
+        &mut self,
+        id: BlockId,
+        path: String,
+        rev: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.file_history(id, path, window, cx);
+        if let Some(git) = self.space.git_mut(id) {
+            git.blame = true;
+            git.blame_at = rev;
+        }
+        let at = self.here(id);
+        self.load_blame(at, window, cx);
+    }
+
+    /// The file's chip's Blame: off, the panel empties.
+    pub(crate) fn toggle_blame(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        if git.file.is_none() {
+            return;
+        }
+        if git.blame {
+            git.blame = false;
+            git.blame_at = None;
+            if git.shown.is_none() {
+                git.history_panel.set_files(Vec::new());
+            }
+            cx.notify();
+        } else {
+            git.blame = true;
+            git.blame_at = None;
+            git.shown = None;
+            cx.notify();
+            let at = self.here(id);
+            self.load_blame(at, window, cx);
+        }
+    }
+
+    /// Reads the blame of History's file into its panel.
+    pub(crate) fn load_blame(&mut self, at: GitAt, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.git_at(&at) else {
+            return;
+        };
+        let (Some(repo), Some(path), true) = (git.repo().cloned(), git.file.clone(), git.blame)
+        else {
+            return;
+        };
+        let rev = git.blame_at.clone();
+        let asked = (path.clone(), rev.clone());
+        self.git_job(
+            at,
+            move || repo.blame(&path, rev.as_deref()),
+            move |ws, at, lines, _, cx| {
+                let Some(git) = ws.git_at(&at) else {
+                    return;
+                };
+                // Turned off, another file, or a commit opened meanwhile: not shown.
+                if !git.blame
+                    || git.shown.is_some()
+                    || (git.file.as_ref(), git.blame_at.as_ref())
+                        != (Some(&asked.0), asked.1.as_ref())
+                {
+                    return;
+                }
+                match lines {
+                    Ok(lines) => {
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs() as i64);
+                        let (file, hashes) = templum_git::blame::blame_diff(&asked.0, &lines, now);
+                        let title = match &asked.1 {
+                            Some(rev) => {
+                                format!("Blame · {} at {}", asked.0, &rev[..rev.len().min(7)])
+                            }
+                            None => format!("Blame · {}", asked.0),
+                        };
+                        git.history_panel.source = Source::Blame { title, hashes };
+                        git.history_panel.set_files(vec![file]);
+                        git.error = None;
+                    }
+                    Err(e) => git.error = Some(e.to_string()),
+                }
+                cx.notify();
+            },
+            window,
+            cx,
+        );
     }
 
     /// A file of the commit shown: the panel scrolls to it.

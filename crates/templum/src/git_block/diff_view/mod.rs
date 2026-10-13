@@ -47,6 +47,9 @@ pub(crate) enum Source {
     /// A read-only list of files, `title` naming it ("feature vs main · 7 commits"): no
     /// sections, no Stage or Discard, no whole-file folds.
     Range { title: String },
+    /// A file's blame: one hunk per group of lines from one commit, its heading naming it;
+    /// `hashes[hunk]` is that commit (a click opens it). Read-only, never Split.
+    Blame { title: String, hashes: Vec<String> },
 }
 
 pub(crate) struct DiffPanel {
@@ -266,6 +269,7 @@ impl DiffPanel {
                 format!("Working changes · {files} · +{added} −{removed}")
             }
             Source::Range { title } => format!("{title} · {files}"),
+            Source::Blame { title, .. } => title.clone(),
         }
     }
 

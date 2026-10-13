@@ -235,14 +235,17 @@ impl Items {
                 };
                 let mut menu = menu;
                 if let Some(p) = path.clone().filter(|_| !is_dir) {
-                    let (open, history) = (p.clone(), p.clone());
+                    let (open, history, blame) = (p.clone(), p.clone(), p.clone());
                     menu = menu
                         .item(item(ws, "Open", None, move |ws, window, cx| {
                             ws.open_file(block, &open, None, window, cx)
                         }))
                         .item(reveal(ws, p))
                         .item(item(ws, "File history", None, move |ws, window, cx| {
-                            ws.history_from_tree(block, history.clone(), window, cx)
+                            ws.history_from_tree(block, history.clone(), false, window, cx)
+                        }))
+                        .item(item(ws, "Blame", None, move |ws, window, cx| {
+                            ws.history_from_tree(block, blame.clone(), true, window, cx)
                         }));
                 }
                 if path.is_none() || is_dir {
@@ -525,10 +528,14 @@ impl Items {
                 // A new file has no history yet.
                 if list != List::Conflicts && entry.unstaged != Some(templum_git::Change::Untracked)
                 {
-                    let history = path.clone();
-                    menu = menu.item(item(ws, "File history", None, move |ws, window, cx| {
-                        ws.file_history(block, history.clone(), window, cx)
-                    }));
+                    let (history, blame) = (path.clone(), path.clone());
+                    menu = menu
+                        .item(item(ws, "File history", None, move |ws, window, cx| {
+                            ws.file_history(block, history.clone(), window, cx)
+                        }))
+                        .item(item(ws, "Blame", None, move |ws, window, cx| {
+                            ws.blame_file(block, blame.clone(), None, window, cx)
+                        }));
                 }
                 let (copy, ignore) = (path.clone(), path.clone());
                 menu.item(item(
@@ -654,10 +661,13 @@ impl Items {
                     ))
                 })
             }
-            Items::GitCommitFile { block, path, .. } => {
-                let history = path.clone();
+            Items::GitCommitFile { block, hash, path } => {
+                let (history, blame) = (path.clone(), path.clone());
                 menu.item(item(ws, "File history", None, move |ws, window, cx| {
                     ws.file_history(block, history.clone(), window, cx)
+                }))
+                .item(item(ws, "Blame", None, move |ws, window, cx| {
+                    ws.blame_file(block, blame.clone(), Some(hash.clone()), window, cx)
                 }))
                 .item(item(
                     ws,

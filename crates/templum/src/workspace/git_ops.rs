@@ -254,7 +254,13 @@ impl Workspace {
         self.load_default(at.clone(), window, cx);
         match tab {
             git_block::Tab::Changes => {}
-            git_block::Tab::History => self.load_history(at, 0, window, cx),
+            git_block::Tab::History => {
+                let blame = self.git_at(&at).is_some_and(|g| g.blame);
+                self.load_history(at.clone(), 0, window, cx);
+                if blame {
+                    self.load_blame(at, window, cx);
+                }
+            }
             git_block::Tab::Branches => {
                 let comparing = self.git_at(&at).is_some_and(|g| g.compare.is_some());
                 self.load_branches(at.clone(), window, cx);

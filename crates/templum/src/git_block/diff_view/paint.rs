@@ -19,7 +19,7 @@ use templum_git::conflict::Take;
 use templum_git::{Change, FileDiff, Kind};
 
 use super::select::display;
-use super::{Note, Row, Shaped, Shown, files_word};
+use super::{Note, Row, Shaped, Shown, Source, files_word};
 use crate::editor::human;
 use crate::git_block::widgets::{badge, icon_button, small};
 use crate::git_block::{FONT, words};
@@ -342,6 +342,15 @@ fn hunk_row(
     let busy = git.is_some_and(|g| g.acting > 0);
     let working = git.is_some_and(|g| g.diff().working());
     let by_hunk = working && s.diff.by_hunk() && git.is_some_and(|g| !g.diff().ignore_ws);
+    // A blame's group: its heading names the commit, and a click opens it (none for the lines
+    // not committed yet).
+    let blame = git.and_then(|g| match &g.diff().source {
+        Source::Blame { hashes, .. } => Some(hashes.get(hunk).cloned().unwrap_or_default()),
+        _ => None,
+    });
+    let opens = blame
+        .clone()
+        .filter(|h| !h.is_empty() && !h.bytes().all(|b| b == b'0'));
     let path = s.diff.path().to_string();
     let ids = |what: &str| ElementId::Name(format!("git-hunk-{what}-{n}-{ix}").into());
     // A conflict region's part: named after its marker's label, with Use this.
@@ -437,12 +446,18 @@ fn hunk_row(
                 .min_w(px(0.0))
                 .truncate()
                 .font_family(ws.cell.font.family.clone())
-                .child(if part {
+                .child(if part || blame.is_some() {
                     h.context.clone()
                 } else {
                     format!("@@ {}", h.title())
                 }),
         )
+        .when_some(opens, |el, hash| {
+            el.cursor_pointer()
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.show_commit(id, hash.clone(), window, cx)
+                }))
+        })
         .child({
             let tools = div().flex().gap(px(4.0 * z)).children(buttons);
             if on_cursor {

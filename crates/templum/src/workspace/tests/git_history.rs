@@ -933,7 +933,7 @@ fn file_history_from_an_editors_tree_opens_a_git_block(cx: &mut TestAppContext) 
     let file = repo.path().join("b.txt");
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.history_from_tree(editor, file.clone(), window, cx)
+            ws.history_from_tree(editor, file.clone(), false, window, cx)
         })
     })
     .unwrap();
@@ -953,7 +953,7 @@ fn file_history_from_an_editors_tree_opens_a_git_block(cx: &mut TestAppContext) 
     // Asked again: the same block, not a second one.
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.history_from_tree(editor, file.clone(), window, cx)
+            ws.history_from_tree(editor, file.clone(), false, window, cx)
         })
     })
     .unwrap();
@@ -987,5 +987,69 @@ fn file_history_from_a_changes_row(cx: &mut TestAppContext) {
         assert_eq!(g.tab, crate::git_block::Tab::History);
         assert_eq!(g.file.as_deref(), Some("b.txt"));
         assert_eq!(g.commits.len(), 3);
+    });
+}
+
+#[gpui_kit::test]
+fn blame_groups_lines_by_commit_and_a_click_opens_it(cx: &mut TestAppContext) {
+    use crate::git_block::diff_view::{Row, Source};
+    let repo = git_repo();
+    commit_file(repo.path(), "a.txt", "one\ntwo\n", "first");
+    commit_file(repo.path(), "a.txt", "one\nTWO\n", "second");
+    std::fs::write(repo.path().join("a.txt"), "one\nTWO\nthree\n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.blame_file(id, "a.txt".to_string(), None, window, cx)
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    let rows = git_of(&ws, cx, id, |g| {
+        assert_eq!(g.tab, crate::git_block::Tab::History);
+        let p = g.diff();
+        assert!(matches!(&p.source, Source::Blame { hashes, .. } if hashes.len() == 3));
+        let h = &p.files[0].diff.hunks;
+        assert!(h[0].context.ends_with("· first"));
+        assert!(h[1].context.ends_with("· second"));
+        assert_eq!(h[2].context, "Not committed yet");
+        (*p.rows).clone()
+    });
+    let at = |hunk: usize| {
+        rows.iter()
+            .position(|r| matches!(r, Row::Hunk { hunk: h, .. } if *h == hunk))
+            .unwrap()
+    };
+    // Not committed: nothing to open.
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-hunk", at(2)), cx)
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert!(g.shown.is_none());
+        assert!(g.error.is_none(), "nothing was asked of git: {:?}", g.error);
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-hunk", at(1)), cx)
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(
+            g.shown.as_ref().map(|s| s.commit.subject.as_str()),
+            Some("second")
+        )
+    });
+    // Back: the blame again.
+    let n = id.0 as usize;
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-commit-back", n), cx)
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert!(matches!(g.diff().source, Source::Blame { .. }))
     });
 }
