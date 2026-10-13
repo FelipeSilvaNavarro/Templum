@@ -1590,3 +1590,41 @@ fn diverged_sync_joined_by_a_merge() {
     );
     assert_eq!(repo.status().unwrap().ahead, 0);
 }
+
+#[test]
+fn a_comparison_is_what_the_branch_has_and_a_commits_own_diff() {
+    let (dir, repo) = two_branches();
+    // feat gets a second commit; main moves on after feat left it.
+    write(dir.path(), "a.txt", "one\nmain moved\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("main moved", false).unwrap();
+    repo.run(&["checkout", "-q", "feat"]).unwrap();
+    write(dir.path(), "c.txt", "c\n");
+    repo.stage(&["c.txt"]).unwrap();
+    repo.commit("c", false).unwrap();
+    let log = repo.compare_log("main", "feat").unwrap();
+    let subjects: Vec<&str> = log.iter().map(|c| c.subject.as_str()).collect();
+    assert_eq!(subjects, ["c", "b"]);
+    let diff = repo.range_diff("main", "feat", false).unwrap();
+    let paths: Vec<&str> = diff.iter().map(|f| f.path()).collect();
+    assert_eq!(paths, ["b.txt", "c.txt"], "not main's own change to a.txt");
+    let one = repo.commit_changes(&log[0].hash, false).unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].path(), "c.txt");
+    // The first commit has no parent; a merge is read against its first parent.
+    let root = repo.run(&["rev-list", "--max-parents=0", "HEAD"]).unwrap();
+    let root = String::from_utf8_lossy(&root).trim().to_string();
+    assert_eq!(
+        repo.commit_changes(&root, false).unwrap()[0].path(),
+        "a.txt"
+    );
+    repo.run(&["merge", "-q", "--no-edit", "main"]).unwrap();
+    let merge = repo.head().unwrap();
+    let merged = repo.commit_changes(&merge, false).unwrap();
+    assert_eq!(merged.len(), 1);
+    assert_eq!(
+        merged[0].path(),
+        "a.txt",
+        "what the merge brought onto feat"
+    );
+}

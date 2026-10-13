@@ -615,30 +615,79 @@ impl Repo {
         Ok(all)
     }
 
-    fn side_diff(
-        &self,
-        staged: bool,
-        ignore_whitespace: bool,
-        whole: &[(bool, String)],
-    ) -> Result<Vec<FileDiff>, GitError> {
-        // quotePath off: a name with non-ASCII letters comes as itself, not as "caf\303\251".
-        // The prefixes are set, and no external diff runs: a user's diff.mnemonicPrefix,
-        // diff.noprefix or diff.external would change what the parser reads.
+    /// What every diff read passes: names as themselves (quotePath off: not as
+    /// "caf\303\251"), fixed prefixes and no external diff (a user's diff.mnemonicPrefix,
+    /// diff.noprefix or diff.external would change what the parser reads), renames found; `-w`
+    /// with `ignore_whitespace`. `command` is "diff" or "diff-tree".
+    fn diff_args(command: &'static str, ignore_whitespace: bool) -> Vec<&'static str> {
         let mut args = vec![
             "-c",
             "core.quotePath=false",
-            "diff",
+            command,
             "--no-color",
             "--no-ext-diff",
             "--src-prefix=a/",
             "--dst-prefix=b/",
             "-M",
         ];
-        if staged {
-            args.push("--cached");
-        }
         if ignore_whitespace {
             args.push("-w");
+        }
+        args
+    }
+
+    /// The commits `branch` has that `base` hasn't (`git log base..branch`), newest first.
+    pub fn compare_log(&self, base: &str, branch: &str) -> Result<Vec<Commit>, GitError> {
+        let format = format!("--format={}", parse::LOG_FORMAT);
+        let date = format!("--date={}", parse::LOG_DATE);
+        let range = format!("{base}..{branch}");
+        let out = self.run(&["log", "-z", &format, &date, &range, "--"])?;
+        Ok(parse::parse_log(&out))
+    }
+
+    /// What `branch` changed since it left `base` (`git diff base...branch`), as a pull request
+    /// shows it.
+    pub fn range_diff(
+        &self,
+        base: &str,
+        branch: &str,
+        ignore_whitespace: bool,
+    ) -> Result<Vec<FileDiff>, GitError> {
+        let range = format!("{base}...{branch}");
+        let mut args = Self::diff_args("diff", ignore_whitespace);
+        args.push(&range);
+        args.push("--");
+        Ok(parse_diff(&self.text(&args)?, DIFF_LIMIT))
+    }
+
+    /// One commit's changes: against its first parent (a merge's too), a root commit's against
+    /// nothing.
+    pub fn commit_changes(
+        &self,
+        hash: &str,
+        ignore_whitespace: bool,
+    ) -> Result<Vec<FileDiff>, GitError> {
+        let mut args = Self::diff_args("diff-tree", ignore_whitespace);
+        args.extend([
+            "-p",
+            "-r",
+            "--root",
+            "--no-commit-id",
+            "--diff-merges=first-parent",
+            hash,
+        ]);
+        Ok(parse_diff(&self.text(&args)?, DIFF_LIMIT))
+    }
+
+    fn side_diff(
+        &self,
+        staged: bool,
+        ignore_whitespace: bool,
+        whole: &[(bool, String)],
+    ) -> Result<Vec<FileDiff>, GitError> {
+        let mut args = Self::diff_args("diff", ignore_whitespace);
+        if staged {
+            args.push("--cached");
         }
         let mut files = parse_diff(&self.text(&args)?, DIFF_LIMIT);
         for (_, path) in whole.iter().filter(|(s, _)| *s == staged) {
