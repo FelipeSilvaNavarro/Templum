@@ -567,7 +567,20 @@ impl Repo {
         ignore_whitespace: bool,
         whole: &[(bool, String)],
     ) -> Result<WorkingDiff, GitError> {
-        let mut unstaged = self.side_diff(false, ignore_whitespace, whole)?;
+        // Conflicted files first, region by region (git's own diff of them is a combined one,
+        // which the parser skips).
+        let mut unstaged: Vec<FileDiff> = status
+            .conflicts()
+            .iter()
+            .filter_map(|e| {
+                let bytes = std::fs::read(self.root.join(&e.path)).ok()?;
+                if bytes.len() > DIFF_LIMIT {
+                    return None;
+                }
+                crate::conflict::conflict_diff(&e.path, &bytes)
+            })
+            .collect();
+        unstaged.extend(self.side_diff(false, ignore_whitespace, whole)?);
         // An agent can make thousands of new files (a build, an unpacked folder): one read
         // takes the first ones, the others are listed unread until asked for.
         let (mut read, mut bytes) = (0, 0u64);

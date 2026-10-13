@@ -247,13 +247,21 @@ fn a_whole_file_is_read_with_every_line_as_context() {
 }
 
 #[test]
-fn a_conflicted_file_is_left_out_of_the_working_diff() {
+fn a_conflicted_file_comes_first_with_its_regions() {
     let (dir, repo) = conflicted();
     write(dir.path(), "other.txt", "x\n");
     let s = repo.status().unwrap();
     let d = repo.working_diff(&s, false, &[]).unwrap();
     let paths: Vec<&str> = d.unstaged.iter().map(|f| f.path()).collect();
-    assert_eq!(paths, ["other.txt"], "a.txt's combined diff is skipped");
+    assert_eq!(paths, ["a.txt", "other.txt"], "conflicts first");
+    let a = &d.unstaged[0];
+    assert_eq!(a.status, Change::Conflict);
+    assert_eq!(
+        (a.hunks[0].context.as_str(), a.hunks[1].context.as_str()),
+        ("HEAD", "topic")
+    );
+    assert_eq!(a.hunks[0].lines[0].text, "main");
+    assert_eq!(a.hunks[1].lines[0].text, "topic");
 }
 
 #[test]

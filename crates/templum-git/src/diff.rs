@@ -92,13 +92,15 @@ impl FileDiff {
     /// A hunk of it can be staged, unstaged or discarded alone. Not a new or deleted file (its
     /// one hunk is the whole file: the file's buttons do it), nor a binary, a file too large or
     /// one not read; nor one whose text isn't UTF-8 (read with U+FFFD in place of its bytes, a
-    /// patch would write those back: `git add` takes the whole file byte for byte instead).
+    /// patch would write those back: `git add` takes the whole file byte for byte instead);
+    /// nor a conflicted file: its hunks are the parts of its regions.
     pub fn by_hunk(&self) -> bool {
         self.old_path.is_some()
             && self.new_path.is_some()
             && !self.binary
             && !self.too_large
             && !self.unread
+            && self.status != Change::Conflict
             && !self
                 .hunks
                 .iter()

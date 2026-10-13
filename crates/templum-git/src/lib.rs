@@ -2,6 +2,7 @@
 //! (`status --porcelain=v2 -z`, a log record format, `for-each-ref`), parsed into typed values.
 //! No UI, no library binding: credentials and SSH work as they do in the user's terminal.
 
+pub mod conflict;
 mod diff;
 mod parse;
 mod repo;
