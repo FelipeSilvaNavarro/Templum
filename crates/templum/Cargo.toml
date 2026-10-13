@@ -34,6 +34,8 @@ serde_json = "1"
 # Already in the tree (GPUI's): round caps and joins for strokes. GPUI re-exports StrokeOptions
 # but not lyon's LineCap and LineJoin.
 lyon_tessellation = "1"
+# Already in the tree: an editor's files for Ctrl+P, as .gitignore leaves them.
+ignore = "0.4"
 
 [dev-dependencies]
 gpui-kit = { version = "=0.7.1", features = ["test-support"] }

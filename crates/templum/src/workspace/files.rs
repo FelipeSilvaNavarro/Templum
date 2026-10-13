@@ -1,11 +1,15 @@
 //! Editor blocks: their folder, their tabs, and saving and reloading their files.
 
+use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
+use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::input::{EditorState, Position};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::{Context, Entity, Window};
+use gpui_kit::prelude::*;
+use gpui_kit::{Context, Entity, SharedString, Window, px};
 use templum_canvas::{BlockId, Point, Rect};
 
 use crate::editor::{self, Editor};
@@ -530,6 +534,52 @@ impl Workspace {
         self.reveal(&space, id, window, cx);
     }
 
+    /// The `open_file` command: the focused editor's files, found by typing part of a name;
+    /// Enter or a click opens the one chosen.
+    pub(super) fn open_file_by_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(block) = self.focused_editor() else {
+            return;
+        };
+        let Some(folder) = self.space.editor(block).map(|e| e.folder.clone()) else {
+            return;
+        };
+        let files = editor::files_in(&folder, editor::FILES_CAP);
+        let state = cx.new(|cx| CommandState::new(window, cx));
+        let ws = cx.entity();
+        let palette = state.clone();
+        // What the query picks, kept until it changes: the dialog is drawn on every frame.
+        let picked: Rc<RefCell<Option<Picked>>> = Rc::default();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let query = palette.read(cx).query(cx);
+            let mut cache = picked.borrow_mut();
+            if cache.as_ref().is_none_or(|(q, _)| *q != query) {
+                let found = editor::pick(&files, &query, editor::PICKED);
+                *cache = Some((query, found.into_iter().map(String::from).collect()));
+            }
+            let shown = cache.as_ref().map_or(Vec::new(), |(_, f)| f.clone());
+            drop(cache);
+            let items = shown
+                .iter()
+                .map(|file| CommandItem::new().label(file.clone()));
+            let (ws, folder) = (ws.clone(), folder.clone());
+            dialog.title("Open a file").w(px(560.0)).child(
+                Command::new(&palette)
+                    .items(items)
+                    // The list above is already the query's: no second filter.
+                    .filterable(false)
+                    .placeholder("Type part of a file's name")
+                    .on_confirm(move |at, window, cx| {
+                        let Some(file) = shown.get(at.row).map(|f| folder.join(f)) else {
+                            return;
+                        };
+                        window.close_dialog(cx);
+                        ws.update(cx, |ws, cx| ws.open_file(block, &file, None, window, cx));
+                    }),
+            )
+        });
+        state.update(cx, |state, cx| state.focus(window, cx));
+    }
+
     /// The `go_to_line` command: a line number, then the cursor goes there.
     pub(super) fn go_to_line(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(block) = self.focused_editor() else {
@@ -570,3 +620,6 @@ impl Workspace {
             .filter(|id| self.space.editor(*id).is_some())
     }
 }
+
+/// The file picker's query and the files it picks.
+type Picked = (SharedString, Vec<String>);

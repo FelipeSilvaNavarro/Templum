@@ -486,3 +486,59 @@ fn the_editor_menu_points_it_at_another_folder(cx: &mut TestAppContext) {
         assert_eq!(ws.space.editor(id).unwrap().folder, other.path())
     });
 }
+
+#[cfg(target_os = "macos")]
+const OPEN_FILE: &str = "cmd-p";
+#[cfg(not(target_os = "macos"))]
+const OPEN_FILE: &str = "ctrl-p";
+
+#[gpui_kit::test]
+fn ctrl_p_opens_a_file_by_name(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    for f in ["src/lib.rs", "src/main.rs", "README.md"] {
+        std::fs::write(dir.path().join(f), "").unwrap();
+    }
+    let (handle, ws) = open(cx);
+    let id = open_editor(handle, &ws, cx, dir.path());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx));
+        window.press(OPEN_FILE, cx);
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "the picker");
+    })
+    .unwrap();
+    cx.simulate_input(handle, "lib");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    // The palette confirms once its own update is over.
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx), "closed");
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let tab = ws.space.editor(id).unwrap().active_tab().unwrap();
+        assert_eq!(tab.path, dir.path().join("src/lib.rs"));
+    });
+}
+
+/// Ctrl+P is the editor's only while one has the focus: a terminal gets it otherwise.
+#[gpui_kit::test]
+fn ctrl_p_reaches_a_focused_terminal(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    let (handle, _ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(OPEN_FILE, cx);
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+    })
+    .unwrap();
+}

@@ -568,6 +568,60 @@ pub(crate) fn keep_list_rows(scroll: &ScrollHandle, last: &Cell<f32>, row: f32) 
     }
 }
 
+/// How many of a folder's files Ctrl+P lists, and shows at once.
+pub(crate) const FILES_CAP: usize = 10_000;
+pub(crate) const PICKED: usize = 50;
+
+/// The files under `folder`, relative, those .gitignore leaves (and never `.git`'s), at most
+/// `cap`.
+// ponytail: walks on the UI thread; move it to the background if a large folder stalls.
+pub(crate) fn files_in(folder: &Path, cap: usize) -> Vec<String> {
+    ignore::WalkBuilder::new(folder)
+        .hidden(false)
+        .require_git(false)
+        .filter_entry(|e| e.file_name() != ".git")
+        .build()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+        .filter_map(|e| {
+            let rel = e.path().strip_prefix(folder).ok()?;
+            Some(rel.to_string_lossy().into_owned())
+        })
+        .take(cap)
+        .collect()
+}
+
+/// Up to `limit` of `files` for `query`, best first: its name holds the query, then its path
+/// does, then the query's letters are in it in order; shorter paths first. Any case.
+pub(crate) fn pick<'a>(files: &'a [String], query: &str, limit: usize) -> Vec<&'a str> {
+    let query = query.trim().to_lowercase();
+    let mut found: Vec<(u8, usize, &str)> = files
+        .iter()
+        .filter_map(|file| {
+            let path = file.to_lowercase();
+            let name = path.rsplit(['/', '\\']).next().unwrap_or(&path);
+            let rank = if name.contains(&query) {
+                0
+            } else if path.contains(&query) {
+                1
+            } else if in_order(&query, &path) {
+                2
+            } else {
+                return None;
+            };
+            Some((rank, file.len(), file.as_str()))
+        })
+        .collect();
+    found.sort();
+    found.into_iter().take(limit).map(|(_, _, f)| f).collect()
+}
+
+/// `query`'s characters appear in `text` in its order.
+fn in_order(query: &str, text: &str) -> bool {
+    let mut rest = text.chars();
+    query.chars().all(|q| rest.any(|c| c == q))
+}
+
 /// The tree's rows at zoom `z`, whole pixels: their scroll scales exactly with them.
 fn tree_row(z: f32) -> f32 {
     (ROW_H * z).round()
@@ -1033,6 +1087,57 @@ fn tab_el(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn files_in_respects_gitignore_skips_git_and_caps() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        for f in [
+            "src/lib.rs",
+            "src/main.rs",
+            "target/out.bin",
+            ".git/HEAD",
+            ".env",
+        ] {
+            let path = d.join(f);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "").unwrap();
+        }
+        std::fs::write(d.join(".gitignore"), "target/\n").unwrap();
+        let mut files = files_in(d, 100);
+        files.sort();
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            files,
+            [
+                ".env".to_string(),
+                ".gitignore".to_string(),
+                format!("src{sep}lib.rs"),
+                format!("src{sep}main.rs"),
+            ]
+        );
+        assert_eq!(files_in(d, 2).len(), 2);
+    }
+
+    #[test]
+    fn pick_prefers_name_matches_then_paths_then_letters_in_order() {
+        let files: Vec<String> = [
+            "docs/library.md",
+            "src/lib.rs",
+            "lib/x.rs",
+            "src/main.rs",
+            "README.md",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            pick(&files, "lib", 10),
+            ["src/lib.rs", "docs/library.md", "lib/x.rs"]
+        );
+        assert_eq!(pick(&files, "smr", 10), ["src/main.rs"]);
+        assert_eq!(pick(&files, "MAIN", 10), ["src/main.rs"]);
+        assert_eq!(pick(&files, "", 2), ["lib/x.rs", "README.md"]);
+    }
 
     #[test]
     fn folders_come_first_then_files_sorted_without_case() {

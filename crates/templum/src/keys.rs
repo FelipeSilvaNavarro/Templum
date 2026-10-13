@@ -31,12 +31,13 @@ pub(crate) enum Command {
     ToggleSidebar,
     GoToWaiting,
     Find,
+    OpenFile,
     Quit,
 }
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 27] = [
+    pub const ALL: [Command; 28] = [
         Command::NewTerminal,
         Command::NewKanban,
         Command::NewNote,
@@ -63,6 +64,7 @@ impl Command {
         Command::ToggleSidebar,
         Command::GoToWaiting,
         Command::Find,
+        Command::OpenFile,
         Command::Quit,
     ];
 
@@ -95,6 +97,7 @@ impl Command {
             Command::ToggleSidebar => "toggle_sidebar",
             Command::GoToWaiting => "go_to_waiting",
             Command::Find => "find",
+            Command::OpenFile => "open_file",
             Command::Quit => "quit",
         }
     }
@@ -128,13 +131,17 @@ impl Command {
             Command::ToggleSidebar => "Show or hide the sidebar",
             Command::GoToWaiting => "Go to the terminal waiting for you",
             Command::Find => "Find in the terminal",
+            Command::OpenFile => "Open a file by name (in an editor)",
             Command::Quit => "Quit Templum",
         }
     }
 
     /// Runs only while an editor block has the focus; otherwise its key goes to the terminal.
     pub fn editor_only(self) -> bool {
-        matches!(self, Command::CloseTab | Command::Save | Command::GoToLine)
+        matches!(
+            self,
+            Command::CloseTab | Command::Save | Command::GoToLine | Command::OpenFile
+        )
     }
 
     /// Shift+1 is reported as "!" on some layouts: fit_all binds both.
@@ -187,6 +194,8 @@ impl Command {
             (Command::GoToWaiting, true) => &["cmd-shift-a"],
             (Command::Find, false) => &["ctrl-shift-f"],
             (Command::Find, true) => &["cmd-f"],
+            (Command::OpenFile, false) => &["ctrl-p"],
+            (Command::OpenFile, true) => &["cmd-p"],
             (Command::Quit, false) => &["ctrl-shift-q"],
             (Command::Quit, true) => &["cmd-q"],
         }
@@ -231,6 +240,7 @@ pub(crate) struct KeysConfig {
     pub toggle_sidebar: Option<Keys>,
     pub go_to_waiting: Option<Keys>,
     pub find: Option<Keys>,
+    pub open_file: Option<Keys>,
     pub quit: Option<Keys>,
 }
 
@@ -263,6 +273,7 @@ impl KeysConfig {
             Command::ToggleSidebar => self.toggle_sidebar.as_ref(),
             Command::GoToWaiting => self.go_to_waiting.as_ref(),
             Command::Find => self.find.as_ref(),
+            Command::OpenFile => self.open_file.as_ref(),
             Command::Quit => self.quit.as_ref(),
         }
     }
@@ -295,6 +306,7 @@ impl KeysConfig {
             Command::ToggleSidebar => &mut self.toggle_sidebar,
             Command::GoToWaiting => &mut self.go_to_waiting,
             Command::Find => &mut self.find,
+            Command::OpenFile => &mut self.open_file,
             Command::Quit => &mut self.quit,
         };
         *slot = keys;

@@ -6808,6 +6808,7 @@ version = "0.1.1"
 dependencies = [
  "futures",
  "gpui-kit",
+ "ignore",
  "lyon_tessellation",
  "serde",
  "serde_json",
