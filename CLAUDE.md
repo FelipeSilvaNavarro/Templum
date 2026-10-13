@@ -1,1 +1,58 @@
-@AGENTS.md
+# AGENTS.md
+
+Instructions for AI coding agents working on Templum. Humans: see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## What this is
+
+A native Rust desktop app: an infinite pan/zoom canvas of terminal blocks, drawn on the GPU with no webview.
+Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Decisions live in [docs/adr/](docs/adr/).
+
+## Commands
+
+- Run: `cargo run -p templum`
+- Dev builds compile the dependencies optimized (`[profile.dev.package."*"]` in `Cargo.toml`), so `cargo run` is
+  usable; performance is judged on `--release`.
+- Everything CI checks:
+  `cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`
+- Licenses and advisories: `cargo deny check` (install with `cargo install cargo-deny --locked`)
+
+## Hard rules
+
+- **Crate boundaries:** only `crates/templum` may depend on the UI framework. `templum-canvas` and
+  `templum-terminal` stay UI-free and are tested headlessly.
+- **No speculative structure:** don't create crates, modules, traits or config "for later". Add them with the first
+  real code that needs them.
+- **No copyleft code:** never copy from GPL/AGPL projects (Zed `terminal`/`terminal_view`, Warp client, Zorite
+  outside `gpui-whiteboard`). The permissive references you may port from, with an attribution comment, are listed in
+  [CONTRIBUTING.md](CONTRIBUTING.md#licensing).
+- **Pinned UI framework:** `gpui-kit` is pinned with `=` and upgraded only in a dedicated PR. GPUI is pre-1.0 and
+  barely documented: read its source in `~/.cargo/registry/src/*/gpui-pre-*` and the lessons in
+  [ADR-0002](docs/adr/0002-ui-framework.md) instead of guessing APIs. The `spike/gpui` branch has a working
+  canvas-of-terminals prototype to learn from.
+- **Tests:** every logic change ships a test that fails without it. For UI-only changes, state how you verified them.
+- **Minor issues left for later:** every minor deferred by a review, a plan or a fix goes into
+  [docs/minors.md](docs/minors.md), under its area, with where it is, what a person sees and a way to fix it. When one
+  is fixed, delete its entry in the same commit as the fix.
+- **No `unsafe`:** the workspace denies it. If it is truly unavoidable, use a local `#[allow(unsafe_code)]` with a
+  `// SAFETY:` comment.
+- **Branches:** `main` and `development`. Commit on `development`, never on `main`, in small commits titled
+  with [Conventional Commits](https://www.conventionalcommits.org) and an imperative sentence:
+  `feat(canvas): zoom with the wheel while the hand is on`, `fix(terminal): …`, `perf: …`, `docs: …`, `test: …`,
+  `refactor: …`, `ci: …`, `chore: …`. The CHANGELOG is generated from `feat`, `fix` and `perf`, so write those for
+  someone who uses Templum. Contributors' pull requests target `development` and are squash-merged. The
+  maintainer opens the pull request from `development` to `main` and merges it with a **merge commit**, never a
+  squash, so both branches keep the same history.
+- **Releases:** only the maintainer cuts them, from an up-to-date `main`, with `./publish.sh patch|minor|major`
+  (`--dry-run` first). It bumps the version, writes the CHANGELOG section, tags and pushes; the tag runs
+  `.github/workflows/release.yml`, which builds every platform and publishes the GitHub Release.
+- **Performance:** pull requests that touch painting or `templum-terminal` run
+  `cargo run --release -p templum -- --bench` (Linux) and paste its JSON line in the PR description (and
+  `--bench-mixed`, an agent cockpit: TUIs, editors, Git, a note, kanban; and `--bench-zoom=<kind>` for a change to
+  zooming, run from a real project folder: `cd ~/Documents/github/DaemonQuest &&
+  ~/Documents/github/Templum/target/release/templum --bench-zoom=editor`; and `--bench-git` for a change to the Git
+  block's diff panel).
+  The bar is `p95_ms` <= 16.7 (see [ADR-0002](docs/adr/0002-ui-framework.md)).
+
+## Before saying "done"
+
+Run the full check command above and report its result honestly, failures included.
