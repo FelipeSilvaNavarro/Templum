@@ -6,18 +6,18 @@ use std::rc::Rc;
 use gpui_kit::{Context, Window};
 use templum_canvas::BlockId;
 use templum_git::graph::graph;
-use templum_git::{Commit, CommitFile, FileDiff, GitError, HistoryQuery};
+use templum_git::{Commit, CommitFile, FileDiff, GitError, HistoryQuery, Search};
 
 use crate::git_block::{self, Git, Tab, diff_view::Source};
 use crate::prompt;
 
 use super::{GitAt, Workspace};
 
-/// What History lists now.
+/// What History lists now: its branches and its search.
 fn history_query(git: &Git) -> HistoryQuery {
     HistoryQuery {
         all: git.all_branches,
-        search: None,
+        search: (!git.searched.is_empty()).then(|| (git.search_mode, git.searched.clone())),
     }
 }
 
@@ -303,6 +303,55 @@ impl Workspace {
         cx.notify();
         let at = self.here(id);
         self.load_history(at, 0, window, cx);
+    }
+
+    /// Enter in a History search field (or the field cleared): that block's list read again.
+    pub(crate) fn search_from(
+        &mut self,
+        field: gpui_kit::EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.space.blocks.iter().find_map(|(id, b)| {
+            b.git()
+                .filter(|g| g.search.entity_id() == field)
+                .map(|_| *id)
+        }) else {
+            return;
+        };
+        self.run_search(id, window, cx);
+    }
+
+    pub(crate) fn run_search(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        let text = git.search.read(cx).value().trim().to_string();
+        git.searched = text;
+        git.shown = None;
+        cx.notify();
+        let at = self.here(id);
+        self.load_history(at, 0, window, cx);
+    }
+
+    /// A mode clicked: with a search on, it runs again in that mode.
+    pub(crate) fn set_search_mode(
+        &mut self,
+        id: BlockId,
+        mode: Search,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        git.search_mode = mode;
+        let again = !git.searched.is_empty();
+        cx.notify();
+        if again {
+            let at = self.here(id);
+            self.load_history(at, 0, window, cx);
+        }
     }
 
     /// A commit clicked (in the list, or a blame's group): the left column shows its message

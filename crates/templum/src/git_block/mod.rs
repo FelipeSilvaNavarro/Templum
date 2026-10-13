@@ -245,6 +245,10 @@ pub(crate) struct Git {
     /// History lists every branch, tag and remote branch.
     pub all_branches: bool,
     pub search: Entity<InputState>,
+    /// Where History's search looks.
+    pub search_mode: templum_git::Search,
+    /// The text History's list was read with; empty: no search.
+    pub searched: String,
     pub shown: Option<Shown>,
     /// A list read was asked while a command ran.
     pub pending_lists: bool,
@@ -304,13 +308,20 @@ impl Git {
                 },
             ),
         ];
-        let search =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search subject or author"));
-        let _search = cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify()
-            }
-        });
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search, then Enter"));
+        let from_search = search.entity_id();
+        let _search = cx.subscribe_in(
+            &search,
+            window,
+            move |ws, field, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { .. } => ws.search_from(from_search, window, cx),
+                // Cleared: the whole history back, without waiting for Enter.
+                InputEvent::Change if field.read(cx).value().trim().is_empty() => {
+                    ws.search_from(from_search, window, cx)
+                }
+                _ => {}
+            },
+        );
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter branches"));
         let _filter = cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
@@ -357,6 +368,8 @@ impl Git {
             unpushed: Rc::new(std::collections::HashSet::new()),
             all_branches: false,
             search,
+            search_mode: templum_git::Search::default(),
+            searched: String::new(),
             shown: None,
             pending_lists: false,
             branches: Vec::new(),
@@ -372,21 +385,6 @@ impl Git {
             _files_filter,
             _search,
         }
-    }
-
-    /// The commits matching the search (subject or author, without case): their indices.
-    pub fn filtered(&self, cx: &App) -> Vec<usize> {
-        let query = self.search.read(cx).value().trim().to_lowercase();
-        self.commits
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| {
-                query.is_empty()
-                    || c.subject.to_lowercase().contains(&query)
-                    || c.author.to_lowercase().contains(&query)
-            })
-            .map(|(i, _)| i)
-            .collect()
     }
 
     /// The summary, then a blank line and the description when there is one.

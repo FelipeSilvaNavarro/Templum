@@ -81,26 +81,95 @@ fn history_lists_the_commits_newest_first_and_shows_one_with_its_files(cx: &mut 
     });
 }
 
+/// Types `text` in History's search and presses Enter (an empty `text` clears the field).
+fn search(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+    text: &str,
+) {
+    let field = git_of(ws, cx, id, |g| g.search.clone());
+    cx.update_window(handle, |_, window, cx| {
+        field.update(cx, |s, cx| s.focus(window, cx));
+        window.press("ctrl-a", cx);
+        window.press("cmd-a", cx);
+        window.press("backspace", cx);
+        if !text.is_empty() {
+            window.input(text, cx);
+            window.press("enter", cx);
+        }
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+}
+
+fn subjects(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> Vec<String> {
+    git_of(ws, cx, id, |g| {
+        g.commits.iter().map(|c| c.subject.clone()).collect()
+    })
+}
+
 #[gpui_kit::test]
-fn the_search_filters_by_subject_and_author_without_case(cx: &mut TestAppContext) {
+fn search_modes_find_by_message_author_and_code(cx: &mut TestAppContext) {
     let repo = committed_repo();
-    commit_file(repo.path(), "b.txt", "b\n", "Second");
     git_run(repo.path(), &["config", "user.name", "Grace"]);
-    commit_file(repo.path(), "c.txt", "c\n", "Third");
+    commit_file(
+        repo.path(),
+        "p.rs",
+        "fn parse_line() {}\n",
+        "Read the input",
+    );
+    git_run(repo.path(), &["config", "user.name", "Ada"]);
+    commit_file(repo.path(), "q.rs", "fn other() {}\n", "Fix the parser");
     let (handle, ws) = open(cx);
     let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
-    let search = git_of(&ws, cx, id, |g| g.search.clone());
-    let filtered = |cx: &mut TestAppContext, text: &str| {
-        cx.update_window(handle, |_, window, cx| {
-            search.update(cx, |s, cx| s.set_value(text, window, cx));
-            window.render_frame(cx);
-        })
-        .unwrap();
-        ws.read_with(cx, |ws, cx| ws.space.git(id).unwrap().filtered(cx))
-    };
-    assert_eq!(filtered(cx, "SECOND"), [1]);
-    assert_eq!(filtered(cx, "grace"), [0]);
-    assert_eq!(filtered(cx, ""), [0, 1, 2]);
+    let n = id.0 as usize;
+    search(handle, &ws, cx, id, "PARSER");
+    assert_eq!(
+        subjects(&ws, cx, id),
+        ["Fix the parser"],
+        "messages, without case"
+    );
+    git_of(&ws, cx, id, |g| {
+        assert!(g.graph.is_empty(), "no graph over a search")
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-search-author", n), cx)
+    })
+    .unwrap();
+    settle(handle, cx);
+    search(handle, &ws, cx, id, "grace");
+    assert_eq!(subjects(&ws, cx, id), ["Read the input"]);
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-search-code", n), cx)
+    })
+    .unwrap();
+    settle(handle, cx);
+    search(handle, &ws, cx, id, "parse_line");
+    assert_eq!(
+        subjects(&ws, cx, id),
+        ["Read the input"],
+        "the commit that added it"
+    );
+}
+
+#[gpui_kit::test]
+fn search_takes_text_as_written_and_clearing_it_brings_all_back(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    commit_file(repo.path(), "b.txt", "b\n", "fix(parser): read [wip] files");
+    let (handle, ws) = open(cx);
+    let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
+    search(handle, &ws, cx, id, "fix(");
+    assert_eq!(subjects(&ws, cx, id), ["fix(parser): read [wip] files"]);
+    search(handle, &ws, cx, id, "[nothing");
+    git_of(&ws, cx, id, |g| {
+        assert!(g.commits.is_empty());
+        assert!(g.error.is_none(), "git didn't fail: {:?}", g.error);
+    });
+    search(handle, &ws, cx, id, "");
+    assert_eq!(subjects(&ws, cx, id).len(), 2, "every commit again");
 }
 
 #[gpui_kit::test]

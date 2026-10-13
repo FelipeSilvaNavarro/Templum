@@ -2,8 +2,6 @@
 //! (its message, author, date and files); on the right the diff panel.
 //! See docs/specs/git.md, section 6.
 
-use std::rc::Rc;
-
 use gpui_kit::assets::IconName;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
@@ -12,9 +10,10 @@ use gpui_kit::{
     PathBuilder, TestSupportExt, canvas, div, fill, point, px, size, uniform_list,
 };
 use templum_canvas::BlockId;
+use templum_git::Search;
 use templum_git::graph::GraphRow;
 
-use super::widgets::{badge, bar, field, icon_button, small};
+use super::widgets::{badge, bar, centered, field, icon_button, small};
 use super::{FONT, Git, LANE_W, LISTS_W, MAX_LANES, ROW_H, Shown, diff_view};
 use crate::editor::button;
 use crate::grid::hsla;
@@ -55,20 +54,19 @@ fn list_column(
     let ui = ws.ui;
     let n = id.0 as usize;
     let commits = git.commits.clone();
-    let filtered = Rc::new(git.filtered(cx));
     let (more, entity) = (git.more, cx.entity());
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
     let mono = ws.cell.font.family.clone();
-    let rows = filtered.len() + usize::from(more);
+    let rows = commits.len() + usize::from(more);
     let (graph, unpushed) = (git.graph.clone(), git.unpushed.clone());
     let lanes = graph.iter().map(|r| r.width).max().unwrap_or(0);
     let palette = [4, 2, 3, 5, 6, 1].map(|i| hsla(ws.theme.palette.ansi[i], 1.0));
     let list = uniform_list(("git-history", n), rows, move |range, _, _| {
         range
             .map(|ix| {
-                if ix == filtered.len() {
+                if ix == commits.len() {
                     let entity = entity.clone();
                     return button(("git-load-more", n), "Load more", ui, z)
                         .m(px(6.0 * z))
@@ -82,7 +80,7 @@ fn list_column(
                         .test_support()
                         .into_any_element();
                 }
-                let c = &commits[filtered[ix]];
+                let c = &commits[ix];
                 let not_pushed = unpushed.contains(&c.hash);
                 let (open, menu, hash) = (entity.clone(), entity.clone(), c.hash.clone());
                 let menu_hash = hash.clone();
@@ -97,7 +95,7 @@ fn list_column(
                     .text_color(ui.title)
                     .cursor_pointer()
                     .hover(move |st| st.bg(ui.hover))
-                    .when_some(graph.get(filtered[ix]), |el, g| {
+                    .when_some(graph.get(ix), |el, g| {
                         el.child(graph_cell(g, lanes, palette, z))
                     })
                     .child(
@@ -178,11 +176,26 @@ fn list_column(
     let modes = div()
         .flex()
         .items_center()
-        .gap(px(4.0 * z))
+        .gap(px(2.0 * z))
         .px(px(6.0 * z))
         .py(px(4.0 * z))
         .border_b_1()
         .border_color(ui.hairline)
+        .children(
+            [
+                (Search::Message, "git-search-message", "Message"),
+                (Search::Author, "git-search-author", "Author"),
+                (Search::Code, "git-search-code", "Code"),
+            ]
+            .map(|(mode, name, label)| {
+                small((name, n), label, ui, z)
+                    .when(git.search_mode == mode, |el| el.bg(ui.card))
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.set_search_mode(id, mode, window, cx)
+                    }))
+                    .test_support()
+            }),
+        )
         .child(div().flex_1())
         .child(
             small(("git-all-branches", n), "All branches", ui, z)
@@ -192,10 +205,15 @@ fn list_column(
                 }))
                 .test_support(),
         );
+    let body = if git.commits.is_empty() && !git.searched.is_empty() {
+        centered(ui, z).child("No commits match").into_any_element()
+    } else {
+        list.into_any_element()
+    };
     column(ui, z)
         .child(top)
         .child(modes)
-        .child(list)
+        .child(body)
         .into_any_element()
 }
 
