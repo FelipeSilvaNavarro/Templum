@@ -53,7 +53,7 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   last came to rest at (`Space::rest`; `templum-canvas`'s `lod.rs`), so a level never changes mid-glide: Full
   while the text is 5.5 px or more; Silhouette under it, where a terminal paints bars of its text's colors on the
   letters' cells, an editor or a note bars of the words gpui-kit laid out in its last Full frame
-  (`silhouette.rs`), and a Git block is its card; Card under 2.5 px. The block worked in (focused, or holding the
+  (`silhouette.rs`), a Git block is its card and a kanban block is drawn in full; Card under 2.5 px. The block worked in (focused, or holding the
   keyboard) is always Full, and below Full a title is a fixed-size label (specs/level-of-detail.md).
   A zoom glides to its step over 150 ms through
   zooms snapped to 0.02 (`templum-canvas`'s `CameraFlight`); the camera holds the target, the workspace's `view`

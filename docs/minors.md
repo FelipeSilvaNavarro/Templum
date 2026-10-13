@@ -243,3 +243,9 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   Soft wrap on its words wrap a little differently at each zoom; far away its bars show the rows of its last Full
   frame, and back at 50% a word or two can move to the next row. Notes don't: their box makes up for those parts
   (`note.rs`, `editor_box`). Fix: give the editor tab's area the note's compensation (`FIXED_LEFT`, `FIXED_RIGHT`).
+- [ ] **The wheel on the one unseen frame scrolls a far editor or note instead of the canvas.** When a far body has no
+  word map, or a stale one (first drawn far away, resized, its file reloaded), it lays its editor out once at opacity
+  0 (`crates/templum/src/silhouette.rs`, `body`), with its hitboxes: a wheel event on that frame scrolls the hidden
+  text (gpui-base's editor takes the wheel and stops it) instead of moving the canvas, and the text shows scrolled
+  when the block is next drawn in full. Fix: a capture-phase wheel listener on the unseen editor's wrapper that moves
+  the canvas and stops the event before the editor sees it.
