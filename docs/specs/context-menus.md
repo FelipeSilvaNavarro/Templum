@@ -38,9 +38,9 @@ would have opened together with the block's. The canvas and the blocks had no me
 | The ▾ beside a Git block's Commit | Commit (or Commit all changes), and the same & Push |
 | The terminal count in a Git block's top bar | The terminals working in its repository, agents first; the one chosen is shown |
 | A row of a Git block's Changes | Stage (or Unstage), Discard changes… (unstaged rows), Open, Copy path, Ignore; a conflict: Open in editor, Use the version from *HEAD*, Use the version from *the other side's label* (the markers' labels, never "ours" or "theirs"), Mark resolved (asks while markers are left), Copy path, Ignore |
-| A line of a Git block's diff panel | Copy (disabled without a selection), Copy line, Copy hunk, Send to ▸ (the selection, else the hunk), Open in editor at this line |
+| A line of a Git block's diff panel | Copy (disabled without a selection), Copy line, Copy hunk, Send to ▸ (the selection, else the hunk), Open in editor at this line (the working changes only, not a comparison) |
 | A commit in a Git block's History | Checkout…, New branch from here…, Create tag…, Revert…, Copy hash |
-| A branch in a Git block | Compare with *main* (the default branch; not on itself), Merge into *current*…, Rename…, Delete… (an unmerged one asks again with its count), Publish (a local branch with no upstream), Copy name |
+| A branch in a Git block | Compare with *main* (the default branch; not on itself), Merge into *current*…, Rename…, Delete… (an unmerged one asks again with its count), Publish (a local branch with no upstream, or one deleted on the server), Copy name |
 | A stash in a Git block | Apply, Pop, Drop…, Show |
 | The toolbar's AI agent button | The agents; the chosen one opens in the middle of the canvas |
 | A board in a block's board list | Open, Rename…, Delete… |
