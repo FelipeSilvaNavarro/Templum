@@ -8,6 +8,11 @@
 //! `templum --bench-git`: one Git block on a repository made in the temp folder, 5 files with
 //! 1,000 changed lines each (a 5,000-line diff); the panel scrolls 400 rows a second while the
 //! zoom glides between 50% and 200%, Unified for 5 s then Split. Bar: p95 <= 16.7 ms.
+//! `templum --bench-far`: an agent cockpit seen from afar, on the folder Templum runs from: 24
+//! blocks, 6 a row (8 terminals, 5 redrawing the mixed scenario's colored screen and 3 showing
+//! its largest file; 6 editors on its 6 largest files; 4 notes holding its README; 3 Git blocks;
+//! 3 kanban blocks), none focused. The camera rests at 33% for 5 s, then glides to 25% and rests
+//! there, while it circles 1,500 world units around the canvas's center.
 //! Prints one JSON line (frame-interval percentiles, memory), then quits. Bar: p95 <= 16.7 ms.
 
 use std::path::{Path, PathBuf};
@@ -132,7 +137,7 @@ pub(crate) fn run_zoom(window: AnyWindowHandle, ws: Entity<Workspace>, kind: Str
                 ws.close(id, window, cx);
             }
             let dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-            let file = sample_file(&dir);
+            let file = largest_files(&dir, 1).into_iter().next();
             let size = match kind.as_str() {
                 "editor" => editor::SIZE,
                 "note" => note::SIZE,
@@ -218,6 +223,128 @@ pub(crate) fn run_zoom(window: AnyWindowHandle, ws: Entity<Workspace>, kind: Str
                         let pivot = ws.center(window);
                         ws.zoom_to(step, pivot, cx);
                     }
+                });
+                cx.notify();
+            })
+        });
+    })
+    .detach();
+}
+
+/// `--bench-far`: see the module's doc.
+pub(crate) fn run_far(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut App) {
+    let tuis = cx
+        .update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                // Only the blocks measured: the startup terminal goes.
+                let startup: Vec<_> = ws.space.canvas.blocks().iter().map(|b| b.id).collect();
+                for id in startup {
+                    ws.close(id, window, cx);
+                }
+                let dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let files = largest_files(&dir, 6);
+                let readme = std::fs::read_to_string(dir.join("README.md")).unwrap_or_default();
+                let board = sample_board(&mut ws.boards);
+                let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, ws.cell.size);
+                // Six a row, in the mixed scenario's slots.
+                let mut slots =
+                    (0..).map(|i| Point::new((i % 6) as f32 * 950.0, (i / 6) as f32 * 750.0));
+                let mut next = || slots.next().expect("endless");
+                // 8 terminals: the first 5 get the TUI loop once their shells run, 3 show a file.
+                let mut tuis = Vec::new();
+                for i in 0..8 {
+                    let p = next();
+                    ws.open(Rect::new(p.x, p.y, size.w, size.h), window, cx);
+                    let Some(id) = ws.space.canvas.top() else {
+                        continue;
+                    };
+                    if i < 5 {
+                        tuis.push(id);
+                    } else if let (Some(pane), Some(file)) = (ws.space.terminal(id), files.first())
+                    {
+                        pane.term
+                            .write(format!("cat '{}'\r", file.display()).into_bytes());
+                    }
+                }
+                for i in 0..6 {
+                    let at = next();
+                    if let (Some(id), Some(file)) =
+                        (ws.add_editor_at(&dir, at, window, cx), files.get(i))
+                    {
+                        ws.open_file(id, file, None, window, cx);
+                    }
+                }
+                for _ in 0..4 {
+                    ws.add_note_at(next(), window, cx);
+                    let id = ws.space.canvas.top().expect("just added");
+                    if let Some(note) = ws.space.blocks.get(&id).and_then(Body::note) {
+                        note.editor
+                            .update(cx, |e, cx| e.set_value(readme.clone(), window, cx));
+                    }
+                }
+                for _ in 0..3 {
+                    ws.add_git_at(&dir, next(), window, cx);
+                }
+                for _ in 0..3 {
+                    ws.add_kanban_at(next(), window, cx);
+                    let id = ws.space.canvas.top().expect("just added");
+                    if let Some(k) = ws.space.kanban_mut(id) {
+                        k.board = Some(board);
+                    }
+                }
+                // No block focused: the workspace keeps the keyboard, so every block is drawn
+                // at its own level.
+                ws.space.focused = None;
+                window.focus(&ws.focus_handle, cx);
+                tuis
+            })
+        })
+        .unwrap_or_default();
+    cx.spawn(async move |cx| {
+        // Let the shells start, the files open and the Git blocks read.
+        cx.background_executor().timer(Duration::from_secs(3)).await;
+        let idle_rss = rss_mb();
+        let _ = cx.update_window(window, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                for id in &tuis {
+                    if let Some(pane) = ws.space.terminal(*id) {
+                        pane.term.write(TUI_LOOP);
+                    }
+                }
+                ws.space.pristine = false;
+                let center = ws
+                    .space
+                    .canvas
+                    .bounds()
+                    .map(|b| Point::new(b.x + b.w / 2.0, b.y + b.h / 2.0))
+                    .unwrap_or_default();
+                let vp = ws.viewport(window);
+                let far = ZOOM_STEPS[1];
+                ws.space.canvas.camera = Camera::at(
+                    Point::new(center.x - vp.w / 2.0 / far, center.y - vp.h / 2.0 / far),
+                    far,
+                );
+                ws.space.flight = None;
+                measure(ws, idle_rss, move |ws, window, cx, t| {
+                    // 33% for 5 s, then one glide out to 25%, which it keeps.
+                    if t >= 5.0 && ws.space.canvas.camera.zoom_index() > 0 {
+                        let pivot = ws.center(window);
+                        ws.zoom_to(-1, pivot, cx);
+                    }
+                    // Around the canvas's center, 1,500 world units out, a turn every 4 s:
+                    // blocks keep entering and leaving the view.
+                    let cam = ws.space.canvas.camera;
+                    let z = cam.zoom();
+                    let a = t * std::f32::consts::TAU / 4.0;
+                    let vp = ws.viewport(window);
+                    let want = Point::new(
+                        center.x + 1500.0 * a.cos() - vp.w / 2.0 / z,
+                        center.y + 1500.0 * a.sin() - vp.h / 2.0 / z,
+                    );
+                    ws.pan_by(Point::new(
+                        (cam.origin.x - want.x) * z,
+                        (cam.origin.y - want.y) * z,
+                    ));
                 });
                 cx.notify();
             })
@@ -370,10 +497,10 @@ fn measure(
     }));
 }
 
-/// The largest Rust, Markdown or TOML file under `dir` (not in `target` or a hidden folder): text
-/// for the editors and the terminals to show.
-fn sample_file(dir: &Path) -> Option<PathBuf> {
-    let mut best: Option<(u64, PathBuf)> = None;
+/// The `n` largest Rust, Markdown or TOML files under `dir` (not in `target` or a hidden
+/// folder), largest first: text for the editors and the terminals to show.
+fn largest_files(dir: &Path, n: usize) -> Vec<PathBuf> {
+    let mut found: Vec<(u64, PathBuf)> = Vec::new();
     let mut folders = vec![(dir.to_path_buf(), 0)];
     while let Some((folder, depth)) = folders.pop() {
         for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
@@ -390,14 +517,13 @@ fn sample_file(dir: &Path) -> Option<PathBuf> {
                 .extension()
                 .is_some_and(|x| x == "rs" || x == "md" || x == "toml")
             {
-                let len = entry.metadata().map_or(0, |m| m.len());
-                if best.as_ref().is_none_or(|(l, _)| len > *l) {
-                    best = Some((len, path));
-                }
+                found.push((entry.metadata().map_or(0, |m| m.len()), path));
             }
         }
     }
-    best.map(|(_, path)| path)
+    // A stable sort: of files of one size, the first found comes first, as before.
+    found.sort_by_key(|a| std::cmp::Reverse(a.0));
+    found.into_iter().take(n).map(|(_, path)| path).collect()
 }
 
 /// A board with 4 cards in each of its columns.
