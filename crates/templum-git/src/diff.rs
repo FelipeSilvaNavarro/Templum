@@ -180,6 +180,8 @@ pub fn parse_diff(text: &str, limit: usize) -> Vec<FileDiff> {
     let mut offset = 0;
     // The next line numbers of the open hunk.
     let (mut old_next, mut new_next) = (0u32, 0u32);
+    // What the open hunk's header says is left of it, old side and new side.
+    let (mut old_left, mut new_left) = (0u32, 0u32);
     for raw in text.split_inclusive('\n') {
         let at = offset;
         offset += raw.len();
@@ -210,21 +212,30 @@ pub fn parse_diff(text: &str, limit: usize) -> Vec<FileDiff> {
         if let Some(rest) = line.strip_prefix("@@ ") {
             if let Some(hunk) = parse_hunk_header(rest) {
                 (old_next, new_next) = (hunk.old_start, hunk.new_start);
+                (old_left, new_left) = (hunk.old_len, hunk.new_len);
                 file.hunks.push(hunk);
             }
             continue;
         }
         if let Some(hunk) = file.hunks.last_mut() {
+            // "\ No newline at end of file" follows the line it is about, the last one too.
+            if line.starts_with('\\') {
+                if let Some(last) = hunk.lines.last_mut() {
+                    last.no_newline = true;
+                }
+                continue;
+            }
+            // The header's counts say where the hunk ends: what follows (a submodule's log with
+            // diff.submodule=log) isn't in it.
+            if old_left == 0 && new_left == 0 {
+                continue;
+            }
             let (kind, text) = match line.as_bytes().first() {
                 Some(b' ') => (Kind::Context, &line[1..]),
                 Some(b'+') => (Kind::Added, &line[1..]),
                 Some(b'-') => (Kind::Removed, &line[1..]),
-                Some(b'\\') => {
-                    if let Some(last) = hunk.lines.last_mut() {
-                        last.no_newline = true;
-                    }
-                    continue;
-                }
+                // diff.suppressBlankEmpty prints an empty context line as nothing at all.
+                None => (Kind::Context, ""),
                 _ => continue,
             };
             let (old_no, new_no) = match kind {
@@ -234,6 +245,8 @@ pub fn parse_diff(text: &str, limit: usize) -> Vec<FileDiff> {
             };
             old_next += u32::from(old_no.is_some());
             new_next += u32::from(new_no.is_some());
+            old_left = old_left.saturating_sub(u32::from(old_no.is_some()));
+            new_left = new_left.saturating_sub(u32::from(new_no.is_some()));
             hunk.lines.push(Line {
                 kind,
                 old_no,
@@ -258,14 +271,14 @@ pub fn parse_diff(text: &str, limit: usize) -> Vec<FileDiff> {
             file.new_path = None;
         } else if let Some(from) = line.strip_prefix("rename from ") {
             file.status = Change::Renamed;
-            file.old_path = Some(from.to_string());
+            file.old_path = Some(unquoted(from));
         } else if let Some(to) = line.strip_prefix("rename to ") {
-            file.new_path = Some(to.to_string());
+            file.new_path = Some(unquoted(to));
         } else if let Some(from) = line.strip_prefix("copy from ") {
             file.status = Change::Added;
-            file.old_path = Some(from.to_string());
+            file.old_path = Some(unquoted(from));
         } else if let Some(to) = line.strip_prefix("copy to ") {
-            file.new_path = Some(to.to_string());
+            file.new_path = Some(unquoted(to));
         } else if let Some(p) = line.strip_prefix("--- ") {
             if let Some(p) = named(p, "a/") {
                 file.old_path = Some(p);
@@ -284,6 +297,11 @@ pub fn parse_diff(text: &str, limit: usize) -> Vec<FileDiff> {
 /// "a/x b/x" → ("x", "x"): the split where both halves agree (a name with spaces), else the
 /// first " b/". A rename's halves are set again by its `rename from` and `rename to` lines.
 fn git_header_paths(rest: &str) -> (String, String) {
+    // A name with a quote, a backslash or a control character comes C-quoted, on either side.
+    if let Some((a, b)) = quoted_halves(rest) {
+        let strip = |s: String, p: &str| s.strip_prefix(p).map(str::to_string).unwrap_or(s);
+        return (strip(a, "a/"), strip(b, "b/"));
+    }
     let rest = rest.strip_prefix("a/").unwrap_or(rest);
     let mut first = None;
     for (i, _) in rest.match_indices(" b/") {
@@ -296,12 +314,78 @@ fn git_header_paths(rest: &str) -> (String, String) {
     first.unwrap_or_else(|| (rest.to_string(), rest.to_string()))
 }
 
-/// A `---`/`+++` line's path: without its prefix and the tab git adds after a name with
-/// spaces; None for /dev/null.
+/// A `---`/`+++` line's path: unquoted, without its prefix and the tab git adds after a name
+/// with spaces; None for /dev/null.
 fn named(p: &str, prefix: &str) -> Option<String> {
-    p.trim_end_matches('\t')
+    unquoted(p.trim_end_matches('\t'))
         .strip_prefix(prefix)
         .map(str::to_string)
+}
+
+/// A name as git prints it, C-quoted (`"a/we\"ird.txt"`) when it holds a quote, a backslash
+/// or a control character, even with core.quotePath off: as written. A name not in quotes
+/// comes back as it is.
+fn unquoted(s: &str) -> String {
+    let Some(inner) = s.strip_prefix('"').and_then(|s| s.strip_suffix('"')) else {
+        return s.to_string();
+    };
+    let mut bytes = Vec::with_capacity(inner.len());
+    let mut it = inner.bytes().peekable();
+    while let Some(b) = it.next() {
+        if b != b'\\' {
+            bytes.push(b);
+            continue;
+        }
+        match it.next() {
+            Some(b'a') => bytes.push(7),
+            Some(b'b') => bytes.push(8),
+            Some(b't') => bytes.push(b'\t'),
+            Some(b'n') => bytes.push(b'\n'),
+            Some(b'v') => bytes.push(11),
+            Some(b'f') => bytes.push(12),
+            Some(b'r') => bytes.push(b'\r'),
+            // \ooo: a byte in octal (a non-UTF-8 name, or quotePath on).
+            Some(d @ b'0'..=b'7') => {
+                let mut v = u32::from(d - b'0');
+                for _ in 0..2 {
+                    if let Some(&n @ b'0'..=b'7') = it.peek() {
+                        v = v * 8 + u32::from(n - b'0');
+                        it.next();
+                    }
+                }
+                bytes.push(v as u8);
+            }
+            // \" and \\.
+            Some(c) => bytes.push(c),
+            None => {}
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// `"a/x" "b/x"`, `a/x "b/y"` or `"a/x" b/y`, unquoted; None when neither side is quoted.
+fn quoted_halves(rest: &str) -> Option<(String, String)> {
+    if rest.starts_with('"') {
+        let end = closing_quote(rest)?;
+        let (a, b) = rest.split_at(end + 1);
+        return Some((unquoted(a), unquoted(b.trim_start())));
+    }
+    let i = rest.find(" \"b/")?;
+    Some((rest[..i].to_string(), unquoted(&rest[i + 1..])))
+}
+
+/// The index of the quote that closes the one `s` starts with.
+fn closing_quote(s: &str) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut i = 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => return Some(i),
+            _ => i += 1,
+        }
+    }
+    None
 }
 
 /// "-10,3 +12,4 @@ fn x() {" (after "@@ "); a missing length is 1.
@@ -615,5 +699,43 @@ diff --git a/ok.txt b/ok.txt\n\
         assert_eq!(Kind::Added.sign(), '+');
         assert_eq!(Kind::Removed.sign(), '-');
         assert_eq!(Kind::Context.sign(), ' ');
+    }
+
+    #[test]
+    fn a_hunk_ends_where_its_counts_say() {
+        // diff.submodule=log prints a submodule's log after the file before it.
+        let text = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n a\n-b\n+c\nSubmodule sub 1111111..2222222:\n  > two\n";
+        let h = &parse_diff(text, usize::MAX)[0].hunks[0];
+        assert_eq!(h.lines.len(), 3, "{:?}", h.lines);
+        // diff.suppressBlankEmpty prints an empty context line as nothing at all.
+        let text = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,3 +1,3 @@\n a\n\n-b\n+c\n";
+        let h = &parse_diff(text, usize::MAX)[0].hunks[0];
+        let got: Vec<_> = h
+            .lines
+            .iter()
+            .map(|l| (l.kind, l.old_no, l.new_no, l.text.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (Kind::Context, Some(1), Some(1), "a"),
+                (Kind::Context, Some(2), Some(2), ""),
+                (Kind::Removed, Some(3), None, "b"),
+                (Kind::Added, None, Some(3), "c"),
+            ]
+        );
+    }
+
+    #[test]
+    fn c_quoted_names_come_unquoted() {
+        let text = "diff --git \"a/we\\\"ird.txt\" \"b/we\\\"ird.txt\"\nindex 1111111..2222222 100644\n--- \"a/we\\\"ird.txt\"\n+++ \"b/we\\\"ird.txt\"\n@@ -1 +1 @@\n-a\n+b\n\
+diff --git \"a/tab\\there.txt\" \"b/tab\\there.txt\"\nnew file mode 100644\n--- /dev/null\n+++ \"b/tab\\there.txt\"\n@@ -0,0 +1 @@\n+x\n\
+diff --git a/old.txt \"b/caf\\303\\251 \\\\.txt\"\nsimilarity index 100%\nrename from old.txt\nrename to \"caf\\303\\251 \\\\.txt\"\n";
+        let files = parse_diff(text, usize::MAX);
+        let paths: Vec<_> = files.iter().map(|f| f.path()).collect();
+        assert_eq!(paths, ["we\"ird.txt", "tab\there.txt", "café \\.txt"]);
+        assert_eq!(files[2].old_path.as_deref(), Some("old.txt"));
+        assert_eq!(unquoted("\"a/x\\001y\""), "a/x\u{1}y", "octal");
+        assert_eq!(unquoted("a/plain"), "a/plain");
     }
 }
