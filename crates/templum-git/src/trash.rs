@@ -3,6 +3,7 @@
 //! See docs/specs/git.md, section 4, The trash.
 
 use std::fs;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -59,19 +60,25 @@ pub fn fits(files: usize, bytes: u64) -> bool {
     files <= MAX_FILES && bytes <= MAX_BYTES
 }
 
-/// A file's state, to tell later whether it changed: its size and modification time (a link
-/// itself, not its target), or `-` when it doesn't exist.
+/// A file's state, to tell later whether it changed: its size and a hash of its bytes (a
+/// link's own target, not what it points to), or `-` when it doesn't exist. Not its
+/// modification time: a coarse clock misses an edit of the same size.
+// ponytail: DefaultHasher may change with a Rust upgrade; a stamp from before then reads as a
+// change, so the restore asks (and a forced one keeps a copy). A fixed hash if that bites.
 fn stamp(path: &Path) -> String {
-    match fs::symlink_metadata(path) {
-        Ok(m) => {
-            let mtime = m
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map_or(0, |d| d.as_nanos());
-            format!("{}:{mtime}", m.len())
-        }
-        Err(_) => "-".to_string(),
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return "-".to_string();
+    };
+    let mut h = DefaultHasher::new();
+    let read = if meta.file_type().is_symlink() {
+        fs::read_link(path).map(|t| t.hash(&mut h))
+    } else {
+        fs::read(path).map(|b| b.hash(&mut h))
+    };
+    match read {
+        Ok(()) => format!("{}:{:016x}", meta.len(), h.finish()),
+        // Unreadable: unlike any hash taken while it could be read.
+        Err(_) => format!("?{}", meta.len()),
     }
 }
 
@@ -176,18 +183,21 @@ impl Trash {
                 "this discard is no longer in the trash",
             )
         })?;
-        if !force && let Ok(after) = fs::read_to_string(entry.join("after")) {
-            let changed: Vec<String> = kept
-                .files
-                .iter()
-                .zip(after.split('\0'))
-                .filter(|((path, _), then)| stamp(&kept.root.join(path)) != *then)
-                .map(|((path, _), _)| path.clone())
-                .collect();
-            if !changed.is_empty() {
-                return Ok(Restored::Changed(changed));
-            }
+        let changed = changed_since(&entry, &kept);
+        if !force && !changed.is_empty() {
+            return Ok(Restored::Changed(changed));
         }
+        // Forced: what it writes over goes to the trash first, so it can be put back too.
+        let over = if changed.is_empty() {
+            None
+        } else {
+            Some(self.put(
+                &kept.root,
+                &changed,
+                "Overwritten by a restore",
+                SystemTime::now(),
+            )?)
+        };
         let files = entry.join("files");
         for (i, (path, existed)) in kept.files.iter().enumerate() {
             let to = kept.root.join(path);
@@ -210,6 +220,10 @@ impl Trash {
                 fs::copy(files.join(i.to_string()), &to)?;
             }
         }
+        if let Some(over) = &over {
+            // Unsealed, restoring it asks first (`changed_since`): nothing is lost.
+            let _ = self.seal(over);
+        }
         fs::remove_dir_all(&entry)?;
         Ok(Restored::Done)
     }
@@ -230,6 +244,25 @@ impl Trash {
         }
         Ok(removed)
     }
+}
+
+/// The files of `kept` that changed since its discard: their stamp now isn't the one `seal`
+/// wrote. Without `after` (a crash between the copy and the discard, a failed seal), every one
+/// there now counts as changed, so the restore asks rather than writes over it.
+fn changed_since(entry: &Path, kept: &Kept) -> Vec<String> {
+    let after = fs::read_to_string(entry.join("after")).ok();
+    let mut then = after.as_deref().map(|a| a.split('\0'));
+    kept.files
+        .iter()
+        .filter(|(path, _)| {
+            let now = kept.root.join(path);
+            match then.as_mut().and_then(|t| t.next()) {
+                Some(then) => stamp(&now) != then,
+                None => fs::symlink_metadata(&now).is_ok(),
+            }
+        })
+        .map(|(path, _)| path.clone())
+        .collect()
 }
 
 fn read_manifest(entry: &Path, id: String) -> Option<Kept> {
@@ -423,6 +456,82 @@ mod tests {
         assert_eq!(
             std::fs::read_link(root.path().join("link")).unwrap(),
             Path::new("target.txt")
+        );
+    }
+
+    /// a.txt kept as "mine\n", then discarded to "committed\n" and sealed.
+    fn discarded(root: &Path, trash: &Trash) -> Kept {
+        std::fs::write(root.join("a.txt"), "mine\n").unwrap();
+        let kept = trash
+            .put(
+                root,
+                &["a.txt".to_string()],
+                "Discarded a.txt",
+                SystemTime::now(),
+            )
+            .unwrap();
+        std::fs::write(root.join("a.txt"), "committed\n").unwrap();
+        trash.seal(&kept).unwrap();
+        kept
+    }
+
+    #[test]
+    fn a_forced_restore_keeps_a_copy_of_what_it_writes_over() {
+        let (root, _data, trash) = setup();
+        let kept = discarded(root.path(), &trash);
+        std::fs::write(root.path().join("a.txt"), "edited since then\n").unwrap();
+        assert_eq!(trash.restore(&kept.id, true).unwrap(), Restored::Done);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("a.txt")).unwrap(),
+            "mine\n"
+        );
+        let left = trash.list();
+        assert_eq!(left.len(), 1, "the edit, kept");
+        assert_eq!(left[0].what, "Overwritten by a restore");
+        assert_eq!(trash.restore(&left[0].id, false).unwrap(), Restored::Done);
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("a.txt")).unwrap(),
+            "edited since then\n"
+        );
+    }
+
+    #[test]
+    fn without_a_seal_a_restore_asks() {
+        let (root, _data, trash) = setup();
+        std::fs::write(root.path().join("a.txt"), "mine\n").unwrap();
+        // A crash between the copy and the discard: no `after`.
+        let kept = trash
+            .put(
+                root.path(),
+                &["a.txt".to_string()],
+                "Discarded a.txt",
+                SystemTime::now(),
+            )
+            .unwrap();
+        std::fs::write(root.path().join("a.txt"), "edited since then\n").unwrap();
+        assert_eq!(
+            trash.restore(&kept.id, false).unwrap(),
+            Restored::Changed(vec!["a.txt".to_string()])
+        );
+    }
+
+    #[test]
+    fn an_edit_of_the_same_size_and_time_is_still_a_change() {
+        let (root, _data, trash) = setup();
+        let kept = discarded(root.path(), &trash);
+        let a = root.path().join("a.txt");
+        let sealed = std::fs::metadata(&a).unwrap().modified().unwrap();
+        // A coarse clock: same length, same modification time, other bytes.
+        std::fs::write(&a, "COMMITTED\n").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&a)
+            .unwrap()
+            .set_modified(sealed)
+            .unwrap();
+        assert_eq!(
+            trash.restore(&kept.id, false).unwrap(),
+            Restored::Changed(vec!["a.txt".to_string()])
         );
     }
 }
