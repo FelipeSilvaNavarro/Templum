@@ -10,6 +10,7 @@ mod flight;
 mod geometry;
 mod gesture;
 mod ink;
+mod lod;
 mod snap;
 
 pub use camera::{Camera, FIT_MARGIN, ZOOM_STEPS};
@@ -22,4 +23,5 @@ pub use ink::{
     Color, Drawing, HIT_PX, MAX_WIDTH, MIN_POINT_DISTANCE, MIN_SHAPE, MIN_WIDTH, STRING_PX,
     ShapeKind, constrain, simplify,
 };
+pub use lod::{CARD_BELOW, GREEK_BELOW, Level, level};
 pub use snap::{Guide, SNAP_PX, Snapped, snap_move, snap_resize};
