@@ -36,6 +36,7 @@ would have opened together with the block's. The canvas and the blocks had no me
 | The ⋯ of a Git block's top bar (a click) | Fetch, Pull, Push, Recently discarded… (with a data folder), Clone a repository… |
 | A Git block's Publish branch, with several remotes (a click) | Publish to *remote*, one per remote, as `git remote` lists them |
 | The ▾ beside a Git block's Commit | Commit (or Commit all changes), and the same & Push |
+| The ⚙ beside a Git block's Generate ✨ | The agent's models (the one in use checked), Instructions for this repository… |
 | The terminal count in a Git block's top bar | The terminals working in its repository, agents first; the one chosen is shown |
 | A row of a Git block's Changes | Stage (or Unstage), Discard changes… (unstaged rows), Open, Copy path, Ignore; a conflict: Open in editor, Use the version from *HEAD*, Use the version from *the other side's label* (the markers' labels, never "ours" or "theirs"), Mark resolved (asks while markers are left), Copy path, Ignore |
 | A line of a Git block's diff panel | Copy (disabled without a selection), Copy line, Copy hunk, Send to ▸ (the selection, else the hunk), Open in editor at this line (the working changes only, not a comparison) |

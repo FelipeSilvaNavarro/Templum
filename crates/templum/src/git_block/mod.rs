@@ -198,6 +198,8 @@ pub(crate) struct Git {
     pub acting: u32,
     /// Kills the running fetch, pull or push (its spinning button).
     pub cancel: Option<Arc<AtomicBool>>,
+    /// Generate ✨ runs: set, it stops the agent.
+    pub generating: Option<Arc<AtomicBool>>,
     /// A refresh was asked while busy: one runs when the command ends.
     pub pending: bool,
     /// Other commands asked while busy, run in turn as each one ends.
@@ -332,6 +334,7 @@ impl Git {
             busy: false,
             acting: 0,
             cancel: None,
+            generating: None,
             pending: false,
             queued: Vec::new(),
             reads: 0,

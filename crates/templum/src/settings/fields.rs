@@ -161,3 +161,23 @@ pub(super) static FONT_SIZE: Number = Number {
     get: |c| f64::from(c.font.size),
     set: |c, v| c.font.size = v as f32,
 };
+
+pub(super) static TIMEOUT: Number = Number {
+    table: "git.commit_message",
+    key: "timeout",
+    min: 5.0,
+    max: 600.0,
+    step: 5.0,
+    get: |c| c.git.commit_message.timeout as f64,
+    set: |c, v| c.git.commit_message.timeout = v as u64,
+};
+
+pub(super) static MAX_DIFF: Number = Number {
+    table: "git.commit_message",
+    key: "max_diff_kb",
+    min: 4.0,
+    max: 1024.0,
+    step: 4.0,
+    get: |c| c.git.commit_message.max_diff_kb as f64,
+    set: |c, v| c.git.commit_message.max_diff_kb = v as u64,
+};

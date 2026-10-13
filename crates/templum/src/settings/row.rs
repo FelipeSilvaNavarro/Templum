@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::Button;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::prelude::*;
@@ -234,5 +234,56 @@ pub(super) fn text_input(
     Input::new(&state.read(cx).input)
         .small()
         .w(px(200.0))
+        .into_any_element()
+}
+
+/// A text area's editor; each change goes to `set`.
+struct AreaState {
+    input: Entity<TextareaState>,
+    _change: Subscription,
+}
+
+/// A text area of `rows` lines showing `value`, the row's whole width (under its title);
+/// typing calls `set` with the whole text.
+pub(super) fn text_area(
+    entity: &Entity<Workspace>,
+    key: &'static str,
+    value: String,
+    rows: usize,
+    set: fn(&mut Workspace, &str, &mut Context<Workspace>),
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let value = SharedString::from(value);
+    let e = entity.clone();
+    let initial = value.clone();
+    let state = window.use_keyed_state(
+        SharedString::from(format!("area-{key}")),
+        cx,
+        move |window, cx| {
+            let input = cx.new(|cx| {
+                TextareaState::new(window, cx)
+                    .rows(rows)
+                    .default_value(initial)
+            });
+            let _change = cx.subscribe(&input, move |_, input, event: &InputEvent, cx| {
+                if let InputEvent::Change = event {
+                    let text = input.read(cx).value();
+                    e.update(cx, |ws, cx| set(ws, &text, cx));
+                }
+            });
+            AreaState { input, _change }
+        },
+    );
+    // What the workspace shows wins over the field's text: a hand edit, a reset.
+    state.update(cx, |state, cx| {
+        if state.input.read(cx).value() != value {
+            state
+                .input
+                .update(cx, |input, cx| input.set_value(value.clone(), window, cx));
+        }
+    });
+    Textarea::new(&state.read(cx).input)
+        .w_full()
         .into_any_element()
 }

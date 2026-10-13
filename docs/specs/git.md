@@ -1,7 +1,7 @@
 # The Git block, second version
 
 - **Date:** 2026-10-13
-- **Status:** Design approved; batches 1 to 4 implemented, 5 and 6 not yet
+- **Status:** Design approved; batches 1 to 4 and 6 implemented, 5 not yet
 - **Replaces:** [cockpit.md](cockpit.md), section 8 (the Git block it describes is what this one starts from)
 - **Builds on:** [context-menus.md](context-menus.md), [agents.md](agents.md), [config.md](config.md)
 

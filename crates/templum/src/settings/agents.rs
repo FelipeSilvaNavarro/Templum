@@ -2,13 +2,14 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::dialog::DialogButtonProps;
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Icon, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, ElementId, Entity, TestSupportExt, Window, div, px,
+    AnyElement, App, ClickEvent, Context, ElementId, Entity, FontWeight, TestSupportExt, Window,
+    div, px,
 };
 
 use super::row::Row;
@@ -141,18 +142,42 @@ pub(crate) fn agent_dialog(
         window,
         cx,
     );
+    let generate = field(
+        &draft.generate,
+        "Writes a commit message, like my-agent ask -m {model}",
+        window,
+        cx,
+    );
+    let models_text = draft.models.clone();
+    let models = cx.new(|cx| {
+        TextareaState::new(window, cx)
+            .rows(3)
+            .placeholder("One per line, the recommended one first")
+            .default_value(models_text)
+    });
     let builtin = agent.as_ref().and_then(|a| a.builtin);
+    let codex = crate::agents::codex_models();
+    let preset = builtin.map(|agent| crate::agents::preset(agent, &codex));
+    let generate_default = preset
+        .as_ref()
+        .map(|(generate, _)| format!("Templum's: {}", generate.unwrap_or("none")));
+    let models_default = preset.map(|(_, models)| match models.as_slice() {
+        [] => "Templum's: none".to_string(),
+        list => format!("Templum's: {}", list.join(", ")),
+    });
     let id = agent.as_ref().map(|a| a.id.clone());
     let title = match &agent {
         Some(agent) => format!("Edit {}", agent.title),
         None => "Add an agent".to_string(),
     };
     let save = {
-        let (entity, name, command, resume, id) = (
+        let (entity, name, command, resume, generate, models, id) = (
             entity.clone(),
             name.clone(),
             command.clone(),
             resume.clone(),
+            generate.clone(),
+            models.clone(),
             id.clone(),
         );
         move |window: &mut Window, cx: &mut App| -> bool {
@@ -161,6 +186,8 @@ pub(crate) fn agent_dialog(
                 command: command.read(cx).value().to_string(),
                 resume: resume.read(cx).value().to_string(),
                 show: draft.show,
+                generate: generate.read(cx).value().to_string(),
+                models: models.read(cx).value().to_string(),
             };
             let saved = entity.update(cx, |ws, cx| ws.save_agent(id.as_deref(), &draft, cx));
             match saved {
@@ -232,6 +259,35 @@ pub(crate) fn agent_dialog(
                                 .to_string(),
                         }))
                     })
+                    .child(
+                        div()
+                            .mt(px(10.0))
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("Commit messages"),
+                    )
+                    .child(default(
+                        "For Generate ✨ in a Git block. {model} is the model; the request goes to \
+                         the standard input, or to the file {prompt_file} names; the answer is the \
+                         standard output, or what it writes to the file {output_file} names."
+                            .to_string(),
+                    ))
+                    .child(label("Generate command"))
+                    .child(
+                        div()
+                            .id("agent-generate")
+                            .child(Input::new(&generate))
+                            .test_support(),
+                    )
+                    .when_some(generate_default.clone(), |el, line| el.child(default(line)))
+                    .child(label("Models"))
+                    .child(
+                        div()
+                            .id("agent-models")
+                            .child(Textarea::new(&models).w_full())
+                            .test_support(),
+                    )
+                    .when_some(models_default.clone(), |el, line| el.child(default(line)))
                     .children(delete),
             )
             .on_ok(move |_, window, cx| save(window, cx))

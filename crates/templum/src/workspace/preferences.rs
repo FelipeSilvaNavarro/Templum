@@ -37,7 +37,7 @@ impl Workspace {
             Some(id) => id.to_string(),
             None => agents::new_id(&draft.name, |x| pending.agents.contains_key(x)),
         };
-        match draft.to_config(builtin) {
+        match draft.to_config(builtin, &agents::codex_models()) {
             Some(set) => {
                 let value = agents::to_value(&set);
                 let key = id.clone();
@@ -169,7 +169,16 @@ impl Workspace {
             }
         }
         if self.config.agents != old.agents {
-            self.agents = agents::effective(&self.config.agents);
+            self.agents = agents::effective(&self.config.agents, &agents::codex_models());
+        }
+        if self.config.agents != old.agents
+            || self.config.git.commit_message != old.git.commit_message
+        {
+            self.commit_agent = agents::commit_agent(
+                &self.agents,
+                &self.config.git.commit_message,
+                templum_terminal::installed,
+            );
         }
         if self.config.keys != old.keys {
             let (keymap, warnings) = Keymap::new(&self.config.keys, cfg!(target_os = "macos"))

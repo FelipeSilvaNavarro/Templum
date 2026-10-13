@@ -1,7 +1,7 @@
 //! Tests of the settings panel's choices, numbers, slide, fonts and shell arguments.
 
 use super::edits::{join_args, split_args};
-use super::fields::{CURSOR, FONT_SIZE, MODE};
+use super::fields::{CURSOR, FONT_SIZE, MAX_DIFF, MODE, TIMEOUT};
 use super::fonts::{is_monospace, safe_to_load};
 use super::*;
 use crate::config::Config;
@@ -27,7 +27,7 @@ fn every_choice_reads_back_what_it_writes() {
 
 #[test]
 fn numbers_read_back_what_they_write() {
-    for n in [&SCROLLBACK, &FONT_SIZE] {
+    for n in [&SCROLLBACK, &FONT_SIZE, &TIMEOUT, &MAX_DIFF] {
         for v in [n.min, n.min + n.step, n.max] {
             let mut c = Config::default();
             (n.set)(&mut c, v);

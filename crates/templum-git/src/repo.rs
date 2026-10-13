@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::diff::{self, FileDiff, parse_diff};
 use crate::parse::{self, Branch, Change, Commit, CommitFile, Entry, Operation, Stash, Status};
@@ -122,7 +122,7 @@ fn run_in(
     };
     let out = match cancel {
         None => c.output().map_err(couldnt)?,
-        Some(cancel) => match until_cancelled(&mut c, cancel).map_err(couldnt)? {
+        Some(cancel) => match until_cancelled(&mut c, cancel, None).map_err(couldnt)? {
             Some(out) => out,
             None => {
                 return Err(GitError {
@@ -149,9 +149,13 @@ fn run_in(
 /// What a cancelled command's error says.
 const CANCELLED: &str = "Cancelled";
 
-/// Runs `c` to the end, or kills it once `cancel` is set (None then). Its output is read on
-/// threads meanwhile, so a chatty command never blocks on a full pipe.
-fn until_cancelled(c: &mut Command, cancel: &AtomicBool) -> io::Result<Option<Output>> {
+/// Runs `c` to the end, or kills it once `cancel` is set or `deadline` has passed (None then).
+/// Its output is read on threads meanwhile, so a chatty command never blocks on a full pipe.
+pub(crate) fn until_cancelled(
+    c: &mut Command,
+    cancel: &AtomicBool,
+    deadline: Option<Instant>,
+) -> io::Result<Option<Output>> {
     use std::io::Read;
     let mut child = c.spawn()?;
     let read = |pipe: Option<Box<dyn Read + Send>>| {
@@ -179,7 +183,7 @@ fn until_cancelled(c: &mut Command, cancel: &AtomicBool) -> io::Result<Option<Ou
         if let Some(status) = child.try_wait()? {
             break status;
         }
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.load(Ordering::Relaxed) || deadline.is_some_and(|d| Instant::now() >= d) {
             // ponytail: kills git, not what it started (an ssh asking on a terminal stays until
             // that terminal closes); a process group needs a dependency or unsafe.
             let _ = child.kill();
@@ -188,6 +192,13 @@ fn until_cancelled(c: &mut Command, cancel: &AtomicBool) -> io::Result<Option<Ou
         }
         std::thread::sleep(Duration::from_millis(20));
     };
+    // A helper it left running may hold its output open: waited for no longer than it.
+    while !(stdout.is_finished() && stderr.is_finished()) {
+        if cancel.load(Ordering::Relaxed) || deadline.is_some_and(|d| Instant::now() >= d) {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
     Ok(Some(Output {
         status,
         stdout: stdout.join().unwrap_or_default(),

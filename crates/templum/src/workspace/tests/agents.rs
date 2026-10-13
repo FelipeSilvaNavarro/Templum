@@ -19,6 +19,7 @@ fn the_agents_tab_resets_ours_and_deletes_yours(cx: &mut TestAppContext) {
             command: "mine".into(),
             resume: String::new(),
             show: true,
+            ..Draft::default()
         };
         ws.save_agent(None, &mine, cx).unwrap();
     });
@@ -192,6 +193,7 @@ fn agents_are_changed_reset_added_and_deleted_from_the_settings(cx: &mut TestApp
             command: "my-agent --tui".into(),
             resume: String::new(),
             show: true,
+            ..Draft::default()
         };
         assert_eq!(
             ws.save_agent(

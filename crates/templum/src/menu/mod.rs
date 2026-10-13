@@ -62,6 +62,8 @@ pub(crate) enum Target {
     },
     /// The ▾ beside a Git block's Commit button.
     GitCommitMenu(BlockId),
+    /// The ⚙ beside a Git block's Generate ✨.
+    GitGenerateMenu(BlockId),
     /// A row of a Git block's Changes lists, by its list and its index in it.
     GitRow {
         block: BlockId,
@@ -222,6 +224,15 @@ impl Workspace {
                 block,
                 label: self.space.git(block)?.commit_label(),
             },
+            Target::GitGenerateMenu(block) => {
+                self.space.git(block)?.repo()?;
+                let agent = self.commit_agent.as_ref()?;
+                Items::GitGenerateMenu {
+                    block,
+                    models: agent.models.clone(),
+                    model: agent.model.clone(),
+                }
+            }
             Target::GitRow { block, list, index } => {
                 let git = self.space.git(block)?;
                 let entries = match list {
@@ -407,6 +418,12 @@ enum Items {
         block: BlockId,
         /// "Commit", or "Commit all changes (5 files)".
         label: String,
+    },
+    GitGenerateMenu {
+        block: BlockId,
+        /// The agent's models, the recommended one first, and the one in use.
+        models: Vec<String>,
+        model: String,
     },
     GitRow {
         block: BlockId,
