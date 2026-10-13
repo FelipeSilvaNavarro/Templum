@@ -3,6 +3,7 @@
 //! No UI, no library binding: credentials and SSH work as they do in the user's terminal.
 
 mod diff;
+pub mod message;
 mod parse;
 mod repo;
 pub mod trash;
