@@ -30,7 +30,7 @@ fn the_lists_fold_away_and_the_block_remembers(cx: &mut TestAppContext) {
     let id = open_git(handle, &ws, cx, repo.path());
     let n = id.0 as usize;
     // The lists' rows (a uniform list's own id isn't observable).
-    let a = crate::git_block::row_id(id, "unstaged", 0);
+    let a = crate::git_block::row_id(id, "files", 0);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.try_find(a.clone()).is_some(), "the lists are drawn");
@@ -109,11 +109,7 @@ fn past_15_files_a_filter_narrows_the_lists(cx: &mut TestAppContext) {
     let listed = ws.read_with(cx, |ws, cx| ws.space.git(id).unwrap().listed(cx));
     assert_eq!(
         listed,
-        [
-            (List::Staged, None),
-            (List::Unstaged, None),
-            (List::Unstaged, Some(15)),
-        ],
+        [(List::Files, None), (List::Files, Some(15)),],
         "b.txt, by its index among all 16, without case"
     );
     // At 15 files no field shows, and a filter left from before narrows nothing.
@@ -126,7 +122,7 @@ fn past_15_files_a_filter_narrows_the_lists(cx: &mut TestAppContext) {
     ws.read_with(cx, |ws, cx| {
         let g = ws.space.git(id).unwrap();
         assert!(!g.filtering());
-        assert_eq!(g.listed(cx).len(), 17, "two headers, fifteen rows");
+        assert_eq!(g.listed(cx).len(), 16, "one header, fifteen rows");
     });
 }
 

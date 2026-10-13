@@ -111,6 +111,11 @@ impl Status {
             .collect()
     }
 
+    /// Every changed path but the conflicts, once each, staged or not: the Changes checklist.
+    pub fn files(&self) -> Vec<&Entry> {
+        self.entries.iter().filter(|e| !e.conflict()).collect()
+    }
+
     /// Unstaged changes and untracked files, together.
     pub fn unstaged(&self) -> Vec<&Entry> {
         self.entries
@@ -542,6 +547,11 @@ u UU N... 100644 100644 100644 100644 4cb29ea38f70d7c61b2a3a25b02e3bdf44905402 5
         assert_eq!(s.conflicts().len(), 1);
         assert_eq!(s.staged().len(), 5, "added, del, link, new, sub/s");
         assert_eq!(s.unstaged().len(), 4, "keep, sub/s, untracked, with space");
+        assert_eq!(
+            s.files().len(),
+            8,
+            "each path once (sub/s too), the conflict apart"
+        );
         assert_eq!(s.entries[5].name(), "s.txt");
         assert_eq!(s.entries[5].folder(), "sub");
         assert_eq!(s.entries[2].folder(), "");

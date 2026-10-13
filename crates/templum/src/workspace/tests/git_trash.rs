@@ -17,8 +17,8 @@ fn discard_row(handle: AnyWindowHandle, cx: &mut TestAppContext, id: BlockId, i:
     click_row_button(
         handle,
         cx,
-        row_id(id, "unstaged", i),
-        git_button(id, "discard", "unstaged", i),
+        row_id(id, "files", i),
+        git_button(id, "discard", "files", i),
     );
     cx.update_window(handle, |_, window, cx| {
         assert!(window.has_active_dialog(cx), "asks first");

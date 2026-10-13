@@ -15,7 +15,7 @@ use gpui_kit::{
     UniformListScrollHandle, Window,
 };
 use templum_canvas::{BlockId, Rect, Size};
-use templum_git::{Branch, Commit, CommitFile, GitError, Operation, Repo, Stash, Status};
+use templum_git::{Branch, Commit, CommitFile, Entry, GitError, Operation, Repo, Stash, Status};
 
 use crate::session;
 use crate::workspace::Workspace;
@@ -147,20 +147,39 @@ pub(crate) enum Sync {
     Cloning,
 }
 
-/// The three lists of the Changes tab.
+/// The lists of the Changes tab: the conflicts, then every other changed file once, as a
+/// checklist (checked: it goes into the next commit).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum List {
     Conflicts,
-    Staged,
-    Unstaged,
+    Files,
 }
 
 impl List {
     pub fn name(self) -> &'static str {
         match self {
             List::Conflicts => "conflicts",
-            List::Staged => "staged",
-            List::Unstaged => "unstaged",
+            List::Files => "files",
+        }
+    }
+}
+
+/// A file's box in the Changes checklist: what of it is staged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Check {
+    /// All of it goes into the next commit.
+    Checked,
+    /// Some of it (hunks staged from the panel), not all.
+    Partial,
+    Unchecked,
+}
+
+impl Check {
+    pub fn of(e: &Entry) -> Check {
+        match (e.staged, e.unstaged) {
+            (Some(_), None) => Check::Checked,
+            (Some(_), Some(_)) => Check::Partial,
+            (None, _) => Check::Unchecked,
         }
     }
 }
@@ -436,11 +455,7 @@ impl Git {
         };
         let s = &self.status;
         let mut items = Vec::new();
-        for (which, entries) in [
-            (List::Conflicts, s.conflicts()),
-            (List::Staged, s.staged()),
-            (List::Unstaged, s.unstaged()),
-        ] {
+        for (which, entries) in [(List::Conflicts, s.conflicts()), (List::Files, s.files())] {
             if which == List::Conflicts && entries.is_empty() {
                 continue;
             }
@@ -465,15 +480,29 @@ impl Git {
             && self.status.conflicts().is_empty()
     }
 
-    /// "Commit", or "Commit all changes (5 files)".
+    /// "Commit (3 files)", the files checked (wholly or in part); with none, "Commit all changes
+    /// (5 files)"; "Commit" with nothing to count (an Amend of the message alone).
     pub fn commit_label(&self) -> String {
-        if !self.commit_all() {
-            return "Commit".to_string();
+        let (label, n) = if self.commit_all() {
+            ("Commit all changes", self.status.unstaged().len())
+        } else {
+            ("Commit", self.status.staged().len())
+        };
+        match n {
+            0 => label.to_string(),
+            1 => format!("{label} (1 file)"),
+            n => format!("{label} ({n} files)"),
         }
-        match self.status.unstaged().len() {
-            1 => "Commit all changes (1 file)".to_string(),
-            n => format!("Commit all changes ({n} files)"),
-        }
+    }
+
+    /// The panel's section a file's click goes to: Staged when nothing of it is left unstaged,
+    /// else Changes.
+    pub fn in_staged(&self, path: &str) -> bool {
+        self.status
+            .entries
+            .iter()
+            .find(|e| e.path == path)
+            .is_some_and(|e| e.staged.is_some() && e.unstaged.is_none())
     }
 
     pub fn summary_len(&self, cx: &App) -> usize {
@@ -620,4 +649,28 @@ impl Git {
 
 pub(crate) fn row_id(block: BlockId, list: &str, i: usize) -> ElementId {
     ElementId::Name(format!("git-row-{}-{list}-{i}", block.0).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use templum_git::Change;
+
+    #[test]
+    fn a_files_box_is_what_of_it_is_staged() {
+        let entry = |staged, unstaged| Entry {
+            path: "a.txt".to_string(),
+            from: None,
+            staged,
+            unstaged,
+        };
+        let m = Some(Change::Modified);
+        assert_eq!(Check::of(&entry(m, None)), Check::Checked);
+        assert_eq!(Check::of(&entry(m, m)), Check::Partial);
+        assert_eq!(Check::of(&entry(None, m)), Check::Unchecked);
+        assert_eq!(
+            Check::of(&entry(None, Some(Change::Untracked))),
+            Check::Unchecked
+        );
+    }
 }

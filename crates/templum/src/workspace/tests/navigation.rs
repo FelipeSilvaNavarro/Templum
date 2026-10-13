@@ -450,7 +450,7 @@ fn zooming_scales_the_editor_and_git_blocks_like_a_photo(cx: &mut TestAppContext
                 ws.space.appearing.clear();
                 ws.select_git_row(
                     id,
-                    crate::git_block::List::Unstaged,
+                    crate::git_block::List::Files,
                     "a.txt".to_string(),
                     window,
                     cx,

@@ -1,4 +1,5 @@
-//! The Git block's Changes tab: the conflicts, staged and unstaged lists, and the row's diff.
+//! The Git block's Changes tab: the conflicts, the checklist of changed files (checked: it goes
+//! into the next commit), and the diff panel.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::tooltip::Tooltip;
@@ -12,8 +13,8 @@ use templum_git::{Change, Entry};
 
 use super::commit_form::commit_form;
 use super::diff_view;
-use super::widgets::{badge, field, icon_button, small};
-use super::{FONT, Git, LISTS_W, List, ROW_H, row_id, words};
+use super::widgets::{badge, check_box, field, icon_button, small};
+use super::{Check, FONT, Git, LISTS_W, List, ROW_H, row_id, words};
 use crate::menu::Target;
 use crate::workspace::Workspace;
 
@@ -38,14 +39,13 @@ pub(super) fn changes(
                 return Vec::new();
             };
             let s = &git.status;
-            let (conflicts, staged, unstaged) = (s.conflicts(), s.staged(), s.unstaged());
+            let (conflicts, files) = (s.conflicts(), s.files());
             range
                 .map(|ix| {
                     let (which, i) = items[ix];
                     let entries = match which {
                         List::Conflicts => &conflicts,
-                        List::Staged => &staged,
-                        List::Unstaged => &unstaged,
+                        List::Files => &files,
                     };
                     match i {
                         None => {
@@ -104,7 +104,8 @@ pub(super) fn changes(
         .into_any_element()
 }
 
-/// A list's header: its title with the count, and its buttons.
+/// A list's header: its title with the count; the checklist's has its box (every file shown
+/// checked, or none) and Discard all….
 fn header(
     ws: &Workspace,
     id: BlockId,
@@ -115,14 +116,22 @@ fn header(
 ) -> AnyElement {
     let ui = ws.ui;
     let n = id.0 as usize;
-    let title = match which {
-        List::Conflicts => "Conflicts",
-        List::Staged => "Staged",
-        List::Unstaged => "Changes",
-    };
     let paths: Vec<String> = entries.iter().map(|e| e.path.clone()).collect();
     let disabled = ws.space.git(id).is_some_and(|g| g.acting > 0) || paths.is_empty();
-    let header = div()
+    let checks: Vec<Check> = entries.iter().map(|e| Check::of(e)).collect();
+    let all = if checks.iter().all(|c| *c == Check::Checked) {
+        Check::Checked
+    } else if checks.iter().all(|c| *c == Check::Unchecked) {
+        Check::Unchecked
+    } else {
+        Check::Partial
+    };
+    let unstaged: Vec<String> = entries
+        .iter()
+        .filter(|e| e.unstaged.is_some())
+        .map(|e| e.path.clone())
+        .collect();
+    div()
         .w_full()
         .flex()
         .items_center()
@@ -131,42 +140,43 @@ fn header(
         .px(px(10.0 * z))
         .text_size(px(11.0 * z))
         .text_color(ui.title_dim)
-        .child(format!("{title} · {}", entries.len()))
-        .child(div().flex_1())
-        .when(!disabled, |el| match which {
-            List::Conflicts => el,
-            List::Staged => {
+        .when(which == List::Files && !paths.is_empty(), |el| {
+            let tip = if all == Check::Checked {
+                "Unstage"
+            } else {
+                "Stage"
+            };
+            let b = check_box(("git-check-all", n), all, ui, z)
+                .tooltip(move |window, cx| Tooltip::new(words::named(tip)).build(window, cx));
+            el.child(if disabled {
+                b.test_support()
+            } else {
                 let paths = paths.clone();
+                b.on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.check_all(id, paths.clone(), window, cx)
+                }))
+                .test_support()
+            })
+        })
+        .child(match which {
+            List::Conflicts => format!("Conflicts · {}", entries.len()),
+            List::Files => format!("Changes · {}", entries.len()),
+        })
+        .child(div().flex_1())
+        .when(
+            !disabled && which == List::Files && !unstaged.is_empty(),
+            |el| {
                 el.child(
-                    small(("git-unstage-all", n), "Unstage all", ui, z)
-                        .tooltip(|window, cx| Tooltip::new(words::tip("Unstage")).build(window, cx))
-                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.unstage(id, paths.clone(), window, cx)
-                        }))
-                        .test_support(),
-                )
-            }
-            List::Unstaged => {
-                let (stage, discard) = (paths.clone(), paths.clone());
-                el.child(
-                    small(("git-stage-all", n), "Stage all", ui, z)
-                        .tooltip(|window, cx| Tooltip::new(words::tip("Stage")).build(window, cx))
-                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.stage(id, stage.clone(), window, cx)
-                        }))
-                        .test_support(),
-                )
-                .child(
                     small(("git-discard-all", n), "Discard all…", ui, z)
                         .tooltip(|window, cx| Tooltip::new(words::tip("Discard")).build(window, cx))
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.discard(id, discard.clone(), window, cx)
+                            ws.discard(id, unstaged.clone(), window, cx)
                         }))
                         .test_support(),
                 )
-            }
-        });
-    header.into_any_element()
+            },
+        )
+        .into_any_element()
 }
 
 /// A row: the status badge, the name, its folder dimmed, and on hover its buttons. A click
@@ -183,8 +193,8 @@ fn row(
     let ui = ws.ui;
     let change = match which {
         List::Conflicts => Change::Conflict,
-        List::Staged => e.staged.unwrap_or(Change::Modified),
-        List::Unstaged => e.unstaged.unwrap_or(Change::Modified),
+        // What the working file shows: its unstaged change, else its staged one.
+        List::Files => e.unstaged.or(e.staged).unwrap_or(Change::Modified),
     };
     let path = e.path.clone();
     let git = ws.space.git(id);
@@ -246,35 +256,19 @@ fn row(
                         .into_any_element(),
                 );
             }
-            List::Staged => {
-                let unstage = path.clone();
-                buttons.push(
-                    hover_button("unstage", IconName::Minus, words::named("Unstage").into())
-                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.unstage(id, vec![unstage.clone()], window, cx)
-                        }))
-                        .test_support()
-                        .into_any_element(),
-                );
-            }
-            List::Unstaged => {
-                let (stage, discard) = (path.clone(), path.clone());
-                buttons.push(
-                    hover_button("stage", IconName::Plus, words::named("Stage").into())
-                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.stage(id, vec![stage.clone()], window, cx)
-                        }))
-                        .test_support()
-                        .into_any_element(),
-                );
-                buttons.push(
-                    hover_button("discard", IconName::Undo2, words::named("Discard").into())
-                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.discard(id, vec![discard.clone()], window, cx)
-                        }))
-                        .test_support()
-                        .into_any_element(),
-                );
+            // The box stages and unstages; Discard while something is left unstaged.
+            List::Files => {
+                if e.unstaged.is_some() {
+                    let discard = path.clone();
+                    buttons.push(
+                        hover_button("discard", IconName::Undo2, words::named("Discard").into())
+                            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                                ws.discard(id, vec![discard.clone()], window, cx)
+                            }))
+                            .test_support()
+                            .into_any_element(),
+                    );
+                }
             }
         }
         let open = path.clone();
@@ -288,6 +282,27 @@ fn row(
         );
     }
     let click = path.clone();
+    let check = (which == List::Files).then(|| {
+        let state = Check::of(e);
+        let tip = if state == Check::Checked {
+            "Unstage"
+        } else {
+            "Stage"
+        };
+        let b = check_box(ids("check"), state, ui, z)
+            .tooltip(move |window, cx| Tooltip::new(words::named(tip)).build(window, cx))
+            // Its press is the box's, never a click on the row.
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+        if busy {
+            b.test_support()
+        } else {
+            let path = path.clone();
+            b.on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                ws.toggle_check(id, path.clone(), window, cx)
+            }))
+            .test_support()
+        }
+    });
     div()
         .id(row_id(id, which.name(), i))
         .group("git-row")
@@ -302,6 +317,7 @@ fn row(
         .when(selected, |el| el.bg(ui.card))
         .cursor_pointer()
         .hover(move |st| st.bg(ui.hover))
+        .children(check)
         .child(badge(ws, change, z))
         .child(div().truncate().child(e.name().to_string()))
         .child(

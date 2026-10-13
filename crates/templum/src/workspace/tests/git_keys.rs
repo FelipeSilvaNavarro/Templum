@@ -103,11 +103,11 @@ fn arrows_walk_the_files_and_enter_opens_at_the_hunk(cx: &mut TestAppContext) {
     let selected = |cx: &mut TestAppContext| git_of(&ws, cx, id, |g| g.selected.clone());
     focus(handle, &ws, cx, id);
     press(handle, cx, "down");
-    assert_eq!(selected(cx), Some((List::Unstaged, "a.txt".to_string())));
+    assert_eq!(selected(cx), Some((List::Files, "a.txt".to_string())));
     press(handle, cx, "down");
-    assert_eq!(selected(cx), Some((List::Unstaged, "b.txt".to_string())));
+    assert_eq!(selected(cx), Some((List::Files, "b.txt".to_string())));
     press(handle, cx, "up");
-    assert_eq!(selected(cx), Some((List::Unstaged, "a.txt".to_string())));
+    assert_eq!(selected(cx), Some((List::Files, "a.txt".to_string())));
     press(handle, cx, "]");
     press(handle, cx, "]");
     press(handle, cx, "enter");
@@ -222,4 +222,18 @@ fn c_with_the_lists_folded_unfolds_them_for_the_summary(cx: &mut TestAppContext)
         assert!(summary.read(cx).focus_handle(cx).is_focused(window));
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn space_checks_the_selected_file_and_unchecks_it(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    focus(handle, &ws, cx, id);
+    press(handle, cx, "down");
+    press(handle, cx, "space");
+    assert_eq!(staged(&repo), "1\t1\ta.txt\n");
+    press(handle, cx, "space");
+    assert_eq!(staged(&repo), "", "unchecked again");
 }

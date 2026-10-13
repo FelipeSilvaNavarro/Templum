@@ -149,7 +149,7 @@ fn clicking_a_file_in_the_left_column_scrolls_the_panel_to_it(cx: &mut TestAppCo
     // Row 8 of the left list is drawn (the list is virtual: ~14 rows fit); its panel rows start
     // at 1 + 8 × 12 = 97, with enough rows after it for the list to scroll there.
     cx.update_window(handle, |_, window, cx| {
-        window.click(row_id(id, "unstaged", 8), cx);
+        window.click(row_id(id, "files", 8), cx);
         window.render_frame(cx);
     })
     .unwrap();

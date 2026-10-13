@@ -338,7 +338,7 @@ impl Workspace {
         let Some(git) = self.space.git_mut(id) else {
             return;
         };
-        let staged = list == git_block::List::Staged;
+        let staged = git.in_staged(&path);
         if let Some(ix) = git.panel.row_of(staged, &path) {
             git.panel
                 .scroll
@@ -586,6 +586,56 @@ impl Workspace {
         self.git_action(id, move |repo| repo.stage(&refs(&paths)), window, cx);
     }
 
+    /// A file's box in the Changes checklist: checked, it is unstaged whole; unchecked or
+    /// checked in part, it is staged whole.
+    pub(crate) fn toggle_check(
+        &mut self,
+        id: BlockId,
+        path: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(check) = self
+            .space
+            .git(id)
+            .and_then(|g| g.status.entries.iter().find(|e| e.path == path))
+            .map(git_block::Check::of)
+        else {
+            return;
+        };
+        if check == git_block::Check::Checked {
+            self.unstage(id, vec![path], window, cx);
+        } else {
+            self.stage(id, vec![path], window, cx);
+        }
+    }
+
+    /// The checklist's top box, over the files shown (Filter files narrows them): all checked,
+    /// they are all unstaged; else they are all staged.
+    pub(crate) fn check_all(
+        &mut self,
+        id: BlockId,
+        paths: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git(id) else {
+            return;
+        };
+        let all = paths.iter().all(|p| {
+            git.status
+                .entries
+                .iter()
+                .find(|e| e.path == *p)
+                .is_some_and(|e| git_block::Check::of(e) == git_block::Check::Checked)
+        });
+        if all {
+            self.unstage(id, paths, window, cx);
+        } else {
+            self.stage(id, paths, window, cx);
+        }
+    }
+
     pub(crate) fn unstage(
         &mut self,
         id: BlockId,
@@ -686,7 +736,7 @@ impl Workspace {
     }
 
     /// Opens a repository path in an editor beside the Git block, at the first hunk of the
-    /// file as the panel shows it (the selected row's section, else the Changes one).
+    /// file as the panel shows it (Staged when nothing of it is left unstaged, else Changes).
     pub(crate) fn open_from_git(
         &mut self,
         id: BlockId,
@@ -697,10 +747,7 @@ impl Workspace {
         let Some(git) = self.space.git(id) else {
             return;
         };
-        let staged = git
-            .selected
-            .as_ref()
-            .is_some_and(|s| s.1 == path && s.0 == git_block::List::Staged);
+        let staged = git.in_staged(path);
         let line = git
             .panel
             .first_line(staged, path)

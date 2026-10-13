@@ -45,8 +45,8 @@ fn commit_needs_something_staged_and_a_summary_then_commits(cx: &mut TestAppCont
     click_row_button(
         handle,
         cx,
-        row_id(id, "unstaged", 0),
-        git_button(id, "stage", "unstaged", 0),
+        row_id(id, "files", 0),
+        git_button(id, "check", "files", 0),
     );
     assert!(disabled(cx), "no summary");
     let summary = git_of(&ws, cx, id, |g| g.summary.clone());

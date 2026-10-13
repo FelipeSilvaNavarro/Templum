@@ -4,7 +4,7 @@ use super::*;
 use gpui_kit::Focusable;
 
 #[gpui_kit::test]
-fn the_plus_button_stages_and_minus_unstages(cx: &mut TestAppContext) {
+fn the_box_stages_a_file_and_unchecking_it_unstages_it(cx: &mut TestAppContext) {
     use crate::git_block::row_id;
     let repo = git_repo();
     std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
@@ -13,8 +13,8 @@ fn the_plus_button_stages_and_minus_unstages(cx: &mut TestAppContext) {
     click_row_button(
         handle,
         cx,
-        row_id(id, "unstaged", 0),
-        git_button(id, "stage", "unstaged", 0),
+        row_id(id, "files", 0),
+        git_button(id, "check", "files", 0),
     );
     git_of(&ws, cx, id, |g| {
         assert_eq!(g.status.staged().len(), 1);
@@ -27,8 +27,8 @@ fn the_plus_button_stages_and_minus_unstages(cx: &mut TestAppContext) {
     click_row_button(
         handle,
         cx,
-        row_id(id, "staged", 0),
-        git_button(id, "unstage", "staged", 0),
+        row_id(id, "files", 0),
+        git_button(id, "check", "files", 0),
     );
     git_of(&ws, cx, id, |g| {
         assert!(g.status.staged().is_empty());
@@ -37,7 +37,7 @@ fn the_plus_button_stages_and_minus_unstages(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn stage_all_and_unstage_all(cx: &mut TestAppContext) {
+fn the_top_box_stages_every_file_then_unstages_them(cx: &mut TestAppContext) {
     let repo = git_repo();
     std::fs::write(repo.path().join("a.txt"), "a\n").unwrap();
     std::fs::write(repo.path().join("b.txt"), "b\n").unwrap();
@@ -45,13 +45,13 @@ fn stage_all_and_unstage_all(cx: &mut TestAppContext) {
     let id = open_git(handle, &ws, cx, repo.path());
     let n = id.0 as usize;
     cx.update_window(handle, |_, window, cx| {
-        window.click(("git-stage-all", n), cx)
+        window.click(("git-check-all", n), cx)
     })
     .unwrap();
     settle(handle, cx);
     git_of(&ws, cx, id, |g| assert_eq!(g.status.staged().len(), 2));
     cx.update_window(handle, |_, window, cx| {
-        window.click(("git-unstage-all", n), cx)
+        window.click(("git-check-all", n), cx)
     })
     .unwrap();
     settle(handle, cx);
@@ -71,8 +71,8 @@ fn discard_asks_first_then_restores_the_file(cx: &mut TestAppContext) {
         click_row_button(
             handle,
             cx,
-            row_id(id, "unstaged", 0),
-            git_button(id, "discard", "unstaged", 0),
+            row_id(id, "files", 0),
+            git_button(id, "discard", "files", 0),
         )
     };
     discard(cx);
@@ -240,7 +240,7 @@ fn a_rows_menu_copies_the_path_and_ignores_the_file(cx: &mut TestAppContext) {
     let id = open_git(handle, &ws, cx, repo.path());
     // Stage, Discard…, Open, Copy path, Ignore.
     cx.update_window(handle, |_, window, cx| {
-        window.right_click(row_id(id, "unstaged", 0), cx);
+        window.right_click(row_id(id, "files", 0), cx);
         window.render_frame(cx);
         window.within("popup-menu").click(3usize, cx);
         window.render_frame(cx);
@@ -252,7 +252,7 @@ fn a_rows_menu_copies_the_path_and_ignores_the_file(cx: &mut TestAppContext) {
         .unwrap_or_default();
     assert_eq!(text, "build/out.o");
     cx.update_window(handle, |_, window, cx| {
-        window.right_click(row_id(id, "unstaged", 0), cx);
+        window.right_click(row_id(id, "files", 0), cx);
         window.render_frame(cx);
         window.within("popup-menu").click(4usize, cx);
         window.render_frame(cx);
@@ -280,11 +280,11 @@ fn the_rows_buttons_stay_while_a_read_runs(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| ws.refresh_git(id, window, cx));
         window.render_frame(cx);
-        window.hover(row_id(id, "unstaged", 0), cx);
+        window.hover(row_id(id, "files", 0), cx);
         window.render_frame(cx);
         assert!(
             window
-                .try_find(git_button(id, "stage", "unstaged", 0))
+                .try_find(git_button(id, "discard", "files", 0))
                 .is_some()
         );
     })
@@ -305,8 +305,8 @@ fn a_long_changes_list_builds_only_the_rows_on_screen(cx: &mut TestAppContext) {
     git_of(&ws, cx, id, |g| assert_eq!(g.status.unstaged().len(), 300));
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find(row_id(id, "unstaged", 0)).is_some());
-        assert!(window.try_find(row_id(id, "unstaged", 299)).is_none());
+        assert!(window.try_find(row_id(id, "files", 0)).is_some());
+        assert!(window.try_find(row_id(id, "files", 299)).is_none());
     })
     .unwrap();
 }
@@ -344,8 +344,8 @@ fn opening_a_file_from_a_git_row_gives_its_editor_the_keyboard(cx: &mut TestAppC
     click_row_button(
         handle,
         cx,
-        row_id(id, "unstaged", 0),
-        git_button(id, "open", "unstaged", 0),
+        row_id(id, "files", 0),
+        git_button(id, "open", "files", 0),
     );
     editor_has_keyboard(cx, "row button");
     // The row's menu: Stage, Discard changes…, Open.
@@ -357,7 +357,7 @@ fn opening_a_file_from_a_git_row_gives_its_editor_the_keyboard(cx: &mut TestAppC
             ws.focus_block(id, window, cx);
         });
         window.render_frame(cx);
-        window.right_click(row_id(id, "unstaged", 0), cx);
+        window.right_click(row_id(id, "files", 0), cx);
         window.render_frame(cx);
         window.within("popup-menu").click(2usize, cx);
         window.render_frame(cx);
@@ -377,5 +377,67 @@ fn with_a_conflict_commit_never_takes_every_change(cx: &mut TestAppContext) {
     git_of(&ws, cx, id, |g| {
         assert!(!g.commit_all());
         assert_eq!(g.commit_label(), "Commit");
+    });
+}
+
+#[gpui_kit::test]
+fn a_file_staged_in_part_shows_a_dash_and_its_box_stages_the_rest(cx: &mut TestAppContext) {
+    use crate::git_block::{Check, row_id};
+    let repo = three_hunk_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    // One hunk of the three, staged from the panel.
+    let patch = git_of(&ws, cx, id, |g| {
+        templum_git::hunk_patch(&g.panel.files[0].diff, 0).unwrap()
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.apply_hunk(id, patch, false, window, cx))
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(Check::of(g.status.files()[0]), Check::Partial);
+        assert_eq!(
+            g.commit_label(),
+            "Commit (1 file)",
+            "a file checked in part counts"
+        );
+    });
+    click_row_button(
+        handle,
+        cx,
+        row_id(id, "files", 0),
+        git_button(id, "check", "files", 0),
+    );
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(
+            Check::of(g.status.files()[0]),
+            Check::Checked,
+            "the rest too"
+        )
+    });
+    // Every file shown is checked: the top box unchecks them.
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-check-all", n), cx)
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(Check::of(g.status.files()[0]), Check::Unchecked)
+    });
+}
+
+#[gpui_kit::test]
+fn the_commit_button_counts_the_files_checked(cx: &mut TestAppContext) {
+    let repo = git_repo();
+    for f in ["a.txt", "b.txt", "c.txt"] {
+        std::fs::write(repo.path().join(f), f).unwrap();
+    }
+    git_run(repo.path(), &["add", "a.txt", "b.txt"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.commit_label(), "Commit (2 files)")
     });
 }

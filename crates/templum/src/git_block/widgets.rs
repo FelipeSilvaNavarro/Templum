@@ -7,7 +7,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{Div, ElementId, Entity, Stateful, div, px};
 use templum_git::Change;
 
-use super::FONT;
+use super::{Check, FONT};
 use crate::grid::hsla;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
@@ -122,4 +122,33 @@ pub(crate) fn badge(ws: &Workspace, change: Change, z: f32) -> Div {
         .text_size(px(10.0 * z))
         .text_color(ws.ui.canvas)
         .child(change.letter().to_string())
+}
+
+/// A box of the Changes checklist at the zoom (gpui-kit's checkbox keeps a fixed size): ✓ when
+/// checked, − when checked in part, empty when not.
+pub(crate) fn check_box(id: impl Into<ElementId>, check: Check, ui: Ui, z: f32) -> Stateful<Div> {
+    let on = check != Check::Unchecked;
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .size(px(14.0 * z))
+        .rounded(px(3.0 * z))
+        .border_1()
+        .border_color(if on { ui.accent } else { ui.title_dim })
+        .when(on, |el| el.bg(ui.accent))
+        .cursor_pointer()
+        .when(on, |el| {
+            el.child(
+                Icon::new(if check == Check::Checked {
+                    IconName::Check
+                } else {
+                    IconName::Minus
+                })
+                .size(px(11.0 * z))
+                .text_color(ui.canvas),
+            )
+        })
 }

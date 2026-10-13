@@ -50,6 +50,7 @@ impl Workspace {
                 "s" => self.key_stage(id, false, window, cx),
                 "u" => self.key_stage(id, true, window, cx),
                 "d" => self.key_discard(id, window, cx),
+                "space" => self.key_check(id, window, cx),
                 "enter" => self.key_open(id, window, cx),
                 // The summary is in the left column: shown first, so the keyboard goes to a
                 // field that is drawn.
@@ -66,11 +67,7 @@ impl Workspace {
         let Some(git) = self.space.git(id) else {
             return;
         };
-        let (conflicts, staged, unstaged) = (
-            git.status.conflicts(),
-            git.status.staged(),
-            git.status.unstaged(),
-        );
+        let (conflicts, changed) = (git.status.conflicts(), git.status.files());
         let files: Vec<(usize, List, String)> = git
             .listed(cx)
             .into_iter()
@@ -78,8 +75,7 @@ impl Workspace {
             .filter_map(|(ix, (list, i))| {
                 let entries = match list {
                     List::Conflicts => &conflicts,
-                    List::Staged => &staged,
-                    List::Unstaged => &unstaged,
+                    List::Files => &changed,
                 };
                 Some((ix, list, entries.get(i?)?.path.clone()))
             })
@@ -98,12 +94,12 @@ impl Workspace {
             None => files.len() - 1,
         };
         let (row, list, path) = files[next].clone();
+        let staged = git.in_staged(&path);
         let Some(git) = self.space.git_mut(id) else {
             return;
         };
         git.panel.cursor = None;
         git.lists_scroll.scroll_to_item(row, ScrollStrategy::Center);
-        let staged = list == List::Staged;
         if let Some(ix) = git.panel.row_of(staged, &path) {
             git.panel.scroll.scroll_to_item(ix, ScrollStrategy::Top);
         }
@@ -138,7 +134,7 @@ impl Workspace {
                     let from = git
                         .selected
                         .as_ref()
-                        .and_then(|(list, path)| p.row_of(*list == List::Staged, path))
+                        .and_then(|(_, path)| p.row_of(git.in_staged(path), path))
                         .unwrap_or(0);
                     if step > 0 {
                         hunks.iter().position(|&h| h > from).unwrap_or(0)
@@ -159,7 +155,12 @@ impl Workspace {
         };
         let (row, staged, path, hunk) = target;
         git.panel.cursor = Some((staged, path.clone(), hunk));
-        git.selected = Some((if staged { List::Staged } else { List::Unstaged }, path));
+        let list = if git.status.conflicts().iter().any(|e| e.path == path) {
+            List::Conflicts
+        } else {
+            List::Files
+        };
+        git.selected = Some((list, path));
         git.panel.scroll.scroll_to_item(row, ScrollStrategy::Center);
         cx.notify();
     }
@@ -219,8 +220,8 @@ impl Workspace {
             Some(c) if unstage => self.unstage(id, vec![c.path], window, cx),
             Some(c) => self.stage(id, vec![c.path], window, cx),
             None => match (selected, unstage) {
-                (Some((List::Staged, path)), true) => self.unstage(id, vec![path], window, cx),
-                (Some((List::Unstaged, path)), false) => self.stage(id, vec![path], window, cx),
+                (Some((List::Files, path)), true) => self.unstage(id, vec![path], window, cx),
+                (Some((List::Files, path)), false) => self.stage(id, vec![path], window, cx),
                 _ => {}
             },
         }
@@ -246,10 +247,17 @@ impl Workspace {
             }) => self.discard_hunk(id, path, patch, window, cx),
             Some(c) => self.discard(id, vec![c.path], window, cx),
             None => {
-                if let Some((List::Unstaged, path)) = selected {
+                if let Some((List::Files, path)) = selected {
                     self.discard(id, vec![path], window, cx)
                 }
             }
+        }
+    }
+
+    /// Space: the selected file's box in the Changes checklist is checked, or unchecked.
+    fn key_check(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((List::Files, path)) = self.space.git(id).and_then(|g| g.selected.clone()) {
+            self.toggle_check(id, path, window, cx);
         }
     }
 

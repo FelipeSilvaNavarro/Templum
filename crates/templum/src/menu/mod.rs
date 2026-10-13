@@ -243,8 +243,7 @@ impl Workspace {
                 let git = self.space.git(block)?;
                 let entries = match list {
                     git_block::List::Conflicts => git.status.conflicts(),
-                    git_block::List::Staged => git.status.staged(),
-                    git_block::List::Unstaged => git.status.unstaged(),
+                    git_block::List::Files => git.status.files(),
                 };
                 let entry = (*entries.get(index)?).clone();
                 Items::GitRow {

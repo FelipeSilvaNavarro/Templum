@@ -507,49 +507,49 @@ impl Items {
                                 },
                             ));
                     }
-                    List::Staged => {
-                        let (unstage, open) = (path.clone(), path.clone());
-                        menu = menu
-                            .item(item(
-                                ws,
-                                "Unstage",
-                                Some(IconName::Minus),
-                                move |ws, window, cx| {
-                                    ws.unstage(block, vec![unstage.clone()], window, cx)
-                                },
-                            ))
-                            .item(item(
-                                ws,
-                                "Open",
-                                Some(IconName::FileCode),
-                                move |ws, window, cx| ws.open_from_git(block, &open, window, cx),
-                            ));
-                    }
-                    List::Unstaged => {
-                        let (stage, discard, open) = (path.clone(), path.clone(), path.clone());
-                        menu = menu
-                            .item(item(
+                    List::Files => {
+                        // Stage what isn't staged yet, Unstage what is: a file staged in part
+                        // offers both.
+                        if entry.unstaged.is_some() {
+                            let stage = path.clone();
+                            menu = menu.item(item(
                                 ws,
                                 "Stage",
                                 Some(IconName::Plus),
                                 move |ws, window, cx| {
                                     ws.stage(block, vec![stage.clone()], window, cx)
                                 },
-                            ))
-                            .item(item(
+                            ));
+                        }
+                        if entry.staged.is_some() {
+                            let unstage = path.clone();
+                            menu = menu.item(item(
+                                ws,
+                                "Unstage",
+                                Some(IconName::Minus),
+                                move |ws, window, cx| {
+                                    ws.unstage(block, vec![unstage.clone()], window, cx)
+                                },
+                            ));
+                        }
+                        if entry.unstaged.is_some() {
+                            let discard = path.clone();
+                            menu = menu.item(item(
                                 ws,
                                 "Discard changes…",
                                 Some(IconName::Undo2),
                                 move |ws, window, cx| {
                                     ws.discard(block, vec![discard.clone()], window, cx)
                                 },
-                            ))
-                            .item(item(
-                                ws,
-                                "Open",
-                                Some(IconName::FileCode),
-                                move |ws, window, cx| ws.open_from_git(block, &open, window, cx),
                             ));
+                        }
+                        let open = path.clone();
+                        menu = menu.item(item(
+                            ws,
+                            "Open",
+                            Some(IconName::FileCode),
+                            move |ws, window, cx| ws.open_from_git(block, &open, window, cx),
+                        ));
                     }
                 }
                 // A new file has no history yet.

@@ -975,7 +975,7 @@ fn file_history_from_a_changes_row(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let id = open_git(handle, &ws, cx, repo.path());
     cx.update_window(handle, |_, window, cx| {
-        window.right_click(crate::git_block::row_id(id, "unstaged", 0), cx);
+        window.right_click(crate::git_block::row_id(id, "files", 0), cx);
         window.render_frame(cx);
         // Stage, Discard changes…, Open, File history (a new file has none).
         window.within("popup-menu").click(3usize, cx);

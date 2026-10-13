@@ -27,12 +27,12 @@ fn a_git_block_on_a_fresh_repository_lists_an_untracked_file(cx: &mut TestAppCon
     cx.update_window(handle, |_, window, _| {
         assert!(
             window
-                .try_find(crate::git_block::row_id(id, "unstaged", 0))
+                .try_find(crate::git_block::row_id(id, "files", 0))
                 .is_some()
         );
         assert!(
             window
-                .try_find(crate::git_block::row_id(id, "staged", 0))
+                .try_find(crate::git_block::row_id(id, "files", 1))
                 .is_none()
         );
         assert!(window.try_find(("branch", id.0 as usize)).is_some());
@@ -271,7 +271,7 @@ fn changing_a_git_blocks_folder_forgets_the_old_repository(cx: &mut TestAppConte
         ws.update(cx, |ws, cx| {
             ws.select_git_row(
                 id,
-                crate::git_block::List::Unstaged,
+                crate::git_block::List::Files,
                 "a.txt".to_string(),
                 window,
                 cx,
