@@ -21,6 +21,7 @@ use crate::workspace::Workspace;
 mod branches;
 mod changes;
 mod commit_form;
+pub(crate) mod diff_view;
 mod history;
 mod stashes;
 mod view;
