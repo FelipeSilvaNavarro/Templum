@@ -403,6 +403,54 @@ impl Repo {
             .to_string())
     }
 
+    /// `git add --all`: every change, new and deleted files included (Commit all changes).
+    pub fn stage_all(&self) -> Result<(), GitError> {
+        self.run(&["add", "--all"]).map(drop)
+    }
+
+    /// The commit `short` is on the current branch's upstream: pushed, so it can't be taken
+    /// back for others. False with no upstream, and on a detached HEAD.
+    pub fn on_upstream(&self, short: &str) -> Result<bool, GitError> {
+        match self.run(&["merge-base", "--is-ancestor", short, "@{u}"]) {
+            Ok(_) => Ok(true),
+            Err(e) if e.code == Some(1) => Ok(false),
+            Err(e)
+                if e.stderr.contains("no upstream")
+                    || e.stderr.contains("does not point to a branch") =>
+            {
+                Ok(false)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Takes the last commit back, its changes left staged, and gives its message (for the
+    /// fields). `short` must still be HEAD: a commit made since is never the one undone. After an
+    /// Amend (`amended`) the commit the amend replaced comes back (`HEAD@{1}`); the repository's
+    /// first commit has no parent, so HEAD goes (`update-ref -d`).
+    pub fn undo_commit(&self, short: &str, amended: bool) -> Result<String, GitError> {
+        let now = self
+            .text(&["rev-parse", "--verify", "-q", "HEAD"])
+            .unwrap_or_default();
+        if short.is_empty() || !now.trim().starts_with(short) {
+            return Err(GitError {
+                command: shown(&self.program, &["reset", "--soft", "HEAD~1"]),
+                code: None,
+                stderr: format!("error: the last commit is no longer {short}"),
+                missing: false,
+            });
+        }
+        let message = self.last_message()?;
+        if amended {
+            self.run(&["reset", "-q", "--soft", "HEAD@{1}"])?;
+        } else if self.run(&["rev-parse", "--verify", "-q", "HEAD~1"]).is_ok() {
+            self.run(&["reset", "-q", "--soft", "HEAD~1"])?;
+        } else {
+            self.run(&["update-ref", "-d", "HEAD"])?;
+        }
+        Ok(message)
+    }
+
     /// `git apply` of `patch` (a `hunk_patch`): on the index with `cached`, the other way with
     /// `reverse`. Written to a temporary file, since `run` gives git no stdin. A patch that no
     /// longer applies (the file changed since it was read) is git's error.

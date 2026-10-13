@@ -1021,3 +1021,93 @@ fn a_hunk_of_a_file_whose_name_git_quotes() {
     .unwrap();
     assert_eq!(working(&repo).staged[0].path(), name);
 }
+
+fn head(repo: &Repo) -> String {
+    String::from_utf8(repo.run(&["rev-parse", "--short", "HEAD"]).unwrap())
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn undo_commit_takes_the_last_commit_back_and_keeps_its_changes_staged() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    // The repository's first commit has no parent: HEAD goes away, the file stays staged.
+    let first = repo.commit("First", false).unwrap();
+    assert_eq!(repo.undo_commit(&first, false).unwrap(), "First");
+    let s = repo.status().unwrap();
+    assert_eq!(s.oid, None, "no commit again");
+    assert_eq!(s.entries[0].staged, Some(Change::Added));
+    let first = repo.commit("First", false).unwrap();
+    write(dir.path(), "a.txt", "two\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let second = repo.commit("Second\n\nWhy it changed.", false).unwrap();
+    assert_eq!(
+        repo.undo_commit(&second, false).unwrap(),
+        "Second\n\nWhy it changed."
+    );
+    assert_eq!(head(&repo), first);
+    assert_eq!(
+        repo.status().unwrap().entries[0].staged,
+        Some(Change::Modified),
+        "its change still staged"
+    );
+    // After an Amend, the commit the amend replaced comes back, not its parent.
+    let second = repo.commit("Second", false).unwrap();
+    write(dir.path(), "a.txt", "three\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let amended = repo.commit("Second, amended", true).unwrap();
+    assert_eq!(repo.undo_commit(&amended, true).unwrap(), "Second, amended");
+    assert_eq!(head(&repo), second);
+    // HEAD moved since (a terminal committed again): refused, nothing taken back.
+    let err = repo.undo_commit(&first, false).unwrap_err();
+    assert!(err.stderr.contains("no longer"), "{err:?}");
+    assert_eq!(head(&repo), second);
+}
+
+#[test]
+fn a_commit_is_on_the_upstream_once_pushed() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let first = repo.commit("a", false).unwrap();
+    assert!(!repo.on_upstream(&first).unwrap(), "no upstream yet");
+    let _remote = with_remote(&repo);
+    assert!(repo.on_upstream(&first).unwrap(), "pushed");
+    write(dir.path(), "a.txt", "two\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let second = repo.commit("b", false).unwrap();
+    assert!(!repo.on_upstream(&second).unwrap(), "not pushed");
+    repo.run(&["checkout", "-q", "--detach"]).unwrap();
+    assert!(!repo.on_upstream(&second).unwrap(), "detached: no upstream");
+}
+
+#[test]
+fn stage_all_takes_new_changed_and_deleted_files() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "keep.txt", "1\n");
+    write(dir.path(), "gone.txt", "1\n");
+    repo.stage(&["keep.txt", "gone.txt"]).unwrap();
+    repo.commit("base", false).unwrap();
+    write(dir.path(), "keep.txt", "2\n");
+    std::fs::remove_file(dir.path().join("gone.txt")).unwrap();
+    write(dir.path(), "new/n.txt", "n\n");
+    repo.stage_all().unwrap();
+    let s = repo.status().unwrap();
+    let staged: Vec<_> = s
+        .entries
+        .iter()
+        .map(|e| (e.path.as_str(), e.staged))
+        .collect();
+    assert_eq!(
+        staged,
+        [
+            ("gone.txt", Some(Change::Deleted)),
+            ("keep.txt", Some(Change::Modified)),
+            ("new/n.txt", Some(Change::Added)),
+        ]
+    );
+    assert!(s.unstaged().is_empty());
+}
