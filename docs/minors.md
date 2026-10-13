@@ -87,6 +87,19 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   (`crates/templum-git/src/repo.rs:1023`) reads `*?[` in a branch name as a pattern. Fix: match the remote's name
   against `git remote`; escape the glob characters.
 
+- [ ] **A switch that fails after leaving the changes may keep them stashed without saying so.** When the checkout
+  fails partway, putting them back is `let _ = self.pop_whole(…)` (`crates/templum-git/src/repo.rs:1170`, at
+  340439a): if that pop conflicts with what the checkout left, the changes stay in Stashes and the notification
+  shows only the switch's error. Fix: return the pop's failure with the switch's, and say "Your changes are in
+  Stashes".
+- [ ] **A region choice checks only its two parts.** `resolve_region`
+  (`crates/templum/src/workspace/git_conflicts.rs:79`, at 340439a) compares the parts' lines with what was drawn, not
+  the `<<<<<<<` and `>>>>>>>` lines: a region whose labels changed (another merge started meanwhile with the same
+  text) is still resolved. Fix: carry the labels in `shown` and compare them too.
+- [ ] **A comparison's binary file reads "Binary file · 0 B".** The size comes from the working file
+  (`crates/templum/src/git_block/diff_view/paint.rs:515`, at 340439a), which a range doesn't read. Fix: leave the size
+  out when `bytes` is None.
+
 ## Trash and discards
 
 - [ ] **Discard all filters its files with `Vec::contains`.** `discard` (`crates/templum/src/workspace/git_discard.rs:69`)
@@ -105,7 +118,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   (`crates/templum/src/workspace/tests/git_layout.rs`) doesn't check the count in the question;
   `a_hunk_that_changed_since_it_was_read_is_refused` (`tests/git_hunks.rs`) checks the notification count, not "The
   file changed; try again"; `past_the_cap_a_discard_keeps_nothing` (`tests/git_trash.rs`) doesn't check "Too much to
-  keep a copy". Fix: read the dialog's description and the notification's message in each.
+  keep a copy". The batches 3 and 4 tests do the same: `without_a_remote_publish_says_so`,
+  `a_failed_clone_says_why_and_leaves_no_folder` (`tests/git_sync.rs`), `leaving_a_branch_with_commits_not_pushed_offers_to_push_it`
+  (`tests/git_switch.rs`), `a_region_changed_since_it_was_read_is_refused` and
+  `a_whole_file_choice_whose_copy_fails_changes_nothing` (`tests/git_conflicts.rs`) count notifications. Fix: read
+  the dialog's description and the notification's message in each (gpui-component's `Notification` keeps its message
+  private: a test-only accessor, or an element id on the message).
 
 ## Release and benches
 
