@@ -91,13 +91,19 @@ impl FileDiff {
 
     /// A hunk of it can be staged, unstaged or discarded alone. Not a new or deleted file (its
     /// one hunk is the whole file: the file's buttons do it), nor a binary, a file too large or
-    /// one not read.
+    /// one not read; nor one whose text isn't UTF-8 (read with U+FFFD in place of its bytes, a
+    /// patch would write those back: `git add` takes the whole file byte for byte instead).
     pub fn by_hunk(&self) -> bool {
         self.old_path.is_some()
             && self.new_path.is_some()
             && !self.binary
             && !self.too_large
             && !self.unread
+            && !self
+                .hunks
+                .iter()
+                .flat_map(|h| &h.lines)
+                .any(|l| l.text.contains('\u{FFFD}'))
     }
 }
 
@@ -845,5 +851,18 @@ diff --git \"a/we\\\"ird.txt\" \"b/we\\\"ird.txt\"\n--- \"a/we\\\"ird.txt\"\n+++
         assert_eq!(quoted("a/plain name.txt"), "a/plain name.txt");
         assert_eq!(quoted("a/tab\there.txt"), "\"a/tab\\there.txt\"");
         assert_eq!(unquoted(&quoted("a/x\u{1}y")), "a/x\u{1}y");
+    }
+
+    #[test]
+    fn a_file_read_with_replaced_bytes_cant_go_by_hunk() {
+        // A Latin-1 "café": the diff was read lossily, so a patch would write U+FFFD back.
+        let text = "diff --git a/l.txt b/l.txt\n--- a/l.txt\n+++ b/l.txt\n@@ -1,2 +1,2 @@\n caf\u{FFFD}\n-b\n+B\n";
+        let file = &parse_diff(text, usize::MAX)[0];
+        assert!(!file.by_hunk());
+        assert_eq!(
+            hunk_patch(file, 0),
+            None,
+            "its file's buttons take it byte for byte"
+        );
     }
 }

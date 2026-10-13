@@ -1111,3 +1111,19 @@ fn stage_all_takes_new_changed_and_deleted_files() {
     );
     assert!(s.unstaged().is_empty());
 }
+
+#[test]
+fn a_file_that_isnt_utf8_has_no_hunk_patch() {
+    let (dir, repo) = fresh();
+    std::fs::write(dir.path().join("l.txt"), b"a\nb\ncaf\xe9\nc\n").unwrap();
+    repo.stage(&["l.txt"]).unwrap();
+    repo.commit("latin-1", false).unwrap();
+    std::fs::write(dir.path().join("l.txt"), b"a\nB\ncaf\xe9\nc\n").unwrap();
+    let d = working(&repo);
+    assert_eq!(d.unstaged[0].path(), "l.txt");
+    assert_eq!(
+        templum_git::hunk_patch(&d.unstaged[0], 0),
+        None,
+        "a patch from the lossy text would write U+FFFD over \\xe9"
+    );
+}
