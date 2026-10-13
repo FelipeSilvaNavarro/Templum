@@ -1,11 +1,14 @@
 //! The Git block's commit form: Summary, Description, Amend and Commit.
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::Icon;
 use gpui_kit::component::input::Textarea;
+use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, Div, ElementId, Stateful, TestSupportExt, div, px,
+    AnyElement, ClickEvent, Context, Div, ElementId, SharedString, Stateful, TestSupportExt, div,
+    px,
 };
 use templum_canvas::BlockId;
 
@@ -61,7 +64,8 @@ pub(super) fn commit_form(
                             .child(len.to_string())
                             .test_support(),
                     )
-                }),
+                })
+                .children(generate_button(ws, id, git, z, cx)),
         )
         .child(
             // Three rows, at the zoom: gpui-kit sizes it from the theme's fixed font otherwise.
@@ -118,6 +122,57 @@ pub(super) fn commit_form(
             )
         })
         .into_any_element()
+}
+
+/// Generate ✨, beside the summary: shown while the agent chosen in Settings ▸ Git is ready and
+/// there is something to describe (what is staged, or every change for Commit all changes). It
+/// spins while the agent writes; a click then stops it.
+fn generate_button(
+    ws: &Workspace,
+    id: BlockId,
+    git: &Git,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> Option<AnyElement> {
+    let agent = ws.commit_agent.as_ref().filter(|a| a.ready)?;
+    if git.repo().is_none() || (git.status.staged().is_empty() && !git.commit_all()) {
+        return None;
+    }
+    let (ui, n) = (ws.ui, id.0 as usize);
+    let running = git.generating.is_some();
+    let tip: SharedString = if running {
+        "Stop the agent".into()
+    } else {
+        format!("Generate: {} writes the message", agent.title).into()
+    };
+    Some(
+        div()
+            .id(("git-generate", n))
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .size(px(22.0 * z))
+            .rounded(px(5.0 * z))
+            .cursor_pointer()
+            .hover(move |s| s.bg(ui.hover))
+            .child(if running {
+                Spinner::new()
+                    .with_size(UiSize::Size(px(12.0 * z)))
+                    .into_any_element()
+            } else {
+                Icon::new(IconName::Sparkles)
+                    .size(px(13.0 * z))
+                    .text_color(ui.title)
+                    .into_any_element()
+            })
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                ws.generate_message(id, window, cx)
+            }))
+            .test_support()
+            .into_any_element(),
+    )
 }
 
 /// A checkbox and its label at the zoom (gpui-kit's has a fixed size).

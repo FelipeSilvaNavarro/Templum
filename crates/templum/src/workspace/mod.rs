@@ -10,6 +10,7 @@ mod git_changes;
 mod git_discard;
 mod git_history;
 mod git_keys;
+mod git_message;
 mod git_ops;
 mod input;
 mod persist;
