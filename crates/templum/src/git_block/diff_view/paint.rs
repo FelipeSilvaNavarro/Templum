@@ -32,7 +32,7 @@ use crate::workspace::Workspace;
 pub(super) fn row(
     ws: &Workspace,
     id: BlockId,
-    files: &[Shown],
+    files: &Rc<Vec<Shown>>,
     rows: &[Row],
     ix: usize,
     row_h: f32,
@@ -42,7 +42,7 @@ pub(super) fn row(
     match &rows[ix] {
         Row::Section { staged, files: n } => section(*staged, *n, ws.ui, row_h, z),
         Row::File { file } => file_row(ws, id, &files[*file], ix, row_h, z, cx),
-        Row::Hunk { file, hunk } => hunk_row(&files[*file].diff.hunks[*hunk].title(), ws, row_h, z),
+        Row::Hunk { file, hunk } => hunk_row(ws, id, files, *file, *hunk, ix, row_h, z, cx),
         Row::Fold { file, lines } => fold_row(ws, id, &files[*file], ix, *lines, row_h, z, cx),
         Row::Note { file, note } => note_row(ws, id, &files[*file], ix, *note, row_h, z, cx),
         Row::Line { file, hunk, line } => {
@@ -204,19 +204,112 @@ fn file_row(
         .into_any_element()
 }
 
-fn hunk_row(title: &str, ws: &Workspace, row_h: f32, z: f32) -> AnyElement {
+/// A hunk's row: where it is, and its buttons: Stage and Discard in Changes, Unstage in Staged
+/// (only for a file taken apart by hunk, and not while whitespace is ignored: the patch would
+/// miss it), and Open at its line. Shown while the row is hovered.
+#[allow(clippy::too_many_arguments)]
+fn hunk_row(
+    ws: &Workspace,
+    id: BlockId,
+    files: &Rc<Vec<Shown>>,
+    file: usize,
+    hunk: usize,
+    ix: usize,
+    row_h: f32,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
     let ui = ws.ui;
+    let n = id.0 as usize;
+    let s = &files[file];
+    let h = &s.diff.hunks[hunk];
+    let git = ws.space.git(id);
+    let busy = git.is_some_and(|g| g.acting > 0);
+    let by_hunk = s.diff.by_hunk() && git.is_some_and(|g| !g.panel.ignore_ws);
+    let path = s.diff.path().to_string();
+    let ids = |what: &str| ElementId::Name(format!("git-hunk-{what}-{n}-{ix}").into());
+    // Built at the click from the files as drawn: what the user saw is what is applied.
+    let drawn = files.clone();
+    let patch = move || templum_git::hunk_patch(&drawn[file].diff, hunk);
+    let mut buttons: Vec<AnyElement> = Vec::new();
+    if !busy && by_hunk {
+        if s.staged {
+            let patch = patch.clone();
+            buttons.push(
+                small(ids("unstage"), "Unstage", ui, z)
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        if let Some(p) = patch() {
+                            ws.apply_hunk(id, p, true, window, cx)
+                        }
+                    }))
+                    .test_support()
+                    .into_any_element(),
+            );
+        } else {
+            let stage = patch.clone();
+            buttons.push(
+                small(ids("stage"), "Stage", ui, z)
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        if let Some(p) = stage() {
+                            ws.apply_hunk(id, p, false, window, cx)
+                        }
+                    }))
+                    .test_support()
+                    .into_any_element(),
+            );
+            let (discard, path) = (patch.clone(), path.clone());
+            buttons.push(
+                small(ids("discard"), "Discard", ui, z)
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        if let Some(p) = discard() {
+                            ws.discard_hunk(id, path.clone(), p, window, cx)
+                        }
+                    }))
+                    .test_support()
+                    .into_any_element(),
+            );
+        }
+    }
+    if !busy {
+        let line = h.new_start.max(1);
+        buttons.push(
+            small(ids("open"), "Open", ui, z)
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.open_from_git_at(id, &path, Some(line), window, cx)
+                }))
+                .test_support()
+                .into_any_element(),
+        );
+    }
     div()
+        .id(("git-hunk", ix))
+        .group("git-hunk")
         .w_full()
         .h(px(row_h))
         .flex()
         .items_center()
+        .gap(px(6.0 * z))
         .px(px(8.0 * z))
         .bg(ui.hover)
-        .font_family(ws.cell.font.family.clone())
         .text_size(px(FONT * z))
         .text_color(ui.title_dim)
-        .child(format!("@@ {title}"))
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .truncate()
+                .font_family(ws.cell.font.family.clone())
+                .child(format!("@@ {}", h.title())),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(px(4.0 * z))
+                .invisible()
+                .group_hover("git-hunk", |s| s.visible())
+                .children(buttons),
+        )
+        .test_support()
         .into_any_element()
 }
 

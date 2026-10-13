@@ -8,7 +8,8 @@ use templum_git::{GitError, Repo};
 use crate::git_block;
 use crate::prompt;
 
-use super::{Workspace, notify_git_error, show_notification};
+use super::git_discard::REFUSED;
+use super::{Workspace, notify_git_error, notify_git_failure, show_notification};
 
 impl Workspace {
     /// Commits what is staged with the form's message; "Committed abc1234" and the fields
@@ -429,6 +430,43 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.git_action(id, move |repo| repo.unstage(&refs(&paths)), window, cx);
+    }
+
+    /// A hunk's Stage (`unstage` false) or Unstage: `patch` applied on the index. One git
+    /// refuses (the file changed since it was read) says so in the user's words, and the block
+    /// reads again either way.
+    pub(crate) fn apply_hunk(
+        &mut self,
+        id: BlockId,
+        patch: String,
+        unstage: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
+            return;
+        };
+        self.act_job(
+            self.here(id),
+            move || repo.apply_patch(&patch, true, unstage),
+            |ws, at, result, window, cx| {
+                if let Err(e) = result {
+                    let entity = cx.entity();
+                    notify_git_failure(
+                        &entity,
+                        at.clone(),
+                        &e,
+                        REFUSED.to_string(),
+                        Vec::new(),
+                        window,
+                        cx,
+                    );
+                }
+                ws.after_action(at, window, cx);
+            },
+            window,
+            cx,
+        );
     }
 
     /// Appends the path to the repository's .gitignore.

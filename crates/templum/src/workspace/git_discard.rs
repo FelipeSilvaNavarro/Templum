@@ -27,8 +27,6 @@ pub(crate) const REFUSED: &str = "The file changed; try again";
 #[derive(Clone)]
 pub(crate) enum Discarding {
     Files(Vec<templum_git::Entry>),
-    // Until Task 6 of the batch-2 plan: the hunk rows' Discard builds it.
-    #[allow(dead_code)]
     Hunk(String),
 }
 
@@ -95,8 +93,6 @@ impl Workspace {
     }
 
     /// A hunk's Discard: `patch` reversed on `path`, after the question.
-    // Until Task 6 of the batch-2 plan: the hunk rows' Discard calls it.
-    #[allow(dead_code)]
     pub(crate) fn discard_hunk(
         &mut self,
         id: BlockId,

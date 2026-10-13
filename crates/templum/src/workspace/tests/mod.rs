@@ -433,6 +433,21 @@ fn committed_repo() -> tempfile::TempDir {
     repo
 }
 
+/// a.txt of 30 lines committed, then lines 2, 15 and 28 changed: three hunks.
+fn three_hunk_repo() -> tempfile::TempDir {
+    let repo = git_repo();
+    let lines: Vec<String> = (1..=30).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(repo.path().join("a.txt"), lines.concat()).unwrap();
+    git_run(repo.path(), &["add", "a.txt"]);
+    git_run(repo.path(), &["commit", "-q", "-m", "a"]);
+    let mut changed = lines;
+    for i in [1, 14, 27] {
+        changed[i] = format!("LINE {}\n", i + 1);
+    }
+    std::fs::write(repo.path().join("a.txt"), changed.concat()).unwrap();
+    repo
+}
+
 /// Hovers a row (its buttons show) and clicks one of them.
 fn click_row_button(
     handle: AnyWindowHandle,
@@ -481,6 +496,7 @@ mod editor_tabs;
 mod git_changes;
 mod git_commit;
 mod git_history;
+mod git_hunks;
 mod git_panel;
 mod git_status;
 mod git_trash;
