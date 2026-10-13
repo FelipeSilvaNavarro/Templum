@@ -4049,13 +4049,121 @@ table followed by its JSON lines. Release build, from `~/Documents/github/Daemon
 
 ### Before (Task 1, `~/Documents/github/Templum/target/lod/before`)
 
+Built from 85a6606. The window was tiled by Hyprland to 945 × 512 px (a quarter of a 1920 × 1080 screen), not
+its 1280 × 800 default, as in earlier benches on this laptop.
+
 | Scenario | frames | p50 | p95 | p99 | max |
 |---|---|---|---|---|---|
+| `--bench-far` | 1019 | 9.34 | 13.93 | 18.54 | 198.39 |
+| `--bench` | 1335 | 6.27 | 13.44 | 17.97 | 35.35 |
+| `--bench-mixed` | 1509 | 6.08 | 9.78 | 13.21 | 32.21 |
+
+```
+far   {"frames":983,"p50_ms":9.62,"p95_ms":14.54,"p99_ms":18.54,"max_ms":205.75,"rss_mb":286.2,"idle_rss_mb":235.3}
+far   {"frames":1019,"p50_ms":9.34,"p95_ms":13.93,"p99_ms":17.15,"max_ms":198.39,"rss_mb":239.2,"idle_rss_mb":187.2}
+far   {"frames":1042,"p50_ms":9.20,"p95_ms":13.47,"p99_ms":20.36,"max_ms":116.92,"rss_mb":238.1,"idle_rss_mb":187.1}
+bench {"frames":1335,"p50_ms":6.27,"p95_ms":13.44,"p99_ms":17.07,"max_ms":34.80,"rss_mb":293.4,"idle_rss_mb":184.3}
+bench {"frames":1362,"p50_ms":6.20,"p95_ms":12.80,"p99_ms":17.97,"max_ms":38.08,"rss_mb":289.0,"idle_rss_mb":184.6}
+bench {"frames":1210,"p50_ms":6.85,"p95_ms":14.94,"p99_ms":20.52,"max_ms":35.35,"rss_mb":291.5,"idle_rss_mb":186.7}
+mixed {"frames":1495,"p50_ms":6.09,"p95_ms":10.25,"p99_ms":12.66,"max_ms":33.65,"rss_mb":200.4,"idle_rss_mb":166.4}
+mixed {"frames":1534,"p50_ms":6.08,"p95_ms":9.34,"p99_ms":13.21,"max_ms":31.43,"rss_mb":198.0,"idle_rss_mb":166.2}
+mixed {"frames":1509,"p50_ms":6.08,"p95_ms":9.78,"p99_ms":14.29,"max_ms":32.21,"rss_mb":196.4,"idle_rss_mb":166.0}
+```
+
+The same binary on the other side of the alternation (the script's "after"): `--bench-far` p95 15.52, `--bench`
+13.96, `--bench-mixed` 9.79 (medians): about 1 ms of run-to-run noise.
 
 ### Checkpoint (Task 8): before → Part 1
 
+`before` against `~/Documents/github/Templum/target/lod/part1` (built from 40666ec), 3 alternating rounds each (5 more
+for `--bench`, whose p95 and p99 came out a little higher in the first 3), window 945 × 512 px as above.
+
 | Scenario | p50 | p95 | p99 | max | frames |
 |---|---|---|---|---|---|
+| `--bench-far` | 9.11 → 7.83 | 16.37 → 13.06 | 18.20 → 16.04 | 119.21 → 151.06 | 1049 → 1180 |
+| `--bench` | 6.35 → 6.26 | 13.15 → 14.17 | 17.00 → 20.39 | 27.01 → 32.82 | 1287 → 1317 |
+| `--bench-mixed` | 6.13 → 6.11 | 11.93 → 10.01 | 15.85 → 13.78 | 52.69 → 53.88 | 1412 → 1470 |
+| `--bench-zoom=empty` | 6.06 → 6.06 | 6.27 → 6.25 | 11.63 → 11.43 | 13.68 → 13.31 | 1633 → 1633 |
+| `--bench-zoom=terminal` | 6.07 → 6.07 | 8.54 → 8.33 | 11.99 → 11.72 | 13.41 → 14.59 | 1588 → 1594 |
+| `--bench-zoom=editor` | 7.97 → 7.86 | 14.67 → 14.44 | 21.77 → 18.50 | 92.26 → 91.83 | 1161 → 1186 |
+| `--bench-zoom=note` | 38.61 → 47.47 | 79.27 → 78.44 | 85.66 → 85.47 | 96.92 → 92.46 | 274 → 263 |
+| `--bench-zoom=kanban` | 6.14 → 6.14 | 9.32 → 9.33 | 13.59 → 12.46 | 18.47 → 16.11 | 1483 → 1487 |
+| `--bench-zoom=git` | 6.10 → 6.08 | 8.99 → 7.90 | 12.30 → 11.94 | 16.83 → 13.33 | 1531 → 1580 |
+| `--bench-git` | 6.06 → 6.07 | 8.93 → 9.26 | 11.59 → 12.00 | 42.90 → 43.73 | 1562 → 1550 |
+| `--bench`, 5 more rounds | 6.41 → 6.38 | 13.52 → 12.89 | 18.14 → 17.86 | 26.30 → 34.05 | 1303 → 1325 |
+
+```
+far           before {"frames":1037,"p50_ms":9.11,"p95_ms":16.37,"p99_ms":18.2,"max_ms":135.24,"rss_mb":236.7,"idle_rss_mb":186.5}
+far           before {"frames":1067,"p50_ms":9.13,"p95_ms":13.26,"p99_ms":15.63,"max_ms":119.21,"rss_mb":239.2,"idle_rss_mb":187.1}
+far           before {"frames":1049,"p50_ms":9.03,"p95_ms":16.41,"p99_ms":18.36,"max_ms":117.01,"rss_mb":238.3,"idle_rss_mb":187.2}
+far           after  {"frames":1164,"p50_ms":8.13,"p95_ms":12.51,"p99_ms":14.95,"max_ms":183.05,"rss_mb":281.9,"idle_rss_mb":235.0}
+far           after  {"frames":1192,"p50_ms":7.72,"p95_ms":13.99,"p99_ms":16.58,"max_ms":117.4,"rss_mb":232.4,"idle_rss_mb":187.5}
+far           after  {"frames":1180,"p50_ms":7.83,"p95_ms":13.06,"p99_ms":16.04,"max_ms":151.06,"rss_mb":231.8,"idle_rss_mb":187.1}
+bench         before {"frames":1354,"p50_ms":6.3,"p95_ms":12.11,"p99_ms":16.78,"max_ms":25.8,"rss_mb":289.4,"idle_rss_mb":184.6}
+bench         before {"frames":1287,"p50_ms":6.35,"p95_ms":14.1,"p99_ms":19.22,"max_ms":41.4,"rss_mb":289.4,"idle_rss_mb":184.5}
+bench         before {"frames":1287,"p50_ms":6.63,"p95_ms":13.15,"p99_ms":17.0,"max_ms":27.01,"rss_mb":290.4,"idle_rss_mb":184.9}
+bench         after  {"frames":1317,"p50_ms":6.25,"p95_ms":14.17,"p99_ms":20.73,"max_ms":32.82,"rss_mb":289.3,"idle_rss_mb":184.4}
+bench         after  {"frames":1345,"p50_ms":6.26,"p95_ms":12.97,"p99_ms":18.0,"max_ms":26.86,"rss_mb":290.1,"idle_rss_mb":184.7}
+bench         after  {"frames":1246,"p50_ms":6.54,"p95_ms":14.82,"p99_ms":20.39,"max_ms":44.08,"rss_mb":290.3,"idle_rss_mb":184.8}
+mixed         before {"frames":1361,"p50_ms":6.16,"p95_ms":12.6,"p99_ms":18.12,"max_ms":52.69,"rss_mb":208.9,"idle_rss_mb":166.4}
+mixed         before {"frames":1415,"p50_ms":6.13,"p95_ms":11.93,"p99_ms":15.85,"max_ms":47.61,"rss_mb":208.5,"idle_rss_mb":166.5}
+mixed         before {"frames":1412,"p50_ms":6.12,"p95_ms":11.69,"p99_ms":14.7,"max_ms":70.1,"rss_mb":206.8,"idle_rss_mb":166.4}
+mixed         after  {"frames":1475,"p50_ms":6.11,"p95_ms":9.74,"p99_ms":13.78,"max_ms":49.34,"rss_mb":198.2,"idle_rss_mb":166.5}
+mixed         after  {"frames":1457,"p50_ms":6.12,"p95_ms":11.2,"p99_ms":13.17,"max_ms":78.1,"rss_mb":199.3,"idle_rss_mb":166.8}
+mixed         after  {"frames":1470,"p50_ms":6.11,"p95_ms":10.01,"p99_ms":14.28,"max_ms":53.88,"rss_mb":199.3,"idle_rss_mb":167.3}
+zoom=empty    before {"frames":1633,"p50_ms":6.06,"p95_ms":6.27,"p99_ms":11.63,"max_ms":13.68,"rss_mb":160.0,"idle_rss_mb":159.7}
+zoom=empty    before {"frames":1610,"p50_ms":6.06,"p95_ms":6.3,"p99_ms":12.17,"max_ms":13.87,"rss_mb":159.6,"idle_rss_mb":159.4}
+zoom=empty    before {"frames":1633,"p50_ms":6.06,"p95_ms":6.25,"p99_ms":11.38,"max_ms":13.6,"rss_mb":159.4,"idle_rss_mb":159.1}
+zoom=empty    after  {"frames":1633,"p50_ms":6.06,"p95_ms":6.25,"p99_ms":10.15,"max_ms":13.39,"rss_mb":160.2,"idle_rss_mb":160.0}
+zoom=empty    after  {"frames":1633,"p50_ms":6.06,"p95_ms":6.24,"p99_ms":11.43,"max_ms":13.31,"rss_mb":159.9,"idle_rss_mb":159.6}
+zoom=empty    after  {"frames":1611,"p50_ms":6.06,"p95_ms":6.3,"p99_ms":12.17,"max_ms":13.12,"rss_mb":160.2,"idle_rss_mb":159.9}
+zoom=terminal before {"frames":1595,"p50_ms":6.07,"p95_ms":8.42,"p99_ms":10.18,"max_ms":13.24,"rss_mb":240.6,"idle_rss_mb":230.4}
+zoom=terminal before {"frames":1588,"p50_ms":6.07,"p95_ms":8.54,"p99_ms":11.99,"max_ms":13.41,"rss_mb":238.7,"idle_rss_mb":228.5}
+zoom=terminal before {"frames":1579,"p50_ms":6.08,"p95_ms":8.64,"p99_ms":12.01,"max_ms":13.51,"rss_mb":237.7,"idle_rss_mb":227.7}
+zoom=terminal after  {"frames":1594,"p50_ms":6.07,"p95_ms":8.34,"p99_ms":11.72,"max_ms":13.87,"rss_mb":238.0,"idle_rss_mb":228.7}
+zoom=terminal after  {"frames":1591,"p50_ms":6.07,"p95_ms":8.33,"p99_ms":12.05,"max_ms":14.59,"rss_mb":237.8,"idle_rss_mb":228.5}
+zoom=terminal after  {"frames":1597,"p50_ms":6.07,"p95_ms":8.18,"p99_ms":11.51,"max_ms":15.67,"rss_mb":238.0,"idle_rss_mb":228.4}
+zoom=editor   before {"frames":1161,"p50_ms":8.17,"p95_ms":13.68,"p99_ms":21.77,"max_ms":97.14,"rss_mb":261.1,"idle_rss_mb":174.1}
+zoom=editor   before {"frames":1138,"p50_ms":7.97,"p95_ms":14.86,"p99_ms":23.33,"max_ms":91.0,"rss_mb":261.2,"idle_rss_mb":174.5}
+zoom=editor   before {"frames":1181,"p50_ms":7.5,"p95_ms":14.67,"p99_ms":18.29,"max_ms":92.26,"rss_mb":263.6,"idle_rss_mb":173.9}
+zoom=editor   after  {"frames":1192,"p50_ms":7.9,"p95_ms":14.11,"p99_ms":18.5,"max_ms":91.83,"rss_mb":260.7,"idle_rss_mb":174.4}
+zoom=editor   after  {"frames":1172,"p50_ms":7.86,"p95_ms":14.44,"p99_ms":18.42,"max_ms":91.01,"rss_mb":260.5,"idle_rss_mb":174.1}
+zoom=editor   after  {"frames":1186,"p50_ms":7.26,"p95_ms":15.15,"p99_ms":22.47,"max_ms":96.53,"rss_mb":264.9,"idle_rss_mb":173.8}
+zoom=note     before {"frames":280,"p50_ms":28.91,"p95_ms":79.27,"p99_ms":85.66,"max_ms":96.92,"rss_mb":174.8,"idle_rss_mb":168.8}
+zoom=note     before {"frames":274,"p50_ms":38.61,"p95_ms":75.95,"p99_ms":85.17,"max_ms":86.65,"rss_mb":174.9,"idle_rss_mb":168.9}
+zoom=note     before {"frames":251,"p50_ms":48.76,"p95_ms":83.62,"p99_ms":88.13,"max_ms":96.98,"rss_mb":175.2,"idle_rss_mb":169.0}
+zoom=note     after  {"frames":227,"p50_ms":54.92,"p95_ms":78.44,"p99_ms":85.79,"max_ms":89.39,"rss_mb":176.0,"idle_rss_mb":170.0}
+zoom=note     after  {"frames":263,"p50_ms":47.47,"p95_ms":80.18,"p99_ms":85.47,"max_ms":95.12,"rss_mb":175.4,"idle_rss_mb":168.9}
+zoom=note     after  {"frames":273,"p50_ms":42.71,"p95_ms":76.67,"p99_ms":81.72,"max_ms":92.46,"rss_mb":175.1,"idle_rss_mb":169.1}
+zoom=kanban   before {"frames":1483,"p50_ms":6.12,"p95_ms":9.3,"p99_ms":12.28,"max_ms":27.88,"rss_mb":168.1,"idle_rss_mb":160.1}
+zoom=kanban   before {"frames":1485,"p50_ms":6.14,"p95_ms":9.32,"p99_ms":13.59,"max_ms":17.01,"rss_mb":168.0,"idle_rss_mb":160.1}
+zoom=kanban   before {"frames":1446,"p50_ms":6.14,"p95_ms":9.62,"p99_ms":14.06,"max_ms":18.47,"rss_mb":167.9,"idle_rss_mb":160.0}
+zoom=kanban   after  {"frames":1479,"p50_ms":6.14,"p95_ms":9.32,"p99_ms":13.51,"max_ms":16.09,"rss_mb":168.8,"idle_rss_mb":160.9}
+zoom=kanban   after  {"frames":1487,"p50_ms":6.14,"p95_ms":9.33,"p99_ms":11.95,"max_ms":16.11,"rss_mb":168.2,"idle_rss_mb":160.4}
+zoom=kanban   after  {"frames":1489,"p50_ms":6.13,"p95_ms":9.33,"p99_ms":12.46,"max_ms":16.35,"rss_mb":168.0,"idle_rss_mb":160.2}
+zoom=git      before {"frames":1533,"p50_ms":6.09,"p95_ms":8.99,"p99_ms":12.3,"max_ms":16.83,"rss_mb":169.6,"idle_rss_mb":163.1}
+zoom=git      before {"frames":1531,"p50_ms":6.1,"p95_ms":8.99,"p99_ms":12.29,"max_ms":22.36,"rss_mb":169.3,"idle_rss_mb":163.0}
+zoom=git      before {"frames":1509,"p50_ms":6.1,"p95_ms":9.41,"p99_ms":12.73,"max_ms":16.17,"rss_mb":169.0,"idle_rss_mb":162.5}
+zoom=git      after  {"frames":1573,"p50_ms":6.08,"p95_ms":8.5,"p99_ms":11.94,"max_ms":13.33,"rss_mb":168.1,"idle_rss_mb":162.8}
+zoom=git      after  {"frames":1580,"p50_ms":6.08,"p95_ms":7.87,"p99_ms":11.99,"max_ms":13.21,"rss_mb":168.4,"idle_rss_mb":163.1}
+zoom=git      after  {"frames":1583,"p50_ms":6.08,"p95_ms":7.9,"p99_ms":11.62,"max_ms":14.43,"rss_mb":168.2,"idle_rss_mb":162.8}
+git           before {"frames":1562,"p50_ms":6.06,"p95_ms":8.93,"p99_ms":11.59,"max_ms":44.47,"rss_mb":184.5,"idle_rss_mb":173.4}
+git           before {"frames":1572,"p50_ms":6.05,"p95_ms":8.09,"p99_ms":11.32,"max_ms":42.8,"rss_mb":185.8,"idle_rss_mb":173.8}
+git           before {"frames":1561,"p50_ms":6.07,"p95_ms":8.95,"p99_ms":12.01,"max_ms":42.9,"rss_mb":186.1,"idle_rss_mb":173.7}
+git           after  {"frames":1527,"p50_ms":6.07,"p95_ms":9.44,"p99_ms":12.37,"max_ms":43.73,"rss_mb":186.2,"idle_rss_mb":173.7}
+git           after  {"frames":1550,"p50_ms":6.08,"p95_ms":9.26,"p99_ms":12.0,"max_ms":45.25,"rss_mb":183.3,"idle_rss_mb":173.4}
+git           after  {"frames":1551,"p50_ms":6.06,"p95_ms":9.08,"p99_ms":11.87,"max_ms":42.78,"rss_mb":187.2,"idle_rss_mb":174.0}
+bench (5)     before {"frames":1419,"p50_ms":6.17,"p95_ms":11.64,"p99_ms":14.96,"max_ms":24.28,"rss_mb":289.1,"idle_rss_mb":184.4}
+bench (5)     before {"frames":1315,"p50_ms":6.37,"p95_ms":13.52,"p99_ms":18.14,"max_ms":28.33,"rss_mb":289.9,"idle_rss_mb":184.6}
+bench (5)     before {"frames":1267,"p50_ms":6.71,"p95_ms":13.46,"p99_ms":17.96,"max_ms":26.3,"rss_mb":289.5,"idle_rss_mb":184.1}
+bench (5)     before {"frames":1240,"p50_ms":6.63,"p95_ms":15.27,"p99_ms":19.95,"max_ms":27.38,"rss_mb":292.0,"idle_rss_mb":186.2}
+bench (5)     before {"frames":1303,"p50_ms":6.41,"p95_ms":13.93,"p99_ms":19.52,"max_ms":24.23,"rss_mb":289.6,"idle_rss_mb":184.9}
+bench (5)     after  {"frames":1352,"p50_ms":6.21,"p95_ms":13.19,"p99_ms":17.86,"max_ms":37.08,"rss_mb":291.2,"idle_rss_mb":185.6}
+bench (5)     after  {"frames":1325,"p50_ms":6.36,"p95_ms":12.89,"p99_ms":17.44,"max_ms":25.93,"rss_mb":290.7,"idle_rss_mb":185.2}
+bench (5)     after  {"frames":1352,"p50_ms":6.38,"p95_ms":12.31,"p99_ms":17.04,"max_ms":34.05,"rss_mb":294.5,"idle_rss_mb":185.6}
+bench (5)     after  {"frames":1276,"p50_ms":6.47,"p95_ms":14.47,"p99_ms":20.12,"max_ms":38.3,"rss_mb":290.6,"idle_rss_mb":185.1}
+bench (5)     after  {"frames":1318,"p50_ms":6.46,"p95_ms":12.34,"p99_ms":17.92,"max_ms":31.59,"rss_mb":293.0,"idle_rss_mb":187.8}
+```
 
 ### Final (Task 13): before → Parts 1 and 2
 
