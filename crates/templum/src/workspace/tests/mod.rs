@@ -519,6 +519,7 @@ mod git_hunks;
 mod git_keys;
 mod git_layout;
 mod git_panel;
+mod git_split;
 mod git_status;
 mod git_switch;
 mod git_sync;

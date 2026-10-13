@@ -65,6 +65,14 @@ pub(crate) enum Row {
         file: usize,
         region: usize,
     },
+    /// Split: a hunk's old line on the left and its new line on the right; None leaves that
+    /// cell empty.
+    Pair {
+        file: usize,
+        hunk: usize,
+        old: Option<usize>,
+        new: Option<usize>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,7 +100,8 @@ impl Row {
             | Row::Line { file, .. }
             | Row::Fold { file, .. }
             | Row::Note { file, .. }
-            | Row::Region { file, .. } => Some(*file),
+            | Row::Region { file, .. }
+            | Row::Pair { file, .. } => Some(*file),
         }
     }
 }
@@ -216,6 +225,74 @@ pub(crate) fn rows(
     rows
 }
 
+/// Split mode's rows: each hunk's line rows replaced by pairs. A context line is paired with
+/// itself; a run of removed lines with the run of added lines after it, the i-th with the i-th;
+/// what is left over sits beside an empty cell. A conflicted file keeps its rows (its parts
+/// aren't an old and a new side).
+// ponytail: "No newline at end of file" notes go in Split, the gutter can't say which side's;
+// an end-of-file mark on the cell if people miss it.
+pub(crate) fn split_rows(rows: Vec<Row>, files: &[Shown]) -> Vec<Row> {
+    let mut out = Vec::with_capacity(rows.len());
+    let mut paired: Option<(usize, usize)> = None;
+    for row in rows {
+        match row {
+            Row::Line { file, hunk, .. } if paired == Some((file, hunk)) => {}
+            Row::Note {
+                file,
+                note: Note::NoNewline,
+            } if paired.is_some_and(|(f, _)| f == file) => {}
+            Row::Hunk { file, hunk }
+                if files[file].diff.status != templum_git::Change::Conflict =>
+            {
+                out.push(row);
+                out.extend(pairs(file, hunk, &files[file].diff.hunks[hunk].lines));
+                paired = Some((file, hunk));
+            }
+            other => {
+                paired = None;
+                out.push(other);
+            }
+        }
+    }
+    out
+}
+
+/// One hunk's pairs.
+fn pairs(file: usize, hunk: usize, lines: &[templum_git::Line]) -> Vec<Row> {
+    use templum_git::Kind;
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].kind == Kind::Context {
+            out.push(Row::Pair {
+                file,
+                hunk,
+                old: Some(i),
+                new: Some(i),
+            });
+            i += 1;
+            continue;
+        }
+        let run = |from: usize, kind: Kind| {
+            (from..lines.len())
+                .take_while(|&k| lines[k].kind == kind)
+                .collect::<Vec<_>>()
+        };
+        let removed = run(i, Kind::Removed);
+        let added = run(i + removed.len(), Kind::Added);
+        for k in 0..removed.len().max(added.len()) {
+            out.push(Row::Pair {
+                file,
+                hunk,
+                old: removed.get(k).copied(),
+                new: added.get(k).copied(),
+            });
+        }
+        i += removed.len() + added.len();
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,6 +302,68 @@ mod tests {
         let mut diff = parse_diff(text, usize::MAX).pop().unwrap();
         diff.lines = lines;
         Shown { staged, diff }
+    }
+
+    #[test]
+    fn split_pairs_rows_and_leaves_the_missing_side_empty() {
+        let text =
+            "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1,4 +1,4 @@\n a\n-b\n+c\n+d\n e\n-f\n";
+        let files = [shown(false, text, None)];
+        let got = split_rows(rows(&files, &HashSet::new(), &HashSet::new()), &files);
+        use Row::*;
+        assert_eq!(
+            got,
+            [
+                Section {
+                    staged: false,
+                    files: 1
+                },
+                File { file: 0 },
+                Hunk { file: 0, hunk: 0 },
+                Pair {
+                    file: 0,
+                    hunk: 0,
+                    old: Some(0),
+                    new: Some(0)
+                },
+                Pair {
+                    file: 0,
+                    hunk: 0,
+                    old: Some(1),
+                    new: Some(2)
+                },
+                Pair {
+                    file: 0,
+                    hunk: 0,
+                    old: None,
+                    new: Some(3)
+                },
+                Pair {
+                    file: 0,
+                    hunk: 0,
+                    old: Some(4),
+                    new: Some(4)
+                },
+                Pair {
+                    file: 0,
+                    hunk: 0,
+                    old: Some(5),
+                    new: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn split_leaves_a_conflicted_file_unified() {
+        let text = "<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> topic\n";
+        let diff = templum_git::conflict::conflict_diff("c.rs", text.as_bytes()).unwrap();
+        let files = [Shown {
+            staged: false,
+            diff,
+        }];
+        let unified = rows(&files, &HashSet::new(), &HashSet::new());
+        assert_eq!(split_rows(unified.clone(), &files), unified);
     }
 
     #[test]

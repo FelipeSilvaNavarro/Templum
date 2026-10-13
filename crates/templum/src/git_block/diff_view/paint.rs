@@ -11,8 +11,8 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, Bounds, ClickEvent, Context, Div, ElementId, Font, Hsla, MouseButton,
-    MouseDownEvent, MouseMoveEvent, Pixels, SharedString, TestSupportExt, TextAlign, TextRun,
-    Window, canvas, div, fill, point, px, size,
+    MouseDownEvent, MouseMoveEvent, Pixels, SharedString, Stateful, TestSupportExt, TextAlign,
+    TextRun, Window, canvas, div, fill, point, px, size,
 };
 use templum_canvas::BlockId;
 use templum_git::conflict::Take;
@@ -64,6 +64,24 @@ pub(super) fn row(
         Row::Region { file, region } => {
             region_row(ws, id, &files[*file], *region, ix, row_h, z, cx)
         }
+        Row::Pair {
+            file,
+            hunk,
+            old,
+            new,
+        } => pair_row(
+            ws,
+            id,
+            &files[*file],
+            *file,
+            *hunk,
+            *old,
+            *new,
+            ix,
+            row_h,
+            z,
+            cx,
+        ),
     }
 }
 
@@ -615,8 +633,10 @@ pub(super) struct LinePaint {
     pub ui: Ui,
 }
 
+/// What a line of the panel paints: its text, numbers, colors and selection. In Split, the
+/// selection shows on the side it was made on.
 #[allow(clippy::too_many_arguments)]
-fn line_row(
+fn line_paint(
     ws: &Workspace,
     id: BlockId,
     s: &Shown,
@@ -624,10 +644,11 @@ fn line_row(
     hunk: usize,
     line: usize,
     ix: usize,
+    right: bool,
     row_h: f32,
     z: f32,
     cx: &mut Context<Workspace>,
-) -> AnyElement {
+) -> LinePaint {
     let ui = ws.ui;
     let l = &s.diff.hunks[hunk].lines[line];
     let ansi = &ws.theme.palette.ansi;
@@ -649,17 +670,14 @@ fn line_row(
         None => (Rc::new(Vec::new()), Rc::new(Vec::new())),
     };
     let text: SharedString = display(&l.text).into();
-    // The cell was measured at the terminal's size: its advance at the panel's.
-    let paint_cw = ws.cell.size.w * FONT / ws.cell.font_size * z;
     let selection = ws
         .space
         .git(id)
-        .and_then(|g| g.diff().selection)
+        .map(|g| g.diff())
+        .filter(|p| !p.split || p.split_right == right)
+        .and_then(|p| p.selection)
         .and_then(|sel| sel.range_in(ix, text.len()));
-    // The whole text, so the list (as wide as its widest row) scrolls to the end of it; the
-    // trailing cell keeps the last glyph off the edge.
-    let width = paint_cw * (super::text_columns(s.digits()) + text.chars().count() + 1) as f32;
-    let paint = LinePaint {
+    LinePaint {
         text,
         digits: s.digits(),
         old_no: l.old_no,
@@ -672,13 +690,65 @@ fn line_row(
         selection,
         font: ws.cell.font.clone(),
         // The cell was measured at the terminal's size: scale its advance to the panel's.
-        cw: paint_cw,
+        cw: ws.cell.size.w * FONT / ws.cell.font_size * z,
         row_h,
         size: FONT * z,
         ui,
-    };
+    }
+}
+
+/// A line row's mouse: press and drag select, right-click opens its menu.
+fn line_mouse(
+    el: Stateful<Div>,
+    id: BlockId,
+    ix: usize,
+    cx: &mut Context<Workspace>,
+) -> Stateful<Div> {
+    el.on_mouse_down(
+        MouseButton::Left,
+        cx.listener(move |ws, e: &MouseDownEvent, _, cx| {
+            ws.diff_press(id, ix, e.position.x, e.click_count, cx)
+        }),
+    )
+    .on_mouse_move(cx.listener(move |ws, e: &MouseMoveEvent, _, cx| {
+        if e.pressed_button == Some(MouseButton::Left) {
+            ws.diff_drag(id, ix, e.position.x, cx)
+        }
+    }))
+    .on_mouse_down(
+        MouseButton::Right,
+        cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+            ws.open_menu(
+                Target::GitLine { block: id, row: ix },
+                e.position,
+                window,
+                cx,
+            );
+            cx.stop_propagation();
+        }),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn line_row(
+    ws: &Workspace,
+    id: BlockId,
+    s: &Shown,
+    file: usize,
+    hunk: usize,
+    line: usize,
+    ix: usize,
+    row_h: f32,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let paint = line_paint(ws, id, s, file, hunk, line, ix, false, row_h, z, cx);
+    // The whole text, so the list (as wide as its widest row) scrolls to the end of it; the
+    // trailing cell keeps the last glyph off the edge.
+    let width =
+        paint.cw * (super::text_columns(s.digits()) + paint.text.chars().count() + 1) as f32;
     let shaped = ws.space.git(id).map(|g| g.diff().shaped.clone());
-    div()
+    let row = div()
         .id(("git-line", ix))
         .w_full()
         .min_w(px(width))
@@ -689,35 +759,87 @@ fn line_row(
                 move |bounds, _, window, cx| {
                     let (line, x) = paint_line(&paint, bounds, window, cx);
                     if let Some(shaped) = &shaped {
-                        shaped.borrow_mut().insert(ix, Shaped { line, x });
+                        let left = bounds.origin.x;
+                        shaped
+                            .borrow_mut()
+                            .insert((ix, false), Shaped { line, x, left });
                     }
                 },
             )
             .size_full(),
-        )
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |ws, e: &MouseDownEvent, _, cx| {
-                ws.diff_press(id, ix, e.position.x, e.click_count, cx)
-            }),
-        )
-        .on_mouse_move(cx.listener(move |ws, e: &MouseMoveEvent, _, cx| {
-            if e.pressed_button == Some(MouseButton::Left) {
-                ws.diff_drag(id, ix, e.position.x, cx)
+        );
+    line_mouse(row, id, ix, cx)
+        .test_support()
+        .into_any_element()
+}
+
+/// Split: the old line in the left half (its old number), the new one in the right half (its
+/// new number), an empty cell dimmed; each half `half` columns wide.
+#[allow(clippy::too_many_arguments)]
+fn pair_row(
+    ws: &Workspace,
+    id: BlockId,
+    s: &Shown,
+    file: usize,
+    hunk: usize,
+    old: Option<usize>,
+    new: Option<usize>,
+    ix: usize,
+    row_h: f32,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let half = ws.space.git(id).map_or(0, |g| g.diff().half);
+    let cw = ws.cell.size.w * FONT / ws.cell.font_size * z;
+    let half_w = px(cw * half as f32);
+    let mut side = |line: Option<usize>, right: bool| {
+        line.map(|l| {
+            let mut p = line_paint(ws, id, s, file, hunk, l, ix, right, row_h, z, cx);
+            if right {
+                p.old_no = None
+            } else {
+                p.new_no = None
             }
-        }))
-        .on_mouse_down(
-            MouseButton::Right,
-            cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
-                ws.open_menu(
-                    Target::GitLine { block: id, row: ix },
-                    e.position,
-                    window,
-                    cx,
-                );
-                cx.stop_propagation();
-            }),
-        )
+            p
+        })
+    };
+    let (left, right) = (side(old, false), side(new, true));
+    let empty = ws.ui.hover;
+    let shaped = ws.space.git(id).map(|g| g.diff().shaped.clone());
+    let row = div()
+        .id(("git-pair", ix))
+        .w_full()
+        .min_w(half_w * 2.0)
+        .h(px(row_h))
+        .child(
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, cx| {
+                    for (paint, right, x0) in [
+                        (left.as_ref(), false, bounds.origin.x),
+                        (right.as_ref(), true, bounds.origin.x + half_w),
+                    ] {
+                        let cell = Bounds::new(
+                            point(x0, bounds.origin.y),
+                            size(half_w, bounds.size.height),
+                        );
+                        match paint {
+                            Some(p) => {
+                                let (line, x) = paint_line(p, cell, window, cx);
+                                if let Some(shaped) = &shaped {
+                                    shaped
+                                        .borrow_mut()
+                                        .insert((ix, right), Shaped { line, x, left: x0 });
+                                }
+                            }
+                            None => window.paint_quad(fill(cell, empty)),
+                        }
+                    }
+                },
+            )
+            .size_full(),
+        );
+    line_mouse(row, id, ix, cx)
         .test_support()
         .into_any_element()
 }

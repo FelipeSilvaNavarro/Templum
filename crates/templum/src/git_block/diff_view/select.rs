@@ -98,15 +98,26 @@ pub(crate) fn word_at(display: &str, col: usize) -> Range<usize> {
     }
 }
 
-/// The selected text: the line rows in the selection, their source text, joined with '\n'.
-pub(crate) fn selected_text(rows: &[Row], files: &[Shown], sel: &Selection) -> String {
+/// The selected text: the line rows in the selection (in Split, the lines of the `right` side or
+/// the left one), their source text, joined with '\n'.
+pub(crate) fn selected_text(rows: &[Row], files: &[Shown], sel: &Selection, right: bool) -> String {
     let (a, b) = sel.ordered();
     let mut out: Vec<String> = Vec::new();
     for (ix, row) in rows.iter().enumerate().take(b.row + 1).skip(a.row) {
-        let Row::Line { file, hunk, line } = row else {
+        let at = match *row {
+            Row::Line { file, hunk, line } => Some((file, hunk, line)),
+            Row::Pair {
+                file,
+                hunk,
+                old,
+                new,
+            } => if right { new } else { old }.map(|l| (file, hunk, l)),
+            _ => None,
+        };
+        let Some((file, hunk, line)) = at else {
             continue;
         };
-        let text = &files[*file].diff.hunks[*hunk].lines[*line].text;
+        let text = &files[file].diff.hunks[hunk].lines[line].text;
         let shown = display(text);
         let Some(r) = sel.range_in(ix, shown.len()) else {
             continue;
@@ -211,11 +222,11 @@ mod tests {
             anchor: Pos { row: 0, col: 0 },
             head: Pos { row: 5, col: 1 },
         };
-        assert_eq!(selected_text(&rows, &files, &all), "a\tz\nb\nc");
+        assert_eq!(selected_text(&rows, &files, &all, false), "a\tz\nb\nc");
         let part = Selection {
             anchor: Pos { row: 3, col: 5 },
             head: Pos { row: 4, col: 1 },
         };
-        assert_eq!(selected_text(&rows, &files, &part), "z\nb");
+        assert_eq!(selected_text(&rows, &files, &part, false), "z\nb");
     }
 }

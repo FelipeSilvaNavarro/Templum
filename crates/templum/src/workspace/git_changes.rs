@@ -464,6 +464,10 @@ impl Workspace {
             return;
         };
         let p = git.diff_mut();
+        // Split: the press picks the side; a drag keeps it (a selection stays on one side).
+        if p.split {
+            p.split_right = p.side_at(row, x);
+        }
         let Some(col) = p.col_at(row, x) else {
             return;
         };
@@ -516,6 +520,14 @@ impl Workspace {
         p.dragging = false;
         if p.selection.is_some_and(|s| s.is_empty()) {
             p.selection = None;
+            cx.notify();
+        }
+    }
+
+    /// Unified or Split, for every panel of the block.
+    pub(crate) fn set_split(&mut self, id: BlockId, on: bool, cx: &mut Context<Self>) {
+        if let Some(git) = self.space.git_mut(id) {
+            git.set_split(on);
             cx.notify();
         }
     }

@@ -20,7 +20,7 @@ use gpui_kit::{
 use templum_canvas::BlockId;
 use templum_git::{FileDiff, WorkingDiff};
 
-pub(crate) use rows::{Note, Row, Shown, rows};
+pub(crate) use rows::{Note, Row, Shown, rows, split_rows};
 
 use super::widgets::{bar, centered, icon_button, small};
 use super::{FONT, Git};
@@ -37,6 +37,8 @@ pub(crate) fn row_height(z: f32) -> f32 {
 pub(crate) struct Shaped {
     pub line: ShapedLine,
     pub x: Pixels,
+    /// Where its side's cell starts: Split's right half begins here.
+    pub left: Pixels,
 }
 
 /// What the panel shows.
@@ -69,8 +71,9 @@ pub(crate) struct DiffPanel {
     pub scroll: UniformListScrollHandle,
     /// The row height when the list was last drawn (`keep_list_rows`).
     pub last_row: Cell<f32>,
-    /// The line rows painted in the last frame, by row index.
-    pub shaped: Rc<RefCell<HashMap<usize, Shaped>>>,
+    /// The line rows painted in the last frame, by row index and side (Split's right one: true;
+    /// a unified row is its left).
+    pub shaped: Rc<RefCell<HashMap<(usize, bool), Shaped>>>,
     /// The text selected in the line rows.
     pub selection: Option<select::Selection>,
     /// The mouse is down since a press on a line row.
@@ -86,6 +89,12 @@ pub(crate) struct DiffPanel {
     /// What the panel says while it has no file, when not the source's own words ("Click a
     /// commit to see its changes").
     pub hint: Option<&'static str>,
+    /// Old and new side by side (Split).
+    pub split: bool,
+    /// Split: the columns of one side, the widest side's.
+    pub half: usize,
+    /// Split: the selection is on the right side.
+    pub split_right: bool,
 }
 
 impl DiffPanel {
@@ -108,6 +117,9 @@ impl DiffPanel {
             reads: 0,
             cursor: None,
             hint: None,
+            split: false,
+            half: 0,
+            split_right: false,
         }
     }
 
@@ -212,6 +224,33 @@ impl DiffPanel {
         if !self.working() {
             rows.retain(|r| !matches!(r, Row::Section { .. }));
         }
+        // A blame stays unified: its groups aren't an old and a new side.
+        if self.split && !matches!(self.source, Source::Blame { .. }) {
+            rows = split_rows(rows, &self.files);
+        }
+        self.half = rows
+            .iter()
+            .filter_map(|r| match *r {
+                Row::Pair {
+                    file,
+                    hunk,
+                    old,
+                    new,
+                } => Some((file, hunk, [old, new])),
+                _ => None,
+            })
+            .flat_map(|(file, hunk, sides)| {
+                let s = &self.files[file];
+                sides.into_iter().flatten().map(move |l| {
+                    text_columns(s.digits())
+                        + select::display(&s.diff.hunks[hunk].lines[l].text)
+                            .chars()
+                            .count()
+                        + 1
+                })
+            })
+            .max()
+            .unwrap_or(0);
         self.rows = Rc::new(rows);
         // The rows a selection named are other rows now.
         self.selection = None;
@@ -234,6 +273,7 @@ impl DiffPanel {
                         .chars()
                         .count()
             }
+            Some(Row::Pair { .. }) => 2 * self.half,
             _ => 0,
         }
     }
@@ -286,24 +326,64 @@ impl DiffPanel {
     /// painted; None for a row that isn't a line, or wasn't painted.
     pub fn col_at(&self, row: usize, x: Pixels) -> Option<usize> {
         let shaped = self.shaped.borrow();
-        let s = shaped.get(&row)?;
+        let s = shaped.get(&(row, self.split_right))?;
         Some(s.line.closest_index_for_x(x - s.x))
     }
 
-    /// A line row's display text.
+    /// Split: window x `x` is on row `row`'s right side, as it was last painted.
+    pub fn side_at(&self, row: usize, x: Pixels) -> bool {
+        self.shaped
+            .borrow()
+            .get(&(row, true))
+            .is_some_and(|s| x >= s.left)
+    }
+
+    /// A line row's display text; a pair row's, the side the selection is on (None for an
+    /// empty cell).
     pub fn display_of(&self, row: usize) -> Option<String> {
-        let Row::Line { file, hunk, line } = self.rows.get(row)? else {
-            return None;
+        let (file, hunk, line) = match *self.rows.get(row)? {
+            Row::Line { file, hunk, line } => (file, hunk, line),
+            Row::Pair {
+                file,
+                hunk,
+                old,
+                new,
+            } => (file, hunk, if self.split_right { new } else { old }?),
+            _ => return None,
         };
         Some(select::display(
-            &self.files[*file].diff.hunks[*hunk].lines[*line].text,
+            &self.files[file].diff.hunks[hunk].lines[line].text,
+        ))
+    }
+
+    /// A pair row's side's display text: None for an empty cell or another row.
+    #[cfg(test)]
+    pub fn display_of_side(&self, row: &Row, right: bool) -> Option<String> {
+        let Row::Pair {
+            file,
+            hunk,
+            old,
+            new,
+        } = *row
+        else {
+            return None;
+        };
+        let line = if right { new } else { old }?;
+        Some(select::display(
+            &self.files[file].diff.hunks[hunk].lines[line].text,
         ))
     }
 
     /// What Copy puts on the clipboard; None without a selection.
     pub fn selected_text(&self) -> Option<String> {
         let sel = self.selection.filter(|s| !s.is_empty())?;
-        Some(select::selected_text(&self.rows, &self.files, &sel)).filter(|t| !t.is_empty())
+        Some(select::selected_text(
+            &self.rows,
+            &self.files,
+            &sel,
+            self.split_right,
+        ))
+        .filter(|t| !t.is_empty())
     }
 }
 
@@ -354,6 +434,24 @@ pub(crate) fn panel(
                 .test_support(),
         )
         .child(div().flex_1())
+        .when(!matches!(p.source, Source::Blame { .. }), |el| {
+            el.child(
+                small(("git-unified", n), "Unified", ui, z)
+                    .when(!p.split, |el| el.bg(ui.card))
+                    .on_click(
+                        cx.listener(move |ws, _: &ClickEvent, _, cx| ws.set_split(id, false, cx)),
+                    )
+                    .test_support(),
+            )
+            .child(
+                small(("git-split", n), "Split", ui, z)
+                    .when(p.split, |el| el.bg(ui.card))
+                    .on_click(
+                        cx.listener(move |ws, _: &ClickEvent, _, cx| ws.set_split(id, true, cx)),
+                    )
+                    .test_support(),
+            )
+        })
         .child(
             small(("git-ignore-ws", n), "Ignore whitespace", ui, z)
                 .when(p.ignore_ws, |el| el.bg(ui.card))
@@ -378,20 +476,19 @@ pub(crate) fn panel(
             .child(p.empty_text())
             .into_any_element()
     } else {
-        let sticky = p.top_file(row_h).map(|file| {
-            let s = &p.files[file];
-            bar(ui, z)
-                .child(
-                    div()
-                        .id(("git-sticky", n))
-                        .truncate()
-                        .text_color(ui.title)
-                        .child(s.diff.path().to_string())
-                        .test_support(),
-                )
-                .child(div().flex_1())
-                .child(paint::counts(&s.diff, ui))
-        });
+        // Always drawn (empty with no file at the top): the list never jumps by its height.
+        let top = p.top_file(row_h).map(|file| &p.files[file]);
+        let sticky = bar(ui, z)
+            .child(
+                div()
+                    .id(("git-sticky", n))
+                    .truncate()
+                    .text_color(ui.title)
+                    .child(top.map_or_else(|| " ".to_string(), |s| s.diff.path().to_string()))
+                    .test_support(),
+            )
+            .child(div().flex_1())
+            .children(top.map(|s| paint::counts(&s.diff, ui)));
         let (rows, files, entity) = (p.rows.clone(), p.files.clone(), cx.entity());
         let list = uniform_list(("git-panel", n), rows.len(), move |range, _, cx| {
             entity.update(cx, |ws, cx| {
@@ -413,7 +510,7 @@ pub(crate) fn panel(
             .min_h(px(0.0))
             .flex()
             .flex_col()
-            .children(sticky)
+            .child(sticky)
             .child(list)
             .into_any_element()
     };

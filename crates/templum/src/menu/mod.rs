@@ -293,12 +293,26 @@ impl Workspace {
                 path: path.clone(),
             },
             Target::GitLine { block, row } => {
+                use git_block::diff_view::Row;
                 let p = self.space.git(block)?.diff();
-                let Some(git_block::diff_view::Row::Line { file, hunk, line }) = p.rows.get(row)
-                else {
-                    return None;
+                let (file, hunk, line) = match *p.rows.get(row)? {
+                    Row::Line { file, hunk, line } => (file, hunk, line),
+                    // A pair: the selection's side, else the new line, else the old one.
+                    Row::Pair {
+                        file,
+                        hunk,
+                        old,
+                        new,
+                    } => {
+                        let side = match (p.selection.is_some(), p.split_right) {
+                            (true, true) => new,
+                            (true, false) => old,
+                            (false, _) => None,
+                        };
+                        (file, hunk, side.or(new).or(old)?)
+                    }
+                    _ => return None,
                 };
-                let (file, hunk, line) = (*file, *hunk, *line);
                 let s = &p.files[file];
                 let h = &s.diff.hunks[hunk];
                 let l = &h.lines[line];

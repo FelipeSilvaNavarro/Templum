@@ -33,12 +33,14 @@ impl Workspace {
             );
             return;
         };
+        let mut panel = DiffPanel::range(String::new());
+        panel.split = git.split;
         git.compare = Some(Compare {
             branch,
             base,
             commits: Rc::new(Vec::new()),
             narrowed: None,
-            panel: DiffPanel::range(String::new()),
+            panel,
         });
         git.tab = Tab::Branches;
         cx.notify();

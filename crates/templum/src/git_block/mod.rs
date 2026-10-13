@@ -275,6 +275,8 @@ pub(crate) struct Git {
     pub lists_scroll: UniformListScrollHandle,
     /// The left column is folded: the diff panel takes the whole width.
     pub lists_folded: bool,
+    /// Every panel of the block side by side (Split) or not; the block remembers it.
+    pub split: bool,
     /// Filter files, over the Changes tab's lists (shown past FILTER_PAST files).
     pub files_filter: Entity<InputState>,
     _files_filter: Subscription,
@@ -393,6 +395,7 @@ impl Git {
             focus: cx.focus_handle(),
             lists_scroll: UniformListScrollHandle::new(),
             lists_folded: false,
+            split: false,
             files_filter,
             _files_filter,
             _search,
@@ -509,6 +512,22 @@ impl Git {
         }
     }
 
+    /// Split on or off, for every panel of the block.
+    pub fn set_split(&mut self, on: bool) {
+        self.split = on;
+        let panels = [
+            &mut self.panel,
+            &mut self.history_panel,
+            &mut self.stash_panel,
+        ]
+        .into_iter()
+        .chain(self.compare.as_mut().map(|c| &mut c.panel));
+        for p in panels {
+            p.split = on;
+            p.rebuild();
+        }
+    }
+
     /// The working panel's conflicted file at `path`, as `conflict_diff` made it.
     fn conflict_file(&self, path: &str) -> Option<&templum_git::FileDiff> {
         self.panel
@@ -571,6 +590,11 @@ impl Git {
             description: draft(&self.description.read(cx).value()),
             lists: if self.lists_folded {
                 "folded".to_string()
+            } else {
+                String::new()
+            },
+            diff: if self.split {
+                "split".to_string()
             } else {
                 String::new()
             },

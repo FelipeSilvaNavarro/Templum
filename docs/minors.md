@@ -23,9 +23,6 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
 - [ ] **The diff keeps its colors after a theme switch.** The highlight cache is cleared only when the diff changes
   (`crates/templum/src/git_block/diff_view/mod.rs:137`); a light/dark switch keeps the old syntax colors until then.
   Fix: clear every Git block's `panel.colors` where the theme is applied.
-- [ ] **The sticky title makes the list jump.** The bar exists only while a file is at the top
-  (`crates/templum/src/git_block/diff_view/mod.rs:307`), so the list shifts by the bar's height each time a section
-  heading reaches the top. Fix: always draw the bar (empty when no file is at the top).
 - [ ] **Any change re-reads everything: the selection and every hunk's colors go.** `DiffPanel::set`
   (`crates/templum/src/git_block/diff_view/mod.rs:137-138`) clears both whenever any file changed, so while an agent
   is writing, a selection vanishes every 2 seconds. Fix: key the colors by (section, path, hunk header) instead of
