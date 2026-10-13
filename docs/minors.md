@@ -91,6 +91,11 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
   `a_hunk_that_changed_since_it_was_read_is_refused` (`tests/git_hunks.rs`) checks the notification count, not "The
   file changed; try again"; `past_the_cap_a_discard_keeps_nothing` (`tests/git_trash.rs`) doesn't check "Too much to
   keep a copy". Fix: read the dialog's description and the notification's message in each.
+- [ ] **A test that writes a script and runs it can fail once with "Text file busy".** Another test's thread may
+  fork while the script is still open for writing, and Linux then refuses to run it (ETXTBSY):
+  `a_cancelled_command_is_killed_and_says_so` (`crates/templum-git/tests/repo.rs`) did once in a full run, and the
+  fake agent of `crates/templum/src/workspace/tests/git_message.rs` is written the same way. Fix: have `sh` read
+  the script (`sh <path> …`) instead of running the file itself.
 
 ## Release and benches
 
@@ -100,3 +105,28 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
 - [ ] **`--bench-zoom=git` measures an empty panel.** It runs from `~/Documents/github/DaemonQuest`, whose tree is
   usually clean, so the Git blocks it zooms show "Nothing changed since the last commit". `--bench-git` covers a full
   diff; for the zoom, leave a few files changed in that folder before running it, or note the state with the result.
+
+## Commit messages
+
+- [ ] **An agent installed while Templum runs gets no ✨ until the config changes.** Whether its program is
+  installed is read when the config changes (`Workspace::commit_agent`, `crates/templum/src/workspace/mod.rs`),
+  not each frame. Fix: look again when the settings panel opens, or on the Git block's focus.
+- [ ] **On Windows, Details may say "exit code 1" for any failing agent.** PowerShell's `-Command` reports 1, not
+  the program's code, and a native program's standard input through it is unchecked (`login_shell`,
+  `crates/templum-git/src/message.rs`). Fix: append `; exit $LASTEXITCODE`, and test Claude Code's preset on
+  Windows.
+- [ ] **A cancelled or timed-out agent may run on under fish or PowerShell.** They keep the command as a child,
+  and only the shell is killed (`until_cancelled`, `crates/templum-git/src/repo.rs`); bash and zsh `exec` it. The
+  agent then finishes on its own, using the person's account. Fix: kill the process group (needs a dependency or
+  `unsafe`).
+- [ ] **A login profile that prints something comes before Claude Code's answer.** The command runs through
+  `$SHELL -l -c`, and Claude Code's preset answers on the standard output, where a profile's greeting lands too.
+  Fix: drop what comes before the answer's first line when it matches the profile's output read once, or ask
+  Claude Code for a file (it has no such flag today).
+- [ ] **A Git block closed or pointed elsewhere while Generate runs leaves its agent running to the timeout.** The
+  answer is dropped (`generated`, `crates/templum/src/workspace/git_message.rs`), the agent isn't stopped. Fix:
+  set `generating` when the block closes and in `set_git_folder`.
+- [ ] **Clearing a repository's instructions leaves an empty `[git.repositories."…"]` line.** `remove_key` takes
+  the key, not its table (`set_repo_instructions`). Fix: remove a table in `save_edits` when its last key goes.
+- [ ] **A nested table's last key removed may move its comments too far.** `remove_key` looks for the next header
+  among the top-level tables only (`crates/templum/src/config.rs`). Fix: walk every table for the next header.

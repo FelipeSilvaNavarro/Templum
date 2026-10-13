@@ -34,6 +34,7 @@ would have opened together with the block's. The canvas and the blocks had no me
 | An editor tree's empty space | New file…, New folder…, Refresh |
 | A Git block | Change folder…, Refresh, Open a terminal here, Recently discarded… (with a data folder), Close |
 | The ▾ beside a Git block's Commit | Commit (or Commit all changes), and the same & Push |
+| The ⚙ beside a Git block's Generate ✨ | The agent's models (the one in use checked), Instructions for this repository… |
 | The terminal count in a Git block's top bar | The terminals working in its repository, agents first; the one chosen is shown |
 | A row of a Git block's Changes | Stage (or Unstage), Discard changes… (unstaged rows), Open, Copy path, Ignore; a conflict: Open in editor, Use ours, Use theirs, Mark resolved, Copy path, Ignore |
 | A line of a Git block's diff panel | Copy (disabled without a selection), Copy line, Copy hunk, Send to ▸ (the selection, else the hunk), Open in editor at this line |

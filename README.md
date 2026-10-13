@@ -157,6 +157,14 @@ terminal. The block refreshes
 every 2 seconds while it is on screen, after each action, and when a terminal of the workspace finishes a command
 in the repository, so `git add` in a terminal shows at once. Settings ▸ Tools names the `git` program.
 
+**Generate ✨**, beside the summary, has an AI agent write the commit message: Claude Code (`claude -p`) and
+Codex (`codex exec`) work as they are, any other agent once its generate command is set in Settings ▸ Agents.
+It gets the diff of what you commit (cut past 60 KB, the list of files always whole), the last 10 commit
+summaries and your rules (Settings ▸ Git, or a repository's own from the ⚙ beside it), and only fills the
+summary and the description, for you to read and commit. A second click stops it, and a message you typed
+meanwhile is kept. The first time, it asks before sending your diff to the agent's provider. Settings ▸ Git
+chooses the agent and its model, and **Try it** runs it on a sample change.
+
 ## The toolbar
 
 The bar at the bottom of the canvas holds the tools: **Select** and **Hand** (move the canvas by dragging anywhere,
@@ -243,6 +251,11 @@ notifications = true   # system notifications while Templum is in the background
 
 [git]
 program = "git"   # the Git block's program: a name on PATH, or a path
+
+[git.commit_message]   # Generate ✨: an AI agent writes the commit message
+agent = "claude"       # an agent with a generate command (Settings ▸ Agents)
+model = "haiku"
+instructions = "Conventional Commits, English, imperative."
 
 [keys]
 new_terminal = "ctrl-shift-t"   # one shortcut, a list, or [] to disable
