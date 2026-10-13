@@ -112,41 +112,146 @@ fn staging_a_renamed_file_and_one_with_a_space() {
         "the rename is one entry: {:?}",
         s.entries
     );
-    let diff = repo.diff(renamed, true).unwrap();
-    assert!(diff.contains("rename from old.txt"), "{diff}");
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    let renamed = d.staged.iter().find(|f| f.path() == "new.txt").unwrap();
+    assert_eq!(renamed.status, Change::Renamed);
+    assert_eq!(renamed.old_path.as_deref(), Some("old.txt"));
 }
 
 #[test]
-fn the_diff_of_each_kind_of_entry() {
+fn the_working_diff_has_both_sides_the_untracked_files_and_their_counts() {
+    use templum_git::Kind;
     let (dir, repo) = fresh();
     write(dir.path(), "a.txt", "one\n");
-    write(dir.path(), "bin", "\0\x01\x02");
-    let s = repo.status().unwrap();
-    let a = s.entries.iter().find(|e| e.path == "a.txt").unwrap();
-    assert_eq!(
-        repo.diff(a, false).unwrap(),
-        "+++ b/a.txt\n@@ -0,0 +1,1 @@\n+one\n"
-    );
-    let bin = s.entries.iter().find(|e| e.path == "bin").unwrap();
-    assert_eq!(repo.diff(bin, false).unwrap(), "Binary file");
     repo.stage(&["a.txt"]).unwrap();
     repo.commit("a", false).unwrap();
-    write(dir.path(), "a.txt", "one\ntwo\n");
-    let s = repo.status().unwrap();
-    let a = s.entries.iter().find(|e| e.path == "a.txt").unwrap();
-    let diff = repo.diff(a, false).unwrap();
-    assert!(
-        diff.contains("@@ -1 +1,2 @@") && diff.contains("+two"),
-        "{diff}"
-    );
+    // a.txt: "zero" staged, "two" not; n.txt untracked; bin untracked and binary.
+    write(dir.path(), "a.txt", "zero\none\n");
     repo.stage(&["a.txt"]).unwrap();
+    write(dir.path(), "a.txt", "zero\none\ntwo\n");
+    write(dir.path(), "n.txt", "new");
+    write(dir.path(), "bin", "\0\x01\x02");
     let s = repo.status().unwrap();
-    assert!(repo.diff(&s.entries[0], true).unwrap().contains("+two"));
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    let paths = |files: &[templum_git::FileDiff]| {
+        files
+            .iter()
+            .map(|f| f.path().to_string())
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        repo.diff(&s.entries[0], false).unwrap(),
-        "",
-        "nothing unstaged"
+        paths(&d.unstaged),
+        ["a.txt", "bin", "n.txt"],
+        "tracked first, then untracked in the status's order"
     );
+    assert_eq!(paths(&d.staged), ["a.txt"]);
+    let a = &d.unstaged[0];
+    assert_eq!(a.status, Change::Modified);
+    assert_eq!((a.added(), a.removed()), (1, 0));
+    assert_eq!(
+        a.hunks[0].lines.last().map(|l| (l.kind, l.text.as_str())),
+        Some((Kind::Added, "two"))
+    );
+    assert_eq!(a.bytes, Some(13));
+    assert_eq!(a.lines, Some(3));
+    assert!(d.unstaged[1].binary, "bin");
+    assert_eq!(d.unstaged[1].bytes, Some(3));
+    assert_eq!(d.unstaged[1].lines, None, "not counted");
+    let n = &d.unstaged[2];
+    assert_eq!(n.status, Change::Added);
+    assert_eq!(n.hunks[0].lines[0].text, "new");
+    assert!(n.hunks[0].lines[0].no_newline);
+    assert_eq!(n.lines, Some(1), "a last line without a newline counts");
+    let staged = &d.staged[0];
+    assert_eq!(staged.hunks[0].lines[0].text, "zero");
+    assert_eq!(staged.hunks[0].lines[0].kind, Kind::Added);
+    // Nothing changed: the same value again (the panel compares them).
+    assert_eq!(repo.working_diff(&s, false, &[]).unwrap(), d);
+    // A clean tree is two empty lists.
+    repo.stage(&["a.txt", "n.txt", "bin"]).unwrap();
+    repo.commit("all", false).unwrap();
+    let s = repo.status().unwrap();
+    assert_eq!(
+        repo.working_diff(&s, false, &[]).unwrap(),
+        templum_git::WorkingDiff::default()
+    );
+}
+
+#[test]
+fn names_with_spaces_and_accents_come_as_themselves() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "with space.txt", "a\n");
+    write(dir.path(), "café.txt", "a\n");
+    repo.stage(&["with space.txt", "café.txt"]).unwrap();
+    repo.commit("two", false).unwrap();
+    write(dir.path(), "with space.txt", "b\n");
+    write(dir.path(), "café.txt", "b\n");
+    let s = repo.status().unwrap();
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    let mut paths: Vec<&str> = d.unstaged.iter().map(|f| f.path()).collect();
+    paths.sort();
+    assert_eq!(paths, ["café.txt", "with space.txt"]);
+}
+
+#[test]
+fn ignore_whitespace_hides_a_change_of_spaces_only() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("a", false).unwrap();
+    write(dir.path(), "a.txt", "one  \n");
+    let s = repo.status().unwrap();
+    assert_eq!(repo.working_diff(&s, false, &[]).unwrap().unstaged.len(), 1);
+    assert!(
+        repo.working_diff(&s, true, &[])
+            .unwrap()
+            .unstaged
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_whole_file_is_read_with_every_line_as_context() {
+    let (dir, repo) = fresh();
+    let lines: Vec<String> = (1..=20).map(|i| format!("line {i}\n")).collect();
+    write(dir.path(), "a.txt", &lines.concat());
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("a", false).unwrap();
+    let mut changed = lines.clone();
+    changed[9] = "LINE 10\n".to_string();
+    write(dir.path(), "a.txt", &changed.concat());
+    let s = repo.status().unwrap();
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    let h = &d.unstaged[0].hunks[0];
+    assert_eq!(
+        (h.old_start, h.old_len),
+        (7, 7),
+        "3 lines of context each side"
+    );
+    let d = repo
+        .working_diff(&s, false, &[(false, "a.txt".to_string())])
+        .unwrap();
+    let h = &d.unstaged[0].hunks[0];
+    assert_eq!(
+        (h.old_start, h.old_len, h.new_start, h.new_len),
+        (1, 20, 1, 20)
+    );
+    assert_eq!(h.lines.len(), 21, "20 lines, one of them twice");
+    // Asked for the staged side only, the unstaged read stays as it was.
+    let d = repo
+        .working_diff(&s, false, &[(true, "a.txt".to_string())])
+        .unwrap();
+    assert_eq!(d.unstaged[0].hunks[0].old_len, 7);
+}
+
+#[test]
+fn a_conflicted_file_is_left_out_of_the_working_diff() {
+    let (dir, repo) = conflicted();
+    write(dir.path(), "other.txt", "x\n");
+    let s = repo.status().unwrap();
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    let paths: Vec<&str> = d.unstaged.iter().map(|f| f.path()).collect();
+    assert_eq!(paths, ["other.txt"], "a.txt's combined diff is skipped");
 }
 
 #[test]
@@ -624,14 +729,17 @@ fn the_first_line_is_the_reason_not_the_summary() {
 
 // Final review I6: a huge untracked file isn't read into the diff view.
 #[test]
-fn a_huge_untracked_file_is_named_not_shown() {
+fn a_huge_untracked_file_is_too_large_and_not_read() {
     let (dir, repo) = fresh();
     write(dir.path(), "big.csv", &"a,b\n".repeat(1_310_720));
     let s = repo.status().unwrap();
-    assert_eq!(
-        repo.diff(&s.entries[0], false).unwrap(),
-        "Too large to show (5.0 MB)"
-    );
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    let f = &d.unstaged[0];
+    assert!(f.too_large);
+    assert!(f.hunks.is_empty());
+    assert_eq!(f.path(), "big.csv");
+    assert_eq!(f.bytes, Some(5_242_880));
+    assert_eq!(f.lines, None);
 }
 
 // Re-graded from minor: Ignore anchors the path at the root and keeps the rest of the file.
@@ -714,4 +822,27 @@ fn root_of_finds_the_nearest_git_entry() {
     assert_eq!(templum_git::root_of(&file), Some(module.as_path()));
     let outside = dir.path().join("loose.txt");
     assert_eq!(templum_git::root_of(&outside), None);
+}
+
+#[test]
+fn a_users_diff_prefixes_and_external_diff_are_overridden() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("a", false).unwrap();
+    // What a user's config can set: i/ and w/ prefixes, none at all, a diff program of its own.
+    for args in [
+        ["config", "diff.mnemonicPrefix", "true"].as_slice(),
+        &["config", "diff.noprefix", "true"],
+        &["config", "diff.external", "templum-no-such-diff"],
+    ] {
+        repo.run(args).unwrap();
+    }
+    write(dir.path(), "a.txt", "two\n");
+    let s = repo.status().unwrap();
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    assert_eq!(d.unstaged.len(), 1);
+    assert_eq!(d.unstaged[0].path(), "a.txt");
+    assert_eq!(d.unstaged[0].old_path.as_deref(), Some("a.txt"));
+    assert_eq!(d.unstaged[0].added(), 1);
 }

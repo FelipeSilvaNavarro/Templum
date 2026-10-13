@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use crate::diff::{self, FileDiff, parse_diff};
 use crate::parse::{self, Branch, Change, Commit, CommitFile, Entry, Operation, Stash, Status};
 
 /// A command that failed: which one, how, and what git said.
@@ -450,6 +451,134 @@ impl Repo {
             .to_string())
     }
 }
+/// The working tree's diff: the unstaged changes, untracked files included (built with a new
+/// file's headers, after the tracked ones, in the status's order), and the staged ones.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkingDiff {
+    pub unstaged: Vec<FileDiff>,
+    pub staged: Vec<FileDiff>,
+}
+
+/// More context lines than any file has: git shows the file whole.
+const WHOLE: &str = "-U999999999";
+
+impl Repo {
+    /// `git diff` and `git diff --cached`, parsed (`-M`; `-w` with `ignore_whitespace`), each
+    /// file's working size and line count counted. The files in `whole` (`(staged, path)`) are
+    /// read again with every line as context, for the panel to show them whole.
+    pub fn working_diff(
+        &self,
+        status: &Status,
+        ignore_whitespace: bool,
+        whole: &[(bool, String)],
+    ) -> Result<WorkingDiff, GitError> {
+        let mut unstaged = self.side_diff(false, ignore_whitespace, whole)?;
+        for e in status
+            .entries
+            .iter()
+            .filter(|e| e.unstaged == Some(Change::Untracked))
+        {
+            unstaged.push(self.untracked_diff(&e.path));
+        }
+        let staged = self.side_diff(true, ignore_whitespace, whole)?;
+        let mut all = WorkingDiff { unstaged, staged };
+        for file in all.unstaged.iter_mut().chain(all.staged.iter_mut()) {
+            self.count(file);
+        }
+        Ok(all)
+    }
+
+    fn side_diff(
+        &self,
+        staged: bool,
+        ignore_whitespace: bool,
+        whole: &[(bool, String)],
+    ) -> Result<Vec<FileDiff>, GitError> {
+        // quotePath off: a name with non-ASCII letters comes as itself, not as "caf\303\251".
+        // The prefixes are set, and no external diff runs: a user's diff.mnemonicPrefix,
+        // diff.noprefix or diff.external would change what the parser reads.
+        let mut args = vec![
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "-M",
+        ];
+        if staged {
+            args.push("--cached");
+        }
+        if ignore_whitespace {
+            args.push("-w");
+        }
+        let mut files = parse_diff(&self.text(&args)?, DIFF_LIMIT);
+        for (_, path) in whole.iter().filter(|(s, _)| *s == staged) {
+            let Some(i) = files.iter().position(|f| f.path() == path) else {
+                continue;
+            };
+            let mut args = args.clone();
+            args.push(WHOLE);
+            args.push("--");
+            if files[i].status == Change::Renamed
+                && let Some(from) = files[i].old_path.as_deref()
+            {
+                args.push(from);
+            }
+            args.push(path);
+            if let Some(file) = parse_diff(&self.text(&args)?, DIFF_LIMIT).pop() {
+                files[i] = file;
+            }
+        }
+        Ok(files)
+    }
+
+    /// An untracked file as a new file's diff: its text as added lines; binary, or too large
+    /// past `DIFF_LIMIT` (not read).
+    fn untracked_diff(&self, path: &str) -> FileDiff {
+        let full = self.root.join(path);
+        let size = std::fs::metadata(&full).map_or(0, |m| m.len());
+        if size > DIFF_LIMIT as u64 {
+            let mut file = FileDiff::empty();
+            file.new_path = Some(path.to_string());
+            file.status = Change::Added;
+            file.too_large = true;
+            return file;
+        }
+        let bytes = std::fs::read(&full).unwrap_or_default();
+        let text = if bytes.iter().take(8 * 1024).any(|b| *b == 0) {
+            diff::new_binary_diff(path)
+        } else {
+            diff::new_file_diff(path, &String::from_utf8_lossy(&bytes))
+        };
+        parse_diff(&text, DIFF_LIMIT).pop().expect("one file")
+    }
+
+    /// The working file's size and line count: the file row's "12 KB", and the fold after
+    /// its last hunk.
+    fn count(&self, file: &mut FileDiff) {
+        let Some(path) = &file.new_path else {
+            return;
+        };
+        let full = self.root.join(path);
+        let Ok(meta) = std::fs::metadata(&full) else {
+            return;
+        };
+        file.bytes = Some(meta.len());
+        if file.binary || file.too_large || meta.len() > DIFF_LIMIT as u64 {
+            return;
+        }
+        // ponytail: reads every changed file on each poll to count its lines; cache by mtime
+        // if a tree with many large changed files stalls the background executor.
+        if let Ok(bytes) = std::fs::read(&full) {
+            let n = bytes.iter().filter(|b| **b == b'\n').count()
+                + usize::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
+            file.lines = Some(n as u32);
+        }
+    }
+}
+
 /// Which side of a conflict to keep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
