@@ -11,6 +11,7 @@ use gpui_kit::{
 use templum_canvas::{BlockId, Size, chrome};
 
 use crate::block::BORDER;
+use crate::board::Label;
 use crate::workspace::Workspace;
 
 /// A new note's size, and the smallest one (world units).
@@ -32,6 +33,8 @@ const FIXED_BOTTOM: f32 = 8.0;
 pub(crate) struct Note {
     pub editor: Entity<EditorState>,
     pub preview: bool,
+    /// Its card's tint, a post-it's color; None: the blocks' own.
+    pub color: Option<Label>,
 }
 
 impl Note {
@@ -44,7 +47,11 @@ impl Note {
                 .line_number(false)
                 .default_value(text)
         });
-        Note { editor, preview }
+        Note {
+            editor,
+            preview,
+            color: None,
+        }
     }
 
     pub fn text(&self, cx: &App) -> String {

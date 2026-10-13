@@ -278,3 +278,38 @@ fn send_to_types_a_notes_selection_into_the_chosen_terminal(cx: &mut TestAppCont
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+#[gpui_kit::test]
+fn the_note_menu_colors_the_note(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let note = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.add_note_at(Point::new(900.0, 40.0), window, cx);
+                ws.space.appearing.clear();
+                ws.space.canvas.top().unwrap()
+            })
+        })
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(("title", note.0 as usize), cx);
+        window.render_frame(cx);
+        // Preview, Copy all, Color ▸ (an empty note has nothing to send), —, Close.
+        window.within("popup-menu").click(2usize, cx);
+        window.render_frame(cx);
+        // None, Red, Yellow…
+        window
+            .within("submenu")
+            .within("popup-menu")
+            .click(2usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.space.blocks[&note].note().unwrap().color,
+            Some(crate::board::Label::Yellow)
+        );
+    });
+}

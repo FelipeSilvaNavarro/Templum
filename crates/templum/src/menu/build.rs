@@ -12,6 +12,7 @@ use gpui_kit::{App, ClipboardItem, Context, Entity, SharedString, Window, px};
 use templum_canvas::{BlockId, Point};
 
 use super::{Items, SendTo};
+use crate::board::Label;
 use crate::git_block;
 use crate::kanban;
 use crate::launcher;
@@ -642,6 +643,7 @@ impl Items {
             Items::Note {
                 block,
                 preview,
+                color,
                 send,
             } => menu
                 .item(item(
@@ -666,6 +668,31 @@ impl Items {
                     },
                 ))
                 .map(|menu| send_to(ws, menu, send, window, cx))
+                .map(|menu| {
+                    let ws = ws.clone();
+                    menu.submenu_with_icon(
+                        Some(Icon::new(IconName::Palette)),
+                        "Color",
+                        window,
+                        cx,
+                        move |menu, _, _| {
+                            let none = item(&ws, "None", None, move |ws, _, cx| {
+                                ws.set_note_color(block, None, cx)
+                            })
+                            .checked(color.is_none());
+                            Label::ALL.into_iter().fold(menu.item(none), |menu, label| {
+                                let name = label.name();
+                                let title = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
+                                menu.item(
+                                    item(&ws, title, None, move |ws, _, cx| {
+                                        ws.set_note_color(block, Some(label), cx)
+                                    })
+                                    .checked(color == Some(label)),
+                                )
+                            })
+                        },
+                    )
+                })
                 .separator()
                 .item(item(
                     ws,

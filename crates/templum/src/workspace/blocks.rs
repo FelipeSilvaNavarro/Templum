@@ -55,6 +55,19 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Tints a note's card with `color` (None: the blocks' own).
+    pub(crate) fn set_note_color(
+        &mut self,
+        id: BlockId,
+        color: Option<crate::board::Label>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(Body::Note(note)) = self.space.blocks.get_mut(&id) {
+            note.color = color;
+            cx.notify();
+        }
+    }
+
     /// A note shows its rendered text, or its editor again. Leaving the editor hands the keyboard
     /// to the canvas; going back to it gives the editor the keyboard.
     pub(crate) fn toggle_preview(

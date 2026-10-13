@@ -444,7 +444,12 @@ pub(crate) fn render(
         } else {
             ui.hairline.lerp(&ui.hover_border, lift)
         })
-        .bg(ws.ui.surface)
+        .bg(match body {
+            Body::Note(note) => note
+                .color
+                .map_or(ws.ui.surface, |color| ws.theme.note_bg(color)),
+            _ => ws.ui.surface,
+        })
         .shadow(shadows)
         .overflow_hidden()
         .when(live, |el| {

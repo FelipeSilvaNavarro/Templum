@@ -51,7 +51,8 @@ impl Workspace {
                 }
                 session::Item::Note(n) => {
                     let id = clamped_rect(n.rect.into(), note::MIN).map(|rect| {
-                        let note = Note::new(&n.text, n.preview, window, cx);
+                        let mut note = Note::new(&n.text, n.preview, window, cx);
+                        note.color = n.color;
                         self.add_block(rect, Body::Note(note))
                     });
                     ids.push(id);

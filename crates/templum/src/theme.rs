@@ -8,6 +8,7 @@ use gpui_kit::{App, Hsla};
 use templum_terminal::{Palette, Rgb};
 use toml_edit::DocumentMut;
 
+use crate::board::Label;
 use crate::grid::hsla;
 
 const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
@@ -81,7 +82,16 @@ impl gpui_kit::base::animation::Lerp for Ui {
     }
 }
 
+/// How much of its label's color a colored note's card takes.
+const NOTE_TINT: f32 = 0.18;
+
 impl Theme {
+    /// A colored note's card: the theme's background with a little of the label's color, so
+    /// the text on it stays readable.
+    pub fn note_bg(&self, label: Label) -> Hsla {
+        hsla(note_tint(&self.palette, label), 1.0)
+    }
+
     pub fn new(name: &str, palette: Palette, cursor: Option<Rgb>, selection: Option<Rgb>) -> Self {
         // About CIE L* 50.
         let is_dark = luminance(palette.background) < 0.18;
@@ -200,6 +210,10 @@ fn luminance(c: Rgb) -> f32 {
         }
     };
     0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b)
+}
+
+fn note_tint(palette: &Palette, label: Label) -> Rgb {
+    mix(palette.background, palette.ansi[label.ansi()], NOTE_TINT)
 }
 
 /// Linear blend in sRGB: `t = 0` is `a`, `t = 1` is `b`.
@@ -536,6 +550,22 @@ white = "#aaaaaa"
         let half = mocha.lerp(&latte, 0.5);
         assert!((half.canvas.l - (mocha.canvas.l + latte.canvas.l) / 2.0).abs() < 1e-6);
         assert!((half.dot.a - 0.26).abs() < 1e-6, "alphas blend too");
+    }
+
+    #[test]
+    fn note_tints_keep_text_readable() {
+        let contrast = |a: Rgb, b: Rgb| {
+            let (la, lb) = (luminance(a), luminance(b));
+            (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+        };
+        for builtin in BUILTIN {
+            let theme = parse(builtin.name, builtin.toml).unwrap();
+            for label in Label::ALL {
+                let tint = note_tint(&theme.palette, label);
+                let ratio = contrast(theme.palette.foreground, tint);
+                assert!(ratio >= 4.5, "{} {}: {ratio}", builtin.name, label.name());
+            }
+        }
     }
 
     #[test]

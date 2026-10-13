@@ -349,6 +349,7 @@ impl Space {
                             rect: b.rect.into(),
                             text: n.text(cx),
                             preview: n.preview,
+                            color: n.color,
                         }))
                     }
                     Body::Editor(e) => {

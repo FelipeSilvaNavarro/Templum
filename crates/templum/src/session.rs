@@ -206,6 +206,13 @@ pub(crate) struct NoteItem {
     /// Shown rendered instead of the editor.
     #[serde(default)]
     pub preview: bool,
+    /// Its card's color, by name ("yellow"); none when missing or unknown.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::board::known_label"
+    )]
+    pub color: Option<crate::board::Label>,
 }
 
 /// An editor block (docs/specs/cockpit.md, section 7).
@@ -521,6 +528,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_note_color_reads_back_and_unknown_or_missing_is_none() {
+        let read = |json: &str| match serde_json::from_str::<Item>(json).unwrap() {
+            Item::Note(n) => n,
+            other => panic!("{other:?}"),
+        };
+        let base = r#"{"kind":"note","rect":{"x":0,"y":0,"w":1,"h":1},"text":"x""#;
+        assert_eq!(read(&format!("{base}}}")).color, None);
+        assert_eq!(read(&format!(r#"{base},"color":"teal"}}"#)).color, None);
+        let note = read(&format!(r#"{base},"color":"yellow"}}"#));
+        assert_eq!(note.color, Some(crate::board::Label::Yellow));
+        let back = serde_json::to_string(&Item::Note(note)).unwrap();
+        assert!(back.contains(r#""color":"yellow""#), "{back}");
+        let plain = serde_json::to_string(&Item::Note(read(&format!("{base}}}")))).unwrap();
+        assert!(!plain.contains("color"), "{plain}");
+    }
+
+    #[test]
     fn a_git_item_round_trips_and_its_tab_defaults_to_changes() {
         let text = r#"{"kind":"git","rect":{"x":1,"y":2,"w":800,"h":560},"folder":"/p"}"#;
         let item: Item = serde_json::from_str(text).unwrap();
@@ -718,6 +742,7 @@ mod tests {
             },
             text: "# Hi\n- one".into(),
             preview: true,
+            color: None,
         }));
         save(d.path(), "n", &saved, 1).unwrap();
         assert_eq!(load(d.path(), "n"), Loaded::Saved(saved));

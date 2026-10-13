@@ -158,6 +158,7 @@ impl Workspace {
                 Body::Note(n) => Items::Note {
                     block,
                     preview: n.preview,
+                    color: n.color,
                     send: self.send_to_menu(n.to_send(cx)),
                 },
                 Body::Editor(e) => Items::Editor {
@@ -303,6 +304,7 @@ enum Items {
         block: BlockId,
         /// It shows rendered.
         preview: bool,
+        color: Option<crate::board::Label>,
         send: SendTo,
     },
     Editor {

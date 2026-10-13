@@ -109,6 +109,12 @@ impl Label {
 }
 
 /// Labels this Templum knows; others (from an edited file) are dropped.
+/// A label by its name; one Templum doesn't know is none (a typo mustn't lose the file).
+pub(crate) fn known_label<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Label>, D::Error> {
+    let name = Option::<String>::deserialize(d)?;
+    Ok(name.and_then(|n| Label::ALL.into_iter().find(|l| l.name() == n)))
+}
+
 fn known_labels<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Label>, D::Error> {
     let names = Vec::<String>::deserialize(d)?;
     Ok(names
