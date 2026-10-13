@@ -42,6 +42,16 @@ pub(crate) fn commits(n: u32) -> String {
     }
 }
 
+/// What deleting a branch git calls not merged loses: its commits on no other branch (None:
+/// the count couldn't be read).
+pub(crate) fn unmerged(count: Option<u32>) -> String {
+    match count {
+        Some(0) => "Its commits are on other branches too: they stay in the history.".to_string(),
+        Some(n) => format!("Its {} not merged anywhere will be lost.", commits(n)),
+        None => "Git says it isn't merged: its commits may be lost.".to_string(),
+    }
+}
+
 /// "1 changed file", "3 changed files".
 pub(crate) fn changed_files(n: usize) -> String {
     if n == 1 {
@@ -196,6 +206,24 @@ mod tests {
         );
         assert_eq!(local_name("origin/main"), "main");
         assert_eq!(local_name("main"), "main");
+    }
+
+    #[test]
+    fn what_deleting_an_unmerged_branch_loses() {
+        assert_eq!(
+            unmerged(Some(3)),
+            "Its 3 commits not merged anywhere will be lost."
+        );
+        assert_eq!(
+            unmerged(Some(1)),
+            "Its 1 commit not merged anywhere will be lost."
+        );
+        assert!(!unmerged(Some(0)).contains('0'), "{}", unmerged(Some(0)));
+        assert!(
+            !unmerged(None).contains('0'),
+            "the count couldn't be read: {}",
+            unmerged(None)
+        );
     }
 
     #[test]

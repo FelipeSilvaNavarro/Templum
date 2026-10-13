@@ -169,14 +169,10 @@ impl Workspace {
             at,
             move || repo.unmerged_count(&counted),
             move |_, at, count, window, cx| {
-                let n = count.unwrap_or(0);
                 let entity = cx.entity();
                 prompt::confirm(
                     format!("Delete {name} anyway?"),
-                    format!(
-                        "Its {} not merged anywhere will be lost.",
-                        words::commits(n)
-                    ),
+                    words::unmerged(count.ok()),
                     "Delete",
                     move |window, cx| {
                         let (name, at) = (name.clone(), at.clone());
