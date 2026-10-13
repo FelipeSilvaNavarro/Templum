@@ -186,6 +186,75 @@ impl Workspace {
         );
     }
 
+    /// Clone a repository…: a URL and where to put it (the block's folder at first).
+    pub(crate) fn ask_clone(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(folder) = self.space.git(id).map(|g| g.folder.display().to_string()) else {
+            return;
+        };
+        let ws = cx.entity();
+        prompt::ask_two(
+            "Clone a repository",
+            "Clone",
+            ("https://github.com/you/app.git", String::new()),
+            ("Destination folder", folder),
+            move |url, dest, window, cx| {
+                let url = url.trim().to_string();
+                if url.is_empty() || dest.trim().is_empty() {
+                    return false;
+                }
+                ws.update(cx, |ws, cx| ws.clone_repo(id, url, dest, window, cx));
+                true
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Clones `url` into `dest` (or a folder named after it there, `clone_target`) in the
+    /// background, the Clone (or Sync) button spinning and cancelling; then the block opens on
+    /// the clone.
+    pub(crate) fn clone_repo(
+        &mut self,
+        id: BlockId,
+        url: String,
+        dest: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let program = self.config.git.program().to_string();
+        let Some(git) = self.space.git_mut(id) else {
+            return;
+        };
+        let into = templum_git::clone_target(&crate::launcher::expand(dest.trim()), &url);
+        let cancel = Arc::new(AtomicBool::new(false));
+        git.sync = Some(git_block::Sync::Cloning);
+        git.cancel = Some(cancel.clone());
+        self.act_job(
+            self.here(id),
+            move || templum_git::Repo::clone_into(&program, &url, &into, Some(cancel)),
+            move |ws, at, cloned, window, cx| {
+                if let Some(git) = ws.git_at(&at) {
+                    git.sync = None;
+                    git.cancel = None;
+                }
+                match cloned {
+                    Ok(repo) => {
+                        let message = format!("Cloned into {}", repo.root.display());
+                        ws.set_git_folder(at.block, &repo.root, window, cx);
+                        show_notification(window, cx, Notification::success(message));
+                    }
+                    Err(e) if e.cancelled() => {}
+                    Err(e) => {
+                        let entity = cx.entity();
+                        notify_git_error(&entity, at, &e, Vec::new(), window, cx);
+                    }
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
     /// `git push -u <remote> <branch>`, its button spinning.
     pub(crate) fn publish_to(
         &mut self,

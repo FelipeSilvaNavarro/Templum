@@ -172,3 +172,69 @@ fn the_more_menu_fetches_and_lists_recently_discarded(cx: &mut TestAppContext) {
     settle(handle, cx);
     git_of(&ws, cx, id, |g| assert_eq!(g.status.behind, 1, "fetched"));
 }
+
+#[gpui_kit::test]
+fn clone_from_a_folder_that_isnt_a_repository_opens_the_block_on_it(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    let repo = committed_repo();
+    let remote = add_remote(repo.path());
+    let empty = tempfile::tempdir().unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, empty.path());
+    let n = id.0 as usize;
+    git_of(&ws, cx, id, |g| {
+        assert!(matches!(g.found, crate::git_block::Found::NotARepo))
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-clone", n), cx);
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "URL and destination");
+    })
+    .unwrap();
+    // The URL field has the keyboard; the destination holds the chosen folder.
+    cx.simulate_input(handle, &remote.path().display().to_string());
+    cx.update_window(handle, |_, window, cx| {
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    let root = git_of(&ws, cx, id, |g| g.repo().map(|r| r.root.clone()));
+    assert_eq!(
+        root.unwrap().canonicalize().unwrap(),
+        empty.path().canonicalize().unwrap(),
+        "an empty folder takes the clone"
+    );
+    assert!(empty.path().join("a.txt").is_file());
+}
+
+#[gpui_kit::test]
+fn a_failed_clone_says_why_and_leaves_no_folder(cx: &mut TestAppContext) {
+    let parent = tempfile::tempdir().unwrap();
+    std::fs::write(parent.path().join("keep.txt"), "").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, parent.path());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.clone_repo(
+                id,
+                "/no/such/app.git".to_string(),
+                parent.path().display().to_string(),
+                window,
+                cx,
+            )
+        })
+    })
+    .unwrap();
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.sync, Some(crate::git_block::Sync::Cloning), "spinning")
+    });
+    settle(handle, cx);
+    assert_eq!(notification_count(handle, cx), 1);
+    assert!(!parent.path().join("app").exists(), "nothing half-made");
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.sync, None);
+        assert!(matches!(g.found, crate::git_block::Found::NotARepo));
+    });
+}

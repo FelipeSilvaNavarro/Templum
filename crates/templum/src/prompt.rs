@@ -195,6 +195,57 @@ pub(crate) fn details(
     });
 }
 
+/// Two text fields (placeholder, initial text). Enter or `ok` calls `apply` with both; the
+/// dialog closes when it returns true.
+pub(crate) fn ask_two<V: 'static>(
+    title: impl Into<SharedString>,
+    ok: &'static str,
+    first: (&'static str, String),
+    second: (&'static str, String),
+    apply: impl Fn(String, String, &mut Window, &mut App) -> bool + 'static,
+    window: &mut Window,
+    cx: &mut Context<V>,
+) {
+    let title = title.into();
+    let field = |(placeholder, initial): (&'static str, String),
+                 window: &mut Window,
+                 cx: &mut Context<V>| {
+        cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(placeholder)
+                .default_value(initial)
+        })
+    };
+    let (a, b) = (field(first, window, cx), field(second, window, cx));
+    let apply = Rc::new(apply);
+    let (fa, fb) = (a.clone(), b.clone());
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let (apply, fa, fb) = (apply.clone(), fa.clone(), fb.clone());
+        alert
+            .confirm()
+            .title(title.clone())
+            .w(px(520.0))
+            .button_props(DialogButtonProps::default().ok_text(ok))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(Input::new(&fa))
+                    .child(Input::new(&fb)),
+            )
+            .on_ok(move |_, window, cx| {
+                let (x, y) = (
+                    fa.read(cx).value().to_string(),
+                    fb.read(cx).value().to_string(),
+                );
+                apply(x, y, window, cx)
+            })
+    });
+    // After opening: the dialog takes the focus when it opens.
+    a.update(cx, |input, cx| input.focus(window, cx));
+}
+
 /// A text field and a checkbox (`flag`, off at first). Enter or `ok` calls `apply` with the
 /// text and the checkbox; the dialog closes when it returns true.
 pub(crate) fn ask_text_and_flag<V: 'static>(

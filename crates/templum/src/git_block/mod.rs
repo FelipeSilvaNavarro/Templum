@@ -122,6 +122,8 @@ pub(crate) enum Sync {
     Push,
     /// Sync: pull, then push.
     Both,
+    /// A clone, from the not-a-repository view or ⋯.
+    Cloning,
 }
 
 /// The three lists of the Changes tab.

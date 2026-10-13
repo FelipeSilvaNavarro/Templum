@@ -16,7 +16,7 @@ use super::changes::changes;
 use super::history::history;
 use super::stashes::stashes;
 use super::widgets::{bar, centered, icon_button};
-use super::{FONT, Found, Git, Tab, words};
+use super::{FONT, Found, Git, Sync, Tab, words};
 use crate::editor::button;
 use crate::menu::Target;
 use crate::workspace::Workspace;
@@ -86,6 +86,28 @@ pub(crate) fn body(
                                 }))
                                 .test_support(),
                         )
+                        .child({
+                            // Spins while a clone runs; a click on it then cancels it.
+                            let cloning = git.sync == Some(Sync::Cloning);
+                            let label = if cloning {
+                                "Cancel"
+                            } else {
+                                "Clone a repository…"
+                            };
+                            let el = button(("git-clone", n), label, ui, z).when(cloning, |el| {
+                                el.child(Spinner::new().with_size(UiSize::Size(px(12.0 * z))))
+                            });
+                            if cloning {
+                                el.on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
+                                    ws.cancel_git(id, cx)
+                                }))
+                            } else {
+                                el.on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                                    ws.ask_clone(id, window, cx)
+                                }))
+                            }
+                            .test_support()
+                        })
                         .child(
                             button(("choose-folder", n), "Choose another folder…", ui, z)
                                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {

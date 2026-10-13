@@ -385,7 +385,13 @@ impl Items {
                         Some(IconName::ArchiveRestore),
                         move |ws, window, cx| ws.show_discarded(block, window, cx),
                     ))
-                }),
+                })
+                .item(item(
+                    ws,
+                    "Clone a repository…",
+                    None,
+                    move |ws, window, cx| ws.ask_clone(block, window, cx),
+                )),
             Items::GitRemotes {
                 block,
                 branch,
