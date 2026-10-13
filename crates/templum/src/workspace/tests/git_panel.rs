@@ -510,3 +510,234 @@ fn send_to_types_the_selection_into_a_terminal(cx: &mut TestAppContext) {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// A committed file of 20 lines, with line 10 changed in the working tree.
+fn twenty_lines_repo() -> tempfile::TempDir {
+    let repo = git_repo();
+    let lines: Vec<String> = (1..=20).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(repo.path().join("a.txt"), lines.concat()).unwrap();
+    git_run(repo.path(), &["add", "a.txt"]);
+    git_run(repo.path(), &["commit", "-q", "-m", "twenty"]);
+    let mut changed = lines;
+    changed[9] = "LINE 10\n".to_string();
+    std::fs::write(repo.path().join("a.txt"), changed.concat()).unwrap();
+    repo
+}
+
+#[gpui_kit::test]
+fn a_fold_names_the_unchanged_lines_and_a_click_shows_the_whole_file(cx: &mut TestAppContext) {
+    let repo = twenty_lines_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let folds: Vec<(usize, u32)> = git_of(&ws, cx, id, |g| {
+        g.panel
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, r)| match r {
+                Row::Fold { lines, .. } => Some((ix, *lines)),
+                _ => None,
+            })
+            .collect()
+    });
+    assert_eq!(folds.len(), 2, "{folds:?}");
+    assert_eq!(folds[0].1, 6, "lines 1 to 6 before the hunk's context");
+    assert_eq!(folds[1].1, 7, "lines 14 to 20 after it");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("git-fold", folds[0].0), cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.panel.whole, [(false, "a.txt".to_string())]);
+        assert!(
+            !g.panel.rows.iter().any(|r| matches!(r, Row::Fold { .. })),
+            "shown whole"
+        );
+        let lines = g
+            .panel
+            .rows
+            .iter()
+            .filter(|r| matches!(r, Row::Line { .. }))
+            .count();
+        assert_eq!(lines, 21, "20 lines, the changed one twice");
+    });
+}
+
+#[gpui_kit::test]
+fn a_file_row_folds_and_expand_and_collapse_all_fold_every_file(cx: &mut TestAppContext) {
+    let repo = mixed_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    let total = git_of(&ws, cx, id, |g| g.panel.rows.len());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("git-file", 1usize), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    git_of(&ws, cx, id, |g| {
+        assert!(g.panel.folded.contains(&(false, "a.txt".to_string())));
+        assert!(g.panel.rows.len() < total);
+        assert!(
+            matches!(g.panel.rows[2], Row::File { .. }),
+            "n.txt's row follows a.txt's at once"
+        );
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-collapse-all", n), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.panel.folded.len(), 3);
+        assert_eq!(g.panel.rows.len(), 5, "two headings, three file rows");
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-expand-all", n), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    git_of(&ws, cx, id, |g| {
+        assert!(g.panel.folded.is_empty());
+        assert_eq!(g.panel.rows.len(), total);
+    });
+}
+
+#[gpui_kit::test]
+fn ignore_whitespace_hides_a_change_of_spaces_only(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "one  \n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    git_of(&ws, cx, id, |g| assert_eq!(g.panel.files.len(), 1));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("git-ignore-ws", n), cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert!(g.panel.ignore_ws);
+        assert!(g.panel.is_empty(), "nothing but spaces changed");
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-ignore-ws", n), cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| assert_eq!(g.panel.files.len(), 1));
+}
+
+#[gpui_kit::test]
+fn large_generated_binary_and_huge_files_show_a_note(cx: &mut TestAppContext) {
+    use crate::git_block::diff_view::Note;
+    let repo = git_repo();
+    std::fs::write(repo.path().join("Cargo.lock"), "a\n").unwrap();
+    git_run(repo.path(), &["add", "Cargo.lock"]);
+    git_run(repo.path(), &["commit", "-q", "-m", "lock"]);
+    std::fs::write(repo.path().join("Cargo.lock"), "b\n").unwrap();
+    std::fs::write(repo.path().join("big.txt"), "l\n".repeat(2101)).unwrap();
+    std::fs::write(repo.path().join("b.bin"), b"\0\x01").unwrap();
+    std::fs::write(repo.path().join("huge.csv"), "a,b\n".repeat(1_310_720)).unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let notes: Vec<(usize, String, Note)> = git_of(&ws, cx, id, |g| {
+        g.panel
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(ix, r)| match r {
+                Row::Note { file, note } => {
+                    Some((ix, g.panel.files[*file].diff.path().to_string(), *note))
+                }
+                _ => None,
+            })
+            .collect()
+    });
+    let kinds: Vec<(&str, Note)> = notes.iter().map(|(_, p, n)| (p.as_str(), *n)).collect();
+    assert_eq!(
+        kinds,
+        [
+            ("Cargo.lock", Note::Large),
+            ("b.bin", Note::Binary),
+            ("big.txt", Note::Large),
+            ("huge.csv", Note::TooLarge),
+        ]
+    );
+    // Show diff on big.txt: its 2,101 lines show.
+    let big = notes[2].0;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(("git-show-diff", big), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    git_of(&ws, cx, id, |g| {
+        assert!(
+            g.panel
+                .large_shown
+                .contains(&(false, "big.txt".to_string()))
+        );
+        let lines = g.panel.rows.iter().filter(|r| matches!(r, Row::Line { file, .. } if g.panel.files[*file].diff.path() == "big.txt")).count();
+        assert_eq!(lines, 2101);
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_mode_change_says_so(cx: &mut TestAppContext) {
+    use crate::git_block::diff_view::Note;
+    use std::os::unix::fs::PermissionsExt;
+    let repo = committed_repo();
+    std::fs::set_permissions(
+        repo.path().join("a.txt"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(
+            g.panel.files[0].diff.mode,
+            Some(("100644".to_string(), "100755".to_string()))
+        );
+        assert!(g.panel.rows.contains(&Row::Note {
+            file: 0,
+            note: Note::Mode
+        }));
+    });
+    let _ = handle;
+}
+
+#[gpui_kit::test]
+fn the_sticky_title_names_the_file_at_the_top_of_the_scroll(cx: &mut TestAppContext) {
+    use gpui_kit::{point, px};
+    let repo = git_repo();
+    for i in 0..30 {
+        std::fs::write(repo.path().join(format!("f{i:02}.txt")), "l\n".repeat(10)).unwrap();
+    }
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    let row_h = crate::git_block::diff_view::row_height(1.0);
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(
+            g.panel.top_file(row_h),
+            None,
+            "a section heading at the top"
+        );
+        // Heading, then 12 rows per file (its row, its hunk, 10 lines): row 15 is inside f01.
+        let base = g.panel.scroll.0.borrow().base_handle.clone();
+        base.set_offset(point(px(0.0), px(-15.0 * row_h)));
+        assert_eq!(g.panel.top_file(row_h), Some(1));
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("git-sticky", n)).is_some());
+    })
+    .unwrap();
+}
