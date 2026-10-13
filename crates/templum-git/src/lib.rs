@@ -2,9 +2,11 @@
 //! (`status --porcelain=v2 -z`, a log record format, `for-each-ref`), parsed into typed values.
 //! No UI, no library binding: credentials and SSH work as they do in the user's terminal.
 
+mod diff;
 mod parse;
 mod repo;
 
+pub use diff::{FileDiff, Hunk, Kind, LARGE, Line, new_binary_diff, new_file_diff, parse_diff};
 pub use parse::{
     BRANCH_FORMAT, Branch, Change, Commit, CommitFile, Entry, LOG_DATE, LOG_FORMAT, Operation,
     STASH_FORMAT, Stash, Status, ago, first_hunk_line, needs_input, not_fast_forward, not_merged,
