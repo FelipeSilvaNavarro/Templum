@@ -638,9 +638,9 @@ fn choosing_another_folder_keeps_unsaved_tabs(cx: &mut TestAppContext) {
     std::fs::write(dir.path().join("a.txt"), "a").unwrap();
     let (handle, ws) = open(cx);
     let id = dirty_tab(handle, &ws, cx, dir.path());
-    cx.update_window(handle, |_, _, cx| {
+    cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.set_editor_folder(id, other.path(), cx);
+            ws.set_editor_folder(id, other.path(), window, cx);
         });
         let e = ws.read(cx).space.editor(id).unwrap();
         assert_eq!(e.tabs.len(), 1, "the changed file stays open");

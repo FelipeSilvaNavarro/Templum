@@ -133,7 +133,7 @@ fn an_editor_comes_back_and_one_whose_folder_is_gone_says_so(cx: &mut TestAppCon
         window.find(("choose-folder", gone.0 as usize));
         // Pointing it at a folder that exists reads it.
         ws.update(cx, |ws, cx| {
-            ws.set_editor_folder(gone, folder.path(), cx);
+            ws.set_editor_folder(gone, folder.path(), window, cx);
         });
         window.render_frame(cx);
         window.find(("tree", gone.0 as usize));
@@ -445,4 +445,44 @@ fn the_editors_gutter_and_current_line_follow_the_theme(cx: &mut TestAppContext)
             );
         });
     }
+}
+
+#[gpui_kit::test]
+fn the_editor_menu_points_it_at_another_folder(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let dir = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    std::fs::write(other.path().join("b.txt"), "b").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_editor(handle, &ws, cx, dir.path());
+    ws.update(cx, |ws, _| {
+        ws.space.recent = vec![other.path().to_path_buf()]
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.right_click(("title", id.0 as usize), cx);
+        window.render_frame(cx);
+        // Change folder…, the tree, soft wrap, —, Close.
+        window.within("popup-menu").click(0usize, cx);
+    })
+    .unwrap();
+    // The menu fades out for a moment: a click meanwhile would land on it.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("recent-0", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("choose-folder").is_none(),
+            "the dialog closed"
+        );
+        // A path that isn't a folder changes nothing.
+        let missing = other.path().join("missing");
+        ws.update(cx, |ws, cx| {
+            assert!(ws.set_editor_folder(id, &missing, window, cx).is_none())
+        });
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.editor(id).unwrap().folder, other.path())
+    });
 }

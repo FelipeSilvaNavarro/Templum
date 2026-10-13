@@ -150,6 +150,8 @@ impl Read {
 pub(crate) struct Git {
     /// What the user chose; the repository's root may be above it.
     pub folder: PathBuf,
+    /// How many times the block changed folder (see `GitAt`).
+    pub generation: u64,
     pub found: Found,
     pub tab: Tab,
     pub status: Status,
@@ -268,6 +270,7 @@ impl Git {
         });
         Git {
             folder,
+            generation: 0,
             found: Found::Looking,
             tab,
             status: Status::default(),

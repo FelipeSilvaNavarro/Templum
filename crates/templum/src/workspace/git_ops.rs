@@ -81,7 +81,8 @@ impl Workspace {
         Some(id)
     }
 
-    /// The system's folder picker, for a Git block whose folder is gone or isn't a repository.
+    /// The folder dialog, to point a Git block at another folder: from its menu, or when its
+    /// folder is gone or isn't a repository.
     pub(crate) fn choose_git_folder(
         &mut self,
         id: BlockId,
@@ -89,7 +90,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let entity = cx.entity();
-        launcher::pick_folder(
+        launcher::ask_folder_for(
+            self,
+            "Change the Git block's folder".to_string(),
+            None,
             Rc::new(move |folder, window, cx| {
                 entity.update(cx, |ws, cx| ws.set_git_folder(id, folder, window, cx))
             }),
@@ -98,7 +102,9 @@ impl Workspace {
         );
     }
 
-    /// Points a Git block at another folder, looked up afresh.
+    /// Points a Git block at another folder, looked up afresh: nothing of the repository it
+    /// showed stays (lists, diffs, the commit's fields), and what its commands still running
+    /// return is dropped. A path that isn't a folder changes nothing.
     pub(crate) fn set_git_folder(
         &mut self,
         id: BlockId,
@@ -106,11 +112,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
-        let git = self.space.git_mut(id)?;
-        git.folder = folder.to_path_buf();
-        git.found = Found::Looking;
-        git.status = templum_git::Status::default();
-        git.error = None;
+        let (tab, generation) = self.space.git(id).map(|g| (g.tab, g.generation + 1))?;
+        if !folder.is_dir() {
+            let message = format!("{} isn't a folder", folder.display());
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+            return None;
+        }
+        let mut git = Git::new(folder.to_path_buf(), tab, window, cx);
+        git.generation = generation;
+        *self.space.git_mut(id)? = git;
         remember(&mut self.space.recent, folder.to_path_buf());
         self.look_up_git(id, window, cx);
         cx.notify();
@@ -126,10 +137,7 @@ impl Workspace {
         if !folder.is_dir() {
             return;
         }
-        let at = GitAt {
-            space: self.space.id.clone(),
-            block: id,
-        };
+        let at = self.here(id);
         self.git_job(
             at,
             move || Repo::discover(&program, &folder),
@@ -155,10 +163,7 @@ impl Workspace {
             return;
         };
         let (program, folder) = (self.config.git.program().to_string(), git.folder.clone());
-        let at = GitAt {
-            space: self.space.id.clone(),
-            block: id,
-        };
+        let at = self.here(id);
         self.act_job(
             at,
             move || Repo::init(&program, &folder),
@@ -200,6 +205,7 @@ impl Workspace {
         GitAt {
             space: self.space.id.clone(),
             block: id,
+            generation: self.space.git(id).map_or(0, |g| g.generation),
         }
     }
 
@@ -213,7 +219,12 @@ impl Workspace {
         if self.space.id != at.space {
             self.reveal(&at.space, at.block, window, cx);
         }
-        self.space.id == at.space && self.space.git(at.block).is_some()
+        // A block that changed folder since isn't the one the notification is about.
+        self.space.id == at.space
+            && self
+                .space
+                .git(at.block)
+                .is_some_and(|g| g.generation == at.generation)
     }
 
     /// After a command: the status now, and the shown tab's list once the status is in.
@@ -248,10 +259,7 @@ impl Workspace {
 
     /// Reads the block's status in the background: at once, or when the running command ends.
     pub(crate) fn refresh_git(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        let at = GitAt {
-            space: self.space.id.clone(),
-            block: id,
-        };
+        let at = self.here(id);
         self.refresh_at(at, window, cx);
     }
 
@@ -314,8 +322,11 @@ impl Workspace {
     }
 
     /// The Git block `at` names, in whichever workspace it is.
+    /// The Git block `at` names, unless it changed folder since.
     pub(super) fn git_at(&mut self, at: &GitAt) -> Option<&mut Git> {
-        self.space_by_id_mut(&at.space)?.git_mut(at.block)
+        self.space_by_id_mut(&at.space)?
+            .git_mut(at.block)
+            .filter(|g| g.generation == at.generation)
     }
 
     /// `git_job` for an action (not a read): while any action is asked and not done, the

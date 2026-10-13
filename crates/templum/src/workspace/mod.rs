@@ -102,6 +102,9 @@ pub(crate) struct Pane {
 pub(crate) struct GitAt {
     pub space: String,
     pub block: BlockId,
+    /// The block's `Git::generation` when the command started: the result of one started
+    /// before the block changed folder is dropped.
+    pub generation: u64,
 }
 
 /// A closed block, still drawn while it fades out. A terminal's shell lives until then.

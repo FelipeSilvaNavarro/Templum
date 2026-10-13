@@ -69,7 +69,8 @@ impl Workspace {
         Some(id)
     }
 
-    /// The system's folder picker, for an editor whose folder is gone.
+    /// The folder dialog, to point an editor at another folder: from its menu, or when its
+    /// folder is gone.
     pub(crate) fn choose_editor_folder(
         &mut self,
         id: BlockId,
@@ -77,22 +78,34 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let entity = cx.entity();
-        launcher::pick_folder(
-            Rc::new(move |folder, _, cx| {
-                entity.update(cx, |ws, cx| ws.set_editor_folder(id, folder, cx))
+        launcher::ask_folder_for(
+            self,
+            "Change the editor's folder".to_string(),
+            None,
+            Rc::new(move |folder, window, cx| {
+                entity.update(cx, |ws, cx| ws.set_editor_folder(id, folder, window, cx))
             }),
             window,
             cx,
         );
     }
 
-    /// Points an editor block at another folder, read afresh.
+    /// Points an editor block at another folder, read afresh. A path that isn't a folder
+    /// changes nothing.
     pub(crate) fn set_editor_folder(
         &mut self,
         id: BlockId,
         folder: &Path,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
+        self.space.editor(id)?;
+        if !folder.is_dir() {
+            let message = format!("{} isn't a folder", folder.display());
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+            return None;
+        }
         let editor = self.space.editor_mut(id)?;
         editor.folder = folder.to_path_buf();
         editor.expanded.clear();

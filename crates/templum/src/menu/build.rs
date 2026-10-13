@@ -508,6 +508,12 @@ impl Items {
             Items::Git { block } => menu
                 .item(item(
                     ws,
+                    "Change folder…",
+                    Some(IconName::FolderOpen),
+                    move |ws, window, cx| ws.choose_git_folder(block, window, cx),
+                ))
+                .item(item(
+                    ws,
                     "Refresh",
                     Some(IconName::RefreshCw),
                     move |ws, window, cx| ws.refresh_git(block, window, cx),
@@ -520,6 +526,12 @@ impl Items {
                     move |ws, window, cx| ws.close(block, window, cx),
                 )),
             Items::Editor { block, tree, wrap } => menu
+                .item(item(
+                    ws,
+                    "Change folder…",
+                    Some(IconName::FolderOpen),
+                    move |ws, window, cx| ws.choose_editor_folder(block, window, cx),
+                ))
                 .item(item(
                     ws,
                     if tree {

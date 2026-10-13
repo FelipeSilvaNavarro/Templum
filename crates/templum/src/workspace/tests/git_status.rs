@@ -258,3 +258,61 @@ fn the_timer_skips_a_block_whose_read_is_still_out(cx: &mut TestAppContext) {
         assert!(!g.pending, "a slow repository never piles reads up");
     });
 }
+
+#[gpui_kit::test]
+fn changing_a_git_blocks_folder_forgets_the_old_repository(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let old = committed_repo();
+    std::fs::write(old.path().join("a.txt"), "zero\none\n").unwrap();
+    let new = committed_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, old.path());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.select_git_row(
+                id,
+                crate::git_block::List::Unstaged,
+                "a.txt".to_string(),
+                window,
+                cx,
+            );
+            ws.space.recent = vec![new.path().to_path_buf()];
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    let stale = ws.read_with(cx, |ws, _| ws.here(id));
+    cx.update_window(handle, |_, window, cx| {
+        window.right_click(("title", id.0 as usize), cx);
+        window.render_frame(cx);
+        // Change folder…, Refresh, —, Close.
+        window.within("popup-menu").click(0usize, cx);
+    })
+    .unwrap();
+    // The menu fades out for a moment: a click meanwhile would land on it.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("recent-0", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    // What a command started before the change returns is dropped.
+    ws.update(cx, |ws, _| assert!(ws.git_at(&stale).is_none()));
+    // Nor does a notification's button about the old repository act on the new one.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| assert!(!ws.show_git_block(&stale, window, cx)))
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.folder, new.path());
+        assert!(g.status.entries.is_empty(), "{:?}", g.status.entries);
+        assert!(g.selected.is_none(), "the old repository's row");
+    });
+    let diff = git_of(&ws, cx, id, |g| g.diff.clone());
+    assert_eq!(
+        ws.read_with(cx, |_, cx| diff.read(cx).value().to_string()),
+        ""
+    );
+}

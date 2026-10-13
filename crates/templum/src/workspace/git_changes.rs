@@ -8,7 +8,7 @@ use templum_git::{GitError, Repo};
 use crate::git_block;
 use crate::prompt;
 
-use super::{GitAt, Workspace, notify_git_error, show_notification};
+use super::{Workspace, notify_git_error, show_notification};
 
 impl Workspace {
     /// Commits what is staged with the form's message; "Committed abc1234" and the fields
@@ -24,10 +24,7 @@ impl Workspace {
         let Some(repo) = git.repo().cloned() else {
             return;
         };
-        let at = GitAt {
-            space: self.space.id.clone(),
-            block: id,
-        };
+        let at = self.here(id);
         self.act_job(
             at,
             move || repo.commit(&message, amend),
@@ -99,10 +96,7 @@ impl Workspace {
         let Some(repo) = git.repo().cloned() else {
             return;
         };
-        let at = GitAt {
-            space: self.space.id.clone(),
-            block: id,
-        };
+        let at = self.here(id);
         self.git_job(
             at,
             move || repo.last_message(),
@@ -225,10 +219,7 @@ impl Workspace {
             .selected
             .as_ref()
             .is_some_and(|s| s.0 == git_block::List::Staged);
-        let at = GitAt {
-            space: self.space.id.clone(),
-            block: id,
-        };
+        let at = self.here(id);
         self.git_job(
             at,
             move || repo.diff(&entry, staged),
@@ -265,10 +256,7 @@ impl Workspace {
         let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
             return;
         };
-        let at = GitAt {
-            space: self.space.id.clone(),
-            block: id,
-        };
+        let at = self.here(id);
         self.act_job(
             at,
             move || job(&repo),

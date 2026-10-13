@@ -272,10 +272,7 @@ impl Workspace {
         git.sync = Some(which);
         git.cancel = Some(cancel.clone());
         let repo = repo.with_cancel(cancel);
-        let at = GitAt {
-            space: self.space.id.clone(),
-            block: id,
-        };
+        let at = self.here(id);
         self.act_job(
             at,
             move || job(&repo),
