@@ -226,7 +226,7 @@ impl Workspace {
                         let (block, entry) = (at.block, kept.id);
                         let undo: Extra = (
                             "git-undo",
-                            "Undo",
+                            "Undo".into(),
                             Rc::new(
                                 move |ws: &mut Workspace,
                                       window: &mut Window,

@@ -67,7 +67,7 @@ impl Workspace {
                         let name = name.clone();
                         extra.push((
                             "git-stash-switch",
-                            "Stash and switch",
+                            "Stash and switch".into(),
                             Rc::new(move |ws, window, cx| {
                                 ws.stash_and_switch(block, name.clone(), remote, window, cx)
                             }),
@@ -215,7 +215,7 @@ impl Workspace {
                         let name = name.clone();
                         extra.push((
                             "git-delete-force",
-                            "Delete anyway",
+                            "Delete anyway".into(),
                             Rc::new(move |ws, window, cx| {
                                 ws.delete_branch(block, name.clone(), true, window, cx)
                             }),
@@ -230,7 +230,7 @@ impl Workspace {
         );
     }
 
-    /// `git push -u origin <name>` for a local branch with no upstream.
+    /// The Branches tab's Publish: `git push -u <remote> <name>`, the remote by Publish's rule.
     pub(crate) fn publish_branch(
         &mut self,
         id: BlockId,
@@ -238,7 +238,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.push_now(id, Some(name), window, cx);
+        self.publish(id, name, window, cx);
     }
 
     /// Runs one of fetch, pull and push, its button spinning meanwhile.
@@ -327,12 +327,12 @@ impl Workspace {
                 if how == Pull::FastForward && templum_git::not_fast_forward(&e.stderr) {
                     extra.push((
                         "git-pull-merge",
-                        "Merge",
+                        "Merge".into(),
                         Rc::new(move |ws, window, cx| ws.pull(block, Pull::Merge, window, cx)),
                     ));
                     extra.push((
                         "git-pull-rebase",
-                        "Rebase",
+                        "Rebase".into(),
                         Rc::new(move |ws, window, cx| ws.pull(block, Pull::Rebase, window, cx)),
                     ));
                 }
@@ -343,47 +343,27 @@ impl Workspace {
         );
     }
 
-    /// `git push`; a branch with no upstream asks, then `git push -u origin <branch>`.
+    /// `git push`; a branch with no upstream (or one gone from the server) is published instead
+    /// (the button says Publish branch: no question).
     pub(crate) fn push(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(git) = self.space.git(id) else {
             return;
         };
-        let publish = match (&git.status.upstream, &git.status.branch) {
-            (None, Some(branch)) => Some(branch.clone()),
-            _ => None,
-        };
-        let Some(branch) = publish else {
-            self.push_now(id, None, window, cx);
-            return;
-        };
-        let ws = cx.entity();
-        prompt::confirm(
-            format!("Publish {branch}?"),
-            format!("git push -u origin {branch}"),
-            "Push",
-            move |window, cx| {
+        let s = &git.status;
+        match &s.branch {
+            Some(branch) if s.upstream.is_none() || s.gone => {
                 let branch = branch.clone();
-                ws.update(cx, |ws, cx| ws.push_now(id, Some(branch), window, cx))
-            },
-            window,
-            cx,
-        );
+                self.publish(id, branch, window, cx)
+            }
+            _ => self.push_now(id, window, cx),
+        }
     }
 
-    pub(super) fn push_now(
-        &mut self,
-        id: BlockId,
-        publish: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn push_now(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         self.git_sync(
             id,
             git_block::Sync::Push,
-            move |repo| match publish.as_deref() {
-                Some(branch) => repo.publish("origin", branch),
-                None => repo.push(),
-            },
+            |repo| repo.push(),
             |_, at, e, window, cx| {
                 let ws = cx.entity();
                 notify_git_error(&ws, at, e, Vec::new(), window, cx)

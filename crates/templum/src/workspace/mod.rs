@@ -11,6 +11,7 @@ mod git_discard;
 mod git_history;
 mod git_keys;
 mod git_ops;
+mod git_sync;
 mod input;
 mod persist;
 mod preferences;

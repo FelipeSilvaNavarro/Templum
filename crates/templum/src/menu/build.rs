@@ -358,6 +358,49 @@ impl Items {
                 }
                 menu
             }
+            Items::GitMore { block, busy, trash } => menu
+                .item(
+                    item(ws, "Fetch", None, move |ws, window, cx| {
+                        ws.fetch(block, window, cx)
+                    })
+                    .disabled(busy),
+                )
+                .item(
+                    item(ws, "Pull", None, move |ws, window, cx| {
+                        ws.pull(block, templum_git::Pull::FastForward, window, cx)
+                    })
+                    .disabled(busy),
+                )
+                .item(
+                    item(ws, "Push", Some(IconName::Upload), move |ws, window, cx| {
+                        ws.push(block, window, cx)
+                    })
+                    .disabled(busy),
+                )
+                .separator()
+                .when(trash, |menu| {
+                    menu.item(item(
+                        ws,
+                        "Recently discarded…",
+                        Some(IconName::ArchiveRestore),
+                        move |ws, window, cx| ws.show_discarded(block, window, cx),
+                    ))
+                }),
+            Items::GitRemotes {
+                block,
+                branch,
+                remotes,
+            } => remotes.into_iter().fold(menu, |menu, remote| {
+                let (branch, label) = (branch.clone(), format!("Publish to {remote}"));
+                menu.item(item(
+                    ws,
+                    label,
+                    Some(IconName::Upload),
+                    move |ws, window, cx| {
+                        ws.publish_to(block, remote.clone(), branch.clone(), window, cx)
+                    },
+                ))
+            }),
             Items::GitCommitMenu { block, label } => menu
                 .item(item(ws, label.clone(), None, move |ws, window, cx| {
                     ws.git_commit(block, false, window, cx)
@@ -597,11 +640,7 @@ impl Items {
                     Some(IconName::FileDiff),
                     move |ws, window, cx| ws.show_stash(block, index, window, cx),
                 )),
-            Items::Git {
-                block,
-                folder,
-                trash,
-            } => menu
+            Items::Git { block, folder } => menu
                 .item(item(
                     ws,
                     "Change folder…",
@@ -625,14 +664,6 @@ impl Items {
                                 ws.reveal(&space, id, window, cx);
                             }
                         },
-                    ))
-                })
-                .when(trash, |menu| {
-                    menu.item(item(
-                        ws,
-                        "Recently discarded…",
-                        Some(IconName::ArchiveRestore),
-                        move |ws, window, cx| ws.show_discarded(block, window, cx),
                     ))
                 })
                 .separator()

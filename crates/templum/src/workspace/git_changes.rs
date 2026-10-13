@@ -79,7 +79,7 @@ impl Workspace {
                             let block = at.block;
                             let undo: Extra = (
                                 "git-undo-commit",
-                                "Undo commit",
+                                "Undo commit".into(),
                                 Rc::new(
                                     move |ws: &mut Workspace,
                                           window: &mut Window,

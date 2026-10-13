@@ -1,4 +1,5 @@
-//! Small dialogs over the window: a name to type, and a question to confirm.
+//! Small dialogs over the window: a name to type, a question to confirm, a question with its
+//! own buttons.
 
 use std::rc::Rc;
 
@@ -113,6 +114,57 @@ pub(crate) fn save_or_discard(
                         },
                     )),
             )
+    });
+}
+
+/// What a `choose` button does.
+pub(crate) type Act = Rc<dyn Fn(&mut Window, &mut App)>;
+
+/// One button of `choose`.
+pub(crate) struct Choice {
+    /// The button's element id (the tests click it).
+    pub id: &'static str,
+    pub label: SharedString,
+    pub primary: bool,
+    pub act: Act,
+}
+
+/// A question with its own buttons, right to left as given reversed (the first is the main
+/// one, drawn last). Each closes the dialog, then acts. An empty `description` shows none.
+pub(crate) fn choose(
+    title: impl Into<SharedString>,
+    description: impl Into<SharedString>,
+    choices: Vec<Choice>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let (title, description) = (title.into(), description.into());
+    let choices = Rc::new(choices);
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let buttons = choices.iter().rev().map(|c| {
+            let act = c.act.clone();
+            let button = Button::new(c.id)
+                .label(c.label.clone())
+                .on_click(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    act(window, cx);
+                });
+            if c.primary { button.primary() } else { button }
+        });
+        let alert = alert.confirm().title(title.clone());
+        let alert = if description.is_empty() {
+            alert
+        } else {
+            alert.description(description.clone())
+        };
+        alert.footer(
+            div()
+                .flex()
+                .flex_wrap()
+                .justify_end()
+                .gap(px(8.0))
+                .children(buttons),
+        )
     });
 }
 

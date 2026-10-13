@@ -7,7 +7,7 @@ use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, App, Context, Entity, Window, div, px};
+use gpui_kit::{AnyElement, App, Context, Entity, SharedString, Window, div, px};
 use templum_canvas::{BlockId, Point, Rect};
 use templum_git::{GitError, Repo};
 
@@ -424,7 +424,7 @@ impl Workspace {
 /// One more button on a failed command's notification: its element id, its label, what it does.
 pub(crate) type Extra = (
     &'static str,
-    &'static str,
+    SharedString,
     Rc<dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>)>,
 );
 
@@ -466,7 +466,7 @@ pub(crate) fn notify_git_failure(
                 .map(|(id, label, act)| {
                     let (ws, act, note, at) = (ws.clone(), act.clone(), note.clone(), at.clone());
                     Button::new(*id)
-                        .label(*label)
+                        .label(label.clone())
                         .small()
                         .primary()
                         .on_click(move |_, window, cx| {
@@ -514,12 +514,14 @@ pub(crate) fn notify_git_failure(
                                     return;
                                 }
                                 let block = run_at.block;
-                                let root = ws
-                                    .space
-                                    .git(block)
-                                    .and_then(|g| g.repo().map(|r| r.root.clone()));
-                                if let Some(root) = root {
-                                    ws.terminal_beside(block, &root, Some(&command), window, cx);
+                                // The repository's root, else the block's folder (a failed
+                                // clone or init has no repository).
+                                let folder = ws.space.git(block).map(|g| {
+                                    g.repo()
+                                        .map_or_else(|| g.folder.clone(), |r| r.root.clone())
+                                });
+                                if let Some(folder) = folder {
+                                    ws.terminal_beside(block, &folder, Some(&command), window, cx);
                                 }
                             });
                             run_note.update(cx, |n, cx| n.dismiss(window, cx));
@@ -552,7 +554,7 @@ pub(crate) fn notify_with(
             .children(buttons.iter().map(|(id, label, act)| {
                 let (ws, act, note, at) = (ws.clone(), act.clone(), note.clone(), at.clone());
                 Button::new(*id)
-                    .label(*label)
+                    .label(label.clone())
                     .small()
                     .primary()
                     .on_click(move |_, window, cx| {

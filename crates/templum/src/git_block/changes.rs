@@ -4,8 +4,8 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, ElementId, MouseButton, MouseDownEvent, TestSupportExt, div,
-    px, uniform_list,
+    AnyElement, ClickEvent, Context, ElementId, MouseButton, MouseDownEvent, SharedString,
+    TestSupportExt, div, px, uniform_list,
 };
 use templum_canvas::BlockId;
 use templum_git::{Change, Entry};
@@ -13,7 +13,7 @@ use templum_git::{Change, Entry};
 use super::commit_form::commit_form;
 use super::diff_view;
 use super::widgets::{badge, field, icon_button, small};
-use super::{FONT, Git, LISTS_W, List, ROW_H, row_id};
+use super::{FONT, Git, LISTS_W, List, ROW_H, row_id, words};
 use crate::menu::Target;
 use crate::workspace::Workspace;
 
@@ -139,6 +139,7 @@ fn header(
                 let paths = paths.clone();
                 el.child(
                     small(("git-unstage-all", n), "Unstage all", ui, z)
+                        .tooltip(|window, cx| Tooltip::new(words::tip("Unstage")).build(window, cx))
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.unstage(id, paths.clone(), window, cx)
                         }))
@@ -149,6 +150,7 @@ fn header(
                 let (stage, discard) = (paths.clone(), paths.clone());
                 el.child(
                     small(("git-stage-all", n), "Stage all", ui, z)
+                        .tooltip(|window, cx| Tooltip::new(words::tip("Stage")).build(window, cx))
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.stage(id, stage.clone(), window, cx)
                         }))
@@ -156,6 +158,7 @@ fn header(
                 )
                 .child(
                     small(("git-discard-all", n), "Discard all…", ui, z)
+                        .tooltip(|window, cx| Tooltip::new(words::tip("Discard")).build(window, cx))
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.discard(id, discard.clone(), window, cx)
                         }))
@@ -192,11 +195,11 @@ fn row(
     let ids =
         |what: &str| ElementId::Name(format!("git-{what}-{}-{}-{i}", id.0, which.name()).into());
     // Shown while the row is hovered; pressing one never counts as a click on the row.
-    let hover_button = |what: &str, icon: IconName, tip: &'static str| {
+    let hover_button = |what: &str, icon: IconName, tip: SharedString| {
         icon_button(ids(what), icon, ui, z)
             .invisible()
             .group_hover("git-row", |s| s.visible())
-            .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
     };
     let mut buttons: Vec<AnyElement> = Vec::new();
@@ -205,7 +208,7 @@ fn row(
             List::Conflicts => {
                 let (ours, theirs, resolved) = (path.clone(), path.clone(), path.clone());
                 buttons.push(
-                    hover_button("ours", IconName::ArrowLeft, "Use ours")
+                    hover_button("ours", IconName::ArrowLeft, "Use ours".into())
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.resolve(id, ours.clone(), templum_git::Side::Ours, window, cx)
                         }))
@@ -213,7 +216,7 @@ fn row(
                         .into_any_element(),
                 );
                 buttons.push(
-                    hover_button("theirs", IconName::ArrowRight, "Use theirs")
+                    hover_button("theirs", IconName::ArrowRight, "Use theirs".into())
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.resolve(id, theirs.clone(), templum_git::Side::Theirs, window, cx)
                         }))
@@ -221,7 +224,7 @@ fn row(
                         .into_any_element(),
                 );
                 buttons.push(
-                    hover_button("resolved", IconName::Check, "Mark resolved")
+                    hover_button("resolved", IconName::Check, "Mark resolved".into())
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.stage(id, vec![resolved.clone()], window, cx)
                         }))
@@ -232,7 +235,7 @@ fn row(
             List::Staged => {
                 let unstage = path.clone();
                 buttons.push(
-                    hover_button("unstage", IconName::Minus, "Unstage")
+                    hover_button("unstage", IconName::Minus, words::named("Unstage").into())
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.unstage(id, vec![unstage.clone()], window, cx)
                         }))
@@ -243,7 +246,7 @@ fn row(
             List::Unstaged => {
                 let (stage, discard) = (path.clone(), path.clone());
                 buttons.push(
-                    hover_button("stage", IconName::Plus, "Stage")
+                    hover_button("stage", IconName::Plus, words::named("Stage").into())
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.stage(id, vec![stage.clone()], window, cx)
                         }))
@@ -251,7 +254,7 @@ fn row(
                         .into_any_element(),
                 );
                 buttons.push(
-                    hover_button("discard", IconName::Undo2, "Discard changes…")
+                    hover_button("discard", IconName::Undo2, words::named("Discard").into())
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.discard(id, vec![discard.clone()], window, cx)
                         }))
@@ -262,7 +265,7 @@ fn row(
         }
         let open = path.clone();
         buttons.push(
-            hover_button("open", IconName::FileCode, "Open")
+            hover_button("open", IconName::FileCode, "Open".into())
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                     ws.open_from_git(id, &open, window, cx)
                 }))

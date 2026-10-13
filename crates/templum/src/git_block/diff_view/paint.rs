@@ -20,8 +20,8 @@ use templum_git::{Change, FileDiff, Kind};
 use super::select::display;
 use super::{Note, Row, Shaped, Shown, files_word};
 use crate::editor::human;
-use crate::git_block::FONT;
 use crate::git_block::widgets::{badge, icon_button, small};
+use crate::git_block::{FONT, words};
 use crate::grid::hsla;
 use crate::menu::Target;
 use crate::theme::Ui;
@@ -118,11 +118,11 @@ fn file_row(
         .unwrap_or(d.status);
     let ids = |what: &str| ElementId::Name(format!("git-panel-{what}-{n}-{ix}").into());
     // Shown while the row is hovered; pressing one never folds the file.
-    let hover_button = |what: &str, icon: IconName, tip: &'static str| {
+    let hover_button = |what: &str, icon: IconName, tip: SharedString| {
         icon_button(ids(what), icon, ui, z)
             .invisible()
             .group_hover("git-file", |s| s.visible())
-            .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
     };
     let mut buttons: Vec<AnyElement> = Vec::new();
@@ -131,7 +131,7 @@ fn file_row(
         if s.staged {
             let p = path.clone();
             buttons.push(
-                hover_button("unstage", IconName::Minus, "Unstage")
+                hover_button("unstage", IconName::Minus, words::named("Unstage").into())
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                         ws.unstage(id, vec![p.clone()], window, cx)
                     }))
@@ -141,7 +141,7 @@ fn file_row(
         } else {
             let (p, q) = (path.clone(), path.clone());
             buttons.push(
-                hover_button("stage", IconName::Plus, "Stage")
+                hover_button("stage", IconName::Plus, words::named("Stage").into())
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                         ws.stage(id, vec![p.clone()], window, cx)
                     }))
@@ -149,7 +149,7 @@ fn file_row(
                     .into_any_element(),
             );
             buttons.push(
-                hover_button("discard", IconName::Undo2, "Discard changes…")
+                hover_button("discard", IconName::Undo2, words::named("Discard").into())
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                         ws.discard(id, vec![q.clone()], window, cx)
                     }))
@@ -161,7 +161,7 @@ fn file_row(
     if !busy && working {
         let p = path.clone();
         buttons.push(
-            hover_button("open", IconName::FileCode, "Open in editor")
+            hover_button("open", IconName::FileCode, "Open in editor".into())
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                     ws.open_from_git(id, &p, window, cx)
                 }))
@@ -258,6 +258,7 @@ fn hunk_row(
             let patch = patch.clone();
             buttons.push(
                 small(ids("unstage"), "Unstage", ui, z)
+                    .tooltip(|window, cx| Tooltip::new(words::tip("Unstage")).build(window, cx))
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                         if let Some(p) = patch() {
                             ws.apply_hunk(id, p, true, window, cx)
@@ -270,6 +271,7 @@ fn hunk_row(
             let stage = patch.clone();
             buttons.push(
                 small(ids("stage"), "Stage", ui, z)
+                    .tooltip(|window, cx| Tooltip::new(words::tip("Stage")).build(window, cx))
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                         if let Some(p) = stage() {
                             ws.apply_hunk(id, p, false, window, cx)
@@ -281,6 +283,7 @@ fn hunk_row(
             let (discard, path) = (patch.clone(), path.clone());
             buttons.push(
                 small(ids("discard"), "Discard", ui, z)
+                    .tooltip(|window, cx| Tooltip::new(words::tip("Discard")).build(window, cx))
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                         if let Some(p) = discard() {
                             ws.discard_hunk(id, path.clone(), p, window, cx)

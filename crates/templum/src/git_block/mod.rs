@@ -29,6 +29,7 @@ mod history;
 mod stashes;
 mod view;
 pub(crate) mod widgets;
+pub(crate) mod words;
 
 pub(crate) use view::body;
 pub(crate) use widgets::field;
@@ -112,12 +113,15 @@ pub(crate) enum Found {
     Repo(Repo),
 }
 
-/// Which of fetch, pull and push runs: its button shows a spinner, the others are disabled.
+/// Which of fetch, pull, push and sync runs: the bar's Sync button spins, and a click on it
+/// cancels it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Sync {
     Fetch,
     Pull,
     Push,
+    /// Sync: pull, then push.
+    Both,
 }
 
 /// The three lists of the Changes tab.

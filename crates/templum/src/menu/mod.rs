@@ -70,6 +70,14 @@ pub(crate) enum Target {
     },
     /// The terminals working in a Git block's repository (its top bar).
     GitTerminals(BlockId),
+    /// The ⋯ of a Git block's top bar.
+    GitMore(BlockId),
+    /// Publish's remotes, when there are several.
+    GitRemotes {
+        block: BlockId,
+        branch: String,
+        remotes: Vec<String>,
+    },
     /// A line row of a Git block's diff panel, by its row index.
     GitLine {
         block: BlockId,
@@ -177,7 +185,6 @@ impl Workspace {
                 body @ Body::Git(_) => Items::Git {
                     block,
                     folder: body.folder(),
-                    trash: self.trash.is_some(),
                 },
             },
             Target::Board { block, board } => Items::Board {
@@ -287,6 +294,23 @@ impl Workspace {
                     hunk_text,
                 }
             }
+            Target::GitMore(block) => {
+                let git = self.space.git(block)?;
+                Items::GitMore {
+                    block,
+                    busy: git.acting > 0,
+                    trash: self.trash.is_some(),
+                }
+            }
+            Target::GitRemotes {
+                block,
+                ref branch,
+                ref remotes,
+            } => Items::GitRemotes {
+                block,
+                branch: branch.clone(),
+                remotes: remotes.clone(),
+            },
             Target::GitTerminals(block) => Items::Reveal {
                 terminals: self.terminal_list(Some(&self.space.git(block)?.repo()?.root)),
             },
@@ -362,8 +386,18 @@ enum Items {
         block: BlockId,
         /// Its repository's root (its folder while there is none).
         folder: Option<PathBuf>,
+    },
+    GitMore {
+        block: BlockId,
+        /// A command runs: Fetch, Pull and Push wait.
+        busy: bool,
         /// Discards are kept (a data folder): Recently discarded… is offered.
         trash: bool,
+    },
+    GitRemotes {
+        block: BlockId,
+        branch: String,
+        remotes: Vec<String>,
     },
     GitCommitMenu {
         block: BlockId,

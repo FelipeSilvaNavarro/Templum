@@ -3,6 +3,7 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
 use gpui_kit::component::input::Textarea;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, ClickEvent, Context, Div, ElementId, Stateful, TestSupportExt, div, px,
@@ -10,6 +11,7 @@ use gpui_kit::{
 use templum_canvas::BlockId;
 
 use super::widgets::{field, icon_button};
+use super::words;
 use super::{FONT, Git};
 use crate::editor::button;
 use crate::grid::hsla;
@@ -77,6 +79,7 @@ pub(super) fn commit_form(
                 .gap(px(8.0 * z))
                 .child(
                     check(("git-amend", n), "Amend the last commit", amend, ui, z)
+                        .tooltip(|window, cx| Tooltip::new(words::tip("Amend")).build(window, cx))
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                             ws.set_amend(id, !amend, window, cx)
                         }))
@@ -86,6 +89,9 @@ pub(super) fn commit_form(
                 .when(can, |el| {
                     el.child(
                         button(("git-commit", n), git.commit_label(), ui, z)
+                            .tooltip(|window, cx| {
+                                Tooltip::new(words::tip("Commit")).build(window, cx)
+                            })
                             .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                                 ws.git_commit(id, false, window, cx)
                             }))

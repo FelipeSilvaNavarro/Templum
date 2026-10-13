@@ -393,6 +393,20 @@ fn settle(handle: AnyWindowHandle, cx: &mut TestAppContext) {
     frame(handle, cx);
 }
 
+/// Waits for the block's next status read (a change made behind its back).
+fn settle_read(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.refresh_git(id, window, cx))
+    })
+    .unwrap();
+    settle(handle, cx);
+}
+
 /// A Git block on `folder`, near the canvas's top-left, looked up and read.
 fn open_git(
     handle: AnyWindowHandle,
@@ -504,6 +518,7 @@ mod git_keys;
 mod git_layout;
 mod git_panel;
 mod git_status;
+mod git_sync;
 mod git_trash;
 mod kanban;
 mod menus;

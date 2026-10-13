@@ -6,8 +6,8 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, ElementId, KeyDownEvent, ScrollWheelEvent, TestSupportExt,
-    div, px,
+    AnyElement, ClickEvent, Context, ElementId, KeyDownEvent, ScrollWheelEvent, SharedString,
+    TestSupportExt, div, px,
 };
 use templum_canvas::BlockId;
 
@@ -16,7 +16,7 @@ use super::changes::changes;
 use super::history::history;
 use super::stashes::stashes;
 use super::widgets::{bar, centered, icon_button};
-use super::{FONT, Found, Git, Sync, Tab};
+use super::{FONT, Found, Git, Tab, words};
 use crate::editor::button;
 use crate::menu::Target;
 use crate::workspace::Workspace;
@@ -132,11 +132,42 @@ fn repo_body(
         (None, Some(oid)) => format!("detached at {}", &oid[..oid.len().min(7)]),
         (None, None) => "no commits".to_string(),
     };
-    let sync = match (&s.upstream, &s.oid) {
-        (Some(_), _) => format!("↑{} ↓{}", s.ahead, s.behind),
-        (None, Some(_)) => "no upstream".to_string(),
-        (None, None) => String::new(),
-    };
+    let (state, tip) = words::server_state(s);
+    let on_branch = s.branch.clone().filter(|_| s.oid.is_some());
+    let publish = s.upstream.is_none() || s.gone;
+    let running = git.sync.is_some();
+    // The running command's button spins, and a click on it cancels it (Fetch and Pull from ⋯
+    // spin here too).
+    let sync_button = (on_branch.is_some() || running).then(|| {
+        let (label, word) = match (running, publish) {
+            (true, _) => ("Cancel", "Sync"),
+            (false, true) => ("Publish branch", "Push"),
+            (false, false) => ("Sync", "Sync"),
+        };
+        let el = button(("git-sync", n), label, ui, z)
+            .when(running, |el| {
+                el.child(Spinner::new().with_size(UiSize::Size(px(12.0 * z))))
+            })
+            .tooltip(move |window, cx| Tooltip::new(words::tip(word)).build(window, cx));
+        if running {
+            el.on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.cancel_git(id, cx)))
+                .test_support()
+                .into_any_element()
+        } else if git.acting > 0 {
+            el.opacity(0.5).test_support().into_any_element()
+        } else {
+            let branch = on_branch.clone().unwrap_or_default();
+            el.on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                if publish {
+                    ws.publish(id, branch.clone(), window, cx)
+                } else {
+                    ws.sync_git(id, window, cx)
+                }
+            }))
+            .test_support()
+            .into_any_element()
+        }
+    });
     // The terminals working in the repository, as their last snapshot saw them: cheap.
     let terminals = git.repo().map_or(0, |repo| {
         ws.space
@@ -180,12 +211,6 @@ fn repo_body(
                     }))
                     .test_support(),
             )
-            .child(
-                div()
-                    .text_size(px(FONT * z))
-                    .text_color(ui.title_dim)
-                    .child(sync),
-            )
             .when(terminals > 0, |el| {
                 el.child(
                     div()
@@ -217,38 +242,26 @@ fn repo_body(
                 )
             })
             .child(div().flex_1())
-            .children([Sync::Fetch, Sync::Pull, Sync::Push].map(|which| {
-                let (name, label) = match which {
-                    Sync::Fetch => ("git-fetch", "Fetch"),
-                    Sync::Pull => ("git-pull", "Pull"),
-                    Sync::Push => ("git-push", "Push"),
-                };
-                let running = git.sync == Some(which);
-                let disabled = git.acting > 0 && !running;
-                // The running one spins, and a click on it cancels it.
-                let el = button((name, n), if running { "Cancel" } else { label }, ui, z)
-                    .when(running, |el| {
-                        el.child(Spinner::new().with_size(UiSize::Size(px(12.0 * z))))
-                    })
-                    .when(disabled, |el| el.opacity(0.5));
-                if disabled {
-                    el.test_support().into_any_element()
-                } else if running {
-                    el.on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.cancel_git(id, cx)))
-                        .test_support()
-                        .into_any_element()
-                } else {
-                    el.on_click(
-                        cx.listener(move |ws, _: &ClickEvent, window, cx| match which {
-                            Sync::Fetch => ws.fetch(id, window, cx),
-                            Sync::Pull => ws.pull(id, templum_git::Pull::FastForward, window, cx),
-                            Sync::Push => ws.push(id, window, cx),
-                        }),
-                    )
-                    .test_support()
-                    .into_any_element()
-                }
-            }))
+            .when(!state.is_empty(), |el| {
+                let tip = SharedString::from(tip.clone());
+                el.child(
+                    div()
+                        .id(("git-state", n))
+                        .text_size(px(FONT * z))
+                        .text_color(ui.title_dim)
+                        .child(state.clone())
+                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)),
+                )
+            })
+            .children(sync_button)
+            .child(
+                icon_button(("git-more", n), IconName::Ellipsis, ui, z)
+                    .tooltip(|window, cx| Tooltip::new("More").build(window, cx))
+                    .on_click(cx.listener(move |ws, e: &ClickEvent, window, cx| {
+                        ws.open_menu(Target::GitMore(id), e.position(), window, cx)
+                    }))
+                    .test_support(),
+            )
             .child(
                 icon_button(("refresh", n), IconName::RefreshCw, ui, z)
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
@@ -305,6 +318,9 @@ fn repo_body(
                 .cursor_pointer()
                 .hover(move |st| st.bg(ui.hover))
                 .child(tab.title())
+                .when(tab == Tab::Stashes, |el| {
+                    el.tooltip(|window, cx| Tooltip::new(words::tip("Stash")).build(window, cx))
+                })
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                     ws.set_git_tab(id, tab, window, cx)
                 }))

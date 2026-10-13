@@ -1,6 +1,7 @@
 //! The Git block's Stashes tab: Stash changes…, the stashes, and the shown stash's diff.
 
 use gpui_kit::component::input::Editor as EditorView;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, ClickEvent, Context, ElementId, MouseButton, MouseDownEvent, TestSupportExt, div,
@@ -9,7 +10,7 @@ use gpui_kit::{
 use templum_canvas::BlockId;
 
 use super::widgets::centered;
-use super::{FONT, Git, LISTS_W, ROW_H};
+use super::{FONT, Git, LISTS_W, ROW_H, words};
 use crate::editor::{button, keep_rows};
 use crate::menu::Target;
 use crate::workspace::Workspace;
@@ -82,6 +83,7 @@ pub(super) fn stashes(
         .child(
             div().p(px(6.0 * z)).child(
                 button(("git-stash-changes", n), "Stash changes…", ui, z)
+                    .tooltip(|window, cx| Tooltip::new(words::tip("Stash")).build(window, cx))
                     .when(git.status.entries.is_empty() || git.acting > 0, |el| {
                         el.opacity(0.5)
                     })

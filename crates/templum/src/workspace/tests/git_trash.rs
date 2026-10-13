@@ -91,10 +91,10 @@ fn recently_discarded_restores_and_asks_over_a_file_changed_since(cx: &mut TestA
     discard_row(handle, cx, id, 0);
     std::fs::write(repo.path().join("a.txt"), "edited since then\n").unwrap();
     cx.update_window(handle, |_, window, cx| {
-        window.right_click(("title", id.0 as usize), cx);
+        window.click(("git-more", id.0 as usize), cx);
         window.render_frame(cx);
-        // Change folder…, Refresh, Open a terminal here, Recently discarded…, —, Close.
-        window.within("popup-menu").click(3usize, cx);
+        // Fetch, Pull, Push, —, Recently discarded….
+        window.within("popup-menu").click(4usize, cx);
         window.render_frame(cx);
     })
     .unwrap();

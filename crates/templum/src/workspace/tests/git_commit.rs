@@ -224,12 +224,13 @@ fn fetch_shows_the_counts_and_pull_fast_forwards(cx: &mut TestAppContext) {
     git_run(other.path(), &["push", "-q"]);
     let (handle, ws) = open(cx);
     let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
     git_of(&ws, cx, id, |g| {
         assert_eq!((g.status.ahead, g.status.behind), (0, 0))
     });
-    cx.update_window(handle, |_, window, cx| window.click(("git-fetch", n), cx))
-        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.fetch(id, window, cx))
+    })
+    .unwrap();
     git_of(&ws, cx, id, |g| {
         assert_eq!(g.sync, Some(crate::git_block::Sync::Fetch), "a spinner");
     });
@@ -238,15 +239,19 @@ fn fetch_shows_the_counts_and_pull_fast_forwards(cx: &mut TestAppContext) {
         assert_eq!(g.sync, None);
         assert_eq!(g.status.behind, 1);
     });
-    cx.update_window(handle, |_, window, cx| window.click(("git-pull", n), cx))
-        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.pull(id, templum_git::Pull::FastForward, window, cx)
+        })
+    })
+    .unwrap();
     settle(handle, cx);
     git_of(&ws, cx, id, |g| assert_eq!(g.status.behind, 0));
     assert!(repo.path().join("b.txt").is_file());
 }
 
 #[gpui_kit::test]
-fn push_with_no_upstream_asks_then_publishes(cx: &mut TestAppContext) {
+fn push_with_no_upstream_publishes_to_the_only_remote(cx: &mut TestAppContext) {
     use gpui_kit::component::WindowExt as _;
     no_motion(cx);
     let repo = committed_repo();
@@ -254,14 +259,14 @@ fn push_with_no_upstream_asks_then_publishes(cx: &mut TestAppContext) {
     git_run(repo.path(), &["checkout", "-q", "-b", "topic"]);
     let (handle, ws) = open(cx);
     let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
     git_of(&ws, cx, id, |g| assert_eq!(g.status.upstream, None));
     cx.update_window(handle, |_, window, cx| {
-        window.click(("git-push", n), cx);
+        ws.update(cx, |ws, cx| ws.push(id, window, cx));
         window.render_frame(cx);
-        assert!(window.has_active_dialog(cx), "asks to publish");
-        window.within("dialog").click("ok", cx);
-        window.render_frame(cx);
+        assert!(
+            !window.has_active_dialog(cx),
+            "no question: the button says Publish"
+        );
     })
     .unwrap();
     settle(handle, cx);
@@ -292,9 +297,12 @@ fn a_pull_that_cant_fast_forward_offers_merge_and_rebase(cx: &mut TestAppContext
     git_run(repo.path(), &["commit", "-q", "-m", "c"]);
     let (handle, ws) = open(cx);
     let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    cx.update_window(handle, |_, window, cx| window.click(("git-pull", n), cx))
-        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.pull(id, templum_git::Pull::FastForward, window, cx)
+        })
+    })
+    .unwrap();
     settle(handle, cx);
     assert_eq!(notification_count(handle, cx), 1);
     cx.update_window(handle, |_, window, cx| {
@@ -321,9 +329,10 @@ fn a_failed_command_offers_details_and_a_terminal(cx: &mut TestAppContext) {
     git_run(repo.path(), &["remote", "add", "origin", "/no/such/remote"]);
     let (handle, ws) = open(cx);
     let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    cx.update_window(handle, |_, window, cx| window.click(("git-fetch", n), cx))
-        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.fetch(id, window, cx))
+    })
+    .unwrap();
     settle(handle, cx);
     assert_eq!(notification_count(handle, cx), 1);
     cx.update_window(handle, |_, window, cx| {
@@ -411,9 +420,10 @@ fn the_running_fetch_button_cancels_it(cx: &mut TestAppContext) {
     let id = open_git(handle, &ws, cx, repo.path());
     let n = id.0 as usize;
     cx.update_window(handle, |_, window, cx| {
-        window.click(("git-fetch", n), cx);
+        ws.update(cx, |ws, cx| ws.fetch(id, window, cx));
         window.render_frame(cx);
-        window.click(("git-fetch", n), cx);
+        // The running command's spinning button.
+        window.click(("git-sync", n), cx);
     })
     .unwrap();
     git_of(&ws, cx, id, |g| {
