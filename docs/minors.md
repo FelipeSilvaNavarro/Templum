@@ -2,7 +2,8 @@
 
 Small issues found by the final reviews of the Git block's second version (`docs/specs/git.md`), batches 1 and 2,
 and left for later on purpose: none loses work or breaks a main path. Each line says where it is, what a person sees,
-and a way to fix it. Tick an item when its fix lands, with a test that fails without it (AGENTS.md).
+and a way to fix it. Every minor left for later is added here; when one is fixed (with a test that fails without it,
+AGENTS.md), its entry is deleted in the same commit.
 
 Line numbers are those of `development` at a5fed2d (2026-10-13).
 
