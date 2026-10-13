@@ -68,10 +68,21 @@ impl Workspace {
                         cx,
                         Notification::success(words::synced(got, sent)),
                     ),
-                    Ok(Synced::Gone) => {
+                    Ok(done @ (Synced::Gone | Synced::Unpublished)) => {
+                        let (id, sentence) = if done == Synced::Gone {
+                            (
+                                "git-publish-gone",
+                                "This branch was deleted on the server: nothing was sent. Publish branch sends it again.",
+                            )
+                        } else {
+                            (
+                                "git-publish-new",
+                                "This branch isn't on the server yet: nothing was sent. Publish branch sends it.",
+                            )
+                        };
                         let block = at.block;
                         let publish: Extra = (
-                            "git-publish-gone",
+                            id,
                             "Publish branch".into(),
                             Rc::new(move |ws, window, cx| {
                                 let branch = ws.space.git(block).and_then(|g| g.status.branch.clone());
@@ -83,9 +94,7 @@ impl Workspace {
                         notify_with(
                             &entity,
                             at.clone(),
-                            Notification::warning(
-                                "This branch was deleted on the server: nothing was sent. Publish branch sends it again.",
-                            ),
+                            Notification::warning(sentence),
                             vec![publish],
                             window,
                             cx,

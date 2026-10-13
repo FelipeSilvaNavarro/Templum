@@ -1735,3 +1735,15 @@ fn a_clone_stopped_midway_leaves_no_folder_and_an_empty_one_empty() {
         }
     }
 }
+
+#[test]
+fn sync_on_a_branch_never_published_says_so_not_deleted() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let _remote = with_remote(&repo);
+    // Made in a terminal: the block's status, up to 2 s old, still showed Sync.
+    repo.run(&["checkout", "-q", "-b", "new"]).unwrap();
+    assert_eq!(repo.sync().unwrap(), Synced::Unpublished);
+}

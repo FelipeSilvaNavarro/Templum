@@ -894,6 +894,8 @@ pub enum Synced {
     /// The branch has no upstream any more (deleted on the server, pruned by the fetch): nothing
     /// was sent; Publish sends it again.
     Gone,
+    /// The branch has no upstream yet (never published): nothing was sent; Publish sends it.
+    Unpublished,
 }
 
 impl Repo {
@@ -905,7 +907,10 @@ impl Repo {
         self.fetch()?;
         let s = self.status()?;
         // No branch.ab: its counts mean nothing, and a push would have nowhere to go.
-        if s.upstream.is_none() || s.gone {
+        if s.upstream.is_none() {
+            return Ok(Synced::Unpublished);
+        }
+        if s.gone {
             return Ok(Synced::Gone);
         }
         let (sent, got) = (s.ahead, s.behind);

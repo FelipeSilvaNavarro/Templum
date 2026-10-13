@@ -422,3 +422,38 @@ fn clone_from_a_repository_goes_beside_it(cx: &mut TestAppContext) {
         "beside it"
     );
 }
+
+// Re-review: a Sync on a branch never published (made in a terminal, the status not read yet)
+// says it isn't on the server yet, not that it was deleted there.
+#[gpui_kit::test]
+fn sync_on_a_branch_never_published_offers_publish(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let repo = committed_repo();
+    let remote = add_remote(repo.path());
+    git_run(repo.path(), &["checkout", "-q", "-b", "new"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.sync_git(id, window, cx))
+    })
+    .unwrap();
+    settle(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        assert!(
+            window.try_find("git-publish-gone").is_none(),
+            "never deleted"
+        );
+        assert!(
+            window.try_find("git-publish-new").is_some(),
+            "not published yet"
+        );
+        window.click("git-publish-new", cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(remote.path(), &["rev-parse", "new"]),
+        git_run(repo.path(), &["rev-parse", "new"]),
+        "published"
+    );
+}
