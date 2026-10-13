@@ -15,7 +15,7 @@ use gpui_kit::{App, Context, SharedString, Window, div, px};
 use templum_canvas::BlockId;
 use templum_git::message::{self, Failure, Request};
 
-use crate::config::Edit;
+use crate::config::{self, Edit};
 use crate::prompt;
 
 use super::{GitAt, Workspace, show_notification};
@@ -230,5 +230,96 @@ impl Workspace {
                     .into_any_element()
             });
         show_notification(window, cx, notification);
+    }
+
+    /// The model Generate asks for; empty: the agent's recommended one (the key goes).
+    pub(crate) fn set_commit_model(&mut self, model: &str, cx: &mut Context<Self>) {
+        let model = model.trim();
+        if model.is_empty() {
+            self.edit(
+                Edit::remove(TABLE, "model"),
+                |c| c.git.commit_message.model = None,
+                cx,
+            );
+        } else {
+            let chosen = model.to_string();
+            self.edit(
+                Edit::set(TABLE, "model", model),
+                |c| c.git.commit_message.model = Some(chosen),
+                cx,
+            );
+        }
+    }
+
+    /// `[git.repositories."<root>"].commit_instructions`: they win over Settings ▸ Git's in
+    /// this repository; empty: the global ones again.
+    // ponytail: removing the last key leaves an empty `[git.repositories."…"]` line in the file;
+    // drop the table in `save_edits` when someone minds it.
+    pub(crate) fn set_repo_instructions(
+        &mut self,
+        root: &Path,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let key = repository_key(root);
+        let table = config::repository_table(&key);
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            self.edit(
+                Edit::remove(table, "commit_instructions"),
+                |c| {
+                    c.git.repositories.remove(&key);
+                },
+                cx,
+            );
+        } else {
+            self.edit(
+                Edit::set(table, "commit_instructions", text.as_str()),
+                |c| {
+                    c.git
+                        .repositories
+                        .entry(key)
+                        .or_default()
+                        .commit_instructions = Some(text)
+                },
+                cx,
+            );
+        }
+    }
+
+    /// The ⚙'s Instructions for this repository…: a field holding them, Save writes them.
+    pub(crate) fn ask_repo_instructions(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self
+            .space
+            .git(id)
+            .and_then(|g| g.repo())
+            .map(|r| r.root.clone())
+        else {
+            return;
+        };
+        let current = self
+            .config
+            .git
+            .repositories
+            .get(&repository_key(&root))
+            .and_then(|r| r.commit_instructions.clone())
+            .unwrap_or_default();
+        let entity = cx.entity();
+        prompt::ask_text(
+            "Instructions for this repository",
+            "Save",
+            current,
+            move |text, _, cx| {
+                entity.update(cx, |ws, cx| ws.set_repo_instructions(&root, &text, cx));
+                true
+            },
+            window,
+            cx,
+        );
     }
 }

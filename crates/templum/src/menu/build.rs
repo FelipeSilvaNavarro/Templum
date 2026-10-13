@@ -368,6 +368,30 @@ impl Items {
                     Some(IconName::Upload),
                     move |ws, window, cx| ws.git_commit(block, true, window, cx),
                 )),
+            Items::GitGenerateMenu {
+                block,
+                models,
+                model,
+            } => {
+                let listed = !models.is_empty();
+                let menu = models.into_iter().fold(menu, |menu, m| {
+                    let checked = m == model;
+                    let chosen = m.clone();
+                    menu.item(
+                        item(ws, m, None, move |ws, _, cx| {
+                            ws.set_commit_model(&chosen, cx)
+                        })
+                        .checked(checked),
+                    )
+                });
+                let menu = if listed { menu.separator() } else { menu };
+                menu.item(item(
+                    ws,
+                    "Instructions for this repository…",
+                    None,
+                    move |ws, window, cx| ws.ask_repo_instructions(block, window, cx),
+                ))
+            }
             Items::GitRow { block, list, entry } => {
                 use git_block::List;
                 let path = entry.path.clone();

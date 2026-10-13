@@ -124,7 +124,7 @@ pub(super) fn commit_form(
         .into_any_element()
 }
 
-/// Generate ✨, beside the summary: shown while the agent chosen in Settings ▸ Git is ready and
+/// Generate ✨ and its ⚙, beside the summary: shown while the agent chosen in Settings ▸ Git is ready and
 /// there is something to describe (what is staged, or every change for Commit all changes). It
 /// spins while the agent writes; a click then stops it.
 fn generate_button(
@@ -145,32 +145,47 @@ fn generate_button(
     } else {
         format!("Generate: {} writes the message", agent.title).into()
     };
+    let generate = div()
+        .id(("git-generate", n))
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .size(px(22.0 * z))
+        .rounded(px(5.0 * z))
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .child(if running {
+            Spinner::new()
+                .with_size(UiSize::Size(px(12.0 * z)))
+                .into_any_element()
+        } else {
+            Icon::new(IconName::Sparkles)
+                .size(px(13.0 * z))
+                .text_color(ui.title)
+                .into_any_element()
+        })
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .on_click(
+            cx.listener(move |ws, _: &ClickEvent, window, cx| ws.generate_message(id, window, cx)),
+        )
+        .test_support();
+    let menu = icon_button(("git-generate-menu", n), IconName::Settings2, ui, z)
+        .flex_shrink_0()
+        .tooltip(|window, cx| {
+            Tooltip::new("The model, and this repository's instructions").build(window, cx)
+        })
+        .on_click(cx.listener(move |ws, e: &ClickEvent, window, cx| {
+            ws.open_menu(Target::GitGenerateMenu(id), e.position(), window, cx)
+        }))
+        .test_support();
     Some(
         div()
-            .id(("git-generate", n))
             .flex()
             .flex_shrink_0()
             .items_center()
-            .justify_center()
-            .size(px(22.0 * z))
-            .rounded(px(5.0 * z))
-            .cursor_pointer()
-            .hover(move |s| s.bg(ui.hover))
-            .child(if running {
-                Spinner::new()
-                    .with_size(UiSize::Size(px(12.0 * z)))
-                    .into_any_element()
-            } else {
-                Icon::new(IconName::Sparkles)
-                    .size(px(13.0 * z))
-                    .text_color(ui.title)
-                    .into_any_element()
-            })
-            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                ws.generate_message(id, window, cx)
-            }))
-            .test_support()
+            .child(generate)
+            .child(menu)
             .into_any_element(),
     )
 }

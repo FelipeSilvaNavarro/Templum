@@ -306,7 +306,6 @@ pub(crate) struct RepoConfig {
 
 /// The table holding one repository's settings, `git.repositories."<key>"`, as an `Edit` names
 /// it: the key quoted as TOML needs (a root has slashes, dots, spaces).
-#[allow(dead_code)] // The Generate menu writes it, in the next commits.
 pub(crate) fn repository_table(key: &str) -> String {
     format!(
         "git.repositories.{}",

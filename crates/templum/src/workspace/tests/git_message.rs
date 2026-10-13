@@ -328,3 +328,63 @@ fn a_second_click_cancels_and_a_message_changed_meanwhile_is_kept(cx: &mut TestA
     assert_eq!(fields(&ws, cx, id).0, "Mine");
     assert_eq!(notification_count(handle, cx), 1, "Kept your message");
 }
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn the_generate_menu_sets_the_model_and_this_repositorys_instructions(cx: &mut TestAppContext) {
+    // The question opens at once: what is typed reaches its field.
+    no_motion(cx);
+    let (handle, ws, id, _repo, config) = staged_with_agent(cx, ANSWER, true);
+    let n = id.0 as usize;
+    let choose = |cx: &mut TestAppContext, item: usize| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(("git-generate-menu", n), cx);
+            window.render_frame(cx);
+            // fast, smart, —, Instructions for this repository…: a separator counts.
+            window.within("popup-menu").click(item, cx);
+            window.render_frame(cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    choose(cx, 1);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.commit_agent.as_ref().unwrap().model, "smart")
+    });
+    choose(cx, 3);
+    cx.update_window(handle, |_, window, cx| {
+        window.input("Prefix the summary with the ticket id.", cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let root = git_of(&ws, cx, id, |g| g.repo().unwrap().root.clone());
+    let key = crate::workspace::git_message::repository_key(&root);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.config.git.repositories[&key]
+                .commit_instructions
+                .as_deref(),
+            Some("Prefix the summary with the ticket id.")
+        );
+    });
+    click_generate(handle, cx, id);
+    settle(handle, cx);
+    let request = std::fs::read_to_string(config.path().join("request.txt")).unwrap();
+    assert!(
+        request.contains("Prefix the summary with the ticket id.") && !request.contains("Say why."),
+        "this repository's rules, not the global ones: {request}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(config.path().join("args.txt")).unwrap(),
+        "smart\n"
+    );
+    ws.update(cx, |ws, _| ws.save());
+    let text = std::fs::read_to_string(config.path().join(crate::config::FILE)).unwrap();
+    assert!(
+        text.contains("model = \"smart\"") && text.contains("[git.repositories."),
+        "{text}"
+    );
+}
