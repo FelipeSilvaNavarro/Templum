@@ -328,9 +328,10 @@ fn the_sync_question_answered_after_a_switch_acts_on_its_own_repository(cx: &mut
     );
 }
 
-// Review I2: a clone that ends after a switch opens on its own block, never on the one shown.
+// Review I2: a clone that ends after a switch opens on its own block, never on the one shown,
+// and with no click: the block itself opens on it.
 #[gpui_kit::test]
-fn a_clone_finished_after_a_switch_leaves_the_other_workspace_alone(cx: &mut TestAppContext) {
+fn a_clone_finished_after_a_switch_opens_its_own_block_only(cx: &mut TestAppContext) {
     no_motion(cx);
     let repo = committed_repo();
     let remote = add_remote(repo.path());
@@ -338,6 +339,7 @@ fn a_clone_finished_after_a_switch_leaves_the_other_workspace_alone(cx: &mut Tes
     let y = tempfile::tempdir().unwrap();
     let (handle, ws) = open(cx);
     let in_x = open_git(handle, &ws, cx, x.path());
+    let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
             ws.clone_repo(
@@ -361,9 +363,11 @@ fn a_clone_finished_after_a_switch_leaves_the_other_workspace_alone(cx: &mut Tes
         assert_eq!(g.folder, y.path(), "the block shown keeps its folder");
         assert!(matches!(g.found, crate::git_block::Found::NotARepo));
     });
-    // The notification opens the clone in its own block, in its own workspace.
-    cx.update_window(handle, |_, window, cx| window.click("git-open-clone", cx))
-        .unwrap();
+    // Back in the first workspace, without a click: its block is on the clone.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.reveal(&first, in_x, window, cx))
+    })
+    .unwrap();
     settle(handle, cx);
     let root = git_of(&ws, cx, in_x, |g| g.repo().map(|r| r.root.clone()));
     assert_eq!(

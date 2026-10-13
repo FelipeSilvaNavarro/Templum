@@ -128,16 +128,53 @@ impl Workspace {
         Some(id)
     }
 
+    /// Points the block `at` names at `folder`, in its own workspace even when another one is on
+    /// screen (a clone that ended there), and looks it up, as `set_git_folder` does. False when
+    /// the block is gone or changed folder since.
+    pub(super) fn set_git_folder_at(
+        &mut self,
+        at: &GitAt,
+        folder: &Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(tab) = self.git_at(at).map(|g| g.tab) else {
+            return false;
+        };
+        let mut git = Git::new(folder.to_path_buf(), tab, window, cx);
+        git.generation = at.generation + 1;
+        let Some(space) = self.space_by_id_mut(&at.space) else {
+            return false;
+        };
+        remember(&mut space.recent, folder.to_path_buf());
+        let Some(slot) = space.git_mut(at.block) else {
+            return false;
+        };
+        *slot = git;
+        let now = GitAt {
+            generation: at.generation + 1,
+            ..at.clone()
+        };
+        self.look_up_at(now, window, cx);
+        cx.notify();
+        true
+    }
+
     /// Finds the repository holding the block's folder, in the background, then reads it.
     pub(crate) fn look_up_git(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(git) = self.space.git(id) else {
+        let at = self.here(id);
+        self.look_up_at(at, window, cx);
+    }
+
+    /// `look_up_git` for the block `at` names, in whichever workspace.
+    pub(super) fn look_up_at(&mut self, at: GitAt, window: &mut Window, cx: &mut Context<Self>) {
+        let program = self.config.git.program().to_string();
+        let Some(folder) = self.git_at(&at).map(|g| g.folder.clone()) else {
             return;
         };
-        let (program, folder) = (self.config.git.program().to_string(), git.folder.clone());
         if !folder.is_dir() {
             return;
         }
-        let at = self.here(id);
         self.git_job(
             at,
             move || Repo::discover(&program, &folder),
