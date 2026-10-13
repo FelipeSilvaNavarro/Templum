@@ -2,6 +2,7 @@
 //! rows are built from the files (`rows.rs`), drawn one by one (`paint.rs`) in a virtual
 //! list; the text is selected by (row, byte) (`select.rs`).
 
+mod highlight;
 mod paint;
 mod rows;
 pub(crate) mod select;
@@ -56,6 +57,8 @@ pub(crate) struct DiffPanel {
     pub last_row: Cell<f32>,
     /// The line rows painted in the last frame, by row index.
     pub shaped: Rc<RefCell<HashMap<usize, Shaped>>>,
+    /// The hunks' colors, built on first draw (a RefCell: the rows are built from `&Workspace`).
+    pub colors: RefCell<highlight::Highlights>,
     /// Diffs taken so far (the tests count them).
     pub reads: u64,
 }
@@ -72,6 +75,7 @@ impl DiffPanel {
             scroll: UniformListScrollHandle::new(),
             last_row: Cell::new(0.0),
             shaped: Rc::new(RefCell::new(HashMap::new())),
+            colors: RefCell::new(highlight::Highlights::default()),
             reads: 0,
         }
     }
@@ -100,6 +104,7 @@ impl DiffPanel {
         self.large_shown.retain(|k| keys.contains(k));
         self.whole.retain(|k| keys.contains(k));
         self.files = Rc::new(files);
+        self.colors.borrow_mut().clear();
         self.rebuild();
         true
     }

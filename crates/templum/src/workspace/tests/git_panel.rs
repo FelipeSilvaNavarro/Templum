@@ -239,3 +239,40 @@ fn a_file_in_the_diff_but_not_in_the_status_still_draws(cx: &mut TestAppContext)
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn the_colors_are_kept_across_a_read_that_changes_nothing_and_dropped_on_a_change(
+    cx: &mut TestAppContext,
+) {
+    let repo = git_repo();
+    std::fs::write(repo.path().join("x.rs"), "fn one() {}\n").unwrap();
+    git_run(repo.path(), &["add", "x.rs"]);
+    git_run(repo.path(), &["commit", "-q", "-m", "x"]);
+    std::fs::write(repo.path().join("x.rs"), "fn one() {}\nfn two() {}\n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let shown = git_of(&ws, cx, id, |g| g.panel.files[0].clone());
+    let theme = gpui_kit::component::highlighter::HighlightTheme::default_dark();
+    let first = git_of(&ws, cx, id, |g| {
+        g.panel.colors.borrow_mut().of(0, 0, &shown, &theme)
+    });
+    assert!(
+        first.lines[1].iter().any(|(r, _)| *r == (0..2)),
+        "fn: {:?}",
+        first.lines[1]
+    );
+    cx.executor().advance_clock(crate::git_block::POLL);
+    settle(handle, cx);
+    let again = git_of(&ws, cx, id, |g| {
+        g.panel.colors.borrow_mut().of(0, 0, &shown, &theme)
+    });
+    assert!(std::rc::Rc::ptr_eq(&first, &again), "kept");
+    std::fs::write(repo.path().join("x.rs"), "fn one() {}\nfn three() {}\n").unwrap();
+    cx.executor().advance_clock(crate::git_block::POLL);
+    settle(handle, cx);
+    let shown = git_of(&ws, cx, id, |g| g.panel.files[0].clone());
+    let after = git_of(&ws, cx, id, |g| {
+        g.panel.colors.borrow_mut().of(0, 0, &shown, &theme)
+    });
+    assert!(!std::rc::Rc::ptr_eq(&first, &after), "built again");
+}

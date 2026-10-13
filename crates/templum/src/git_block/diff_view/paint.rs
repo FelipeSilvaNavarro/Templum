@@ -5,6 +5,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::component::Icon;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
@@ -43,7 +44,7 @@ pub(super) fn row(
         Row::Fold { file, lines } => fold_row(ws, id, &files[*file], ix, *lines, row_h, z, cx),
         Row::Note { file, note } => note_row(ws, id, &files[*file], ix, *note, row_h, z, cx),
         Row::Line { file, hunk, line } => {
-            line_row(ws, id, &files[*file], *hunk, *line, ix, row_h, z, cx)
+            line_row(ws, id, &files[*file], *file, *hunk, *line, ix, row_h, z, cx)
         }
     }
 }
@@ -339,6 +340,7 @@ fn line_row(
     ws: &Workspace,
     id: BlockId,
     s: &Shown,
+    file: usize,
     hunk: usize,
     line: usize,
     ix: usize,
@@ -354,6 +356,18 @@ fn line_row(
         Kind::Removed => (Some(hsla(ansi[1], 0.15)), hsla(ansi[1], 0.35)),
         Kind::Context => (None, ui.selection),
     };
+    let theme = cx.theme().highlight_theme.clone();
+    let hunk_colors = ws
+        .space
+        .git(id)
+        .map(|g| g.panel.colors.borrow_mut().of(file, hunk, s, &theme));
+    let (colors, marks) = match &hunk_colors {
+        Some(c) => (
+            Rc::new(c.lines[line].clone()),
+            Rc::new(c.marks[line].clone()),
+        ),
+        None => (Rc::new(Vec::new()), Rc::new(Vec::new())),
+    };
     let paint = LinePaint {
         text: display(&l.text).into(),
         digits: s.digits(),
@@ -361,8 +375,8 @@ fn line_row(
         new_no: l.new_no,
         sign: l.kind.sign(),
         bg,
-        colors: Rc::new(Vec::new()),
-        marks: Rc::new(Vec::new()),
+        colors,
+        marks,
         mark,
         selection: None,
         font: ws.cell.font.clone(),
@@ -373,7 +387,6 @@ fn line_row(
         ui,
     };
     let shaped = ws.space.git(id).map(|g| g.panel.shaped.clone());
-    let _ = cx;
     div()
         .id(("git-line", ix))
         .w_full()
