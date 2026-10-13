@@ -35,6 +35,14 @@ pub struct Span {
     pub len: usize,
 }
 
+/// Text drawn from afar: a run of non-blank cells of one color, columns `cols`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Bar {
+    pub cols: Span,
+    pub fg: Rgb,
+    pub dim: bool,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Row {
     /// One char per column (wide-char spacers become blanks), trailing blanks trimmed.
@@ -102,6 +110,38 @@ impl Row {
                 self.runs.pop();
             }
         }
+    }
+
+    /// The row's text as bars: one per run of non-blank cells of one color (bold and italic don't
+    /// count), for a terminal seen from far away. One column per character: a wide character's
+    /// spacer is a blank, so its bar is its first column.
+    pub fn bars(&self) -> Vec<Bar> {
+        let mut bars: Vec<Bar> = Vec::new();
+        let (mut byte, mut col) = (0, 0);
+        for run in &self.runs {
+            // `push` and `trim` keep the runs on `text`'s char boundaries.
+            for c in self.text[byte..byte + run.len].chars() {
+                if c != ' ' {
+                    match bars.last_mut() {
+                        Some(b)
+                            if b.cols.start + b.cols.len == col
+                                && b.fg == run.fg
+                                && b.dim == run.dim =>
+                        {
+                            b.cols.len += 1
+                        }
+                        _ => bars.push(Bar {
+                            cols: Span { start: col, len: 1 },
+                            fg: run.fg,
+                            dim: run.dim,
+                        }),
+                    }
+                }
+                col += 1;
+            }
+            byte += run.len;
+        }
+        bars
     }
 }
 
@@ -558,5 +598,72 @@ mod tests {
         let mut s = Snapshot::default();
         s.refresh(&term, &Palette::default());
         assert_eq!(s.rows[0].selected, vec![Span { start: 0, len: 5 }]);
+    }
+
+    fn bar(start: usize, len: usize, fg: Rgb, dim: bool) -> Bar {
+        Bar {
+            cols: Span { start, len },
+            fg,
+            dim,
+        }
+    }
+
+    fn red() -> Rgb {
+        palette::resolve(
+            Color::Named(NamedColor::Red),
+            &Colors::default(),
+            &Palette::default(),
+        )
+    }
+
+    #[test]
+    fn row_bars_are_runs_of_non_blank_cells_of_one_color() {
+        let fg = Palette::default().foreground;
+        let s = snap(b"\x1b[31mred\x1b[0m ok");
+        assert_eq!(
+            s.rows[0].bars(),
+            vec![bar(0, 3, red(), false), bar(4, 2, fg, false)]
+        );
+        // A colored run with a space inside: two bars.
+        let s = snap(b"\x1b[31mgo on");
+        assert_eq!(
+            s.rows[0].bars(),
+            vec![bar(0, 2, red(), false), bar(3, 2, red(), false)]
+        );
+        // Leading blanks have none; bold and italic don't cut a bar.
+        let s = snap(b"   \x1b[1mab\x1b[0;3mcd");
+        assert_eq!(s.rows[0].bars(), vec![bar(3, 4, fg, false)]);
+        assert!(s.rows[1].bars().is_empty(), "an empty row");
+    }
+
+    #[test]
+    fn row_bars_count_columns_in_characters() {
+        let fg = Palette::default().foreground;
+        // é is two bytes, one column.
+        let s = snap("é ab".as_bytes());
+        assert_eq!(
+            s.rows[0].bars(),
+            vec![bar(0, 1, fg, false), bar(2, 2, fg, false)]
+        );
+        // A wide character's bar is its first column: its spacer is a blank.
+        let s = snap("你好x".as_bytes());
+        assert_eq!(
+            s.rows[0].bars(),
+            vec![
+                bar(0, 1, fg, false),
+                bar(2, 1, fg, false),
+                bar(4, 1, fg, false)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_dim_run_stays_dim() {
+        let fg = Palette::default().foreground;
+        let s = snap(b"\x1b[2mdim\x1b[0mlit");
+        assert_eq!(
+            s.rows[0].bars(),
+            vec![bar(0, 3, fg, true), bar(3, 3, fg, false)]
+        );
     }
 }
