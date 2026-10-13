@@ -206,10 +206,16 @@ pub fn run(
     }
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let file = |what: &str| {
-        std::env::temp_dir().join(format!("templum-{}-{n}-{what}.txt", std::process::id()))
-    };
-    let (prompt_file, output_file) = (file("request"), file("answer"));
+    // The request holds the person's code: in a folder only they can read, made new (never one
+    // someone else put there first).
+    let dir = std::env::temp_dir().join(format!("templum-{}-{n}", std::process::id()));
+    let mut folder_of_files = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut folder_of_files, 0o700);
+    folder_of_files
+        .create(&dir)
+        .map_err(|e| Failure::CouldntRun(format!("couldn't make {}: {e}", dir.display())))?;
+    let (prompt_file, output_file) = (dir.join("request.txt"), dir.join("answer.txt"));
     let result = (|| {
         std::fs::write(&prompt_file, request)
             .map_err(|e| Failure::CouldntRun(format!("couldn't write the request: {e}")))?;
@@ -267,8 +273,7 @@ pub fn run(
             Ok(answer)
         }
     })();
-    let _ = std::fs::remove_file(&prompt_file);
-    let _ = std::fs::remove_file(&output_file);
+    let _ = std::fs::remove_dir_all(&dir);
     result
 }
 
@@ -634,5 +639,31 @@ mod tests {
         let capped = changes(&repo, true, 1).unwrap();
         assert_eq!(capped.files, all.files);
         assert!(!capped.diff.contains("+brand new"), "{}", capped.diff);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_request_is_kept_where_only_this_user_can_read_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = "ls -ld \"$(dirname {prompt_file})\"; dirname {prompt_file}";
+        let answer = run(line, "m", "r", dir.path(), LONG, &never()).unwrap();
+        let (listing, folder) = answer.trim().split_once('\n').unwrap();
+        assert!(listing.starts_with("drwx------"), "{listing}");
+        assert!(!std::path::Path::new(folder).exists(), "{folder} removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_left_holding_the_output_is_not_waited_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = Instant::now();
+        let short = Duration::from_millis(500);
+        // The shell ends at once; the sleep it left keeps its standard output open.
+        let err = run("sleep 20 & echo hi", "m", "r", dir.path(), short, &never()).unwrap_err();
+        assert_eq!(err, Failure::TimedOut(short));
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "stopped, not waited for"
+        );
     }
 }

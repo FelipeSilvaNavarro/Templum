@@ -96,12 +96,15 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
   `a_cancelled_command_is_killed_and_says_so` (`crates/templum-git/tests/repo.rs`) did once in a full run, and the
   fake agent of `crates/templum/src/workspace/tests/git_message.rs` is written the same way. Fix: have `sh` read
   the script (`sh <path> …`) instead of running the file itself.
+- [ ] **`an_agent_past_its_timeout_is_stopped` counts the notifications, not what they say.**
+  (`crates/templum/src/workspace/tests/git_message.rs`.) Fix: check it is "didn't answer within".
 
 ## Release and benches
 
 - [ ] **The CHANGELOG will list three features twice.** Batch 2 has a `feat` commit for the library and another for
   the UI of the same feature: 726079b with c7e13c6 (hunks), 1d5bc9a with cb26cfd (the trash), efdd911 with 6362120
   (commit all, undo commit). Fix: edit the generated section at the next release so each feature reads once.
+  Batch 6's `fix(git)` commit after its review fixes Generate ✨ before any release: drop it from the section too.
 - [ ] **`--bench-zoom=git` measures an empty panel.** It runs from `~/Documents/github/DaemonQuest`, whose tree is
   usually clean, so the Git blocks it zooms show "Nothing changed since the last commit". `--bench-git` covers a full
   diff; for the zoom, leave a few files changed in that folder before running it, or note the state with the result.
@@ -130,3 +133,17 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
   the key, not its table (`set_repo_instructions`). Fix: remove a table in `save_edits` when its last key goes.
 - [ ] **A nested table's last key removed may move its comments too far.** `remove_key` looks for the next header
   among the top-level tables only (`crates/templum/src/config.rs`). Fix: walk every table for the next header.
+- [ ] **Generate's answer can't be undone in the fields.** It replaces what they held at the click with
+  `set_value`, which clears their undo history (`generated`, `crates/templum/src/workspace/git_message.rs`): a draft
+  typed before clicking ✨ is gone. Fix: `replace_all`, which keeps it, on both fields.
+- [ ] **With Amend, Generate describes only what is newly staged.** The request is the staged diff
+  (`message::changes`), and the answer then replaces the whole amended commit's message. Fix: with Amend, diff the
+  index against `HEAD~1` (the empty tree for the first commit), or hide ✨ while Amend is on.
+- [ ] **Emptying Settings ▸ Git ▸ Prompt puts the default back at once.** Empty text removes the key and the next
+  frame fills the area with `PROMPT`, the caret at its start (`set_commit_prompt`, `crates/templum/src/settings/git.rs`);
+  select all and type still works. Fix: keep a draft while the area is empty, as Another model does.
+- [ ] **A new file's diff for the request is built twice.** `message::changes` reads untracked files and builds
+  their diff as `untracked_diff` (`crates/templum-git/src/repo.rs`) does. Fix: one helper both call.
+- [ ] **The docs don't say all of it.** `docs/specs/agents.md` doesn't list `[agents]`'s `generate` and `models`, and
+  the README doesn't say Codex's models come from its `~/.codex/models_cache.json` (else one is typed). Fix: a line
+  in each.

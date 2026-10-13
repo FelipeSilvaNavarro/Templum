@@ -407,11 +407,16 @@ fn settings_git_chooses_the_agent_and_tries_it(cx: &mut TestAppContext) {
         ),
     );
     let (handle, ws) = open_with(cx, Some(config.path().to_path_buf()));
+    // None chosen: the first installed one with a command (Claude Code, Codex, then Fake).
+    let first = ["claude", "codex"]
+        .into_iter()
+        .find(|p| templum_terminal::installed(p))
+        .unwrap_or("fake");
     ws.read_with(cx, |ws, _| {
         assert_eq!(
             ws.commit_agent.as_ref().map(|a| a.id.as_str()),
-            Some("claude"),
-            "none chosen: the first with a command"
+            Some(first),
+            "none chosen: the first installed one with a command"
         )
     });
     cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
@@ -542,4 +547,47 @@ fn the_git_section_writes_the_rules_and_the_prompt_back_at_its_default_goes(
         !text.contains("prompt") && text.contains("instructions = \"Imperative.\""),
         "{text}"
     );
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_commit_made_while_the_agent_writes_leaves_its_answer_out(cx: &mut TestAppContext) {
+    // The agent's answer would describe changes already committed (here from a terminal; from
+    // the block, the fields were cleared too).
+    let (handle, ws, id, repo, _config) = staged_with_agent(
+        cx,
+        &format!("git commit -q -m 'From a terminal'\n{ANSWER}"),
+        true,
+    );
+    click_generate(handle, cx, id);
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["log", "-1", "--format=%s"]),
+        "From a terminal\n"
+    );
+    assert_eq!(fields(&ws, cx, id), (String::new(), String::new()));
+    assert_eq!(notification_count(handle, cx), 1, "says why");
+    git_of(&ws, cx, id, |g| assert!(g.generating.is_none()));
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn generate_can_be_stopped_once_the_changes_are_committed(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    let config = tempfile::tempdir().unwrap();
+    let agent = fake_agent(config.path(), ANSWER);
+    write_config(config.path(), &fake_config(&agent, true));
+    let (handle, ws) = open_with(cx, Some(config.path().to_path_buf()));
+    let id = open_git(handle, &ws, cx, repo.path());
+    // Writing, with nothing left to commit (it was committed meanwhile): the spinner stays.
+    ws.update(cx, |ws, _| {
+        ws.space.git_mut(id).unwrap().generating = Some(std::sync::Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        ));
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("git-generate", id.0 as usize)).is_some());
+    })
+    .unwrap();
 }

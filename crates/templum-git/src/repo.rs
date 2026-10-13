@@ -192,6 +192,13 @@ pub(crate) fn until_cancelled(
         }
         std::thread::sleep(Duration::from_millis(20));
     };
+    // A helper it left running may hold its output open: waited for no longer than it.
+    while !(stdout.is_finished() && stderr.is_finished()) {
+        if cancel.load(Ordering::Relaxed) || deadline.is_some_and(|d| Instant::now() >= d) {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
     Ok(Some(Output {
         status,
         stdout: stdout.join().unwrap_or_default(),

@@ -125,8 +125,8 @@ pub(super) fn commit_form(
 }
 
 /// Generate ✨ and its ⚙, beside the summary: shown while the agent chosen in Settings ▸ Git is ready and
-/// there is something to describe (what is staged, or every change for Commit all changes). It
-/// spins while the agent writes; a click then stops it.
+/// there is something to describe (what is staged, or every change for Commit all changes), or
+/// while the agent writes, when it spins and a click stops it.
 fn generate_button(
     ws: &Workspace,
     id: BlockId,
@@ -135,11 +135,11 @@ fn generate_button(
     cx: &mut Context<Workspace>,
 ) -> Option<AnyElement> {
     let agent = ws.commit_agent.as_ref().filter(|a| a.ready)?;
-    if git.repo().is_none() || (git.status.staged().is_empty() && !git.commit_all()) {
+    let running = git.generating.is_some();
+    if git.repo().is_none() || (git.status.staged().is_empty() && !git.commit_all() && !running) {
         return None;
     }
     let (ui, n) = (ws.ui, id.0 as usize);
-    let running = git.generating.is_some();
     let tip: SharedString = if running {
         "Stop the agent".into()
     } else {

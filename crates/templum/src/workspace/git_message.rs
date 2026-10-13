@@ -125,32 +125,39 @@ impl Workspace {
         let timeout = Duration::from_secs(settings.timeout);
         let title = agent.title.clone();
         cx.spawn_in(window, async move |ws, cx| {
-            let answer = cx
+            let (answer, committed) = cx
                 .background_executor()
                 .spawn(async move {
-                    let changes = message::changes(&repo, all, max_bytes).map_err(Failure::Git)?;
-                    let request = message::request(
-                        &template,
-                        &Request {
-                            instructions: &instructions,
-                            files: &changes.files,
-                            diff: &changes.diff,
-                            recent: &changes.recent,
-                            max_bytes,
-                        },
-                    );
-                    message::run(
-                        &agent.command,
-                        &agent.model,
-                        &request,
-                        &repo.root,
-                        timeout,
-                        &cancel,
-                    )
+                    let head = repo.head().ok();
+                    let answer = (|| {
+                        let changes =
+                            message::changes(&repo, all, max_bytes).map_err(Failure::Git)?;
+                        let request = message::request(
+                            &template,
+                            &Request {
+                                instructions: &instructions,
+                                files: &changes.files,
+                                diff: &changes.diff,
+                                recent: &changes.recent,
+                                max_bytes,
+                            },
+                        );
+                        message::run(
+                            &agent.command,
+                            &agent.model,
+                            &request,
+                            &repo.root,
+                            timeout,
+                            &cancel,
+                        )
+                    })();
+                    // A commit made meanwhile, from the block or a terminal, took what the
+                    // answer describes.
+                    (answer, repo.head().ok() != head)
                 })
                 .await;
             ws.update_in(cx, |ws, window, cx| {
-                ws.generated(at, &title, before, answer, window, cx)
+                ws.generated(at, &title, before, answer, committed, window, cx)
             })
             .ok();
         })
@@ -158,17 +165,20 @@ impl Workspace {
     }
 
     /// The agent's answer: in the fields, unless the summary or the description changed since
-    /// the click (what was typed is never replaced, and a commit made meanwhile cleared them);
-    /// a failure says why, with Details; a cancel says nothing.
+    /// the click (what was typed is never replaced) or a commit was made meanwhile (`committed`:
+    /// the answer describes changes already committed); a failure says why, with Details; a
+    /// cancel says nothing.
     // ponytail: a block closed or pointed at another folder meanwhile drops the answer, and its
     // agent runs on to its timeout; set `generating` in `set_git_folder` and on close if a slow
     // agent's cost matters.
+    #[allow(clippy::too_many_arguments)]
     fn generated(
         &mut self,
         at: GitAt,
         agent: &str,
         before: (SharedString, SharedString),
         answer: Result<String, Failure>,
+        committed: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -187,14 +197,19 @@ impl Workspace {
             Err(Failure::Cancelled) => {}
             Err(failure) => self.notify_generate_failure(agent, &failure, window, cx),
             Ok((s, d)) => {
-                if (summary.read(cx).value(), description.read(cx).value()) != before {
-                    show_notification(
-                        window,
-                        cx,
-                        Notification::info(format!(
-                            "Kept your message: it changed while {agent} was writing one"
-                        )),
-                    );
+                let left_out = if committed {
+                    Some(format!(
+                        "Left out {agent}'s message: a commit was made while it was writing"
+                    ))
+                } else if (summary.read(cx).value(), description.read(cx).value()) != before {
+                    Some(format!(
+                        "Kept your message: it changed while {agent} was writing one"
+                    ))
+                } else {
+                    None
+                };
+                if let Some(why) = left_out {
+                    show_notification(window, cx, Notification::info(why));
                     return;
                 }
                 summary.update(cx, |field, cx| field.set_value(s, window, cx));

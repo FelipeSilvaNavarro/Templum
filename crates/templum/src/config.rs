@@ -266,7 +266,7 @@ impl Default for GitConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct CommitMessage {
-    /// An agent's id; None: the first agent with a generate command.
+    /// An agent's id; None: the first agent with a generate command, an installed one first.
     pub agent: Option<String>,
     /// None: the agent's recommended model, the first of its list.
     pub model: Option<String>,

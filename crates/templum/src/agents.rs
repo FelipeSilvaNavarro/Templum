@@ -317,8 +317,8 @@ impl CommitAgent {
     }
 }
 
-/// The agent `settings` chose among `agents` (none chosen: the first with a generate command),
-/// with its model. None when that agent has no generate command or is gone: Generate never
+/// The agent `settings` chose among `agents` (none chosen: the first with a generate command
+/// whose program is installed, else the first with one), with its model. None when that agent has no generate command or is gone: Generate never
 /// sends a diff to another agent than the one chosen. `installed`: whether a program can run
 /// (`templum_terminal::installed`).
 pub(crate) fn commit_agent(
@@ -328,7 +328,17 @@ pub(crate) fn commit_agent(
 ) -> Option<CommitAgent> {
     let agent = match settings.agent.as_deref() {
         Some(id) => agents.iter().find(|a| a.id == id)?,
-        None => agents.iter().find(|a| a.generate.is_some())?,
+        None => {
+            let mut writers = agents.iter().filter(|a| a.generate.is_some());
+            let program = |a: &AgentEntry| {
+                let generate = a.generate.as_deref().unwrap_or_default();
+                installed(generate.split_whitespace().next().unwrap_or_default())
+            };
+            writers
+                .clone()
+                .find(|a| program(a))
+                .or_else(|| writers.next())?
+        }
     };
     let command = agent.generate.clone()?;
     let model = settings
@@ -616,6 +626,19 @@ mod tests {
             commit_agent(&list, &chose("copilot", None), |_| true),
             None,
             "no generate command"
+        );
+    }
+
+    #[test]
+    fn none_chosen_an_installed_agent_writes_the_message() {
+        let list = agents("");
+        let codex = commit_agent(&list, &CommitMessage::default(), |p| p == "codex").unwrap();
+        assert_eq!(codex.id, "codex", "Codex alone on this computer");
+        let none = commit_agent(&list, &CommitMessage::default(), |_| false).unwrap();
+        assert_eq!(
+            (none.id.as_str(), none.ready),
+            ("claude", false),
+            "none installed: the first with a command"
         );
     }
 }
