@@ -237,6 +237,10 @@ impl Render for Workspace {
                 self.space.canvas.camera
             }
         };
+        // The level of detail changes only at rest (docs/specs/level-of-detail.md, section 1).
+        if self.space.flight.is_none() {
+            self.space.rest = self.space.view.zoom();
+        }
         let visible: Vec<_> = self
             .space
             .canvas

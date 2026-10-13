@@ -14,7 +14,7 @@ use gpui_kit::{
     MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt, Window, div,
     point, px,
 };
-use templum_canvas::{Block, BlockId, Edges, Point, Rect, chrome};
+use templum_canvas::{Block, BlockId, Edges, Level, Point, Rect, chrome};
 
 use crate::alert::{self, Alert};
 use crate::editor;
@@ -89,6 +89,16 @@ pub(crate) fn render(
         _ => Point::default(),
     };
     let focused = live && ws.space.focused == Some(id);
+    // How much of the body is drawn: the block worked in (focused, or holding the keyboard: GPUI
+    // drops the focus of what isn't drawn) is always Full; the others by their text's size on
+    // screen at the zoom the camera rests at (docs/specs/level-of-detail.md, section 1).
+    let level = match body {
+        _ if focused || (live && body.has_focus(window, cx)) => Level::Full,
+        // Drawn in full down to the Card level, which its 13 px never reach (3.25 px at 25%).
+        Body::Kanban(_) => Level::Full,
+        Body::Terminal(_) => templum_canvas::level(ws.cell.font_size, ws.space.rest),
+        _ => templum_canvas::level(font, ws.space.rest),
+    };
     let target = Target::Block(id);
     let hovered = live && ws.space.hovered == Some(id);
     let ui = ws.ui;
@@ -385,8 +395,10 @@ pub(crate) fn render(
                 editor::body(ws, id, e, settled, cx),
             ))
         }),
-        // A fading Git block is drawn empty, like a note.
-        Body::Git(g) => frame.when(live, |el| {
+        // A fading Git block is drawn empty, like a note. Below Full it is its card: its body is
+        // dozens of components whose shape says little from afar, and its diff rows and commit
+        // fields would do their per-frame work for nothing.
+        Body::Git(g) => frame.when(live && level == Level::Full, |el| {
             el.child(settled_box(
                 block,
                 settled,

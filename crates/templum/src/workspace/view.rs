@@ -83,10 +83,11 @@ impl Workspace {
             return;
         }
         // Mid-flight, from where it is drawn; otherwise the camera is what was last drawn (or
-        // moved since, by a drag).
+        // moved since, by a drag), at rest there until now, on a canvas not drawn yet too.
         let from = if self.space.flight.is_some() {
             self.space.view
         } else {
+            self.space.rest = self.space.canvas.camera.zoom();
             self.space.canvas.camera
         };
         self.space.canvas.camera = to;

@@ -526,6 +526,7 @@ mod git_switch;
 mod git_sync;
 mod git_trash;
 mod kanban;
+mod lod;
 mod menus;
 mod navigation;
 mod notes;

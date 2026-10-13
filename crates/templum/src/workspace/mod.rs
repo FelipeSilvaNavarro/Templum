@@ -325,6 +325,9 @@ pub(crate) struct Space {
     pub view: Camera,
     /// The view gliding to `canvas.camera`, since when.
     pub flight: Option<(CameraFlight, Instant)>,
+    /// The zoom the view last came to rest at. Blocks are drawn at its level of detail, so a
+    /// glide keeps the level it started at, and the level changes on the frame the glide ends.
+    pub rest: f32,
     /// Blocks still popping in, since when.
     pub appearing: HashMap<BlockId, Instant>,
     /// Closed blocks still fading out.
