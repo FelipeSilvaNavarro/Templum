@@ -317,6 +317,9 @@ impl Tab {
 /// An editor block: one folder, the file tree over it, the open files.
 pub(crate) struct Editor {
     pub folder: PathBuf,
+    /// The folder wasn't there at the last look, on opening and every POLL: the body says so.
+    /// Never looked up while drawing: a stat each frame stalls on a slow or network disk.
+    pub gone: bool,
     pub tree: Entity<TreeState>,
     /// The folders read so far, by path: the root and each one expanded. A folder that was
     /// never expanded costs nothing (`node_modules`).
@@ -341,6 +344,7 @@ impl Editor {
             ws.on_tree_event(&tree, event, cx)
         });
         let mut editor = Editor {
+            gone: !folder.is_dir(),
             folder,
             tree,
             dirs: HashMap::new(),
@@ -645,7 +649,7 @@ pub(crate) fn body(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    if !editor.folder.is_dir() {
+    if editor.gone {
         return gone(id, &editor.folder, ui, z, cx);
     }
     let tree = editor.show_tree.then(|| {

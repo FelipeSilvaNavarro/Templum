@@ -43,7 +43,7 @@ pub(crate) fn body(
 ) -> AnyElement {
     let ui = ws.ui;
     let n = id.0 as usize;
-    let content: AnyElement = if !git.folder.is_dir() {
+    let content: AnyElement = if git.gone {
         centered(ui, z)
             .child(format!("{} is gone", git.folder.display()))
             .child(

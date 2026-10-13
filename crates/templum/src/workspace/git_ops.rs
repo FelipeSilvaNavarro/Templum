@@ -355,6 +355,17 @@ impl Workspace {
 
     /// Every git_block::POLL: reads the Git blocks in the viewport again.
     pub(super) fn poll_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut changed = false;
+        for body in self.space.blocks.values_mut() {
+            if let Body::Git(git) = body {
+                let gone = !git.folder.is_dir();
+                changed |= gone != git.gone;
+                git.gone = gone;
+            }
+        }
+        if changed {
+            cx.notify();
+        }
         let vp = self.viewport(window);
         let due: Vec<BlockId> = self
             .space

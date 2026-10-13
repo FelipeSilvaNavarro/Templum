@@ -137,6 +137,28 @@ fn a_refresh_asked_while_one_runs_waits_and_runs_once(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_deleted_folder_shows_after_the_poll_not_on_the_next_frame(cx: &mut TestAppContext) {
+    let repo = git_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    std::fs::remove_dir_all(repo.path()).unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("choose-folder", id.0 as usize)).is_none(),
+            "drawing doesn't read the disk"
+        );
+    })
+    .unwrap();
+    cx.executor().advance_clock(crate::git_block::POLL);
+    settle(handle, cx);
+    cx.update_window(handle, |_, window, _| {
+        window.find(("choose-folder", id.0 as usize));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn a_result_for_a_closed_block_is_dropped(cx: &mut TestAppContext) {
     let repo = git_repo();
     let (handle, ws) = open(cx);

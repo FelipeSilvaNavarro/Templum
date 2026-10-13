@@ -142,6 +142,31 @@ fn an_editor_comes_back_and_one_whose_folder_is_gone_says_so(cx: &mut TestAppCon
 }
 
 #[gpui_kit::test]
+fn a_deleted_folder_shows_after_the_poll_not_on_the_next_frame(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("project");
+    std::fs::create_dir(&folder).unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_editor(handle, &ws, cx, &folder);
+    std::fs::remove_dir(&folder).unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("choose-folder", id.0 as usize)).is_none(),
+            "drawing doesn't read the disk"
+        );
+    })
+    .unwrap();
+    cx.executor().advance_clock(crate::editor::POLL);
+    cx.run_until_parked();
+    frame(handle, cx);
+    cx.update_window(handle, |_, window, _| {
+        window.find(("choose-folder", id.0 as usize));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn the_focused_editors_tree_is_read_again_after_two_seconds(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "a").unwrap();

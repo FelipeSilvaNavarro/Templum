@@ -112,6 +112,7 @@ impl Workspace {
         }
         let editor = self.space.editor_mut(id)?;
         editor.folder = folder.to_path_buf();
+        editor.gone = false;
         editor.expanded.clear();
         // Changed files stay open (Save writes them where they were); the others close.
         editor.tabs.retain(|t| t.dirty);
@@ -429,6 +430,9 @@ impl Workspace {
             let Body::Editor(editor) = body else {
                 continue;
             };
+            let gone = !editor.folder.is_dir();
+            changed |= gone != editor.gone;
+            editor.gone = gone;
             for tab in &mut editor.tabs {
                 let now = editor::mtime(&tab.path);
                 if now == tab.mtime {

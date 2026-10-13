@@ -208,6 +208,9 @@ impl Read {
 pub(crate) struct Git {
     /// What the user chose; the repository's root may be above it.
     pub folder: PathBuf,
+    /// The folder wasn't there at the last look, on opening and every POLL: the body says so.
+    /// Never looked up while drawing: a stat each frame stalls on a slow or network disk.
+    pub gone: bool,
     /// How many times the block changed folder (see `GitAt`).
     pub generation: u64,
     pub found: Found,
@@ -374,6 +377,7 @@ impl Git {
             }
         });
         Git {
+            gone: !folder.is_dir(),
             folder,
             generation: 0,
             found: Found::Looking,
