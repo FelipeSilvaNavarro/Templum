@@ -100,6 +100,15 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   (`crates/templum/src/git_block/diff_view/paint.rs:515`, at 340439a), which a range doesn't read. Fix: leave the size
   out when `bytes` is None.
 
+- [ ] **Publish is dropped without a word after a workspace switch.** Its remotes read waits in the block's queue;
+  when it comes back with another workspace on screen, `publish`'s early `return`
+  (`crates/templum/src/workspace/git_sync.rs:174`, at 150c656) drops it. Fix: let `publish_to` and `git_sync` run by
+  `GitAt` off screen, or say it was dropped.
+- [ ] **A conflict choice with no trash goes ahead without asking.** Without a data folder, or past the trash's cap,
+  `resolve_region` and `resolve_file` (`crates/templum/src/workspace/git_conflicts.rs:88,141`, at 150c656) write
+  the file with no copy and no question, where the trash rule (docs/specs/git.md, "When a copy can't be kept") asks
+  first. Fix: ask as discards do ("This can't be undone").
+
 ## Trash and discards
 
 - [ ] **Discard all filters its files with `Vec::contains`.** `discard` (`crates/templum/src/workspace/git_discard.rs:69`)
@@ -111,6 +120,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   manifest older than a day.
 - [ ] **Recently discarded doesn't name the files.** A row says "Discarded 7 files"
   (`crates/templum/src/git_block/discarded.rs:51`). Fix: the file names under it, folded past a few.
+
+- [ ] **Two answers from batches 1 and 2 act on the bare block id in whichever workspace is shown.** Undo commit's
+  "Revert {short}?" (`crates/templum/src/workspace/git_changes.rs:240`) and Restore's "changed since" question
+  (`crates/templum/src/workspace/git_discard.rs:302`, at 150c656) call `git_action`/`restore_discarded` with
+  `at.block`: answered after a switch, they act on the other workspace's block with that id. Fix: through
+  `show_git_block(&at, …)`, as the batches 3 and 4 questions do.
 
 ## Tests
 
