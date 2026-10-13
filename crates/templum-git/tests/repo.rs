@@ -1683,3 +1683,55 @@ fn sync_on_a_branch_deleted_on_the_server_says_so_and_sends_nothing() {
         .unwrap();
     assert!(on_server.stdout.is_empty(), "nothing sent");
 }
+
+/// A clone that has started writing, then stops: cancelled, as a click on its spinning button
+/// does. A new folder goes; an empty one that was there is empty again.
+#[cfg(unix)]
+#[test]
+fn a_clone_stopped_midway_leaves_no_folder_and_an_empty_one_empty() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+    // `git clone` waiting on the network after it made the folder: a stand-in for git.
+    let bin = tempfile::tempdir().unwrap();
+    let slow = bin.path().join("slow-git");
+    std::fs::write(
+        &slow,
+        "#!/bin/sh\nfor a; do dest=$a; done\nmkdir -p \"$dest/.git\" && echo partial > \"$dest/.git/HEAD\"\nexec sleep 30\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let empty = parent.path().join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    for (into, existed) in [(parent.path().join("new"), false), (empty, true)] {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (stop, watched) = (cancel.clone(), into.join(".git"));
+        let stopper = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !watched.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            stop.store(true, Ordering::Relaxed);
+        });
+        let err = Repo::clone_into(
+            &slow.display().to_string(),
+            "https://example.com/me/app.git",
+            &into,
+            Some(cancel),
+        )
+        .unwrap_err();
+        stopper.join().unwrap();
+        assert!(err.cancelled(), "{err}");
+        if existed {
+            assert!(into.is_dir(), "the folder chosen stays");
+            assert_eq!(
+                std::fs::read_dir(&into).unwrap().count(),
+                0,
+                "emptied again"
+            );
+        } else {
+            assert!(!into.exists(), "no half-made folder");
+        }
+    }
+}

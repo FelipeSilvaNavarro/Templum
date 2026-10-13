@@ -240,7 +240,7 @@ impl Repo {
 
     /// `git clone -- url into`, then the repository there. `into`'s parent is made when
     /// missing. A clone that fails or is cancelled leaves no folder behind when there was none
-    /// before (git can't clean up after a kill).
+    /// before, and an empty folder empty (git can't clean up after a kill).
     pub fn clone_into(
         program: &str,
         url: &str,
@@ -257,6 +257,7 @@ impl Repo {
             missing: false,
         })?;
         let existed = into.exists();
+        let was_empty = std::fs::read_dir(into).is_ok_and(|mut d| d.next().is_none());
         if let Err(e) = run_in(
             program,
             parent,
@@ -265,6 +266,16 @@ impl Repo {
         ) {
             if !existed {
                 let _ = std::fs::remove_dir_all(into);
+            } else if was_empty {
+                // An empty folder chosen as it is: empty again, with no half-made `.git`.
+                for entry in std::fs::read_dir(into).into_iter().flatten().flatten() {
+                    let path = entry.path();
+                    let _ = if path.is_dir() && !path.is_symlink() {
+                        std::fs::remove_dir_all(&path)
+                    } else {
+                        std::fs::remove_file(&path)
+                    };
+                }
             }
             return Err(e);
         }
