@@ -371,3 +371,50 @@ fn a_clone_finished_after_a_switch_leaves_the_other_workspace_alone(cx: &mut Tes
         x.path().canonicalize().unwrap()
     );
 }
+
+// Review M8: Clone… from a repository's ⋯ goes beside it, not inside it.
+#[gpui_kit::test]
+fn clone_from_a_repository_goes_beside_it(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    let around = tempfile::tempdir().unwrap();
+    let proj = around.path().join("proj");
+    std::fs::create_dir(&proj).unwrap();
+    for args in [
+        ["init", "-q"].as_slice(),
+        &["symbolic-ref", "HEAD", "refs/heads/main"],
+        &["config", "user.name", "Ada"],
+        &["config", "user.email", "ada@example.com"],
+        &["config", "commit.gpgsign", "false"],
+    ] {
+        git_run(&proj, args);
+    }
+    commit_in(&proj, "a.txt");
+    let server = tempfile::tempdir().unwrap();
+    let bare = server.path().join("app.git");
+    std::fs::create_dir(&bare).unwrap();
+    git_run(&bare, &["init", "-q", "--bare"]);
+    // Clones check out its HEAD: main, not git's default branch.
+    git_run(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    git_run(&proj, &["push", "-q", &bare.display().to_string(), "main"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, &proj);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.ask_clone(id, window, cx));
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+    })
+    .unwrap();
+    cx.simulate_input(handle, &bare.display().to_string());
+    cx.update_window(handle, |_, window, cx| {
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert!(!proj.join("app").exists(), "not inside the repository");
+    assert!(
+        around.path().join("app").join("a.txt").is_file(),
+        "beside it"
+    );
+}

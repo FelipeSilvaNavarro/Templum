@@ -214,9 +214,18 @@ impl Workspace {
         );
     }
 
-    /// Clone a repository…: a URL and where to put it (the block's folder at first).
+    /// Clone a repository…: a URL and where to put it: the block's folder at first, or beside
+    /// the block's repository (from its ⋯), never inside it.
     pub(crate) fn ask_clone(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(folder) = self.space.git(id).map(|g| g.folder.display().to_string()) else {
+        let Some(folder) = self.space.git(id).map(|g| {
+            let beside = g
+                .repo()
+                .and_then(|r| r.root.parent().map(|p| p.to_path_buf()));
+            beside
+                .unwrap_or_else(|| g.folder.clone())
+                .display()
+                .to_string()
+        }) else {
             return;
         };
         let (ws, at) = (cx.entity(), self.here(id));
