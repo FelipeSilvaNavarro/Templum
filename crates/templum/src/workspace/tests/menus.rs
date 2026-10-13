@@ -125,6 +125,8 @@ fn the_canvas_menu_opens_an_agent_in_a_recent_folder(cx: &mut TestAppContext) {
             builtin: None,
             changed: false,
             show: true,
+            generate: None,
+            models: Vec::new(),
         }];
     });
     cx.update_window(handle, |_, window, cx| {

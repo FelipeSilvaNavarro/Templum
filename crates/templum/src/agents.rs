@@ -4,9 +4,10 @@
 
 use std::collections::BTreeMap;
 
+use serde::Deserialize;
 use templum_terminal::{Agent, Detect, program_name};
 
-use crate::config::{AgentConfig, valid_agent_id};
+use crate::config::{AgentConfig, CommitMessage, valid_agent_id};
 
 /// One agent as Templum uses it.
 #[derive(Clone, Debug, PartialEq)]
@@ -26,6 +27,11 @@ pub(crate) struct AgentEntry {
     pub changed: bool,
     /// Listed in the canvas's menu.
     pub show: bool,
+    /// Runs it without a terminal to write a commit message (`{model}`, `{prompt_file}`,
+    /// `{output_file}`); None: it writes none.
+    pub generate: Option<String>,
+    /// Its models for commit messages, the recommended one first.
+    pub models: Vec<String>,
 }
 
 impl AgentEntry {
@@ -58,8 +64,12 @@ impl AgentEntry {
     }
 }
 
-/// Templum's agents with `config`'s changes, in their order, then the user's, by id.
-pub(crate) fn effective(config: &BTreeMap<String, AgentConfig>) -> Vec<AgentEntry> {
+/// Templum's agents with `config`'s changes, in their order, then the user's, by id. `codex`:
+/// Codex's own list of models (`codex_models`).
+pub(crate) fn effective(
+    config: &BTreeMap<String, AgentConfig>,
+    codex: &[String],
+) -> Vec<AgentEntry> {
     fn text(v: &Option<String>) -> Option<&str> {
         v.as_deref().map(str::trim).filter(|v| !v.is_empty())
     }
@@ -73,6 +83,7 @@ pub(crate) fn effective(config: &BTreeMap<String, AgentConfig>) -> Vec<AgentEntr
         let set = config.get(spec.id);
         let empty = AgentConfig::default();
         let set_ = set.unwrap_or(&empty);
+        let (generate, models) = preset(agent, codex);
         AgentEntry {
             id: spec.id.to_string(),
             title: text(&set_.name).unwrap_or(spec.title).to_string(),
@@ -82,6 +93,8 @@ pub(crate) fn effective(config: &BTreeMap<String, AgentConfig>) -> Vec<AgentEntr
             builtin: Some(agent),
             changed: set.is_some_and(|s| *s != AgentConfig::default()),
             show: set_.show.unwrap_or(true),
+            generate: text(&set_.generate).or(generate).map(str::to_string),
+            models: set_.models.clone().unwrap_or(models),
         }
     });
     let theirs = config
@@ -97,9 +110,64 @@ pub(crate) fn effective(config: &BTreeMap<String, AgentConfig>) -> Vec<AgentEntr
                 builtin: None,
                 changed: false,
                 show: set.show.unwrap_or(true),
+                generate: text(&set.generate).map(str::to_string),
+                models: set.models.clone().unwrap_or_default(),
             })
         });
     ours.chain(theirs).collect()
+}
+
+/// Templum's command to write a commit message with one of its agents, and its models (the
+/// recommended one first): Claude Code's and Codex's, whose models are its own list, `codex`,
+/// which changes by itself. The others have none until the person sets one.
+pub(crate) fn preset(agent: Agent, codex: &[String]) -> (Option<&'static str>, Vec<String>) {
+    match agent.spec().id {
+        "claude" => (
+            Some("claude -p --model {model}"),
+            ["haiku", "sonnet", "opus"].map(String::from).to_vec(),
+        ),
+        "codex" => (
+            Some(
+                "codex exec -m {model} --sandbox read-only --ephemeral --skip-git-repo-check \
+                 -o {output_file} -",
+            ),
+            codex.to_vec(),
+        ),
+        _ => (None, Vec::new()),
+    }
+}
+
+/// Codex's models as its own picker lists them: `~/.codex/models_cache.json`'s entries with
+/// `"visibility": "list"`, by priority. None when Codex hasn't written it.
+pub(crate) fn codex_models() -> Vec<String> {
+    std::env::home_dir()
+        .and_then(|home| std::fs::read_to_string(home.join(".codex/models_cache.json")).ok())
+        .map_or_else(Vec::new, |json| codex_list(&json))
+}
+
+fn codex_list(json: &str) -> Vec<String> {
+    #[derive(Deserialize)]
+    struct Cache {
+        models: Vec<Model>,
+    }
+    #[derive(Deserialize)]
+    struct Model {
+        slug: String,
+        #[serde(default)]
+        visibility: String,
+        #[serde(default)]
+        priority: i64,
+    }
+    let Ok(cache) = serde_json::from_str::<Cache>(json) else {
+        return Vec::new();
+    };
+    let mut listed: Vec<Model> = cache
+        .models
+        .into_iter()
+        .filter(|m| m.visibility == "list")
+        .collect();
+    listed.sort_by_key(|m| m.priority);
+    listed.into_iter().map(|m| m.slug).collect()
 }
 
 /// What the settings dialog edits.
@@ -110,6 +178,11 @@ pub(crate) struct Draft {
     /// Empty: a new session on restore.
     pub resume: String,
     pub show: bool,
+    /// Its generate command; empty: none (one of Templum's: its own).
+    pub generate: String,
+    /// Its models, one per line, the recommended one first; empty: none (one of Templum's: its
+    /// own).
+    pub models: String,
 }
 
 impl Draft {
@@ -119,6 +192,8 @@ impl Draft {
             command: entry.command.clone(),
             resume: entry.resume.clone().unwrap_or_default(),
             show: entry.show,
+            generate: entry.generate.clone().unwrap_or_default(),
+            models: entry.models.join("\n"),
         }
     }
 
@@ -134,19 +209,30 @@ impl Draft {
     }
 
     /// What `[agents.<id>]` holds for it: only what differs from Templum's default for one of
-    /// its own (None when nothing does), everything for one of the user's.
-    pub fn to_config(&self, builtin: Option<Agent>) -> Option<AgentConfig> {
+    /// its own (None when nothing does), everything for one of the user's. `codex`: Codex's own
+    /// list of models, its default.
+    pub fn to_config(&self, builtin: Option<Agent>, codex: &[String]) -> Option<AgentConfig> {
         let (name, command, resume) = (self.name.trim(), self.command.trim(), self.resume.trim());
+        let generate = self.generate.trim();
+        let models: Vec<String> = self
+            .models
+            .lines()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string)
+            .collect();
         let config = match builtin {
             Some(agent) => {
                 let default_resume = agent.spec().resume.unwrap_or("");
+                let (default_generate, default_models) = preset(agent, codex);
                 AgentConfig {
                     name: (name != agent.title()).then(|| name.to_string()),
                     command: (command != agent.command()).then(|| command.to_string()),
                     resume: (resume != default_resume).then(|| resume.to_string()),
                     show: (!self.show).then_some(false),
-                    generate: None,
-                    models: None,
+                    generate: (!generate.is_empty() && Some(generate) != default_generate)
+                        .then(|| generate.to_string()),
+                    models: (!models.is_empty() && models != default_models).then_some(models),
                 }
             }
             None => AgentConfig {
@@ -154,8 +240,8 @@ impl Draft {
                 command: Some(command.to_string()),
                 resume: (!resume.is_empty()).then(|| resume.to_string()),
                 show: (!self.show).then_some(false),
-                generate: None,
-                models: None,
+                generate: (!generate.is_empty()).then(|| generate.to_string()),
+                models: (!models.is_empty()).then_some(models),
             },
         };
         (config != AgentConfig::default()).then_some(config)
@@ -169,6 +255,7 @@ pub(crate) fn to_value(config: &AgentConfig) -> toml_edit::InlineTable {
         ("name", &config.name),
         ("command", &config.command),
         ("resume", &config.resume),
+        ("generate", &config.generate),
     ] {
         if let Some(value) = value {
             table.insert(key, value.as_str().into());
@@ -176,6 +263,10 @@ pub(crate) fn to_value(config: &AgentConfig) -> toml_edit::InlineTable {
     }
     if let Some(show) = config.show {
         table.insert("show", show.into());
+    }
+    if let Some(models) = &config.models {
+        let list: toml_edit::Array = models.iter().map(String::as_str).collect();
+        table.insert("models", list.into());
     }
     table
 }
@@ -203,13 +294,69 @@ pub(crate) fn new_id(name: &str, taken: impl Fn(&str) -> bool) -> String {
         .expect("a free id")
 }
 
+/// The agent Generate ✨ runs, as `[git.commit_message]` chose it.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct CommitAgent {
+    pub id: String,
+    pub title: String,
+    /// Its generate command.
+    pub command: String,
+    /// Its models, the recommended one first.
+    pub models: Vec<String>,
+    /// The model asked for: the one chosen, else the recommended one ("" when it has none).
+    pub model: String,
+    /// Its program is installed, and a model is known when its command needs one: Generate
+    /// shows.
+    pub ready: bool,
+}
+
+impl CommitAgent {
+    /// The program its command runs, to look for on this computer.
+    pub fn program(&self) -> &str {
+        self.command.split_whitespace().next().unwrap_or_default()
+    }
+}
+
+/// The agent `settings` chose among `agents` (none chosen: the first with a generate command),
+/// with its model. None when that agent has no generate command or is gone: Generate never
+/// sends a diff to another agent than the one chosen. `installed`: whether a program can run
+/// (`templum_terminal::installed`).
+pub(crate) fn commit_agent(
+    agents: &[AgentEntry],
+    settings: &CommitMessage,
+    installed: impl Fn(&str) -> bool,
+) -> Option<CommitAgent> {
+    let agent = match settings.agent.as_deref() {
+        Some(id) => agents.iter().find(|a| a.id == id)?,
+        None => agents.iter().find(|a| a.generate.is_some())?,
+    };
+    let command = agent.generate.clone()?;
+    let model = settings
+        .model
+        .clone()
+        .filter(|m| !m.trim().is_empty())
+        .or_else(|| agent.models.first().cloned())
+        .unwrap_or_default();
+    let mut chosen = CommitAgent {
+        id: agent.id.clone(),
+        title: agent.title.clone(),
+        command,
+        models: agent.models.clone(),
+        model,
+        ready: false,
+    };
+    chosen.ready = installed(chosen.program())
+        && !(chosen.model.is_empty() && chosen.command.contains("{model}"));
+    Some(chosen)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::parse;
 
     fn agents(text: &str) -> Vec<AgentEntry> {
-        effective(&parse(text).unwrap().agents)
+        effective(&parse(text).unwrap().agents, &[])
     }
 
     fn by<'a>(list: &'a [AgentEntry], id: &str) -> &'a AgentEntry {
@@ -268,19 +415,19 @@ mod tests {
         let claude = Agent::CLAUDE;
         let mut draft = Draft::of(&by(&agents(""), "claude").clone());
         assert_eq!(
-            draft.to_config(Some(claude)),
+            draft.to_config(Some(claude), &[]),
             None,
             "unchanged: nothing to keep"
         );
         draft.command = " claude --model opus ".into();
         draft.show = false;
-        let kept = draft.to_config(Some(claude)).unwrap();
+        let kept = draft.to_config(Some(claude), &[]).unwrap();
         assert_eq!(kept.command.as_deref(), Some("claude --model opus"));
         assert_eq!(
             (kept.name, kept.resume, kept.show),
             (None, None, Some(false))
         );
-        let value = to_value(&draft.to_config(Some(claude)).unwrap()).to_string();
+        let value = to_value(&draft.to_config(Some(claude), &[]).unwrap()).to_string();
         assert!(
             value.contains("command = \"claude --model opus\""),
             "{value}"
@@ -289,10 +436,10 @@ mod tests {
         let mine = Draft {
             name: "Mine".into(),
             command: "mine".into(),
-            resume: String::new(),
             show: true,
+            ..Draft::default()
         };
-        let kept = mine.to_config(None).unwrap();
+        let kept = mine.to_config(None, &[]).unwrap();
         assert_eq!(
             (kept.name.as_deref(), kept.command.as_deref()),
             (Some("Mine"), Some("mine"))
@@ -314,5 +461,161 @@ mod tests {
         assert_eq!(new_id("My Agent", |id| id == "my-agent"), "my-agent-2");
         assert_eq!(new_id("Claude", |_| false), "claude-2", "ours are taken");
         assert_eq!(new_id("日本", |_| false), "agent");
+    }
+
+    #[test]
+    fn claude_and_codex_write_commit_messages_and_the_others_can() {
+        let codex_list = ["gpt-a".to_string(), "gpt-b".to_string()];
+        let config = parse(concat!(
+            "[agents.gemini]\n",
+            "generate = \"gemini -p -m {model}\"\n",
+            "models = [\"flash\"]\n",
+        ))
+        .unwrap();
+        let list = effective(&config.agents, &codex_list);
+        let claude = by(&list, "claude");
+        assert_eq!(
+            claude.generate.as_deref(),
+            Some("claude -p --model {model}")
+        );
+        assert_eq!(claude.models, ["haiku", "sonnet", "opus"]);
+        let codex = by(&list, "codex");
+        assert_eq!(
+            codex.generate.as_deref(),
+            Some(
+                "codex exec -m {model} --sandbox read-only --ephemeral --skip-git-repo-check \
+                 -o {output_file} -"
+            )
+        );
+        assert_eq!(codex.models, codex_list, "Codex's own list");
+        let gemini = by(&list, "gemini");
+        assert_eq!(gemini.generate.as_deref(), Some("gemini -p -m {model}"));
+        assert_eq!(gemini.models, ["flash"]);
+        assert!(gemini.changed);
+        assert_eq!(by(&list, "copilot").generate, None);
+        assert!(by(&list, "copilot").models.is_empty());
+    }
+
+    #[test]
+    fn codexs_models_are_its_listed_ones_by_priority() {
+        let json = r#"{"fetched_at":"x","models":[
+            {"slug":"hidden","visibility":"hide","priority":1},
+            {"slug":"second","visibility":"list","priority":9,"description":"…"},
+            {"slug":"first","visibility":"list","priority":8}]}"#;
+        assert_eq!(codex_list(json), ["first", "second"]);
+        assert!(codex_list("not json").is_empty());
+    }
+
+    #[test]
+    fn a_changed_generate_command_or_model_list_is_kept() {
+        let claude = by(&agents(""), "claude").clone();
+        let mut draft = Draft::of(&claude);
+        assert_eq!(draft.models, "haiku\nsonnet\nopus");
+        draft.generate = "claude -p --model {model} --verbose".into();
+        draft.models = " sonnet \n\nhaiku\n".into();
+        let kept = draft.to_config(Some(Agent::CLAUDE), &[]).unwrap();
+        assert_eq!(
+            kept.generate.as_deref(),
+            Some("claude -p --model {model} --verbose")
+        );
+        assert_eq!(
+            kept.models,
+            Some(vec!["sonnet".to_string(), "haiku".to_string()])
+        );
+        // As config.toml holds it, read back.
+        let text = format!("[agents]\nclaude = {}\n", to_value(&kept));
+        assert_eq!(parse(&text).unwrap().agents["claude"], kept, "{text}");
+        // Codex's list is its own: kept only when the person changed it.
+        let codex_list = ["gpt-a".to_string()];
+        let codex = by(&effective(&BTreeMap::new(), &codex_list), "codex").clone();
+        assert_eq!(
+            Draft::of(&codex).to_config(Some(Agent::CODEX), &codex_list),
+            None
+        );
+        let edited = Draft {
+            models: "gpt-b".into(),
+            ..Draft::of(&codex)
+        };
+        assert_eq!(
+            edited
+                .to_config(Some(Agent::CODEX), &codex_list)
+                .unwrap()
+                .models,
+            Some(vec!["gpt-b".to_string()])
+        );
+        // Emptied: back to Templum's own.
+        let emptied = Draft {
+            generate: " ".into(),
+            models: String::new(),
+            ..Draft::of(&claude)
+        };
+        assert_eq!(emptied.to_config(Some(Agent::CLAUDE), &[]), None);
+        // One of the user's: its own, or none.
+        let mine = Draft {
+            name: "Mine".into(),
+            command: "mine".into(),
+            generate: "mine ask {model}".into(),
+            models: "fast".into(),
+            show: true,
+            ..Draft::default()
+        };
+        let kept = mine.to_config(None, &[]).unwrap();
+        assert_eq!(
+            (kept.generate.as_deref(), kept.models),
+            (Some("mine ask {model}"), Some(vec!["fast".to_string()]))
+        );
+    }
+
+    #[test]
+    fn generate_runs_the_chosen_agent_with_its_recommended_model() {
+        let list = agents(concat!(
+            "[agents.mine]\nname = \"Mine\"\ncommand = \"mine\"\n",
+            "generate = \"/opt/mine/ask {model}\"\nmodels = [\"fast\", \"smart\"]\n",
+            "[agents.bare]\nname = \"Bare\"\ncommand = \"bare\"\ngenerate = \"bare {model}\"\n",
+            "[agents.plain]\nname = \"Plain\"\ncommand = \"plain\"\ngenerate = \"plain -q\"\n",
+        ));
+        let chose = |agent: &str, model: Option<&str>| CommitMessage {
+            agent: Some(agent.to_string()),
+            model: model.map(str::to_string),
+            ..CommitMessage::default()
+        };
+        let first = commit_agent(&list, &CommitMessage::default(), |_| true).unwrap();
+        assert_eq!(
+            (first.id.as_str(), first.model.as_str()),
+            ("claude", "haiku"),
+            "none chosen: the first with a command, its recommended model"
+        );
+        let mine = commit_agent(&list, &chose("mine", None), |p| p == "/opt/mine/ask").unwrap();
+        assert_eq!((mine.model.as_str(), mine.ready), ("fast", true));
+        assert_eq!(mine.program(), "/opt/mine/ask");
+        let smart = commit_agent(&list, &chose("mine", Some("smart")), |_| true).unwrap();
+        assert_eq!(smart.model, "smart");
+        assert!(
+            !commit_agent(&list, &chose("mine", None), |_| false)
+                .unwrap()
+                .ready,
+            "not installed"
+        );
+        assert!(
+            !commit_agent(&list, &chose("bare", None), |_| true)
+                .unwrap()
+                .ready,
+            "a command that needs a model, and none known"
+        );
+        assert!(
+            commit_agent(&list, &chose("plain", None), |_| true)
+                .unwrap()
+                .ready
+        );
+        assert_eq!(
+            commit_agent(&list, &chose("gone", None), |_| true),
+            None,
+            "never another agent than the one chosen"
+        );
+        assert_eq!(
+            commit_agent(&list, &chose("copilot", None), |_| true),
+            None,
+            "no generate command"
+        );
     }
 }

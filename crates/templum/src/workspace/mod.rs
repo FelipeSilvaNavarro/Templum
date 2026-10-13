@@ -571,6 +571,11 @@ pub struct Workspace {
     pub(crate) keymap: Keymap,
     /// The AI agents in effect: Templum's, with the config's changes, and the user's.
     pub(crate) agents: Vec<AgentEntry>,
+    /// The agent Generate ✨ runs, and whether it is ready; read when the config changes, not
+    /// each frame (finding a program looks in many folders).
+    // ponytail: an agent installed while Templum runs shows its ✨ after the next config change
+    // or a restart; look again when the settings panel opens if someone waits for it.
+    pub(crate) commit_agent: Option<agents::CommitAgent>,
     /// What config.toml looked like at the last read, for polling.
     config_stamp: config::Stamp,
     /// The last read failed: the next good one says so.
@@ -691,7 +696,12 @@ impl Workspace {
             eprintln!("templum: {warning}");
             show_notification(window, cx, Notification::warning(warning));
         }
-        let effective_agents = agents::effective(&config.agents);
+        let effective_agents = agents::effective(&config.agents, &agents::codex_models());
+        let commit_agent = agents::commit_agent(
+            &effective_agents,
+            &config.git.commit_message,
+            templum_terminal::installed,
+        );
         let integration = data_dir.as_deref().and_then(|dir| {
             templum_terminal::install(dir)
                 .inspect_err(|err| {
@@ -858,6 +868,7 @@ impl Workspace {
             config,
             keymap,
             agents: effective_agents,
+            commit_agent,
             _wake: wake,
         };
         // The trash's old discards go at startup (and after each discard).
