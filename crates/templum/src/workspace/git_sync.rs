@@ -273,8 +273,34 @@ impl Workspace {
                 match cloned {
                     Ok(repo) => {
                         let message = format!("Cloned into {}", repo.root.display());
-                        ws.set_git_folder(at.block, &repo.root, window, cx);
-                        show_notification(window, cx, Notification::success(message));
+                        let ours = ws.git_at(&at).is_some();
+                        if ours && ws.space.id == at.space {
+                            ws.set_git_folder(at.block, &repo.root, window, cx);
+                            show_notification(window, cx, Notification::success(message));
+                        } else if ours {
+                            // Its workspace isn't on screen: the block shown there with the same
+                            // id is another one. Open it on the clone when asked.
+                            let (block, root) = (at.block, repo.root.clone());
+                            let open: Extra = (
+                                "git-open-clone",
+                                "Open it".into(),
+                                Rc::new(move |ws, window, cx| {
+                                    ws.set_git_folder(block, &root, window, cx);
+                                }),
+                            );
+                            let entity = cx.entity();
+                            notify_with(
+                                &entity,
+                                at,
+                                Notification::success(message),
+                                vec![open],
+                                window,
+                                cx,
+                            );
+                        } else {
+                            // The block changed folder or closed meanwhile.
+                            show_notification(window, cx, Notification::success(message));
+                        }
                     }
                     Err(e) if e.cancelled() => {}
                     Err(e) => {
