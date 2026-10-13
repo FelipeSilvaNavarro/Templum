@@ -194,6 +194,9 @@ pub(crate) struct Git {
     pub sync: Option<Sync>,
     /// Why the last read failed, shown under the top bar.
     pub error: Option<String>,
+    /// The default branch ("main", or "origin/main" with no local one), as Back to and Compare
+    /// name it; None when the repository has none. Read after each action, not on every poll.
+    pub default_branch: Option<String>,
     /// The diff panel of the Changes tab.
     pub panel: diff_view::DiffPanel,
     /// History's file diff and Stashes' diff: each tab has its own, so a 2-second read of the
@@ -316,6 +319,7 @@ impl Git {
             reads: 0,
             sync: None,
             error: None,
+            default_branch: None,
             panel: diff_view::DiffPanel::new(),
             commit_diff,
             stash_diff,

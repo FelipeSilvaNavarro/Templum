@@ -13,7 +13,7 @@ use crate::git_block::{self, words};
 use crate::menu::Target;
 use crate::prompt::{self, Choice};
 
-use super::{Extra, Workspace, notify_git_error, notify_with, show_notification};
+use super::{Extra, GitAt, Workspace, notify_git_error, notify_with, show_notification};
 
 impl Workspace {
     /// Sync: fetch, fast-forward, push, then "Got 3 commits, sent 2". Both sides new: asks how
@@ -248,6 +248,24 @@ impl Workspace {
                         let entity = cx.entity();
                         notify_git_error(&entity, at, &e, Vec::new(), window, cx);
                     }
+                }
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Reads the default branch in the background (after an action, and when the block opens).
+    pub(crate) fn load_default(&mut self, at: GitAt, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repo) = self.git_at(&at).and_then(|g| g.repo().cloned()) else {
+            return;
+        };
+        self.git_job(
+            at,
+            move || repo.default_branch(),
+            |ws, at, default, _, _| {
+                if let Some(git) = ws.git_at(&at) {
+                    git.default_branch = default;
                 }
             },
             window,

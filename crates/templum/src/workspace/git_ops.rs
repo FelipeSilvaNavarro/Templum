@@ -249,7 +249,10 @@ impl Workspace {
             git.pending_lists = true;
             return;
         }
-        match git.tab {
+        let tab = git.tab;
+        // The tab's list job queues behind it.
+        self.load_default(at.clone(), window, cx);
+        match tab {
             git_block::Tab::Changes => {}
             git_block::Tab::History => self.load_history(at, 0, window, cx),
             git_block::Tab::Branches => self.load_branches(at, window, cx),

@@ -1,7 +1,7 @@
 //! The Git block's words for people: each Git word's one-sentence tooltip, and the sentences
 //! that say where a branch stands. See docs/specs/git.md, Words.
 
-use templum_git::Status;
+use templum_git::{Operation, Status};
 
 /// The tooltip of a Git word, as the spec's Words table gives it ("" for a word it hasn't).
 pub(crate) fn tip(word: &str) -> &'static str {
@@ -86,6 +86,33 @@ pub(crate) fn server_state(s: &Status) -> (String, String) {
     )
 }
 
+/// "origin/main" → "main": the name a person switches to.
+// ponytail: assumes the remote's name has no '/'; read `git remote` if one does.
+pub(crate) fn local_name(branch: &str) -> &str {
+    branch.split_once('/').map_or(branch, |(_, b)| b)
+}
+
+/// The banner's sentence while a merge, rebase, cherry-pick or revert is under way.
+pub(crate) fn operation_sentence(op: Operation, conflicts: usize) -> String {
+    if conflicts > 0 {
+        let files = if conflicts == 1 {
+            "1 file".to_string()
+        } else {
+            format!("{conflicts} files")
+        };
+        return format!(
+            "Git couldn't join the changes in {files} by itself. Choose which version stays in each part."
+        );
+    }
+    let what = match op {
+        Operation::Merge => "Merging another branch into this one.",
+        Operation::Rebase => "Rebasing: your commits are being put on top of another branch.",
+        Operation::CherryPick => "Copying a commit onto this branch (cherry-pick).",
+        Operation::Revert => "Adding a commit that undoes another (revert).",
+    };
+    format!("{what} Continue to finish it, or Abort to go back.")
+}
+
 /// What a Sync did: "Up to date", "Got 3 commits", "Sent 2 commits", "Got 3 commits, sent 2".
 pub(crate) fn synced(got: u32, sent: u32) -> String {
     match (got, sent) {
@@ -149,6 +176,26 @@ mod tests {
         let mut detached = status(None, 0, 0, false);
         detached.branch = None;
         assert_eq!(server_state(&detached).0, "");
+    }
+
+    #[test]
+    fn what_an_operation_under_way_says() {
+        use templum_git::Operation;
+        assert_eq!(
+            operation_sentence(Operation::Merge, 2),
+            "Git couldn't join the changes in 2 files by itself. Choose which version stays in each part."
+        );
+        assert_eq!(
+            operation_sentence(Operation::Rebase, 1),
+            "Git couldn't join the changes in 1 file by itself. Choose which version stays in each part."
+        );
+        assert!(operation_sentence(Operation::Rebase, 0).starts_with("Rebasing"));
+        assert!(
+            operation_sentence(Operation::Merge, 0)
+                .ends_with("Continue to finish it, or Abort to go back.")
+        );
+        assert_eq!(local_name("origin/main"), "main");
+        assert_eq!(local_name("main"), "main");
     }
 
     #[test]

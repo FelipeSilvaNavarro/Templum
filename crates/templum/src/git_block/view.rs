@@ -10,6 +10,7 @@ use gpui_kit::{
     TestSupportExt, div, px,
 };
 use templum_canvas::BlockId;
+use templum_git::Operation;
 
 use super::branches::branches;
 use super::changes::changes;
@@ -292,30 +293,77 @@ fn repo_body(
                     .test_support(),
             )
             .test_support();
-    let banner = git.operation.map(|op| {
-        let can_continue = git.status.conflicts().is_empty();
-        bar(ui, z)
-            .id(("git-banner", n))
-            .child(format!("{} in progress", capitalized(op.name())))
-            .child(div().flex_1())
-            .child(
-                button(("git-abort", n), "Abort", ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.abort_operation(id, window, cx)
-                    }))
-                    .test_support(),
-            )
-            .when(can_continue, |el| {
-                el.child(
-                    button(("git-continue", n), "Continue", ui, z)
+    let detached = s.branch.is_none() && s.oid.is_some();
+    let banner = if let Some(op) = git.operation {
+        let conflicts = s.conflicts().len();
+        // The Git word behind the sentence, explained on hover.
+        let word = match op {
+            Operation::Rebase => words::tip("Rebase"),
+            Operation::Merge => words::tip("Merge"),
+            _ => "",
+        };
+        Some(
+            bar(ui, z)
+                .id(("git-banner", n))
+                .child(
+                    div()
+                        .id(("git-banner-text", n))
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .child(words::operation_sentence(op, conflicts))
+                        .when(!word.is_empty(), |el| {
+                            el.tooltip(move |window, cx| Tooltip::new(word).build(window, cx))
+                        }),
+                )
+                .child(
+                    button(("git-abort", n), "Abort", ui, z)
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.continue_operation(id, window, cx)
+                            ws.abort_operation(id, window, cx)
                         }))
                         .test_support(),
                 )
-            })
-            .test_support()
-    });
+                .when(conflicts == 0, |el| {
+                    el.child(
+                        button(("git-continue", n), "Continue", ui, z)
+                            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                                ws.continue_operation(id, window, cx)
+                            }))
+                            .test_support(),
+                    )
+                })
+                .test_support(),
+        )
+    } else if detached {
+        let back = git.default_branch.clone();
+        Some(
+            bar(ui, z)
+                .id(("git-banner", n))
+                .child(div().flex_1().min_w(px(0.0)).child(
+                    "You're looking at an old version. Commits made here won't belong to any branch.",
+                ))
+                .child(
+                    button(("git-branch-here", n), "Create a branch here", ui, z)
+                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                            ws.branch_from(id, None, window, cx)
+                        }))
+                        .test_support(),
+                )
+                .when_some(back, |el, back| {
+                    let label = format!("Back to {}", words::local_name(&back));
+                    let remote = back.contains('/');
+                    el.child(
+                        button(("git-back", n), label, ui, z)
+                            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                                ws.switch_branch(id, back.clone(), remote, window, cx)
+                            }))
+                            .test_support(),
+                    )
+                })
+                .test_support(),
+        )
+    } else {
+        None
+    };
     let tabs = div()
         .id(("git-tabs", n))
         .flex()
@@ -364,13 +412,4 @@ fn repo_body(
         .child(tabs)
         .child(area)
         .into_any_element()
-}
-
-/// "merge" → "Merge".
-fn capitalized(word: &str) -> String {
-    let mut c = word.chars();
-    match c.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
-        None => String::new(),
-    }
 }

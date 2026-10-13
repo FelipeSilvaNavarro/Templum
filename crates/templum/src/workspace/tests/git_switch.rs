@@ -178,3 +178,56 @@ fn leaving_a_branch_with_commits_not_pushed_offers_to_push_it(cx: &mut TestAppCo
         git_run(repo.path(), &["rev-parse", "main"])
     );
 }
+
+#[gpui_kit::test]
+fn a_detached_head_says_so_and_goes_back_to_main(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let repo = two_branches();
+    git_run(repo.path(), &["checkout", "-q", "--detach", "feat"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.default_branch.as_deref(), Some("main"))
+    });
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.try_find(("git-banner", n)).is_some(), "the banner");
+        window.click(("git-back", n), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.status.branch.as_deref(), Some("main"))
+    });
+    cx.update_window(handle, |_, window, _| {
+        assert!(
+            window.try_find(("git-banner", n)).is_none(),
+            "gone with the detached HEAD"
+        )
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn create_a_branch_here_keeps_the_commits_on_a_branch(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let repo = two_branches();
+    git_run(repo.path(), &["checkout", "-q", "--detach", "feat"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-branch-here", n), cx);
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+        window.input("rescue", cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.status.branch.as_deref(), Some("rescue"))
+    });
+}
