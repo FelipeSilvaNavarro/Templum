@@ -27,6 +27,10 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
   (`crates/templum/src/git_block/diff_view/mod.rs:137-138`) clears both whenever any file changed, so while an agent
   is writing, a selection vanishes every 2 seconds. Fix: key the colors by (section, path, hunk header) instead of
   indices, and keep a selection whose rows still hold the same lines.
+- [ ] **A blame's panel shows Ignore whitespace, which changes nothing.** The header keeps the button for every
+  source (`crates/templum/src/git_block/diff_view/mod.rs`, `panel`); with a blame shown, `reload_shown_diff` has no
+  commit to read again, so the button lights up and the lines stay. Fix: hide it for `Source::Blame`, or read the
+  blame again with `git blame -w`.
 
 ## Hunks and the keyboard
 
@@ -80,6 +84,14 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   (a remote named `team/x` breaks Back to and Compare with), and `unmerged_count`'s `--exclude`
   (`crates/templum-git/src/repo.rs:1023`) reads `*?[` in a branch name as a pattern. Fix: match the remote's name
   against `git remote`; escape the glob characters.
+
+## History
+
+- [ ] **Load more in a file's history reads the earlier pages again.** `--skip` with `--follow` counts commits that
+  don't touch the file (git 2.55), so `Repo::file_log` (`crates/templum-git/src/repo.rs`) reads the first
+  `skip + count` entries and drops `skip` of them. A file with thousands of commits makes each Load more slower.
+  Fix: remember where the last page ended (its commit and the path then) and go on from there with
+  `git log --follow <hash>^ -- <path then>`.
 
 ## Trash and discards
 

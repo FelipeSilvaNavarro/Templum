@@ -29,7 +29,7 @@ would have opened together with the block's. The canvas and the blocks had no me
 | A kanban block (header, or its empty space) | Board list (or Back to the board, while the list shows), Close |
 | A note block | Preview (or Edit), Copy all, Send to ▸ (the workspace's terminals), Color ▸ (None and the six label colors), Close |
 | An editor block | Change folder…, Hide (or Show) the file tree, Turn soft wrap on (or off), Send to ▸, Close |
-| A file in an editor's tree | Open, Reveal in file manager, Rename…, Delete… |
+| A file in an editor's tree | Open, Reveal in file manager, File history, Blame (in the Git block open on its repository, else a new one beside the editor), Rename…, Delete… |
 | A folder in an editor's tree | New file…, New folder…, Open a terminal here, Rename…, Delete…, Reveal in file manager |
 | An editor tree's empty space | New file…, New folder…, Refresh |
 | A Git block | Change folder…, Refresh, Open a terminal here, Close |
@@ -37,9 +37,10 @@ would have opened together with the block's. The canvas and the blocks had no me
 | A Git block's Publish branch, with several remotes (a click) | Publish to *remote*, one per remote, as `git remote` lists them |
 | The ▾ beside a Git block's Commit | Commit (or Commit all changes), and the same & Push |
 | The terminal count in a Git block's top bar | The terminals working in its repository, agents first; the one chosen is shown |
-| A row of a Git block's Changes | Stage (or Unstage), Discard changes… (unstaged rows), Open, Copy path, Ignore; a conflict: Open in editor, Use the version from *HEAD*, Use the version from *the other side's label* (the markers' labels, never "ours" or "theirs"), Mark resolved (asks while markers are left), Copy path, Ignore |
+| A row of a Git block's Changes | Stage (or Unstage), Discard changes… (unstaged rows), Open, File history, Blame (not on a new file: it has no history), Copy path, Ignore; a conflict: Open in editor, Use the version from *HEAD*, Use the version from *the other side's label* (the markers' labels, never "ours" or "theirs"), Mark resolved (asks while markers are left), Copy path, Ignore |
 | A line of a Git block's diff panel | Copy (disabled without a selection), Copy line, Copy hunk, Send to ▸ (the selection, else the hunk), Open in editor at this line |
-| A commit in a Git block's History | Checkout…, New branch from here…, Create tag…, Revert…, Copy hash |
+| A commit in a Git block's History | Checkout…, New branch here…, Create tag…, Revert…, Undo this commit (the newest, not pushed), Copy hash, Copy message, Restore this version… (in a file's history, unless the commit deleted the file) |
+| A file of the commit shown in a Git block's History | File history, Blame (as the file was in that commit), Copy path |
 | A branch in a Git block | Compare with *main* (the default branch; not on itself), Merge into *current*…, Rename…, Delete… (an unmerged one asks again with its count), Publish (a local branch with no upstream), Copy name |
 | A stash in a Git block | Apply, Pop, Drop…, Show |
 | The toolbar's AI agent button | The agents; the chosen one opens in the middle of the canvas |
