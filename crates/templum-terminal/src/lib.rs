@@ -1,6 +1,7 @@
 //! A shell in a PTY, its input encoding and a non-blocking view of its grid. No UI.
 
 mod agent;
+mod find;
 mod input;
 mod integration;
 pub mod palette;
@@ -12,6 +13,7 @@ mod terminal;
 pub use agent::{Agent, Detect, agent_of, installed, program_name};
 pub use alacritty_terminal::index::Side;
 pub use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Rgb};
+pub use find::{Find, Toward};
 pub use input::{KeyInput, encode_key, paste_bytes, typed_bytes};
 pub use integration::install;
 pub use palette::Palette;

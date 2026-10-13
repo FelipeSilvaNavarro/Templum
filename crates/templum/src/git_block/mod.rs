@@ -27,6 +27,7 @@ mod view;
 mod widgets;
 
 pub(crate) use view::body;
+pub(crate) use widgets::field;
 
 /// A new Git block's size, and the smallest one (world units).
 pub(crate) const SIZE: Size = Size { w: 800.0, h: 560.0 };

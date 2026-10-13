@@ -24,7 +24,7 @@ use crate::kanban;
 use crate::menu::Target;
 use crate::motion::{self, Look};
 use crate::note;
-use crate::workspace::{Body, Pane, Workspace};
+use crate::workspace::{Body, FindBar, Pane, Workspace};
 
 /// World units, like everything in a block.
 const TITLE_FONT: f32 = 12.0;
@@ -353,7 +353,10 @@ pub(crate) fn render(
                 ws.theme.clone(),
                 ws.blink_on,
                 cx.entity(),
-            )),
+            ))
+            .when_some(pane.find.as_ref().filter(|_| live), |el, bar| {
+                el.child(find_bar(ws, n, bar, z))
+            }),
         // A fading kanban block is drawn empty: its board is still live elsewhere.
         Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
         // A fading note is drawn empty, like a kanban block.
@@ -475,6 +478,38 @@ pub(crate) fn render(
         .child(content)
         .children(other_zones)
         .when(hovered, |el| el.child(fade_in(handle, ("handle-fade", n))))
+        .test_support()
+        .into_any_element()
+}
+
+/// A terminal's find field, over its top right corner; "No matches" beside it when so.
+fn find_bar(ws: &Workspace, n: usize, bar: &FindBar, z: f32) -> AnyElement {
+    div()
+        .id(("find", n))
+        .absolute()
+        .top(px(chrome::PAD * z))
+        .right(px(chrome::PAD * z))
+        .w(px(260.0 * z))
+        .flex()
+        .items_center()
+        .gap(px(6.0 * z))
+        .p(px(4.0 * z))
+        .rounded(px(6.0 * z))
+        .bg(ws.ui.surface)
+        .border_1()
+        .border_color(ws.ui.hairline)
+        // Clicks here are the field's, not a selection's in the grid below.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(git_block::field(&bar.input, z).flex_1())
+        .when(bar.missing, |el| {
+            el.child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(git_block::FONT * z))
+                    .text_color(hsla(ws.theme.palette.ansi[1], 1.0))
+                    .child("No matches"),
+            )
+        })
         .test_support()
         .into_any_element()
 }

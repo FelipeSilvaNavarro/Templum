@@ -80,7 +80,7 @@ pub(super) fn badge_color(ws: &Workspace, change: Change) -> gpui_kit::Hsla {
 
 /// A one-line text field at the zoom: gpui-kit's fields keep a fixed height and padding, so
 /// they are set here with the rest of the block's sizes.
-pub(super) fn field(state: &Entity<InputState>, z: f32) -> Input {
+pub(crate) fn field(state: &Entity<InputState>, z: f32) -> Input {
     let input = Input::new(state)
         .small()
         .text_size(px(FONT * z))

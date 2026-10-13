@@ -355,6 +355,7 @@ impl Workspace {
                             folder: start,
                             agent: None,
                         },
+                        find: None,
                     }),
                 );
                 self.space.focused = Some(id);

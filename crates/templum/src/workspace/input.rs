@@ -260,6 +260,7 @@ impl Workspace {
             Command::NewWorkspace => self.new_space(window, cx),
             Command::ToggleSidebar => self.toggle_sidebar(window, cx),
             Command::GoToWaiting => self.go_to_waiting(window, cx),
+            Command::Find => self.open_find(window, cx),
             Command::Quit => self.quit(window, cx),
         }
     }
@@ -311,6 +312,24 @@ impl Workspace {
             self.keymap.command(&e.keystroke),
             self.focused_editor().is_some(),
         );
+        // A terminal's find field has the keyboard: what it leaves (Enter, Esc, shortcuts)
+        // never reaches the shell. Copy and paste are the field's own; text goes on to it.
+        if let Some(id) = self.finding(window, cx) {
+            if e.keystroke.key == "escape" {
+                self.close_find(id, window, cx);
+                cx.stop_propagation();
+            } else if command == Some(Command::Paste) {
+                // The terminal's paste shortcut pastes into the field.
+                self.paste_into_find(id, window, cx);
+                cx.stop_propagation();
+            } else if let Some(command) =
+                command.filter(|c| !matches!(c, Command::Copy | Command::Paste))
+            {
+                self.command_key(e, Some(command), window, cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
         if self.picker.is_some() || command.is_some() {
             // While the picker is open, typing and shortcuts don't reach the terminal.
             self.command_key(e, command, window, cx);

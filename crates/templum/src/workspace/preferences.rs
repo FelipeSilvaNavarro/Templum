@@ -475,6 +475,7 @@ impl Workspace {
                     | Command::CloseTerminal
                     | Command::PreviousPrompt
                     | Command::NextPrompt
+                    | Command::Find
             )
         });
         if self.picker.is_some() || command.is_some() {

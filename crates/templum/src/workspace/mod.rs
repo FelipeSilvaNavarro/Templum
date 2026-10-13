@@ -4,6 +4,7 @@ mod blocks;
 mod drawing;
 mod file_tree;
 mod files;
+mod find;
 mod git_branches;
 mod git_changes;
 mod git_history;
@@ -14,6 +15,8 @@ mod preferences;
 mod render;
 mod spaces;
 mod view;
+
+pub(crate) use find::FindBar;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -97,6 +100,8 @@ pub(crate) struct Pane {
     /// Its folder and its agent as last read: at most a snapshot old (5 s), cheap to ask every
     /// frame. The folder is the start folder until then, and follows each finished command.
     pub seen: templum_terminal::Inspection,
+    /// Its find field, while open.
+    pub find: Option<Box<find::FindBar>>,
 }
 
 impl Pane {
@@ -250,7 +255,8 @@ impl Body {
                 .contains_focused(window, cx),
             Body::Editor(e) => e.has_focus(window, cx),
             Body::Git(g) => g.has_focus(window, cx),
-            _ => false,
+            Body::Terminal(pane) => pane.find.as_ref().is_some_and(|b| b.has_focus(window, cx)),
+            Body::Kanban(_) => false,
         }
     }
 }

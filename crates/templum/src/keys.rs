@@ -30,12 +30,13 @@ pub(crate) enum Command {
     NewWorkspace,
     ToggleSidebar,
     GoToWaiting,
+    Find,
     Quit,
 }
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 26] = [
+    pub const ALL: [Command; 27] = [
         Command::NewTerminal,
         Command::NewKanban,
         Command::NewNote,
@@ -61,6 +62,7 @@ impl Command {
         Command::NewWorkspace,
         Command::ToggleSidebar,
         Command::GoToWaiting,
+        Command::Find,
         Command::Quit,
     ];
 
@@ -92,6 +94,7 @@ impl Command {
             Command::NewWorkspace => "new_workspace",
             Command::ToggleSidebar => "toggle_sidebar",
             Command::GoToWaiting => "go_to_waiting",
+            Command::Find => "find",
             Command::Quit => "quit",
         }
     }
@@ -124,6 +127,7 @@ impl Command {
             Command::NewWorkspace => "New workspace",
             Command::ToggleSidebar => "Show or hide the sidebar",
             Command::GoToWaiting => "Go to the terminal waiting for you",
+            Command::Find => "Find in the terminal",
             Command::Quit => "Quit Templum",
         }
     }
@@ -181,6 +185,8 @@ impl Command {
             (Command::ToggleSidebar, _) => &[],
             (Command::GoToWaiting, false) => &["ctrl-shift-a"],
             (Command::GoToWaiting, true) => &["cmd-shift-a"],
+            (Command::Find, false) => &["ctrl-shift-f"],
+            (Command::Find, true) => &["cmd-f"],
             (Command::Quit, false) => &["ctrl-shift-q"],
             (Command::Quit, true) => &["cmd-q"],
         }
@@ -224,6 +230,7 @@ pub(crate) struct KeysConfig {
     pub new_workspace: Option<Keys>,
     pub toggle_sidebar: Option<Keys>,
     pub go_to_waiting: Option<Keys>,
+    pub find: Option<Keys>,
     pub quit: Option<Keys>,
 }
 
@@ -255,6 +262,7 @@ impl KeysConfig {
             Command::NewWorkspace => self.new_workspace.as_ref(),
             Command::ToggleSidebar => self.toggle_sidebar.as_ref(),
             Command::GoToWaiting => self.go_to_waiting.as_ref(),
+            Command::Find => self.find.as_ref(),
             Command::Quit => self.quit.as_ref(),
         }
     }
@@ -286,6 +294,7 @@ impl KeysConfig {
             Command::NewWorkspace => &mut self.new_workspace,
             Command::ToggleSidebar => &mut self.toggle_sidebar,
             Command::GoToWaiting => &mut self.go_to_waiting,
+            Command::Find => &mut self.find,
             Command::Quit => &mut self.quit,
         };
         *slot = keys;

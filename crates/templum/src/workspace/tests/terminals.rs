@@ -667,3 +667,130 @@ fn shift_enter_is_a_newline_only_in_an_agent(cx: &mut TestAppContext) {
     let agent = shown_after(cx, "y");
     assert!(agent.contains("^["), "an agent gets ESC CR: {agent:?}");
 }
+
+#[cfg(target_os = "macos")]
+const FIND: &str = "cmd-f";
+#[cfg(not(target_os = "macos"))]
+const FIND: &str = "ctrl-shift-f";
+
+/// The find field selects what it finds, says when nothing matches, and Esc gives the terminal
+/// the keyboard back. Nothing typed in it (Enter included) reaches the shell.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn the_find_field_selects_what_it_finds_and_esc_gives_the_terminal_back(cx: &mut TestAppContext) {
+    use std::time::{Duration, Instant};
+    use templum_terminal::Snapshot;
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let screen = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let mut snap = Snapshot::default();
+            snap.refresh(
+                ws.space.terminal(id).unwrap().term.shared(),
+                &ws.theme.palette,
+            );
+            snap.text()
+        })
+    };
+    let typed_until = |cx: &mut TestAppContext, text: &str, shown: &str| {
+        ws.read_with(cx, |ws, _| {
+            ws.space
+                .terminal(id)
+                .unwrap()
+                .term
+                .write(text.as_bytes().to_vec())
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !screen(cx).contains(shown) {
+            assert!(Instant::now() < deadline, "{:?}", screen(cx));
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    // cat shows it twice: its echo, then its output.
+    typed_until(cx, "hello\r", "hello\nhello");
+    let selected = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space
+                .terminal(id)
+                .unwrap()
+                .term
+                .shared()
+                .selection_text()
+        })
+    };
+    let missing = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space
+                .terminal(id)
+                .unwrap()
+                .find
+                .as_ref()
+                .unwrap()
+                .missing
+        })
+    };
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(FIND, cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("find", id.0 as usize)).is_some(),
+            "the field"
+        );
+    })
+    .unwrap();
+    cx.simulate_input(handle, "hello");
+    assert_eq!(selected(cx).as_deref(), Some("hello"));
+    assert!(!missing(cx));
+    cx.update_window(handle, |_, window, cx| {
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(selected(cx).as_deref(), Some("hello"), "the older one");
+    cx.simulate_input(handle, "zzz");
+    assert!(missing(cx), "no matches");
+    assert_eq!(selected(cx), None);
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        window.render_frame(cx);
+        let ws = ws.read(cx);
+        assert!(ws.space.terminal(id).unwrap().find.is_none(), "closed");
+        assert!(
+            ws.focus_handle.is_focused(window),
+            "the terminal's keys again"
+        );
+    })
+    .unwrap();
+    // Nothing reached cat in between: the next line comes right after.
+    typed_until(cx, "mark\r", "mark\nmark");
+    assert!(
+        screen(cx).contains("hello\nhello\nmark\nmark"),
+        "{:?}",
+        screen(cx)
+    );
+}
+
+/// The terminal's paste shortcut pastes into its find field, not into the shell.
+#[gpui_kit::test]
+fn the_paste_shortcut_pastes_into_the_find_field(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("needle".into()));
+    let paste = if cfg!(target_os = "macos") {
+        "cmd-v"
+    } else {
+        "ctrl-shift-v"
+    };
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(FIND, cx);
+        window.render_frame(cx);
+        window.press(paste, cx);
+        window.render_frame(cx);
+        let ws = ws.read(cx);
+        let bar = ws.space.terminal(id).unwrap().find.as_ref().unwrap();
+        assert_eq!(bar.input.read(cx).value().as_ref(), "needle");
+    })
+    .unwrap();
+}
