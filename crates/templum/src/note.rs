@@ -1,14 +1,16 @@
 //! A note block: Markdown text, edited in gpui-kit's editor (tree-sitter highlights it) or shown
 //! rendered. Its title is its first heading. See docs/specs/cockpit.md, section 5.
 
+use std::cell::Cell;
 use std::ops::Range;
 
 use gpui_kit::component::input::{Editor, EditorState, Enter};
-use gpui_kit::component::text::TextView;
+use gpui_kit::component::text::{TextView, TextViewStyle};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Context, Entity, Focusable as _, KeyDownEvent, Keystroke, ScrollWheelEvent,
-    SharedString, TestSupportExt, Window, div, px, relative,
+    AnyElement, App, Bounds, Context, Element, ElementId, Entity, Focusable as _, GlobalElementId,
+    InspectorElementId, IntoElement, KeyDownEvent, Keystroke, LayoutId, Pixels, ScrollHandle,
+    ScrollWheelEvent, SharedString, StyleRefinement, TestSupportExt, Window, div, px, relative,
 };
 use templum_canvas::{BlockId, Size, chrome};
 
@@ -37,6 +39,7 @@ pub(crate) struct Note {
     pub preview: bool,
     /// Its card's tint, a post-it's color; None: the blocks' own.
     pub color: Option<Label>,
+    pub preview_scroll: PreviewScroll,
 }
 
 impl Note {
@@ -53,6 +56,7 @@ impl Note {
             editor,
             preview,
             color: None,
+            preview_scroll: PreviewScroll::default(),
         }
     }
 
@@ -106,29 +110,27 @@ pub(crate) fn body(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let n = id.0 as usize;
+    let content = ws
+        .space
+        .canvas
+        .get(id)
+        .map_or(Size::default(), |b| chrome::content_rect(b.rect).size());
     let inner = if note.preview {
-        div()
-            .id(("note-preview", n))
-            .size_full()
-            .overflow_y_scroll()
-            .px(px(6.0 * z))
-            .child(TextView::markdown(
-                ("note-markdown", n),
-                SharedString::from(note.text(cx)),
-            ))
-            .test_support()
-            .into_any_element()
+        preview(
+            ("note-preview", n).into(),
+            ("note-markdown", n).into(),
+            note.text(cx).into(),
+            &note.preview_scroll,
+            content.w - 2.0 * BORDER,
+            FONT,
+            z,
+        )
     } else {
         // Its fixed parts would make the text start further in, wrap at other words and show
         // fewer lines the further the canvas is zoomed out: the editor is as much larger (or
         // smaller) and moved by its fixed left and top parts' share, so the text starts, wraps
         // and fits as if they zoomed too. Its lines change only when the block is resized. At
         // zoom 1, exactly the note's box.
-        let content = ws
-            .space
-            .canvas
-            .get(id)
-            .map_or(Size::default(), |b| chrome::content_rect(b.rect).size());
         let (across, down) = (FIXED_LEFT + FIXED_RIGHT, FIXED_TOP + FIXED_BOTTOM);
         crate::editor::keep_rows(&note.editor, FONT, z, cx);
         div()
@@ -204,6 +206,120 @@ pub(crate) fn body(
         })
         .child(inner)
         .into_any_element()
+}
+
+/// A Markdown preview's scroll, kept through zooms (see `preview`).
+#[derive(Default)]
+pub(crate) struct PreviewScroll {
+    pub(crate) handle: ScrollHandle,
+    /// The zoom it was last drawn at.
+    zoom: Cell<f32>,
+}
+
+/// Markdown `text` rendered at zoom `z` like a photo of it at zoom 1: `w` world units wide, its
+/// text `font`, headings, code and spacing (in rems) all scaled by `z`, so it wraps at the same
+/// words at every zoom; its scroll follows the zoom.
+pub(crate) fn preview(
+    id: ElementId,
+    markdown: ElementId,
+    text: SharedString,
+    scroll: &PreviewScroll,
+    w: f32,
+    font: f32,
+    z: f32,
+) -> AnyElement {
+    crate::editor::keep_list_rows(&scroll.handle, &scroll.zoom, z);
+    // gpui-kit's defaults at zoom 1: headings from 14 px, code 13 px.
+    let style = TextViewStyle {
+        heading_base_font_size: px(14.0 * z),
+        code_block: StyleRefinement::default().text_size(px(13.0 * z)),
+        ..TextViewStyle::default()
+    };
+    div()
+        .id(id)
+        .h_full()
+        .w(px(w.max(0.0) * z))
+        .overflow_y_scroll()
+        .track_scroll(&scroll.handle)
+        .text_size(px(font * z))
+        .px(px(6.0 * z))
+        .child(ScaledRem {
+            scale: z,
+            child: TextView::markdown(markdown, text)
+                .style(style)
+                .into_any_element(),
+        })
+        .test_support()
+        .into_any_element()
+}
+
+/// Lays out and paints its child with the window's rem size times `scale`: Markdown's spacing
+/// is in rems, which no style can scale for one element (gpui-pre-0.3.8 src/window.rs:3032).
+struct ScaledRem {
+    scale: f32,
+    child: AnyElement,
+}
+
+impl IntoElement for ScaledRem {
+    type Element = Self;
+
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for ScaledRem {
+    /// The rem size it laid its child out with.
+    type RequestLayoutState = Pixels;
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Pixels) {
+        let rem = window.rem_size() * self.scale;
+        let layout =
+            window.with_rem_size(Some(rem), |window| self.child.request_layout(window, cx));
+        (layout, rem)
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        rem: &mut Pixels,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.with_rem_size(Some(*rem), |window| {
+            self.child.prepaint(window, cx);
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        rem: &mut Pixels,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.with_rem_size(Some(*rem), |window| self.child.paint(window, cx));
+    }
 }
 
 /// The byte range of the line holding byte `at` of `text`.

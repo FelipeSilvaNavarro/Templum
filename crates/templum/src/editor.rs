@@ -14,14 +14,13 @@ use gpui_kit::component::highlighter::Language;
 use gpui_kit::component::input::{
     Editor as EditorView, EditorState, InputEvent, Position, RopeExt as _, TabSize,
 };
-use gpui_kit::component::text::TextView;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, MouseButton, MouseDownEvent,
     ScrollHandle, ScrollWheelEvent, SharedString, Stateful, StyleRefinement, Subscription,
     TestSupportExt, Window, div, point, px, relative,
 };
-use templum_canvas::{BlockId, Rect, Size};
+use templum_canvas::{BlockId, Rect, Size, chrome};
 
 use crate::menu::Target;
 use crate::session;
@@ -255,6 +254,7 @@ pub(crate) struct Tab {
     pub conflict: bool,
     /// A Markdown file shown rendered.
     pub preview: bool,
+    pub preview_scroll: crate::note::PreviewScroll,
     _edits: Subscription,
 }
 
@@ -447,6 +447,7 @@ impl Editor {
             mtime: mtime(path),
             conflict: false,
             preview: false,
+            preview_scroll: crate::note::PreviewScroll::default(),
             _edits,
         });
         self.active = Some(self.tabs.len() - 1);
@@ -559,7 +560,7 @@ pub(crate) fn keep_rows(editor: &Entity<EditorState>, font: f32, z: f32, cx: &mu
 /// Keeps the rows a list shows when the zoom changes, as `keep_rows` does for an editor: its
 /// scroll offset is in pixels, so it scales with its rows, `row` high now and `last` when the
 /// list was last drawn.
-fn keep_list_rows(scroll: &ScrollHandle, last: &Cell<f32>, row: f32) {
+pub(crate) fn keep_list_rows(scroll: &ScrollHandle, last: &Cell<f32>, row: f32) {
     let old = last.replace(row);
     if old > 0.0 && old != row {
         let at = scroll.offset();
@@ -780,6 +781,16 @@ fn files(
     let n = id.0 as usize;
     let ui = ws.ui;
     let i = editor.active.unwrap_or(0);
+    // The files' width, world units: the block's inner width without the card's border and,
+    // when shown, the tree and its 1 px border (unscaled pixels both).
+    let preview_w = ws.space.canvas.get(id).map_or(0.0, |b| {
+        let inner = chrome::content_rect(b.rect).w - 2.0 * crate::block::BORDER;
+        if editor.show_tree {
+            inner - TREE_W - 1.0
+        } else {
+            inner
+        }
+    });
     let markdown = editor
         .active_tab()
         .is_some_and(|t| lang_of(&t.path) == "markdown");
@@ -863,18 +874,15 @@ fn files(
             }
             Content::Text { read_only, .. } => {
                 let view: AnyElement = if tab.preview {
-                    div()
-                        .id(("file-preview", n))
-                        .size_full()
-                        .overflow_y_scroll()
-                        .text_size(px(FONT * z))
-                        .px(px(6.0 * z))
-                        .child(TextView::markdown(
-                            ("file-markdown", n),
-                            tab.editor.read(cx).value(),
-                        ))
-                        .test_support()
-                        .into_any_element()
+                    crate::note::preview(
+                        ("file-preview", n).into(),
+                        ("file-markdown", n).into(),
+                        tab.editor.read(cx).value(),
+                        &tab.preview_scroll,
+                        preview_w,
+                        FONT,
+                        z,
+                    )
                 } else {
                     keep_rows(&tab.editor, FONT, z, cx);
                     div()

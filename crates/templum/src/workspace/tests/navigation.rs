@@ -898,3 +898,59 @@ fn zooming_keeps_the_rows_a_scrolled_file_tree_shows(cx: &mut TestAppContext) {
         .unwrap();
     }
 }
+
+/// A note shown rendered zooms like a photo: its headings, code and spacing scale with its
+/// text, so its content is as tall, measured at zoom 1, at every zoom.
+#[gpui_kit::test]
+fn a_note_preview_zooms_like_a_photo(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let mut text =
+        String::from("# A heading long enough to wrap over two lines, it goes on and on\n\n");
+    for i in 1..=30 {
+        text.push_str(&format!("Paragraph {i} with a few words.\n\n"));
+    }
+    text.push_str("## Code\n\n```\nlet x = 1;\n```\n");
+    let (rect, id) = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.add_note_at(Point::new(40.0, 40.0), window, cx);
+                ws.space.appearing.clear();
+                let id = ws.space.canvas.top().unwrap();
+                let Some(crate::workspace::Body::Note(note)) = ws.space.blocks.get_mut(&id) else {
+                    unreachable!()
+                };
+                note.editor
+                    .update(cx, |e, cx| e.set_value(text.clone(), window, cx));
+                note.preview = true;
+                (ws.space.canvas.get(id).unwrap().rect, id)
+            })
+        })
+        .unwrap();
+    let mut heights = Vec::new();
+    for zoom in [1.0, 0.5, 0.67, 1.5, 2.0] {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, _| {
+                ws.space.canvas.camera = Camera::at(Point::new(rect.x - 10.0, rect.y - 10.0), zoom);
+                ws.space.flight = None;
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let height = ws.read_with(cx, |ws, _| {
+            let scroll = &ws.space.blocks[&id].note().unwrap().preview_scroll.handle;
+            (f32::from(scroll.max_offset().y) + f32::from(scroll.bounds().size.height)) / zoom
+        });
+        heights.push((zoom, height));
+    }
+    let base = heights[0].1;
+    for (zoom, height) in &heights {
+        // Each row's height is rounded to a whole pixel: up to a pixel per row.
+        assert!(
+            (height - base).abs() <= 40.0 / zoom,
+            "{zoom}: {height} vs {base} at 1.0 ({heights:?})"
+        );
+    }
+}
