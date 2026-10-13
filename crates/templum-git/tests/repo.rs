@@ -1628,3 +1628,33 @@ fn a_comparison_is_what_the_branch_has_and_a_commits_own_diff() {
         "what the merge brought onto feat"
     );
 }
+
+#[test]
+fn a_branch_gone_but_named_like_a_folder_is_refused_and_the_folders_edits_stay() {
+    // A branch `docs` deleted meanwhile (a terminal, an agent), and a folder `docs` edited:
+    // git must never read the name as a path and restore the folder from the index.
+    let (dir, repo) = two_branches();
+    write(dir.path(), "docs/x.md", "first\n");
+    repo.stage(&["docs/x.md"]).unwrap();
+    repo.commit("docs", false).unwrap();
+    for leave in [None, Some("main")] {
+        write(dir.path(), "docs/x.md", "edited\n");
+        assert!(repo.switch("docs", false, leave).is_err(), "{leave:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("docs/x.md")).unwrap(),
+            "edited\n",
+            "{leave:?}: the edit stays"
+        );
+        assert!(
+            repo.stashes().unwrap().is_empty(),
+            "{leave:?}: nothing hidden in a stash"
+        );
+        assert_eq!(repo.status().unwrap().branch.as_deref(), Some("main"));
+    }
+    // A remote one that isn't there is refused the same way.
+    assert!(repo.switch("origin/docs", true, None).is_err());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("docs/x.md")).unwrap(),
+        "edited\n"
+    );
+}

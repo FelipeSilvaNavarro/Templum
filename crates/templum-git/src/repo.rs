@@ -992,13 +992,16 @@ impl Repo {
         Ok(parse::parse_branches(&out))
     }
 
+    /// The branch `name`, checked out. The `--` makes it a branch only: a name that isn't one
+    /// (deleted meanwhile) but is a folder's would otherwise restore that folder from the index.
     pub fn checkout(&self, name: &str) -> Result<(), GitError> {
-        self.run(&["checkout", "-q", name]).map(drop)
+        self.run(&["checkout", "-q", name, "--"]).map(drop)
     }
 
     /// "origin/x": a local x tracking it, checked out.
     pub fn checkout_remote(&self, name: &str) -> Result<(), GitError> {
-        self.run(&["checkout", "-q", "--track", name]).map(drop)
+        self.run(&["checkout", "-q", "--track", name, "--"])
+            .map(drop)
     }
 
     pub fn rename_branch(&self, from: &str, to: &str) -> Result<(), GitError> {
