@@ -27,6 +27,7 @@ pub(crate) mod diff_view;
 pub(crate) mod discarded;
 mod history;
 mod stashes;
+pub(crate) mod switcher;
 mod view;
 pub(crate) mod widgets;
 pub(crate) mod words;

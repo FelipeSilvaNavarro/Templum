@@ -83,7 +83,7 @@ pub(super) fn branches(
                     .child(div().flex_shrink_0().text_color(ui.title_dim).child(sync))
                     .when(!busy, |el| {
                         el.on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.checkout_branch(id, click.clone(), remote, window, cx)
+                            ws.switch_branch(id, click.clone(), remote, window, cx)
                         }))
                     })
                     .on_mouse_down(

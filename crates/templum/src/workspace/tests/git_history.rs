@@ -298,43 +298,6 @@ fn new_branch_creates_and_checks_out_and_a_bad_name_is_refused(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
-fn a_refused_checkout_offers_stash_and_switch(cx: &mut TestAppContext) {
-    // The notification slides in: its buttons take clicks once it is at rest.
-    no_motion(cx);
-    let repo = committed_repo();
-    git_run(repo.path(), &["checkout", "-q", "-b", "other"]);
-    commit_file(repo.path(), "a.txt", "other\n", "other a");
-    git_run(repo.path(), &["checkout", "-q", "main"]);
-    std::fs::write(repo.path().join("a.txt"), "dirty\n").unwrap();
-    let (handle, ws) = open(cx);
-    let id = open_git_on(
-        handle,
-        &ws,
-        cx,
-        repo.path(),
-        crate::git_block::Tab::Branches,
-    );
-    // main, other.
-    cx.update_window(handle, |_, window, cx| {
-        window.click(branch_row(id, false, 1), cx)
-    })
-    .unwrap();
-    settle(handle, cx);
-    git_of(&ws, cx, id, |g| {
-        assert_eq!(g.status.branch.as_deref(), Some("main"), "refused")
-    });
-    assert_eq!(notification_count(handle, cx), 1);
-    cx.update_window(handle, |_, window, cx| window.click("git-stash-switch", cx))
-        .unwrap();
-    settle(handle, cx);
-    git_of(&ws, cx, id, |g| {
-        assert_eq!(g.status.branch.as_deref(), Some("other"));
-        assert!(g.status.entries.is_empty(), "stashed");
-    });
-    assert!(git_run(repo.path(), &["stash", "list"]).contains("before switching"));
-}
-
-#[gpui_kit::test]
 fn a_branchs_menu_renames_merges_publishes_and_deletes_asking_to_force(cx: &mut TestAppContext) {
     no_motion(cx);
     let repo = committed_repo();

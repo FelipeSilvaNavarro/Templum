@@ -229,7 +229,7 @@ fn repo_body(
                     )
                     .child(div().truncate().child(branch))
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.set_git_tab(id, Tab::Branches, window, cx)
+                        ws.open_branch_switcher(id, window, cx)
                     }))
                     .test_support(),
             )

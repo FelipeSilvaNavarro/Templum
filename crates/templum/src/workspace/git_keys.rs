@@ -34,7 +34,6 @@ impl Workspace {
         if !git.focus.is_focused(window) || git.tab != Tab::Changes {
             return;
         }
-        let summary = git.summary.clone();
         let k = &e.keystroke;
         let m = &k.modifiers;
         if k.key == "enter" && m.secondary() && !m.shift && !m.alt {
@@ -52,15 +51,9 @@ impl Workspace {
                 "u" => self.key_stage(id, true, window, cx),
                 "d" => self.key_discard(id, window, cx),
                 "enter" => self.key_open(id, window, cx),
-                "c" => {
-                    // The summary is in the left column: shown first, so the keyboard goes to
-                    // a field that is drawn.
-                    if let Some(git) = self.space.git_mut(id) {
-                        git.lists_folded = false;
-                    }
-                    cx.notify();
-                    summary.update(cx, |s, cx| s.focus(window, cx))
-                }
+                // The summary is in the left column: shown first, so the keyboard goes to a
+                // field that is drawn.
+                "c" => self.focus_summary(id, window, cx),
                 _ => return,
             }
         }

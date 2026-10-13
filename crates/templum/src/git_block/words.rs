@@ -43,8 +43,6 @@ pub(crate) fn commits(n: u32) -> String {
 }
 
 /// "1 changed file", "3 changed files".
-// The switch question says it; until then only the tests do.
-#[allow(dead_code)]
 pub(crate) fn changed_files(n: usize) -> String {
     if n == 1 {
         "1 changed file".to_string()
