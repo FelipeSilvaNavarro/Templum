@@ -19,7 +19,28 @@ use super::{Workspace, notify_git_error, show_notification};
 enum Refused {
     /// The region isn't what was shown any more.
     Changed,
+    /// The copy in the trash couldn't be made: nothing was changed.
+    Keep(std::io::Error),
     Io(std::io::Error),
+    Git(templum_git::GitError),
+}
+
+/// A refusal said: "The file changed; try again", why the copy failed, or git's error.
+fn tell(at: super::GitAt, refused: Refused, window: &mut Window, cx: &mut Context<Workspace>) {
+    let message = match refused {
+        Refused::Changed => REFUSED.to_string(),
+        Refused::Keep(e) => {
+            format!("Couldn't keep a copy of the file, so nothing was changed: {e}")
+        }
+        Refused::Io(e) => format!("Couldn't write the file: {e}"),
+        Refused::Git(e) => {
+            let entity = cx.entity();
+            notify_git_error(&entity, at, &e, Vec::new(), window, cx);
+            return;
+        }
+    };
+    eprintln!("templum: {message}");
+    show_notification(window, cx, Notification::error(message));
 }
 
 impl Workspace {
@@ -69,7 +90,7 @@ impl Workspace {
                         let what = format!("Chose a part of {path}");
                         let k = t
                             .put(&root, &paths, &what, SystemTime::now())
-                            .map_err(Refused::Io)?;
+                            .map_err(Refused::Keep)?;
                         Some((t, k))
                     }
                     None => None,
@@ -87,17 +108,8 @@ impl Workspace {
                 Ok(())
             },
             |ws, at, done, window, cx| {
-                match done {
-                    Ok(()) => {}
-                    Err(Refused::Changed) => {
-                        eprintln!("templum: {REFUSED}");
-                        show_notification(window, cx, Notification::error(REFUSED));
-                    }
-                    Err(Refused::Io(e)) => {
-                        let message = format!("Couldn't write the file: {e}");
-                        eprintln!("templum: {message}");
-                        show_notification(window, cx, Notification::error(message));
-                    }
+                if let Err(refused) = done {
+                    tell(at.clone(), refused, window, cx);
                 }
                 ws.after_action(at, window, cx);
             },
@@ -107,8 +119,7 @@ impl Workspace {
     }
 
     /// A whole file's version (`git checkout --ours` / `--theirs`), after a copy in the trash.
-    /// A failed copy doesn't stop it: git keeps both versions in its index, only the markers'
-    /// text would be lost.
+    /// A copy that fails stops it: the file may hold hand edits git keeps nowhere.
     pub(crate) fn resolve_file(
         &mut self,
         id: BlockId,
@@ -123,29 +134,34 @@ impl Workspace {
         let keep = self.trash.clone();
         self.act_job(
             self.here(id),
-            move || {
+            move || -> Result<(), Refused> {
                 let paths = [path.clone()];
                 let (files, size) = trash::measure(&repo.root, &paths);
                 let what = format!("Chose a version of {path}");
-                let kept = keep
-                    .as_ref()
-                    .filter(|_| trash::fits(files, size))
-                    .and_then(|t| {
-                        t.put(&repo.root, &paths, &what, SystemTime::now())
-                            .ok()
-                            .map(|k| (t, k))
-                    });
-                let done = repo.resolve(&path, side);
+                let kept = match keep.as_ref().filter(|_| trash::fits(files, size)) {
+                    Some(t) => {
+                        let k = t
+                            .put(&repo.root, &paths, &what, SystemTime::now())
+                            .map_err(Refused::Keep)?;
+                        Some((t, k))
+                    }
+                    None => None,
+                };
+                if let Err(e) = repo.resolve(&path, side) {
+                    if let Some((t, k)) = &kept {
+                        let _ = t.remove(&k.id);
+                    }
+                    return Err(Refused::Git(e));
+                }
                 if let Some((t, k)) = kept {
                     let _ = t.seal(&k);
                     let _ = t.prune(SystemTime::now());
                 }
-                done
+                Ok(())
             },
             |ws, at, done, window, cx| {
-                if let Err(e) = done {
-                    let entity = cx.entity();
-                    notify_git_error(&entity, at.clone(), &e, Vec::new(), window, cx);
+                if let Err(refused) = done {
+                    tell(at.clone(), refused, window, cx);
                 }
                 ws.after_action(at, window, cx);
             },

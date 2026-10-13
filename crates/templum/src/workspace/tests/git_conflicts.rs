@@ -222,3 +222,71 @@ fn s_on_a_conflict_with_markers_asks_first(cx: &mut TestAppContext) {
         assert_eq!(g.status.conflicts().len(), 1, "still conflicted")
     });
 }
+
+fn take_whole_file(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+    side: templum_git::Side,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.resolve_file(id, "a.txt".to_string(), side, window, cx)
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+}
+
+#[gpui_kit::test]
+fn a_whole_file_choice_keeps_the_file_as_it_was_in_the_trash(cx: &mut TestAppContext) {
+    let repo = merge_conflict();
+    let before = std::fs::read(repo.path().join("a.txt")).unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let id = open_git(handle, &ws, cx, repo.path());
+    take_whole_file(handle, &ws, cx, id, templum_git::Side::Theirs);
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
+        "one\ntopic\nthree\n"
+    );
+    let kept = ws.read_with(cx, |ws, _| ws.trash.as_ref().unwrap().list());
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].files, [("a.txt".to_string(), true)]);
+    let copy = data
+        .path()
+        .join("trash")
+        .join(&kept[0].id)
+        .join("files")
+        .join("0");
+    assert_eq!(
+        std::fs::read(copy).unwrap(),
+        before,
+        "the markers and all, as they were"
+    );
+}
+
+// Review M3: a hand-edited, partly resolved file is never overwritten without its copy.
+#[gpui_kit::test]
+fn a_whole_file_choice_whose_copy_fails_changes_nothing(cx: &mut TestAppContext) {
+    let repo = merge_conflict();
+    let edited = "one\nfixed by hand\n<<<<<<< HEAD\nmain\n=======\ntopic\n>>>>>>> topic\nthree\n";
+    std::fs::write(repo.path().join("a.txt"), edited).unwrap();
+    let data = tempfile::tempdir().unwrap();
+    // The trash can't be made: a file stands where its folder goes.
+    std::fs::write(data.path().join("trash"), "").unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let id = open_git(handle, &ws, cx, repo.path());
+    take_whole_file(handle, &ws, cx, id, templum_git::Side::Ours);
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
+        edited,
+        "left as it is"
+    );
+    assert_eq!(
+        notification_count(handle, cx),
+        1,
+        "says the copy couldn't be kept"
+    );
+}
