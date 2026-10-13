@@ -5,6 +5,7 @@
 mod diff;
 mod parse;
 mod repo;
+mod words;
 
 pub use diff::{FileDiff, Hunk, Kind, LARGE, Line, new_binary_diff, new_file_diff, parse_diff};
 pub use parse::{
@@ -13,3 +14,4 @@ pub use parse::{
     parse_branches, parse_log, parse_name_status, parse_stashes, parse_status,
 };
 pub use repo::{DIFF_LIMIT, GitError, Pull, Repo, Side, root_of};
+pub use words::changed;
