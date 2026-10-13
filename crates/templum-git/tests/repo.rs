@@ -1,8 +1,10 @@
 //! Runs the real `git` on a temporary repository. CI's runners have it.
 
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
-use templum_git::{Change, Operation, Pull, Repo, Side};
+use templum_git::{Change, Operation, Pull, Repo, Side, clone_name, clone_target};
 
 /// A new repository on `main` with an author set, so commits work on a bare runner.
 fn fresh() -> (tempfile::TempDir, Repo) {
@@ -441,12 +443,12 @@ fn fetch_pull_and_push_against_a_local_remote() {
     assert!(templum_git::not_fast_forward(&err.stderr), "{err}");
     repo.pull(Pull::Merge).unwrap();
     assert!(dir.path().join("c.txt").is_file());
-    repo.push(None).unwrap();
+    repo.push().unwrap();
     assert_eq!(repo.status().unwrap().ahead, 0);
     // A new branch has no upstream until it is published.
     repo.run(&["checkout", "-q", "-b", "topic"]).unwrap();
     assert_eq!(repo.status().unwrap().upstream, None);
-    repo.push(Some("topic")).unwrap();
+    repo.publish("origin", "topic").unwrap();
     assert_eq!(
         repo.status().unwrap().upstream.as_deref(),
         Some("origin/topic")
@@ -1170,4 +1172,171 @@ fn an_upstream_gone_from_the_server_isnt_one() {
         .unwrap();
     repo.run(&["fetch", "-q", "--prune"]).unwrap();
     assert!(!repo.on_upstream(&mine).unwrap());
+}
+
+#[test]
+fn the_default_branch_is_origin_heads_else_main_else_master() {
+    let (dir, repo) = fresh();
+    assert_eq!(repo.default_branch(), None, "no commit, no branch");
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    assert_eq!(repo.default_branch().as_deref(), Some("main"));
+    repo.run(&["branch", "-m", "main", "master"]).unwrap();
+    assert_eq!(repo.default_branch().as_deref(), Some("master"));
+    // origin's HEAD names trunk: it wins over master.
+    repo.run(&["branch", "-m", "master", "main"]).unwrap();
+    let _remote = with_remote(&repo);
+    repo.run(&["branch", "trunk"]).unwrap();
+    repo.run(&["push", "-q", "origin", "trunk"]).unwrap();
+    repo.run(&["remote", "set-head", "origin", "trunk"])
+        .unwrap();
+    assert_eq!(repo.default_branch().as_deref(), Some("trunk"));
+    // No local trunk: the remote one.
+    repo.run(&["branch", "-D", "trunk"]).unwrap();
+    assert_eq!(repo.default_branch().as_deref(), Some("origin/trunk"));
+    // Without origin/HEAD (not fetched after: git 2.48+ would make it again).
+    repo.run(&["remote", "set-head", "origin", "-d"]).unwrap();
+    assert_eq!(repo.default_branch().as_deref(), Some("main"));
+}
+
+#[test]
+fn remotes_are_listed_and_publish_goes_to_the_one_named() {
+    let (dir, repo) = fresh();
+    assert!(repo.remotes().unwrap().is_empty());
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let _origin = with_remote(&repo);
+    let other = tempfile::tempdir().unwrap();
+    std::process::Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .current_dir(other.path())
+        .status()
+        .unwrap();
+    repo.run(&[
+        "remote",
+        "add",
+        "backup",
+        &other.path().display().to_string(),
+    ])
+    .unwrap();
+    assert_eq!(repo.remotes().unwrap(), ["backup", "origin"]);
+    repo.run(&["checkout", "-q", "-b", "topic"]).unwrap();
+    repo.publish("backup", "topic").unwrap();
+    assert_eq!(
+        repo.status().unwrap().upstream.as_deref(),
+        Some("backup/topic")
+    );
+}
+
+#[test]
+fn a_branch_not_checked_out_is_pushed_to_its_own_upstream() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let remote = with_remote(&repo);
+    write(dir.path(), "a.txt", "two\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("two", false).unwrap();
+    repo.run(&["checkout", "-q", "-b", "other"]).unwrap();
+    repo.push_branch("main").unwrap();
+    let theirs = std::process::Command::new("git")
+        .args(["rev-parse", "main"])
+        .current_dir(remote.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&theirs.stdout).trim(),
+        repo.run(&["rev-parse", "main"])
+            .map(|o| String::from_utf8_lossy(&o).trim().to_string())
+            .unwrap()
+    );
+}
+
+#[test]
+fn the_unmerged_count_is_what_only_that_branch_has() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    repo.run(&["checkout", "-q", "-b", "feat"]).unwrap();
+    for n in ["b", "c", "d"] {
+        write(dir.path(), n, n);
+        repo.stage(&[n]).unwrap();
+        repo.commit(n, false).unwrap();
+    }
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    assert_eq!(repo.unmerged_count("feat").unwrap(), 3);
+    repo.run(&["branch", "copy", "feat~1"]).unwrap();
+    assert_eq!(
+        repo.unmerged_count("feat").unwrap(),
+        1,
+        "two are on copy too"
+    );
+}
+
+#[test]
+fn branches_have_their_last_commits_date() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let b = repo.branches().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    assert!((now - b[0].time).abs() < 120, "{} vs {now}", b[0].time);
+}
+
+#[test]
+fn clone_names_and_targets() {
+    assert_eq!(clone_name("git@github.com:me/app.git"), "app");
+    assert_eq!(clone_name("https://host/me/app/"), "app");
+    assert_eq!(clone_name("https://host/me/app.git/"), "app");
+    assert_eq!(clone_name("/srv/repos/tool"), "tool");
+    let empty = tempfile::tempdir().unwrap();
+    assert_eq!(
+        clone_target(empty.path(), "x/app.git"),
+        empty.path(),
+        "an empty folder takes it"
+    );
+    std::fs::write(empty.path().join("f"), "").unwrap();
+    assert_eq!(
+        clone_target(empty.path(), "x/app.git"),
+        empty.path().join("app"),
+        "beside what is there"
+    );
+    let missing = empty.path().join("new");
+    assert_eq!(
+        clone_target(&missing, "x/app.git"),
+        missing,
+        "a folder still to make"
+    );
+}
+
+#[test]
+fn clone_makes_the_repository_and_a_failed_one_leaves_nothing() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let remote = with_remote(&repo);
+    let parent = tempfile::tempdir().unwrap();
+    let into = parent.path().join("copy");
+    let cloned =
+        Repo::clone_into("git", &remote.path().display().to_string(), &into, None).unwrap();
+    assert!(cloned.root.join("a.txt").is_file());
+    let bad = parent.path().join("bad");
+    let err = Repo::clone_into(
+        "git",
+        "/no/such/repository",
+        &bad,
+        Some(Arc::new(AtomicBool::new(false))),
+    )
+    .unwrap_err();
+    assert!(!err.missing, "{err}");
+    assert!(!bad.exists(), "no half-made folder");
 }

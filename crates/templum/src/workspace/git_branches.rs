@@ -380,7 +380,10 @@ impl Workspace {
         self.git_sync(
             id,
             git_block::Sync::Push,
-            move |repo| repo.push(publish.as_deref()),
+            move |repo| match publish.as_deref() {
+                Some(branch) => repo.publish("origin", branch),
+                None => repo.push(),
+            },
             |_, at, e, window, cx| {
                 let ws = cx.entity();
                 notify_git_error(&ws, at, e, Vec::new(), window, cx)

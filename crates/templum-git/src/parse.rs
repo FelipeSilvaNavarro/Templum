@@ -93,6 +93,9 @@ pub struct Status {
     pub upstream: Option<String>,
     pub ahead: u32,
     pub behind: u32,
+    /// An upstream is set but no longer exists (deleted on the server, then pruned): the counts
+    /// mean nothing.
+    pub gone: bool,
     pub entries: Vec<Entry>,
 }
 
@@ -127,6 +130,7 @@ fn records(out: &[u8]) -> impl Iterator<Item = &str> {
 pub fn parse_status(out: &[u8]) -> Status {
     let mut status = Status::default();
     let mut records = records(out);
+    let mut counted = false;
     while let Some(record) = records.next() {
         if let Some(header) = record.strip_prefix("# ") {
             let (key, value) = header.split_once(' ').unwrap_or((header, ""));
@@ -135,6 +139,7 @@ pub fn parse_status(out: &[u8]) -> Status {
                 "branch.head" if value != "(detached)" => status.branch = Some(value.to_string()),
                 "branch.upstream" => status.upstream = Some(value.to_string()),
                 "branch.ab" => {
+                    counted = true;
                     let mut parts = value.split(' ');
                     status.ahead = parts.next().and_then(|a| a[1..].parse().ok()).unwrap_or(0);
                     status.behind = parts.next().and_then(|b| b[1..].parse().ok()).unwrap_or(0);
@@ -194,6 +199,7 @@ pub fn parse_status(out: &[u8]) -> Status {
         };
         status.entries.push(entry);
     }
+    status.gone = status.upstream.is_some() && !counted;
     status
 }
 
@@ -253,7 +259,7 @@ pub fn parse_log(out: &[u8]) -> Vec<Commit> {
 
 /// `git for-each-ref --format=BRANCH_FORMAT refs/heads refs/remotes`: one line per ref, fields
 /// split by NUL.
-pub const BRANCH_FORMAT: &str = "%(refname)%00%(refname:short)%00%(objectname:short)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(subject)%00%(HEAD)";
+pub const BRANCH_FORMAT: &str = "%(refname)%00%(refname:short)%00%(objectname:short)%00%(upstream:short)%00%(upstream:track,nobracket)%00%(subject)%00%(HEAD)%00%(committerdate:unix)";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Branch {
@@ -270,6 +276,8 @@ pub struct Branch {
     pub behind: u32,
     /// Its last commit's subject.
     pub subject: String,
+    /// Its last commit's date, Unix seconds (0 when git gave none).
+    pub time: i64,
 }
 
 pub fn parse_branches(out: &[u8]) -> Vec<Branch> {
@@ -277,7 +285,7 @@ pub fn parse_branches(out: &[u8]) -> Vec<Branch> {
     text.lines()
         .filter_map(|line| {
             let f: Vec<&str> = line.split('\0').collect();
-            if f.len() < 7 || f[0].ends_with("/HEAD") {
+            if f.len() < 8 || f[0].ends_with("/HEAD") {
                 return None;
             }
             let track = f[4];
@@ -298,6 +306,7 @@ pub fn parse_branches(out: &[u8]) -> Vec<Branch> {
                 ahead: count("ahead "),
                 behind: count("behind "),
                 subject: f[5].to_string(),
+                time: f[7].trim().parse().unwrap_or(0),
             })
         })
         .collect()
@@ -502,6 +511,22 @@ u UU N... 100644 100644 100644 100644 4cb29ea38f70d7c61b2a3a25b02e3bdf44905402 5
         assert_eq!(parse_status(b""), Status::default());
     }
 
+    #[test]
+    fn a_gone_upstream_has_no_counts() {
+        // Its branch was deleted on the server and pruned: git prints the upstream, no branch.ab.
+        let s = parse_status(
+            b"# branch.oid 247fff93\0# branch.head feat\0# branch.upstream origin/feat\0",
+        );
+        assert_eq!(s.upstream.as_deref(), Some("origin/feat"));
+        assert!(s.gone);
+        let s = parse_status(b"# branch.oid 247fff93\0# branch.head feat\0# branch.upstream origin/feat\0# branch.ab +0 -0\0");
+        assert!(!s.gone, "there and up to date");
+        assert!(
+            !parse_status(b"# branch.oid 247fff93\0# branch.head feat\0").gone,
+            "no upstream at all"
+        );
+    }
+
     const LOG: &[u8] = b"c3b2616d56fb1b9ab991507a8167c200c190b9f2\x1fc3b2616\x1fAda Lovelace\x1fada@example.com\x1f1791755697\x1f2026-10-11 16:14\x1fc10c14198b74a38923beeeface7f41e6774f4288\x1ftag: v1, origin/feature, feature\x1fUpper two\x1fA body line.\n\nAnother.\n\0\
 0d817e9ea557196af5794a0915ba6b96e6745223\x1f0d817e9\x1fAda Lovelace\x1fada@example.com\x1f1791755685\x1f2026-10-11 16:14\x1f\x1fHEAD -> main\x1fInitial commit\x1f\0";
 
@@ -526,11 +551,11 @@ u UU N... 100644 100644 100644 100644 4cb29ea38f70d7c61b2a3a25b02e3bdf44905402 5
         assert!(parse_log(b"").is_empty());
     }
 
-    const REFS: &[u8] = b"refs/heads/feature\0feature\0c3b2616\0\0\0Upper two\0 \n\
-refs/heads/main\0main\0a95aff3\0origin/main\0ahead 1, behind 2\0Local only\0*\n\
-refs/heads/old\0old\0a95aff3\0origin/old\0gone\0Was pushed\0 \n\
-refs/remotes/origin/HEAD\0origin/HEAD\0a95aff3\0\0\0Local only\0 \n\
-refs/remotes/origin/main\0origin/main\0a95aff3\0\0\0Local only\0 \n";
+    const REFS: &[u8] = b"refs/heads/feature\0feature\0c3b2616\0\0\0Upper two\0 \x001791755697\n\
+refs/heads/main\0main\0a95aff3\0origin/main\0ahead 1, behind 2\0Local only\0*\x001791755600\n\
+refs/heads/old\0old\0a95aff3\0origin/old\0gone\0Was pushed\0 \x001791755600\n\
+refs/remotes/origin/HEAD\0origin/HEAD\0a95aff3\0\0\0Local only\0 \x001791755600\n\
+refs/remotes/origin/main\0origin/main\0a95aff3\0\0\0Local only\0 \0\n";
 
     #[test]
     fn branch_lists_with_upstreams() {
@@ -553,6 +578,8 @@ refs/remotes/origin/main\0origin/main\0a95aff3\0\0\0Local only\0 \n";
         assert_eq!(b[0].upstream, None);
         assert_eq!(b[0].subject, "Upper two");
         assert_eq!(b[3].commit, "a95aff3");
+        assert_eq!(b[0].time, 1791755697, "its last commit's date");
+        assert_eq!(b[3].time, 0, "a date git left empty");
     }
 
     #[test]

@@ -238,6 +238,44 @@ impl Repo {
         })
     }
 
+    /// `git clone -- url into`, then the repository there. `into`'s parent is made when
+    /// missing. A clone that fails or is cancelled leaves no folder behind when there was none
+    /// before (git can't clean up after a kill).
+    pub fn clone_into(
+        program: &str,
+        url: &str,
+        into: &Path,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<Repo, GitError> {
+        let dest = into.to_string_lossy().into_owned();
+        let command = shown(program, &["clone", "--", url, &dest]);
+        let parent = into.parent().unwrap_or(Path::new("."));
+        std::fs::create_dir_all(parent).map_err(|e| GitError {
+            command: command.clone(),
+            code: None,
+            stderr: format!("Couldn't make {}: {e}", parent.display()),
+            missing: false,
+        })?;
+        let existed = into.exists();
+        if let Err(e) = run_in(
+            program,
+            parent,
+            &["clone", "-q", "--", url, &dest],
+            cancel.as_deref(),
+        ) {
+            if !existed {
+                let _ = std::fs::remove_dir_all(into);
+            }
+            return Err(e);
+        }
+        Self::discover(program, into)?.ok_or(GitError {
+            command,
+            code: None,
+            stderr: "git clone made no repository".to_string(),
+            missing: false,
+        })
+    }
+
     /// This repository, its commands killed once `cancel` is set (fetch, pull and push can
     /// hang on a network or on ssh asking on a terminal).
     pub fn with_cancel(&self, cancel: Arc<AtomicBool>) -> Repo {
@@ -704,12 +742,60 @@ impl Repo {
         self.run(&["pull", flag]).map(drop)
     }
 
-    /// `git push`; with `publish`, `git push -u origin <branch>` for a branch with no upstream.
-    pub fn push(&self, publish: Option<&str>) -> Result<(), GitError> {
-        match publish {
-            Some(branch) => self.run(&["push", "-u", "origin", branch]).map(drop),
-            None => self.run(&["push"]).map(drop),
+    pub fn push(&self) -> Result<(), GitError> {
+        self.run(&["push"]).map(drop)
+    }
+
+    /// `git push -u <remote> <branch>`: the branch goes to the server and follows it from then.
+    pub fn publish(&self, remote: &str, branch: &str) -> Result<(), GitError> {
+        self.run(&["push", "-u", remote, branch]).map(drop)
+    }
+
+    /// Pushes `branch`, not the one checked out, to its upstream: the remote and the ref it
+    /// follows are read from its config, so a branch tracking another name goes there.
+    pub fn push_branch(&self, branch: &str) -> Result<(), GitError> {
+        let get = |key: String| -> Result<String, GitError> {
+            Ok(self.text(&["config", "--get", &key])?.trim().to_string())
+        };
+        let remote = get(format!("branch.{branch}.remote"))?;
+        let merge = get(format!("branch.{branch}.merge"))?;
+        self.run(&["push", &remote, &format!("refs/heads/{branch}:{merge}")])
+            .map(drop)
+    }
+
+    /// The remotes' names, as `git remote` lists them.
+    pub fn remotes(&self) -> Result<Vec<String>, GitError> {
+        Ok(self
+            .text(&["remote"])?
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// The branch a pull request would go into: the one `origin/HEAD` names, else `main`, else
+    /// `master`; the local one when there is one ("main"), else origin's ("origin/main"). None
+    /// when there is none of them.
+    pub fn default_branch(&self) -> Option<String> {
+        let has = |r: String| self.run(&["rev-parse", "--verify", "-q", &r]).is_ok();
+        let mut names = Vec::new();
+        // parse_branches leaves origin/HEAD out: it is its own command.
+        if let Ok(head) = self.text(&["symbolic-ref", "-q", "--short", "refs/remotes/origin/HEAD"])
+            && let Some(name) = head.trim().strip_prefix("origin/")
+        {
+            names.push(name.to_string());
         }
+        names.extend(["main".to_string(), "master".to_string()]);
+        names.into_iter().find_map(|name| {
+            if has(format!("refs/heads/{name}")) {
+                Some(name)
+            } else if has(format!("refs/remotes/origin/{name}")) {
+                Some(format!("origin/{name}"))
+            } else {
+                None
+            }
+        })
     }
 }
 
@@ -821,6 +907,23 @@ impl Repo {
             .map(drop)
     }
 
+    /// The commits only `branch` has (on no other branch, local or remote): what deleting it
+    /// loses.
+    // ponytail: a name holding glob characters (`*?[`) is read as a pattern by --exclude;
+    // escape it if such names show up.
+    pub fn unmerged_count(&self, branch: &str) -> Result<u32, GitError> {
+        let out = self.text(&[
+            "rev-list",
+            "--count",
+            &format!("refs/heads/{branch}"),
+            "--not",
+            &format!("--exclude={branch}"),
+            "--branches",
+            "--remotes",
+        ])?;
+        Ok(out.trim().parse().unwrap_or(0))
+    }
+
     /// `git stash push -m message`, with untracked files when asked.
     pub fn stash_push(&self, message: &str, untracked: bool) -> Result<(), GitError> {
         let mut args = vec!["stash", "push", "-q", "-m", message];
@@ -881,4 +984,26 @@ impl Repo {
 /// (a folder, or a file in a worktree or a submodule).
 pub fn root_of(file: &Path) -> Option<&Path> {
     file.ancestors().skip(1).find(|d| d.join(".git").exists())
+}
+
+/// The folder `git clone <url>` would make: the URL's last part without `.git` ("app" for
+/// `git@github.com:me/app.git` and `https://host/me/app/`).
+pub fn clone_name(url: &str) -> String {
+    let url = url.trim().trim_end_matches(['/', '\\']);
+    let url = url.strip_suffix(".git").unwrap_or(url);
+    url.rsplit(['/', ':', '\\'])
+        .next()
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Where a clone of `url` into `dest` goes: `dest` itself when it is an empty folder or doesn't
+/// exist yet, else a folder named after the repository inside it.
+pub fn clone_target(dest: &Path, url: &str) -> PathBuf {
+    let empty = std::fs::read_dir(dest).map_or(true, |mut d| d.next().is_none());
+    if empty {
+        dest.to_path_buf()
+    } else {
+        dest.join(clone_name(url))
+    }
 }
