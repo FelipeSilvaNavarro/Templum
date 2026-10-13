@@ -4,6 +4,7 @@
 
 pub mod conflict;
 mod diff;
+pub mod graph;
 mod parse;
 mod repo;
 pub mod trash;
