@@ -4167,5 +4167,88 @@ bench (5)     after  {"frames":1318,"p50_ms":6.46,"p95_ms":12.34,"p99_ms":17.92,
 
 ### Final (Task 13): before → Parts 1 and 2
 
+`before` against `~/Documents/github/Templum/target/lod/final` (built from bea0960), 3 alternating rounds each,
+from 15:09 to 15:23 (load average 0.99 at the start; no other build ran). The window was tiled by Hyprland to
+945 × 512 px as above; no other Templum was open (the windows titled "Templum — …" are Zed).
+
 | Scenario | p50 | p95 | p99 | max | frames |
 |---|---|---|---|---|---|
+| `--bench-far` | 9.14 → 6.07 | 16.03 → 9.10 | 18.16 → 13.04 | 119.90 → 123.77 | 1043 → 1541 |
+| `--bench` | 6.25 → 6.29 | 12.70 → 12.36 | 16.65 → 17.20 | 25.74 → 28.32 | 1345 → 1354 |
+| `--bench-mixed` | 6.08 → 6.07 | 9.84 → 7.82 | 13.26 → 12.09 | 20.72 → 31.19 | 1510 → 1582 |
+| `--bench-zoom=empty` | 6.06 → 6.06 | 6.27 → 6.25 | 11.48 → 11.33 | 13.42 → 15.23 | 1632 → 1633 |
+| `--bench-zoom=terminal` | 6.07 → 6.07 | 8.50 → 8.39 | 12.02 → 12.08 | 13.60 → 13.48 | 1588 → 1595 |
+| `--bench-zoom=editor` | 7.20 → 6.30 | 14.40 → 12.67 | 18.68 → 17.11 | 90.66 → 84.45 | 1180 → 1285 |
+| `--bench-zoom=note` | 27.88 → 12.03 | 76.43 → 57.02 | 86.07 → 74.08 | 94.02 → 86.18 | 277 → 476 |
+| `--bench-zoom=kanban` | 6.14 → 6.14 | 9.41 → 9.25 | 12.59 → 12.38 | 17.02 → 15.26 | 1478 → 1490 |
+| `--bench-zoom=git` | 6.10 → 6.07 | 9.04 → 8.07 | 12.62 → 11.77 | 22.25 → 16.02 | 1532 → 1578 |
+| `--bench-git` | 6.06 → 6.07 | 8.88 → 8.63 | 11.95 → 11.96 | 42.65 → 44.22 | 1563 → 1569 |
+
+`--bench`'s max: before 25.74, 30.90, 23.01; after 25.09, 36.36, 28.32. A probe that logged every frame over 18 ms
+(not committed) put the worst ones of both binaries in glides, at 26–46% and at 110–200%; in 3 more alternating
+runs right after a build (load 10) the maxima were before 32.3, 29.1, 35.7 and after 29.7, 29.2, 23.9: run-to-run
+noise, no cost found. `--bench-mixed`'s max moves as much between sessions (before 18.7–31.5 here, 47.6–70.1 at the
+checkpoint) while its p95 drops by 2 ms.
+
+```
+far           before {"frames":1043,"p50_ms":9.08,"p95_ms":16.15,"p99_ms":18.16,"max_ms":119.0,"rss_mb":237.2,"idle_rss_mb":186.6}
+far           before {"frames":1025,"p50_ms":9.22,"p95_ms":16.03,"p99_ms":19.85,"max_ms":119.9,"rss_mb":237.7,"idle_rss_mb":186.6}
+far           before {"frames":1052,"p50_ms":9.14,"p95_ms":14.9,"p99_ms":17.18,"max_ms":149.38,"rss_mb":238.0,"idle_rss_mb":186.7}
+far           after  {"frames":1541,"p50_ms":6.08,"p95_ms":9.1,"p99_ms":13.25,"max_ms":123.77,"rss_mb":272.7,"idle_rss_mb":235.6}
+far           after  {"frames":1526,"p50_ms":6.07,"p95_ms":9.26,"p99_ms":12.91,"max_ms":194.27,"rss_mb":224.8,"idle_rss_mb":187.9}
+far           after  {"frames":1548,"p50_ms":6.07,"p95_ms":8.55,"p99_ms":13.04,"max_ms":122.16,"rss_mb":225.1,"idle_rss_mb":187.8}
+bench         before {"frames":1382,"p50_ms":6.25,"p95_ms":11.93,"p99_ms":16.65,"max_ms":25.74,"rss_mb":289.2,"idle_rss_mb":184.8}
+bench         before {"frames":1345,"p50_ms":6.16,"p95_ms":13.79,"p99_ms":18.96,"max_ms":30.9,"rss_mb":289.2,"idle_rss_mb":184.5}
+bench         before {"frames":1313,"p50_ms":6.55,"p95_ms":12.7,"p99_ms":16.45,"max_ms":23.01,"rss_mb":290.0,"idle_rss_mb":184.8}
+bench         after  {"frames":1334,"p50_ms":6.29,"p95_ms":12.99,"p99_ms":18.42,"max_ms":25.09,"rss_mb":290.3,"idle_rss_mb":184.8}
+bench         after  {"frames":1361,"p50_ms":6.22,"p95_ms":12.36,"p99_ms":17.2,"max_ms":36.36,"rss_mb":293.6,"idle_rss_mb":184.9}
+bench         after  {"frames":1354,"p50_ms":6.35,"p95_ms":12.28,"p99_ms":16.03,"max_ms":28.32,"rss_mb":290.6,"idle_rss_mb":184.8}
+mixed         before {"frames":1542,"p50_ms":6.08,"p95_ms":9.34,"p99_ms":13.26,"max_ms":20.72,"rss_mb":196.4,"idle_rss_mb":166.3}
+mixed         before {"frames":1506,"p50_ms":6.09,"p95_ms":9.85,"p99_ms":13.19,"max_ms":18.72,"rss_mb":197.0,"idle_rss_mb":166.3}
+mixed         before {"frames":1510,"p50_ms":6.08,"p95_ms":9.84,"p99_ms":13.62,"max_ms":31.54,"rss_mb":197.5,"idle_rss_mb":165.5}
+mixed         after  {"frames":1582,"p50_ms":6.07,"p95_ms":7.82,"p99_ms":11.98,"max_ms":46.37,"rss_mb":193.5,"idle_rss_mb":166.3}
+mixed         after  {"frames":1589,"p50_ms":6.07,"p95_ms":7.82,"p99_ms":12.09,"max_ms":31.19,"rss_mb":192.4,"idle_rss_mb":166.4}
+mixed         after  {"frames":1580,"p50_ms":6.07,"p95_ms":7.97,"p99_ms":12.45,"max_ms":24.54,"rss_mb":193.5,"idle_rss_mb":166.0}
+zoom=empty    before {"frames":1633,"p50_ms":6.06,"p95_ms":6.27,"p99_ms":11.48,"max_ms":13.29,"rss_mb":162.9,"idle_rss_mb":159.2}
+zoom=empty    before {"frames":1595,"p50_ms":6.06,"p95_ms":6.6,"p99_ms":12.22,"max_ms":18.55,"rss_mb":158.9,"idle_rss_mb":158.6}
+zoom=empty    before {"frames":1632,"p50_ms":6.06,"p95_ms":6.27,"p99_ms":11.47,"max_ms":13.42,"rss_mb":159.3,"idle_rss_mb":159.0}
+zoom=empty    after  {"frames":1633,"p50_ms":6.06,"p95_ms":6.24,"p99_ms":11.33,"max_ms":13.37,"rss_mb":159.7,"idle_rss_mb":159.5}
+zoom=empty    after  {"frames":1633,"p50_ms":6.06,"p95_ms":6.25,"p99_ms":11.33,"max_ms":15.23,"rss_mb":159.6,"idle_rss_mb":159.4}
+zoom=empty    after  {"frames":1584,"p50_ms":6.06,"p95_ms":6.7,"p99_ms":12.2,"max_ms":19.22,"rss_mb":159.8,"idle_rss_mb":159.5}
+zoom=terminal before {"frames":1588,"p50_ms":6.07,"p95_ms":8.46,"p99_ms":11.94,"max_ms":17.42,"rss_mb":237.9,"idle_rss_mb":227.8}
+zoom=terminal before {"frames":1582,"p50_ms":6.07,"p95_ms":8.69,"p99_ms":12.02,"max_ms":13.41,"rss_mb":237.6,"idle_rss_mb":227.5}
+zoom=terminal before {"frames":1589,"p50_ms":6.07,"p95_ms":8.5,"p99_ms":12.08,"max_ms":13.6,"rss_mb":237.8,"idle_rss_mb":227.5}
+zoom=terminal after  {"frames":1572,"p50_ms":6.07,"p95_ms":8.83,"p99_ms":12.17,"max_ms":14.88,"rss_mb":237.7,"idle_rss_mb":228.6}
+zoom=terminal after  {"frames":1595,"p50_ms":6.07,"p95_ms":8.39,"p99_ms":12.05,"max_ms":13.33,"rss_mb":238.3,"idle_rss_mb":229.1}
+zoom=terminal after  {"frames":1596,"p50_ms":6.06,"p95_ms":8.13,"p99_ms":12.08,"max_ms":13.48,"rss_mb":238.3,"idle_rss_mb":229.1}
+zoom=editor   before {"frames":1198,"p50_ms":7.2,"p95_ms":14.14,"p99_ms":18.38,"max_ms":90.66,"rss_mb":262.5,"idle_rss_mb":174.0}
+zoom=editor   before {"frames":1146,"p50_ms":6.76,"p95_ms":15.58,"p99_ms":23.46,"max_ms":97.33,"rss_mb":262.4,"idle_rss_mb":173.9}
+zoom=editor   before {"frames":1180,"p50_ms":7.72,"p95_ms":14.4,"p99_ms":18.68,"max_ms":90.18,"rss_mb":262.9,"idle_rss_mb":174.4}
+zoom=editor   after  {"frames":1332,"p50_ms":6.16,"p95_ms":12.13,"p99_ms":16.55,"max_ms":84.16,"rss_mb":255.4,"idle_rss_mb":174.3}
+zoom=editor   after  {"frames":1282,"p50_ms":6.39,"p95_ms":13.25,"p99_ms":17.43,"max_ms":84.45,"rss_mb":258.2,"idle_rss_mb":174.1}
+zoom=editor   after  {"frames":1285,"p50_ms":6.3,"p95_ms":12.67,"p99_ms":17.11,"max_ms":92.9,"rss_mb":257.6,"idle_rss_mb":174.3}
+zoom=note     before {"frames":290,"p50_ms":20.29,"p95_ms":76.4,"p99_ms":86.07,"max_ms":95.95,"rss_mb":174.8,"idle_rss_mb":168.8}
+zoom=note     before {"frames":277,"p50_ms":27.88,"p95_ms":76.43,"p99_ms":86.02,"max_ms":88.89,"rss_mb":174.5,"idle_rss_mb":168.6}
+zoom=note     before {"frames":267,"p50_ms":47.07,"p95_ms":77.46,"p99_ms":86.5,"max_ms":94.02,"rss_mb":178.7,"idle_rss_mb":169.2}
+zoom=note     after  {"frames":476,"p50_ms":12.03,"p95_ms":55.97,"p99_ms":74.82,"max_ms":89.38,"rss_mb":175.3,"idle_rss_mb":169.2}
+zoom=note     after  {"frames":478,"p50_ms":11.98,"p95_ms":57.02,"p99_ms":74.08,"max_ms":86.18,"rss_mb":175.2,"idle_rss_mb":169.1}
+zoom=note     after  {"frames":468,"p50_ms":12.05,"p95_ms":64.25,"p99_ms":73.7,"max_ms":79.81,"rss_mb":175.2,"idle_rss_mb":169.1}
+zoom=kanban   before {"frames":1486,"p50_ms":6.14,"p95_ms":9.33,"p99_ms":12.48,"max_ms":16.88,"rss_mb":168.1,"idle_rss_mb":160.1}
+zoom=kanban   before {"frames":1478,"p50_ms":6.13,"p95_ms":9.41,"p99_ms":12.77,"max_ms":17.02,"rss_mb":167.8,"idle_rss_mb":159.9}
+zoom=kanban   before {"frames":1463,"p50_ms":6.15,"p95_ms":9.49,"p99_ms":12.59,"max_ms":23.17,"rss_mb":168.1,"idle_rss_mb":160.3}
+zoom=kanban   after  {"frames":1471,"p50_ms":6.14,"p95_ms":9.39,"p99_ms":12.75,"max_ms":24.58,"rss_mb":168.4,"idle_rss_mb":160.7}
+zoom=kanban   after  {"frames":1493,"p50_ms":6.14,"p95_ms":9.25,"p99_ms":12.38,"max_ms":14.98,"rss_mb":168.3,"idle_rss_mb":160.5}
+zoom=kanban   after  {"frames":1490,"p50_ms":6.13,"p95_ms":9.22,"p99_ms":12.33,"max_ms":15.26,"rss_mb":168.3,"idle_rss_mb":160.4}
+zoom=git      before {"frames":1532,"p50_ms":6.1,"p95_ms":9.0,"p99_ms":12.22,"max_ms":24.09,"rss_mb":169.0,"idle_rss_mb":162.7}
+zoom=git      before {"frames":1532,"p50_ms":6.1,"p95_ms":9.04,"p99_ms":12.62,"max_ms":14.41,"rss_mb":169.0,"idle_rss_mb":162.7}
+zoom=git      before {"frames":1515,"p50_ms":6.09,"p95_ms":9.36,"p99_ms":13.03,"max_ms":22.25,"rss_mb":169.0,"idle_rss_mb":162.6}
+zoom=git      after  {"frames":1572,"p50_ms":6.07,"p95_ms":8.5,"p99_ms":12.08,"max_ms":16.02,"rss_mb":168.2,"idle_rss_mb":162.9}
+zoom=git      after  {"frames":1578,"p50_ms":6.08,"p95_ms":8.07,"p99_ms":11.77,"max_ms":14.15,"rss_mb":168.6,"idle_rss_mb":163.2}
+zoom=git      after  {"frames":1585,"p50_ms":6.07,"p95_ms":7.56,"p99_ms":11.48,"max_ms":16.17,"rss_mb":168.4,"idle_rss_mb":162.9}
+git           before {"frames":1563,"p50_ms":6.07,"p95_ms":8.88,"p99_ms":12.04,"max_ms":42.61,"rss_mb":185.6,"idle_rss_mb":173.7}
+git           before {"frames":1563,"p50_ms":6.06,"p95_ms":8.79,"p99_ms":11.88,"max_ms":42.65,"rss_mb":186.3,"idle_rss_mb":173.9}
+git           before {"frames":1560,"p50_ms":6.06,"p95_ms":8.9,"p99_ms":11.95,"max_ms":43.03,"rss_mb":185.0,"idle_rss_mb":173.2}
+git           after  {"frames":1523,"p50_ms":6.09,"p95_ms":9.43,"p99_ms":12.52,"max_ms":45.03,"rss_mb":187.8,"idle_rss_mb":174.6}
+git           after  {"frames":1569,"p50_ms":6.07,"p95_ms":8.63,"p99_ms":11.96,"max_ms":44.22,"rss_mb":184.5,"idle_rss_mb":173.6}
+git           after  {"frames":1573,"p50_ms":6.06,"p95_ms":8.36,"p99_ms":11.4,"max_ms":43.99,"rss_mb":185.7,"idle_rss_mb":173.8}
+```
