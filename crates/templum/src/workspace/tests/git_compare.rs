@@ -271,3 +271,30 @@ fn the_base_can_be_another_branch(cx: &mut TestAppContext) {
         assert_eq!(c.commits.len(), 1);
     });
 }
+
+// Review M7: a comparison's lines aren't the working file's: no Open in editor at this line.
+#[gpui_kit::test]
+fn a_comparisons_lines_offer_no_open_at_this_line(cx: &mut TestAppContext) {
+    let repo = feature_repo(1);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    compare(handle, &ws, cx, id, "feature");
+    let row = git_of(&ws, cx, id, |g| {
+        g.diff()
+            .rows
+            .iter()
+            .position(|r| matches!(r, crate::git_block::diff_view::Row::Line { .. }))
+            .expect("a line")
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.right_click(("git-line", row), cx);
+        window.render_frame(cx);
+        // Copy, Copy line, Copy hunk, Send to ▸; no —, Open in editor at this line.
+        assert!(
+            window.within("popup-menu").try_find(3usize).is_some(),
+            "the menu"
+        );
+        assert!(window.within("popup-menu").try_find(5usize).is_none());
+    })
+    .unwrap();
+}

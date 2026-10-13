@@ -535,6 +535,7 @@ impl Items {
             }
             Items::GitLine {
                 block,
+                working,
                 path,
                 line,
                 selection,
@@ -558,12 +559,16 @@ impl Items {
                         cx.write_to_clipboard(ClipboardItem::new_string(hunk_text.clone()))
                     }));
                 let menu = send_to(ws, menu, send, window, cx);
-                menu.separator().item(item(
-                    ws,
-                    "Open in editor at this line",
-                    Some(IconName::FileCode),
-                    move |ws, window, cx| ws.open_from_git_at(block, &path, Some(line), window, cx),
-                ))
+                menu.when(working, |menu| {
+                    menu.separator().item(item(
+                        ws,
+                        "Open in editor at this line",
+                        Some(IconName::FileCode),
+                        move |ws, window, cx| {
+                            ws.open_from_git_at(block, &path, Some(line), window, cx)
+                        },
+                    ))
+                })
             }
             Items::GitCommit { block, commit } => {
                 let (checkout, branch, tag, revert, copy) = (

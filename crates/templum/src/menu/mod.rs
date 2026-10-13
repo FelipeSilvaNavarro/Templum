@@ -289,6 +289,7 @@ impl Workspace {
                 let selection = p.selected_text();
                 Items::GitLine {
                     block,
+                    working: p.working(),
                     path: s.diff.path().to_string(),
                     line: l.new_no.unwrap_or(h.new_start.max(1)),
                     send: self.send_to_menu(selection.clone().unwrap_or_else(|| hunk_text.clone())),
@@ -431,6 +432,8 @@ enum Items {
     },
     GitLine {
         block: BlockId,
+        /// The working changes' panel: its lines are the file's (a comparison's aren't).
+        working: bool,
         path: String,
         /// Where Open in editor goes: the line's new number, else its hunk's first.
         line: u32,
