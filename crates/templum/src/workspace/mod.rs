@@ -9,6 +9,7 @@ mod git_branches;
 mod git_changes;
 mod git_discard;
 mod git_history;
+mod git_keys;
 mod git_ops;
 mod input;
 mod persist;
@@ -229,6 +230,14 @@ impl Body {
                 true
             }
             Body::Editor(e) => e.focus(window, cx),
+            // A field (the summary, a filter) keeps the keyboard it just took on the click;
+            // otherwise the block takes it.
+            Body::Git(g) => {
+                if !g.focus.contains_focused(window, cx) {
+                    g.focus.focus(window, cx);
+                }
+                true
+            }
             _ => false,
         }
     }
@@ -256,7 +265,7 @@ impl Body {
                 .focus_handle(cx)
                 .contains_focused(window, cx),
             Body::Editor(e) => e.has_focus(window, cx),
-            Body::Git(g) => g.has_focus(window, cx),
+            Body::Git(g) => g.focus.contains_focused(window, cx),
             Body::Terminal(pane) => pane.find.as_ref().is_some_and(|b| b.has_focus(window, cx)),
             Body::Kanban(_) => false,
         }

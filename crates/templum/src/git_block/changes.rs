@@ -62,6 +62,7 @@ pub(super) fn changes(
                 .collect()
         })
     })
+    .track_scroll(&git.lists_scroll)
     .flex_1()
     .min_h(px(0.0));
     let body = div().flex_1().min_h(px(0.0)).flex();

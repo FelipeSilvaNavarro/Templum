@@ -500,6 +500,7 @@ mod git_changes;
 mod git_commit;
 mod git_history;
 mod git_hunks;
+mod git_keys;
 mod git_layout;
 mod git_panel;
 mod git_status;

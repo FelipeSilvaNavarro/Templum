@@ -66,6 +66,8 @@ pub(crate) struct DiffPanel {
     pub widest: usize,
     /// Diffs taken so far (the tests count them).
     pub reads: u64,
+    /// The keyboard's hunk (`[` and `]`): its section, its file and its index in the file.
+    pub cursor: Option<(bool, String, usize)>,
 }
 
 impl DiffPanel {
@@ -85,7 +87,27 @@ impl DiffPanel {
             colors: RefCell::new(highlight::Highlights::default()),
             widest: 0,
             reads: 0,
+            cursor: None,
         }
+    }
+
+    /// The cursor's hunk row: its hunk, else the file's last one (staging one shortens the
+    /// file's list), else none (the file left the section).
+    pub fn cursor_row(&self) -> Option<usize> {
+        let (staged, path, hunk) = self.cursor.as_ref()?;
+        let mut last = None;
+        for (ix, row) in self.rows.iter().enumerate() {
+            if let Row::Hunk { file, hunk: h } = row {
+                let s = &self.files[*file];
+                if s.staged == *staged && s.diff.path() == path {
+                    if h == hunk {
+                        return Some(ix);
+                    }
+                    last = Some(ix);
+                }
+            }
+        }
+        last
     }
 
     /// Takes a read. False when it equals what is shown: nothing changes, so the scroll, the
@@ -300,8 +322,9 @@ pub(crate) fn panel(
         let list = uniform_list(("git-panel", n), rows.len(), move |range, _, cx| {
             entity.update(cx, |ws, cx| {
                 let ws = &*ws;
+                let cursor = ws.space.git(id).and_then(|g| g.panel.cursor_row());
                 range
-                    .map(|ix| paint::row(ws, id, &files, &rows, ix, row_h, z, cx))
+                    .map(|ix| paint::row(ws, id, &files, &rows, ix, cursor, row_h, z, cx))
                     .collect()
             })
         })
@@ -320,6 +343,15 @@ pub(crate) fn panel(
             .child(list)
             .into_any_element()
     };
+    let keys = bar(ui, z)
+        .id(("git-keys", n))
+        .text_size(px(11.0 * z))
+        .child(if cfg!(target_os = "macos") {
+            "↑↓ file · [ ] hunk · s stage · u unstage · d discard · ⏎ open · c message · ⌘⏎ commit"
+        } else {
+            "↑↓ file · [ ] hunk · s stage · u unstage · d discard · ⏎ open · c message · Ctrl+⏎ commit"
+        })
+        .test_support();
     div()
         .id(("git-diff", n))
         .flex_1()
@@ -328,6 +360,7 @@ pub(crate) fn panel(
         .flex_col()
         .child(header)
         .child(body)
+        .child(keys)
         .on_mouse_up(
             MouseButton::Left,
             cx.listener(move |ws, _: &MouseUpEvent, _, cx| ws.diff_release(id, cx)),

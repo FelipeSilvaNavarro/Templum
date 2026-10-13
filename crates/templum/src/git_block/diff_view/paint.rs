@@ -35,6 +35,7 @@ pub(super) fn row(
     files: &Rc<Vec<Shown>>,
     rows: &[Row],
     ix: usize,
+    cursor: Option<usize>,
     row_h: f32,
     z: f32,
     cx: &mut Context<Workspace>,
@@ -42,7 +43,18 @@ pub(super) fn row(
     match &rows[ix] {
         Row::Section { staged, files: n } => section(*staged, *n, ws.ui, row_h, z),
         Row::File { file } => file_row(ws, id, &files[*file], ix, row_h, z, cx),
-        Row::Hunk { file, hunk } => hunk_row(ws, id, files, *file, *hunk, ix, row_h, z, cx),
+        Row::Hunk { file, hunk } => hunk_row(
+            ws,
+            id,
+            files,
+            *file,
+            *hunk,
+            ix,
+            cursor == Some(ix),
+            row_h,
+            z,
+            cx,
+        ),
         Row::Fold { file, lines } => fold_row(ws, id, &files[*file], ix, *lines, row_h, z, cx),
         Row::Note { file, note } => note_row(ws, id, &files[*file], ix, *note, row_h, z, cx),
         Row::Line { file, hunk, line } => {
@@ -215,6 +227,7 @@ fn hunk_row(
     file: usize,
     hunk: usize,
     ix: usize,
+    on_cursor: bool,
     row_h: f32,
     z: f32,
     cx: &mut Context<Workspace>,
@@ -291,6 +304,7 @@ fn hunk_row(
         .gap(px(6.0 * z))
         .px(px(8.0 * z))
         .bg(ui.hover)
+        .when(on_cursor, |el| el.border_l_2().border_color(ui.accent))
         .text_size(px(FONT * z))
         .text_color(ui.title_dim)
         .child(
@@ -301,14 +315,14 @@ fn hunk_row(
                 .font_family(ws.cell.font.family.clone())
                 .child(format!("@@ {}", h.title())),
         )
-        .child(
-            div()
-                .flex()
-                .gap(px(4.0 * z))
-                .invisible()
-                .group_hover("git-hunk", |s| s.visible())
-                .children(buttons),
-        )
+        .child({
+            let tools = div().flex().gap(px(4.0 * z)).children(buttons);
+            if on_cursor {
+                tools
+            } else {
+                tools.invisible().group_hover("git-hunk", |s| s.visible())
+            }
+        })
         .test_support()
         .into_any_element()
 }

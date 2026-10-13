@@ -6,7 +6,8 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, ElementId, ScrollWheelEvent, TestSupportExt, div, px,
+    AnyElement, ClickEvent, Context, ElementId, KeyDownEvent, ScrollWheelEvent, TestSupportExt,
+    div, px,
 };
 use templum_canvas::BlockId;
 
@@ -102,6 +103,10 @@ pub(crate) fn body(
         .size_full()
         .flex()
         .flex_col()
+        .track_focus(&git.focus)
+        .on_key_down(
+            cx.listener(move |ws, e: &KeyDownEvent, window, cx| ws.git_key(id, e, window, cx)),
+        )
         .on_scroll_wheel(|e: &ScrollWheelEvent, _, cx| {
             if !e.modifiers.control {
                 cx.stop_propagation();

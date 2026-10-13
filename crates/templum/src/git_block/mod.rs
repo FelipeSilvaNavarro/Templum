@@ -8,10 +8,12 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use gpui_kit::Focusable as _;
 use gpui_kit::component::input::{EditorState, InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, ElementId, Entity, EntityId, SharedString, Subscription, Window};
+use gpui_kit::{
+    App, Context, ElementId, Entity, EntityId, FocusHandle, SharedString, Subscription,
+    UniformListScrollHandle, Window,
+};
 use templum_canvas::{BlockId, Rect, Size};
 use templum_git::{Branch, Commit, CommitFile, GitError, Operation, Repo, Stash, Status};
 
@@ -214,6 +216,10 @@ pub(crate) struct Git {
     /// The Branches tab's filter.
     pub filter: Entity<InputState>,
     _filter: Subscription,
+    /// The block's own keyboard focus (not a field's): its keys act while it has it.
+    pub focus: FocusHandle,
+    /// The left column's list, scrolled by ↑ and ↓.
+    pub lists_scroll: UniformListScrollHandle,
     /// The left column is folded: the diff panel takes the whole width.
     pub lists_folded: bool,
     /// Filter files, over the Changes tab's lists (shown past FILTER_PAST files).
@@ -321,6 +327,8 @@ impl Git {
             stash_shown: None,
             filter,
             _filter,
+            focus: cx.focus_handle(),
+            lists_scroll: UniformListScrollHandle::new(),
             lists_folded: false,
             files_filter,
             _files_filter,
@@ -341,19 +349,6 @@ impl Git {
             })
             .map(|(i, _)| i)
             .collect()
-    }
-
-    /// The keyboard is in the summary or the description.
-    pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
-        self.summary
-            .read(cx)
-            .focus_handle(cx)
-            .contains_focused(window, cx)
-            || self
-                .description
-                .read(cx)
-                .focus_handle(cx)
-                .contains_focused(window, cx)
     }
 
     /// The summary, then a blank line and the description when there is one.
