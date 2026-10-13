@@ -36,7 +36,7 @@ Measured on Arch Linux + Hyprland (Wayland) with an i5-13420H and an RTX 3050 La
 
 ## Decision
 
-Use GPUI through **`gpui-kit`**, pinned exactly (`gpui-kit = "=0.7.1"`, which pins the `gpui-pre` 0.3.8 snapshot).
+Use GPUI through **`gpui-kit`**, pinned exactly (`gpui-kit = "=0.7.3"`, which pins the `gpui-pre` 0.3.9 snapshot).
 `use gpui_kit::*` gives GPUI itself plus the widget library. Only `crates/templum` depends on it.
 
 ## Consequences

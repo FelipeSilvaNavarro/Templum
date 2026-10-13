@@ -550,7 +550,7 @@ impl Editor {
 }
 
 /// Keeps the rows a gpui-kit editor shows when the zoom changes, as a photo would: its scroll
-/// offset is in pixels (gpui-base-0.7.1 src/input/base/state.rs:2997), so it scales with its
+/// offset is in pixels (gpui-base-0.7.3 src/input/base/state.rs:3111), so it scales with its
 /// rows, 1.5 × its font rounded (see `block::exact_rows`). Called where the editor is drawn at
 /// `font × z`, before it lays out.
 pub(crate) fn keep_rows(editor: &Entity<EditorState>, font: f32, z: f32, cx: &mut App) {

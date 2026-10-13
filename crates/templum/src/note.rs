@@ -3,6 +3,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
+use std::sync::Arc;
 
 use gpui_kit::component::input::{Editor, EditorState, Enter};
 use gpui_kit::component::text::{TextView, TextViewStyle};
@@ -11,6 +12,7 @@ use gpui_kit::{
     AnyElement, App, Bounds, Context, Element, ElementId, Entity, Focusable as _, GlobalElementId,
     InspectorElementId, IntoElement, KeyDownEvent, Keystroke, LayoutId, Pixels, ScrollHandle,
     ScrollWheelEvent, SharedString, StyleRefinement, TestSupportExt, Window, div, px, relative,
+    rems,
 };
 use templum_canvas::{BlockId, Level, Size, chrome};
 
@@ -26,10 +28,10 @@ pub(crate) const MIN: Size = Size { w: 200.0, h: 140.0 };
 /// The text's size at zoom 1, world units.
 pub(crate) const FONT: f32 = 13.0;
 /// What gpui-kit's code editor keeps at fixed pixel sizes at any zoom: its padding
-/// (gpui-component-0.7.1 src/input/input.rs:591-600 and sizing.rs:147-166, size Medium: 6 left
+/// (gpui-component-0.7.3 src/input/input.rs:591-600 and sizing.rs:147-166, size Medium: 6 left
 /// in a code editor, 10 right, 8 top and bottom) and, inside it, left of the text, the line
 /// numbers' margin (6) and the fold icons (18), and right of it a margin its wrap width leaves
-/// out (10) (gpui-base-0.7.1 src/input/base/element.rs:50-53, 1102-1124, 2562).
+/// out (10) (gpui-base-0.7.3 src/input/base/element.rs:50-53, 1102-1124, 2562).
 pub(crate) const FIXED_LEFT: f32 = 6.0 + 6.0 + 18.0;
 const FIXED_RIGHT: f32 = 10.0 + 10.0;
 pub(crate) const FIXED_TOP: f32 = 8.0;
@@ -271,9 +273,22 @@ pub(crate) fn preview(
     z: f32,
 ) -> AnyElement {
     crate::editor::keep_list_rows(&scroll.handle, &scroll.zoom, z);
-    // gpui-kit's defaults at zoom 1: headings from 14 px, code 13 px.
+    // gpui-kit 0.7.1's look at zoom 1: headings from 14 px, code 13 px, paragraphs 1 rem apart.
     let style = TextViewStyle {
+        paragraph_gap: rems(1.0),
         heading_base_font_size: px(14.0 * z),
+        // Pinned at every zoom: with a 14 px base and no resolver gpui-kit sizes headings from
+        // the body text instead (gpui-component-0.7.3 src/text/compat.rs:339-345), so they
+        // would shrink at zoom 1 exactly. The resolver is that default's own scale.
+        heading_font_size: Some(Arc::new(|level, base| {
+            base * match level {
+                1 => 2.0,
+                2 => 1.5,
+                3 => 1.25,
+                4 => 1.125,
+                _ => 1.0,
+            }
+        })),
         code_block: StyleRefinement::default().text_size(px(13.0 * z)),
         ..TextViewStyle::default()
     };
@@ -296,7 +311,7 @@ pub(crate) fn preview(
 }
 
 /// Lays out and paints its child with the window's rem size times `scale`: Markdown's spacing
-/// is in rems, which no style can scale for one element (gpui-pre-0.3.8 src/window.rs:3032).
+/// is in rems, which no style can scale for one element (gpui-pre-0.3.9 src/window.rs:3150).
 struct ScaledRem {
     scale: f32,
     child: AnyElement,

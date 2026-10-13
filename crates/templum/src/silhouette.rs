@@ -16,8 +16,8 @@ use gpui_kit::{
 use crate::grid::bar_quad;
 
 /// gpui-kit's fixed pixels around an editor tab's text: the code editor's padding, left
-/// (`input_px().min(6)`) and top (`input_py()`, 8 at size Medium; gpui-component-0.7.1
-/// src/input/input.rs:588-602), and the margin right of the line numbers (gpui-base-0.7.1
+/// (`input_px().min(6)`) and top (`input_py()`, 8 at size Medium; gpui-component-0.7.3
+/// src/input/input.rs:588-602), and the margin right of the line numbers (gpui-base-0.7.3
 /// src/input/base/element.rs:51).
 const TAB_LEFT: f32 = 6.0;
 const TAB_TOP: f32 = 8.0;
@@ -127,8 +127,8 @@ impl WordMap {
 
     /// Each word's cell at zoom `s`: `(left, top, width, height)`, pixels from the body's box,
     /// its text starting at `origin`. Rows are gpui-kit's, `1.5 × font × s` rounded to whole
-    /// pixels as GPUI rounds a line's height (gpui-pre-0.3.8 src/style.rs:553-555,
-    /// gpui-component-0.7.1 src/input/editor.rs:14).
+    /// pixels as GPUI rounds a line's height (gpui-pre-0.3.9 src/style.rs:553-555,
+    /// gpui-component-0.7.3 src/input/editor.rs:14).
     pub fn cells(
         &self,
         origin: (f32, f32),
@@ -269,7 +269,7 @@ pub(crate) fn body(
         .id(id)
         .relative()
         .size_full()
-        // GPUI lays out and paints what has opacity 0 (gpui-pre-0.3.8 src/window.rs:4078-4094).
+        // GPUI lays out and paints what has opacity 0 (gpui-pre-0.3.9 src/window.rs:4212-4228).
         .children(unseen.map(|el| div().absolute().size_full().opacity(0.0).child(el)))
         .child(
             canvas(

@@ -670,8 +670,8 @@ fn resize_zone(id: BlockId, edges: Edges, edge: f32, cx: &mut Context<Workspace>
 }
 
 /// The zoom nearest `z` at which gpui-kit's editor rows, 1.5 × their text size of `font × zoom`,
-/// are whole pixels. GPUI rounds them to whole pixels (gpui-pre-0.3.8 src/style.rs:555,
-/// gpui-component-0.7.1 src/input/editor.rs:145): at any other zoom the rows grow a pixel at a
+/// are whole pixels. GPUI rounds them to whole pixels (gpui-pre-0.3.9 src/style.rs:555,
+/// gpui-component-0.7.3 src/input/editor.rs:145): at any other zoom the rows grow a pixel at a
 /// time while the letters grow smoothly, and the text below the first rows jumps.
 fn exact_rows(z: f32, font: f32) -> f32 {
     let row = 1.5 * font;

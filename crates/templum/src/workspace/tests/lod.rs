@@ -775,7 +775,7 @@ fn a_notes_bars_line_up_with_its_letters_at_every_zoom(cx: &mut TestAppContext) 
     let corner = Point::new(30.0, 30.0);
     rest_at(handle, &ws, cx, corner, 1.0);
     // Folds "## Folded" (line 2; lines 3 to 7 hidden) from its gutter icon, drawn on the cursor's
-    // line: 14 px, 2 px into the gutter (gpui-base-0.7.1 src/input/base/element.rs:1334-1348).
+    // line: 14 px, 2 px into the gutter (gpui-base-0.7.3 src/input/base/element.rs:1334-1348).
     let line2 = "# Title\nintro\n".len();
     cx.update_window(handle, |_, window, cx| {
         note.update(cx, |e, cx| {
