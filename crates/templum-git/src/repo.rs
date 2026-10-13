@@ -980,6 +980,89 @@ impl Repo {
     }
 }
 
+/// What a switch found of the changes once left on the branch it went to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Back {
+    /// None were left there.
+    Nothing,
+    /// They are back in the working tree and their stash is gone.
+    Popped,
+    /// They couldn't come back cleanly (a conflict, a file in the way): git's line. The stash
+    /// stays in Stashes.
+    Kept(String),
+}
+
+/// The message of the stash a switch leaves changes in.
+pub fn left_on(name: &str) -> String {
+    format!("templum: left on {name}")
+}
+
+impl Repo {
+    /// Switches to `to`: a local branch, or a remote one ("origin/x"), which goes to the local x
+    /// when there is one and else makes it, tracking origin/x. With `leave` (the branch being
+    /// left, or its short hash on a detached HEAD), the uncommitted changes, untracked files
+    /// too, go first into a stash named `left_on(leave)`; a switch that then fails puts them
+    /// straight back, so nothing stays hidden. Once switched, the newest stash left on `to` is
+    /// popped (the others stay in Stashes).
+    pub fn switch(&self, to: &str, remote: bool, leave: Option<&str>) -> Result<Back, GitError> {
+        let local = if remote {
+            to.split_once('/').map_or(to, |(_, b)| b)
+        } else {
+            to
+        };
+        let top = || {
+            self.text(&["rev-parse", "-q", "--verify", "refs/stash"])
+                .unwrap_or_default()
+        };
+        let mut stashed = false;
+        if let Some(name) = leave {
+            let before = top();
+            self.stash_push(&left_on(name), true)?;
+            // Nothing to stash makes no stash: never pop someone else's.
+            stashed = top() != before;
+        }
+        let has_local = self
+            .run(&[
+                "rev-parse",
+                "--verify",
+                "-q",
+                &format!("refs/heads/{local}"),
+            ])
+            .is_ok();
+        let switched = if remote && !has_local {
+            self.checkout_remote(to)
+        } else {
+            self.checkout(local)
+        };
+        if let Err(e) = switched {
+            if stashed {
+                let _ = self.pop_whole("stash@{0}");
+            }
+            return Err(e);
+        }
+        let mine = format!("On {local}: {}", left_on(local));
+        let Some(stash) = self.stashes()?.into_iter().find(|s| s.message == mine) else {
+            return Ok(Back::Nothing);
+        };
+        let name = self.stash_ref(&stash)?;
+        Ok(match self.pop_whole(&name) {
+            Ok(()) => Back::Popped,
+            Err(e) => Back::Kept(e.first_line().to_string()),
+        })
+    }
+
+    /// Pops a stash with its staged changes staged again (`--index`); when git can't do that
+    /// part, as plain changes.
+    fn pop_whole(&self, name: &str) -> Result<(), GitError> {
+        match self.run(&["stash", "pop", "-q", "--index", name]) {
+            Err(e) if e.stderr.contains("Try without --index") => {
+                self.run(&["stash", "pop", "-q", name]).map(drop)
+            }
+            r => r.map(drop),
+        }
+    }
+}
+
 /// The work tree holding `file`, without running git: the nearest folder above it with a `.git`
 /// (a folder, or a file in a worktree or a submodule).
 pub fn root_of(file: &Path) -> Option<&Path> {

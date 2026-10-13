@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use templum_git::{Change, Operation, Pull, Repo, Side, clone_name, clone_target};
+use templum_git::{Back, Change, Operation, Pull, Repo, Side, clone_name, clone_target};
 
 /// A new repository on `main` with an author set, so commits work on a bare runner.
 fn fresh() -> (tempfile::TempDir, Repo) {
@@ -1339,4 +1339,138 @@ fn clone_makes_the_repository_and_a_failed_one_leaves_nothing() {
     .unwrap_err();
     assert!(!err.missing, "{err}");
     assert!(!bad.exists(), "no half-made folder");
+}
+
+/// main (a.txt "one") and feat (b.txt), on main.
+fn two_branches() -> (tempfile::TempDir, Repo) {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    repo.run(&["checkout", "-q", "-b", "feat"]).unwrap();
+    write(dir.path(), "b.txt", "b\n");
+    repo.stage(&["b.txt"]).unwrap();
+    repo.commit("b", false).unwrap();
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    (dir, repo)
+}
+
+#[test]
+fn leaving_changes_on_a_branch_brings_them_back_when_returning() {
+    let (dir, repo) = two_branches();
+    write(dir.path(), "a.txt", "changed\n");
+    write(dir.path(), "new.txt", "untracked\n");
+    repo.stage(&["a.txt"]).unwrap();
+    assert_eq!(
+        repo.switch("feat", false, Some("main")).unwrap(),
+        Back::Nothing
+    );
+    assert_eq!(repo.status().unwrap().branch.as_deref(), Some("feat"));
+    assert!(repo.status().unwrap().entries.is_empty(), "left on main");
+    assert_eq!(
+        repo.stashes().unwrap()[0].message,
+        "On main: templum: left on main"
+    );
+    assert_eq!(repo.switch("main", false, None).unwrap(), Back::Popped);
+    let s = repo.status().unwrap();
+    let a = s.entries.iter().find(|e| e.path == "a.txt").unwrap();
+    assert_eq!(a.staged, Some(Change::Modified), "staged again");
+    assert!(dir.path().join("new.txt").is_file(), "untracked files too");
+    assert!(repo.stashes().unwrap().is_empty(), "popped, not applied");
+}
+
+#[test]
+fn bringing_changes_along_keeps_them_and_a_refused_switch_says_why() {
+    let (dir, repo) = two_branches();
+    write(dir.path(), "a.txt", "changed\n");
+    assert_eq!(repo.switch("feat", false, None).unwrap(), Back::Nothing);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "changed\n"
+    );
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    // feat changes a.txt too: carrying the change would overwrite it.
+    repo.run(&["stash", "-q"]).unwrap();
+    repo.run(&["checkout", "-q", "feat"]).unwrap();
+    write(dir.path(), "a.txt", "feat's\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("a on feat", false).unwrap();
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    repo.run(&["stash", "pop", "-q"]).unwrap();
+    let err = repo.switch("feat", false, None).unwrap_err();
+    assert!(err.stderr.contains("would be overwritten"), "{err}");
+}
+
+#[test]
+fn a_switch_that_fails_after_leaving_brings_the_changes_back() {
+    let (dir, repo) = two_branches();
+    write(dir.path(), "a.txt", "changed\n");
+    repo.stage(&["a.txt"]).unwrap();
+    write(dir.path(), "a.txt", "changed twice\n");
+    repo.switch("gone", false, Some("main")).unwrap_err();
+    assert!(
+        repo.stashes().unwrap().is_empty(),
+        "nothing hidden in a stash"
+    );
+    let s = repo.status().unwrap();
+    assert_eq!(s.branch.as_deref(), Some("main"));
+    assert_eq!(s.entries[0].staged, Some(Change::Modified));
+    assert_eq!(s.entries[0].unstaged, Some(Change::Modified));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "changed twice\n"
+    );
+}
+
+#[test]
+fn the_newest_stash_left_on_a_branch_is_popped_and_the_older_stays() {
+    let (dir, repo) = two_branches();
+    write(dir.path(), "a.txt", "first\n");
+    repo.stash_push(&templum_git::left_on("main"), true)
+        .unwrap();
+    write(dir.path(), "a.txt", "second\n");
+    repo.switch("feat", false, Some("main")).unwrap();
+    assert_eq!(repo.switch("main", false, None).unwrap(), Back::Popped);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "second\n"
+    );
+    assert_eq!(
+        repo.stashes().unwrap().len(),
+        1,
+        "the older one stays in Stashes"
+    );
+}
+
+#[test]
+fn a_pop_that_conflicts_keeps_the_stash_and_says_so() {
+    let (dir, repo) = two_branches();
+    write(dir.path(), "a.txt", "mine\n");
+    repo.switch("feat", false, Some("main")).unwrap();
+    // Meanwhile main moves on the same line (a terminal, an agent).
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    write(dir.path(), "a.txt", "theirs\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("a again", false).unwrap();
+    repo.run(&["checkout", "-q", "feat"]).unwrap();
+    let back = repo.switch("main", false, None).unwrap();
+    assert!(matches!(back, Back::Kept(_)), "{back:?}");
+    assert_eq!(repo.stashes().unwrap().len(), 1, "kept");
+}
+
+#[test]
+fn a_remote_branch_makes_its_tracking_branch_or_goes_to_the_local_one() {
+    let (dir, repo) = two_branches();
+    let _remote = with_remote(&repo);
+    repo.run(&["push", "-q", "origin", "feat"]).unwrap();
+    repo.run(&["branch", "-D", "feat"]).unwrap();
+    repo.switch("origin/feat", true, None).unwrap();
+    let s = repo.status().unwrap();
+    assert_eq!(s.branch.as_deref(), Some("feat"));
+    assert_eq!(s.upstream.as_deref(), Some("origin/feat"));
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    // A local feat exists now: origin/feat goes to it.
+    repo.switch("origin/feat", true, None).unwrap();
+    assert_eq!(repo.status().unwrap().branch.as_deref(), Some("feat"));
+    assert!(dir.path().join("b.txt").is_file());
 }
