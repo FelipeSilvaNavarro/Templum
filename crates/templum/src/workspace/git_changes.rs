@@ -92,6 +92,14 @@ impl Workspace {
         );
     }
 
+    /// The left column's fold button: the diff takes the whole width, or gives it back.
+    pub(crate) fn toggle_lists(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        if let Some(git) = self.space.git_mut(id) {
+            git.lists_folded = !git.lists_folded;
+            cx.notify();
+        }
+    }
+
     /// Ctrl+Enter in a block's summary or description.
     pub(crate) fn commit_from(
         &mut self,

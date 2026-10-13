@@ -12,7 +12,7 @@ use templum_git::{Change, Entry};
 
 use super::commit_form::commit_form;
 use super::diff_view;
-use super::widgets::{badge, icon_button, small};
+use super::widgets::{badge, field, icon_button, small};
 use super::{FONT, Git, LISTS_W, List, ROW_H, row_id};
 use crate::menu::Target;
 use crate::workspace::Workspace;
@@ -27,20 +27,9 @@ pub(super) fn changes(
 ) -> AnyElement {
     let ui = ws.ui;
     let n = id.0 as usize;
-    let s = &git.status;
     // Each list's header, then its rows, all one row tall: a virtual list builds only the ones
     // on screen, however many files changed.
-    let mut items: Vec<(List, Option<usize>)> = Vec::new();
-    for (which, len) in [
-        (List::Conflicts, s.conflicts().len()),
-        (List::Staged, s.staged().len()),
-        (List::Unstaged, s.unstaged().len()),
-    ] {
-        if which != List::Conflicts || len > 0 {
-            items.push((which, None));
-            items.extend((0..len).map(|i| (which, Some(i))));
-        }
-    }
+    let items = git.listed(cx);
     let entity = cx.entity();
     let lists = uniform_list(("git-lists", n), items.len(), move |range, _, cx| {
         entity.update(cx, |ws, cx| {
@@ -59,7 +48,14 @@ pub(super) fn changes(
                         List::Unstaged => &unstaged,
                     };
                     match i {
-                        None => header(ws, id, which, entries, z, cx),
+                        None => {
+                            let shown: Vec<&Entry> = items
+                                .iter()
+                                .filter(|(w, _)| *w == which)
+                                .filter_map(|(_, i)| i.map(|i| entries[i]))
+                                .collect();
+                            header(ws, id, which, &shown, z, cx)
+                        }
                         Some(i) => row(ws, id, which, i, entries[i], z, cx),
                     }
                 })
@@ -68,22 +64,42 @@ pub(super) fn changes(
     })
     .flex_1()
     .min_h(px(0.0));
-    let column = div()
-        .w(px(LISTS_W * z))
-        .h_full()
-        .flex_shrink_0()
-        .flex()
-        .flex_col()
-        .border_r_1()
-        .border_color(ui.hairline)
-        .child(lists)
-        .child(commit_form(ws, id, git, z, cx));
-    div()
-        .flex_1()
-        .min_h(px(0.0))
-        .flex()
-        .child(column)
-        .child(diff_view::panel(ws, id, git, z, cx))
+    let body = div().flex_1().min_h(px(0.0)).flex();
+    let body = if git.lists_folded {
+        body
+    } else {
+        let top = div()
+            .flex()
+            .items_center()
+            .gap(px(6.0 * z))
+            .p(px(6.0 * z))
+            .border_b_1()
+            .border_color(ui.hairline)
+            .when(git.filtering(), |el| {
+                el.child(field(&git.files_filter, z).flex_1())
+            })
+            .when(!git.filtering(), |el| el.child(div().flex_1()))
+            .child(
+                icon_button(("git-fold-lists", n), IconName::PanelLeftClose, ui, z)
+                    .tooltip(|window, cx| Tooltip::new("Fold the lists").build(window, cx))
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(id, cx)))
+                    .test_support(),
+            );
+        body.child(
+            div()
+                .w(px(LISTS_W * z))
+                .h_full()
+                .flex_shrink_0()
+                .flex()
+                .flex_col()
+                .border_r_1()
+                .border_color(ui.hairline)
+                .child(top)
+                .child(lists)
+                .child(commit_form(ws, id, git, z, cx)),
+        )
+    };
+    body.child(diff_view::panel(ws, id, git, z, cx))
         .into_any_element()
 }
 

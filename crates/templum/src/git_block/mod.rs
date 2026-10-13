@@ -32,8 +32,13 @@ pub(crate) use view::body;
 pub(crate) use widgets::field;
 
 /// A new Git block's size, and the smallest one (world units).
-pub(crate) const SIZE: Size = Size { w: 800.0, h: 560.0 };
-pub(crate) const MIN: Size = Size { w: 480.0, h: 320.0 };
+pub(crate) const SIZE: Size = Size {
+    w: 1200.0,
+    h: 760.0,
+};
+pub(crate) const MIN: Size = Size { w: 640.0, h: 420.0 };
+/// Past this many changed files, a Filter files field shows above the lists.
+pub(crate) const FILTER_PAST: usize = 15;
 /// The lists' column width and the rows' height, world units.
 pub(crate) const LISTS_W: f32 = 300.0;
 pub(crate) const ROW_H: f32 = 24.0;
@@ -209,6 +214,11 @@ pub(crate) struct Git {
     /// The Branches tab's filter.
     pub filter: Entity<InputState>,
     _filter: Subscription,
+    /// The left column is folded: the diff panel takes the whole width.
+    pub lists_folded: bool,
+    /// Filter files, over the Changes tab's lists (shown past FILTER_PAST files).
+    pub files_filter: Entity<InputState>,
+    _files_filter: Subscription,
     _search: Subscription,
 }
 
@@ -271,6 +281,12 @@ impl Git {
                 cx.notify()
             }
         });
+        let files_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files"));
+        let _files_filter = cx.subscribe(&files_filter, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify()
+            }
+        });
         Git {
             folder,
             generation: 0,
@@ -305,6 +321,9 @@ impl Git {
             stash_shown: None,
             filter,
             _filter,
+            lists_folded: false,
+            files_filter,
+            _files_filter,
             _search,
         }
     }
@@ -346,6 +365,43 @@ impl Git {
         } else {
             format!("{summary}\n\n{description}")
         }
+    }
+
+    /// The Filter files field shows.
+    pub fn filtering(&self) -> bool {
+        self.status.entries.len() > FILTER_PAST
+    }
+
+    /// The left column's rows: each list's header (Conflicts only when there are some), then its
+    /// entries matching Filter files without case, by their index in the whole list (what the
+    /// rows' ids, buttons and menus use). A filter left from before narrows nothing once the
+    /// field is gone.
+    pub fn listed(&self, cx: &App) -> Vec<(List, Option<usize>)> {
+        let query = if self.filtering() {
+            self.files_filter.read(cx).value().trim().to_lowercase()
+        } else {
+            String::new()
+        };
+        let s = &self.status;
+        let mut items = Vec::new();
+        for (which, entries) in [
+            (List::Conflicts, s.conflicts()),
+            (List::Staged, s.staged()),
+            (List::Unstaged, s.unstaged()),
+        ] {
+            if which == List::Conflicts && entries.is_empty() {
+                continue;
+            }
+            items.push((which, None));
+            items.extend(
+                entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| query.is_empty() || e.path.to_lowercase().contains(&query))
+                    .map(|(i, _)| (which, Some(i))),
+            );
+        }
+        items
     }
 
     /// Commit takes every change (`git add --all` first): nothing staged, something changed, no
@@ -426,6 +482,11 @@ impl Git {
             tab: self.tab.name().to_string(),
             summary: draft(&self.summary.read(cx).value()),
             description: draft(&self.description.read(cx).value()),
+            lists: if self.lists_folded {
+                "folded".to_string()
+            } else {
+                String::new()
+            },
         }
     }
 }

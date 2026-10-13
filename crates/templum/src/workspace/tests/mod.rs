@@ -406,6 +406,9 @@ fn open_git(
                 let id = ws
                     .add_git_at(folder, Point::new(40.0, 40.0), window, cx)
                     .unwrap();
+                // The size the tests were written at (a new block is 1200 × 760 now): their rows
+                // and buttons stay inside the window.
+                ws.space.canvas.get_mut(id).unwrap().rect = Rect::new(40.0, 40.0, 800.0, 560.0);
                 ws.space.appearing.clear();
                 id
             })
@@ -497,6 +500,7 @@ mod git_changes;
 mod git_commit;
 mod git_history;
 mod git_hunks;
+mod git_layout;
 mod git_panel;
 mod git_status;
 mod git_trash;

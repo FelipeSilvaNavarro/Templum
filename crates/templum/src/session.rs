@@ -244,6 +244,9 @@ pub(crate) struct GitItem {
     pub summary: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    /// "folded": the left column is folded. Left out when it isn't.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub lists: String,
 }
 
 fn changes() -> String {
@@ -557,6 +560,7 @@ mod tests {
         assert!(back.contains(r#""kind":"git""#), "{back}");
         assert!(back.contains(r#""tab":"changes""#), "{back}");
         assert!(!back.contains("summary"), "no message, no key: {back}");
+        assert!(!back.contains("lists"), "not folded, no key: {back}");
         let item: Item =
             serde_json::from_str(&text.replace(r#""folder""#, r#""tab":"history","folder""#))
                 .unwrap();

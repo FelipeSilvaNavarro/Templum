@@ -60,12 +60,13 @@ impl Workspace {
                 }
                 session::Item::Git(g) => {
                     let id = clamped_rect(g.rect.into(), git_block::MIN).map(|rect| {
-                        let git = Git::new(
+                        let mut git = Git::new(
                             PathBuf::from(&g.folder),
                             git_block::Tab::from_name(&g.tab),
                             window,
                             cx,
                         );
+                        git.lists_folded = g.lists == "folded";
                         git.summary
                             .update(cx, |s, cx| s.set_value(g.summary.clone(), window, cx));
                         git.description

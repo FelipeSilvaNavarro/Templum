@@ -11,6 +11,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
+use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, ClickEvent, Context, ListHorizontalSizingBehavior, MouseButton, MouseUpEvent,
@@ -21,7 +22,7 @@ use templum_git::WorkingDiff;
 
 pub(crate) use rows::{Note, Row, Shown, rows};
 
-use super::widgets::{bar, centered, small};
+use super::widgets::{bar, centered, icon_button, small};
 use super::{FONT, Git};
 use crate::editor::keep_list_rows;
 use crate::workspace::Workspace;
@@ -241,6 +242,13 @@ pub(crate) fn panel(
     // Each frame paints the visible line rows again.
     p.shaped.borrow_mut().clear();
     let header = bar(ui, z)
+        .when(git.lists_folded, |el| {
+            el.child(
+                icon_button(("git-unfold-lists", n), IconName::PanelLeftOpen, ui, z)
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(id, cx)))
+                    .test_support(),
+            )
+        })
         .child(
             div()
                 .id(("git-panel-title", n))
