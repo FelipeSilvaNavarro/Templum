@@ -16,10 +16,10 @@ pub use diff::{
 pub use parse::{
     BRANCH_FORMAT, Branch, Change, Commit, CommitFile, Entry, LOG_DATE, LOG_FORMAT, Operation,
     STASH_FORMAT, Stash, Status, ago, needs_input, not_fast_forward, not_merged, parse_branches,
-    parse_log, parse_name_status, parse_stashes, parse_status,
+    parse_file_log, parse_log, parse_name_status, parse_stashes, parse_status,
 };
 pub use repo::{
-    Back, DIFF_LIMIT, GitError, Pull, Repo, Side, Synced, WorkingDiff, clone_name, clone_target,
-    left_on, root_of,
+    Back, DIFF_LIMIT, GitError, HistoryQuery, Pull, Repo, Search, Side, Synced, WorkingDiff,
+    clone_name, clone_target, left_on, root_of,
 };
 pub use words::changed;

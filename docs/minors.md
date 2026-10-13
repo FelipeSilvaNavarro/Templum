@@ -9,9 +9,6 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
 
 ## Diff panel
 
-- [ ] **A pure deletion's hunk is titled "Line 0".** `Hunk::title` (`crates/templum-git/src/diff.rs:123`) uses the
-  new side; a deleted file, or any hunk with `new_len == 0`, has `new_start` 0. Fix: when `new_len` is 0, name the
-  old side ("Lines 12–20" of `old_start`/`old_len`).
 - [ ] **An empty new file gets an empty "Line 1" hunk row.** `new_file_diff` makes `@@ -0,0 +1,0 @@` for an empty
   file, drawn as a hunk with no lines. Fix: no hunk for an empty file; a note row "Empty file".
 - [ ] **An untracked nested repository shows an empty name.** `status -uall` lists it as `dir/`, and the file row's

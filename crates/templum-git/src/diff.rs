@@ -126,11 +126,17 @@ impl Hunk {
         if !self.context.is_empty() {
             return self.context.clone();
         }
-        let end = self.new_start + self.new_len.saturating_sub(1);
-        if end > self.new_start {
-            format!("Lines {}–{end}", self.new_start)
+        // A deletion has no new lines: its old ones say where it was.
+        let (start, len) = if self.new_len == 0 {
+            (self.old_start, self.old_len)
         } else {
-            format!("Line {}", self.new_start)
+            (self.new_start, self.new_len)
+        };
+        let end = start + len.saturating_sub(1);
+        if end > start {
+            format!("Lines {start}–{end}")
+        } else {
+            format!("Line {start}")
         }
     }
 
@@ -509,6 +515,15 @@ pub fn new_binary_diff(path: &str) -> String {
 mod tests {
     use super::*;
     use crate::parse::Change;
+
+    #[test]
+    fn a_deletions_hunk_is_named_by_its_old_lines() {
+        let text = "diff --git a/x b/x\ndeleted file mode 100644\n--- a/x\n+++ /dev/null\n@@ -12,3 +0,0 @@\n-a\n-b\n-c\n";
+        assert_eq!(
+            parse_diff(text, usize::MAX)[0].hunks[0].title(),
+            "Lines 12–14"
+        );
+    }
 
     const MODIFIED: &str = "diff --git a/src/lib.rs b/src/lib.rs\n\
 index 3b18e51..a1b2c3d 100644\n\

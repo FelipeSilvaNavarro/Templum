@@ -183,7 +183,7 @@ impl Workspace {
         };
         self.git_job(
             at,
-            move || repo.log(skip, git_block::PAGE),
+            move || repo.history(&templum_git::HistoryQuery::default(), skip, git_block::PAGE),
             move |ws, at, log, _, _| {
                 let Some(git) = ws.git_at(&at) else {
                     return;

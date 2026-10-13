@@ -2,6 +2,7 @@
 //! completion on the calling thread (the UI runs them on its background executor), never waits
 //! for input, and gives back typed values or a [`GitError`] with the command and its stderr.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -908,19 +909,127 @@ impl Repo {
     }
 }
 
+/// Where History's search looks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Search {
+    /// Commit messages (`--grep`), without case.
+    #[default]
+    Message,
+    /// Authors' names and emails (`--author`), without case.
+    Author,
+    /// Commits that added or removed the text (`-S`).
+    Code,
+}
+
+/// What History lists.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HistoryQuery {
+    /// HEAD and every branch, tag and remote branch (not `--all`, which has the stashes); else
+    /// HEAD's history.
+    pub all: bool,
+    pub search: Option<(Search, String)>,
+}
+
 impl Repo {
-    /// `count` commits of HEAD's history after the first `skip`, newest first. Before the
-    /// first commit: none.
-    pub fn log(&self, skip: usize, count: usize) -> Result<Vec<Commit>, GitError> {
+    /// `count` commits of the query after the first `skip`, in `--date-order` (children before
+    /// parents, so the graph's lanes never cross back; every page shares it). Searches take the
+    /// text as written (`-F`: a bracket is a bracket). Before the first commit: none.
+    pub fn history(
+        &self,
+        q: &HistoryQuery,
+        skip: usize,
+        count: usize,
+    ) -> Result<Vec<Commit>, GitError> {
         let format = format!("--format={}", parse::LOG_FORMAT);
         let date = format!("--date={}", parse::LOG_DATE);
-        let skip = format!("--skip={skip}");
-        let count = format!("-n{count}");
-        match self.run(&["log", "-z", &format, &date, &skip, &count]) {
+        let (skip, count) = (format!("--skip={skip}"), format!("-n{count}"));
+        let search: Vec<String> = match &q.search {
+            Some((Search::Message, t)) => vec!["-i".into(), "-F".into(), format!("--grep={t}")],
+            Some((Search::Author, t)) => vec!["-i".into(), "-F".into(), format!("--author={t}")],
+            Some((Search::Code, t)) => vec![format!("-S{t}")],
+            None => Vec::new(),
+        };
+        let mut args = vec!["log", "-z", &format, &date, "--date-order", &skip, &count];
+        if q.all {
+            args.extend(["HEAD", "--branches", "--tags", "--remotes"]);
+        }
+        args.extend(search.iter().map(String::as_str));
+        args.push("--");
+        match self.run(&args) {
             Ok(out) => Ok(parse::parse_log(&out)),
-            Err(e) if e.stderr.contains("does not have any commits") => Ok(Vec::new()),
+            Err(e)
+                if e.stderr.contains("does not have any commits")
+                    || e.stderr.contains("unknown revision") =>
+            {
+                Ok(Vec::new())
+            }
             Err(e) => Err(e),
         }
+    }
+
+    /// One commit, as History lists it (Blame opens one that isn't loaded).
+    pub fn commit_info(&self, hash: &str) -> Result<Commit, GitError> {
+        let format = format!("--format={}", parse::LOG_FORMAT);
+        let date = format!("--date={}", parse::LOG_DATE);
+        let out = self.run(&["log", "-z", "-1", &format, &date, hash, "--"])?;
+        parse::parse_log(&out).pop().ok_or_else(|| GitError {
+            command: shown(&self.program, &["log", "-1", hash]),
+            code: None,
+            stderr: format!("fatal: no commit {hash}"),
+            missing: false,
+        })
+    }
+
+    /// HEAD's commits not on its upstream (`git rev-list @{u}..HEAD`): History's "not pushed".
+    /// None with no upstream, or one gone from the server.
+    pub fn unpushed(&self) -> Result<HashSet<String>, GitError> {
+        if self.run(&["rev-parse", "--verify", "-q", "@{u}"]).is_err() {
+            return Ok(HashSet::new());
+        }
+        Ok(self
+            .text(&["rev-list", "@{u}..HEAD"])?
+            .lines()
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// `path`'s history through its renames (`--follow`), each commit with the file's path then.
+    pub fn file_log(
+        &self,
+        path: &str,
+        skip: usize,
+        count: usize,
+    ) -> Result<Vec<(Commit, CommitFile)>, GitError> {
+        let format = format!("--format={}", parse::LOG_FORMAT);
+        let date = format!("--date={}", parse::LOG_DATE);
+        // `--skip` counts the commits `--follow` leaves out too (git 2.55: skipping 1 skips a
+        // commit that didn't touch the file), `-n` only the shown ones: read the first
+        // `skip + count` and drop the first `skip` here. Parsing from the newest also keeps
+        // each entry's path right across a rename on an earlier page.
+        let count = format!("-n{}", skip + count);
+        let out = self.run(&[
+            "-c",
+            "core.quotePath=false",
+            "log",
+            "-z",
+            &format,
+            &date,
+            "--follow",
+            "--name-status",
+            "-M",
+            &count,
+            "--",
+            path,
+        ])?;
+        let mut log = parse::parse_file_log(&out, path);
+        log.drain(..skip.min(log.len()));
+        Ok(log)
+    }
+
+    /// `path` as it was in `rev`, as a checkout would write it: `git cat-file --filters` applies
+    /// the working tree's line endings and filters to the stored bytes.
+    pub fn file_at(&self, rev: &str, path: &str) -> Result<Vec<u8>, GitError> {
+        self.run(&["cat-file", "--filters", &format!("{rev}:{path}")])
     }
 
     pub fn commit_files(&self, hash: &str) -> Result<Vec<CommitFile>, GitError> {
@@ -1086,6 +1195,37 @@ impl Repo {
     pub fn stash_show(&self, stash: &Stash) -> Result<String, GitError> {
         let name = self.stash_ref(stash)?;
         self.text(&["stash", "show", "-p", "--no-color", &name])
+    }
+
+    /// A stash's changes, its new (untracked) files too, as the panel reads them.
+    pub fn stash_diff(
+        &self,
+        stash: &Stash,
+        ignore_whitespace: bool,
+    ) -> Result<Vec<FileDiff>, GitError> {
+        let name = self.stash_ref(stash)?;
+        let mut args = vec![
+            "-c",
+            "core.quotePath=false",
+            // Not --src-prefix/--dst-prefix: with --include-untracked, git 2.55 mangles them
+            // ("diff --git a.txt ludea.txt"). The default prefixes, whatever the user's config.
+            "-c",
+            "diff.noprefix=false",
+            "-c",
+            "diff.mnemonicPrefix=false",
+            "stash",
+            "show",
+            "-p",
+            "--include-untracked",
+            "--no-color",
+            "--no-ext-diff",
+            "-M",
+        ];
+        if ignore_whitespace {
+            args.push("-w");
+        }
+        args.push(&name);
+        Ok(parse_diff(&self.text(&args)?, DIFF_LIMIT))
     }
 }
 
