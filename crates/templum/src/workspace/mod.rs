@@ -94,6 +94,9 @@ pub(crate) struct Pane {
     pub heard: (u64, u64),
     /// News nobody has looked at yet; gone once the block is focused in the active window.
     pub alert: Option<Alert>,
+    /// Its folder and its agent as last read: at most a snapshot old (5 s), cheap to ask every
+    /// frame. The folder is the start folder until then, and follows each finished command.
+    pub seen: templum_terminal::Inspection,
 }
 
 /// A Git block of any workspace: block ids count from 0 in every one, so a result that comes
@@ -360,6 +363,32 @@ impl Space {
                 _ => false,
             })
         })
+    }
+
+    /// The terminal blocks back to front: the order of a snapshot's terminal items.
+    fn terminal_order(&self) -> Vec<BlockId> {
+        self.canvas
+            .blocks()
+            .iter()
+            .filter(|b| self.terminal(b.id).is_some())
+            .map(|b| b.id)
+            .collect()
+    }
+
+    /// Tells the terminals `ids` (a snapshot's `terminal_order`) what `saved` found in them.
+    fn see(&mut self, ids: &[BlockId], saved: &session::Saved) {
+        let found = saved.items.iter().filter_map(|item| match item {
+            session::Item::Terminal(t) => Some(t),
+            _ => None,
+        });
+        for (id, t) in ids.iter().zip(found) {
+            if let Some(pane) = self.terminal_mut(*id) {
+                // A folder the snapshot couldn't read (or write as JSON) keeps the one known.
+                let folder = t.folder.as_ref().map(PathBuf::from);
+                pane.seen.folder = folder.or(pane.seen.folder.take());
+                pane.seen.agent.clone_from(&t.agent);
+            }
+        }
     }
 
     /// Every terminal block, in no order.

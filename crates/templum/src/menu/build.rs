@@ -1,6 +1,7 @@
 //! Each target's menu: its items and what choosing them does.
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use crate::agents::AgentEntry;
 use gpui_kit::assets::IconName;
@@ -8,9 +9,9 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, ClipboardItem, Context, Entity, SharedString, Window, px};
-use templum_canvas::Point;
+use templum_canvas::{BlockId, Point};
 
-use super::Items;
+use super::{Items, SendTo};
 use crate::git_block;
 use crate::kanban;
 use crate::launcher;
@@ -56,6 +57,52 @@ fn agent_items(
     missing
         .into_iter()
         .fold(menu.separator().label("Not installed"), entry)
+}
+
+/// One item per terminal (`Workspace::terminal_list`); `act` on the chosen one.
+fn terminal_items(
+    ws: &Entity<Workspace>,
+    menu: PopupMenu,
+    terminals: &[(BlockId, String)],
+    act: impl Fn(&mut Workspace, BlockId, &mut Window, &mut Context<Workspace>) + Clone + 'static,
+) -> PopupMenu {
+    terminals.iter().fold(menu, |menu, (id, label)| {
+        let (id, act) = (*id, act.clone());
+        menu.item(item(
+            ws,
+            label.clone(),
+            Some(IconName::SquareTerminal),
+            move |ws, window, cx| act(ws, id, window, cx),
+        ))
+    })
+}
+
+/// Send to ▸ the workspace's terminals: the text is typed into the chosen one, never run.
+/// Nothing without a terminal or a text.
+fn send_to(
+    ws: &Entity<Workspace>,
+    menu: PopupMenu,
+    send: SendTo,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    if send.to.is_empty() || send.text.trim().is_empty() {
+        return menu;
+    }
+    let ws = ws.clone();
+    let text: Rc<str> = send.text.into();
+    menu.submenu_with_icon(
+        Some(Icon::new(IconName::SquareTerminal)),
+        "Send to",
+        window,
+        cx,
+        move |menu, _, _| {
+            let text = text.clone();
+            terminal_items(&ws, menu, &send.to, move |ws, id, window, cx| {
+                ws.send_to(id, &text, window, cx)
+            })
+        },
+    )
 }
 
 /// What deleting `n` cards along with their board or column says.
@@ -245,7 +292,9 @@ impl Items {
                         ws,
                         "Open a terminal here",
                         Some(IconName::SquareTerminal),
-                        move |ws, window, cx| ws.terminal_beside(block, &p, None, window, cx),
+                        move |ws, window, cx| {
+                            ws.terminal_beside(block, &p, None, window, cx);
+                        },
                     ));
                 }
                 if let Some(p) = path.clone() {
@@ -525,7 +574,12 @@ impl Items {
                     Some(IconName::Close),
                     move |ws, window, cx| ws.close(block, window, cx),
                 )),
-            Items::Editor { block, tree, wrap } => menu
+            Items::Editor {
+                block,
+                tree,
+                wrap,
+                send,
+            } => menu
                 .item(item(
                     ws,
                     "Change folder…",
@@ -552,6 +606,7 @@ impl Items {
                     None,
                     move |ws, window, cx| ws.toggle_wrap(block, window, cx),
                 ))
+                .map(|menu| send_to(ws, menu, send, window, cx))
                 .separator()
                 .item(item(
                     ws,
@@ -565,7 +620,11 @@ impl Items {
                 Some(IconName::Delete),
                 move |ws, _, cx| ws.delete_ink(index, cx),
             )),
-            Items::Note { block, preview } => menu
+            Items::Note {
+                block,
+                preview,
+                send,
+            } => menu
                 .item(item(
                     ws,
                     if preview { "Edit" } else { "Preview" },
@@ -587,6 +646,7 @@ impl Items {
                         }
                     },
                 ))
+                .map(|menu| send_to(ws, menu, send, window, cx))
                 .separator()
                 .item(item(
                     ws,
@@ -692,12 +752,13 @@ impl Items {
                         );
                     },
                 )),
-            Items::Card { board, card } => menu
+            Items::Card { board, card, send } => menu
                 .item(item(ws, "Open", None, move |ws, window, cx| {
                     if let Some(current) = ws.boards.card(board, card).cloned() {
                         kanban::open_card(board, current, false, window, cx);
                     }
                 }))
+                .map(|menu| send_to(ws, menu, send, window, cx))
                 .separator()
                 .item(item(
                     ws,

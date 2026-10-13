@@ -109,9 +109,32 @@ pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     }
 }
 
+/// Bytes for text typed in for the person to send (a note, a card): never an Enter. Bracketed
+/// like a paste when the app asked for it; otherwise its lines are joined with spaces and every
+/// other control character becomes a space. Trailing newlines are dropped.
+pub fn typed_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    let text = text.trim_end_matches(['\r', '\n']);
+    if bracketed {
+        paste_bytes(text, true)
+    } else {
+        text.replace("\r\n", "\n")
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect::<String>()
+            .into_bytes()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_text_never_presses_enter() {
+        assert_eq!(typed_bytes("ls\r\nrm -rf x\n", false), b"ls rm -rf x");
+        assert_eq!(typed_bytes("a\tb\x1b[A", false), b"a b [A");
+        assert_eq!(typed_bytes("a\nb\n", true), b"\x1b[200~a\nb\x1b[201~");
+    }
 
     fn key(key: &str) -> KeyInput<'_> {
         KeyInput {

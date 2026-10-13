@@ -147,6 +147,11 @@ fn an_agent_opens_in_its_folder_and_the_folder_becomes_recent(cx: &mut TestAppCo
             Point::new(40.0, 0.0)
         );
         assert_eq!(ws.space.focused, Some(id));
+        assert_eq!(
+            ws.space.terminal(id).unwrap().seen.agent.as_deref(),
+            Some("claude"),
+            "known at once, not at the next snapshot"
+        );
     });
     assert_eq!(folder_of(&ws, id, cx), a.path().canonicalize().unwrap());
     // The test shell echoes what it is typed.

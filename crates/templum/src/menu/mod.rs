@@ -10,7 +10,7 @@ use crate::agents::AgentEntry;
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, DismissEvent, Entity, Focusable as _, Pixels, Point as PixelPoint,
+    AnyElement, App, Context, DismissEvent, Entity, Focusable as _, Pixels, Point as PixelPoint,
     ScrollWheelEvent, Subscription, Window, anchored, deferred, div, px,
 };
 use templum_canvas::{BlockId, Point};
@@ -95,7 +95,7 @@ impl Workspace {
         let back = window
             .focused(cx)
             .unwrap_or_else(|| self.focus_handle.clone());
-        let Some(items) = self.items(&target) else {
+        let Some(items) = self.items(&target, cx) else {
             return;
         };
         let view = PopupMenu::build(window, cx, move |menu, window, cx| {
@@ -125,8 +125,16 @@ impl Workspace {
             .collect()
     }
 
+    /// A menu's Send to: `text`, and the terminals it can go to.
+    fn send_to_menu(&self, text: String) -> SendTo {
+        SendTo {
+            text,
+            to: self.terminal_list(None),
+        }
+    }
+
     /// What the menu for `target` needs to know, read now: building it can't read the workspace.
-    fn items(&self, target: &Target) -> Option<Items> {
+    fn items(&self, target: &Target, cx: &App) -> Option<Items> {
         Some(match *target {
             Target::Canvas(at) => Items::Canvas {
                 at,
@@ -148,11 +156,13 @@ impl Workspace {
                 Body::Note(n) => Items::Note {
                     block,
                     preview: n.preview,
+                    send: self.send_to_menu(n.to_send(cx)),
                 },
                 Body::Editor(e) => Items::Editor {
                     block,
                     tree: e.show_tree,
                     wrap: e.wrap,
+                    send: self.send_to_menu(e.to_send(cx).unwrap_or_default()),
                 },
                 Body::Git(_) => Items::Git { block },
             },
@@ -177,7 +187,15 @@ impl Workspace {
                     cards: found.map_or(0, |c| c.cards.len()),
                 }
             }
-            Target::Card { board, card } => Items::Card { board, card },
+            Target::Card { board, card } => Items::Card {
+                board,
+                card,
+                send: self.send_to_menu(
+                    self.boards
+                        .card(board, card)
+                        .map_or_else(String::new, |c| c.text()),
+                ),
+            },
             Target::Ink(index) => Items::Ink { index },
             Target::GitRow { block, list, index } => {
                 let git = self.space.git(block)?;
@@ -247,6 +265,12 @@ impl Workspace {
     }
 }
 
+/// A Send to submenu: the text, and the terminals listed (see `Workspace::terminal_list`).
+struct SendTo {
+    text: String,
+    to: Vec<(BlockId, String)>,
+}
+
 /// A target's menu, with what it shows read from the workspace.
 enum Items {
     Canvas {
@@ -271,11 +295,13 @@ enum Items {
         block: BlockId,
         /// It shows rendered.
         preview: bool,
+        send: SendTo,
     },
     Editor {
         block: BlockId,
         tree: bool,
         wrap: bool,
+        send: SendTo,
     },
     Git {
         block: BlockId,
@@ -313,6 +339,7 @@ enum Items {
     Card {
         board: u64,
         card: u64,
+        send: SendTo,
     },
     Space {
         id: String,

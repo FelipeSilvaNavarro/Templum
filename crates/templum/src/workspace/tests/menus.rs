@@ -184,8 +184,9 @@ fn the_innermost_menu_opens_and_acts_on_what_was_clicked(cx: &mut TestAppContext
         let card_el = gpui_kit::ElementId::Name(format!("card-{}-{card}", block.0).into());
         window.right_click(card_el, cx);
         window.render_frame(cx);
-        // Open, —, Delete card: the card's menu, not its block's (Board list, —, Close).
-        window.within("popup-menu").click(2usize, cx);
+        // Open, Send to ▸, —, Delete card: the card's menu, not its block's (Board list, —,
+        // Close).
+        window.within("popup-menu").click(3usize, cx);
         window.render_frame(cx);
         let ws = ws.read(cx);
         assert!(ws.boards.card(board, card).is_none(), "the card went");
@@ -207,4 +208,43 @@ fn the_innermost_menu_opens_and_acts_on_what_was_clicked(cx: &mut TestAppContext
         );
     })
     .unwrap();
+}
+
+#[test]
+fn a_terminals_label_names_its_agent_title_and_folder_once() {
+    use crate::workspace::blocks::label;
+    let folder = std::path::Path::new("/code/Templum");
+    assert_eq!(
+        label(Some("Claude Code"), "✳ Fix tests", Some(folder)),
+        "Claude Code · ✳ Fix tests · Templum"
+    );
+    assert_eq!(label(None, "Templum", Some(folder)), "Templum");
+    assert_eq!(label(None, "", None), "");
+}
+
+#[gpui_kit::test]
+fn send_to_lists_the_terminals_running_an_agent_first(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let second = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.add_terminal_at(Point::new(900.0, 0.0), window, cx);
+                let id = ws.space.canvas.top().unwrap();
+                ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into());
+                id
+            })
+        })
+        .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let list = ws.terminal_list(None);
+        assert_eq!(
+            list.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            [second, first]
+        );
+        assert!(list[0].1.starts_with("Claude Code"), "{list:?}");
+        // Only those working in a folder.
+        let nowhere = std::path::Path::new("/nowhere");
+        assert!(ws.terminal_list(Some(nowhere)).is_empty());
+    });
 }

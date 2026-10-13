@@ -51,6 +51,17 @@ pub(crate) struct Card {
     pub labels: Vec<Label>,
 }
 
+impl Card {
+    /// What sending it to a terminal types: its title, then its description.
+    pub fn text(&self) -> String {
+        if self.description.trim().is_empty() {
+            self.title.clone()
+        } else {
+            format!("{}\n\n{}", self.title, self.description)
+        }
+    }
+}
+
 /// A card's label: one of six colors, drawn with the theme's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, Window};
-use templum_canvas::{Camera, Point, Rect, Size, chrome};
+use templum_canvas::{BlockId, Camera, Point, Rect, Size, chrome};
 
 use crate::agents::AgentEntry;
 use crate::board::{self, Boards};
@@ -125,11 +125,10 @@ impl Workspace {
                 .and_then(|a| self.agents.iter().find(|known| known.id == *a));
             if let (Some(id), Some(agent), true) = (id, agent, in_its_folder) {
                 let line = format!("{}\r", agent.resume_command());
-                self.space
-                    .terminal(id)
-                    .expect("just spawned")
-                    .term
-                    .write(line.into_bytes());
+                let agent = agent.id.clone();
+                let pane = self.space.terminal_mut(id).expect("just spawned");
+                pane.term.write(line.into_bytes());
+                pane.seen.agent = Some(agent);
             }
             ids.push(id);
         }
@@ -182,8 +181,12 @@ impl Workspace {
         let known = self.known_agents();
         let jobs: Vec<_> = self
             .spaces()
-            .filter(|s| !s.frozen)
-            .map(|s| (s.id.clone(), s.layout(known.clone(), cx), s.saved.clone()))
+            .map(|s| {
+                let layout = s.layout(known.clone(), cx);
+                // A frozen workspace's file is never written, but its terminals are read.
+                let last = (!s.frozen).then(|| s.saved.clone());
+                (s.id.clone(), s.terminal_order(), layout, last)
+            })
             .collect();
         let boards = (!self.boards_frozen && self.boards_saved.as_ref() != Some(&self.boards))
             .then(|| self.boards.clone());
@@ -193,11 +196,12 @@ impl Workspace {
                 .spawn(async move {
                     let done = jobs
                         .into_iter()
-                        .map(|(id, layout, last)| {
+                        .map(|(id, terminals, layout, last)| {
                             let saved = layout.snapshot();
-                            let written = (last.as_ref() != Some(&saved))
-                                .then(|| session::save(&dir, &id, &saved, generation));
-                            (id, saved, written)
+                            let written = last
+                                .filter(|last| last.as_ref() != Some(&saved))
+                                .map(|_| session::save(&dir, &id, &saved, generation));
+                            (id, terminals, saved, written)
                         })
                         .collect::<Vec<_>>();
                     let boards = boards.map(|b| {
@@ -217,7 +221,7 @@ impl Workspace {
 
     pub(super) fn snapshot_done(
         &mut self,
-        done: Vec<(String, session::Saved, Option<std::io::Result<()>>)>,
+        done: Vec<SpaceSnapshot>,
         boards: Option<(Boards, std::io::Result<()>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -233,7 +237,10 @@ impl Workspace {
             Some((_, Err(err))) => failed = Some(err),
             None => {}
         }
-        for (id, saved, written) in done {
+        for (id, terminals, saved, written) in done {
+            if let Some(space) = self.space_by_id_mut(&id) {
+                space.see(&terminals, &saved);
+            }
             match written {
                 None => {}
                 Some(Ok(())) => {
@@ -320,3 +327,12 @@ fn clamped_rect(r: Rect, min: Size) -> Option<Rect> {
         )
     })
 }
+
+/// A workspace's snapshot, read in the background: its id, its terminals in the order of the
+/// snapshot's terminal items, the file's content, and the write's outcome (None: unchanged).
+pub(super) type SpaceSnapshot = (
+    String,
+    Vec<BlockId>,
+    session::Saved,
+    Option<std::io::Result<()>>,
+);

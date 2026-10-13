@@ -51,6 +51,17 @@ impl Note {
         self.editor.read(cx).value().to_string()
     }
 
+    /// What sending it to a terminal types: its selection, or all of it (always while it shows
+    /// rendered: a selection there is hidden).
+    pub fn to_send(&self, cx: &App) -> String {
+        let selected = self.editor.read(cx).selected_value();
+        if self.preview || selected.trim().is_empty() {
+            self.text(cx)
+        } else {
+            selected.to_string()
+        }
+    }
+
     pub fn title(&self, cx: &App) -> SharedString {
         title(&self.text(cx)).into()
     }

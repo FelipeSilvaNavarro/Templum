@@ -649,3 +649,32 @@ fn choosing_another_folder_keeps_unsaved_tabs(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn an_editor_sends_its_selection_or_its_file_and_line(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.rs");
+    std::fs::write(&file, "fn a() {}\nfn b() {}\n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_editor(handle, &ws, cx, dir.path());
+    click_file(handle, 0, cx);
+    cx.update_window(handle, |_, window, cx| {
+        let tab = ws.read(cx).space.editor(id).unwrap().tabs[0].editor.clone();
+        tab.update(cx, |e, cx| {
+            e.set_cursor_position(
+                gpui_kit::component::input::Position {
+                    line: 1,
+                    character: 3,
+                },
+                window,
+                cx,
+            )
+        });
+        let sent = ws.read(cx).space.editor(id).unwrap().to_send(cx);
+        assert_eq!(sent, Some(format!("{}:2", file.display())));
+        tab.update(cx, |e, cx| e.set_selected_range(3..4, cx));
+        let sent = ws.read(cx).space.editor(id).unwrap().to_send(cx);
+        assert_eq!(sent.as_deref(), Some("a"));
+    })
+    .unwrap();
+}

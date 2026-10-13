@@ -19,7 +19,7 @@ use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::CursorStyle;
 
 use crate::agent::{Detect, agent_of};
-use crate::input::{KeyInput, encode_key, paste_bytes};
+use crate::input::{KeyInput, encode_key, paste_bytes, typed_bytes};
 use crate::palette::{self, Palette};
 use crate::tap::{Mark, Status, Tap};
 
@@ -596,13 +596,21 @@ impl Terminal {
     }
 
     pub fn paste(&self, text: &str) {
-        let bracketed = self
-            .term
+        self.write(paste_bytes(text, self.bracketed()));
+    }
+
+    /// Types `text` in for the person to send: never presses Enter (see [`typed_bytes`]).
+    pub fn type_in(&self, text: &str) {
+        self.write(typed_bytes(text, self.bracketed()));
+    }
+
+    /// The program asked for pastes to be bracketed.
+    fn bracketed(&self) -> bool {
+        self.term
             .0
             .lock_unfair()
             .mode()
-            .contains(TermMode::BRACKETED_PASTE);
-        self.write(paste_bytes(text, bracketed));
+            .contains(TermMode::BRACKETED_PASTE)
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16, cell_px: (u16, u16)) {

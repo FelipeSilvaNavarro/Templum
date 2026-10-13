@@ -220,3 +220,61 @@ fn a_note_comes_back_with_its_text_and_mode(cx: &mut TestAppContext) {
         assert_eq!(notes, [("# Keep me\n- x".to_string(), true)]);
     });
 }
+
+/// Send to ▸ a terminal types the note's selection there (never Enter) and shows the terminal
+/// with the keyboard.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn send_to_types_a_notes_selection_into_the_chosen_terminal(cx: &mut TestAppContext) {
+    use std::time::{Duration, Instant};
+    use templum_terminal::Snapshot;
+    let (handle, ws) = open(cx);
+    let terminal = first_id(&ws, cx);
+    let note = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.add_note_at(Point::new(900.0, 40.0), window, cx);
+                ws.space.appearing.clear();
+                let id = ws.space.canvas.top().unwrap();
+                let editor = ws.space.blocks[&id].note().unwrap().editor.clone();
+                editor.update(cx, |e, cx| {
+                    e.set_value("one two", window, cx);
+                    e.set_selected_range(4..7, cx);
+                });
+                id
+            })
+        })
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(("title", note.0 as usize), cx);
+        window.render_frame(cx);
+        // Preview, Copy all, Send to ▸, —, Close.
+        window.within("popup-menu").click(2usize, cx);
+        window.render_frame(cx);
+        window
+            .within("submenu")
+            .within("popup-menu")
+            .click(0usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(terminal)));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let shown = ws.read_with(cx, |ws, _| {
+            let mut snap = Snapshot::default();
+            snap.refresh(
+                ws.space.terminal(terminal).unwrap().term.shared(),
+                &ws.theme.palette,
+            );
+            snap.text()
+        });
+        if shown.contains("two") {
+            assert!(!shown.contains("one"), "only the selection: {shown:?}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "not typed: {shown:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}

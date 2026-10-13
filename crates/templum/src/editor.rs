@@ -472,6 +472,23 @@ impl Editor {
         }
     }
 
+    /// What sending it to a terminal types: the active file's selection, or its path and the
+    /// cursor's line (`/abs/path:12`), which agents read.
+    pub fn to_send(&self, cx: &App) -> Option<String> {
+        let tab = self.active_tab()?;
+        let editor = tab.editor.read(cx);
+        let selected = editor.selected_value();
+        Some(if selected.trim().is_empty() {
+            format!(
+                "{}:{}",
+                tab.path.display(),
+                editor.cursor_position().line + 1
+            )
+        } else {
+            selected.to_string()
+        })
+    }
+
     /// The keyboard is in one of the tabs' editors.
     pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
         self.tabs.iter().any(|t| {

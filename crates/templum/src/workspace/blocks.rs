@@ -82,10 +82,8 @@ impl Workspace {
         command: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        let Some(anchor) = self.space.canvas.get(block).map(|b| b.rect) else {
-            return;
-        };
+    ) -> Option<BlockId> {
+        let anchor = self.space.canvas.get(block)?.rect;
         self.space.pristine = false;
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
         let rect = self.space.canvas.place_beside(anchor, size);
@@ -98,6 +96,56 @@ impl Workspace {
             }
         }
         window.focus(&self.focus_handle, cx);
+        id
+    }
+
+    /// The terminals of this workspace, labeled, those running an agent first: every one, or
+    /// those whose folder is inside `root`.
+    pub(crate) fn terminal_list(&self, root: Option<&Path>) -> Vec<(BlockId, String)> {
+        let mut found: Vec<_> = self
+            .space
+            .terminals()
+            .filter(|(_, pane)| {
+                root.is_none_or(|root| {
+                    pane.seen
+                        .folder
+                        .as_ref()
+                        .is_some_and(|f| f.starts_with(root))
+                })
+            })
+            .map(|(id, pane)| {
+                let agent = pane.seen.agent.as_ref().map(|agent| {
+                    self.agents
+                        .iter()
+                        .find(|a| a.id == *agent)
+                        .map_or(agent.as_str(), |a| a.title.as_str())
+                });
+                let label = label(agent, &pane.term.title(), pane.seen.folder.as_deref());
+                (agent.is_none(), id, label)
+            })
+            .collect();
+        found.sort_by_key(|(no_agent, id, _)| (*no_agent, id.0));
+        found
+            .into_iter()
+            .map(|(_, id, label)| (id, label))
+            .collect()
+    }
+
+    /// Types `text` into the terminal `to` for the person to send (never Enter), then shows it
+    /// with the keyboard.
+    pub(crate) fn send_to(
+        &mut self,
+        to: BlockId,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pane) = self.space.terminal(to) else {
+            return;
+        };
+        pane.term.type_in(text);
+        let space = self.space.id.clone();
+        self.reveal(&space, to, window, cx);
     }
 
     /// A block's editor is about to leave the frame: if it has the keyboard, the canvas takes it.
@@ -178,11 +226,15 @@ impl Workspace {
         let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx)?;
         // The shell reads it once it is ready.
         let line = format!("{command}\r");
-        self.space
-            .terminal(id)
-            .expect("just spawned")
-            .term
-            .write(line.into_bytes());
+        // Known at once (Shift+Enter, closing), not at the next snapshot.
+        let agent = self
+            .agents
+            .iter()
+            .find(|a| a.command == command)
+            .map(|a| a.id.clone());
+        let pane = self.space.terminal_mut(id).expect("just spawned");
+        pane.term.write(line.into_bytes());
+        pane.seen.agent = agent;
         remember(&mut self.space.recent, folder.to_path_buf());
         window.focus(&self.focus_handle, cx);
         Some(id)
@@ -249,12 +301,13 @@ impl Workspace {
             command,
             palette: self.theme.palette,
             options: self.config.term_options(),
-            working_directory: folder,
+            working_directory: folder.clone(),
             integration: self
                 .integration
                 .clone()
                 .filter(|_| self.config.shell.integration),
         };
+        let start = folder.or_else(std::env::home_dir);
         let id = match Terminal::spawn(opts, self.notify.clone()) {
             Ok(term) => {
                 let id = self.space.canvas.add(rect);
@@ -265,6 +318,10 @@ impl Workspace {
                         snapshot: Rc::default(),
                         heard: (0, 0),
                         alert: None,
+                        seen: templum_terminal::Inspection {
+                            folder: start,
+                            agent: None,
+                        },
                     }),
                 );
                 self.space.focused = Some(id);
@@ -359,8 +416,14 @@ impl Workspace {
             for (id, pane) in terminals {
                 let status = pane.term.status();
                 let new = alert::news(&status, pane.heard);
-                if i == 0 && status.finished > pane.heard.0 {
-                    finished_in.extend(pane.term.processes().reported);
+                if status.finished > pane.heard.0 {
+                    let reported = pane.term.processes().reported;
+                    if reported.is_some() {
+                        pane.seen.folder.clone_from(&reported);
+                    }
+                    if i == 0 {
+                        finished_in.extend(reported);
+                    }
                 }
                 pane.heard = (status.finished, status.attention);
                 if active && i == 0 && space.focused == Some(id) {
@@ -475,4 +538,21 @@ impl Workspace {
             self.close(id, window, cx);
         }
     }
+}
+
+/// A terminal as a menu names it: its agent, its title and its folder's name, each once.
+pub(super) fn label(agent: Option<&str>, title: &str, folder: Option<&Path>) -> String {
+    let folder = folder
+        .and_then(Path::file_name)
+        .map(|n| n.to_string_lossy().into_owned());
+    let mut parts: Vec<&str> = Vec::new();
+    for part in [agent, Some(title), folder.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        if !part.is_empty() && !parts.contains(&part) {
+            parts.push(part);
+        }
+    }
+    parts.join(" · ")
 }
