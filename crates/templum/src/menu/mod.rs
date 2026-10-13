@@ -72,9 +72,9 @@ pub(crate) enum Target {
     GitTerminals(BlockId),
     /// The ⋯ of a Git block's top bar.
     GitMore(BlockId),
-    /// Publish's remotes, when there are several.
+    /// Publish's remotes, when there are several: for the block `at` names.
     GitRemotes {
-        block: BlockId,
+        at: crate::workspace::GitAt,
         branch: String,
         remotes: Vec<String>,
     },
@@ -306,11 +306,11 @@ impl Workspace {
                 }
             }
             Target::GitRemotes {
-                block,
+                ref at,
                 ref branch,
                 ref remotes,
             } => Items::GitRemotes {
-                block,
+                at: at.clone(),
                 branch: branch.clone(),
                 remotes: remotes.clone(),
             },
@@ -398,7 +398,7 @@ enum Items {
         trash: bool,
     },
     GitRemotes {
-        block: BlockId,
+        at: crate::workspace::GitAt,
         branch: String,
         remotes: Vec<String>,
     },

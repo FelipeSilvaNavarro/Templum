@@ -35,7 +35,7 @@ impl Workspace {
                 if let Some(git) = ws.git_at(&at) {
                     git.branches = branches.clone();
                 }
-                git_block::switcher::open(cx.entity(), at.block, branches, window, cx);
+                git_block::switcher::open(cx.entity(), at, branches, window, cx);
             },
             window,
             cx,
@@ -81,17 +81,20 @@ impl Workspace {
             "You have {}. What should happen to them?",
             words::changed_files(s.entries.len())
         );
-        let entity = cx.entity();
+        let (entity, block_at) = (cx.entity(), self.here(id));
+        // Answered later: on its own block, in its own workspace.
         let act = |leave: Option<String>| -> Act {
-            let (entity, name) = (entity.clone(), name.clone());
+            let (entity, name, at) = (entity.clone(), name.clone(), block_at.clone());
             Rc::new(move |window, cx| {
                 let (name, leave) = (name.clone(), leave.clone());
                 entity.update(cx, |ws, cx| {
-                    ws.switch_now(id, name, remote, leave, window, cx)
+                    if ws.show_git_block(&at, window, cx) {
+                        ws.switch_now(at.block, name, remote, leave, window, cx)
+                    }
                 })
             })
         };
-        let commit = entity.clone();
+        let (commit, commit_at) = (entity.clone(), block_at.clone());
         prompt::choose(
             title,
             unpushed,
@@ -113,7 +116,11 @@ impl Workspace {
                     label: "Commit first".into(),
                     primary: false,
                     act: Rc::new(move |window, cx| {
-                        commit.update(cx, |ws, cx| ws.focus_summary(id, window, cx))
+                        commit.update(cx, |ws, cx| {
+                            if ws.show_git_block(&commit_at, window, cx) {
+                                ws.focus_summary(commit_at.block, window, cx)
+                            }
+                        })
                     }),
                 },
                 Choice {

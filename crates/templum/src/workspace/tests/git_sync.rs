@@ -275,3 +275,55 @@ fn sync_after_the_servers_branch_was_deleted_offers_publish(cx: &mut TestAppCont
         "published again"
     );
 }
+
+// Review I1: a question's answer acts on its own block, in its own workspace.
+#[gpui_kit::test]
+fn the_sync_question_answered_after_a_switch_acts_on_its_own_repository(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    // X: diverged from its server. Y: another repository, same block id in another workspace.
+    let x = committed_repo();
+    let x_remote = add_remote(x.path());
+    let other = other_clone(&x_remote);
+    commit_in(other.path(), "b.txt");
+    git_run(other.path(), &["push", "-q"]);
+    commit_in(x.path(), "c.txt");
+    let y = committed_repo();
+    let y_head = git_run(y.path(), &["rev-parse", "HEAD"]);
+    let (handle, ws) = open(cx);
+    let in_x = open_git(handle, &ws, cx, x.path());
+    let n = in_x.0 as usize;
+    cx.update_window(handle, |_, window, cx| window.click(("git-sync", n), cx))
+        .unwrap();
+    settle(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.has_active_dialog(cx), "both sides have new commits")
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.new_space(window, cx);
+            ws.add_note_at(Point::new(3000.0, 3000.0), window, cx);
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    let in_y = open_git(handle, &ws, cx, y.path());
+    assert_eq!(in_y, in_x, "block ids repeat across workspaces");
+    cx.update_window(handle, |_, window, cx| {
+        window.within("dialog").click("git-rebase", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(x_remote.path(), &["log", "-1", "--format=%s", "main"]),
+        "c.txt\n",
+        "X joined and sent"
+    );
+    assert_eq!(
+        git_run(y.path(), &["rev-parse", "HEAD"]),
+        y_head,
+        "Y untouched"
+    );
+}

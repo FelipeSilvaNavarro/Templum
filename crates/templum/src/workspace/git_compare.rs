@@ -151,17 +151,21 @@ impl Workspace {
             .map(|b| b.name.clone())
             .filter(|b| *b != branch)
             .collect();
+        let at = self.here(id);
         git_block::switcher::pick(
             cx.entity(),
             "Compare with",
             names,
             move |ws, base, window, cx| {
-                if let Some(c) = ws.space.git_mut(id).and_then(|g| g.compare.as_mut()) {
+                // Answered later: on its own block, in its own workspace.
+                if !ws.show_git_block(&at, window, cx) {
+                    return;
+                }
+                if let Some(c) = ws.space.git_mut(at.block).and_then(|g| g.compare.as_mut()) {
                     c.base = base;
                     c.narrowed = None;
                 }
-                let at = ws.here(id);
-                ws.load_compare(at, window, cx);
+                ws.load_compare(at.clone(), window, cx);
             },
             window,
             cx,

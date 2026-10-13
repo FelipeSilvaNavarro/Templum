@@ -92,8 +92,17 @@ impl Workspace {
                         );
                     }
                     Ok(Synced::Diverged { .. }) => {
-                        let (rebase, merge) = (entity.clone(), entity.clone());
-                        let block = at.block;
+                        // Answered later: on its own block, in its own workspace.
+                        let join = |rebase: bool| -> prompt::Act {
+                            let (entity, at) = (entity.clone(), at.clone());
+                            Rc::new(move |window, cx| {
+                                entity.update(cx, |ws, cx| {
+                                    if ws.show_git_block(&at, window, cx) {
+                                        ws.sync_join(at.block, rebase, window, cx)
+                                    }
+                                })
+                            })
+                        };
                         prompt::choose(
                             "Your branch and the server's both have new commits.",
                             "",
@@ -102,21 +111,13 @@ impl Workspace {
                                     id: "git-rebase",
                                     label: "Put my commits on top (rebase)".into(),
                                     primary: true,
-                                    act: Rc::new(move |window, cx| {
-                                        rebase.update(cx, |ws, cx| {
-                                            ws.sync_join(block, true, window, cx)
-                                        })
-                                    }),
+                                    act: join(true),
                                 },
                                 Choice {
                                     id: "git-merge",
                                     label: "Merge".into(),
                                     primary: false,
-                                    act: Rc::new(move |window, cx| {
-                                        merge.update(cx, |ws, cx| {
-                                            ws.sync_join(block, false, window, cx)
-                                        })
-                                    }),
+                                    act: join(false),
                                 },
                                 Choice {
                                     id: "cancel",
@@ -160,6 +161,10 @@ impl Workspace {
             move |ws, at, remotes, window, cx| {
                 let block = at.block;
                 let entity = cx.entity();
+                // The workspace changed meanwhile: its block with this id isn't the one asked.
+                if ws.space.id != at.space || ws.git_at(&at).is_none() {
+                    return;
+                }
                 match remotes {
                     Ok(r) if r.len() == 1 => ws.publish_to(block, r[0].clone(), branch, window, cx),
                     Ok(r) if r.is_empty() => {
@@ -193,7 +198,7 @@ impl Workspace {
                     }
                     Ok(remotes) => ws.open_menu(
                         Target::GitRemotes {
-                            block,
+                            at,
                             branch,
                             remotes,
                         },
@@ -214,7 +219,7 @@ impl Workspace {
         let Some(folder) = self.space.git(id).map(|g| g.folder.display().to_string()) else {
             return;
         };
-        let ws = cx.entity();
+        let (ws, at) = (cx.entity(), self.here(id));
         prompt::ask_two(
             "Clone a repository",
             "Clone",
@@ -225,7 +230,12 @@ impl Workspace {
                 if url.is_empty() || dest.trim().is_empty() {
                     return false;
                 }
-                ws.update(cx, |ws, cx| ws.clone_repo(id, url, dest, window, cx));
+                let at = at.clone();
+                ws.update(cx, |ws, cx| {
+                    if ws.show_git_block(&at, window, cx) {
+                        ws.clone_repo(at.block, url, dest, window, cx)
+                    }
+                });
                 true
             },
             window,

@@ -169,14 +169,18 @@ impl Workspace {
             self.stage(id, vec![path], window, cx);
             return;
         }
-        let entity = cx.entity();
+        let (entity, at) = (cx.entity(), self.here(id));
         prompt::confirm(
             format!("Mark {path} resolved?"),
             "It still has conflict markers: Git will record them as they are.",
             "Mark resolved",
             move |window, cx| {
-                let path = path.clone();
-                entity.update(cx, |ws, cx| ws.stage(id, vec![path], window, cx))
+                let (path, at) = (path.clone(), at.clone());
+                entity.update(cx, |ws, cx| {
+                    if ws.show_git_block(&at, window, cx) {
+                        ws.stage(at.block, vec![path], window, cx)
+                    }
+                })
             },
             window,
             cx,

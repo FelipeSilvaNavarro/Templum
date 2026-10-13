@@ -7,14 +7,14 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Entity, Window, px};
-use templum_canvas::BlockId;
 use templum_git::Branch;
 
-use crate::workspace::Workspace;
+use crate::workspace::{GitAt, Workspace};
 
+/// Opens the switcher for the block `here` names: its answer acts there, whatever shows then.
 pub(crate) fn open(
     ws: Entity<Workspace>,
-    block: BlockId,
+    here: GitAt,
     branches: Vec<Branch>,
     window: &mut Window,
     cx: &mut App,
@@ -24,6 +24,7 @@ pub(crate) fn open(
     let palette = state.clone();
     window.open_dialog(cx, move |dialog, _, _| {
         let (ws_pick, ws_new) = (ws.clone(), ws.clone());
+        let (here_pick, here_new) = (here.clone(), here.clone());
         let (local_names, remote_names): (Vec<String>, Vec<String>) = (
             local.iter().map(|b| b.name.clone()).collect(),
             remote.iter().map(|b| b.name.clone()).collect(),
@@ -47,16 +48,20 @@ pub(crate) fn open(
                 )
                 .placeholder("Search branches")
                 .footer(move |_, _, _| {
-                    let ws = ws_new.clone();
+                    let (ws, here) = (ws_new.clone(), here_new.clone());
                     Button::new("git-switcher-new")
                         .label("+ New branch…")
                         .ghost()
                         .on_click(move |_, window, cx| {
                             window.close_dialog(cx);
-                            let ws = ws.clone();
+                            let (ws, here) = (ws.clone(), here.clone());
                             // The next dialog opens once this one has closed.
                             window.defer(cx, move |window, cx| {
-                                ws.update(cx, |ws, cx| ws.branch_from(block, None, window, cx))
+                                ws.update(cx, |ws, cx| {
+                                    if ws.show_git_block(&here, window, cx) {
+                                        ws.branch_from(here.block, None, window, cx)
+                                    }
+                                })
                             });
                         })
                 })
@@ -70,7 +75,9 @@ pub(crate) fn open(
                     };
                     window.close_dialog(cx);
                     ws_pick.update(cx, |ws, cx| {
-                        ws.switch_branch(block, name, remote, window, cx)
+                        if ws.show_git_block(&here_pick, window, cx) {
+                            ws.switch_branch(here_pick.block, name, remote, window, cx)
+                        }
                     });
                 }),
         )

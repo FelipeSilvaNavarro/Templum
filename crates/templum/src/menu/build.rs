@@ -393,17 +393,20 @@ impl Items {
                     move |ws, window, cx| ws.ask_clone(block, window, cx),
                 )),
             Items::GitRemotes {
-                block,
+                at,
                 branch,
                 remotes,
             } => remotes.into_iter().fold(menu, |menu, remote| {
-                let (branch, label) = (branch.clone(), format!("Publish to {remote}"));
+                let (branch, label, at) =
+                    (branch.clone(), format!("Publish to {remote}"), at.clone());
                 menu.item(item(
                     ws,
                     label,
                     Some(IconName::Upload),
                     move |ws, window, cx| {
-                        ws.publish_to(block, remote.clone(), branch.clone(), window, cx)
+                        if ws.show_git_block(&at, window, cx) {
+                            ws.publish_to(at.block, remote.clone(), branch.clone(), window, cx)
+                        }
                     },
                 ))
             }),

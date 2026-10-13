@@ -124,7 +124,7 @@ impl Pane {
 
 /// A Git block of any workspace: block ids count from 0 in every one, so a result that comes
 /// back after a switch still finds its block.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GitAt {
     pub space: String,
     pub block: BlockId,
