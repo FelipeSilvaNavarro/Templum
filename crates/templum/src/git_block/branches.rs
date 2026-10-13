@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, ClickEvent, Context, ElementId, MouseButton, MouseDownEvent, TestSupportExt, div,
@@ -14,8 +15,8 @@ use gpui_kit::{
 use templum_canvas::BlockId;
 use templum_git::Branch;
 
-use super::widgets::{centered, field};
-use super::{FONT, Git, LISTS_W, ROW_H, words};
+use super::widgets::{centered, field, icon_button, small};
+use super::{Compare, FONT, Git, LISTS_W, ROW_H, diff_view, words};
 use crate::editor::button;
 use crate::menu::Target;
 use crate::workspace::Workspace;
@@ -29,29 +30,186 @@ pub(super) fn branches(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let n = id.0 as usize;
+    let (column, right) = match &git.compare {
+        Some(c) => (
+            compare_column(ws, id, c, z, cx),
+            diff_view::panel(ws, id, git, z, cx),
+        ),
+        None => (
+            branch_column(ws, id, git, z, cx),
+            no_comparison(ws, id, git, z, cx),
+        ),
+    };
     div()
         .id(("git-branches", n))
         .flex_1()
         .min_h(px(0.0))
         .flex()
-        .child(branch_column(ws, id, git, z, cx))
-        .child(no_comparison(ws, git, z))
+        .child(column)
+        .child(right)
         .test_support()
         .into_any_element()
 }
 
-/// The right side before a comparison is asked for.
-fn no_comparison(ws: &Workspace, git: &Git, z: f32) -> AnyElement {
+/// The right side before a comparison is asked for, with Compare for the current branch.
+fn no_comparison(
+    ws: &Workspace,
+    id: BlockId,
+    git: &Git,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let (ui, n) = (ws.ui, id.0 as usize);
     let base = git
         .default_branch
         .as_deref()
         .map(words::local_name)
-        .unwrap_or("main");
-    centered(ws.ui, z)
+        .unwrap_or("main")
+        .to_string();
+    let current = git.status.branch.clone();
+    centered(ui, z)
         .flex_1()
         .child(format!(
             "Right-click a branch and choose Compare with {base} to see what it has that {base} doesn't."
         ))
+        .when_some(
+            current.filter(|c| git.default_branch.is_some() && *c != base),
+            |el, current| {
+                el.child(
+                    button(
+                        ("git-compare-current", n),
+                        format!("Compare {current} with {base}"),
+                        ui,
+                        z,
+                    )
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.compare_branch(id, current.clone(), window, cx)
+                    }))
+                    .test_support(),
+                )
+            },
+        )
+        .into_any_element()
+}
+
+/// A comparison's column: ← back, its heading (a click shows every commit), the base, and the
+/// commits newest first (a click narrows the panel to one).
+fn compare_column(
+    ws: &Workspace,
+    id: BlockId,
+    c: &Compare,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let ui = ws.ui;
+    let n = id.0 as usize;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
+    let rows: Vec<AnyElement> = c
+        .commits
+        .iter()
+        .enumerate()
+        .map(|(i, commit)| {
+            let hash = commit.hash.clone();
+            let selected = c.narrowed.as_deref() == Some(commit.hash.as_str());
+            div()
+                .id(ElementId::Name(
+                    format!("git-compare-commit-{n}-{i}").into(),
+                ))
+                .flex()
+                .flex_col()
+                .justify_center()
+                .h(px(2.0 * ROW_H * z))
+                .px(px(10.0 * z))
+                .text_size(px(FONT * z))
+                .text_color(ui.title)
+                .when(selected, |el| el.bg(ui.card))
+                .cursor_pointer()
+                .hover(move |st| st.bg(ui.hover))
+                .child(div().truncate().child(commit.subject.clone()))
+                .child(
+                    div()
+                        .text_size(px(11.0 * z))
+                        .text_color(ui.title_dim)
+                        .child(format!(
+                            "{} · {}",
+                            commit.short,
+                            templum_git::ago(now, commit.time)
+                        )),
+                )
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.narrow_compare(id, Some(hash.clone()), window, cx)
+                }))
+                .test_support()
+                .into_any_element()
+        })
+        .collect();
+    let empty = c.commits.is_empty().then(|| {
+        div()
+            .p(px(10.0 * z))
+            .text_size(px(FONT * z))
+            .text_color(ui.title_dim)
+            .child(format!("{} has nothing {} doesn't", c.branch, c.base))
+    });
+    div()
+        .w(px(LISTS_W * z))
+        .h_full()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .border_r_1()
+        .border_color(ui.hairline)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0 * z))
+                .p(px(6.0 * z))
+                .border_b_1()
+                .border_color(ui.hairline)
+                .child(
+                    icon_button(("git-compare-close", n), IconName::ArrowLeft, ui, z)
+                        .tooltip(|window, cx| {
+                            Tooltip::new("Back to the branches").build(window, cx)
+                        })
+                        .on_click(
+                            cx.listener(move |ws, _: &ClickEvent, _, cx| ws.close_compare(id, cx)),
+                        )
+                        .test_support(),
+                )
+                .child(
+                    div()
+                        .id(("git-compare-all", n))
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .text_size(px(FONT * z))
+                        .text_color(ui.title)
+                        .cursor_pointer()
+                        .child(format!("{} vs {}", c.branch, c.base))
+                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                            ws.narrow_compare(id, None, window, cx)
+                        }))
+                        .test_support(),
+                )
+                .child(
+                    small(("git-compare-base", n), "Base ▾", ui, z)
+                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                            ws.choose_compare_base(id, window, cx)
+                        }))
+                        .test_support(),
+                ),
+        )
+        .child(
+            div()
+                .id(("git-compare-list", n))
+                .flex_1()
+                .min_h(px(0.0))
+                .overflow_y_scroll()
+                .children(rows)
+                .children(empty),
+        )
         .into_any_element()
 }
 

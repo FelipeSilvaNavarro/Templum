@@ -314,7 +314,8 @@ fn a_branchs_menu_renames_merges_publishes_and_deletes_asking_to_force(cx: &mut 
         repo.path(),
         crate::git_block::Tab::Branches,
     );
-    // feat, main; feat's menu: Rename…, Merge into main…, Delete…, Publish, Copy name.
+    // feat, main; feat's menu: Compare with main, Merge into main…, Rename…, Delete…, Publish,
+    // Copy name.
     let menu = |cx: &mut TestAppContext, row: usize, item: usize| {
         cx.update_window(handle, |_, window, cx| {
             window.right_click(branch_row(id, false, row), cx);
@@ -324,7 +325,7 @@ fn a_branchs_menu_renames_merges_publishes_and_deletes_asking_to_force(cx: &mut 
         })
         .unwrap();
     };
-    menu(cx, 0, 0);
+    menu(cx, 0, 2);
     cx.update_window(handle, |_, window, cx| {
         window.press("ctrl-a", cx);
         window.press("cmd-a", cx);
@@ -336,7 +337,7 @@ fn a_branchs_menu_renames_merges_publishes_and_deletes_asking_to_force(cx: &mut 
     settle(handle, cx);
     git_of(&ws, cx, id, |g| assert_eq!(g.branches[0].name, "feature"));
     // Delete… before it has an upstream: unmerged anywhere, so git refuses.
-    menu(cx, 0, 2);
+    menu(cx, 0, 3);
     cx.update_window(handle, |_, window, cx| {
         window.within("dialog").click("ok", cx);
         window.render_frame(cx);
@@ -353,13 +354,13 @@ fn a_branchs_menu_renames_merges_publishes_and_deletes_asking_to_force(cx: &mut 
         window.render_frame(cx);
     })
     .unwrap();
-    menu(cx, 0, 3);
+    menu(cx, 0, 4);
     settle(handle, cx);
     git_of(&ws, cx, id, |g| {
         assert_eq!(g.branches[0].upstream.as_deref(), Some("origin/feature"))
     });
     // Published: merged into its upstream, so `git branch -d` takes it.
-    menu(cx, 0, 2);
+    menu(cx, 0, 3);
     cx.update_window(handle, |_, window, cx| {
         window.within("dialog").click("ok", cx);
         window.render_frame(cx);
@@ -384,8 +385,8 @@ fn a_branchs_menu_renames_merges_publishes_and_deletes_asking_to_force(cx: &mut 
         window.render_frame(cx);
         window.right_click(branch_row(id, true, 0), cx);
         window.render_frame(cx);
-        // Merge into main…, Copy name.
-        window.within("popup-menu").click(0usize, cx);
+        // Compare with main, Merge into main…, Copy name.
+        window.within("popup-menu").click(1usize, cx);
         window.render_frame(cx);
         window.within("dialog").click("ok", cx);
         window.render_frame(cx);

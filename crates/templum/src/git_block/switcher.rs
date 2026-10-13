@@ -77,3 +77,38 @@ pub(crate) fn open(
     });
     state.update(cx, |state, cx| state.focus(window, cx));
 }
+
+/// A searchable list of `names`; Enter or a click gives the one chosen to `chosen`.
+pub(crate) fn pick(
+    ws: Entity<Workspace>,
+    title: &'static str,
+    names: Vec<String>,
+    chosen: impl Fn(&mut Workspace, String, &mut Window, &mut gpui_kit::Context<Workspace>) + 'static,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let state = cx.new(|cx| CommandState::new(window, cx));
+    let palette = state.clone();
+    let chosen = std::rc::Rc::new(chosen);
+    window.open_dialog(cx, move |dialog, _, _| {
+        let (ws, names, chosen) = (ws.clone(), names.clone(), chosen.clone());
+        let items: Vec<CommandItem> = names
+            .iter()
+            .map(|n| CommandItem::new().label(n.clone()))
+            .collect();
+        dialog.title(title).w(px(420.0)).child(
+            Command::new(&palette)
+                .items(items)
+                .placeholder("Search branches")
+                .on_confirm(move |at, window, cx| {
+                    let Some(name) = names.get(at.row).cloned() else {
+                        return;
+                    };
+                    window.close_dialog(cx);
+                    let chosen = chosen.clone();
+                    ws.update(cx, |ws, cx| chosen(ws, name, window, cx));
+                }),
+        )
+    });
+    state.update(cx, |state, cx| state.focus(window, cx));
+}

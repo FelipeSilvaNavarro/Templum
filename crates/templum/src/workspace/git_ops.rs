@@ -255,7 +255,13 @@ impl Workspace {
         match tab {
             git_block::Tab::Changes => {}
             git_block::Tab::History => self.load_history(at, 0, window, cx),
-            git_block::Tab::Branches => self.load_branches(at, window, cx),
+            git_block::Tab::Branches => {
+                let comparing = self.git_at(&at).is_some_and(|g| g.compare.is_some());
+                self.load_branches(at.clone(), window, cx);
+                if comparing {
+                    self.load_compare(at, window, cx);
+                }
+            }
             git_block::Tab::Stashes => self.load_stashes(at, window, cx),
         }
     }

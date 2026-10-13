@@ -581,15 +581,19 @@ impl Items {
                 block,
                 branch,
                 current,
+                base,
             } => {
                 let name = branch.name.clone();
                 let into = current.unwrap_or_else(|| "HEAD".to_string());
                 let mut menu = menu;
-                if !branch.remote {
-                    let rename = name.clone();
-                    menu = menu.item(item(ws, "Rename…", None, move |ws, window, cx| {
-                        ws.rename_branch(block, rename.clone(), window, cx)
-                    }));
+                if let Some(base) = base.filter(|b| *b != name) {
+                    let compare = name.clone();
+                    menu = menu.item(item(
+                        ws,
+                        format!("Compare with {}", git_block::words::local_name(&base)),
+                        Some(IconName::GitCompare),
+                        move |ws, window, cx| ws.compare_branch(block, compare.clone(), window, cx),
+                    ));
                 }
                 if !branch.current {
                     let merge = name.clone();
@@ -599,6 +603,12 @@ impl Items {
                         Some(IconName::GitMerge),
                         move |ws, window, cx| ws.merge_branch(block, merge.clone(), window, cx),
                     ));
+                }
+                if !branch.remote {
+                    let rename = name.clone();
+                    menu = menu.item(item(ws, "Rename…", None, move |ws, window, cx| {
+                        ws.rename_branch(block, rename.clone(), window, cx)
+                    }));
                 }
                 if !branch.remote && !branch.current {
                     let delete = name.clone();

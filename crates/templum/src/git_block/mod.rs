@@ -56,6 +56,20 @@ pub(crate) const PAGE: usize = 200;
 /// Past this many characters a summary is longer than `git log --oneline` shows well.
 pub(crate) const SUMMARY_MAX: usize = 72;
 
+/// A comparison in the Branches tab: what `branch` has that `base` hasn't, as a pull request
+/// shows it (docs/specs/git.md, section 5, Comparison).
+pub(crate) struct Compare {
+    pub branch: String,
+    /// The default branch at first; the column's base button changes it.
+    pub base: String,
+    /// `git log base..branch`, newest first (an Rc: the column's rows hold it).
+    pub commits: Rc<Vec<Commit>>,
+    /// The commit the panel is narrowed to; None: the whole comparison.
+    pub narrowed: Option<String>,
+    /// Its own panel: the 2-second read never touches it.
+    pub panel: diff_view::DiffPanel,
+}
+
 /// The commit shown on the right of the History tab.
 pub(crate) struct Shown {
     pub commit: Commit,
@@ -199,6 +213,8 @@ pub(crate) struct Git {
     pub default_branch: Option<String>,
     /// The diff panel of the Changes tab.
     pub panel: diff_view::DiffPanel,
+    /// The Branches tab's comparison, while one shows.
+    pub compare: Option<Compare>,
     /// History's file diff and Stashes' diff: each tab has its own, so a 2-second read of the
     /// Changes diff never replaces what another tab shows.
     pub commit_diff: Entity<EditorState>,
@@ -323,6 +339,7 @@ impl Git {
             error: None,
             default_branch: None,
             panel: diff_view::DiffPanel::new(),
+            compare: None,
             commit_diff,
             stash_diff,
             selected: None,
@@ -455,13 +472,20 @@ impl Git {
         self.summary.entity_id() == field || self.description.entity_id() == field
     }
 
-    /// The diff panel on screen: the Changes tab's.
+    /// The diff panel on screen: the comparison's while the Branches tab shows one, else the
+    /// Changes tab's.
     pub fn diff(&self) -> &diff_view::DiffPanel {
-        &self.panel
+        match (&self.compare, self.tab) {
+            (Some(c), Tab::Branches) => &c.panel,
+            _ => &self.panel,
+        }
     }
 
     pub fn diff_mut(&mut self) -> &mut diff_view::DiffPanel {
-        &mut self.panel
+        match (&mut self.compare, self.tab) {
+            (Some(c), Tab::Branches) => &mut c.panel,
+            _ => &mut self.panel,
+        }
     }
 
     pub fn repo(&self) -> Option<&Repo> {

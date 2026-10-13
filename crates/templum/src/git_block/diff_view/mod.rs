@@ -41,8 +41,6 @@ pub(crate) struct Shaped {
 
 /// What the panel shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
-// Compare builds the Range panel; until it lands only the tests do.
-#[allow(dead_code)]
 pub(crate) enum Source {
     /// The working tree: Changes then Staged, with their buttons (the Changes tab).
     Working,
@@ -107,7 +105,6 @@ impl DiffPanel {
     }
 
     /// A read-only panel (`Source::Range`).
-    #[allow(dead_code)]
     pub fn range(title: String) -> DiffPanel {
         DiffPanel {
             source: Source::Range { title },
@@ -129,7 +126,6 @@ impl DiffPanel {
     }
 
     /// A read-only list of files (`Source::Range`); false when it equals what is shown.
-    #[allow(dead_code)]
     pub fn set_files(&mut self, files: Vec<FileDiff>) -> bool {
         self.set_shown(
             files

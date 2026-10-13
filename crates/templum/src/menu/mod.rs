@@ -249,6 +249,7 @@ impl Workspace {
                     block,
                     branch: git.branches.iter().find(|b| b.name == *name)?.clone(),
                     current: git.status.branch.clone(),
+                    base: git.default_branch.clone(),
                 }
             }
             Target::GitCommit { block, ref hash } => Items::GitCommit {
@@ -417,6 +418,8 @@ enum Items {
         block: BlockId,
         branch: Branch,
         current: Option<String>,
+        /// The default branch: Compare with it.
+        base: Option<String>,
     },
     GitStash {
         block: BlockId,

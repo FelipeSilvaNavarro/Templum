@@ -156,6 +156,13 @@ fn repo_body(
         (None, None) => "no commits".to_string(),
     };
     let (state, tip) = words::server_state(s);
+    // Compare with main: while there is a default branch and this branch isn't it.
+    let compare_with = git
+        .default_branch
+        .as_deref()
+        .map(words::local_name)
+        .filter(|b| s.branch.as_deref().is_some_and(|c| c != *b))
+        .map(str::to_string);
     let on_branch = s.branch.clone().filter(|_| s.oid.is_some());
     let publish = s.upstream.is_none() || s.gone;
     let running = git.sync.is_some();
@@ -274,6 +281,21 @@ fn repo_body(
                         .text_color(ui.title_dim)
                         .child(state.clone())
                         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)),
+                )
+            })
+            .when_some(compare_with, |el, base| {
+                let current = s.branch.clone().unwrap_or_default();
+                el.child(
+                    button(
+                        ("git-compare-main", n),
+                        format!("Compare with {base}"),
+                        ui,
+                        z,
+                    )
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.compare_branch(id, current.clone(), window, cx)
+                    }))
+                    .test_support(),
                 )
             })
             .children(sync_button)
