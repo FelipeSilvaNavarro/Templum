@@ -48,7 +48,7 @@ impl Workspace {
                             .is_some_and(|i| !s.iter().any(|st| st.index == i))
                         {
                             git.stash_shown = None;
-                            git.stash_panel.set_files(Vec::new());
+                            git.stash_panel.clear();
                         }
                         git.stashes = s;
                     }
@@ -272,7 +272,10 @@ impl Workspace {
                 let Some(git) = ws.git_at(&at) else {
                     return;
                 };
-                if (history_query(git), git.file.clone()) != asked {
+                // Another query asked since, or this page already added (Load more twice).
+                if (history_query(git), git.file.clone()) != asked
+                    || (skip > 0 && git.commits.len() != skip)
+                {
                     return;
                 }
                 match read {
@@ -322,8 +325,13 @@ impl Workspace {
         git.file = Some(path);
         git.blame = false;
         git.blame_at = None;
-        git.shown = None;
-        git.history_panel.set_files(Vec::new());
+        git.hide_shown();
+        // The list read for another file (or the whole history) goes at once: a menu on one of
+        // its rows would pair that commit with this file.
+        git.commits = Rc::new(Vec::new());
+        git.file_paths = Rc::new(Vec::new());
+        git.graph = Rc::new(Vec::new());
+        git.more = false;
         cx.notify();
         let at = self.here(id);
         // A block still looking its repository up reads the list once it has found it.
@@ -341,11 +349,13 @@ impl Workspace {
             return;
         };
         git.file = None;
-        git.file_paths = Rc::new(Vec::new());
         git.blame = false;
         git.blame_at = None;
-        git.shown = None;
-        git.history_panel.set_files(Vec::new());
+        git.hide_shown();
+        git.commits = Rc::new(Vec::new());
+        git.file_paths = Rc::new(Vec::new());
+        git.graph = Rc::new(Vec::new());
+        git.more = false;
         cx.notify();
         let at = self.here(id);
         self.load_history(at, 0, window, cx);
@@ -558,7 +568,7 @@ impl Workspace {
             return;
         };
         git.all_branches = !git.all_branches;
-        git.shown = None;
+        git.hide_shown();
         cx.notify();
         let at = self.here(id);
         self.load_history(at, 0, window, cx);
@@ -587,7 +597,7 @@ impl Workspace {
         };
         let text = git.search.read(cx).value().trim().to_string();
         git.searched = text;
-        git.shown = None;
+        git.hide_shown();
         cx.notify();
         let at = self.here(id);
         self.load_history(at, 0, window, cx);
@@ -630,6 +640,10 @@ impl Workspace {
         };
         let loaded = git.commits.iter().find(|c| c.hash == hash).cloned();
         let ignore_ws = git.history_panel.ignore_ws;
+        let asked = hash.clone();
+        if let Some(git) = self.space.git_mut(id) {
+            git.showing = Some(hash.clone());
+        }
         self.git_job(
             self.here(id),
             move || -> Result<(Commit, Vec<CommitFile>, Vec<FileDiff>), GitError> {
@@ -647,6 +661,10 @@ impl Workspace {
                 let Some(git) = ws.git_at(&at) else {
                     return;
                 };
+                // Left meanwhile (←, a search, another file…), or another commit clicked.
+                if git.showing.as_deref() != Some(asked.as_str()) {
+                    return;
+                }
                 match read {
                     Ok((commit, files, diffs)) => {
                         // In a file's history, that file's change alone, by its name then.
@@ -686,11 +704,8 @@ impl Workspace {
         let Some(git) = self.space.git_mut(id) else {
             return;
         };
-        git.shown = None;
+        git.hide_shown();
         let blame = git.blame;
-        if !blame {
-            git.history_panel.set_files(Vec::new());
-        }
         cx.notify();
         if blame {
             let at = self.here(id);
@@ -735,13 +750,13 @@ impl Workspace {
             git.blame = false;
             git.blame_at = None;
             if git.shown.is_none() {
-                git.history_panel.set_files(Vec::new());
+                git.history_panel.clear();
             }
             cx.notify();
         } else {
             git.blame = true;
             git.blame_at = None;
-            git.shown = None;
+            git.hide_shown();
             cx.notify();
             let at = self.here(id);
             self.load_blame(at, window, cx);

@@ -124,7 +124,8 @@ parent), **a stash**, and **a comparison** of two branches.
   with a stronger background (a removed line paired with an added one in the same hunk).
 - **Split mode:** removed lines on the left, added on the right, paired row by row; an addition with no removal
   leaves the left cell empty, and the other way round. A conflicted file and a blame stay unified (their parts
-  aren't an old and a new side), and "No newline at end of file" isn't shown in Split.
+  aren't an old and a new side), and "No newline at end of file" isn't shown in Split. Each side is at most half
+  the panel, so the added side is always in view; a longer line is cut at its side (Unified shows it whole).
 - **Unchanged stretches** longer than 6 lines (3 of context on each side) fold into "⋯ 40 unchanged lines"; a click
   shows the whole file's diff (`-U` with the file's length).
 - **Special files:** a rename shows "old.rs → new.rs"; a binary "Binary file · 12 KB"; a new or deleted file all
@@ -306,7 +307,8 @@ on it. A clone that wants credentials fails with **Run in a terminal**, as other
 - **File history:** right-click a file (in Changes, in a commit's files, in an editor's tree) → **File history**:
   History narrowed to it (`git log --follow --name-status -- path`, so each commit knows the file's path at that
   time, before a rename), the panel showing that file's change in each commit: a commit clicked there shows that
-  file's change alone, by its name then (the commit's other files are in the left column). **Restore this
+  file's change alone, by its name then (the commit's other files are in the left column). A file's history has
+  no search and no All branches (`--follow` follows one file). **Restore this
   version…** writes the file as it was in that commit (`git show rev:<path then>`, written to the path now), after
   a copy in the trash.
 - **Blame:** right-click a file → **Blame**: the panel shows the whole file with the diff's rows (colors,

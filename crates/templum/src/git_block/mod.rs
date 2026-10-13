@@ -258,6 +258,8 @@ pub(crate) struct Git {
     /// The text History's list was read with; empty: no search.
     pub searched: String,
     pub shown: Option<Shown>,
+    /// The commit clicked, until another place is asked for: a read for any other is dropped.
+    pub showing: Option<String>,
     /// A list read was asked while a command ran.
     pub pending_lists: bool,
     pub branches: Vec<Branch>,
@@ -385,6 +387,7 @@ impl Git {
             search_mode: templum_git::Search::default(),
             searched: String::new(),
             shown: None,
+            showing: None,
             pending_lists: false,
             branches: Vec::new(),
             stashes: Vec::new(),
@@ -509,6 +512,16 @@ impl Git {
             (Tab::Stashes, _) => &mut self.stash_panel,
             (Tab::Branches, Some(c)) => &mut c.panel,
             _ => &mut self.panel,
+        }
+    }
+
+    /// History leaves the commit shown (or being read): the list again, the panel empty unless
+    /// it shows the file's blame.
+    pub fn hide_shown(&mut self) {
+        self.shown = None;
+        self.showing = None;
+        if !self.blame {
+            self.history_panel.clear();
         }
     }
 

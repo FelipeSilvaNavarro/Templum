@@ -171,7 +171,11 @@ fn list_column(
         .p(px(6.0 * z))
         .border_b_1()
         .border_color(ui.hairline)
-        .child(field(&git.search, z).flex_1())
+        // A file's history (`git log --follow`) takes no search: the chip below says what it is.
+        .when(git.file.is_none(), |el| {
+            el.child(field(&git.search, z).flex_1())
+        })
+        .when(git.file.is_some(), |el| el.child(div().flex_1()))
         .child(fold_button(id, ui, z, cx));
     let chip = git.file.as_ref().map(|path| {
         div()
@@ -240,7 +244,7 @@ fn list_column(
                 }))
                 .test_support(),
         );
-    let body = if git.commits.is_empty() && !git.searched.is_empty() {
+    let body = if git.commits.is_empty() && !git.searched.is_empty() && git.file.is_none() {
         centered(ui, z).child("No commits match").into_any_element()
     } else {
         list.into_any_element()
@@ -248,7 +252,7 @@ fn list_column(
     column(ui, z)
         .child(top)
         .children(chip)
-        .child(modes)
+        .when(git.file.is_none(), |el| el.child(modes))
         .child(body)
         .into_any_element()
 }

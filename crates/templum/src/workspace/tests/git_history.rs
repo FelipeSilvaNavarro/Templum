@@ -1053,3 +1053,164 @@ fn blame_groups_lines_by_commit_and_a_click_opens_it(cx: &mut TestAppContext) {
         assert!(matches!(g.diff().source, Source::Blame { .. }))
     });
 }
+
+// Final review, I1: a commit's read that comes back after the user left it changes nothing.
+#[gpui_kit::test]
+fn a_commit_left_before_its_diff_came_back_stays_left(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    commit_file(repo.path(), "b.txt", "b\n", "Second");
+    let (handle, ws) = open(cx);
+    let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-commit", 0usize), cx);
+        ws.update(cx, |ws, cx| ws.hide_commit(id, window, cx));
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert!(g.shown.is_none(), "the list stays");
+        assert!(g.history_panel.files.is_empty());
+    });
+}
+
+// Final review, I2: while another file's history loads, the first file's commits are gone
+// (Restore this version… would pair one file's commit with the other's path).
+#[gpui_kit::test]
+fn another_files_history_never_lists_the_first_files_commits(cx: &mut TestAppContext) {
+    let repo = renamed_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let history = |cx: &mut TestAppContext, path: &str| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.file_history(id, path.to_string(), window, cx)
+            })
+        })
+        .unwrap();
+    };
+    history(cx, "b.txt");
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| assert_eq!(g.commits.len(), 3));
+    history(cx, "o.txt");
+    git_of(&ws, cx, id, |g| {
+        assert!(g.commits.is_empty(), "b.txt's commits are gone at once");
+        assert!(g.file_paths.is_empty());
+        assert!(!g.more);
+    });
+    settle(handle, cx);
+    let subjects: Vec<String> = git_of(&ws, cx, id, |g| {
+        g.commits.iter().map(|c| c.subject.clone()).collect()
+    });
+    assert_eq!(subjects, ["other"]);
+}
+
+// Final review, I4: a file's history (`git log --follow`) has no search and no All branches.
+#[gpui_kit::test]
+fn a_files_history_has_no_search_or_all_branches(cx: &mut TestAppContext) {
+    let repo = renamed_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.file_history(id, "b.txt".to_string(), window, cx)
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("git-search-message", n)).is_none());
+        assert!(window.try_find(("git-all-branches", n)).is_none());
+        window.click(("git-file-clear", n), cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("git-search-message", n)).is_some(),
+            "the whole history has them"
+        );
+    })
+    .unwrap();
+}
+
+// Final review (re-graded): an empty History or Stashes panel names nothing, and a blame turned
+// off leaves no blame's header.
+#[gpui_kit::test]
+fn an_empty_history_panel_has_no_title(cx: &mut TestAppContext) {
+    use crate::git_block::diff_view::Source;
+    let repo = committed_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
+    let n = id.0 as usize;
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.diff().title(), "");
+        assert_eq!(g.stash_panel.title(), "");
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-commit", 0usize), cx)
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert!(g.diff().title().starts_with("Commit "))
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-commit-back", n), cx)
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.diff().title(), "", "back to the list")
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.blame_file(id, "a.txt".to_string(), None, window, cx)
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert!(g.diff().title().starts_with("Blame"))
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.toggle_blame(id, window, cx))
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.diff().title(), "");
+        assert!(
+            !matches!(g.diff().source, Source::Blame { .. }),
+            "Unified and Split come back"
+        );
+    });
+}
+
+// Final review (declined item, ruled a finding): Load more asked twice for one page adds it once.
+#[gpui_kit::test]
+fn a_second_load_more_for_the_same_page_adds_nothing(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    commit_file(repo.path(), "b.txt", "b\n", "Second");
+    commit_file(repo.path(), "c.txt", "c\n", "Third");
+    let (handle, ws) = open(cx);
+    let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::History);
+    // As if the first page had held one commit, and Load more were clicked twice.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let git = ws.space.git_mut(id).unwrap();
+            git.commits = std::rc::Rc::new(git.commits[..1].to_vec());
+            let at = ws.here(id);
+            ws.load_history(at.clone(), 1, window, cx);
+            ws.load_history(at, 1, window, cx);
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    let subjects: Vec<String> = git_of(&ws, cx, id, |g| {
+        g.commits.iter().map(|c| c.subject.clone()).collect()
+    });
+    assert_eq!(subjects, ["Third", "Second", "First"]);
+}

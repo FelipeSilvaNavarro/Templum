@@ -10,9 +10,9 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Bounds, ClickEvent, Context, Div, ElementId, Font, Hsla, MouseButton,
-    MouseDownEvent, MouseMoveEvent, Pixels, SharedString, Stateful, TestSupportExt, TextAlign,
-    TextRun, Window, canvas, div, fill, point, px, size,
+    AnyElement, App, Bounds, ClickEvent, ContentMask, Context, Div, ElementId, Font, Hsla,
+    MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, SharedString, Stateful, TestSupportExt,
+    TextAlign, TextRun, Window, canvas, div, fill, point, px, size,
 };
 use templum_canvas::BlockId;
 use templum_git::conflict::Take;
@@ -22,7 +22,7 @@ use super::select::display;
 use super::{Note, Row, Shaped, Shown, Source, files_word};
 use crate::editor::human;
 use crate::git_block::widgets::{badge, icon_button, small};
-use crate::git_block::{FONT, words};
+use crate::git_block::{FONT, LISTS_W, words};
 use crate::grid::hsla;
 use crate::menu::Target;
 use crate::theme::Ui;
@@ -789,9 +789,24 @@ fn pair_row(
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
-    let half = ws.space.git(id).map_or(0, |g| g.diff().half);
+    let git = ws.space.git(id);
+    let half = git.map_or(0, |g| g.diff().half);
     let cw = ws.cell.size.w * FONT / ws.cell.font_size * z;
-    let half_w = px(cw * half as f32);
+    // The panel's width: the block's, less the left column while it shows.
+    let lists = if git.is_some_and(|g| g.lists_folded) {
+        0.0
+    } else {
+        LISTS_W
+    };
+    let panel_w = ws
+        .space
+        .canvas
+        .get(id)
+        .map_or(f32::INFINITY, |b| (b.rect.w - lists) * z);
+    // ponytail: a side is at most half the panel, so the added side is always in view; a line
+    // longer than that is cut at its side (Unified shows it whole). Scroll each side alone if
+    // people need the end of long lines side by side.
+    let half_w = px((cw * half as f32).min((panel_w / 2.0).floor()));
     let mut side = |line: Option<usize>, right: bool| {
         line.map(|l| {
             let mut p = line_paint(ws, id, s, file, hunk, l, ix, right, row_h, z, cx);
@@ -825,7 +840,10 @@ fn pair_row(
                         );
                         match paint {
                             Some(p) => {
-                                let (line, x) = paint_line(p, cell, window, cx);
+                                let mask = ContentMask { bounds: cell };
+                                let (line, x) = window.with_content_mask(Some(mask), |window| {
+                                    paint_line(p, cell, window, cx)
+                                });
                                 if let Some(shaped) = &shaped {
                                     shaped
                                         .borrow_mut()

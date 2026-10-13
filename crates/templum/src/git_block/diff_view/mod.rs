@@ -140,6 +140,14 @@ impl DiffPanel {
         self.source == Source::Working
     }
 
+    /// A read-only panel back to nothing shown: no file, no title (a blame's goes too).
+    pub fn clear(&mut self) {
+        self.source = Source::Range {
+            title: String::new(),
+        };
+        self.set_files(Vec::new());
+    }
+
     /// What the panel says with no file: its hint, else the source's words.
     pub fn empty_text(&self) -> &'static str {
         if let Some(hint) = self.hint {
@@ -308,6 +316,8 @@ impl DiffPanel {
                 let removed: u32 = self.files.iter().map(|s| s.diff.removed()).sum();
                 format!("Working changes · {files} · +{added} −{removed}")
             }
+            // Nothing shown yet (History, Stashes): no title.
+            Source::Range { title } if title.is_empty() => String::new(),
             Source::Range { title } => format!("{title} · {files}"),
             Source::Blame { title, .. } => title.clone(),
         }

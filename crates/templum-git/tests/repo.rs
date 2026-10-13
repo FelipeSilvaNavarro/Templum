@@ -1811,3 +1811,18 @@ fn blame_names_each_lines_commit() {
     assert_eq!(then.len(), 2);
     assert_eq!(then[1].text, "two");
 }
+
+// Final review, I5: a version restored takes the working tree's line endings.
+#[test]
+fn a_file_then_has_the_working_trees_line_endings() {
+    let (dir, repo) = fresh();
+    write(dir.path(), ".gitattributes", "*.txt eol=crlf\n");
+    write(dir.path(), "a.txt", "one\ntwo\n");
+    repo.stage(&[".gitattributes", "a.txt"]).unwrap();
+    repo.commit("add a", false).unwrap();
+    assert_eq!(
+        repo.file_at("HEAD", "a.txt").unwrap(),
+        b"one\r\ntwo\r\n",
+        "as a checkout writes it"
+    );
+}
