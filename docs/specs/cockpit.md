@@ -427,6 +427,9 @@ Architecture: `editor.rs` (new): the block state (`folder`, `tree: Entity<TreeSt
 
 ## 8. Git
 
+> **Superseded by [git.md](git.md)** (2026-10-13): the second version of the Git block. What follows is the
+> first version, the one that version starts from.
+
 A **Git block** shows one repository and does what the Git panels of VS Code, Zed and GitHub Desktop do, with the
 same words. It never runs a command the user didn't ask for, except reads.
 

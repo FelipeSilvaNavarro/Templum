@@ -1,0 +1,436 @@
+# The Git block, second version
+
+- **Date:** 2026-10-13
+- **Status:** Design approved, not implemented
+- **Replaces:** [cockpit.md](cockpit.md), section 8 (the Git block it describes is what this one starts from)
+- **Builds on:** [context-menus.md](context-menus.md), [agents.md](agents.md), [config.md](config.md)
+
+## Goal
+
+The Git block becomes the way to work with Git in Templum: reviewing what an agent changed, committing and
+pushing, switching and comparing branches, understanding the history, and never losing work by a wrong click,
+for people who know Git well and for people who don't.
+
+**Who opens it, and why**
+
+1. **Reviewing what an agent did:** an agent finished; the user wants to see everything that changed, file by
+   file, and keep or throw away parts of it.
+2. **Committing and pushing:** choosing what goes in, writing the message, commit, push; fast, by keyboard.
+3. **Branches and comparison:** switching and creating branches, seeing what a branch has that `main` doesn't
+   (a pull request's diff), resolving conflicts.
+4. **Understanding the past:** what a commit changed, who changed a line, how a file evolved, how branches split
+   and joined.
+5. **Not knowing Git well:** safe, explained actions: switching branches without losing files, undoing a commit,
+   getting a discarded change back.
+
+**Success criteria**
+
+1. Every behavior below works on Linux, macOS and Windows; CI checks it on the 3 OS and Linux (Hyprland) is also
+   checked by hand.
+2. No action loses work silently: whatever discards or overwrites keeps a copy the user can restore.
+3. The diff reads like GitHub's: the file's language colors, old and new line numbers, changed words marked.
+4. `--bench` and a new Git review scenario stay at p95 ≤ 16.7 ms (see [ADR-0002](../adr/0002-ui-framework.md)).
+5. All tests in [Testing](#testing) pass in CI on the 3 OS.
+
+## Out of scope
+
+- Staging single lines (hunks only), interactive rebase, cherry-pick from the interface, submodules, Git LFS.
+- GitHub (or GitLab) pull requests and issues; signing commits; image previews in the diff.
+- A view of "only what the agent changed" separate from the user's own uncommitted changes.
+
+## Words
+
+The block keeps Git's own words (Stage, Commit, Push, Pull, Fetch, Stash, Amend, Rebase, Merge), the ones
+tutorials, the terminal and other tools use, so the user learns them. Each one has a one-sentence tooltip wherever
+it appears as a button or a heading:
+
+| Word | Tooltip |
+|---|---|
+| Stage | Choose this change to go into the next commit. |
+| Unstage | Take this change out of the next commit; the file keeps it. |
+| Discard | Throw this change away and go back to the last commit's version. You can restore it from Recently discarded. |
+| Commit | Save a version of the project with the staged changes, and a message saying what they do. |
+| Amend | Replace the last commit with this one (its changes and message), instead of adding a new one. |
+| Push | Send your commits to the server (the remote), so others can get them. |
+| Pull | Get the server's new commits into this branch. |
+| Fetch | Look at what changed on the server, without changing your files. |
+| Sync | Pull, then push: your branch and the server's end up the same. |
+| Stash | Put your uncommitted changes aside, to bring them back later. |
+| Rebase | Put your commits on top of the others', as if you had started after them. |
+| Merge | Join another branch's commits into this one. |
+
+Risky actions say what they will do before doing it, in one plain sentence (see [Safe actions](#4-safe-actions)).
+
+## 1. Layout and navigation
+
+- **Size:** a new Git block opens 1200 × 760, at least 640 × 420. Blocks saved before keep their size.
+- **Top bar,** left to right:
+  - **the current branch** as a pill. A click opens the **branch switcher**: a search field over the local
+    branches, then the remote ones; Enter switches (with [the switch flow](#switching-branches)); a last row
+    **+ New branch…**.
+  - **where it stands with the server:** "↑2 ↓1", "up to date", or "not published", with a tooltip in words
+    ("2 commits of yours not pushed yet, 1 on the server you don't have").
+  - **Sync**, the main button: pull then push (see [Sync](#sync)). It is **Publish branch** while the branch has
+    no upstream. Beside it, **⋯**: Fetch, Pull, Push, Recently discarded…, Clone a repository….
+  - **Compare with `main`**, while the current branch isn't the default one (see [Comparison](#comparison)).
+  - **↻** refresh.
+- **Banner** under the bar during a merge, rebase, cherry-pick or revert, or on a detached HEAD: one sentence on
+  what is happening and its buttons (Abort, Continue; Create a branch here, Back to *default*).
+- **Tabs:** Changes, History, Branches, Stashes.
+- **Body:** a left column, 300 world units, with the tab's list and, in Changes, the commit area under it; and the
+  **diff panel** on the right, the same component in every tab. A button at the column's top folds it, so the diff
+  takes the whole width; the block remembers it.
+- **Keyboard,** while the Git block has the focus (it takes it like an editor block, and gives it back to the
+  workspace's shortcuts as the other blocks do):
+
+| Key | Does |
+|---|---|
+| ↑ / ↓ | previous / next file in the list (the diff scrolls to it) |
+| `[` / `]` | previous / next hunk |
+| `s` / `u` | stage / unstage the hunk under the keyboard cursor, or the selected file |
+| `d` | discard (asks first) |
+| Enter | open the file in an editor beside the block, at the hunk's line |
+| `c` | focus the commit summary |
+| Ctrl+Enter (Cmd+Enter) | commit |
+| Ctrl+Shift+C (Cmd+C) | copy the diff's selection |
+
+  A line at the diff panel's foot names them. They only act while the block has the focus and no field does.
+- **Empty states** say it in words with a useful button: "Nothing changed since the last commit" (History, switch
+  branch), "No stashes", "No other branches" (+ New branch…).
+- **Zoom:** everything scales like a photo. The diff's rows follow the same rule as an editor's (whole pixels; the
+  block's body is drawn at the exact zooms while a zoom glides, see `block::exact_rows`).
+
+## 2. The diff panel
+
+One component shows four sources: the **working changes** (unstaged and staged), **a commit** (against its first
+parent), **a stash**, and **a comparison** of two branches.
+
+- **Panel header:** a title ("Working changes · 4 files · +120 −30", "Commit a1b2c3d · 3 files", "feature vs main ·
+  7 commits · 12 files"); **Unified / Split** (one column, or side by side; remembered by the block); **Ignore
+  whitespace** (`-w`); **Expand all / Collapse all**.
+- **Every file in one scroll.** Each starts with a **file row:** a fold arrow, the path (its folder dimmed), the
+  status letter in its colored badge, `+n −m`, and its actions (Stage/Unstage, Discard, Open in editor; only the
+  ones that apply to the source). A click on the left column's file scrolls the panel there.
+- **Sticky title:** the panel's top shows the path of the file being read, whatever the scroll.
+- **Hunks:** a hunk row with where it is (the function or heading git names after `@@`, else "Lines 12–20") and,
+  for working changes, **Stage** / **Unstage** / **Discard** for that hunk.
+- **Lines:** two line-number columns (old, new), a `+`/`−` gutter, the text in the terminal's font with the
+  **file's language colors**, a soft green or red background from the theme's ANSI colors, and **changed words**
+  with a stronger background (a removed line paired with an added one in the same hunk).
+- **Split mode:** removed lines on the left, added on the right, paired row by row; an addition with no removal
+  leaves the left cell empty, and the other way round.
+- **Unchanged stretches** longer than 6 lines (3 of context on each side) fold into "⋯ 40 unchanged lines"; a click
+  shows the whole file's diff (`-U` with the file's length).
+- **Special files:** a rename shows "old.rs → new.rs"; a binary "Binary file · 12 KB"; a new or deleted file all
+  green or all red; a mode change says so; "No newline at end of file" shows dimmed.
+- **Large and generated files** fold by default with **Show diff**: more than 2,000 changed lines, and
+  `Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `*.min.js`, `*.min.css`, `*.map`. Over
+  `DIFF_LIMIT` (4 MB) a file says "Too large to show" with Open in editor.
+- **Selecting text:** click and drag selects across lines (in Split mode, within one side); a double-click selects
+  a word, a triple-click a line. It is monospaced, so a point maps to a (row, column) the way the terminal's
+  selection does. Copy: Ctrl+Shift+C (Cmd+C), or the right-click menu.
+- **Right-click on a line:** Copy (the selection), Copy line, Copy hunk, **Send to ▸** (the selection, else the
+  hunk, to a terminal, as [context-menus.md](context-menus.md) describes), Open in editor at this line.
+- **Colors per hunk:** each hunk's old and new sides are highlighted as two fragments (gpui-kit's
+  `SyntaxHighlighter::new(lang)`, `update`, `styles`, gpui-component-0.7.1 src/highlighter/highlighter.rs:380,
+  597, 1163), on the rows shown, and kept. A hunk that starts inside a long comment or string may color its first
+  lines wrongly; GitHub's does the same.
+
+## 3. Changes: review and commit
+
+- **Left column:** **Conflicts** (only during a merge or rebase with conflicts), **Staged**, **Changes** (unstaged
+  and untracked), each with its count and Stage all / Unstage all / Discard all…. Rows as today (badge, name,
+  folder dimmed, hover buttons, right-click menu). Over 15 files, a **Filter files** field above the lists.
+- **Diff panel:** two sections in one scroll, **Changes** then **Staged**. A partly staged file is in both, each
+  with its own hunks. In Changes a hunk has **Stage** and **Discard**; in Staged, **Unstage**.
+- **Per hunk,** the block builds that hunk's patch (the file's header and the hunk) and runs:
+
+| Action | Command |
+|---|---|
+| Stage hunk | `git apply --cached` |
+| Unstage hunk | `git apply --cached --reverse` |
+| Discard hunk | `git apply --reverse` (after a copy in the trash) |
+
+  If the file changed since it was read, git refuses the patch: the block refreshes and says "The file changed;
+  try again".
+- **Discard never loses anything:** before any discard (a hunk, a file, all) the files are copied to the trash
+  ([Safe actions](#the-trash)); the notification says "Discarded src/x.rs" with **Undo**.
+- **Commit area** under the lists:
+  - **Summary,** with a quiet counter that warns past 72 characters; **Description**; **Generate ✨**
+    ([section 7](#7-commit-messages-from-an-agent)); **Amend** (fills the fields with the last commit's message, as
+    today).
+  - **Commit** with a menu ▾: **Commit**, **Commit & Push**. With nothing staged and something changed, the button
+    is **Commit all changes (5 files)**: it stages everything, new files included (`git add --all`), then commits.
+  - After a commit: "Committed a1b2c3d" with **Undo commit** (`git reset --soft HEAD~1`; only while that commit
+    isn't on the upstream). The fields clear; the draft is kept across restarts as today.
+- **Open in editor** on a file row and on a hunk opens the file beside the block at that line (the camera goes
+  there).
+
+## 4. Safe actions
+
+### The trash
+
+- Before any discard, the affected files (their current content, or the fact that they didn't exist) are copied
+  to `trash/` in Templum's data folder, with a manifest: the repository's root, the paths, the time, what was
+  done. Untracked files are covered too.
+- **Undo** on the notification restores at once. **Recently discarded…** (the top bar's ⋯) lists the entries,
+  newest first, each with **Restore**; a file changed since asks before it is overwritten.
+- Entries older than 7 days, or beyond the newest 50, are deleted when Templum starts and after each discard.
+
+### Switching branches
+
+- **With uncommitted changes,** the block always asks: "You have 3 changed files. What should happen to them?"
+  - **Leave them on `main`:** stashed as `templum: left on main` and, when the user comes back to `main`, applied
+    again automatically (with a notification; a conflict keeps the stash and says so).
+  - **Bring them along:** `git switch` carries them; if git refuses (they'd be overwritten), it says why and offers
+    the first choice.
+  - **Commit first:** cancels the switch and focuses the commit summary.
+  - **Cancel.**
+- **With commits not pushed** on the branch being left, it switches and a notification says "`main` has 2 commits
+  not pushed yet", with **Push `main`**. With both, the question above shows that line too.
+- A remote branch with no local one creates the local tracking branch.
+
+### Undoing a commit
+
+**Undo commit** (the notification after a commit, or the right-click on History's newest commit) runs
+`git reset --soft HEAD~1`: the commit goes, its changes stay staged. Once that commit is on the upstream the item
+is **Revert…** instead, which explains: "Pushed commits can't be removed for others; this adds a new commit that
+undoes it".
+
+### Sync
+
+- **Sync** = `git pull --ff-only`, then `git push`; the notification says what happened ("Got 3 commits, sent 2").
+- **Diverged** (fast-forward impossible): "Your branch and the server's both have new commits." with **Put my
+  commits on top (rebase)** (recommended) and **Merge**.
+- **No upstream:** the button is **Publish branch** (`git push -u origin <branch>`).
+- Credentials as today: git never waits for a password; a failure that wanted one offers **Run in a terminal**.
+
+### Risky actions say what they do
+
+- **Discard all…:** "Discard 7 files? You can restore them from Recently discarded."
+- **Delete branch:** an unmerged one asks again: "Its 3 commits not merged anywhere will be lost."
+- **Checkout of a commit:** the banner: "You're looking at an old version. Commits made here won't belong to any
+  branch." with **Create a branch here** and **Back to `main`**.
+
+### Starting without a repository
+
+"Not a Git repository" offers **Initialize** and **Clone a repository…**: a URL and a destination folder
+(default: the chosen folder), cloned in the background with progress on the button; when done, the block opens
+on it. A clone that wants credentials fails with **Run in a terminal**, as other commands do.
+
+## 5. Branches, comparison and conflicts
+
+### Branches tab
+
+- **Local** first: the current one marked; each with ↑↓ against its upstream and its last commit's subject and
+  age. **Remote** in a folded group. A filter field.
+- **Click:** switch, with [the switch flow](#switching-branches). **+ New branch…** from the current one (and, in
+  History, from a chosen commit).
+- **Right-click:** **Compare with `main`**, Merge into *current*…, Rename…, Delete…, Publish, Copy name.
+
+### Comparison
+
+- **Compare** shows what a branch has that the base doesn't: the left column lists its commits
+  (`git log base..branch`), the panel its diff (`git diff base...branch`), as a pull request does. A click on a
+  commit narrows the panel to it; a click on the heading shows them all again.
+- **The base** is the default branch: what `origin/HEAD` names, else `main`, else `master`. A selector changes it.
+
+### Conflicts
+
+- A merge, rebase or pull that stops on conflicts shows the banner: "Git couldn't join the changes in 2 files by
+  itself. Choose which version stays in each part." and the **Conflicts** group in Changes.
+- **The panel, on a conflicted file,** shows each conflict region (`<<<<<<<`, `|||||||` when present, `=======`,
+  `>>>>>>>`) as two parts, **Current (yours)** and **Incoming (theirs)**, each highlighted, with **Use mine**,
+  **Use theirs**, **Use both** and **Edit in editor**. A choice rewrites that region of the file (a copy goes to
+  the trash first).
+- With no region left, **Mark resolved** stages the file; with no conflicted file left, the banner shows
+  **Continue**. Use mine / Use theirs for the whole file stay in the right-click menu.
+
+## 6. History
+
+- **Commit list with a graph:** a column of colored lanes on the left, computed from each commit's parents
+  (already in `LOG_FORMAT`'s `%P`), shows where branches split and join. The current branch by default;
+  **All branches** shows every ref. Each row: subject, ref badges (branches, tags, HEAD), author, age, short hash;
+  commits not on the upstream have a "not pushed" mark. 200 at a time, **Load more**.
+- **Click a commit:** the left column shows its full message, author, date and files; the panel its whole diff.
+- **Right-click a commit:** Checkout…, New branch here…, Create tag…, Revert…, **Undo this commit** (the newest,
+  not pushed), Copy hash, Copy message.
+- **Search** runs in git, not over the loaded commits, in three modes: **Message** (`--grep -i`), **Author**
+  (`--author -i`), **Code** (`-S`: commits that added or removed a text).
+- **File history:** right-click a file (in Changes, in a commit's files, in an editor's tree) → **File history**:
+  History narrowed to it (`git log --follow -- path`), the panel showing that file's change in each commit.
+  **Restore this version…** writes the file as it was in that commit (`git show rev:path`), after a copy in the
+  trash.
+- **Blame:** right-click a file → **Blame**: the panel shows the whole file with the diff's rows (colors,
+  selection) and, on the left of each group of lines from one commit, its author, date and short hash
+  (`git blame --porcelain`). A click on a group opens that commit.
+
+## 7. Commit messages from an agent
+
+### In Settings ▸ Agents
+
+Each agent's dialog (Templum's and the user's) gets a **Commit messages** part:
+
+- **Generate command:** how to run the agent's CLI non-interactively, a template with placeholders:
+  - `{model}`: the model chosen;
+  - `{prompt_file}`: a temporary file holding the request; without it, the request goes to the standard input;
+  - `{output_file}`: where the CLI writes its answer; without it, the answer is the standard output.
+- **Models:** the list, one per line, the first being the recommended one.
+- **Templum's presets** (editable, with ↺ back to them):
+
+| Agent | Generate command | Models |
+|---|---|---|
+| Claude Code | `claude -p --model {model}` | `haiku` (recommended), `sonnet`, `opus` |
+| Codex | `codex exec -m {model} --sandbox read-only --ephemeral --skip-git-repo-check -o {output_file} -` | read from `~/.codex/models_cache.json` (entries with `"visibility": "list"`), else the list written |
+
+- A user's agent gets the same fields, empty; once filled, it is offered in Settings ▸ Git.
+- **Running:** through the user's login shell (`$SHELL -lc` on Unix, PowerShell on Windows), as typed in a
+  terminal, so PATH, aliases and version managers work; placeholders are replaced by quoted paths.
+
+### In Settings ▸ Git ▸ Commit messages
+
+- **Agent:** the agents with a generate command. **Model:** its list, the recommended one marked; another can be
+  typed.
+- **Timeout** (default 60 s) and **Max diff size** (default 60 KB).
+- **Instructions:** the user's commit rules ("Conventional Commits, English, imperative, at most 72 characters").
+- **Prompt (advanced):** the request's text, editable, with the placeholders `{instructions}`, `{files}`,
+  `{diff}`, `{recent_commits}`, `{truncated}`; **Reset to default**.
+- **Try it:** runs the command on a sample diff and shows the answer, or the whole error (exit code, stderr).
+
+### Generate ✨
+
+- Beside the summary, shown when the agent chosen in Settings ▸ Git has a generate command and its program is
+  installed.
+- **The request:** the staged diff (with **Commit all changes**, every change), cut at Max diff size with the full
+  file list and `{truncated}` saying so; the 10 last commit subjects, to follow the repository's style; the
+  instructions (the repository's own when set, else the global ones); the format: first line the summary, a blank
+  line, then the description, no code fences.
+- **Runs in the background;** the button spins and a click on it cancels. The answer fills Summary and
+  Description for the user to read; nothing is committed. A failure or a timeout: a notification with Details.
+- **First use:** once, a confirmation says the diff is sent to the agent's provider and uses the user's account.
+- **The ⚙ beside it:** the model for now, and **Instructions for this repository** (overrides the global ones in
+  this repository only).
+
+## Configuration
+
+```toml
+[agents]
+claude = { models = ["haiku", "sonnet", "opus"] }   # only what differs from Templum's preset
+my-agent = { name = "My agent", command = "my-agent", generate = "my-agent ask -m {model} -f {prompt_file}", models = ["fast", "smart"] }
+
+[git.commit_message]
+agent = "claude"
+model = "haiku"
+timeout = 60          # seconds
+max_diff_kb = 60
+instructions = "Conventional Commits, English, imperative."
+# prompt = """…"""   # only when changed
+
+[git.repositories."/home/u/proj"]
+commit_instructions = "Prefix the summary with the ticket id."
+```
+
+- `generate` and `models` follow the `[agents]` rules of [agents.md](agents.md): for one of Templum's, a missing
+  key keeps the preset, and saving it back at the preset removes it.
+- A `generate` that is set can't be empty; `timeout` is 5 to 600; `max_diff_kb` is 4 to 1024. Errors are reported
+  like any other config error.
+
+## Files
+
+The canvas's Git item gains two keys, both optional (an older file loads as before):
+
+```json
+{ "kind": "git", "rect": {…}, "folder": "/home/u/proj", "tab": "changes",
+  "diff": "split", "lists": "folded" }
+```
+
+## Architecture
+
+The rule of [ARCHITECTURE.md](../ARCHITECTURE.md): what can live without the UI is in a library crate and tested
+headlessly.
+
+**`templum-git`** (no UI):
+
+| File | Holds |
+|---|---|
+| `diff.rs` | Parsing `git diff` output into `FileDiff { old_path, new_path, status, binary, mode, hunks }`, `Hunk { old_start, old_len, new_start, new_len, context, lines }`, `Line { kind, old_no, new_no, text }`; and `hunk_patch(file, hunk)`, a hunk's patch for `git apply`. |
+| `words.rs` | The changed ranges of a removed line and its added line (a longest common subsequence over words and punctuation). |
+| `conflict.rs` | Conflict regions of a file's text (with or without the base part), and the text with one region resolved (mine, theirs, both). |
+| `graph.rs` | Lanes for a list of commits and their parents: each row's lane, and the lines into and out of it. |
+| `trash.rs` | The trash: put (copies and a manifest), list, restore (with "changed since" detection), prune. |
+| `repo.rs` | New commands: diff by source (working, staged, commit, stash, range), apply a patch (cached, reverse), blame, file log, log search, default branch, ahead of upstream, undo commit, clone, switch with a stash per branch. |
+
+**`templum`** (the UI):
+
+| File | Holds |
+|---|---|
+| `git_block/diff_view/` | The diff panel: its rows (file, hunk, lines, folded stretch), unified and split layouts, highlighting with the cache, the selection, the sticky title. |
+| `git_block/*.rs` | The tabs reorganized around the left column and the panel; the branch switcher; the banners. |
+| `commit_message.rs` | The request from the template, running the command (placeholders, shell, timeout, cancel), the answer into summary and description. |
+| `config.rs`, `settings/` | `[agents]`'s `generate` and `models`; `[git.commit_message]`; `[git.repositories]`; the Git section and the agents dialog's new part. |
+| `session.rs` | The Git item's `diff` and `lists`. |
+
+**Data flow:** every git command still goes through the block's queue (`git_job`/`act_job`, one at a time, results
+dropped when the block changed folder); a diff is read in the background, parsed in `templum-git`, and turned into
+rows on the UI thread; highlighting runs per hunk the first time it is drawn, and is kept until the diff changes.
+
+## Error handling
+
+- Every failed command: the notification of today, with Details and Run in a terminal.
+- A hunk patch git refuses: refresh, and "The file changed; try again".
+- A restore over a file changed since: asks before overwriting.
+- A generate command that fails, times out, or answers nothing: a notification with its exit code and stderr; the
+  fields are left as they were.
+
+## Testing
+
+**`templum-git`, unit, on recorded output:**
+
+- `diff.rs`: a modified file, several hunks, a rename with changes, a pure rename, a binary file, a new and a
+  deleted file, a mode change, CRLF lines, "\ No newline at end of file", a file name with spaces; `hunk_patch`
+  applied with `git apply --cached --check` in a temporary repository for each.
+- `words.rs`: changed words in a line, an inserted word, a whole line changed, Unicode text.
+- `conflict.rs`: two-way and three-way markers, several regions, each resolution.
+- `graph.rs`: a straight line, a branch and its merge, an octopus merge, a root commit in the middle.
+- `trash.rs`: put, list, restore, "changed since", pruning by age and count.
+
+**`templum-git`, integration (`tests/repo.rs`), on real temporary repositories:** stage, unstage and discard of
+one hunk of a file with three; diff of a commit, a stash and a range; undo commit; switch with a stash per branch
+and back; default branch with and without `origin/HEAD`; blame; file log through a rename; log search in each
+mode.
+
+**`templum`, headless UI (`workspace/tests/git_*.rs`):**
+
+- the diff panel: rows for a sample diff, Unified and Split, folding and expanding, the sticky title, selection
+  and copy, Send to;
+- each hunk button, the trash's Undo and Restore, Commit all changes, Commit & Push, Undo commit;
+- the branch switcher and the switch question's four answers; the unpushed-commits notification;
+- Sync's fast-forward and diverged cases, Publish, Clone;
+- Compare, conflicts region by region, Mark resolved and Continue;
+- History's graph rows, search modes, file history, Restore this version, Blame;
+- Generate with a fake agent command (a script that writes a known answer), its timeout and failure; the
+  settings' Try it;
+- the keyboard keys; the zoom keeping the diff like a photo (rows across `ZOOM_STEPS`).
+
+**Manual (Hyprland):** a real agent session reviewed and committed; Generate with Claude Code and Codex.
+
+## Performance
+
+- The panel is a virtual list: only the rows on screen are built.
+- Reading and parsing a diff, and running an agent, happen off the UI thread.
+- Highlighting is per hunk, on first draw, cached.
+- `--bench-zoom=git` and a new `--bench-git` (a block with a 5,000-line diff, scrolling and zooming) stay at
+  p95 ≤ 16.7 ms.
+
+## Delivery
+
+One plan per batch, each usable on its own:
+
+| Batch | Delivers |
+|---|---|
+| 1 | The diff panel (Unified) in Changes, with selection, folding, special files, highlighting |
+| 2 | Hunk stage and discard, the trash, the new layout and size, the keyboard, Commit all changes, Commit & Push, Undo commit |
+| 3 | Safe actions: the branch switcher and the switch question, Sync, Publish, Clone, tooltips, the detached-HEAD banner |
+| 4 | Branches tab, Compare, conflicts region by region |
+| 5 | History with the graph, search modes, file history, Restore this version, Blame, Split mode |
+| 6 | Commit messages from an agent: Generate, Settings ▸ Git, the agents dialog's Commit messages part |
