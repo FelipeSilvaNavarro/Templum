@@ -483,6 +483,7 @@ mod git_commit;
 mod git_history;
 mod git_panel;
 mod git_status;
+mod git_trash;
 mod kanban;
 mod menus;
 mod navigation;

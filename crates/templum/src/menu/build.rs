@@ -587,7 +587,11 @@ impl Items {
                     Some(IconName::FileDiff),
                     move |ws, window, cx| ws.show_stash(block, index, window, cx),
                 )),
-            Items::Git { block, folder } => menu
+            Items::Git {
+                block,
+                folder,
+                trash,
+            } => menu
                 .item(item(
                     ws,
                     "Change folder…",
@@ -611,6 +615,14 @@ impl Items {
                                 ws.reveal(&space, id, window, cx);
                             }
                         },
+                    ))
+                })
+                .when(trash, |menu| {
+                    menu.item(item(
+                        ws,
+                        "Recently discarded…",
+                        Some(IconName::ArchiveRestore),
+                        move |ws, window, cx| ws.show_discarded(block, window, cx),
                     ))
                 })
                 .separator()

@@ -22,6 +22,7 @@ mod branches;
 mod changes;
 mod commit_form;
 pub(crate) mod diff_view;
+pub(crate) mod discarded;
 mod history;
 mod stashes;
 mod view;

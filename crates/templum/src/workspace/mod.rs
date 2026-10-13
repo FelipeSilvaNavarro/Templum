@@ -7,6 +7,7 @@ mod files;
 mod find;
 mod git_branches;
 mod git_changes;
+mod git_discard;
 mod git_history;
 mod git_ops;
 mod input;
@@ -57,7 +58,7 @@ use crate::settings::Panel;
 use crate::theme::{self, Entry, Theme, Ui};
 use crate::theme_picker::Picker;
 
-pub(crate) use git_ops::{Extra, notify_git_error};
+pub(crate) use git_ops::{Extra, notify_git_error, notify_git_failure, notify_with};
 
 pub(crate) const DEFAULT_COLS: u16 = 80;
 pub(crate) const DEFAULT_ROWS: u16 = 24;
@@ -536,6 +537,8 @@ pub struct Workspace {
     pub(crate) config_dir: Option<PathBuf>,
     /// Where the canvas is saved (None: it isn't kept).
     pub(crate) data_dir: Option<PathBuf>,
+    /// What discards keep (`trash/` in the data folder); None without one, as in `--bench`.
+    pub(crate) trash: Option<templum_git::trash::Trash>,
     /// Where the shell integration's scripts were written (None: not written, no integration).
     integration: Option<PathBuf>,
     /// Counts snapshots: a write older than the last one done is dropped (session::save).
@@ -796,6 +799,9 @@ impl Workspace {
             scroll_acc: 0.0,
             command,
             config_dir,
+            trash: data_dir
+                .as_ref()
+                .map(|dir| templum_git::trash::Trash::new(dir.join("trash"))),
             data_dir,
             integration,
             generation: 0,
@@ -845,6 +851,14 @@ impl Workspace {
             agents: effective_agents,
             _wake: wake,
         };
+        // The trash's old discards go at startup (and after each discard).
+        if let Some(trash) = ws.trash.clone() {
+            cx.background_executor()
+                .spawn(async move {
+                    let _ = trash.prune(std::time::SystemTime::now());
+                })
+                .detach();
+        }
         ws.load_spaces(window, cx);
         ws
     }

@@ -438,9 +438,22 @@ pub(crate) fn notify_git_error(
     window: &mut Window,
     cx: &mut App,
 ) {
+    notify_git_failure(ws, at, err, git_error_message(err), extra, window, cx);
+}
+
+/// A failed git command said in `message`'s words (git's own stay under Details).
+pub(crate) fn notify_git_failure(
+    ws: &Entity<Workspace>,
+    at: GitAt,
+    err: &GitError,
+    message: String,
+    extra: Vec<Extra>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     eprintln!("templum: {err}");
     let (err, ws) = (err.clone(), ws.clone());
-    let notification = Notification::error(git_error_message(&err))
+    let notification = Notification::error(message)
         .title(err.command.clone())
         .autohide(false)
         .content(move |_, _, cx| {
@@ -515,5 +528,44 @@ pub(crate) fn notify_git_error(
                 .children(extras)
                 .into_any_element()
         });
+    show_notification(window, cx, notification);
+}
+
+/// A notification about something done ("Discarded src/x.rs"), with buttons that act on the
+/// block it is about (Undo): each shows the block's workspace first, and does nothing when the
+/// block changed folder since.
+pub(crate) fn notify_with(
+    ws: &Entity<Workspace>,
+    at: GitAt,
+    notification: Notification,
+    buttons: Vec<Extra>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let ws = ws.clone();
+    let notification = notification.content(move |_, _, cx| {
+        let note = cx.entity();
+        div()
+            .flex()
+            .gap(px(6.0))
+            .mt(px(6.0))
+            .children(buttons.iter().map(|(id, label, act)| {
+                let (ws, act, note, at) = (ws.clone(), act.clone(), note.clone(), at.clone());
+                Button::new(*id)
+                    .label(*label)
+                    .small()
+                    .primary()
+                    .on_click(move |_, window, cx| {
+                        ws.update(cx, |ws, cx| {
+                            if ws.show_git_block(&at, window, cx) {
+                                act(ws, window, cx)
+                            }
+                        });
+                        note.update(cx, |n, cx| n.dismiss(window, cx));
+                    })
+                    .into_any_element()
+            }))
+            .into_any_element()
+    });
     show_notification(window, cx, notification);
 }

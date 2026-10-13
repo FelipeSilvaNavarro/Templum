@@ -67,11 +67,16 @@ fn discard_asks_first_then_restores_the_file(cx: &mut TestAppContext) {
     std::fs::write(repo.path().join("a.txt"), "changed\n").unwrap();
     let (handle, ws) = open(cx);
     let id = open_git(handle, &ws, cx, repo.path());
+    let discard = |cx: &mut TestAppContext| {
+        click_row_button(
+            handle,
+            cx,
+            row_id(id, "unstaged", 0),
+            git_button(id, "discard", "unstaged", 0),
+        )
+    };
+    discard(cx);
     cx.update_window(handle, |_, window, cx| {
-        window.hover(row_id(id, "unstaged", 0), cx);
-        window.render_frame(cx);
-        window.click(git_button(id, "discard", "unstaged", 0), cx);
-        window.render_frame(cx);
         assert!(window.has_active_dialog(cx), "asks first");
         window.within("dialog").click("cancel", cx);
         window.render_frame(cx);
@@ -82,11 +87,8 @@ fn discard_asks_first_then_restores_the_file(cx: &mut TestAppContext) {
         std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
         "changed\n"
     );
+    discard(cx);
     cx.update_window(handle, |_, window, cx| {
-        window.hover(row_id(id, "unstaged", 0), cx);
-        window.render_frame(cx);
-        window.click(git_button(id, "discard", "unstaged", 0), cx);
-        window.render_frame(cx);
         window.within("dialog").click("ok", cx);
         window.render_frame(cx);
     })

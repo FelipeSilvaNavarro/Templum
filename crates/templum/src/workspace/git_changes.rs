@@ -431,52 +431,6 @@ impl Workspace {
         self.git_action(id, move |repo| repo.unstage(&refs(&paths)), window, cx);
     }
 
-    /// Asks, then throws the unstaged changes of `paths` away.
-    pub(crate) fn discard(
-        &mut self,
-        id: BlockId,
-        paths: Vec<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(git) = self.space.git(id) else {
-            return;
-        };
-        let entries: Vec<templum_git::Entry> = git
-            .status
-            .unstaged()
-            .into_iter()
-            .filter(|e| paths.contains(&e.path))
-            .cloned()
-            .collect();
-        if entries.is_empty() {
-            return;
-        }
-        let what = match entries.as_slice() {
-            [one] => format!("Discard the changes to {}?", one.path),
-            many => format!("Discard the changes to {} files?", many.len()),
-        };
-        let ws = cx.entity();
-        prompt::confirm(
-            what,
-            "Untracked files are deleted. This can't be undone.",
-            "Discard",
-            move |window, cx| {
-                let entries = entries.clone();
-                ws.update(cx, |ws, cx| {
-                    ws.git_action(
-                        id,
-                        move |repo| repo.discard(&entries.iter().collect::<Vec<_>>()),
-                        window,
-                        cx,
-                    )
-                })
-            },
-            window,
-            cx,
-        );
-    }
-
     /// Appends the path to the repository's .gitignore.
     pub(crate) fn ignore_path(
         &mut self,

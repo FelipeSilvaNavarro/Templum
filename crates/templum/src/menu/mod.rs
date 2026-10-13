@@ -175,6 +175,7 @@ impl Workspace {
                 body @ Body::Git(_) => Items::Git {
                     block,
                     folder: body.folder(),
+                    trash: self.trash.is_some(),
                 },
             },
             Target::Board { block, board } => Items::Board {
@@ -355,6 +356,8 @@ enum Items {
         block: BlockId,
         /// Its repository's root (its folder while there is none).
         folder: Option<PathBuf>,
+        /// Discards are kept (a data folder): Recently discarded… is offered.
+        trash: bool,
     },
     GitRow {
         block: BlockId,
