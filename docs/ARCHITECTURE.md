@@ -11,7 +11,7 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 | `templum` | bin | Window, event loop, rendering, input, wiring | **Yes, the only one** (`gpui-kit`) |
 | `templum-canvas` | lib | Pure model: camera (pan, zoom), blocks, hit-testing, snapping, layout (de)serialization | No |
 | `templum-terminal` | lib | Wraps `alacritty_terminal`: shell in a PTY, input, resize, key encoding, events | No |
-| `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values | No |
+| `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values, and keeps the trash of discarded changes | No |
 
 All four crates exist. New library crates are created together with the first real code that needs
 them, never as empty scaffolding. The behavior of the current version is specified in
@@ -82,7 +82,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   closing blocks), `view.rs` (the camera), `input.rs` (keys and the pointer), `render.rs` (drawing a frame),
   `drawing.rs` (the drawing tools), `persist.rs` (restoring and saving the canvas), `preferences.rs` (config,
   themes, settings panel), `files.rs` and `file_tree.rs` (editor blocks), `git_ops.rs`, `git_changes.rs`,
-  `git_branches.rs` and `git_history.rs` (Git blocks). Methods a sibling or a test calls are `pub(super)`.
+  `git_branches.rs`, `git_history.rs`, `git_discard.rs` (discards through the trash) and `git_keys.rs` (the
+  block's keys) (Git blocks). Methods a sibling or a test calls are `pub(super)`.
   `workspace/tests/` holds its tests, one file per area, with the shared helpers in `tests/mod.rs`.
 - `settings/`, `git_block/` and `menu/`: the panel's sections, the Git block's tabs, and what each menu lists, each
   in its own file behind the folder's `mod.rs`, which keeps the paths the rest of the crate uses. `git_block/diff_view/`

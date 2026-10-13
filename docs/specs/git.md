@@ -1,7 +1,7 @@
 # The Git block, second version
 
 - **Date:** 2026-10-13
-- **Status:** Design approved; batch 1 (the diff panel in Changes) implemented, the rest not yet
+- **Status:** Design approved; batches 1 and 2 implemented, the rest not yet
 - **Replaces:** [cockpit.md](cockpit.md), section 8 (the Git block it describes is what this one starts from)
 - **Builds on:** [context-menus.md](context-menus.md), [agents.md](agents.md), [config.md](config.md)
 
