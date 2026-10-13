@@ -398,7 +398,8 @@ fn a_middle_drag_moves_the_canvas_anywhere(cx: &mut TestAppContext) {
 }
 
 /// Every element inside `block` (registered for tests), relative to the block: its
-/// position and size.
+/// position and size. The invisible resize strips along its edges are left out: they keep a
+/// screen size, to be easy to grab at any zoom.
 fn block_layout(window: &Window, block: BlockId) -> std::collections::BTreeMap<String, [f32; 4]> {
     let id = gpui_kit::ElementId::NamedInteger("block".into(), block.0);
     let origin = window.find(("block", block.0 as usize)).bounds().origin;
@@ -406,9 +407,13 @@ fn block_layout(window: &Window, block: BlockId) -> std::collections::BTreeMap<S
         .into_iter()
         .filter_map(|s| {
             let at = s.path().iter().position(|p| *p == id)?;
+            let key = format!("{:?}", &s.path()[at..]);
+            if key.contains("\"resize-") {
+                return None;
+            }
             let b = s.bounds();
             Some((
-                format!("{:?}", &s.path()[at..]),
+                key,
                 [
                     f32::from(b.origin.x - origin.x),
                     f32::from(b.origin.y - origin.y),

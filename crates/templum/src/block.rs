@@ -14,7 +14,7 @@ use gpui_kit::{
     MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt, Window, div,
     point, px,
 };
-use templum_canvas::{Block, Point, Rect, chrome};
+use templum_canvas::{Block, BlockId, Edges, Point, Rect, chrome};
 
 use crate::alert::{self, Alert};
 use crate::editor;
@@ -33,6 +33,9 @@ const RADIUS: f32 = 10.0;
 const RING: f32 = 2.0;
 /// The card's border (`border_1`), screen pixels: not zoomed.
 pub(crate) const BORDER: f32 = 1.0;
+/// How thick the strips along a block's edges that resize it are, screen pixels, at most: thinner
+/// when zoomed out, so the title stays easy to grab.
+const EDGE: f32 = 6.0;
 
 /// `look` scales the block around its center (it is drawn at zoom × scale) and fades it.
 /// A block that isn't `live` is a ghost fading out: no controls, and clicks go through it.
@@ -285,11 +288,34 @@ pub(crate) fn render(
         }
         _ => None,
     };
+    // The resize strips, on the block under the pointer only (the pointer reaches an edge from
+    // inside the block): the top ones under the header's buttons, the others over the body.
+    let edge = (EDGE * z).clamp(2.0, EDGE);
+    let (top_zones, other_zones) = if hovered {
+        let mut zone = |edges| resize_zone(id, edges, edge, cx);
+        (
+            vec![
+                zone(Edges::TOP),
+                zone(Edges::TOP_LEFT),
+                zone(Edges::TOP_RIGHT),
+            ],
+            vec![
+                zone(Edges::LEFT),
+                zone(Edges::RIGHT),
+                zone(Edges::BOTTOM),
+                zone(Edges::BOTTOM_LEFT),
+                zone(Edges::BOTTOM_RIGHT),
+            ],
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let header = div()
         .relative()
         .w_full()
         .h(px(chrome::TITLE_H * z))
         .child(title)
+        .children(top_zones)
         .children(dot)
         .children(boards)
         .children(preview)
@@ -380,7 +406,7 @@ pub(crate) fn render(
             // The handle overlaps the body: stop here so the body doesn't start a selection.
             cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
                 ws.focus_block(id, window, cx);
-                ws.begin_resize(id, e.position);
+                ws.begin_resize(id, Edges::BOTTOM_RIGHT, e.position);
                 cx.stop_propagation();
             }),
         )
@@ -447,9 +473,65 @@ pub(crate) fn render(
         })
         .child(header)
         .child(content)
+        .children(other_zones)
         .when(hovered, |el| el.child(fade_in(handle, ("handle-fade", n))))
         .test_support()
         .into_any_element()
+}
+
+/// An invisible strip along a block's edge (`edge` thick), or a square at its corner, that resizes
+/// it by those `edges`, like a window's border.
+fn resize_zone(id: BlockId, edges: Edges, edge: f32, cx: &mut Context<Workspace>) -> AnyElement {
+    let corner = 2.0 * edge;
+    let name = match (edges.top, edges.bottom, edges.left, edges.right) {
+        (true, _, true, _) => "top-left",
+        (true, _, _, true) => "top-right",
+        (_, true, true, _) => "bottom-left",
+        (_, true, _, true) => "bottom-right",
+        (true, ..) => "top",
+        (_, true, ..) => "bottom",
+        (_, _, true, _) => "left",
+        _ => "right",
+    };
+    let el = div()
+        .id(ElementId::Name(format!("resize-{name}-{}", id.0).into()))
+        .absolute();
+    // Across: the edge's own side; along: clear of the corners' squares.
+    let el = match (edges.left || edges.right, edges.top || edges.bottom) {
+        (true, true) => el.size(px(corner)),
+        (true, false) => el.w(px(edge)).top(px(corner)).bottom(px(corner)),
+        _ => el.h(px(edge)).left(px(corner)).right(px(corner)),
+    };
+    let el = if edges.left {
+        el.left_0()
+    } else if edges.right {
+        el.right_0()
+    } else {
+        el
+    };
+    let el = if edges.top {
+        el.top_0()
+    } else if edges.bottom {
+        el.bottom_0()
+    } else {
+        el
+    };
+    let el = match name {
+        "top-left" | "bottom-right" => el.cursor_nwse_resize(),
+        "top-right" | "bottom-left" => el.cursor_nesw_resize(),
+        "top" | "bottom" => el.cursor_ns_resize(),
+        _ => el.cursor_ew_resize(),
+    };
+    el.on_mouse_down(
+        MouseButton::Left,
+        cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+            ws.focus_block(id, window, cx);
+            ws.begin_resize(id, edges, e.position);
+            cx.stop_propagation();
+        }),
+    )
+    .test_support()
+    .into_any_element()
 }
 
 /// The zoom nearest `z` at which gpui-kit's editor rows, 1.5 × their text size of `font × zoom`,

@@ -8,7 +8,7 @@ use gpui_kit::{
     Bounds, ClipboardItem, Context, EntityInputHandler, KeyDownEvent, MouseDownEvent, PinchEvent,
     Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, UTF16Selection, Window, px,
 };
-use templum_canvas::{BlockId, Drawing, Gesture, Point, STRING_PX, chrome, constrain};
+use templum_canvas::{BlockId, Drawing, Edges, Gesture, Point, STRING_PX, chrome, constrain};
 use templum_terminal::{KeyInput, SelectionKind, Side};
 
 use crate::keys::{self, Command};
@@ -69,7 +69,7 @@ impl Workspace {
         self.drag = Gesture::move_block(&self.space.canvas, id, p).map(Drag::Canvas);
     }
 
-    pub(crate) fn begin_resize(&mut self, id: BlockId, pos: PixelPoint<Pixels>) {
+    pub(crate) fn begin_resize(&mut self, id: BlockId, edges: Edges, pos: PixelPoint<Pixels>) {
         let p = self.local(pos);
         let min = self
             .space
@@ -78,7 +78,7 @@ impl Workspace {
             .map_or(chrome::min_block_size(self.cell.size), |b| {
                 b.min_size(self.cell.size)
             });
-        self.drag = Gesture::resize_block(&self.space.canvas, id, p, min).map(Drag::Canvas);
+        self.drag = Gesture::resize_block(&self.space.canvas, id, edges, p, min).map(Drag::Canvas);
     }
 
     pub(super) fn drag_to(&mut self, pos: PixelPoint<Pixels>, shift: bool, cx: &mut Context<Self>) {

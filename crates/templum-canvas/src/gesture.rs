@@ -11,14 +11,48 @@ pub struct Update {
     pub guides: Vec<Guide>,
 }
 
+/// The edges a resize drags; the others stay put. A corner drags two.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Edges {
+    pub left: bool,
+    pub top: bool,
+    pub right: bool,
+    pub bottom: bool,
+}
+
+impl Edges {
+    pub const LEFT: Edges = Edges::new(true, false, false, false);
+    pub const TOP: Edges = Edges::new(false, true, false, false);
+    pub const RIGHT: Edges = Edges::new(false, false, true, false);
+    pub const BOTTOM: Edges = Edges::new(false, false, false, true);
+    pub const TOP_LEFT: Edges = Edges::new(true, true, false, false);
+    pub const TOP_RIGHT: Edges = Edges::new(false, true, true, false);
+    pub const BOTTOM_LEFT: Edges = Edges::new(true, false, false, true);
+    pub const BOTTOM_RIGHT: Edges = Edges::new(false, false, true, true);
+
+    const fn new(left: bool, top: bool, right: bool, bottom: bool) -> Edges {
+        Edges {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Gesture {
     /// Dragging empty canvas; `last` is the previous pointer position.
     Pan { last: Point },
     /// Dragging a title bar; `grab` is the pointer's world offset from the block's top-left.
     Move { id: BlockId, grab: Point },
-    /// Dragging the resize handle; `grab` is the world offset from the block's bottom-right.
-    Resize { id: BlockId, grab: Point, min: Size },
+    /// Dragging `edges` of a block; `grab` is the pointer's world offset from them.
+    Resize {
+        id: BlockId,
+        edges: Edges,
+        grab: Point,
+        min: Size,
+    },
 }
 
 impl Gesture {
@@ -35,12 +69,21 @@ impl Gesture {
         })
     }
 
-    pub fn resize_block(canvas: &Canvas, id: BlockId, pointer: Point, min: Size) -> Option<Self> {
+    pub fn resize_block(
+        canvas: &Canvas,
+        id: BlockId,
+        edges: Edges,
+        pointer: Point,
+        min: Size,
+    ) -> Option<Self> {
         let r = canvas.get(id)?.rect;
         let w = canvas.camera.to_world(pointer);
+        let x = if edges.left { r.x } else { r.right() };
+        let y = if edges.top { r.y } else { r.bottom() };
         Some(Gesture::Resize {
             id,
-            grab: Point::new(r.right() - w.x, r.bottom() - w.y),
+            edges,
+            grab: Point::new(x - w.x, y - w.y),
             min,
         })
     }
@@ -72,25 +115,28 @@ impl Gesture {
                     guides: snapped.guides,
                 }
             }
-            Gesture::Resize { id, grab, min } => {
+            Gesture::Resize {
+                id,
+                edges,
+                grab,
+                min,
+            } => {
                 let w = canvas.camera.to_world(pointer);
                 let others = others(canvas, *id);
                 let threshold = SNAP_PX / canvas.camera.zoom();
                 let Some(b) = canvas.get_mut(*id) else {
                     return Update::default();
                 };
-                let raw = Rect::new(
-                    b.rect.x,
-                    b.rect.y,
-                    (w.x + grab.x - b.rect.x).max(min.w),
-                    (w.y + grab.y - b.rect.y).max(min.h),
-                );
-                let snapped = snap_resize(raw, &others, threshold);
-                b.rect = Rect::new(
-                    raw.x,
-                    raw.y,
-                    snapped.rect.w.max(min.w),
-                    snapped.rect.h.max(min.h),
+                let (x, y) = (w.x + grab.x, w.y + grab.y);
+                let raw = clamp(b.rect, *edges, x, y, *min);
+                let snapped = snap_resize(raw, *edges, &others, threshold);
+                let r = snapped.rect;
+                b.rect = clamp(
+                    raw,
+                    *edges,
+                    if edges.left { r.x } else { r.right() },
+                    if edges.top { r.y } else { r.bottom() },
+                    *min,
                 );
                 Update {
                     resized: Some((*id, b.rect)),
@@ -99,6 +145,23 @@ impl Gesture {
             }
         }
     }
+}
+
+/// `r` with its dragged `edges` moved to `x` (left or right) and `y` (top or bottom), never
+/// smaller than `min`: a dragged edge stops where the block is at its smallest.
+fn clamp(r: Rect, edges: Edges, x: f32, y: f32, min: Size) -> Rect {
+    let (mut left, mut top, mut right, mut bottom) = (r.x, r.y, r.right(), r.bottom());
+    if edges.left {
+        left = x.min(right - min.w);
+    } else if edges.right {
+        right = x.max(left + min.w);
+    }
+    if edges.top {
+        top = y.min(bottom - min.h);
+    } else if edges.bottom {
+        bottom = y.max(top + min.h);
+    }
+    Rect::new(left, top, right - left, bottom - top)
 }
 
 /// Every block's rect but `id`'s: what it can snap to.
@@ -142,7 +205,9 @@ mod tests {
         let mut c = Canvas::default();
         let id = c.add(Rect::new(0.0, 0.0, 200.0, 100.0));
         let min = Size::new(150.0, 80.0);
-        let mut g = Gesture::resize_block(&c, id, Point::new(195.0, 95.0), min).unwrap();
+        let mut g =
+            Gesture::resize_block(&c, id, Edges::BOTTOM_RIGHT, Point::new(195.0, 95.0), min)
+                .unwrap();
         assert_eq!(
             g.update(&mut c, Point::new(295.0, 145.0)).resized,
             Some((id, Rect::new(0.0, 0.0, 300.0, 150.0)))
@@ -158,8 +223,14 @@ mod tests {
         let mut c = Canvas::default();
         let id = c.add(Rect::new(0.0, 0.0, 200.0, 100.0));
         let mut mv = Gesture::move_block(&c, id, Point::new(5.0, 5.0)).unwrap();
-        let mut rs =
-            Gesture::resize_block(&c, id, Point::new(195.0, 95.0), Size::new(1.0, 1.0)).unwrap();
+        let mut rs = Gesture::resize_block(
+            &c,
+            id,
+            Edges::BOTTOM_RIGHT,
+            Point::new(195.0, 95.0),
+            Size::new(1.0, 1.0),
+        )
+        .unwrap();
         c.remove(id);
         assert_eq!(mv.update(&mut c, Point::new(50.0, 50.0)).resized, None);
         assert_eq!(rs.update(&mut c, Point::new(50.0, 50.0)).resized, None);
@@ -206,10 +277,84 @@ mod tests {
         c.add(Rect::new(100.0, 100.0, 200.0, 100.0));
         let id = c.add(Rect::new(500.0, 500.0, 50.0, 50.0));
         let min = Size::new(10.0, 10.0);
-        let mut g = Gesture::resize_block(&c, id, Point::new(550.0, 550.0), min).unwrap();
+        let mut g =
+            Gesture::resize_block(&c, id, Edges::BOTTOM_RIGHT, Point::new(550.0, 550.0), min)
+                .unwrap();
         // Width would be 203: snaps to 200.
         let u = g.update(&mut c, Point::new(703.0, 550.0));
         assert_eq!(u.resized, Some((id, Rect::new(500.0, 500.0, 200.0, 50.0))));
+        assert_eq!(u.guides.len(), 1);
+    }
+
+    #[test]
+    fn every_edge_and_corner_resizes_keeping_the_opposite_ones() {
+        let rect = Rect::new(100.0, 100.0, 200.0, 100.0);
+        let min = Size::new(50.0, 40.0);
+        let drag = |edges: Edges, from: Point, to: Point| {
+            let mut c = Canvas::default();
+            let id = c.add(rect);
+            let mut g = Gesture::resize_block(&c, id, edges, from, min).unwrap();
+            g.update(&mut c, to).resized.unwrap().1
+        };
+        // Left edge, grabbed 2 units inside: 30 to the left.
+        assert_eq!(
+            drag(
+                Edges::LEFT,
+                Point::new(102.0, 150.0),
+                Point::new(72.0, 170.0)
+            ),
+            Rect::new(70.0, 100.0, 230.0, 100.0)
+        );
+        // Top edge, down 20.
+        assert_eq!(
+            drag(
+                Edges::TOP,
+                Point::new(150.0, 100.0),
+                Point::new(150.0, 120.0)
+            ),
+            Rect::new(100.0, 120.0, 200.0, 80.0)
+        );
+        // Right edge only: the height stays.
+        assert_eq!(
+            drag(
+                Edges::RIGHT,
+                Point::new(300.0, 150.0),
+                Point::new(340.0, 190.0)
+            ),
+            Rect::new(100.0, 100.0, 240.0, 100.0)
+        );
+        // Bottom-left corner.
+        assert_eq!(
+            drag(
+                Edges::BOTTOM_LEFT,
+                Point::new(100.0, 200.0),
+                Point::new(90.0, 230.0)
+            ),
+            Rect::new(90.0, 100.0, 210.0, 130.0)
+        );
+        // Top-left corner dragged past the opposite corner: stops at the minimum, the
+        // bottom-right corner stays.
+        assert_eq!(
+            drag(
+                Edges::TOP_LEFT,
+                Point::new(100.0, 100.0),
+                Point::new(900.0, 900.0)
+            ),
+            Rect::new(250.0, 160.0, 50.0, 40.0)
+        );
+    }
+
+    #[test]
+    fn a_dragged_left_edge_snaps_to_a_neighbour() {
+        let mut c = Canvas::default();
+        c.add(Rect::new(100.0, 0.0, 200.0, 100.0));
+        let id = c.add(Rect::new(110.0, 300.0, 200.0, 100.0));
+        let min = Size::new(10.0, 10.0);
+        let mut g =
+            Gesture::resize_block(&c, id, Edges::LEFT, Point::new(110.0, 350.0), min).unwrap();
+        // Left edge would be at 104: within 8 of 100. The right edge stays at 310.
+        let u = g.update(&mut c, Point::new(104.0, 350.0));
+        assert_eq!(u.resized, Some((id, Rect::new(100.0, 300.0, 210.0, 100.0))));
         assert_eq!(u.guides.len(), 1);
     }
 }

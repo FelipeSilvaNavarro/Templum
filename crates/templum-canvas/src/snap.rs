@@ -2,6 +2,7 @@
 //! comes within a few screen pixels, with no key held, and lets go as soon as it is farther.
 
 use crate::Rect;
+use crate::gesture::Edges;
 
 /// How close, in screen pixels, an edge must come to snap. The caller divides by the zoom.
 pub const SNAP_PX: f32 = 8.0;
@@ -49,27 +50,55 @@ pub fn snap_move(rect: Rect, others: &[Rect], threshold: f32) -> Snapped {
     }
 }
 
-/// A block being resized by its bottom-right corner: its right and bottom edges line up with the
-/// others' edges, or its width or height matches another block's. It never moves.
-pub fn snap_resize(rect: Rect, others: &[Rect], threshold: f32) -> Snapped {
-    let x = nearest(
-        &[rect.right()],
-        others,
-        |o| [o.x, o.right(), rect.x + o.w],
-        threshold,
-    );
-    let y = nearest(
-        &[rect.bottom()],
-        others,
-        |o| [o.y, o.bottom(), rect.y + o.h],
-        threshold,
-    );
+/// A block being resized by `edges`: each dragged edge lines up with the others' edges, or the
+/// block's width or height matches another block's. The edges it doesn't drag never move.
+pub fn snap_resize(rect: Rect, edges: Edges, others: &[Rect], threshold: f32) -> Snapped {
+    let x = if edges.left {
+        nearest(
+            &[rect.x],
+            others,
+            |o| [o.x, o.right(), rect.right() - o.w],
+            threshold,
+        )
+    } else if edges.right {
+        nearest(
+            &[rect.right()],
+            others,
+            |o| [o.x, o.right(), rect.x + o.w],
+            threshold,
+        )
+    } else {
+        None
+    };
+    let y = if edges.top {
+        nearest(
+            &[rect.y],
+            others,
+            |o| [o.y, o.bottom(), rect.bottom() - o.h],
+            threshold,
+        )
+    } else if edges.bottom {
+        nearest(
+            &[rect.bottom()],
+            others,
+            |o| [o.y, o.bottom(), rect.y + o.h],
+            threshold,
+        )
+    } else {
+        None
+    };
     let mut snapped = rect;
     if let Some(hit) = &x {
-        snapped.w += hit.delta;
+        if edges.left {
+            snapped.x += hit.delta;
+        }
+        snapped.w += if edges.left { -hit.delta } else { hit.delta };
     }
     if let Some(hit) = &y {
-        snapped.h += hit.delta;
+        if edges.top {
+            snapped.y += hit.delta;
+        }
+        snapped.h += if edges.top { -hit.delta } else { hit.delta };
     }
     Snapped {
         rect: snapped,
@@ -137,6 +166,7 @@ mod tests {
     use super::*;
 
     const T: f32 = 8.0;
+    const BR: Edges = Edges::BOTTOM_RIGHT;
 
     fn others() -> Vec<Rect> {
         vec![Rect::new(100.0, 100.0, 200.0, 100.0)]
@@ -196,21 +226,49 @@ mod tests {
     #[test]
     fn resizing_snaps_the_far_edges_and_matches_a_width() {
         // Right edge 297 → the other's right edge 300.
-        let s = snap_resize(Rect::new(0.0, 300.0, 297.0, 50.0), &others(), T);
+        let s = snap_resize(Rect::new(0.0, 300.0, 297.0, 50.0), BR, &others(), T);
         assert_eq!(s.rect.w, 300.0);
         assert_eq!(s.rect.x, 0.0, "resizing never moves the block");
         // Width 203 → the other's width 200.
-        let s = snap_resize(Rect::new(500.0, 300.0, 203.0, 50.0), &others(), T);
+        let s = snap_resize(Rect::new(500.0, 300.0, 203.0, 50.0), BR, &others(), T);
         assert_eq!(s.rect.w, 200.0);
         // Bottom edge 198 → the other's bottom 200.
-        let s = snap_resize(Rect::new(500.0, 100.0, 50.0, 98.0), &others(), T);
+        let s = snap_resize(Rect::new(500.0, 100.0, 50.0, 98.0), BR, &others(), T);
         assert_eq!(s.rect.h, 100.0);
+    }
+
+    #[test]
+    fn resizing_by_the_left_or_top_edge_keeps_the_right_and_bottom() {
+        // Left edge 104 → the other's left edge 100; the right edge stays at 350.
+        let s = snap_resize(
+            Rect::new(104.0, 300.0, 246.0, 50.0),
+            Edges::LEFT,
+            &others(),
+            T,
+        );
+        assert_eq!(s.rect, Rect::new(100.0, 300.0, 250.0, 50.0));
+        // Width 203 by the left edge → 200, the right edge stays at 700.
+        let s = snap_resize(
+            Rect::new(497.0, 300.0, 203.0, 50.0),
+            Edges::LEFT,
+            &others(),
+            T,
+        );
+        assert_eq!(s.rect, Rect::new(500.0, 300.0, 200.0, 50.0));
+        // Top edge 196 → the other's bottom 200; the bottom stays at 260.
+        let s = snap_resize(
+            Rect::new(500.0, 196.0, 50.0, 64.0),
+            Edges::TOP,
+            &others(),
+            T,
+        );
+        assert_eq!(s.rect, Rect::new(500.0, 200.0, 50.0, 60.0));
     }
 
     #[test]
     fn nothing_to_snap_to_changes_nothing() {
         let r = Rect::new(1.5, 2.5, 3.0, 4.0);
         assert_eq!(snap_move(r, &[], T).rect, r);
-        assert_eq!(snap_resize(r, &[], T).rect, r);
+        assert_eq!(snap_resize(r, BR, &[], T).rect, r);
     }
 }
