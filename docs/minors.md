@@ -29,10 +29,6 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
 - [ ] **The sticky title makes the list jump.** The bar exists only while a file is at the top
   (`crates/templum/src/git_block/diff_view/mod.rs:307`), so the list shifts by the bar's height each time a section
   heading reaches the top. Fix: always draw the bar (empty when no file is at the top).
-- [ ] **A conflicted file shows nothing in the panel during a merge.** The parser skips `diff --cc`
-  (`crates/templum-git/src/diff.rs:215`), so a Conflicts row's click scrolls nowhere (before batch 1 it showed the
-  conflict diff). Batch 4 brings conflicts region by region; until then a note row "Conflicted: open it in an
-  editor" would avoid the blank.
 - [ ] **Any change re-reads everything: the selection and every hunk's colors go.** `DiffPanel::set`
   (`crates/templum/src/git_block/diff_view/mod.rs:137-138`) clears both whenever any file changed, so while an agent
   is writing, a selection vanishes every 2 seconds. Fix: key the colors by (section, path, hunk header) instead of
@@ -51,9 +47,6 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
   (`crates/templum/src/workspace/git_keys.rs:34`), so a held key queues the same patch again and again, and each
   refusal leaves a sticky "The file changed; try again". Fix: ignore held keys, and do nothing while `acting > 0`
   (the buttons already hide then).
-- [ ] **`s` on a selected conflict marks it resolved without asking.** `key_stage` stages a Conflicts selection
-  (`crates/templum/src/workspace/git_keys.rs:211`), with the markers still in the file. Fix: ask first ("Mark
-  resolved? The file still has conflict markers") when the file holds `<<<<<<<`.
 - [ ] **With Ignore whitespace on, `s` stages the cursor hunk's whole file without asking.** The hunk can't go alone
   then (`crates/templum/src/workspace/git_keys.rs:184`), and `s` falls back to the file silently (`d` asks). Fix: say
   so in a notification, or ask.

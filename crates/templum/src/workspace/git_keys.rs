@@ -181,6 +181,13 @@ impl Workspace {
         })
     }
 
+    /// `path` is in the Conflicts list.
+    fn conflicted(&self, id: BlockId, path: &str) -> bool {
+        self.space
+            .git(id)
+            .is_some_and(|g| g.status.conflicts().iter().any(|e| e.path == path))
+    }
+
     /// s / u: the cursor's hunk (Stage in Changes, Unstage in Staged; one that can't go alone
     /// takes its whole file), else the selected file.
     fn key_stage(
@@ -191,6 +198,18 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let selected = self.space.git(id).and_then(|g| g.selected.clone());
+        // A conflict: s marks it resolved (asking while markers are left); u does nothing.
+        let conflict = match (&selected, self.at_cursor(id)) {
+            (_, Some(c)) if self.conflicted(id, &c.path) => Some(c.path),
+            (Some((List::Conflicts, path)), None) => Some(path.clone()),
+            _ => None,
+        };
+        if let Some(path) = conflict {
+            if !unstage {
+                self.mark_resolved(id, path, window, cx);
+            }
+            return;
+        }
         match self.at_cursor(id) {
             // s on a staged hunk, u on an unstaged one: nothing to do.
             Some(c) if c.staged != unstage => {}
@@ -201,9 +220,7 @@ impl Workspace {
             Some(c) => self.stage(id, vec![c.path], window, cx),
             None => match (selected, unstage) {
                 (Some((List::Staged, path)), true) => self.unstage(id, vec![path], window, cx),
-                (Some((List::Unstaged | List::Conflicts, path)), false) => {
-                    self.stage(id, vec![path], window, cx)
-                }
+                (Some((List::Unstaged, path)), false) => self.stage(id, vec![path], window, cx),
                 _ => {}
             },
         }
@@ -213,6 +230,13 @@ impl Workspace {
     /// selected file's unstaged changes. Both ask first.
     fn key_discard(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         let selected = self.space.git(id).and_then(|g| g.selected.clone());
+        // A conflicted file isn't discarded by key: its choices are its regions'.
+        if self
+            .at_cursor(id)
+            .is_some_and(|c| self.conflicted(id, &c.path))
+        {
+            return;
+        }
         match self.at_cursor(id) {
             Some(c) if c.staged => {}
             Some(AtCursor {

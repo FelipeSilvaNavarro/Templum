@@ -755,7 +755,8 @@ impl Repo {
     }
 }
 
-/// Which side of a conflict to keep.
+/// Which side of a conflict to keep, whatever the operation: Ours is the `<<<<<<<` part (HEAD's,
+/// the branch rebased onto in a rebase), Theirs the `>>>>>>>` one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
     Ours,

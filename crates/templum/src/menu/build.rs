@@ -417,7 +417,12 @@ impl Items {
                     Some(IconName::Upload),
                     move |ws, window, cx| ws.git_commit(block, true, window, cx),
                 )),
-            Items::GitRow { block, list, entry } => {
+            Items::GitRow {
+                block,
+                list,
+                entry,
+                labels: (first, second),
+            } => {
                 use git_block::List;
                 let path = entry.path.clone();
                 let mut menu = menu;
@@ -432,24 +437,40 @@ impl Items {
                                 Some(IconName::FileCode),
                                 move |ws, window, cx| ws.open_from_git(block, &open, window, cx),
                             ))
-                            .item(item(ws, "Use ours", None, move |ws, window, cx| {
-                                ws.resolve(block, ours.clone(), templum_git::Side::Ours, window, cx)
-                            }))
-                            .item(item(ws, "Use theirs", None, move |ws, window, cx| {
-                                ws.resolve(
-                                    block,
-                                    theirs.clone(),
-                                    templum_git::Side::Theirs,
-                                    window,
-                                    cx,
-                                )
-                            }))
+                            .item(item(
+                                ws,
+                                format!("Use the version from {first}"),
+                                None,
+                                move |ws, window, cx| {
+                                    ws.resolve_file(
+                                        block,
+                                        ours.clone(),
+                                        templum_git::Side::Ours,
+                                        window,
+                                        cx,
+                                    )
+                                },
+                            ))
+                            .item(item(
+                                ws,
+                                format!("Use the version from {second}"),
+                                None,
+                                move |ws, window, cx| {
+                                    ws.resolve_file(
+                                        block,
+                                        theirs.clone(),
+                                        templum_git::Side::Theirs,
+                                        window,
+                                        cx,
+                                    )
+                                },
+                            ))
                             .item(item(
                                 ws,
                                 "Mark resolved",
                                 Some(IconName::Check),
                                 move |ws, window, cx| {
-                                    ws.stage(block, vec![resolved.clone()], window, cx)
+                                    ws.mark_resolved(block, resolved.clone(), window, cx)
                                 },
                             ));
                     }

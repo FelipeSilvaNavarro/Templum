@@ -229,10 +229,12 @@ impl Workspace {
                     git_block::List::Staged => git.status.staged(),
                     git_block::List::Unstaged => git.status.unstaged(),
                 };
+                let entry = (*entries.get(index)?).clone();
                 Items::GitRow {
                     block,
                     list,
-                    entry: (*entries.get(index)?).clone(),
+                    labels: git.conflict_labels(&entry.path),
+                    entry,
                 }
             }
             Target::GitStash { block, index } => {
@@ -409,6 +411,8 @@ enum Items {
         block: BlockId,
         list: git_block::List,
         entry: Entry,
+        /// A conflict's parts, named after its markers' labels (the whole-file choices).
+        labels: (String, String),
     },
     GitCommit {
         block: BlockId,

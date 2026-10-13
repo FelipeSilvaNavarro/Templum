@@ -8,6 +8,7 @@ mod find;
 mod git_branches;
 mod git_changes;
 mod git_compare;
+mod git_conflicts;
 mod git_discard;
 mod git_history;
 mod git_keys;

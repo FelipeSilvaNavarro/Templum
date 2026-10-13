@@ -207,26 +207,40 @@ fn row(
         match which {
             List::Conflicts => {
                 let (ours, theirs, resolved) = (path.clone(), path.clone(), path.clone());
-                buttons.push(
-                    hover_button("ours", IconName::ArrowLeft, "Use ours".into())
-                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.resolve(id, ours.clone(), templum_git::Side::Ours, window, cx)
-                        }))
-                        .test_support()
-                        .into_any_element(),
+                // Named after the markers' labels: in a rebase "ours" and "theirs" are
+                // backwards.
+                let (first, second) = git.map_or_else(
+                    || ("HEAD".to_string(), "the other side".to_string()),
+                    |g| g.conflict_labels(&e.path),
                 );
                 buttons.push(
-                    hover_button("theirs", IconName::ArrowRight, "Use theirs".into())
-                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.resolve(id, theirs.clone(), templum_git::Side::Theirs, window, cx)
-                        }))
-                        .test_support()
-                        .into_any_element(),
+                    hover_button(
+                        "ours",
+                        IconName::ArrowLeft,
+                        format!("Use the version from {first}").into(),
+                    )
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.resolve_file(id, ours.clone(), templum_git::Side::Ours, window, cx)
+                    }))
+                    .test_support()
+                    .into_any_element(),
+                );
+                buttons.push(
+                    hover_button(
+                        "theirs",
+                        IconName::ArrowRight,
+                        format!("Use the version from {second}").into(),
+                    )
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.resolve_file(id, theirs.clone(), templum_git::Side::Theirs, window, cx)
+                    }))
+                    .test_support()
+                    .into_any_element(),
                 );
                 buttons.push(
                     hover_button("resolved", IconName::Check, "Mark resolved".into())
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.stage(id, vec![resolved.clone()], window, cx)
+                            ws.mark_resolved(id, resolved.clone(), window, cx)
                         }))
                         .test_support()
                         .into_any_element(),

@@ -488,6 +488,30 @@ impl Git {
         }
     }
 
+    /// The working panel's conflicted file at `path`, as `conflict_diff` made it.
+    fn conflict_file(&self, path: &str) -> Option<&templum_git::FileDiff> {
+        self.panel
+            .files
+            .iter()
+            .map(|s| &s.diff)
+            .find(|d| d.status == templum_git::Change::Conflict && d.path() == path)
+    }
+
+    /// The labels of a conflicted file's parts (its first region's): what the whole-file
+    /// choices are named after. "HEAD" and "the other side" when it has no region to read.
+    pub fn conflict_labels(&self, path: &str) -> (String, String) {
+        match self.conflict_file(path).map(|d| &d.hunks[..]) {
+            Some([first, second, ..]) => (first.context.clone(), second.context.clone()),
+            _ => ("HEAD".to_string(), "the other side".to_string()),
+        }
+    }
+
+    /// The file still has conflict markers (as last read).
+    pub fn markers_left(&self, path: &str) -> bool {
+        self.conflict_file(path)
+            .is_some_and(|d| !d.hunks.is_empty())
+    }
+
     pub fn repo(&self) -> Option<&Repo> {
         match &self.found {
             Found::Repo(repo) => Some(repo),

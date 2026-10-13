@@ -15,6 +15,7 @@ use gpui_kit::{
     Window, canvas, div, fill, point, px, size,
 };
 use templum_canvas::BlockId;
+use templum_git::conflict::Take;
 use templum_git::{Change, FileDiff, Kind};
 
 use super::select::display;
@@ -60,7 +61,101 @@ pub(super) fn row(
         Row::Line { file, hunk, line } => {
             line_row(ws, id, &files[*file], *file, *hunk, *line, ix, row_h, z, cx)
         }
+        Row::Region { file, region } => {
+            region_row(ws, id, &files[*file], *region, ix, row_h, z, cx)
+        }
     }
+}
+
+/// A conflict region's two parts' lines, as drawn: what a choice checks the file still has.
+fn sides(s: &Shown, region: usize) -> (Vec<String>, Vec<String>) {
+    let texts = |h: usize| -> Vec<String> {
+        s.diff.hunks.get(h).map_or_else(Vec::new, |h| {
+            h.lines.iter().map(|l| l.text.clone()).collect()
+        })
+    };
+    (texts(2 * region), texts(2 * region + 1))
+}
+
+/// A conflict region's heading: "Conflict 1 of 2", and on hover Use both and Edit in editor
+/// (at its `<<<<<<<` line).
+#[allow(clippy::too_many_arguments)]
+fn region_row(
+    ws: &Workspace,
+    id: BlockId,
+    s: &Shown,
+    region: usize,
+    ix: usize,
+    row_h: f32,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let ui = ws.ui;
+    let n = id.0 as usize;
+    let busy = ws.space.git(id).is_some_and(|g| g.acting > 0);
+    let path = s.diff.path().to_string();
+    let ids = |what: &str| ElementId::Name(format!("git-region-{what}-{n}-{ix}").into());
+    // The first part starts on the line after `<<<<<<<`.
+    let marker = s
+        .diff
+        .hunks
+        .get(2 * region)
+        .map_or(1, |h| h.new_start.saturating_sub(1).max(1));
+    let mut buttons: Vec<AnyElement> = Vec::new();
+    if !busy {
+        let (both, shown) = (path.clone(), sides(s, region));
+        buttons.push(
+            small(ids("both"), "Use both", ui, z)
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.resolve_region(
+                        id,
+                        both.clone(),
+                        region,
+                        Take::Both,
+                        shown.clone(),
+                        window,
+                        cx,
+                    )
+                }))
+                .test_support()
+                .into_any_element(),
+        );
+        buttons.push(
+            small(ids("edit"), "Edit in editor", ui, z)
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.open_from_git_at(id, &path, Some(marker), window, cx)
+                }))
+                .test_support()
+                .into_any_element(),
+        );
+    }
+    div()
+        .id(("git-region", ix))
+        .group("git-region")
+        .w_full()
+        .h(px(row_h))
+        .flex()
+        .items_center()
+        .gap(px(6.0 * z))
+        .px(px(8.0 * z))
+        .bg(ui.card)
+        .text_size(px(FONT * z))
+        .text_color(ui.title)
+        .child(div().flex_1().min_w(px(0.0)).truncate().child(format!(
+            "Conflict {} of {}",
+            region + 1,
+            s.diff.hunks.len() / 2
+        )))
+        .child(
+            div()
+                .flex()
+                .gap(px(4.0 * z))
+                .children(buttons)
+                .invisible()
+                .group_hover("git-region", |s| s.visible()),
+        )
+        .test_support()
+        .into_any_element()
 }
 
 /// "+12 −3", dimmed.
@@ -249,10 +344,28 @@ fn hunk_row(
     let by_hunk = working && s.diff.by_hunk() && git.is_some_and(|g| !g.diff().ignore_ws);
     let path = s.diff.path().to_string();
     let ids = |what: &str| ElementId::Name(format!("git-hunk-{what}-{n}-{ix}").into());
+    // A conflict region's part: named after its marker's label, with Use this.
+    let part = s.diff.status == Change::Conflict;
     // Built at the click from the files as drawn: what the user saw is what is applied.
     let drawn = files.clone();
     let patch = move || templum_git::hunk_patch(&drawn[file].diff, hunk);
     let mut buttons: Vec<AnyElement> = Vec::new();
+    if !busy && working && part {
+        let (shown, path) = (sides(s, hunk / 2), path.clone());
+        let take = if hunk.is_multiple_of(2) {
+            Take::First
+        } else {
+            Take::Second
+        };
+        buttons.push(
+            small(ids("use"), "Use this", ui, z)
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.resolve_region(id, path.clone(), hunk / 2, take, shown.clone(), window, cx)
+                }))
+                .test_support()
+                .into_any_element(),
+        );
+    }
     if !busy && by_hunk {
         if s.staged {
             let patch = patch.clone();
@@ -294,7 +407,7 @@ fn hunk_row(
             );
         }
     }
-    if !busy && working {
+    if !busy && working && !part {
         let line = h.new_start.max(1);
         buttons.push(
             small(ids("open"), "Open", ui, z)
@@ -324,7 +437,11 @@ fn hunk_row(
                 .min_w(px(0.0))
                 .truncate()
                 .font_family(ws.cell.font.family.clone())
-                .child(format!("@@ {}", h.title())),
+                .child(if part {
+                    h.context.clone()
+                } else {
+                    format!("@@ {}", h.title())
+                }),
         )
         .child({
             let tools = div().flex().gap(px(4.0 * z)).children(buttons);
@@ -405,6 +522,7 @@ fn note_row(
         }
         Note::NoNewline => "No newline at end of file".to_string(),
         Note::Unread => format!("New file · {} · not read yet", human(d.bytes.unwrap_or(0))),
+        Note::Resolved => "No conflict markers left".to_string(),
     };
     let row = div()
         .id(("git-note", ix))
@@ -440,7 +558,19 @@ fn note_row(
                     }))
                     .test_support(),
             ),
-            Note::TooLarge | Note::Unread | Note::Binary | Note::Mode | Note::NoNewline => row,
+            Note::Resolved if working => row.child(
+                small(("git-mark-resolved", ix), "Mark resolved", ui, z)
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.stage(id, vec![path.clone()], window, cx)
+                    }))
+                    .test_support(),
+            ),
+            Note::TooLarge
+            | Note::Unread
+            | Note::Resolved
+            | Note::Binary
+            | Note::Mode
+            | Note::NoNewline => row,
         };
     row.test_support().into_any_element()
 }

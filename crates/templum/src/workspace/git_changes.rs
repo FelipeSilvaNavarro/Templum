@@ -656,17 +656,6 @@ impl Workspace {
         );
     }
 
-    pub(crate) fn resolve(
-        &mut self,
-        id: BlockId,
-        path: String,
-        side: templum_git::Side,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.git_action(id, move |repo| repo.resolve(&path, side), window, cx);
-    }
-
     pub(crate) fn abort_operation(
         &mut self,
         id: BlockId,

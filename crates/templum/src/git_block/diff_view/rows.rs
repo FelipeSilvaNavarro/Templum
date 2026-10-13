@@ -60,6 +60,11 @@ pub(crate) enum Row {
         file: usize,
         note: Note,
     },
+    /// A conflict region's heading: Conflict 1 of 2, Use both, Edit in editor.
+    Region {
+        file: usize,
+        region: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,6 +78,8 @@ pub(crate) enum Note {
     NoNewline,
     /// An untracked file not read yet (past what one read takes): Show diff reads it.
     Unread,
+    /// A conflicted file with no marker left: Mark resolved.
+    Resolved,
 }
 
 impl Row {
@@ -84,7 +91,8 @@ impl Row {
             | Row::Hunk { file, .. }
             | Row::Line { file, .. }
             | Row::Fold { file, .. }
-            | Row::Note { file, .. } => Some(*file),
+            | Row::Note { file, .. }
+            | Row::Region { file, .. } => Some(*file),
         }
     }
 }
@@ -118,6 +126,29 @@ pub(crate) fn rows(
                 continue;
             }
             let d = &shown.diff;
+            // A conflicted file: each region's heading, then its two parts (hunks 2k and 2k+1:
+            // the part's label, then its lines). Never folds: it isn't read whole.
+            if d.status == templum_git::Change::Conflict {
+                if d.hunks.is_empty() {
+                    rows.push(Row::Note {
+                        file,
+                        note: Note::Resolved,
+                    });
+                    continue;
+                }
+                for region in 0..d.hunks.len() / 2 {
+                    rows.push(Row::Region { file, region });
+                    for hunk in [2 * region, 2 * region + 1] {
+                        rows.push(Row::Hunk { file, hunk });
+                        rows.extend((0..d.hunks[hunk].lines.len()).map(|line| Row::Line {
+                            file,
+                            hunk,
+                            line,
+                        }));
+                    }
+                }
+                continue;
+            }
             if d.unread {
                 rows.push(Row::Note {
                     file,
@@ -194,6 +225,72 @@ mod tests {
         let mut diff = parse_diff(text, usize::MAX).pop().unwrap();
         diff.lines = lines;
         Shown { staged, diff }
+    }
+
+    #[test]
+    fn a_conflicted_file_shows_each_region_and_its_two_parts() {
+        let text = "a\n<<<<<<< HEAD\nx\n=======\ny\ny2\n>>>>>>> topic\nb\n<<<<<<< HEAD\n=======\nz\n>>>>>>> topic\n";
+        let mut diff = templum_git::conflict::conflict_diff("c.rs", text.as_bytes()).unwrap();
+        diff.lines = Some(12);
+        let files = [Shown {
+            staged: false,
+            diff,
+        }];
+        let got = rows(&files, &HashSet::new(), &HashSet::new());
+        use Row::*;
+        assert_eq!(
+            got,
+            [
+                Section {
+                    staged: false,
+                    files: 1
+                },
+                File { file: 0 },
+                Region { file: 0, region: 0 },
+                Hunk { file: 0, hunk: 0 },
+                Line {
+                    file: 0,
+                    hunk: 0,
+                    line: 0
+                },
+                Hunk { file: 0, hunk: 1 },
+                Line {
+                    file: 0,
+                    hunk: 1,
+                    line: 0
+                },
+                Line {
+                    file: 0,
+                    hunk: 1,
+                    line: 1
+                },
+                Region { file: 0, region: 1 },
+                Hunk { file: 0, hunk: 2 },
+                Hunk { file: 0, hunk: 3 },
+                Line {
+                    file: 0,
+                    hunk: 3,
+                    line: 0
+                },
+            ],
+            "no folds: a conflicted file isn't read whole"
+        );
+        let resolved = templum_git::conflict::conflict_diff("c.rs", b"done\n").unwrap();
+        let got = rows(
+            &[Shown {
+                staged: false,
+                diff: resolved,
+            }],
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+        assert_eq!(
+            got[2],
+            Note {
+                file: 0,
+                note: super::Note::Resolved
+            }
+        );
     }
 
     const TWO_HUNKS: &str = "diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n\
