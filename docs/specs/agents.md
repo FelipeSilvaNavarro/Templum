@@ -81,6 +81,20 @@ Interpreter, Qodo Command. Each is one more row in `templum-terminal/src/agent.r
   in the folder, and types the agent's command and Enter. When the agent exits, the shell is still there.
 - The folder becomes the workspace's newest recent folder.
 
+## While one runs
+
+Each terminal knows its folder and its agent as the 5-second snapshot read them (`Pane::seen`; the folder also
+follows each finished command, with shell integration).
+
+- **Shift+Enter** sends Esc then Enter (what Claude Code's `/terminal-setup` binds, and Alt+Enter sends) in a
+  terminal running an agent: a new line in the prompt, not a send. A shell still gets Enter.
+- **Closing** a terminal running an agent, or a command (shell integration), asks first and says why. A shell
+  that exited closes at once.
+- **Find** (`find`, Ctrl+Shift+F, Cmd+F on macOS) opens a field over the terminal: the text typed, read literally
+  (lowercase matches either case), is found in the whole history, selected and scrolled into view; Enter goes to
+  the older match, Shift+Enter to the newer, wrapping; Esc closes it and keeps the match selected. Nothing typed in
+  the field reaches the shell.
+
 ## Changing ours, adding yours
 
 **Settings ▸ Agents** lists every agent: Templum's, then the user's.

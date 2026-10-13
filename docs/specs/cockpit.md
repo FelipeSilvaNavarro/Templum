@@ -123,8 +123,10 @@ when it is that close, and lets go as soon as the pointer moves away.
 - **What snaps, moving:** the block's left, right and horizontal center to the others' left, right and horizontal
   center; its top, bottom and vertical center to their top, bottom and vertical center. Each axis takes the
   candidate with the smallest distance within the threshold, independently.
-- **What snaps, resizing:** the right and bottom edges to the others' left, right (and top, bottom) edges, and
-  the width or height to another block's width or height, so two blocks can be made the same size.
+- **What snaps, resizing:** the dragged edges (any edge or corner of a block resizes it, like a window's: thin
+  strips along its edges, squares at its corners) to the others' left, right (and top, bottom) edges, and the
+  width or height to another block's width or height, so two blocks can be made the same size. The opposite
+  edges stay put.
 - **Guides:** while a snap is in effect, a 1 px line in the `accent` color is drawn along the aligned edge (or
   center), from the nearest end of the two blocks to the farthest. It disappears when the drag ends or the snap
   lets go.
@@ -139,7 +141,7 @@ pub const SNAP_PX: f32 = 8.0;
 pub enum Guide { Vertical { x: f32, y0: f32, y1: f32 }, Horizontal { y: f32, x0: f32, x1: f32 } }
 pub struct Snapped { pub rect: Rect, pub guides: Vec<Guide> }
 pub fn snap_move(rect: Rect, others: &[Rect], threshold: f32) -> Snapped;
-pub fn snap_resize(rect: Rect, others: &[Rect], threshold: f32) -> Snapped;
+pub fn snap_resize(rect: Rect, edges: Edges, others: &[Rect], threshold: f32) -> Snapped;
 ```
 
 `Gesture::update` computes the unsnapped rect from the grab offset as today, then snaps it (never accumulating:
@@ -265,7 +267,15 @@ lift, pop-in and fade-out, menus, zoom.
 - **Title:** the first line that starts with `#`, without the hashes, trimmed; "Note" when there is none.
 - **Keyboard:** focusing the block focuses its editor, so typing goes there. Templum's shortcuts (Ctrl+Shift+…)
   keep working from inside it. Copy, paste, undo and search are the editor's own.
-- **Right-click a note:** Preview (or Edit), Copy all, Close.
+- **Markdown keys** (in the note's text, not in code editors): Enter on a list item (`- `, `* `, `+ `, `1. `,
+  `- [ ] `) starts the next one, and on an empty item ends the list; Ctrl+Enter (Cmd+Enter) ticks or unticks the
+  line's task, or makes the line one; Ctrl+B and Ctrl+I put `**` or `*` around the selection, or the cursor.
+- **Preview at any zoom:** headings, code and the space between paragraphs scale with the text (a `ScaledRem`
+  element lays the preview out with the rem size × zoom), and it wraps at the same width in world units, so it
+  zooms like a photo. A Markdown file's preview in an editor is the same.
+- **Color:** Color ▸ in the menu tints the card with one of the six label colors (the background mixed with the
+  label's ANSI color, readable in every built-in theme); saved as `"color": "yellow"`.
+- **Right-click a note:** Preview (or Edit), Copy all, Send to ▸, Color ▸, Close.
 - **File:** `{ "kind": "note", "rect": {…}, "text": "# Plan\n- …", "preview": false }`. The text is read from the
   editor at each snapshot. Any size of text is accepted; a text that isn't valid UTF-8 can't be in JSON, so none is.
 

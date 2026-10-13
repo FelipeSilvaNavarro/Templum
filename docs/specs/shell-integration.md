@@ -90,7 +90,10 @@ looking at: not the focused one of the shown workspace while the window is activ
 - A notification at the bottom right: the terminal's title (and the workspace's name, with several), then
   "Finished after 2 min", "Failed (exit 1) after 12 s", the agent's text, or "Needs your attention". Only the
   first news until the block is seen: a terminal that rings on and on doesn't flood. A click shows the block: its
-  workspace, the block focused, the camera on it.
+  workspace, the block focused, the camera moved just enough to show it whole.
+- **`go_to_waiting`** (Ctrl+Shift+A, Cmd+Shift+A on macOS) shows the terminal that asked for attention: this
+  workspace's first, then the others' in the sidebar's order, the oldest block first. Going there clears its
+  alert, so the next press shows the next one; with none waiting, a notification says so.
 - With Templum in the background and `terminal.notifications` on, the same as a system notification. A click
   brings Templum to the front on the block.
 
@@ -106,7 +109,20 @@ From a prompt's A to its command's C, the scanner adds a hyperlink of its own to
 `OSC 8 ;; templum:cmd/<n>` after the A (after its ST, when it ends with one), `OSC 8 ;;` after the C. alacritty
 keeps a hyperlink on each cell printed meanwhile: the prompt and the command typed at it. The mark is in the
 grid, so it moves with the text when it scrolls, falls out of the history with it, survives resizing, and is gone
-after `clear`. Templum doesn't draw hyperlinks.
+after `clear`. Templum doesn't draw hyperlinks, and Ctrl+click treats the text under its own as text.
+
+## Links
+
+Ctrl+click (Cmd+click on macOS) in a terminal opens what is under the pointer (`templum-terminal`'s `link.rs`,
+read from the grid under the lock, on the click only):
+
+- a hyperlink a program marked (OSC 8): a web page in the browser, a `file://` one in an editor;
+- else the run of non-blank characters around the pointer, across wrapped lines: a URL opens in the browser; a
+  path (`src/main.rs`, `src/main.rs:42`, `src/main.rs:42:7`, `a.ts(12,5)`, `/abs/x`, `~/x`) that is a file, found
+  from the terminal's folder when relative, opens in an editor beside the terminal at that line. The editor's
+  folder is the nearest one above the file with a `.git` entry, else the file's folder.
+
+A plain click selects as before. Nothing is drawn under a link.
 
 - **In the margin:** a dot left of the line where a prompt starts (the first line with its mark), green when its
   command ended with 0, red when it failed, dim while it runs or when the shell didn't say the code. A prompt with

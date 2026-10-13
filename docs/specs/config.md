@@ -84,10 +84,13 @@ zoom_reset     = "ctrl-0"
 fit_all        = ["ctrl-shift-1", "ctrl-!"]
 theme_picker   = "ctrl-shift-p"
 open_config    = "ctrl-,"
+go_to_waiting  = "ctrl-shift-a"   # the terminal waiting for you
+find           = "ctrl-shift-f"   # in the focused terminal's history
+open_file      = "ctrl-p"         # in a focused editor: a file by name
 ```
 
 On macOS the default shortcuts are `cmd-t`, `cmd-w`, `cmd-c`, `cmd-v`, `cmd-=` and `cmd-+`, `cmd--`, `cmd-0`,
-`cmd-shift-1` and `cmd-!`, `cmd-shift-p` and `cmd-,`.
+`cmd-shift-1` and `cmd-!`, `cmd-shift-p`, `cmd-,`, `cmd-shift-a`, `cmd-f` and `cmd-p`.
 
 ### Rules per table
 

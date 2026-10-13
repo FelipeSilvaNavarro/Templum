@@ -22,7 +22,6 @@ same board stay in sync.
 
 - Checklists, due dates, members, attachments, comments, search, and archiving.
 - Label names: a label is one of six colors.
-- Undo.
 
 ## A kanban block
 
@@ -33,6 +32,9 @@ same board stay in sync.
 - **Its title** is the board's name. The title stays the handle for moving the block; a ⇅ button at the left of
   the header shows the board list in the block (and goes back to the board).
 - **Everything inside scales with the zoom**, like a terminal's text.
+- **Undo:** with a kanban block focused, Ctrl+Z (Cmd+Z on macOS) undoes the last change to the boards (a card or a
+  column added, moved, renamed or deleted, a label, a board added or deleted), up to 50. Typing in a card's dialog
+  is undone in its fields. Delete card in a card's menu asks first.
 
 ### The board list
 
