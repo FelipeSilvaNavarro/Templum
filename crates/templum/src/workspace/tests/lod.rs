@@ -1,11 +1,14 @@
 //! Level of detail at far zoom: what each block draws at 33% and 25%, and what keeps working
 //! there. See docs/specs/level-of-detail.md.
 
+use std::rc::Rc;
 use std::time::Duration;
 
+use gpui_kit::component::input::EditorState;
 use gpui_kit::{ElementId, Focusable as _};
 
 use super::*;
+use crate::silhouette::WordMap;
 
 /// The camera at rest at `zoom`, its top-left corner at `at` (world units), and a frame drawn.
 fn rest_at(
@@ -678,4 +681,361 @@ fn far_rendered_markdown_is_left_out_and_kanban_drawn_in_full(cx: &mut TestAppCo
         shown(handle, cx, ("board-list", kanban)),
         "the kanban block is drawn in full"
     );
+}
+
+/// A note at `at` holding `text`, at rest (not popping in), focused; and its editor.
+fn note_with(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    at: Point,
+    text: &str,
+) -> (BlockId, Entity<EditorState>) {
+    cx.update_window(handle, |_, window, cx| {
+        let (id, editor) = ws.update(cx, |ws, cx| {
+            ws.add_note_at(at, window, cx);
+            ws.space.appearing.clear();
+            let id = ws.space.canvas.top().unwrap();
+            (id, ws.space.blocks[&id].note().unwrap().editor.clone())
+        });
+        editor.update(cx, |e, cx| e.set_value(text.to_string(), window, cx));
+        window.render_frame(cx);
+        (id, editor)
+    })
+    .unwrap()
+}
+
+fn note_map(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> Option<Rc<WordMap>> {
+    ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&id]
+            .note()
+            .unwrap()
+            .far
+            .borrow()
+            .map
+            .clone()
+    })
+}
+
+/// An unfocused note at 33% builds no gpui-kit editor: it paints its words as bars, in its text's
+/// own box. At 50% it is its editor again.
+#[gpui_kit::test]
+fn a_far_note_draws_bars_in_its_box_and_at_fifty_its_editor(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (id, _) = note_with(
+        handle,
+        &ws,
+        cx,
+        Point::new(40.0, 40.0),
+        "# Plan\nwrite the bars\n",
+    );
+    let n = id.0 as usize;
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    let full = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("note-editor", n)).bounds()
+        })
+        .unwrap();
+    unfocus(handle, &ws, cx);
+    frame(handle, cx);
+    assert!(!shown(handle, cx, ("note-text", n)), "no gpui-kit editor");
+    let bars = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("silhouette", n)).bounds()
+        })
+        .unwrap();
+    assert_eq!(bars, full, "the bars fill the editor's box");
+    let map = note_map(&ws, cx, id).expect("a word map");
+    assert_eq!(map.words.len(), 5, "#, Plan, write, the, bars");
+    rest_at(handle, &ws, cx, corner, 0.5);
+    assert!(shown(handle, cx, ("note-text", n)), "Full at 50%");
+}
+
+/// Bars line up with letters at every zoom step, within 1 px: a soft-wrapped note scrolled a row
+/// and a half, with a folded section on screen, its word map taken at 50% (as after a zoom out
+/// from there), against its letters laid out at each step.
+#[gpui_kit::test]
+fn a_notes_bars_line_up_with_its_letters_at_every_zoom(cx: &mut TestAppContext) {
+    use crate::silhouette::{Taken, note_origin};
+    use gpui_kit::component::input::FoldRange;
+    let mut text = String::from("# Title\nintro\n## Folded\n");
+    for i in 0..5 {
+        text.push_str(&format!("hidden words {i}\n"));
+    }
+    text.push_str("## After\n");
+    for i in 0..60 {
+        text.push_str(&format!(
+            "{i:02} the quick brown fox jumps over the lazy dog and keeps on running far\n"
+        ));
+    }
+    let (handle, ws) = open(cx);
+    let (id, note) = note_with(handle, &ws, cx, Point::new(40.0, 40.0), &text);
+    let n = id.0 as usize;
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 1.0);
+    // Folds "## Folded" (line 2; lines 3 to 7 hidden) from its gutter icon, drawn on the cursor's
+    // line: 14 px, 2 px into the gutter (gpui-base-0.7.1 src/input/base/element.rs:1334-1348).
+    let line2 = "# Title\nintro\n".len();
+    cx.update_window(handle, |_, window, cx| {
+        note.update(cx, |e, cx| {
+            e.apply_highlighter_fold_candidates(vec![FoldRange::new(2, 8)], cx);
+            e.set_selected_range(line2..line2, cx);
+        });
+        window.render_frame(cx);
+        let e = note.read(cx);
+        let (tb, lh) = (
+            e.text_bounds().unwrap(),
+            f32::from(e.line_height().unwrap()),
+        );
+        let icon = (
+            f32::from(tb.origin.x) + 9.0,
+            f32::from(tb.origin.y) + 2.5 * lh,
+        );
+        click(window, cx, icon, 1);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let (hidden, after) = (text.find("hidden").unwrap(), text.find("## After").unwrap());
+    cx.update_window(handle, |_, _, cx| {
+        let b = note
+            .read(cx)
+            .range_to_bounds(&(hidden..hidden + 6))
+            .unwrap();
+        assert_eq!(b.size.width, px(0.0), "line 3 is folded away");
+    })
+    .unwrap();
+    // A row and a half down: the fold stays on screen.
+    cx.update_window(handle, |_, window, cx| {
+        note.update(cx, |e, cx| {
+            let row = e.line_height().unwrap();
+            e.set_scroll_offset(point(px(0.0), -row * 1.5), cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    rest_at(handle, &ws, cx, corner, 0.5);
+    let map = cx
+        .update_window(handle, |_, _, cx| {
+            let taken = Taken {
+                len: text.len(),
+                size: (0.0, 0.0),
+                font: "".into(),
+                wrap: true,
+                tree: false,
+            };
+            WordMap::take(note.read(cx), 0.5, taken).expect("laid out")
+        })
+        .unwrap();
+    assert!(
+        (map.scroll.0 - 1.5).abs() < 0.01,
+        "taken scrolled: {:?}",
+        map.scroll
+    );
+    assert!(
+        map.words
+            .iter()
+            .all(|w| !(hidden..after).contains(&w.range.start)),
+        "no bars for the folded lines"
+    );
+    for zoom in templum_canvas::ZOOM_STEPS {
+        rest_at(handle, &ws, cx, corner, zoom);
+        cx.update_window(handle, |_, window, cx| {
+            let origin = window.find(("note-editor", n)).bounds().origin;
+            let e = note.read(cx);
+            let lh = f32::from(e.line_height().unwrap());
+            let cells = map.cells(note_origin(&map, zoom), crate::note::FONT, zoom);
+            let mut compared = 0;
+            for (word, (x, y, w, h)) in map.words.iter().zip(cells) {
+                let Some(b) = e.range_to_bounds(&word.range) else {
+                    continue;
+                };
+                if f32::from(b.size.height) > 1.5 * lh || b.size.width <= px(0.0) {
+                    continue;
+                }
+                let (x, y) = (f32::from(origin.x) + x, f32::from(origin.y) + y);
+                for (what, bar, letters) in [
+                    ("left", x, f32::from(b.origin.x)),
+                    ("right", x + w, f32::from(b.origin.x + b.size.width)),
+                    ("top", y, f32::from(b.origin.y)),
+                    ("height", h, f32::from(b.size.height)),
+                ] {
+                    assert!(
+                        (bar - letters).abs() <= 1.0,
+                        "{what} of {:?} at {zoom}: bar {bar}, letters {letters}",
+                        &text[word.range.clone()]
+                    );
+                }
+                compared += 1;
+            }
+            assert!(compared > 30, "{compared} words compared at {zoom}");
+        })
+        .unwrap();
+    }
+}
+
+/// A word longer than the note's line, which gpui-kit breaks across rows, is a bar on each row it
+/// is on, as wide as its letters there.
+#[gpui_kit::test]
+fn a_far_notes_word_broken_across_rows_is_a_bar_on_each(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let text = format!("a {}\n", "x".repeat(100));
+    let (id, _) = note_with(handle, &ws, cx, Point::new(40.0, 40.0), &text);
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.5);
+    unfocus(handle, &ws, cx);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    let map = note_map(&ws, cx, id).expect("taken");
+    let parts: Vec<_> = map.words.iter().filter(|w| w.range.start == 2).collect();
+    assert!(parts.len() >= 2, "{parts:?}");
+    assert!(
+        parts.windows(2).all(|p| p[1].row == p[0].row + 1),
+        "{parts:?}"
+    );
+    // 100 letters 0.6 em wide at 13 px, world units.
+    let w: f32 = parts.iter().map(|p| p.w).sum();
+    assert!((w - 100.0 * 0.6 * 13.0).abs() < 2.0, "{w}: {parts:?}");
+}
+
+/// A note with no word map yet (a canvas restored at 25%: never drawn Full) is laid out unseen on
+/// its first frame, and its next frame takes its word map.
+#[gpui_kit::test]
+fn a_far_note_with_no_word_map_yet_gets_one_after_its_first_frames(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.add_note_at(Point::new(40.0, 40.0), window, cx);
+                let id = ws.space.canvas.top().unwrap();
+                let editor = ws.space.blocks[&id].note().unwrap().editor.clone();
+                editor.update(cx, |e, cx| {
+                    e.set_value(
+                        "# Plan\nwrite the bars\nthen the label\n".to_string(),
+                        window,
+                        cx,
+                    )
+                });
+                ws.space.appearing.clear();
+                ws.space.focused = None;
+                ws.space.pristine = false;
+                ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 0.25);
+                window.focus(&ws.focus_handle, cx);
+                id
+            })
+        })
+        .unwrap();
+    // The update above drew the first frame: a test context draws a window an update left dirty.
+    assert!(
+        note_map(&ws, cx, id).is_none(),
+        "the first frame lays its editor out, unseen"
+    );
+    assert!(shown(handle, cx, ("silhouette", id.0 as usize)));
+    frame(handle, cx);
+    let map = note_map(&ws, cx, id).expect("the next frame takes its word map");
+    assert_eq!(
+        map.words.len(),
+        8,
+        "#, Plan, write, the, bars, then, the, label"
+    );
+}
+
+/// A far note resized (a command, the keyboard elsewhere) gets its word map taken again: one
+/// unseen Full frame lays it out at its new width, the next takes it.
+#[gpui_kit::test]
+fn a_far_notes_word_map_is_taken_again_after_a_resize(cx: &mut TestAppContext) {
+    let text: String = (0..20)
+        .map(|i| format!("{i} the quick brown fox jumps over the lazy dog\n"))
+        .collect();
+    let (handle, ws) = open(cx);
+    let (id, _) = note_with(handle, &ws, cx, Point::new(40.0, 40.0), &text);
+    rest_at(handle, &ws, cx, Point::new(30.0, 30.0), 0.33);
+    unfocus(handle, &ws, cx);
+    let dog = text.find("dog").unwrap();
+    let row = |m: &WordMap| m.words.iter().find(|w| w.range.start == dog).unwrap().row;
+    let before = note_map(&ws, cx, id).expect("taken");
+    assert_eq!(row(&before), 1, "the first line wraps at 360 wide");
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(id).unwrap().rect.w += 200.0
+    });
+    frame(handle, cx);
+    frame(handle, cx);
+    let after = note_map(&ws, cx, id).expect("taken again");
+    assert_eq!(after.taken.size.0, before.taken.size.0 + 200.0);
+    assert_eq!(row(&after), 0, "one row at 560 wide");
+}
+
+/// Over a far note the wheel moves the canvas; once it is clicked (focused: Full), the wheel
+/// scrolls the note again.
+#[gpui_kit::test]
+fn the_wheel_over_a_far_note_moves_the_canvas(cx: &mut TestAppContext) {
+    let text: String = (0..100).map(|i| format!("line {i}\n")).collect();
+    let (handle, ws) = open(cx);
+    let (id, note) = note_with(handle, &ws, cx, Point::new(40.0, 40.0), &text);
+    let n = id.0 as usize;
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    unfocus(handle, &ws, cx);
+    let c = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("silhouette", n)).bounds().center()
+        })
+        .unwrap();
+    let at = (f32::from(c.x), f32::from(c.y));
+    let camera = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    let down = ScrollDelta::Pixels(point(px(0.0), px(-40.0)));
+    let before = camera(cx);
+    cx.update_window(handle, |_, window, cx| wheel(window, cx, at, down, false))
+        .unwrap();
+    assert_ne!(camera(cx).origin, before.origin, "the canvas moved");
+    rest_at(handle, &ws, cx, corner, 0.33);
+    cx.update_window(handle, |_, window, cx| {
+        click(window, cx, at, 1);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(shown(handle, cx, ("note-text", n)), "clicked: Full");
+    let (before, scroll) = (camera(cx), note.read_with(cx, |e, _| e.scroll_offset()));
+    cx.update_window(handle, |_, window, cx| {
+        wheel(window, cx, at, down, false);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(camera(cx), before, "the wheel is the note's");
+    assert_ne!(
+        note.read_with(cx, |e, _| e.scroll_offset()),
+        scroll,
+        "the note scrolled"
+    );
+}
+
+/// A note's rows survive Full → bars → Full: the same lines are on screen after.
+#[gpui_kit::test]
+fn a_notes_rows_survive_being_drawn_far_away(cx: &mut TestAppContext) {
+    let text: String = (0..200).map(|i| format!("line {i}\n")).collect();
+    let (handle, ws) = open(cx);
+    let (id, note) = note_with(handle, &ws, cx, Point::new(40.0, 40.0), &text);
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.5);
+    cx.update_window(handle, |_, window, cx| {
+        note.update(cx, |e, cx| {
+            let row = e.line_height().unwrap();
+            e.set_scroll_offset(point(px(0.0), -row * 60.0), cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let top =
+        |cx: &mut TestAppContext| note.read_with(cx, |e, _| e.visible_row_range().unwrap().start);
+    assert_eq!(top(cx), 60);
+    unfocus(handle, &ws, cx);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    assert!(shown(handle, cx, ("silhouette", id.0 as usize)));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx))
+    })
+    .unwrap();
+    rest_at(handle, &ws, cx, corner, 0.33);
+    assert_eq!(top(cx), 60, "focused again at 33%");
+    rest_at(handle, &ws, cx, corner, 0.5);
+    assert_eq!(top(cx), 60, "and at 50%");
 }

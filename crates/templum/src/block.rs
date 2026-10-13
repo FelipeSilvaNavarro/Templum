@@ -452,7 +452,7 @@ pub(crate) fn render(
                     block,
                     settled,
                     pull,
-                    note::body(ws, id, n, settled, cx),
+                    note::body(ws, id, n, settled, level, cx),
                 ))
             }),
             // A fading editor is drawn empty, like a note.

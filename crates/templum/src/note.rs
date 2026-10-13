@@ -1,7 +1,7 @@
 //! A note block: Markdown text, edited in gpui-kit's editor (tree-sitter highlights it) or shown
 //! rendered. Its title is its first heading. See docs/specs/cockpit.md, section 5.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ops::Range;
 
 use gpui_kit::component::input::{Editor, EditorState, Enter};
@@ -12,10 +12,12 @@ use gpui_kit::{
     InspectorElementId, IntoElement, KeyDownEvent, Keystroke, LayoutId, Pixels, ScrollHandle,
     ScrollWheelEvent, SharedString, StyleRefinement, TestSupportExt, Window, div, px, relative,
 };
-use templum_canvas::{BlockId, Size, chrome};
+use templum_canvas::{BlockId, Level, Size, chrome};
 
 use crate::block::BORDER;
 use crate::board::Label;
+use crate::grid::{BAR_OPACITY, hsla};
+use crate::silhouette::{self, Far};
 use crate::workspace::Workspace;
 
 /// A new note's size, and the smallest one (world units).
@@ -28,9 +30,9 @@ pub(crate) const FONT: f32 = 13.0;
 /// in a code editor, 10 right, 8 top and bottom) and, inside it, left of the text, the line
 /// numbers' margin (6) and the fold icons (18), and right of it a margin its wrap width leaves
 /// out (10) (gpui-base-0.7.1 src/input/base/element.rs:50-53, 1102-1124, 2562).
-const FIXED_LEFT: f32 = 6.0 + 6.0 + 18.0;
+pub(crate) const FIXED_LEFT: f32 = 6.0 + 6.0 + 18.0;
 const FIXED_RIGHT: f32 = 10.0 + 10.0;
-const FIXED_TOP: f32 = 8.0;
+pub(crate) const FIXED_TOP: f32 = 8.0;
 const FIXED_BOTTOM: f32 = 8.0;
 
 /// A note block: its text lives in the editor; `preview` shows it rendered instead.
@@ -40,6 +42,8 @@ pub(crate) struct Note {
     /// Its card's tint, a post-it's color; None: the blocks' own.
     pub color: Option<Label>,
     pub preview_scroll: PreviewScroll,
+    /// Its word map, drawn far away (`silhouette.rs`).
+    pub far: RefCell<Far>,
 }
 
 impl Note {
@@ -57,6 +61,7 @@ impl Note {
             preview,
             color: None,
             preview_scroll: PreviewScroll::default(),
+            far: RefCell::default(),
         }
     }
 
@@ -101,12 +106,14 @@ pub(crate) fn title(text: &str) -> String {
         .unwrap_or_else(|| "Note".to_string())
 }
 
-/// The body below the header: the editor, or the rendered text. Both at the block's zoom `z`.
+/// The body below the header at the block's zoom `z`: the editor, or the rendered text; below
+/// Full, the text's bars (`block.rs` leaves a note shown rendered out there).
 pub(crate) fn body(
     ws: &Workspace,
     id: BlockId,
     note: &Note,
     z: f32,
+    level: Level,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let n = id.0 as usize;
@@ -115,6 +122,29 @@ pub(crate) fn body(
         .canvas
         .get(id)
         .map_or(Size::default(), |b| chrome::content_rect(b.rect).size());
+    // What its word map is of.
+    let taken = silhouette::Taken {
+        len: note.editor.read(cx).text().len(),
+        size: (content.w, content.h),
+        font: ws.cell.font.family.clone(),
+        wrap: true,
+        tree: false,
+    };
+    if level != Level::Full {
+        // Its words as bars: no Markdown keys, and the wheel moves the canvas.
+        return silhouette::body(
+            ("silhouette", n).into(),
+            &note.editor,
+            &note.far,
+            taken,
+            z,
+            FONT,
+            silhouette::note_origin,
+            hsla(ws.theme.palette.foreground, BAR_OPACITY),
+            |cx| editor_box(ws, n, note, content, z, cx),
+            cx,
+        );
+    }
     let inner = if note.preview {
         preview(
             ("note-preview", n).into(),
@@ -126,40 +156,8 @@ pub(crate) fn body(
             z,
         )
     } else {
-        // Its fixed parts would make the text start further in, wrap at other words and show
-        // fewer lines the further the canvas is zoomed out: the editor is as much larger (or
-        // smaller) and moved by its fixed left and top parts' share, so the text starts, wraps
-        // and fits as if they zoomed too. Its lines change only when the block is resized. At
-        // zoom 1, exactly the note's box.
-        let (across, down) = (FIXED_LEFT + FIXED_RIGHT, FIXED_TOP + FIXED_BOTTOM);
-        crate::editor::keep_rows(&note.editor, FONT, z, cx);
-        div()
-            .id(("note-editor", n))
-            .size_full()
-            .font_family(ws.cell.font.family.clone())
-            .child(
-                div()
-                    .id(("note-text", n))
-                    .relative()
-                    .left(px(-FIXED_LEFT * (1.0 - z)))
-                    .top(px(-FIXED_TOP * (1.0 - z)))
-                    .w(px(
-                        ((content.w - 2.0 * BORDER - across) * z + across).max(0.0)
-                    ))
-                    .h(px(((content.h - down) * z + down).max(0.0)))
-                    .child(
-                        // On the editor itself: it sets the theme's code size on itself, over
-                        // a parent's.
-                        Editor::new(&note.editor)
-                            .appearance(false)
-                            .bordered(false)
-                            .text_size(px(FONT * z))
-                            .h(relative(1.0)),
-                    )
-                    .test_support(),
-            )
-            .test_support()
-            .into_any_element()
+        note.far.borrow_mut().full = Some((z, taken));
+        editor_box(ws, n, note, content, z, cx)
     };
     // The wheel scrolls the note and stops there; with Ctrl it zooms the canvas.
     let (enter, key) = (note.editor.clone(), note.editor.clone());
@@ -205,6 +203,50 @@ pub(crate) fn body(
             })
         })
         .child(inner)
+        .into_any_element()
+}
+
+/// The note's editor as Full draws it, at zoom `z`. Its fixed parts would make the text start
+/// further in, wrap at other words and show fewer lines the further the canvas is zoomed out:
+/// the editor is as much larger (or smaller) and moved by its fixed left and top parts' share,
+/// so the text starts, wraps and fits as if they zoomed too. Its lines change only when the
+/// block is resized. At zoom 1, exactly the note's box.
+fn editor_box(
+    ws: &Workspace,
+    n: usize,
+    note: &Note,
+    content: Size,
+    z: f32,
+    cx: &mut App,
+) -> AnyElement {
+    let (across, down) = (FIXED_LEFT + FIXED_RIGHT, FIXED_TOP + FIXED_BOTTOM);
+    crate::editor::keep_rows(&note.editor, FONT, z, cx);
+    div()
+        .id(("note-editor", n))
+        .size_full()
+        .font_family(ws.cell.font.family.clone())
+        .child(
+            div()
+                .id(("note-text", n))
+                .relative()
+                .left(px(-FIXED_LEFT * (1.0 - z)))
+                .top(px(-FIXED_TOP * (1.0 - z)))
+                .w(px(
+                    ((content.w - 2.0 * BORDER - across) * z + across).max(0.0)
+                ))
+                .h(px(((content.h - down) * z + down).max(0.0)))
+                .child(
+                    // On the editor itself: it sets the theme's code size on itself, over a
+                    // parent's.
+                    Editor::new(&note.editor)
+                        .appearance(false)
+                        .bordered(false)
+                        .text_size(px(FONT * z))
+                        .h(relative(1.0)),
+                )
+                .test_support(),
+        )
+        .test_support()
         .into_any_element()
 }
 
