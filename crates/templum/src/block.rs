@@ -387,11 +387,13 @@ pub(crate) fn render(
         .h(px((r.h - chrome::TITLE_H * z).max(0.0)))
         .p(px(chrome::PAD * z))
         .overflow_hidden();
-    let content = match body {
-        Body::Terminal(pane) => frame
-            .when(live, |el| {
-                el.cursor_text()
-                    .on_mouse_down(
+    let content =
+        match body {
+            Body::Terminal(pane) => frame
+                // At the Card level nothing is inside: the grid isn't painted, so the terminal isn't
+                // re-armed and its output asks for no frames, as off screen.
+                .when(live && level != Level::Card, |el| {
+                    el.cursor_text().on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
                             // Ctrl+click (Cmd on macOS) opens a path or a link; the block's own
@@ -403,57 +405,76 @@ pub(crate) fn render(
                             }
                         }),
                     )
-                    .on_scroll_wheel(cx.listener(move |ws, e: &ScrollWheelEvent, _, cx| {
+                })
+                // Over bars the wheel moves the canvas: a far terminal's history stays still.
+                .when(live && level == Level::Full, |el| {
+                    el.on_scroll_wheel(cx.listener(move |ws, e: &ScrollWheelEvent, _, cx| {
                         ws.scroll_terminal(id, e, cx)
                     }))
-            })
-            .child(grid::body(
-                pane.term.shared().clone(),
-                pane.snapshot.clone(),
-                ws.cell.clone(),
-                z,
-                focused,
-                ws.marked.clone().filter(|_| focused),
-                ws.theme.clone(),
-                ws.blink_on,
-                cx.entity(),
-            ))
-            .when_some(pane.find.as_ref().filter(|_| live), |el, bar| {
-                el.child(find_bar(ws, n, bar, z))
+                })
+                .when(level != Level::Card, |el| {
+                    let grid = grid::body(
+                        pane.term.shared().clone(),
+                        pane.snapshot.clone(),
+                        ws.cell.clone(),
+                        z,
+                        level == Level::Silhouette,
+                        focused,
+                        ws.marked.clone().filter(|_| focused),
+                        ws.theme.clone(),
+                        ws.blink_on,
+                        cx.entity(),
+                    );
+                    if level == Level::Full {
+                        el.child(grid)
+                    } else {
+                        el.child(
+                            div()
+                                .id(("silhouette", n))
+                                .size_full()
+                                .child(grid)
+                                .test_support(),
+                        )
+                    }
+                })
+                // Its find field is kept while the block is far, and comes back with its letters.
+                .when_some(
+                    pane.find.as_ref().filter(|_| live && level == Level::Full),
+                    |el, bar| el.child(find_bar(ws, n, bar, z)),
+                ),
+            // A fading kanban block is drawn empty: its board is still live elsewhere.
+            Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
+            // A fading note is drawn empty, like a kanban block.
+            Body::Note(n) => frame.when(live, |el| {
+                el.child(settled_box(
+                    block,
+                    settled,
+                    pull,
+                    note::body(ws, id, n, settled, cx),
+                ))
             }),
-        // A fading kanban block is drawn empty: its board is still live elsewhere.
-        Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
-        // A fading note is drawn empty, like a kanban block.
-        Body::Note(n) => frame.when(live, |el| {
-            el.child(settled_box(
-                block,
-                settled,
-                pull,
-                note::body(ws, id, n, settled, cx),
-            ))
-        }),
-        // A fading editor is drawn empty, like a note.
-        Body::Editor(e) => frame.when(live, |el| {
-            el.child(settled_box(
-                block,
-                settled,
-                pull,
-                editor::body(ws, id, e, settled, cx),
-            ))
-        }),
-        // A fading Git block is drawn empty, like a note. Below Full it is its card: its body is
-        // dozens of components whose shape says little from afar, and its diff rows and commit
-        // fields would do their per-frame work for nothing.
-        Body::Git(g) => frame.when(live && level == Level::Full, |el| {
-            el.child(settled_box(
-                block,
-                settled,
-                pull,
-                git_block::body(ws, id, g, settled, cx),
-            ))
-        }),
-    }
-    .test_support();
+            // A fading editor is drawn empty, like a note.
+            Body::Editor(e) => frame.when(live, |el| {
+                el.child(settled_box(
+                    block,
+                    settled,
+                    pull,
+                    editor::body(ws, id, e, settled, cx),
+                ))
+            }),
+            // A fading Git block is drawn empty, like a note. Below Full it is its card: its body is
+            // dozens of components whose shape says little from afar, and its diff rows and commit
+            // fields would do their per-frame work for nothing.
+            Body::Git(g) => frame.when(live && level == Level::Full, |el| {
+                el.child(settled_box(
+                    block,
+                    settled,
+                    pull,
+                    git_block::body(ws, id, g, settled, cx),
+                ))
+            }),
+        }
+        .test_support();
 
     let handle = div()
         .id(("handle", n))

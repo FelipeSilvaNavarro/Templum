@@ -328,3 +328,301 @@ fn the_headers_buttons_hide_behind_a_far_label(cx: &mut TestAppContext) {
         "the label sits there"
     );
 }
+
+/// A focused terminal at 25% is Full: its letters, its cursor (the IME popup follows it) and the
+/// keys. When the focus moves to another block, it is bars on the next frame.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_focused_far_terminal_draws_its_letters_and_the_one_left_bars(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    ws.update(cx, |ws, _| ws.ime_cursor = None);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 10.0, rect.y - 10.0),
+        0.25,
+    );
+    assert!(
+        !shown(handle, cx, ("silhouette", n)),
+        "focused: its letters"
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.ime_cursor.is_some(), "its cursor is drawn")
+    });
+    cx.update_window(handle, |_, window, cx| window.input("z", cx))
+        .unwrap();
+    super::terminals::until("the key to show", handle, &ws, cx, |ws| {
+        ws.space
+            .terminal(id)
+            .unwrap()
+            .snapshot
+            .borrow()
+            .text()
+            .contains('z')
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.add_note_at(Point::new(rect.x + rect.w + 100.0, rect.y), window, cx)
+        })
+    })
+    .unwrap();
+    frame(handle, cx);
+    assert!(shown(handle, cx, ("silhouette", n)), "left: bars");
+}
+
+/// A far terminal's bars are its colored runs, painted on its grid's cells (the grid's area is
+/// where the letters start); a theme switch while far gives them the new palette at once.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_far_terminals_bars_are_its_colored_runs_on_its_cells(cx: &mut TestAppContext) {
+    use templum_terminal::{Bar, Span};
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    // `cat` prints the line back: "red" in red, then " ok". Waited for in the block's own
+    // snapshot: a snapshot of its own (`shown_in`) would take the rows' damage from it.
+    ws.read_with(cx, |ws, _| {
+        let term = &ws.space.terminal(id).unwrap().term;
+        term.write(b"\x1b[31mred\x1b[0m ok\r".to_vec())
+    });
+    super::terminals::until("red ok", handle, &ws, cx, |ws| {
+        let pane = ws.space.terminal(id).unwrap();
+        pane.snapshot.borrow().text().contains("\nred ok")
+    });
+    unfocus(handle, &ws, cx);
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 10.0, rect.y - 10.0),
+        0.25,
+    );
+    let bars = |ws: &Workspace| {
+        let snap = ws.space.terminal(id).unwrap().snapshot.borrow();
+        let row = snap
+            .rows
+            .iter()
+            .rposition(|r| r.text == "red ok")
+            .expect("the row");
+        snap.rows[row].bars()
+    };
+    ws.read_with(cx, |ws, _| {
+        let p = &ws.theme.palette;
+        assert_eq!(
+            bars(ws),
+            vec![
+                Bar {
+                    cols: Span { start: 0, len: 3 },
+                    fg: p.ansi[1],
+                    dim: false
+                },
+                Bar {
+                    cols: Span { start: 4, len: 2 },
+                    fg: p.foreground,
+                    dim: false
+                },
+            ]
+        );
+    });
+    cx.update_window(handle, |_, window, _| {
+        let grid = window.find(("silhouette", n)).bounds();
+        let body = window.find(("body", n)).bounds();
+        let pad = px(chrome::PAD * 0.25);
+        assert_eq!(grid.origin, point(body.origin.x + pad, body.origin.y + pad));
+    })
+    .unwrap();
+    let red = ws.read_with(cx, |ws, _| ws.theme.palette.ansi[1]);
+    ws.update(cx, |ws, cx| ws.set_dark(true, cx));
+    frame(handle, cx);
+    ws.read_with(cx, |ws, _| {
+        let now = ws.theme.palette.ansi[1];
+        assert_ne!(now, red, "another theme");
+        assert_eq!(bars(ws)[0].fg, now, "the bars take its red at once");
+    });
+}
+
+/// Under 2.5 px (8-point text at 25%) a terminal is its card: its grid isn't painted, so it isn't
+/// re-armed, and its output wakes the UI once and then waits, as off screen.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_terminal_drawn_as_its_card_isnt_rearmed(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    // 8 × 0.25 = 2 px: the Card level. The grid keeps its cells; only the level changes.
+    ws.update(cx, |ws, _| ws.cell.font_size = 8.0);
+    unfocus(handle, &ws, cx);
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 10.0, rect.y - 10.0),
+        0.25,
+    );
+    assert!(shown(handle, cx, ("block", n)), "on screen");
+    assert!(!shown(handle, cx, ("silhouette", n)), "no bars: its card");
+    let armed = |ws: &Workspace| ws.space.terminal(id).unwrap().term.shared().armed();
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(id).unwrap().term.write(b"x\r".to_vec())
+    });
+    super::terminals::until("its output to wake the UI once", handle, &ws, cx, |ws| {
+        !armed(ws)
+    });
+    for _ in 0..3 {
+        frame(handle, cx);
+    }
+    ws.read_with(cx, |ws, _| assert!(!armed(ws), "a card isn't re-armed"));
+}
+
+/// Over a far terminal the wheel moves the canvas and Ctrl+wheel zooms; once it is clicked
+/// (focused: Full), the wheel is the terminal's again.
+#[gpui_kit::test]
+fn the_wheel_over_a_far_terminal_moves_the_canvas(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    unfocus(handle, &ws, cx);
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    let corner = Point::new(rect.x - 10.0, rect.y - 10.0);
+    rest_at(handle, &ws, cx, corner, 0.25);
+    let c = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("silhouette", n)).bounds().center()
+        })
+        .unwrap();
+    let at = (f32::from(c.x), f32::from(c.y));
+    let camera = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    let down = ScrollDelta::Pixels(point(px(0.0), px(40.0)));
+    let before = camera(cx);
+    cx.update_window(handle, |_, window, cx| wheel(window, cx, at, down, false))
+        .unwrap();
+    assert_ne!(camera(cx).origin, before.origin, "the canvas moved");
+    rest_at(handle, &ws, cx, corner, 0.25);
+    cx.update_window(handle, |_, window, cx| {
+        wheel(window, cx, at, ScrollDelta::Lines(point(0.0, 1.0)), true)
+    })
+    .unwrap();
+    assert_eq!(camera(cx).zoom(), 0.33, "Ctrl+wheel zooms");
+    rest_at(handle, &ws, cx, corner, 0.25);
+    cx.update_window(handle, |_, window, cx| {
+        click(window, cx, at, 1);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(!shown(handle, cx, ("silhouette", n)), "clicked: Full");
+    let before = camera(cx);
+    cx.update_window(handle, |_, window, cx| wheel(window, cx, at, down, false))
+        .unwrap();
+    assert_eq!(camera(cx), before, "the wheel is the terminal's");
+}
+
+/// Ctrl+click on a URL in an unfocused far terminal opens it: its bars keep the press, which
+/// reads the grid. The URL is printed 10 rows down (the echo of the line is a single row),
+/// below the rows the label covers.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn ctrl_click_on_a_url_in_a_far_terminal_opens_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    ws.read_with(cx, |ws, _| {
+        let term = &ws.space.terminal(id).unwrap().term;
+        term.write(b"\x1b[10Bsee https://example.com/x\r".to_vec())
+    });
+    super::terminals::until("the URL", handle, &ws, cx, |ws| {
+        let pane = ws.space.terminal(id).unwrap();
+        pane.snapshot
+            .borrow()
+            .text()
+            .contains("\nsee https://example.com/x")
+    });
+    unfocus(handle, &ws, cx);
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 10.0, rect.y - 10.0),
+        0.25,
+    );
+    assert!(shown(handle, cx, ("silhouette", id.0 as usize)));
+    let row = ws.read_with(cx, |ws, _| {
+        let snap = ws.space.terminal(id).unwrap().snapshot.borrow();
+        snap.rows
+            .iter()
+            .rposition(|r| r.text.starts_with("see https"))
+            .unwrap()
+    });
+    super::terminals::ctrl_click_cell(handle, &ws, cx, id, (row, 8));
+    assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/x"));
+}
+
+/// A find field left open on a terminal that lost the focus at 33% is hidden, and comes back with
+/// its text when the terminal is focused again.
+#[gpui_kit::test]
+fn a_find_field_hides_far_away_and_comes_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 10.0, rect.y - 10.0),
+        0.33,
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_find(window, cx));
+        window.render_frame(cx);
+        window.input("needle", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(shown(handle, cx, ("find", n)), "focused: its field");
+    unfocus(handle, &ws, cx);
+    assert!(!shown(handle, cx, ("find", n)), "far and left: hidden");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(shown(handle, cx, ("find", n)), "back");
+    ws.read_with(cx, |ws, cx| {
+        let bar = ws.space.terminal(id).unwrap().find.as_ref().unwrap();
+        assert_eq!(bar.input.read(cx).value().as_ref(), "needle");
+    });
+}
+
+/// "Go to the terminal waiting for you" focuses a far waiting terminal: it is drawn Full.
+#[gpui_kit::test]
+fn going_to_a_far_waiting_terminal_draws_it_in_full(cx: &mut TestAppContext) {
+    use crate::alert::Alert;
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    unfocus(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().alert = Some(Alert::Attention(None))
+    });
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 10.0, rect.y - 10.0),
+        0.25,
+    );
+    assert!(shown(handle, cx, ("silhouette", n)), "waiting, far: bars");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.go_to_waiting(window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(!shown(handle, cx, ("silhouette", n)), "gone to: Full");
+}

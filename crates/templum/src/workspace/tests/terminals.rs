@@ -4,7 +4,7 @@ use super::*;
 
 /// Draws frames (each hears the terminals) until `done`.
 #[cfg(unix)]
-fn until(
+pub(super) fn until(
     what: &str,
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
@@ -773,7 +773,7 @@ fn the_find_field_selects_what_it_finds_and_esc_gives_the_terminal_back(cx: &mut
 
 /// A press with Ctrl (Cmd on macOS) at a terminal's cell `(row, col)`.
 #[cfg(unix)]
-fn ctrl_click_cell(
+pub(super) fn ctrl_click_cell(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
