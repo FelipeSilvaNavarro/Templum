@@ -259,6 +259,7 @@ impl Workspace {
             Command::PreviousWorkspace => self.cycle_space(-1, window, cx),
             Command::NewWorkspace => self.new_space(window, cx),
             Command::ToggleSidebar => self.toggle_sidebar(window, cx),
+            Command::GoToWaiting => self.go_to_waiting(window, cx),
             Command::Quit => self.quit(window, cx),
         }
     }

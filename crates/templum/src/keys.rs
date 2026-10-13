@@ -29,12 +29,13 @@ pub(crate) enum Command {
     PreviousWorkspace,
     NewWorkspace,
     ToggleSidebar,
+    GoToWaiting,
     Quit,
 }
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 25] = [
+    pub const ALL: [Command; 26] = [
         Command::NewTerminal,
         Command::NewKanban,
         Command::NewNote,
@@ -59,6 +60,7 @@ impl Command {
         Command::PreviousWorkspace,
         Command::NewWorkspace,
         Command::ToggleSidebar,
+        Command::GoToWaiting,
         Command::Quit,
     ];
 
@@ -89,6 +91,7 @@ impl Command {
             Command::PreviousWorkspace => "previous_workspace",
             Command::NewWorkspace => "new_workspace",
             Command::ToggleSidebar => "toggle_sidebar",
+            Command::GoToWaiting => "go_to_waiting",
             Command::Quit => "quit",
         }
     }
@@ -120,6 +123,7 @@ impl Command {
             Command::PreviousWorkspace => "Previous workspace",
             Command::NewWorkspace => "New workspace",
             Command::ToggleSidebar => "Show or hide the sidebar",
+            Command::GoToWaiting => "Go to the terminal waiting for you",
             Command::Quit => "Quit Templum",
         }
     }
@@ -175,6 +179,8 @@ impl Command {
             (Command::NewWorkspace, false) => &["ctrl-shift-n"],
             (Command::NewWorkspace, true) => &["cmd-shift-n"],
             (Command::ToggleSidebar, _) => &[],
+            (Command::GoToWaiting, false) => &["ctrl-shift-a"],
+            (Command::GoToWaiting, true) => &["cmd-shift-a"],
             (Command::Quit, false) => &["ctrl-shift-q"],
             (Command::Quit, true) => &["cmd-q"],
         }
@@ -217,6 +223,7 @@ pub(crate) struct KeysConfig {
     pub previous_workspace: Option<Keys>,
     pub new_workspace: Option<Keys>,
     pub toggle_sidebar: Option<Keys>,
+    pub go_to_waiting: Option<Keys>,
     pub quit: Option<Keys>,
 }
 
@@ -247,6 +254,7 @@ impl KeysConfig {
             Command::PreviousWorkspace => self.previous_workspace.as_ref(),
             Command::NewWorkspace => self.new_workspace.as_ref(),
             Command::ToggleSidebar => self.toggle_sidebar.as_ref(),
+            Command::GoToWaiting => self.go_to_waiting.as_ref(),
             Command::Quit => self.quit.as_ref(),
         }
     }
@@ -277,6 +285,7 @@ impl KeysConfig {
             Command::PreviousWorkspace => &mut self.previous_workspace,
             Command::NewWorkspace => &mut self.new_workspace,
             Command::ToggleSidebar => &mut self.toggle_sidebar,
+            Command::GoToWaiting => &mut self.go_to_waiting,
             Command::Quit => &mut self.quit,
         };
         *slot = keys;

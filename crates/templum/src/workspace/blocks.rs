@@ -99,6 +99,40 @@ impl Workspace {
         id
     }
 
+    /// Shows the terminal waiting for the person (it asked for attention): this workspace's
+    /// first, then the others' in the sidebar's order, the oldest block first. Going there is
+    /// seeing it, so the next time shows the next one. None waiting: a notification says so.
+    pub(crate) fn go_to_waiting(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let order = self.order();
+        let spaces =
+            std::iter::once(&self.space).chain(order.into_iter().filter(|s| s.id != self.space.id));
+        let waiting = spaces
+            .filter_map(|space| {
+                space
+                    .terminals()
+                    .filter(|(_, pane)| matches!(pane.alert, Some(Alert::Attention(_))))
+                    .map(|(id, _)| id)
+                    .min_by_key(|id| id.0)
+                    .map(|id| (space.id.clone(), id))
+            })
+            .next();
+        let Some((space, id)) = waiting else {
+            show_notification(
+                window,
+                cx,
+                Notification::info("No terminal is waiting for you".to_string()),
+            );
+            return;
+        };
+        if let Some(pane) = self
+            .space_by_id_mut(&space)
+            .and_then(|s| s.terminal_mut(id))
+        {
+            pane.alert = None;
+        }
+        self.reveal(&space, id, window, cx);
+    }
+
     /// The terminals of this workspace, labeled, those running an agent first: every one, or
     /// those whose folder is inside `root`.
     pub(crate) fn terminal_list(&self, root: Option<&Path>) -> Vec<(BlockId, String)> {

@@ -564,3 +564,61 @@ fn only_painted_terminals_are_rearmed(cx: &mut TestAppContext) {
         ws.space.terminal(hidden).is_none()
     });
 }
+
+#[cfg(target_os = "macos")]
+const WAITING: &str = "cmd-shift-a";
+#[cfg(not(target_os = "macos"))]
+const WAITING: &str = "ctrl-shift-a";
+
+/// Its shortcut shows each terminal that asked for attention in turn, across workspaces (this
+/// one's first), never one that merely finished a command; then it says none is waiting.
+#[gpui_kit::test]
+fn go_to_waiting_visits_each_waiting_terminal_then_says_none(cx: &mut TestAppContext) {
+    use crate::alert::Alert;
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let (home, there) = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let home = ws.space.id.clone();
+                ws.add_terminal_at(Point::new(900.0, 0.0), window, cx);
+                let finished = ws.space.canvas.top().unwrap();
+                ws.space.terminal_mut(finished).unwrap().alert =
+                    Some(Alert::Finished(templum_terminal::Outcome {
+                        code: Some(0),
+                        took: std::time::Duration::from_secs(9),
+                    }));
+                ws.space.terminal_mut(first).unwrap().alert = Some(Alert::Attention(None));
+                ws.new_space(window, cx);
+                ws.add_terminal_at(Point::new(0.0, 0.0), window, cx);
+                let there = ws.space.canvas.top().unwrap();
+                ws.space.terminal_mut(there).unwrap().alert =
+                    Some(Alert::Attention(Some("Allow?".into())));
+                ws.switch_to(0, window, cx);
+                ws.focus_block(finished, window, cx);
+                (home, (ws.order()[1].id.clone(), there))
+            })
+        })
+        .unwrap();
+    let press = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.press(WAITING, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| (ws.space.id.clone(), ws.space.focused))
+    };
+    assert_eq!(
+        press(cx),
+        (home.clone(), Some(first)),
+        "this workspace's first"
+    );
+    assert_eq!(
+        press(cx),
+        (there.0.clone(), Some(there.1)),
+        "then the other's"
+    );
+    let notes = notification_count(handle, cx);
+    assert_eq!(press(cx), (there.0, Some(there.1)), "none left: it stays");
+    assert_eq!(notification_count(handle, cx), notes + 1, "and says so");
+}
