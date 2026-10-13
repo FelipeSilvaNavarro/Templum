@@ -23,6 +23,15 @@ use super::{GitAt, Workspace, show_notification};
 /// The table Generate's settings live in.
 const TABLE: &str = "git.commit_message";
 
+/// Settings ▸ Git ▸ Try it: running (setting it stops the agent), or what came back.
+#[derive(Debug)]
+pub(crate) enum TryIt {
+    Running(Arc<AtomicBool>),
+    Answer(String),
+    /// What went wrong, whole: the sentence, the exit code, stderr.
+    Failed(String),
+}
+
 /// `[git.repositories]`'s key for a repository: its root with `/` on every OS, as
 /// `git rev-parse --show-toplevel` prints it.
 pub(crate) fn repository_key(root: &Path) -> String {
@@ -321,5 +330,79 @@ impl Workspace {
             window,
             cx,
         );
+    }
+
+    /// Settings ▸ Git ▸ Agent: Generate runs `id`; the model goes back to its recommended one
+    /// (a model belongs to its agent).
+    pub(crate) fn set_commit_agent(&mut self, id: &str, cx: &mut Context<Self>) {
+        let chosen = id.to_string();
+        self.edit(
+            Edit::set(TABLE, "agent", id),
+            |c| c.git.commit_message.agent = Some(chosen),
+            cx,
+        );
+        self.edit(
+            Edit::remove(TABLE, "model"),
+            |c| c.git.commit_message.model = None,
+            cx,
+        );
+    }
+
+    /// Settings ▸ Git ▸ Try it: the agent on a small sample change (none of the person's code
+    /// is sent), its answer or its whole error shown under the button. It runs even when the
+    /// agent isn't ready: its error says why. A click while it runs stops it.
+    pub(crate) fn try_message(&mut self, cx: &mut Context<Self>) {
+        if let Some(TryIt::Running(cancel)) = &self.message_try {
+            cancel.store(true, Ordering::Relaxed);
+            return;
+        }
+        let Some(agent) = self.commit_agent.clone() else {
+            return;
+        };
+        let settings = self.config.git.commit_message.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.message_try = Some(TryIt::Running(cancel.clone()));
+        cx.notify();
+        let template = settings
+            .prompt
+            .unwrap_or_else(|| message::PROMPT.to_string());
+        let timeout = Duration::from_secs(settings.timeout);
+        let instructions = settings.instructions;
+        cx.spawn(async move |ws, cx| {
+            let answer = cx
+                .background_executor()
+                .spawn(async move {
+                    let files = [message::SAMPLE_FILE.to_string()];
+                    let request = message::request(
+                        &template,
+                        &Request {
+                            instructions: &instructions,
+                            files: &files,
+                            diff: message::SAMPLE_DIFF,
+                            recent: &[],
+                            max_bytes: usize::MAX,
+                        },
+                    );
+                    message::run(
+                        &agent.command,
+                        &agent.model,
+                        &request,
+                        &std::env::temp_dir(),
+                        timeout,
+                        &cancel,
+                    )
+                })
+                .await;
+            ws.update(cx, |ws, cx| {
+                ws.message_try = match answer {
+                    Err(Failure::Cancelled) => None,
+                    Ok(answer) => Some(TryIt::Answer(answer.trim().to_string())),
+                    Err(failure) => Some(TryIt::Failed(failure.details())),
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 }

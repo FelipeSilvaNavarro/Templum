@@ -211,6 +211,7 @@ pub(super) fn rows(
                     ),
             ]
         }
+        Section::Git => super::git::rows(ws, entity, window, cx),
         Section::Agents => ws
             .agents
             .iter()
@@ -356,7 +357,7 @@ fn folder_kind_row(ws: &Workspace, entity: &Entity<Workspace>) -> Row {
         )
 }
 
-fn number_row(
+pub(super) fn number_row(
     ws: &Workspace,
     entity: &Entity<Workspace>,
     n: &'static Number,

@@ -20,6 +20,7 @@ mod spaces;
 mod view;
 
 pub(crate) use find::FindBar;
+pub(crate) use git_message::TryIt;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -642,6 +643,8 @@ pub struct Workspace {
     /// `git --version` with the configured program, read when the settings panel opens: Ok is
     /// the version, Err why it can't run. None while it is being read.
     pub(crate) git_version: Option<Result<String, String>>,
+    /// Settings ▸ Git ▸ Try it, running or done.
+    pub(crate) message_try: Option<TryIt>,
     _wake: Task<()>,
 }
 
@@ -866,6 +869,7 @@ impl Workspace {
             _files: files,
             _git: git,
             git_version: None,
+            message_try: None,
             config,
             keymap,
             agents: effective_agents,

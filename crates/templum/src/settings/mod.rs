@@ -24,6 +24,7 @@ mod agents;
 mod edits;
 mod fields;
 mod fonts;
+mod git;
 mod row;
 mod sections;
 #[cfg(test)]
@@ -36,6 +37,9 @@ pub(crate) use edits::{
 };
 pub(crate) use fields::{NumberState, SCROLLBACK};
 pub(crate) use fonts::monospace_families;
+// What the Git section's text areas call on each change: the tests type through them.
+#[cfg(test)]
+pub(crate) use git::{set_commit_instructions, set_commit_prompt};
 use row::Reset;
 use sections::rows;
 
@@ -50,17 +54,19 @@ pub(crate) enum Section {
     Terminal,
     Shell,
     Tools,
+    Git,
     Agents,
     Shortcuts,
 }
 
 impl Section {
-    pub const ALL: [Section; 7] = [
+    pub const ALL: [Section; 8] = [
         Section::Appearance,
         Section::Font,
         Section::Terminal,
         Section::Shell,
         Section::Tools,
+        Section::Git,
         Section::Agents,
         Section::Shortcuts,
     ];
@@ -72,6 +78,7 @@ impl Section {
             Section::Terminal => "Terminal",
             Section::Shell => "Shell",
             Section::Tools => "Tools",
+            Section::Git => "Git",
             Section::Agents => "Agents",
             Section::Shortcuts => "Shortcuts",
         }
@@ -85,6 +92,7 @@ impl Section {
             Section::Terminal => "settings-tab-terminal",
             Section::Shell => "settings-tab-shell",
             Section::Tools => "settings-tab-tools",
+            Section::Git => "settings-tab-git",
             Section::Agents => "settings-tab-agents",
             Section::Shortcuts => "settings-tab-shortcuts",
         }
@@ -97,6 +105,10 @@ impl Section {
             Section::Tools => {
                 Some("The programs the Git block runs. Checked when the panel opens.")
             }
+            Section::Git => Some(
+                "Commit messages written by an AI agent: Generate ✨, beside a Git block's summary, \
+                 sends it the diff of what you commit and fills the message for you to read.",
+            ),
             Section::Agents => Some(
                 "The AI agents in the canvas menu. Change one of Templum's, or add your own; ↺ puts \
                  one of Templum's back as it was.",

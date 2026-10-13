@@ -388,3 +388,158 @@ fn the_generate_menu_sets_the_model_and_this_repositorys_instructions(cx: &mut T
         "{text}"
     );
 }
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn settings_git_chooses_the_agent_and_tries_it(cx: &mut TestAppContext) {
+    use crate::workspace::TryIt;
+    let config = tempfile::tempdir().unwrap();
+    let agent = fake_agent(
+        config.path(),
+        "printf 'Fix the greeting\\n\\nIt said Helo.\\n'",
+    );
+    write_config(
+        config.path(),
+        &format!(
+            "[agents.fake]\nname = \"Fake\"\ncommand = \"fake\"\ngenerate = \"{} {{model}}\"\n\
+             models = [\"fast\", \"smart\"]\n",
+            agent.display()
+        ),
+    );
+    let (handle, ws) = open_with(cx, Some(config.path().to_path_buf()));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.commit_agent.as_ref().map(|a| a.id.as_str()),
+            Some("claude"),
+            "none chosen: the first with a command"
+        )
+    });
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-tab-git", cx);
+        window.render_frame(cx);
+        window
+            .within("field-git.commit_message.agent")
+            .click("menu-git.commit_message.agent", cx);
+        window.render_frame(cx);
+        // Claude Code, Codex, Fake.
+        window.within("popup-menu").click(2usize, cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let agent = ws.commit_agent.as_ref().unwrap();
+        assert_eq!(
+            (agent.id.as_str(), agent.model.as_str(), agent.ready),
+            ("fake", "fast", true)
+        );
+    });
+    cx.update_window(handle, |_, window, cx| {
+        // Try it is the last row.
+        window.scroll(
+            "settings-scroll",
+            ScrollDelta::Pixels(point(px(0.), px(-5000.))),
+            cx,
+        );
+        window.render_frame(cx);
+        window.click("git-try-message", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    ws.read_with(cx, |ws, _| match &ws.message_try {
+        Some(TryIt::Answer(answer)) => assert_eq!(answer, "Fix the greeting\n\nIt said Helo."),
+        _ => panic!("no answer"),
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("git-try-result").is_some(),
+            "shown under it"
+        );
+    })
+    .unwrap();
+    let request = std::fs::read_to_string(config.path().join("request.txt")).unwrap();
+    assert!(
+        request.contains("M src/greet.rs") && request.contains("Hello, {name}!"),
+        "the sample, its braces as written: {request}"
+    );
+    ws.update(cx, |ws, _| ws.save());
+    let text = std::fs::read_to_string(config.path().join(crate::config::FILE)).unwrap();
+    assert!(
+        text.contains("[git.commit_message]") && text.contains("agent = \"fake\""),
+        "{text}"
+    );
+}
+
+#[gpui_kit::test]
+fn try_it_shows_the_whole_error(cx: &mut TestAppContext) {
+    use crate::workspace::TryIt;
+    let dir = tempfile::tempdir().unwrap();
+    write_config(
+        dir.path(),
+        concat!(
+            "[agents.mine]\nname = \"Mine\"\ncommand = \"mine\"\n",
+            // git refuses an option it doesn't know, on every OS.
+            "generate = \"git {model}\"\nmodels = [\"--templum-no-such-option\"]\n",
+            "[git.commit_message]\nagent = \"mine\"\n",
+        ),
+    );
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    ws.update(cx, |ws, cx| ws.try_message(cx));
+    settle(handle, cx);
+    ws.read_with(cx, |ws, _| match &ws.message_try {
+        Some(TryIt::Failed(text)) => {
+            assert!(text.contains("failed (exit code"), "{text}");
+            assert!(
+                text.contains("templum-no-such-option"),
+                "git's own words: {text}"
+            );
+        }
+        _ => panic!("no failure"),
+    });
+}
+
+#[gpui_kit::test]
+fn the_git_section_writes_the_rules_and_the_prompt_back_at_its_default_goes(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-tab-git", cx);
+        window.render_frame(cx);
+        for row in ["agent", "model", "other_model", "timeout", "max_diff_kb"] {
+            let id = gpui_kit::ElementId::Name(format!("field-git.commit_message.{row}").into());
+            assert!(window.try_find(id).is_some(), "{row}");
+        }
+    })
+    .unwrap();
+    // What the text areas call on each change, as the shell program's tests do.
+    ws.update(cx, |ws, cx| {
+        crate::settings::set_commit_prompt(ws, "Only {diff}", cx);
+        crate::settings::set_commit_instructions(ws, "Imperative.", cx);
+    });
+    frame(handle, cx);
+    ws.read_with(cx, |ws, _| {
+        let m = &ws.config.git.commit_message;
+        assert_eq!(m.prompt.as_deref(), Some("Only {diff}"));
+        assert_eq!(m.instructions, "Imperative.");
+    });
+    ws.update(cx, |ws, cx| {
+        crate::settings::set_commit_prompt(ws, templum_git::message::PROMPT, cx)
+    });
+    frame(handle, cx);
+    ws.update(cx, |ws, _| ws.save());
+    let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap();
+    assert!(
+        !text.contains("prompt") && text.contains("instructions = \"Imperative.\""),
+        "{text}"
+    );
+}
