@@ -683,6 +683,15 @@ impl Workspace {
                             title: format!("Commit {}", commit.short),
                         };
                         git.history_panel.set_files(diffs);
+                        // Another commit opens at the top of its details (the same one read
+                        // again keeps its place).
+                        if git
+                            .shown
+                            .as_ref()
+                            .is_none_or(|s| s.commit.hash != commit.hash)
+                        {
+                            git.details_scroll.set_offset(Default::default());
+                        }
                         git.shown = Some(git_block::Shown {
                             commit,
                             files,

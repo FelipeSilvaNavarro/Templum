@@ -1367,17 +1367,26 @@ fn an_editors_state_survives_being_drawn_far_away(cx: &mut TestAppContext) {
     );
 }
 
-/// Scrolls `list` with the wheel at 100%, draws its Git block as its card at 33%, and back: the
-/// list is where it was.
+/// Where `row` is on screen, pixels from the window's top.
+fn top_of(handle: AnyWindowHandle, cx: &mut TestAppContext, row: &ElementId) -> gpui_kit::Pixels {
+    cx.update_window(handle, |_, window, _| {
+        window.find(row.clone()).bounds().origin.y
+    })
+    .unwrap()
+}
+
+/// Scrolls `list` with the wheel at 100%, draws its Git block as its card at 33%, and back: its
+/// `row` is where it was on screen.
 fn a_lists_scroll_survives_a_card(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
     id: BlockId,
     list: ElementId,
-    scroll: fn(&crate::git_block::Git) -> gpui_kit::ScrollHandle,
+    row: ElementId,
 ) {
     rest_at(handle, ws, cx, Point::new(0.0, 0.0), 1.0);
+    let start = top_of(handle, cx, &row);
     cx.update_window(handle, |_, window, cx| {
         window.scroll(
             list.clone(),
@@ -1387,8 +1396,8 @@ fn a_lists_scroll_survives_a_card(
         window.render_frame(cx);
     })
     .unwrap();
-    let before = git_of(ws, cx, id, |g| scroll(g).offset().y);
-    assert!(before < px(0.0), "the wheel moved {list:?}'s own scroll");
+    let before = top_of(handle, cx, &row);
+    assert!(before < start, "the wheel scrolled {list:?}");
     unfocus(handle, ws, cx);
     rest_at(handle, ws, cx, Point::new(0.0, 0.0), 0.33);
     assert!(
@@ -1400,23 +1409,35 @@ fn a_lists_scroll_survives_a_card(
     })
     .unwrap();
     rest_at(handle, ws, cx, Point::new(0.0, 0.0), 1.0);
-    assert!(shown(handle, cx, list.clone()));
-    let after = git_of(ws, cx, id, |g| scroll(g).offset().y);
-    assert_eq!(after, before, "{list:?} kept its scroll");
+    assert_eq!(top_of(handle, cx, &row), before, "{list:?} kept its scroll");
 }
 
-#[gpui_kit::test]
-fn a_commits_details_keep_their_scroll_through_a_card(cx: &mut TestAppContext) {
+/// A repository with `n` commits on top of `committed_repo`'s, each adding a file, with an
+/// 80-line message: their details are longer than the block.
+fn long_commits(n: usize) -> tempfile::TempDir {
     let repo = committed_repo();
     let body: String = (1..=80)
         .map(|i| format!("Line {i} of a long message.\n"))
         .collect();
-    git_run(
-        repo.path(),
-        &["commit", "-q", "--allow-empty", "-m", "Long", "-m", &body],
-    );
+    for i in 0..n {
+        let name = format!("f{i}.txt");
+        std::fs::write(repo.path().join(&name), "x\n").unwrap();
+        git_run(repo.path(), &["add", &name]);
+        git_run(
+            repo.path(),
+            &["commit", "-q", "-m", &format!("c{i}"), "-m", &body],
+        );
+    }
+    repo
+}
+
+/// A Git block on `repo` showing History, at rest at 100%.
+fn history_of(
+    cx: &mut TestAppContext,
+    repo: &std::path::Path,
+) -> (AnyWindowHandle, Entity<Workspace>, BlockId) {
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
+    let id = open_git(handle, &ws, cx, repo);
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
             ws.set_git_tab(id, crate::git_block::Tab::History, window, cx)
@@ -1425,16 +1446,130 @@ fn a_commits_details_keep_their_scroll_through_a_card(cx: &mut TestAppContext) {
     .unwrap();
     settle(handle, cx);
     rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 1.0);
+    (handle, ws, id)
+}
+
+#[gpui_kit::test]
+fn a_commits_details_keep_their_scroll_through_a_card(cx: &mut TestAppContext) {
+    let repo = long_commits(1);
+    let (handle, ws, id) = history_of(cx, repo.path());
     cx.update_window(handle, |_, window, cx| {
         window.click(("git-commit", 0usize), cx)
     })
     .unwrap();
     settle(handle, cx);
-    let list = ElementId::from(("git-commit-details", id.0 as usize));
-    a_lists_scroll_survives_a_card(handle, &ws, cx, id, list, |g| g.details_scroll.clone());
+    let n = id.0 as usize;
+    let list = ElementId::from(("git-commit-details", n));
+    let row = ElementId::Name(format!("git-commit-file-{n}-0").into());
+    a_lists_scroll_survives_a_card(handle, &ws, cx, id, list, row);
     git_of(&ws, cx, id, |g| {
         assert!(g.shown.is_some(), "the commit is still shown")
     });
+}
+
+/// Another commit opens at the top of its details, however far the last one was scrolled.
+#[gpui_kit::test]
+fn another_commit_opens_at_the_top_of_its_details(cx: &mut TestAppContext) {
+    let repo = long_commits(2);
+    let (handle, ws, id) = history_of(cx, repo.path());
+    let n = id.0 as usize;
+    let row = ElementId::Name(format!("git-commit-file-{n}-0").into());
+    let open = |cx: &mut TestAppContext, i: usize| {
+        cx.update_window(handle, |_, window, cx| window.click(("git-commit", i), cx))
+            .unwrap();
+        settle(handle, cx);
+    };
+    open(cx, 0);
+    let fresh = top_of(handle, cx, &row);
+    cx.update_window(handle, |_, window, cx| {
+        let down = ScrollDelta::Pixels(point(px(0.0), px(-120.0)));
+        window.scroll(("git-commit-details", n), down, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        top_of(handle, cx, &row) < fresh,
+        "the first commit scrolled"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.hide_commit(id, window, cx))
+    })
+    .unwrap();
+    settle(handle, cx);
+    open(cx, 1);
+    assert_eq!(
+        top_of(handle, cx, &row),
+        fresh,
+        "the second opens at the top"
+    );
+    // The same commit read again (Ignore whitespace) keeps its place.
+    cx.update_window(handle, |_, window, cx| {
+        let down = ScrollDelta::Pixels(point(px(0.0), px(-120.0)));
+        window.scroll(("git-commit-details", n), down, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let scrolled = top_of(handle, cx, &row);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.reload_shown_diff(id, window, cx))
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        top_of(handle, cx, &row),
+        scrolled,
+        "read again: where it was"
+    );
+}
+
+/// Another comparison opens at the top of its commits, however far the last one was scrolled.
+#[gpui_kit::test]
+fn another_comparison_opens_at_the_top_of_its_commits(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    for branch in ["one", "two"] {
+        git_run(repo.path(), &["checkout", "-q", "-b", branch, "main"]);
+        for i in 0..40 {
+            let subject = format!("{branch}{i}");
+            git_run(
+                repo.path(),
+                &["commit", "-q", "--allow-empty", "-m", &subject],
+            );
+        }
+    }
+    git_run(repo.path(), &["checkout", "-q", "main"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    let row = ElementId::Name(format!("git-compare-commit-{n}-0").into());
+    let compare = |cx: &mut TestAppContext, branch: &str| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.close_compare(id, cx);
+                ws.compare_branch(id, branch.to_string(), window, cx)
+            })
+        })
+        .unwrap();
+        settle(handle, cx);
+    };
+    compare(cx, "one");
+    rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 1.0);
+    let fresh = top_of(handle, cx, &row);
+    cx.update_window(handle, |_, window, cx| {
+        let down = ScrollDelta::Pixels(point(px(0.0), px(-120.0)));
+        window.scroll(("git-compare-list", n), down, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        top_of(handle, cx, &row) < fresh,
+        "the first comparison scrolled"
+    );
+    compare(cx, "two");
+    assert_eq!(
+        top_of(handle, cx, &row),
+        fresh,
+        "the second opens at the top"
+    );
 }
 
 #[gpui_kit::test]
@@ -1457,14 +1592,17 @@ fn a_comparisons_commits_keep_their_scroll_through_a_card(cx: &mut TestAppContex
     })
     .unwrap();
     settle(handle, cx);
-    let list = ElementId::from(("git-compare-list", id.0 as usize));
-    a_lists_scroll_survives_a_card(handle, &ws, cx, id, list, |g| g.compare_scroll.clone());
+    let n = id.0 as usize;
+    let row = ElementId::Name(format!("git-compare-commit-{n}-0").into());
+    let list = ElementId::from(("git-compare-list", n));
+    a_lists_scroll_survives_a_card(handle, &ws, cx, id, list, row);
 }
 
 #[gpui_kit::test]
 fn the_stashes_keep_their_scroll_through_a_card(cx: &mut TestAppContext) {
     let repo = committed_repo();
-    for i in 0..15 {
+    // More than the list shows.
+    for i in 0..40 {
         std::fs::write(repo.path().join("a.txt"), format!("{i}\n")).unwrap();
         git_run(
             repo.path(),
@@ -1480,6 +1618,8 @@ fn the_stashes_keep_their_scroll_through_a_card(cx: &mut TestAppContext) {
     })
     .unwrap();
     settle(handle, cx);
-    let list = ElementId::from(("git-stash-list", id.0 as usize));
-    a_lists_scroll_survives_a_card(handle, &ws, cx, id, list, |g| g.stash_scroll.clone());
+    let n = id.0 as usize;
+    let row = ElementId::Name(format!("git-stash-{n}-0").into());
+    let list = ElementId::from(("git-stash-list", n));
+    a_lists_scroll_survives_a_card(handle, &ws, cx, id, list, row);
 }
