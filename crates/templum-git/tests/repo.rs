@@ -1658,3 +1658,28 @@ fn a_branch_gone_but_named_like_a_folder_is_refused_and_the_folders_edits_stay()
         "edited\n"
     );
 }
+
+#[test]
+fn sync_on_a_branch_deleted_on_the_server_says_so_and_sends_nothing() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let remote = with_remote(&repo);
+    repo.run(&["checkout", "-q", "-b", "topic"]).unwrap();
+    repo.publish("origin", "topic").unwrap();
+    // Merged and deleted on the server; this clone hasn't fetched since.
+    std::process::Command::new("git")
+        .args(["branch", "-q", "-D", "topic"])
+        .current_dir(remote.path())
+        .status()
+        .unwrap();
+    commit_file(&repo, "more");
+    assert_eq!(repo.sync().unwrap(), Synced::Gone);
+    let on_server = std::process::Command::new("git")
+        .args(["branch", "--list", "topic"])
+        .current_dir(remote.path())
+        .output()
+        .unwrap();
+    assert!(on_server.stdout.is_empty(), "nothing sent");
+}

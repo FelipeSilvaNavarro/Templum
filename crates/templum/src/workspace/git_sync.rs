@@ -68,6 +68,29 @@ impl Workspace {
                         cx,
                         Notification::success(words::synced(got, sent)),
                     ),
+                    Ok(Synced::Gone) => {
+                        let block = at.block;
+                        let publish: Extra = (
+                            "git-publish-gone",
+                            "Publish branch".into(),
+                            Rc::new(move |ws, window, cx| {
+                                let branch = ws.space.git(block).and_then(|g| g.status.branch.clone());
+                                if let Some(branch) = branch {
+                                    ws.publish(block, branch, window, cx)
+                                }
+                            }),
+                        );
+                        notify_with(
+                            &entity,
+                            at.clone(),
+                            Notification::warning(
+                                "This branch was deleted on the server: nothing was sent. Publish branch sends it again.",
+                            ),
+                            vec![publish],
+                            window,
+                            cx,
+                        );
+                    }
                     Ok(Synced::Diverged { .. }) => {
                         let (rebase, merge) = (entity.clone(), entity.clone());
                         let block = at.block;

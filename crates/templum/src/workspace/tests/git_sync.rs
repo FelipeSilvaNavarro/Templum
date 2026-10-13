@@ -238,3 +238,40 @@ fn a_failed_clone_says_why_and_leaves_no_folder(cx: &mut TestAppContext) {
         assert!(matches!(g.found, crate::git_block::Found::NotARepo));
     });
 }
+
+#[gpui_kit::test]
+fn sync_after_the_servers_branch_was_deleted_offers_publish(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let repo = committed_repo();
+    let remote = add_remote(repo.path());
+    git_run(repo.path(), &["checkout", "-q", "-b", "topic"]);
+    git_run(repo.path(), &["push", "-q", "-u", "origin", "topic"]);
+    // Merged and deleted on the server; this clone hasn't fetched since.
+    git_run(remote.path(), &["branch", "-q", "-D", "topic"]);
+    commit_in(repo.path(), "c.txt");
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    cx.update_window(handle, |_, window, cx| window.click(("git-sync", n), cx))
+        .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(remote.path(), &["branch", "--list", "topic"]),
+        "",
+        "nothing sent"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        assert!(
+            window.try_find("git-publish-gone").is_some(),
+            "says the server's branch was deleted, not Up to date"
+        );
+        window.click("git-publish-gone", cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(remote.path(), &["rev-parse", "topic"]),
+        git_run(repo.path(), &["rev-parse", "topic"]),
+        "published again"
+    );
+}

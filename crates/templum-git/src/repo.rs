@@ -869,15 +869,23 @@ pub enum Synced {
     Done { got: u32, sent: u32 },
     /// Both sides have new commits: nothing was changed; `sync_join` joins them.
     Diverged { ahead: u32, behind: u32 },
+    /// The branch has no upstream any more (deleted on the server, pruned by the fetch): nothing
+    /// was sent; Publish sends it again.
+    Gone,
 }
 
 impl Repo {
     /// Sync: fetch, then a fast-forward to the upstream when it has new commits, then a push
     /// when this branch has new ones. The counts are the status's after the fetch (what each
-    /// side has that the other hasn't). Both new: nothing is joined.
+    /// side has that the other hasn't). Both new: nothing is joined. An upstream the fetch found
+    /// deleted: nothing is sent.
     pub fn sync(&self) -> Result<Synced, GitError> {
         self.fetch()?;
         let s = self.status()?;
+        // No branch.ab: its counts mean nothing, and a push would have nowhere to go.
+        if s.upstream.is_none() || s.gone {
+            return Ok(Synced::Gone);
+        }
         let (sent, got) = (s.ahead, s.behind);
         if sent > 0 && got > 0 {
             return Ok(Synced::Diverged {
