@@ -1,6 +1,7 @@
 //! An editor block: a file tree, tabs of open files and gpui-kit's code editor, on one folder.
 //! See docs/specs/cockpit.md, section 7.
 
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -17,8 +18,8 @@ use gpui_kit::component::text::TextView;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, MouseButton, MouseDownEvent,
-    ScrollWheelEvent, SharedString, Stateful, StyleRefinement, Subscription, TestSupportExt,
-    Window, div, point, px, relative,
+    ScrollHandle, ScrollWheelEvent, SharedString, Stateful, StyleRefinement, Subscription,
+    TestSupportExt, Window, div, point, px, relative,
 };
 use templum_canvas::{BlockId, Rect, Size};
 
@@ -322,6 +323,8 @@ pub(crate) struct Editor {
     pub active: Option<usize>,
     /// When the tree was last read, for the refresh while the block is focused.
     pub tree_read: Instant,
+    /// The tree's row height when it was last drawn, to keep its rows through a zoom.
+    tree_row: Cell<f32>,
     _expansions: Subscription,
 }
 
@@ -341,6 +344,7 @@ impl Editor {
             tabs: Vec::new(),
             active: None,
             tree_read: Instant::now(),
+            tree_row: Cell::new(0.0),
             _expansions,
         };
         editor.refresh(cx);
@@ -535,6 +539,22 @@ pub(crate) fn keep_rows(editor: &Entity<EditorState>, font: f32, z: f32, cx: &mu
     });
 }
 
+/// Keeps the rows a list shows when the zoom changes, as `keep_rows` does for an editor: its
+/// scroll offset is in pixels, so it scales with its rows, `row` high now and `last` when the
+/// list was last drawn.
+fn keep_list_rows(scroll: &ScrollHandle, last: &Cell<f32>, row: f32) {
+    let old = last.replace(row);
+    if old > 0.0 && old != row {
+        let at = scroll.offset();
+        scroll.set_offset(point(at.x, at.y / old * row));
+    }
+}
+
+/// The tree's rows at zoom `z`, whole pixels: their scroll scales exactly with them.
+fn tree_row(z: f32) -> f32 {
+    (ROW_H * z).round()
+}
+
 /// The body below the header, at the block's zoom `z`: the tree on the left (when shown) and
 /// the files on the right.
 pub(crate) fn body(
@@ -620,6 +640,15 @@ fn tree_panel(
 ) -> AnyElement {
     let n = id.0 as usize;
     let entity = cx.entity();
+    let scroll = editor
+        .tree
+        .read(cx)
+        .scroll_handle()
+        .0
+        .borrow()
+        .base_handle
+        .clone();
+    keep_list_rows(&scroll, &editor.tree_row, tree_row(z));
     div()
         .id(("tree", n))
         .w(px(TREE_W * z))
@@ -681,7 +710,7 @@ fn row(
         .flex()
         .items_center()
         .gap(px(4.0 * z))
-        .h(px(ROW_H * z))
+        .h(px(tree_row(z)))
         .pl(px((8.0 + 14.0 * entry.depth() as f32) * z))
         .pr(px(6.0 * z))
         .text_size(px(12.0 * z))

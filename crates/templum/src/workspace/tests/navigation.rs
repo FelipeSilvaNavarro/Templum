@@ -846,3 +846,50 @@ fn a_note_wraps_the_same_at_every_zoom(cx: &mut TestAppContext) {
         assert_eq!(range, &at_100, "lines shown at {zoom} vs 1.0: {shown:?}");
     }
 }
+
+/// Zooming keeps the rows a scrolled file tree shows, as a photo would: its scroll is in pixels,
+/// and its rows change size with the zoom.
+#[gpui_kit::test]
+fn zooming_keeps_the_rows_a_scrolled_file_tree_shows(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..200 {
+        std::fs::write(dir.path().join(format!("f{i:03}.txt")), "").unwrap();
+    }
+    let (handle, ws) = open(cx);
+    let id = open_editor(handle, &ws, cx, dir.path());
+    let n = id.0 as usize;
+    let (rect, tree) = ws.read_with(cx, |ws, _| {
+        (
+            ws.space.canvas.get(id).unwrap().rect,
+            ws.space.editor(id).unwrap().tree.clone(),
+        )
+    });
+    // Scrolled so its 60th row is at the top.
+    cx.update_window(handle, |_, window, cx| {
+        let row = window.find(("entry", 0usize)).bounds().size.height;
+        let scroll = tree.read(cx).scroll_handle().0.borrow().base_handle.clone();
+        scroll.set_offset(gpui_kit::point(gpui_kit::px(0.0), -row * 60.0));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    for zoom in [1.0, 1.25, 0.5, 0.67, 2.0, 1.0] {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, _| {
+                let at = Point::new(rect.x - 10.0, rect.y - 10.0);
+                ws.space.canvas.camera = Camera::at(at, zoom);
+                ws.space.flight = None;
+            });
+            window.render_frame(cx);
+            let top = window.find(("tree", n)).bounds().top();
+            let row = window
+                .try_find(("entry", 60usize))
+                .unwrap_or_else(|| panic!("row 60 is shown at {zoom}"))
+                .bounds();
+            assert!(
+                (f32::from(row.top()) - f32::from(top)).abs() < 0.5,
+                "row 60 at the tree's top at {zoom}: {row:?}, tree top {top:?}"
+            );
+        })
+        .unwrap();
+    }
+}
