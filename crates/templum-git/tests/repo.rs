@@ -636,7 +636,7 @@ fn stashes_are_listed_shown_applied_popped_and_dropped() {
     assert_eq!(s.len(), 1);
     assert_eq!(s[0].index, 0);
     assert_eq!(s[0].message, "On main: my work");
-    assert!(repo.stash_show(&s[0]).unwrap().contains("+changed"));
+    assert_eq!(repo.stash_diff(&s[0], false).unwrap()[0].added(), 1);
     repo.stash_apply(&s[0]).unwrap();
     assert_eq!(
         std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),

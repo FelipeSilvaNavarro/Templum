@@ -103,6 +103,10 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   `a_hunk_that_changed_since_it_was_read_is_refused` (`tests/git_hunks.rs`) checks the notification count, not "The
   file changed; try again"; `past_the_cap_a_discard_keeps_nothing` (`tests/git_trash.rs`) doesn't check "Too much to
   keep a copy". Fix: read the dialog's description and the notification's message in each.
+- [ ] **`a_cancelled_command_is_killed_and_says_so` fails now and then with "Text file busy".** It writes its fake
+  `slow-git` script and runs it at once (`crates/templum-git/tests/repo.rs`); another test's thread forking meanwhile
+  keeps the script's write handle open in its child, so `exec` gets ETXTBSY (seen once in the full check). Fix: run the
+  script through `sh <script>` instead of executing it, or retry the spawn on ETXTBSY in the test.
 
 ## Release and benches
 

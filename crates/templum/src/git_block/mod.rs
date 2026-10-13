@@ -215,10 +215,13 @@ pub(crate) struct Git {
     pub panel: diff_view::DiffPanel,
     /// The Branches tab's comparison, while one shows.
     pub compare: Option<Compare>,
-    /// History's file diff and Stashes' diff: each tab has its own, so a 2-second read of the
-    /// Changes diff never replaces what another tab shows.
+    /// History's file diff: each tab has its own, so a 2-second read of the Changes diff never
+    /// replaces what another tab shows.
     pub commit_diff: Entity<EditorState>,
-    pub stash_diff: Entity<EditorState>,
+    /// History's diff panel: the commit shown, or a file's blame.
+    pub history_panel: diff_view::DiffPanel,
+    /// Stashes' diff panel: the stash shown.
+    pub stash_panel: diff_view::DiffPanel,
     /// The row whose diff is shown.
     pub selected: Option<(List, String)>,
     pub summary: Entity<InputState>,
@@ -258,17 +261,14 @@ pub(crate) struct Git {
 
 impl Git {
     pub fn new(folder: PathBuf, tab: Tab, window: &mut Window, cx: &mut Context<Workspace>) -> Git {
-        let mut editor_view = || {
-            cx.new(|cx| {
-                EditorState::new(window, cx)
-                    .language("diff")
-                    .line_number(false)
-                    .soft_wrap(false)
-                    // Its fold icons have a fixed size, which breaks the layout at a zoom.
-                    .folding(false)
-            })
-        };
-        let (commit_diff, stash_diff) = (editor_view(), editor_view());
+        let commit_diff = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language("diff")
+                .line_number(false)
+                .soft_wrap(false)
+                // Its fold icons have a fixed size, which breaks the layout at a zoom.
+                .folding(false)
+        });
         let summary = cx.new(|cx| InputState::new(window, cx).placeholder("Summary"));
         let description = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -341,7 +341,10 @@ impl Git {
             panel: diff_view::DiffPanel::new(),
             compare: None,
             commit_diff,
-            stash_diff,
+            history_panel: diff_view::DiffPanel::range(String::new())
+                .with_hint("Click a commit to see its changes"),
+            stash_panel: diff_view::DiffPanel::range(String::new())
+                .with_hint("Click a stash to see its changes"),
             selected: None,
             summary,
             description,
@@ -472,18 +475,22 @@ impl Git {
         self.summary.entity_id() == field || self.description.entity_id() == field
     }
 
-    /// The diff panel on screen: the comparison's while the Branches tab shows one, else the
-    /// Changes tab's.
+    /// The diff panel on screen: each tab its own (the Branches tab's is the comparison's while
+    /// one shows), so a 2-second read of the working changes never touches another tab's.
     pub fn diff(&self) -> &diff_view::DiffPanel {
-        match (&self.compare, self.tab) {
-            (Some(c), Tab::Branches) => &c.panel,
+        match (self.tab, &self.compare) {
+            (Tab::History, _) => &self.history_panel,
+            (Tab::Stashes, _) => &self.stash_panel,
+            (Tab::Branches, Some(c)) => &c.panel,
             _ => &self.panel,
         }
     }
 
     pub fn diff_mut(&mut self) -> &mut diff_view::DiffPanel {
-        match (&mut self.compare, self.tab) {
-            (Some(c), Tab::Branches) => &mut c.panel,
+        match (self.tab, &mut self.compare) {
+            (Tab::History, _) => &mut self.history_panel,
+            (Tab::Stashes, _) => &mut self.stash_panel,
+            (Tab::Branches, Some(c)) => &mut c.panel,
             _ => &mut self.panel,
         }
     }

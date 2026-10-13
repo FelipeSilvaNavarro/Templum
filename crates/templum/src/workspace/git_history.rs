@@ -5,7 +5,7 @@ use std::rc::Rc;
 use gpui_kit::{Context, Window};
 use templum_canvas::BlockId;
 
-use crate::git_block;
+use crate::git_block::{self, Tab, diff_view::Source};
 use crate::prompt;
 
 use super::{GitAt, Workspace};
@@ -29,6 +29,7 @@ impl Workspace {
                             .is_some_and(|i| !s.iter().any(|st| st.index == i))
                         {
                             git.stash_shown = None;
+                            git.stash_panel.set_files(Vec::new());
                         }
                         git.stashes = s;
                     }
@@ -136,7 +137,7 @@ impl Workspace {
         );
     }
 
-    /// Shows a stash's diff on the right.
+    /// Shows a stash's changes, its new files too, in the Stashes tab's panel.
     pub(crate) fn show_stash(
         &mut self,
         id: BlockId,
@@ -151,23 +152,59 @@ impl Workspace {
             return;
         };
         git.stash_shown = Some(index);
+        let ignore_ws = git.stash_panel.ignore_ws;
         let Some(repo) = git.repo().cloned() else {
             return;
         };
+        let title = format!("stash@{{{}}} · {}", stash.index, stash.message);
         self.git_job(
             self.here(id),
-            move || repo.stash_show(&stash),
-            |ws, at, diff, window, cx| {
+            move || repo.stash_diff(&stash, ignore_ws),
+            move |ws, at, diff, _, cx| {
                 let Some(git) = ws.git_at(&at) else {
                     return;
                 };
-                let text = diff.unwrap_or_else(|e| e.to_string());
-                let view = git.stash_diff.clone();
-                view.update(cx, |d, cx| d.set_value(text, window, cx));
+                // Another stash clicked meanwhile shows instead.
+                if git.stash_shown != Some(index) {
+                    return;
+                }
+                match diff {
+                    Ok(files) => {
+                        git.stash_panel.source = Source::Range { title };
+                        git.stash_panel.set_files(files);
+                    }
+                    Err(e) => git.error = Some(e.to_string()),
+                }
+                cx.notify();
             },
             window,
             cx,
         );
+    }
+
+    /// The diff on screen, read again (Ignore whitespace changed): the working changes, the
+    /// comparison, or the stash shown.
+    pub(crate) fn reload_shown_diff(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.space.git(id) else {
+            return;
+        };
+        match git.tab {
+            Tab::Stashes => {
+                if let Some(index) = git.stash_shown {
+                    self.show_stash(id, index, window, cx)
+                }
+            }
+            Tab::Branches if git.compare.is_some() => {
+                let at = self.here(id);
+                self.load_compare(at, window, cx)
+            }
+            _ => self.reload_git_panel(id, window, cx),
+        }
     }
 
     /// Loads a page of History: the first page replaces the list, a later one extends it.

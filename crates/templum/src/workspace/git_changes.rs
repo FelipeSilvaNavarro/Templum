@@ -532,15 +532,8 @@ impl Workspace {
         };
         let p = git.diff_mut();
         p.ignore_ws = !p.ignore_ws;
-        // What shows is read again: the comparison, or the working changes.
-        let comparing = git.tab == git_block::Tab::Branches && git.compare.is_some();
         cx.notify();
-        if comparing {
-            let at = self.here(id);
-            self.load_compare(at, window, cx);
-        } else {
-            self.reload_git_panel(id, window, cx);
-        }
+        self.reload_shown_diff(id, window, cx);
     }
 
     /// Runs `job` on the block's repository in the background; its failure is a notification,

@@ -444,12 +444,22 @@ fn a_stash_is_shown_applied_popped_and_dropped(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| window.click(stash_row(id, 1), cx))
         .unwrap();
     settle(handle, cx);
-    let diff = git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, id, |g| {
         assert_eq!(g.stash_shown, Some(1));
-        g.stash_diff.clone()
+        let p = g.diff();
+        assert!(
+            std::ptr::eq(p, &g.stash_panel),
+            "the Stashes tab's own panel"
+        );
+        assert_eq!(p.files.len(), 1);
+        assert_eq!(p.files[0].diff.path(), "a.txt");
+        assert!(
+            p.files[0].diff.hunks[0]
+                .lines
+                .iter()
+                .any(|l| l.text == "changed")
+        );
     });
-    let text = ws.read_with(cx, |_, cx| diff.read(cx).value().to_string());
-    assert!(text.contains("+changed"), "{text}");
     // Apply, Pop, Drop…, Show.
     let menu = |cx: &mut TestAppContext, row: usize, item: usize| {
         cx.update_window(handle, |_, window, cx| {
@@ -486,6 +496,37 @@ fn a_stash_is_shown_applied_popped_and_dropped(cx: &mut TestAppContext) {
     .unwrap();
     settle(handle, cx);
     git_of(&ws, cx, id, |g| assert!(g.stashes.is_empty()));
+}
+
+#[gpui_kit::test]
+fn a_stash_shows_its_new_files_and_survives_the_two_second_read(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "changed\n").unwrap();
+    std::fs::write(repo.path().join("new.txt"), "n\n").unwrap();
+    git_run(
+        repo.path(),
+        &["stash", "push", "-q", "-u", "-m", "with new"],
+    );
+    let (handle, ws) = open(cx);
+    let id = open_git_on(handle, &ws, cx, repo.path(), crate::git_block::Tab::Stashes);
+    cx.update_window(handle, |_, window, cx| window.click(stash_row(id, 0), cx))
+        .unwrap();
+    settle(handle, cx);
+    let paths = |cx: &mut TestAppContext| {
+        git_of(&ws, cx, id, |g| {
+            g.stash_panel
+                .files
+                .iter()
+                .map(|s| s.diff.path().to_string())
+                .collect::<Vec<_>>()
+        })
+    };
+    assert_eq!(paths(cx), ["a.txt", "new.txt"]);
+    // An agent writes meanwhile: the read changes the Changes panel only.
+    std::fs::write(repo.path().join("x.txt"), "agent\n").unwrap();
+    cx.executor().advance_clock(crate::git_block::POLL);
+    settle(handle, cx);
+    assert_eq!(paths(cx), ["a.txt", "new.txt"]);
 }
 
 // Final review, C1: the 2-second read must leave the diffs alone.

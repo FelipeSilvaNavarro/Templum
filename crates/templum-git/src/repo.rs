@@ -1202,12 +1202,6 @@ impl Repo {
         self.run(&["stash", "drop", "-q", &name]).map(drop)
     }
 
-    /// The stash's diff.
-    pub fn stash_show(&self, stash: &Stash) -> Result<String, GitError> {
-        let name = self.stash_ref(stash)?;
-        self.text(&["stash", "show", "-p", "--no-color", &name])
-    }
-
     /// A stash's changes, its new (untracked) files too, as the panel reads them.
     pub fn stash_diff(
         &self,

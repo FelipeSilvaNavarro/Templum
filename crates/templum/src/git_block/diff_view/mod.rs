@@ -80,6 +80,9 @@ pub(crate) struct DiffPanel {
     pub reads: u64,
     /// The keyboard's hunk (`[` and `]`): its section, its file and its index in the file.
     pub cursor: Option<(bool, String, usize)>,
+    /// What the panel says while it has no file, when not the source's own words ("Click a
+    /// commit to see its changes").
+    pub hint: Option<&'static str>,
 }
 
 impl DiffPanel {
@@ -101,6 +104,7 @@ impl DiffPanel {
             widest: 0,
             reads: 0,
             cursor: None,
+            hint: None,
         }
     }
 
@@ -112,13 +116,20 @@ impl DiffPanel {
         }
     }
 
+    pub fn with_hint(mut self, hint: &'static str) -> DiffPanel {
+        self.hint = Some(hint);
+        self
+    }
+
     pub fn working(&self) -> bool {
         self.source == Source::Working
     }
 
-    /// What the panel says with no file.
+    /// What the panel says with no file: its hint, else the source's words.
     pub fn empty_text(&self) -> &'static str {
-        if self.working() {
+        if let Some(hint) = self.hint {
+            hint
+        } else if self.working() {
             "Nothing changed since the last commit"
         } else {
             "No changes"
