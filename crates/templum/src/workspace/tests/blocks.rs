@@ -398,3 +398,37 @@ fn clicking_the_empty_canvas_unfocuses_terminals(cx: &mut TestAppContext) {
     .unwrap();
     ws.read_with(cx, |ws, _| assert_eq!(ws.space.focused, None));
 }
+
+/// Closing a terminal an agent works in asks first; Cancel keeps it. An idle one closes at once.
+#[gpui_kit::test]
+fn closing_a_busy_terminal_asks_first(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into())
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.press(CLOSE, cx);
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "it asks");
+        window.within("dialog").click("cancel", cx);
+        window.render_frame(cx);
+        assert!(ws.read(cx).space.terminal(id).is_some(), "kept");
+        window.press(CLOSE, cx);
+        window.render_frame(cx);
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+        assert!(ws.read(cx).space.terminal(id).is_none(), "closed");
+        // An idle one: no question.
+        ws.update(cx, |ws, cx| {
+            ws.add_terminal_at(Point::new(0.0, 0.0), window, cx);
+            let idle = ws.space.canvas.top().unwrap();
+            ws.close(idle, window, cx);
+            assert!(ws.space.terminal(idle).is_none());
+        });
+        assert!(!window.has_active_dialog(cx));
+    })
+    .unwrap();
+}

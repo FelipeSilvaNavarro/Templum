@@ -66,6 +66,19 @@ pub(crate) fn finished(o: &Outcome) -> String {
 }
 
 /// "12 s", "3 min", "1 h 5 min".
+/// Why closing a terminal would lose work, or None: the agent running in it (by its title), or
+/// the command running (with shell integration).
+pub(crate) fn busy(status: &Status, agent: Option<&str>) -> Option<String> {
+    match (agent, status.running) {
+        (Some(agent), _) => Some(format!("{agent} is running in it.")),
+        (None, Some(since)) => Some(format!(
+            "A command has been running in it for {}.",
+            took(since.elapsed())
+        )),
+        (None, None) => None,
+    }
+}
+
 pub(crate) fn took(d: Duration) -> String {
     let s = d.as_secs();
     match s {
@@ -79,6 +92,24 @@ pub(crate) fn took(d: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busy_says_why() {
+        let idle = Status::default();
+        assert_eq!(busy(&idle, None), None);
+        assert_eq!(
+            busy(&idle, Some("Claude Code")).as_deref(),
+            Some("Claude Code is running in it.")
+        );
+        let running = Status {
+            running: Some(std::time::Instant::now()),
+            ..Status::default()
+        };
+        assert_eq!(
+            busy(&running, None).as_deref(),
+            Some("A command has been running in it for 0 s.")
+        );
+    }
 
     fn ended(code: Option<i32>, secs: u64, finished: u64) -> Status {
         Status {

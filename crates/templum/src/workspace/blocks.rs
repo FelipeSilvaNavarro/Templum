@@ -141,12 +141,7 @@ impl Workspace {
             .terminals()
             .filter(|(_, pane)| root.is_none_or(|root| pane.works_in(root)))
             .map(|(id, pane)| {
-                let agent = pane.seen.agent.as_ref().map(|agent| {
-                    self.agents
-                        .iter()
-                        .find(|a| a.id == *agent)
-                        .map_or(agent.as_str(), |a| a.title.as_str())
-                });
+                let agent = self.agent_name(pane);
                 let label = label(agent, &pane.term.title(), pane.seen.folder.as_deref());
                 (agent.is_none(), id, label)
             })
@@ -156,6 +151,17 @@ impl Workspace {
             .into_iter()
             .map(|(_, id, label)| (id, label))
             .collect()
+    }
+
+    /// The agent running in a terminal, by its title (its id when Templum doesn't know it).
+    pub(crate) fn agent_name<'a>(&'a self, pane: &'a Pane) -> Option<&'a str> {
+        let agent = pane.seen.agent.as_ref()?;
+        Some(
+            self.agents
+                .iter()
+                .find(|a| a.id == *agent)
+                .map_or(agent.as_str(), |a| a.title.as_str()),
+        )
     }
 
     /// Types `text` into the terminal `to` for the person to send (never Enter), then shows it
@@ -368,6 +374,23 @@ impl Workspace {
 
     /// Closes a block. An editor with unsaved edits asks first: Save all, Don't save, Cancel.
     pub(crate) fn close(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        // A terminal at work (an agent, a command running) asks too: Cancel or Close.
+        let busy = self
+            .space
+            .terminal(id)
+            .and_then(|pane| alert::busy(&pane.term.status(), self.agent_name(pane)));
+        if let Some(why) = busy {
+            let ws = cx.entity();
+            prompt::confirm(
+                "Close the terminal?",
+                why,
+                "Close",
+                move |window, cx| ws.update(cx, |ws, cx| ws.remove_block(id, window, cx)),
+                window,
+                cx,
+            );
+            return;
+        }
         // Only this workspace: block ids count from 0 in every one.
         let unsaved = self.space.unsaved(Some(id));
         if unsaved.is_empty() {

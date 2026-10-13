@@ -184,8 +184,9 @@ impl Render for Workspace {
             .filter(|(_, pane)| pane.term.exited())
             .map(|(id, _)| id)
             .collect();
+        // Nothing left to lose: no question.
         for id in exited {
-            self.close(id, window, cx);
+            self.remove_block(id, window, cx);
         }
         self.hear(window, cx);
 
