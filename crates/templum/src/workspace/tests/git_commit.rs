@@ -465,3 +465,165 @@ fn the_commit_message_being_written_comes_back_after_a_restart(cx: &mut TestAppC
     ws.update(cx, |ws, _| ws.space.git_mut(id).unwrap().amend = true);
     assert_eq!(item(cx).summary, "");
 }
+
+#[gpui_kit::test]
+fn commit_all_changes_takes_every_change_new_files_included(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    std::fs::write(repo.path().join("new.txt"), "n\n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.commit_label(), "Commit all changes (2 files)")
+    });
+    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    cx.update_window(handle, |_, window, cx| {
+        summary.update(cx, |s, cx| s.set_value("Everything", window, cx));
+        window.render_frame(cx);
+        window.click(("git-commit", n), cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert!(g.status.entries.is_empty(), "committed")
+    });
+    assert_eq!(
+        git_run(repo.path(), &["show", "--name-only", "--format=%s", "HEAD"]),
+        "Everything\n\na.txt\nnew.txt\n"
+    );
+}
+
+#[gpui_kit::test]
+fn commit_and_push_from_the_commit_menu(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    let remote = add_remote(repo.path());
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    git_run(repo.path(), &["add", "a.txt"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    cx.update_window(handle, |_, window, cx| {
+        summary.update(cx, |s, cx| s.set_value("Sent at once", window, cx));
+        window.render_frame(cx);
+        window.click(("git-commit-menu", n), cx);
+        window.render_frame(cx);
+        // Commit, Commit & Push.
+        window.within("popup-menu").click(1usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(remote.path(), &["log", "-1", "--format=%s", "main"]),
+        "Sent at once\n"
+    );
+}
+
+#[gpui_kit::test]
+fn undo_commit_takes_it_back_and_puts_its_message_in_the_fields(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    git_run(repo.path(), &["add", "a.txt"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    let (summary, description) =
+        git_of(&ws, cx, id, |g| (g.summary.clone(), g.description.clone()));
+    cx.update_window(handle, |_, window, cx| {
+        summary.update(cx, |s, cx| s.set_value("Fix it", window, cx));
+        description.update(cx, |d, cx| d.set_value("Why.", window, cx));
+        window.render_frame(cx);
+        window.click(("git-commit", n), cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["log", "-1", "--format=%s"]),
+        "Fix it\n"
+    );
+    cx.update_window(handle, |_, window, cx| window.click("git-undo-commit", cx))
+        .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["log", "-1", "--format=%s"]),
+        "First\n",
+        "taken back"
+    );
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.status.staged().len(), 1, "its change still staged")
+    });
+    ws.read_with(cx, |_, cx| {
+        assert_eq!(summary.read(cx).value(), "Fix it");
+        assert_eq!(description.read(cx).value(), "Why.");
+    });
+}
+
+#[gpui_kit::test]
+fn the_summary_counter_warns_past_72_characters(cx: &mut TestAppContext) {
+    let repo = git_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    let long = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, cx| ws.space.git(id).unwrap().summary_too_long(cx))
+    };
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("git-summary-count", n)).is_none(),
+            "nothing typed"
+        );
+        summary.update(cx, |s, cx| s.set_value("x".repeat(72), window, cx));
+        window.render_frame(cx);
+        assert!(window.try_find(("git-summary-count", n)).is_some());
+    })
+    .unwrap();
+    assert!(!long(cx), "72 fits");
+    cx.update_window(handle, |_, window, cx| {
+        summary.update(cx, |s, cx| s.set_value("x".repeat(73), window, cx))
+    })
+    .unwrap();
+    assert!(long(cx));
+}
+
+#[gpui_kit::test]
+fn undo_commit_once_pushed_offers_a_revert_instead(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    let repo = committed_repo();
+    let _remote = add_remote(repo.path());
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    git_run(repo.path(), &["add", "a.txt"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    cx.update_window(handle, |_, window, cx| {
+        summary.update(cx, |s, cx| s.set_value("Shared", window, cx));
+        window.render_frame(cx);
+        window.click(("git-commit", n), cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    // A terminal pushes it before Undo commit is clicked.
+    git_run(repo.path(), &["push", "-q"]);
+    cx.update_window(handle, |_, window, cx| window.click("git-undo-commit", cx))
+        .unwrap();
+    settle(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.has_active_dialog(cx), "says why it reverts");
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["log", "-2", "--format=%s"]),
+        "Revert \"Shared\"\nShared\n",
+        "a new commit undoes it; the pushed one stays"
+    );
+}

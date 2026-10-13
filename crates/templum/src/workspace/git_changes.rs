@@ -1,5 +1,7 @@
 //! A Git block's changes: staging, discarding, diffs and commits.
 
+use std::rc::Rc;
+
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
 use templum_canvas::BlockId;
@@ -9,27 +11,44 @@ use crate::git_block;
 use crate::prompt;
 
 use super::git_discard::REFUSED;
-use super::{Workspace, notify_git_error, notify_git_failure, show_notification};
+use super::{
+    Extra, GitAt, Workspace, notify_git_error, notify_git_failure, notify_with, show_notification,
+};
 
 impl Workspace {
-    /// Commits what is staged with the form's message; "Committed abc1234" and the fields
-    /// clear.
-    pub(crate) fn git_commit(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+    /// Commits with the form's message: what is staged, or every change (`Git::commit_all`).
+    /// "Committed abc1234" with Undo commit, and the fields clear; with `push`, then pushes (a
+    /// branch with no upstream asks to publish, as Push does).
+    pub(crate) fn git_commit(
+        &mut self,
+        id: BlockId,
+        push: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(git) = self.space.git(id) else {
             return;
         };
         if !git.can_commit(cx) {
             return;
         }
-        let (message, amend) = (git.message(cx), git.amend);
+        let (message, amend, all) = (git.message(cx), git.amend, git.commit_all());
         let Some(repo) = git.repo().cloned() else {
             return;
         };
         let at = self.here(id);
         self.act_job(
             at,
-            move || repo.commit(&message, amend),
-            |ws, at, result, window, cx| {
+            move || {
+                if all {
+                    repo.stage_all()?;
+                }
+                repo.commit(&message, amend)
+            },
+            move |ws, at, result, window, cx| {
+                let entity = cx.entity();
+                // Only a commit that happened is pushed.
+                let mut pushed = false;
                 match result {
                     Ok(short) => {
                         if let Some(git) = ws.git_at(&at) {
@@ -39,18 +58,34 @@ impl Workspace {
                             summary.update(cx, |s, cx| s.set_value("", window, cx));
                             description.update(cx, |d, cx| d.set_value("", window, cx));
                         }
-                        show_notification(
-                            window,
-                            cx,
-                            Notification::success(format!("Committed {short}")),
-                        );
+                        let committed = Notification::success(format!("Committed {short}"));
+                        if push {
+                            // It goes to the server next: nothing to take back here.
+                            show_notification(window, cx, committed);
+                            pushed = true;
+                        } else {
+                            let block = at.block;
+                            let undo: Extra = (
+                                "git-undo-commit",
+                                "Undo commit",
+                                Rc::new(
+                                    move |ws: &mut Workspace,
+                                          window: &mut Window,
+                                          cx: &mut Context<Workspace>| {
+                                        ws.undo_commit(block, short.clone(), amend, window, cx)
+                                    },
+                                ),
+                            );
+                            notify_with(&entity, at.clone(), committed, vec![undo], window, cx);
+                        }
                     }
-                    Err(e) => {
-                        let entity = cx.entity();
-                        notify_git_error(&entity, at.clone(), &e, Vec::new(), window, cx)
-                    }
+                    Err(e) => notify_git_error(&entity, at.clone(), &e, Vec::new(), window, cx),
                 }
+                let block = at.block;
                 ws.after_action(at, window, cx);
+                if pushed {
+                    ws.push(block, window, cx);
+                }
             },
             window,
             cx,
@@ -72,7 +107,7 @@ impl Workspace {
         else {
             return;
         };
-        self.git_commit(id, window, cx);
+        self.git_commit(id, false, window, cx);
     }
 
     /// Amend on: the fields show the last commit's message; off: they clear.
@@ -101,13 +136,87 @@ impl Workspace {
         self.git_job(
             at,
             move || repo.last_message(),
-            move |_, _, message, window, cx| {
+            move |ws, at, message, window, cx| {
                 let Ok(message) = message else {
                     return;
                 };
-                let (first, rest) = message.split_once('\n').unwrap_or((&message, ""));
-                summary.update(cx, |s, cx| s.set_value(first.to_string(), window, cx));
-                description.update(cx, |d, cx| d.set_value(rest.trim().to_string(), window, cx));
+                ws.fill_message(&at, &message, window, cx);
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// The fields hold `message`: its first line the summary, the rest the description.
+    fn fill_message(
+        &mut self,
+        at: &GitAt,
+        message: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(git) = self.git_at(at) else {
+            return;
+        };
+        let (summary, description) = (git.summary.clone(), git.description.clone());
+        let (first, rest) = message.split_once('\n').unwrap_or((message, ""));
+        summary.update(cx, |s, cx| s.set_value(first.to_string(), window, cx));
+        description.update(cx, |d, cx| d.set_value(rest.trim().to_string(), window, cx));
+    }
+
+    /// Undo commit (the notification after a commit): takes it back, its changes staged and its
+    /// message in the fields. Pushed meanwhile, it can't be taken back for others: Revert…
+    /// instead, after saying why.
+    pub(crate) fn undo_commit(
+        &mut self,
+        id: BlockId,
+        short: String,
+        amended: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
+            return;
+        };
+        let job_short = short.clone();
+        self.act_job(
+            self.here(id),
+            move || -> Result<Option<String>, GitError> {
+                if repo.on_upstream(&job_short)? {
+                    return Ok(None);
+                }
+                repo.undo_commit(&job_short, amended).map(Some)
+            },
+            move |ws, at, result, window, cx| {
+                match result {
+                    Ok(Some(message)) => {
+                        if let Some(git) = ws.git_at(&at) {
+                            git.amend = false;
+                        }
+                        ws.fill_message(&at, &message, window, cx);
+                    }
+                    Ok(None) => {
+                        let (entity, block) = (cx.entity(), at.block);
+                        prompt::confirm(
+                            format!("Revert {short}?"),
+                            "Pushed commits can't be removed for others; this adds a new commit that undoes it.",
+                            "Revert",
+                            move |window, cx| {
+                                let short = short.clone();
+                                entity.update(cx, |ws, cx| {
+                                    ws.git_action(block, move |repo| repo.revert(&short), window, cx)
+                                })
+                            },
+                            window,
+                            cx,
+                        );
+                    }
+                    Err(e) => {
+                        let entity = cx.entity();
+                        notify_git_error(&entity, at.clone(), &e, Vec::new(), window, cx)
+                    }
+                }
+                ws.after_action(at, window, cx);
             },
             window,
             cx,

@@ -60,6 +60,8 @@ pub(crate) enum Target {
         block: BlockId,
         hash: String,
     },
+    /// The ▾ beside a Git block's Commit button.
+    GitCommitMenu(BlockId),
     /// A row of a Git block's Changes lists, by its list and its index in it.
     GitRow {
         block: BlockId,
@@ -209,6 +211,10 @@ impl Workspace {
                 ),
             },
             Target::Ink(index) => Items::Ink { index },
+            Target::GitCommitMenu(block) => Items::GitCommitMenu {
+                block,
+                label: self.space.git(block)?.commit_label(),
+            },
             Target::GitRow { block, list, index } => {
                 let git = self.space.git(block)?;
                 let entries = match list {
@@ -358,6 +364,11 @@ enum Items {
         folder: Option<PathBuf>,
         /// Discards are kept (a data folder): Recently discarded… is offered.
         trash: bool,
+    },
+    GitCommitMenu {
+        block: BlockId,
+        /// "Commit", or "Commit all changes (5 files)".
+        label: String,
     },
     GitRow {
         block: BlockId,

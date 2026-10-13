@@ -9,9 +9,11 @@ use gpui_kit::{
 };
 use templum_canvas::BlockId;
 
-use super::widgets::field;
+use super::widgets::{field, icon_button};
 use super::{FONT, Git};
 use crate::editor::button;
+use crate::grid::hsla;
+use crate::menu::Target;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
 
@@ -29,6 +31,7 @@ pub(super) fn commit_form(
     let ui = ws.ui;
     let n = id.0 as usize;
     let can = git.can_commit(cx);
+    let len = git.summary_len(cx);
     let amend = git.amend;
     div()
         .flex()
@@ -38,7 +41,28 @@ pub(super) fn commit_form(
         .border_t_1()
         .border_color(ui.hairline)
         .text_size(px(FONT * z))
-        .child(field(&git.summary, z).w_full())
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0 * z))
+                .child(field(&git.summary, z).flex_1())
+                .when(len > 0, |el| {
+                    el.child(
+                        div()
+                            .id(("git-summary-count", n))
+                            .flex_shrink_0()
+                            .text_size(px(11.0 * z))
+                            .text_color(if git.summary_too_long(cx) {
+                                hsla(ws.theme.palette.ansi[3], 1.0)
+                            } else {
+                                ui.title_dim
+                            })
+                            .child(len.to_string())
+                            .test_support(),
+                    )
+                }),
+        )
         .child(
             // Three rows, at the zoom: gpui-kit sizes it from the theme's fixed font otherwise.
             Textarea::new(&git.description)
@@ -61,9 +85,16 @@ pub(super) fn commit_form(
                 .child(div().flex_1())
                 .when(can, |el| {
                     el.child(
-                        button(("git-commit", n), "Commit", ui, z)
+                        button(("git-commit", n), git.commit_label(), ui, z)
                             .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                                ws.git_commit(id, window, cx)
+                                ws.git_commit(id, false, window, cx)
+                            }))
+                            .test_support(),
+                    )
+                    .child(
+                        icon_button(("git-commit-menu", n), IconName::ChevronDown, ui, z)
+                            .on_click(cx.listener(move |ws, e: &ClickEvent, window, cx| {
+                                ws.open_menu(Target::GitCommitMenu(id), e.position(), window, cx)
                             }))
                             .test_support(),
                     )

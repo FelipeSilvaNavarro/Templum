@@ -358,6 +358,16 @@ impl Items {
                 }
                 menu
             }
+            Items::GitCommitMenu { block, label } => menu
+                .item(item(ws, label.clone(), None, move |ws, window, cx| {
+                    ws.git_commit(block, false, window, cx)
+                }))
+                .item(item(
+                    ws,
+                    format!("{label} & Push"),
+                    Some(IconName::Upload),
+                    move |ws, window, cx| ws.git_commit(block, true, window, cx),
+                )),
             Items::GitRow { block, list, entry } => {
                 use git_block::List;
                 let path = entry.path.clone();

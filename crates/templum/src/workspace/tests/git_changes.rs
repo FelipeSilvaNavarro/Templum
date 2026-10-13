@@ -366,3 +366,16 @@ fn opening_a_file_from_a_git_row_gives_its_editor_the_keyboard(cx: &mut TestAppC
     settle(handle, cx);
     editor_has_keyboard(cx, "row menu");
 }
+
+#[gpui_kit::test]
+fn with_a_conflict_commit_never_takes_every_change(cx: &mut TestAppContext) {
+    let repo = conflicted_repo();
+    std::fs::write(repo.path().join("other.txt"), "x\n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    // `git add --all` would mark the conflict resolved.
+    git_of(&ws, cx, id, |g| {
+        assert!(!g.commit_all());
+        assert_eq!(g.commit_label(), "Commit");
+    });
+}

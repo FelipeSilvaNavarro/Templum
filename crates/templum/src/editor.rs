@@ -681,7 +681,7 @@ fn gone(id: BlockId, folder: &Path, ui: Ui, z: f32, cx: &mut Context<Workspace>)
 /// A small outlined button, at the zoom.
 pub(crate) fn button(
     id: impl Into<ElementId>,
-    label: &'static str,
+    label: impl Into<SharedString>,
     ui: Ui,
     z: f32,
 ) -> Stateful<Div> {
@@ -700,7 +700,7 @@ pub(crate) fn button(
         .text_color(ui.title)
         .cursor_pointer()
         .hover(move |s| s.bg(ui.hover))
-        .child(label)
+        .child(label.into())
 }
 
 fn tree_panel(

@@ -44,6 +44,8 @@ pub(crate) const FONT: f32 = 12.0;
 pub(crate) const POLL: Duration = Duration::from_secs(2);
 /// How many commits History loads at a time.
 pub(crate) const PAGE: usize = 200;
+/// Past this many characters a summary is longer than `git log --oneline` shows well.
+pub(crate) const SUMMARY_MAX: usize = 72;
 
 /// The commit shown on the right of the History tab.
 pub(crate) struct Shown {
@@ -346,10 +348,38 @@ impl Git {
         }
     }
 
-    /// Commit is possible: something staged, a summary, an author, nothing running. With
-    /// Amend, nothing staged is fine (the message alone changes).
+    /// Commit takes every change (`git add --all` first): nothing staged, something changed, no
+    /// conflict (adding one would mark it resolved), no Amend.
+    pub fn commit_all(&self) -> bool {
+        !self.amend
+            && self.status.staged().is_empty()
+            && !self.status.unstaged().is_empty()
+            && self.status.conflicts().is_empty()
+    }
+
+    /// "Commit", or "Commit all changes (5 files)".
+    pub fn commit_label(&self) -> String {
+        if !self.commit_all() {
+            return "Commit".to_string();
+        }
+        match self.status.unstaged().len() {
+            1 => "Commit all changes (1 file)".to_string(),
+            n => format!("Commit all changes ({n} files)"),
+        }
+    }
+
+    pub fn summary_len(&self, cx: &App) -> usize {
+        self.summary.read(cx).value().chars().count()
+    }
+
+    pub fn summary_too_long(&self, cx: &App) -> bool {
+        self.summary_len(cx) > SUMMARY_MAX
+    }
+
+    /// Commit is possible: something staged (or every change, see `commit_all`), a summary, an
+    /// author, nothing running. With Amend, nothing staged is fine (the message alone changes).
     pub fn can_commit(&self, cx: &App) -> bool {
-        (self.amend || !self.status.staged().is_empty())
+        (self.amend || !self.status.staged().is_empty() || self.commit_all())
             && !self.summary.read(cx).value().trim().is_empty()
             && self.author.is_some()
             && self.acting == 0
