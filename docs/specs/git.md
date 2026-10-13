@@ -1,7 +1,7 @@
 # The Git block, second version
 
 - **Date:** 2026-10-13
-- **Status:** Design approved; batches 1 and 2 implemented, the rest not yet
+- **Status:** Design approved; batches 1 to 4 implemented, 5 and 6 not yet
 - **Replaces:** [cockpit.md](cockpit.md), section 8 (the Git block it describes is what this one starts from)
 - **Builds on:** [context-menus.md](context-menus.md), [agents.md](agents.md), [config.md](config.md)
 
@@ -225,7 +225,9 @@ explains: "Pushed commits can't be removed for others; this adds a new commit th
 ### Sync
 
 - **Sync** = `git pull --ff-only`, then `git push`; the notification says what happened ("Got 3 commits, sent 2"),
-  counted from the status's ahead and behind before and after, not from git's output.
+  counted from the status's ahead and behind before and after, not from git's output. As built: `git fetch --prune`,
+  the status (its ahead and behind are then exact), `git merge --ff-only @{u}` when behind, `git push` when ahead:
+  one network read, and a diverged branch is found before anything changes.
 - **Diverged** (fast-forward impossible): "Your branch and the server's both have new commits." with **Put my
   commits on top (rebase)** (recommended; `git pull --rebase --autostash`, since a rebase refuses to start over
   uncommitted changes) and **Merge**.
@@ -244,8 +246,9 @@ explains: "Pushed commits can't be removed for others; this adds a new commit th
 
 ### Starting without a repository
 
-"Not a Git repository" offers **Initialize** and **Clone a repository…**: a URL and a destination folder
-(default: the chosen folder), cloned in the background, the button spinning meanwhile and a click on it
+"Not a Git repository" offers **Initialize** and **Clone a repository…** (also in the top bar's ⋯): a URL and a
+destination folder (default: the chosen folder; an empty or missing folder takes the clone itself, one holding files
+gets a folder named after the repository inside it, as `git clone <url>` does), cloned in the background, the button spinning meanwhile and a click on it
 cancelling, as Fetch's does (git writes its progress to stderr, which the block's runner reads only when the
 command ends; a progress bar would need a streaming runner, not worth it for a clone); when done, the block opens
 on it. A clone that wants credentials fails with **Run in a terminal**, as other commands do.
@@ -263,7 +266,8 @@ on it. A clone that wants credentials fails with **Run in a terminal**, as other
 
 ### Comparison
 
-- **Compare** shows what a branch has that the base doesn't: the left column lists its commits
+- **Compare** (in the Branches tab: its column becomes the comparison's commits, the panel its diff, a ← goes back)
+  shows what a branch has that the base doesn't: the left column lists its commits
   (`git log base..branch`), the panel its diff (`git diff base...branch`), as a pull request does. A click on a
   commit narrows the panel to it; a click on the heading shows them all again.
 - **The base** is the default branch: what `git symbolic-ref refs/remotes/origin/HEAD` names (`parse_branches`
@@ -280,7 +284,7 @@ on it. A clone that wants credentials fails with **Run in a terminal**, as other
   so those words would be backwards. A choice rewrites that region of the file (a copy goes to the trash first).
 - With no region left, **Mark resolved** stages the file; with no conflicted file left, the banner shows
   **Continue**. The whole-file choices stay in the right-click menu (`git checkout --ours` / `--theirs`), named
-  the same way.
+  the same way: "Use the version from HEAD", "Use the version from feature".
 
 ## 6. History
 

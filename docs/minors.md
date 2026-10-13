@@ -65,6 +65,28 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
   (`crates/templum-git/src/repo.rs:407`), which adds `nested/` as an embedded repository with a warning nobody sees,
   and the label counts it as one file. Fix: leave out untracked entries ending in `/` (and say so), or ask.
 
+## Branches, Sync and conflicts
+
+From batches 3 and 4 (line numbers of `development` at 5046612).
+
+- [ ] **A comparison's "⋯ 40 unchanged lines" does nothing when clicked.** `fold_row`
+  (`crates/templum/src/git_block/diff_view/paint.rs:460`) is inert on a read-only panel: Compare's diff is read once
+  with git's 3 lines of context. Fix: read that file of the range again with `-U` and its length (as `show_whole`
+  does for the working changes).
+- [ ] **Changes left on a detached HEAD don't come back by themselves.** The switch question names the stash after
+  the short hash (`templum: left on a1b2c3d`, `crates/templum/src/workspace/git_switch.rs:68`) and `Repo::switch`
+  pops only a stash named after the branch it goes to (`crates/templum-git/src/repo.rs:1152`), so checking that
+  commit out again leaves them in Stashes. Fix: pop by the commit on a detached checkout too, or offer Leave them
+  only on a branch.
+- [ ] **The default branch is read again after every action and tab change.** `refresh_lists_at` queues
+  `load_default` each time (`crates/templum/src/workspace/git_ops.rs:254`): a few `rev-parse`s more per action.
+  Fix: read it when the block opens and after a fetch, a sync or a branch change only.
+- [ ] **A remote or branch name with an unusual character is read wrong.** `words::local_name`
+  (`crates/templum/src/git_block/words.rs:91`) and `Repo::switch` take what follows the first `/` as the local name
+  (a remote named `team/x` breaks Back to and Compare with), and `unmerged_count`'s `--exclude`
+  (`crates/templum-git/src/repo.rs:1023`) reads `*?[` in a branch name as a pattern. Fix: match the remote's name
+  against `git remote`; escape the glob characters.
+
 ## Trash and discards
 
 - [ ] **Discard all filters its files with `Vec::contains`.** `discard` (`crates/templum/src/workspace/git_discard.rs:69`)
