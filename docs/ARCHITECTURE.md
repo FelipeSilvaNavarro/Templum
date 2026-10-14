@@ -75,8 +75,11 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - The window is opaque: a solid canvas with a dot grid fixed to the world, and blocks drawn as cards on it
   ([specs/polish.md](specs/polish.md)).
 - A theme is a file in Alacritty's color format. `crates/templum/src/theme.rs` derives every interface color
-  from the terminal colors, so any Alacritty theme works. The built-ins live in `crates/templum/themes/`, with
-  their credits.
+  from the terminal colors, so any Alacritty theme works; an optional `[templum]` table sets the accent, the canvas
+  and the dots instead. The built-ins live in `crates/templum/themes/`, with their credits.
+- The file of the theme in use is polled with `config.toml` (`poll_theme` in `workspace/preferences.rs`): saving
+  it applies it, and a file that stops reading keeps the last good colors. New themes are written from
+  `theme::template`, never over an existing file.
 - `templum-terminal` only knows a `Palette` (foreground, background, 16 ANSI colors). It never sees a theme.
 - `config.toml` holds the light and dark theme names; the picker edits it with `toml_edit`, keeping comments.
 

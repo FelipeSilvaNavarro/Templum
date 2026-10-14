@@ -102,6 +102,17 @@ Any theme in [Alacritty's format](https://github.com/alacritty/alacritty-theme) 
 | Linux, macOS | `~/.config/templum/themes/` (or `$XDG_CONFIG_HOME/templum/themes/`) |
 | Windows | `%APPDATA%\templum\themes\` |
 
+To make your own, open Settings ▸ Appearance: **Duplicate…** copies the theme in use into that folder, with
+comments that say what each color paints. **Open file** opens it in an editor block, and saving it there (or in any
+editor) shows the change at once. Besides Alacritty's colors, a theme can set three of Templum's:
+
+```toml
+[templum]
+accent = "#ff8800"  # the focused block's border
+canvas = "#101018"  # behind the blocks
+dots = "#303040"    # the dot grid
+```
+
 Your choice is saved in `config.toml`, one folder up:
 
 ```toml

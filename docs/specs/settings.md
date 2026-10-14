@@ -26,7 +26,7 @@ same `config.toml`: what one changes, the other shows. Comments in the file are 
 ## Out of scope
 
 - Persistence of the canvas (the next sub-project).
-- Per-block settings, theme editing (colors), and importing other formats.
+- Per-block settings, and importing other formats. (Theme colors are edited since [themes.md](themes.md).)
 - Undo history of settings changes. "Back to default" per field is in scope.
 
 ## The panel
@@ -85,6 +85,9 @@ Every field reads the active `Config`. A change applies at once, except in Shell
 | Canvas opacity | Slider 0–100% (stored as 0.0–1.0); disabled while the window is opaque | `window.opacity` |
 
 The theme picker in the title bar keeps working and writes the same keys.
+
+Under these rows, a card for the theme in use: **Duplicate…** for a built-in one; **New theme…** and **Open file**
+for one of yours ([themes.md](themes.md#making-a-theme)).
 
 **Font**
 
