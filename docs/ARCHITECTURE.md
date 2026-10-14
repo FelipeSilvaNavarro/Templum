@@ -85,7 +85,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
 
 - `workspace/`: `mod.rs` has the types (`Workspace`, `Space`, `Body`, `Tool`…) and the constructor; each other file
   is an `impl Workspace` block for one area: `spaces.rs` (the workspaces), `blocks.rs` (adding, focusing and
-  closing blocks), `view.rs` (the camera), `input.rs` (keys and the pointer), `render.rs` (drawing a frame),
+  closing blocks), `view.rs` (the camera), `input.rs` (keys and the pointer), `selection.rs` (selected blocks: Shift+drag,
+  Shift+click on a title; Delete, Copy and Paste on them), `render.rs` (drawing a frame),
   `drawing.rs` (the drawing tools), `persist.rs` (restoring and saving the canvas), `preferences.rs` (config,
   themes, settings panel), `files.rs` and `file_tree.rs` (editor blocks), `git_ops.rs`, `git_changes.rs`,
   `git_branches.rs`, `git_history.rs`, `git_discard.rs` (discards through the trash), `git_keys.rs` (the

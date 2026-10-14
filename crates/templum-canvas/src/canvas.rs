@@ -81,6 +81,15 @@ impl Canvas {
             .filter(move |b| b.rect.intersects(&world))
     }
 
+    /// The blocks a selection rectangle `area` (world units) touches, back-to-front.
+    pub fn hits(&self, area: Rect) -> Vec<BlockId> {
+        self.blocks
+            .iter()
+            .filter(|b| b.rect.intersects(&area))
+            .map(|b| b.id)
+            .collect()
+    }
+
     pub fn bounds(&self) -> Option<Rect> {
         self.blocks
             .iter()
@@ -180,6 +189,19 @@ mod tests {
             .map(|b| b.id)
             .collect();
         assert_eq!(ids, [far]);
+    }
+
+    #[test]
+    fn hits_are_the_blocks_a_rectangle_touches_in_any_direction() {
+        let mut c = Canvas::default();
+        let a = c.add(rect(0.0, 0.0));
+        let b = c.add(rect(200.0, 0.0));
+        c.add(rect(0.0, 300.0));
+        // Dragged from bottom right to top left, over a's corner and b's left half.
+        let area = Rect::corners(Point::new(250.0, 20.0), Point::new(90.0, -10.0));
+        assert_eq!(area, Rect::new(90.0, -10.0, 160.0, 30.0));
+        assert_eq!(c.hits(area), [a, b]);
+        assert!(c.hits(Rect::new(500.0, 500.0, 10.0, 10.0)).is_empty());
     }
 
     #[test]

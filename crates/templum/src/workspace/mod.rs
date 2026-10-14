@@ -20,6 +20,7 @@ mod input;
 mod persist;
 mod preferences;
 mod render;
+mod selection;
 mod spaces;
 mod view;
 
@@ -262,6 +263,30 @@ impl Body {
         }
     }
 
+    /// The block as a saved item at `rect`. A terminal's is its folder as last seen, without its
+    /// agent: a snapshot reads both in the background.
+    pub fn item(&self, rect: templum_canvas::Rect, cx: &App) -> session::Item {
+        match self {
+            Body::Terminal(pane) => session::Item::Terminal(session::TerminalItem {
+                rect: rect.into(),
+                folder: pane.seen.folder.clone().and_then(session::utf8),
+                agent: None,
+            }),
+            Body::Kanban(k) => session::Item::Kanban(session::KanbanItem {
+                rect: rect.into(),
+                board: k.board,
+            }),
+            Body::Note(n) => session::Item::Note(session::NoteItem {
+                rect: rect.into(),
+                text: n.text(cx),
+                preview: n.preview,
+                color: n.color,
+            }),
+            Body::Editor(e) => session::Item::Editor(e.item(rect)),
+            Body::Git(g) => session::Item::Git(g.item(rect, cx)),
+        }
+    }
+
     /// The keyboard is inside the block.
     pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
         match self {
@@ -289,6 +314,13 @@ enum Drag {
         erased: bool,
         last: Point,
     },
+    /// Selecting blocks with a rectangle from `from` to `to` (world points): the blocks it touches
+    /// join those selected before (`base`).
+    Marquee {
+        base: Vec<BlockId>,
+        from: Point,
+        to: Point,
+    },
     /// Moving a selected drawing: `last` is the pointer's previous world point; `moved` once it
     /// has moved (and the undo step is taken).
     MoveInk {
@@ -309,6 +341,9 @@ pub(crate) struct Space {
     /// What each block of the canvas holds. Inserted and removed together with `canvas`'s blocks.
     pub blocks: HashMap<BlockId, Body>,
     pub focused: Option<BlockId>,
+    /// The selected blocks (Shift+drag, Shift+click on a title): Delete closes them, Copy and
+    /// Paste copy them. Never the focused one: selecting takes the focus away.
+    pub selected: Vec<BlockId>,
     /// True until the user first moves the camera or touches a block: meanwhile the startup
     /// terminal stays centered, since tiling compositors resize the window after it opens.
     pub pristine: bool,
@@ -358,26 +393,7 @@ impl Space {
                     Body::Terminal(pane) => {
                         session::LayoutBlock::Terminal(b.rect, pane.term.processes())
                     }
-                    Body::Kanban(k) => {
-                        session::LayoutBlock::Saved(session::Item::Kanban(session::KanbanItem {
-                            rect: b.rect.into(),
-                            board: k.board,
-                        }))
-                    }
-                    Body::Note(n) => {
-                        session::LayoutBlock::Saved(session::Item::Note(session::NoteItem {
-                            rect: b.rect.into(),
-                            text: n.text(cx),
-                            preview: n.preview,
-                            color: n.color,
-                        }))
-                    }
-                    Body::Editor(e) => {
-                        session::LayoutBlock::Saved(session::Item::Editor(e.item(b.rect)))
-                    }
-                    Body::Git(g) => {
-                        session::LayoutBlock::Saved(session::Item::Git(g.item(b.rect, cx)))
-                    }
+                    body => session::LayoutBlock::Saved(body.item(b.rect, cx)),
                 })
                 .collect(),
             focused: self
@@ -962,6 +978,17 @@ fn undo_key(k: &Keystroke, macos: bool) -> Option<bool> {
         return None;
     }
     Some(m.shift)
+}
+
+/// Ctrl+`key` (Cmd on macOS), with no other modifier.
+fn secondary(k: &Keystroke, key: &str, macos: bool) -> bool {
+    let m = &k.modifiers;
+    let held = if macos {
+        m.platform && !m.control
+    } else {
+        m.control && !m.platform
+    };
+    held && !m.alt && !m.shift && !m.function && k.key == key
 }
 
 /// Ctrl+1 to Ctrl+9 (Cmd on macOS), with no other modifier: the position of a workspace.

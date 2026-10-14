@@ -27,6 +27,7 @@ impl Workspace {
         let id = self.space.canvas.add(rect);
         self.space.blocks.insert(id, body);
         self.space.focused = Some(id);
+        self.space.selected.clear();
         self.space.appearing.insert(id, Instant::now());
         id
     }
@@ -399,6 +400,7 @@ impl Workspace {
                     }),
                 );
                 self.space.focused = Some(id);
+                self.space.selected.clear();
                 self.space.appearing.insert(id, Instant::now());
                 Some(id)
             }
@@ -481,6 +483,7 @@ impl Workspace {
         if self.space.hovered == Some(id) {
             self.space.hovered = None;
         }
+        self.space.selected.retain(|s| *s != id);
         if self.space.focused == Some(id) {
             self.space.focused = self.space.canvas.top();
         }
@@ -596,6 +599,7 @@ impl Workspace {
         self.space.pristine = false;
         self.space.canvas.raise(id);
         self.space.focused = Some(id);
+        self.space.selected.clear();
         self.space.selected_ink = None;
         // What types inside the block takes the keyboard; anything else leaves it with the
         // workspace.

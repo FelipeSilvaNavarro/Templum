@@ -531,6 +531,7 @@ mod menus;
 mod navigation;
 mod notes;
 mod persistence;
+mod selection;
 mod settings_edits;
 mod settings_panel;
 mod shortcuts;

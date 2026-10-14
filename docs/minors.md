@@ -249,3 +249,17 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   text (gpui-base's editor takes the wheel and stops it) instead of moving the canvas, and the text shows scrolled
   when the block is next drawn in full. Fix: a capture-phase wheel listener on the unseen editor's wrapper that moves
   the canvas and stops the event before the editor sees it.
+
+## Selecting blocks
+
+- [ ] **Dragging a selected block's title moves only that block.** `begin_move`
+  (`crates/templum/src/workspace/input.rs`) moves one block, and the click focuses it, which drops the selection.
+  Fix: when the pressed block is selected, a `Gesture` that moves every selected block by the same offset, snapping
+  the group's bounds.
+- [ ] **Delete on a focused note loses its text for good.** A note shown rendered, a kanban block or a Git block
+  closes on Delete or Backspace (`delete_blocks`, `crates/templum/src/workspace/selection.rs`) as its close button
+  does, with no undo. Fix: keep the closed blocks' `session::Item`s and bring them back with Ctrl+Z, as
+  `paste_blocks` does.
+- [ ] **A pasted terminal starts a plain shell.** Copy saves a terminal's folder without its agent (`Body::item`,
+  `crates/templum/src/workspace/mod.rs`), so a copied Claude Code terminal pastes as a shell in that folder. Fix: copy
+  `seen.agent` and type the agent's command (not its resume command) into the pasted shell.

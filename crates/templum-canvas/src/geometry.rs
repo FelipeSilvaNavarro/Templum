@@ -37,6 +37,16 @@ impl Rect {
         Self { x, y, w, h }
     }
 
+    /// The rect between two opposite corners, in any order.
+    pub fn corners(a: Point, b: Point) -> Rect {
+        Rect::new(
+            a.x.min(b.x),
+            a.y.min(b.y),
+            (a.x - b.x).abs(),
+            (a.y - b.y).abs(),
+        )
+    }
+
     pub fn origin(&self) -> Point {
         Point::new(self.x, self.y)
     }

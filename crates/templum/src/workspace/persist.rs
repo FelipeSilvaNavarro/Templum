@@ -36,72 +36,8 @@ impl Workspace {
         for item in &saved.items {
             let t = match item {
                 session::Item::Terminal(t) => t,
-                session::Item::Kanban(k) => {
-                    let id = clamped_rect(k.rect.into(), kanban::MIN).map(|rect| {
-                        self.add_block(
-                            rect,
-                            Body::Kanban(Kanban {
-                                board: k.board,
-                                picking: false,
-                            }),
-                        )
-                    });
-                    ids.push(id);
-                    continue;
-                }
-                session::Item::Note(n) => {
-                    let id = clamped_rect(n.rect.into(), note::MIN).map(|rect| {
-                        let mut note = Note::new(&n.text, n.preview, window, cx);
-                        note.color = n.color;
-                        self.add_block(rect, Body::Note(note))
-                    });
-                    ids.push(id);
-                    continue;
-                }
-                session::Item::Git(g) => {
-                    let id = clamped_rect(g.rect.into(), git_block::MIN).map(|rect| {
-                        let mut git = Git::new(
-                            PathBuf::from(&g.folder),
-                            git_block::Tab::from_name(&g.tab),
-                            window,
-                            cx,
-                        );
-                        git.lists_folded = g.lists == "folded";
-                        git.set_split(g.diff == "split");
-                        git.summary
-                            .update(cx, |s, cx| s.set_value(g.summary.clone(), window, cx));
-                        git.description
-                            .update(cx, |s, cx| s.set_value(g.description.clone(), window, cx));
-                        self.add_block(rect, Body::Git(Box::new(git)))
-                    });
-                    if let Some(id) = id {
-                        self.look_up_git(id, window, cx);
-                    }
-                    ids.push(id);
-                    continue;
-                }
-                session::Item::Editor(e) => {
-                    let id = clamped_rect(e.rect.into(), editor::MIN).map(|rect| {
-                        let folder = PathBuf::from(&e.folder);
-                        let mut editor = Editor::new(folder.clone(), e.tree, cx);
-                        for rel in &e.open {
-                            let rel = Path::new(rel);
-                            // Only files inside the folder, as they were saved: a path that
-                            // climbs out or is absolute is not followed.
-                            let inside = rel
-                                .components()
-                                .all(|c| matches!(c, std::path::Component::Normal(_)));
-                            let path = folder.join(rel);
-                            if inside && path.is_file() {
-                                editor.open_tab(&path, window, cx).ok();
-                            }
-                        }
-                        if let Some(a) = e.active.filter(|a| *a < editor.tabs.len()) {
-                            editor.active = Some(a);
-                        }
-                        self.add_block(rect, Body::Editor(editor))
-                    });
-                    ids.push(id);
+                other => {
+                    ids.push(self.add_saved(other, window, cx));
                     continue;
                 }
             };
@@ -162,6 +98,79 @@ impl Workspace {
             .collect();
         self.space.recent = saved.recent.iter().map(PathBuf::from).collect();
         self.space.saved = Some(saved);
+    }
+
+    /// A block from a saved item, on top and focused. A terminal starts a fresh shell in the
+    /// item's folder (the home folder when it is gone). None when its rect has a number that
+    /// isn't finite, or its shell couldn't start.
+    pub(super) fn add_saved(
+        &mut self,
+        item: &session::Item,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<BlockId> {
+        match item {
+            session::Item::Terminal(t) => {
+                let rect = self.restorable(t.rect.into())?;
+                let folder = t.folder.as_ref().map(PathBuf::from).filter(|f| f.is_dir());
+                self.spawn_block(rect, folder, window, cx)
+            }
+            session::Item::Kanban(k) => clamped_rect(k.rect.into(), kanban::MIN).map(|rect| {
+                self.add_block(
+                    rect,
+                    Body::Kanban(Kanban {
+                        board: k.board,
+                        picking: false,
+                    }),
+                )
+            }),
+            session::Item::Note(n) => clamped_rect(n.rect.into(), note::MIN).map(|rect| {
+                let mut note = Note::new(&n.text, n.preview, window, cx);
+                note.color = n.color;
+                self.add_block(rect, Body::Note(note))
+            }),
+            session::Item::Git(g) => {
+                let id = clamped_rect(g.rect.into(), git_block::MIN).map(|rect| {
+                    let mut git = Git::new(
+                        PathBuf::from(&g.folder),
+                        git_block::Tab::from_name(&g.tab),
+                        window,
+                        cx,
+                    );
+                    git.lists_folded = g.lists == "folded";
+                    git.set_split(g.diff == "split");
+                    git.summary
+                        .update(cx, |s, cx| s.set_value(g.summary.clone(), window, cx));
+                    git.description
+                        .update(cx, |s, cx| s.set_value(g.description.clone(), window, cx));
+                    self.add_block(rect, Body::Git(Box::new(git)))
+                });
+                if let Some(id) = id {
+                    self.look_up_git(id, window, cx);
+                }
+                id
+            }
+            session::Item::Editor(e) => clamped_rect(e.rect.into(), editor::MIN).map(|rect| {
+                let folder = PathBuf::from(&e.folder);
+                let mut editor = Editor::new(folder.clone(), e.tree, cx);
+                for rel in &e.open {
+                    let rel = Path::new(rel);
+                    // Only files inside the folder, as they were saved: a path that climbs out
+                    // or is absolute is not followed.
+                    let inside = rel
+                        .components()
+                        .all(|c| matches!(c, std::path::Component::Normal(_)));
+                    let path = folder.join(rel);
+                    if inside && path.is_file() {
+                        editor.open_tab(&path, window, cx).ok();
+                    }
+                }
+                if let Some(a) = e.active.filter(|a| *a < editor.tabs.len()) {
+                    editor.active = Some(a);
+                }
+                self.add_block(rect, Body::Editor(editor))
+            }),
+        }
     }
 
     /// The agents to look for in terminals, for a snapshot's background read.

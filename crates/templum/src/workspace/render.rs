@@ -10,7 +10,7 @@ use gpui_kit::{
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
     TestSupportExt, Window, canvas, div, fill, point, px, size,
 };
-use templum_canvas::{BlockId, Camera, Gesture, Guide, Point, dot_grid, dot_size};
+use templum_canvas::{BlockId, Camera, Gesture, Guide, Point, Rect, dot_grid, dot_size};
 
 use crate::block;
 use crate::menu;
@@ -318,6 +318,13 @@ impl Render for Workspace {
         self.hand = window.modifiers().alt;
         let hand = self.hand || self.tool == Tool::Hand;
         let panning = matches!(self.drag, Some(Drag::Canvas(Gesture::Pan { .. })));
+        // The selection rectangle being dragged, on screen.
+        let marquee = match &self.drag {
+            Some(Drag::Marquee { from, to, .. }) => {
+                Some(self.space.view.rect_to_screen(Rect::corners(*from, *to)))
+            }
+            _ => None,
+        };
         let area = div()
             .id("workspace")
             .relative()
@@ -341,6 +348,17 @@ impl Render for Workspace {
             // The drawings, above the blocks; with a drawing tool on, a layer over them takes the
             // pointer.
             .child(self.ink_layer(cx))
+            .children(marquee.map(|r| {
+                div()
+                    .absolute()
+                    .left(px(r.x))
+                    .top(px(r.y))
+                    .w(px(r.w))
+                    .h(px(r.h))
+                    .border_1()
+                    .border_color(self.ui.accent)
+                    .bg(self.ui.accent.opacity(0.08))
+            }))
             .when(self.tool.draws(), |el| {
                 el.child(
                     div()

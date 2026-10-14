@@ -93,6 +93,8 @@ pub(crate) fn render(
         _ => Point::default(),
     };
     let focused = live && ws.space.focused == Some(id);
+    // Selected blocks wear the focused one's ring and border.
+    let marked = focused || (live && ws.space.selected.contains(&id));
     // How much of the body is drawn: by its text's size on screen at the zoom the camera rests at
     // (docs/specs/level-of-detail.md, section 1); the block worked in (focused, or holding the
     // keyboard: GPUI drops the focus of what isn't drawn) is always Full, asked only below Full.
@@ -119,7 +121,7 @@ pub(crate) fn render(
         cx,
     );
     let mut shadows = vec![shadow(ui.shadow, focused, lift, z)];
-    if focused {
+    if marked {
         shadows.push(BoxShadow {
             color: ui.ring,
             offset: point(px(0.0), px(0.0)),
@@ -210,6 +212,12 @@ pub(crate) fn render(
         el.on_mouse_down(
             MouseButton::Left,
             cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                // Shift+click selects the block, or deselects it; it neither moves nor focuses.
+                if e.modifiers.shift {
+                    ws.toggle_selected(id, window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 // A double-click frames the block; the camera flies, so nothing moves.
                 if e.click_count == 2 {
                     ws.frame_block(id, window, cx);
@@ -525,7 +533,7 @@ pub(crate) fn render(
         .rounded(px(RADIUS * z))
         // Always 1 px, so focusing never moves the grid.
         .border_1()
-        .border_color(if focused {
+        .border_color(if marked {
             ui.accent
         } else {
             ui.hairline.lerp(&ui.hover_border, lift)

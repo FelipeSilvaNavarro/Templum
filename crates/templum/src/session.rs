@@ -197,6 +197,18 @@ pub(crate) enum Item {
     Git(GitItem),
 }
 
+impl Item {
+    pub fn rect_mut(&mut self) -> &mut SavedRect {
+        match self {
+            Item::Terminal(t) => &mut t.rect,
+            Item::Kanban(k) => &mut k.rect,
+            Item::Note(n) => &mut n.rect,
+            Item::Editor(e) => &mut e.rect,
+            Item::Git(g) => &mut g.rect,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct NoteItem {
     pub rect: SavedRect,
@@ -453,7 +465,7 @@ impl Layout {
 }
 
 /// A path as JSON can hold it.
-fn utf8(path: PathBuf) -> Option<String> {
+pub(crate) fn utf8(path: PathBuf) -> Option<String> {
     path.into_os_string().into_string().ok()
 }
 

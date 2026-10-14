@@ -15,8 +15,8 @@ use crate::keys::{self, Command};
 use crate::menu;
 
 use super::{
-    CLICK_SLOP, Drag, QUIT_AGAIN, Tool, Workspace, effective, option_types_text, show_notification,
-    undo_key, workspace_digit,
+    CLICK_SLOP, Drag, QUIT_AGAIN, Tool, Workspace, effective, option_types_text, secondary,
+    show_notification, undo_key, workspace_digit,
 };
 
 impl Workspace {
@@ -130,6 +130,10 @@ impl Workspace {
                 {
                     *erased = true;
                 }
+            }
+            Some(Drag::Marquee { .. }) => {
+                let to = self.space.canvas.camera.to_world(p);
+                self.marquee_to(to);
             }
             Some(Drag::MoveInk { index, last, moved }) => {
                 let world = self.space.canvas.camera.to_world(p);
@@ -255,14 +259,15 @@ impl Workspace {
     }
 
     /// Mouse up: a press on the empty canvas that didn't pan is a click, and leaves no terminal
-    /// focused (typing then reaches none; panning keeps the focus).
+    /// focused (typing then reaches none; panning keeps the focus) and no block selected.
     pub(super) fn release(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
         if let Some(start) = self.press {
             let p = self.local(pos);
             let moved = (p.x - start.x).abs().max((p.y - start.y).abs());
             if moved < CLICK_SLOP {
                 self.unfocused = self.space.focused.take();
-                if self.unfocused.is_some() {
+                if self.unfocused.is_some() || !self.space.selected.is_empty() {
+                    self.space.selected.clear();
                     cx.notify();
                 }
             }
@@ -286,8 +291,17 @@ impl Workspace {
             Command::CloseTab => self.close_active_tab(window, cx),
             Command::Save => self.save_active(window, cx),
             Command::GoToLine => self.go_to_line(window, cx),
-            Command::Copy => self.copy_selection(cx),
-            Command::Paste => self.paste_clipboard(cx),
+            Command::Copy => {
+                if !self.copy_blocks(cx) {
+                    self.copy_selection(cx);
+                }
+            }
+            // Blocks on the clipboard are pasted on the canvas, unless a field has the keyboard.
+            Command::Paste => {
+                if !(self.canvas_has_keys(window) && self.paste_blocks(window, cx)) {
+                    self.paste_clipboard(cx);
+                }
+            }
             Command::PreviousPrompt => self.jump_to_prompt(true, cx),
             Command::NextPrompt => self.jump_to_prompt(false, cx),
             Command::ZoomIn => self.zoom_in(window, cx),
@@ -386,8 +400,12 @@ impl Workspace {
         // Esc puts a tool that stays on back to Select, closes the shapes pill and deselects.
         if e.keystroke.key == "escape"
             && !e.keystroke.modifiers.modified()
-            && (self.tool != Tool::Select || self.shapes_open || self.space.selected_ink.is_some())
+            && (self.tool != Tool::Select
+                || self.shapes_open
+                || self.space.selected_ink.is_some()
+                || !self.space.selected.is_empty())
         {
+            self.space.selected.clear();
             self.set_tool(Tool::Select, window, cx);
             cx.stop_propagation();
             return;
@@ -400,6 +418,25 @@ impl Workspace {
             self.delete_ink(index, cx);
             cx.stop_propagation();
             return;
+        }
+        // The canvas has the keyboard and no terminal does: Delete closes the selected blocks or
+        // the focused one; Ctrl+C and Ctrl+V (Cmd on macOS) copy and paste blocks.
+        if self.space.focused_terminal().is_none() && self.canvas_has_keys(window) {
+            let macos = cfg!(target_os = "macos");
+            let done =
+                if !k.modifiers.modified() && matches!(k.key.as_str(), "delete" | "backspace") {
+                    self.delete_blocks(window, cx)
+                } else if secondary(k, "c", macos) {
+                    self.copy_blocks(cx)
+                } else if secondary(k, "v", macos) {
+                    self.paste_blocks(window, cx)
+                } else {
+                    false
+                };
+            if done {
+                cx.stop_propagation();
+                return;
+            }
         }
         // Undo and redo are the terminal's keys unless a drawing tool is on or a drawing is
         // selected.
@@ -498,6 +535,12 @@ impl Workspace {
         let p = self.local(e.position);
         // Drawings are hit only here, where no block is (blocks stop the press).
         let world = self.space.canvas.camera.to_world(p);
+        if e.modifiers.shift && e.click_count == 1 {
+            self.space.selected_ink = None;
+            self.begin_marquee(world);
+            cx.notify();
+            return;
+        }
         if e.click_count == 1
             && self.tool == Tool::Select
             && let Some(index) = self.ink_at(world)
