@@ -112,6 +112,54 @@ impl Workspace {
             self.config_stamp = config::Stamp::of(self.config_dir.as_deref());
             self.reload_config(window, cx);
         }
+        self.poll_theme(window, cx);
+    }
+
+    /// Reads the theme in use again when its file changed (saved from an editor block, or any
+    /// editor), and applies it. A file that doesn't read keeps the last good colors and says so
+    /// once: the stamp is kept, so only the next save is read.
+    fn poll_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self
+            .themes
+            .iter()
+            .find(|e| e.theme.name == self.theme.name)
+            .and_then(|e| e.path.clone())
+        else {
+            self.theme_file = None;
+            return;
+        };
+        let stamp = config::Stamp::file(&path);
+        if self
+            .theme_file
+            .as_ref()
+            .is_some_and(|(p, s)| *p == path && *s == stamp)
+        {
+            return;
+        }
+        self.theme_file = Some((path.clone(), stamp));
+        match theme::read(&path) {
+            Ok(read) => {
+                let read = Rc::new(read);
+                if let Some(entry) = self
+                    .themes
+                    .iter_mut()
+                    .find(|e| e.path.as_ref() == Some(&path))
+                {
+                    entry.theme = read.clone();
+                }
+                if read != self.theme {
+                    self.apply(read, cx);
+                }
+            }
+            Err(err) => {
+                let message = format!(
+                    "Theme \"{}\": {err}. Keeping the last good one",
+                    self.theme.name
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+            }
+        }
     }
 
     /// Reads config.toml again and applies what changed. An invalid file keeps the current

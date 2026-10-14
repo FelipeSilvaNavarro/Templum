@@ -234,3 +234,100 @@ fn choosing_in_dark_mode_saves_the_dark_theme(cx: &mut TestAppContext) {
     assert!(saved.contains("dark = \"One Dark\""), "{saved}");
     assert!(!saved.contains("light"), "{saved}");
 }
+
+/// A light theme, with `background` as its background.
+fn light_theme(background: &str) -> String {
+    format!(
+        "[colors.primary]\nbackground = \"{background}\"\nforeground = \"#202020\"\n\n\
+         [colors.normal]\nblack = \"#000000\"\nred = \"#aa0000\"\ngreen = \"#00aa00\"\n\
+         yellow = \"#aaaa00\"\nblue = \"#0000aa\"\nmagenta = \"#aa00aa\"\ncyan = \"#00aaaa\"\n\
+         white = \"#aaaaaa\"\n"
+    )
+}
+
+/// Writes `<dir>/themes/<name>.toml`.
+fn write_theme(dir: &std::path::Path, name: &str, text: &str) -> std::path::PathBuf {
+    let themes = dir.join("themes");
+    std::fs::create_dir_all(&themes).unwrap();
+    let path = themes.join(format!("{name}.toml"));
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+fn poll(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.poll_config(window, cx))
+    })
+    .unwrap();
+}
+
+fn rgb(v: u32) -> templum_terminal::Rgb {
+    templum_terminal::Rgb {
+        r: (v >> 16) as u8,
+        g: (v >> 8) as u8,
+        b: v as u8,
+    }
+}
+
+#[gpui_kit::test]
+fn saving_the_theme_file_applies_it(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_theme(dir.path(), "mine", &light_theme("#fafafa"));
+    write_config(dir.path(), "[theme]\nlight = \"mine\"\n");
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    poll(handle, &ws, cx);
+    let first = ws.read_with(cx, |ws, _| ws.theme.clone());
+    assert_eq!(first.palette.background, rgb(0xfafafa));
+    std::fs::write(&path, light_theme("#f0f0e0") + "# changed\n").unwrap();
+    poll(handle, &ws, cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.palette.background, rgb(0xf0f0e0));
+        let entry = ws.themes.iter().find(|e| e.theme.name == "mine").unwrap();
+        assert_eq!(entry.theme, ws.theme, "the list has it too");
+        for pane in ws.space.terminals().map(|(_, p)| p) {
+            assert_eq!(pane.term.palette(), ws.theme.palette);
+        }
+    });
+    assert_eq!(notification_count(handle, cx), 0);
+}
+
+#[gpui_kit::test]
+fn a_broken_theme_file_keeps_the_last_good_one_and_says_so_once(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_theme(dir.path(), "mine", &light_theme("#fafafa"));
+    write_config(dir.path(), "[theme]\nlight = \"mine\"\n");
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    poll(handle, &ws, cx);
+    std::fs::write(&path, light_theme("#f0f0e0").replace("red = ", "rde = ")).unwrap();
+    poll(handle, &ws, cx);
+    poll(handle, &ws, cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.name, "mine");
+        assert_eq!(ws.theme.palette.background, rgb(0xfafafa), "kept");
+    });
+    assert_eq!(notification_count(handle, cx), 1, "said once");
+    std::fs::write(&path, light_theme("#f0f0e0")).unwrap();
+    poll(handle, &ws, cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.palette.background, rgb(0xf0f0e0))
+    });
+}
+
+#[gpui_kit::test]
+fn a_theme_edited_while_the_other_mode_is_on_shows_when_switching(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    write_theme(dir.path(), "day", &light_theme("#fafafa"));
+    let night = write_theme(dir.path(), "night", &light_theme("#101010"));
+    write_config(dir.path(), "[theme]\nlight = \"day\"\ndark = \"night\"\n");
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    poll(handle, &ws, cx);
+    std::fs::write(&night, light_theme("#202030") + "\n").unwrap();
+    poll(handle, &ws, cx);
+    ws.read_with(cx, |ws, _| assert_eq!(ws.theme.name, "day"));
+    ws.update(cx, |ws, cx| ws.set_dark(true, cx));
+    poll(handle, &ws, cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.name, "night");
+        assert_eq!(ws.theme.palette.background, rgb(0x202030));
+    });
+}

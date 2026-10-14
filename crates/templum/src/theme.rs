@@ -1,7 +1,7 @@
 //! Themes: Alacritty color files, the interface colors derived from them, the built-ins and the
 //! user's themes folder.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui_kit::{App, Hsla};
@@ -314,6 +314,8 @@ pub(crate) fn default_name(dark: bool) -> &'static str {
 pub(crate) struct Entry {
     pub group: &'static str,
     pub theme: Rc<Theme>,
+    /// The user's file; None for a built-in.
+    pub path: Option<PathBuf>,
 }
 
 /// The built-ins, then the valid themes of `<config_dir>/themes` sorted by name. A user theme
@@ -324,24 +326,36 @@ pub(crate) fn load(config_dir: Option<&Path>) -> Vec<Entry> {
         .map(|b| Entry {
             group: b.group,
             theme: Rc::new(parse(b.name, b.toml).expect("built-in themes are valid")),
+            path: None,
         })
         .collect();
     let mut mine = config_dir
         .map(|dir| read_folder(&dir.join("themes")))
         .unwrap_or_default();
-    mine.sort_by(|a, b| a.name.cmp(&b.name));
-    for theme in mine {
+    mine.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+    for (theme, path) in mine {
         entries.retain(|e| e.theme.name != theme.name);
         entries.push(Entry {
             group: MY_THEMES,
             theme: Rc::new(theme),
+            path: Some(path),
         });
     }
     entries
 }
 
+/// The theme in the file at `path`, named after the file.
+pub(crate) fn read(path: &Path) -> Result<Theme, String> {
+    let name = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    parse(&name, &text).map_err(|e| e.to_string())
+}
+
 /// Every valid `*.toml` directly inside `folder`. Broken files are reported and skipped.
-fn read_folder(folder: &Path) -> Vec<Theme> {
+fn read_folder(folder: &Path) -> Vec<(Theme, PathBuf)> {
     let files = match std::fs::read_dir(folder) {
         Ok(files) => files,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
@@ -355,15 +369,8 @@ fn read_folder(folder: &Path) -> Vec<Theme> {
         if path.extension().is_none_or(|e| e != "toml") || !path.is_file() {
             continue;
         }
-        let name = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let theme = std::fs::read_to_string(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|text| parse(&name, &text).map_err(|e| e.to_string()));
-        match theme {
-            Ok(theme) => themes.push(theme),
+        match read(&path) {
+            Ok(theme) => themes.push((theme, path)),
             Err(err) => eprintln!("templum: skipping theme {}: {err}", path.display()),
         }
     }

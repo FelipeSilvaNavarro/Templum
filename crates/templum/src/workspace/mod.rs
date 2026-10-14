@@ -773,6 +773,8 @@ pub struct Workspace {
     pub(crate) commit_agent: Option<agents::CommitAgent>,
     /// What config.toml looked like at the last read, for polling.
     config_stamp: config::Stamp,
+    /// The file of the theme in use, as it was when last read, for polling.
+    theme_file: Option<(PathBuf, config::Stamp)>,
     /// The last read failed: the next good one says so.
     config_failed: bool,
     /// The system's appearance. `dark` is what's in effect, since config.toml may pin a mode.
@@ -1089,6 +1091,7 @@ impl Workspace {
             theme,
             config_failed: config_error.is_some(),
             config_stamp,
+            theme_file: None,
             system_dark,
             _poll: poll,
             pending: None,

@@ -468,8 +468,14 @@ pub(crate) struct Stamp(Option<(SystemTime, u64)>);
 
 impl Stamp {
     pub fn of(dir: Option<&Path>) -> Stamp {
+        dir.map_or(Stamp(None), |d| Stamp::file(&d.join(FILE)))
+    }
+
+    /// The same for any file: a theme's.
+    pub fn file(path: &Path) -> Stamp {
         Stamp(
-            dir.and_then(|d| std::fs::metadata(d.join(FILE)).ok())
+            std::fs::metadata(path)
+                .ok()
                 .map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len())),
         )
     }
