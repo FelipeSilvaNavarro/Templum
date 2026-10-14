@@ -16,6 +16,7 @@ mod git_message;
 mod git_ops;
 mod git_switch;
 mod git_sync;
+mod history;
 mod input;
 mod persist;
 mod preferences;
@@ -82,8 +83,8 @@ const MAX_ROWS: u16 = 1000;
 const CLICK_SLOP: f32 = 4.0;
 /// Drawing changes kept for undo, per workspace.
 pub(crate) const INK_UNDO: usize = 50;
-/// Closes kept for Ctrl+Z, per workspace.
-const CLOSED_UNDO: usize = 50;
+/// Block changes kept for Ctrl+Z, per workspace; and as many undone ones.
+const CANVAS_UNDO: usize = 100;
 /// Board changes kept for undo, for the whole app (the boards are).
 pub(crate) const BOARD_UNDO: usize = 50;
 /// Cursor blink half-period.
@@ -378,8 +379,12 @@ pub(crate) struct Space {
     pub ink: Vec<Drawing>,
     /// The selected drawing, by its index in `ink`.
     pub selected_ink: Option<usize>,
-    /// The blocks each close took away, newest last, at most CLOSED_UNDO: Ctrl+Z reopens them.
-    pub closed: Vec<Vec<session::Item>>,
+    /// The changes that take back each change of the blocks (added, closed, moved, resized), by
+    /// their step numbers, newest last, at most CANVAS_UNDO; and those of the undone ones.
+    pub undo: Vec<(u64, history::Change)>,
+    pub redo: Vec<(u64, history::Change)>,
+    /// The last step's number.
+    pub steps: u64,
     /// `ink` before each change, newest last, at most INK_UNDO; and the undone ones.
     pub ink_undo: Vec<Vec<Drawing>>,
     pub ink_redo: Vec<Vec<Drawing>>,
@@ -557,6 +562,11 @@ pub struct Workspace {
     pub(crate) ime_cursor: Option<Bounds<Pixels>>,
     pub(crate) on_frame: Option<FrameHook>,
     drag: Option<Drag>,
+    /// The rects of the blocks a drag moves or resizes, as they were when it started.
+    placed: Vec<(BlockId, templum_canvas::Rect)>,
+    /// Blocks added now aren't kept for Ctrl+Z: a canvas being restored, closed blocks coming
+    /// back.
+    quiet: bool,
     /// Where a press on the empty canvas started: released in place, it's a click.
     press: Option<Point>,
     /// The block the last click on the empty canvas unfocused: a double-click's terminal starts
@@ -840,6 +850,8 @@ impl Workspace {
             ime_cursor: None,
             on_frame: None,
             drag: None,
+            placed: Vec::new(),
+            quiet: false,
             press: None,
             unfocused: None,
             focus_handle,

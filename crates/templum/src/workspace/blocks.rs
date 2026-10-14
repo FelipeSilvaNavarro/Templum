@@ -16,6 +16,7 @@ use crate::kanban::{self, Kanban};
 use crate::note::{self, Note};
 use crate::prompt;
 
+use super::history::{Change, Then};
 use super::{
     AGENT_COLS, AGENT_ROWS, BOARD_UNDO, Body, DEFAULT_COLS, DEFAULT_ROWS, Ghost, Pane, Workspace,
     remember, show_notification,
@@ -26,10 +27,19 @@ impl Workspace {
     pub(super) fn add_block(&mut self, rect: Rect, body: Body) -> BlockId {
         let id = self.space.canvas.add(rect);
         self.space.blocks.insert(id, body);
+        self.added(id);
+        id
+    }
+
+    /// A block was just added: it is focused, pops in, and Ctrl+Z takes it away (unless the
+    /// canvas is being restored or blocks come back by an undo: `quiet`).
+    fn added(&mut self, id: BlockId) {
         self.space.focused = Some(id);
         self.space.selected.clear();
         self.space.appearing.insert(id, Instant::now());
-        id
+        if !self.quiet {
+            self.keep(Change::Close(vec![id]), Then::New);
+        }
     }
 
     /// A note at the viewport's center, focused, in edit mode.
@@ -399,9 +409,7 @@ impl Workspace {
                         find: None,
                     }),
                 );
-                self.space.focused = Some(id);
-                self.space.selected.clear();
-                self.space.appearing.insert(id, Instant::now());
+                self.added(id);
                 Some(id)
             }
             Err(err) => {
@@ -415,49 +423,119 @@ impl Workspace {
         id
     }
 
-    /// Closes a block. An editor with unsaved edits asks first: Save all, Don't save, Cancel.
+    /// Closes a block. An editor with unsaved edits asks first: Save all, Don't save, Cancel; a
+    /// terminal at work (an agent, a command running) too: Cancel or Close.
     pub(crate) fn close(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        // A terminal at work (an agent, a command running) asks too: Cancel or Close.
-        let busy = self
-            .space
-            .terminal(id)
-            .and_then(|pane| alert::busy(&pane.term.status(), self.agent_name(pane)));
-        if let Some(why) = busy {
-            let ws = cx.entity();
-            prompt::confirm(
-                "Close the terminal?",
-                why,
-                "Close",
-                move |window, cx| ws.update(cx, |ws, cx| ws.close_now(&[id], window, cx)),
-                window,
-                cx,
-            );
-            return;
-        }
+        self.close_blocks(vec![id], Then::New, window, cx);
+    }
+
+    /// Closes blocks as `close` does one; several ask once. `then` says where Ctrl+Z keeps them:
+    /// an undo or a redo closes only if its step is still next when the person answers.
+    pub(super) fn close_blocks(
+        &mut self,
+        ids: Vec<BlockId>,
+        then: Then,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let one = ids.len() == 1;
+        let busy: Vec<String> = ids
+            .iter()
+            .filter_map(|id| {
+                let pane = self.space.terminal(*id)?;
+                let why = alert::busy(&pane.term.status(), self.agent_name(pane))?;
+                Some(if one {
+                    why
+                } else {
+                    format!("{}: {why}", pane.term.title())
+                })
+            })
+            .collect();
         // Only this workspace: block ids count from 0 in every one.
-        let unsaved = self.space.unsaved(Some(id));
-        if unsaved.is_empty() {
-            self.close_now(&[id], window, cx);
+        let unsaved: Vec<String> = ids
+            .iter()
+            .flat_map(|id| self.space.unsaved(Some(*id)))
+            .collect();
+        if busy.is_empty() && unsaved.is_empty() {
+            self.close_now(&ids, then, window, cx);
             return;
         }
         let ws = cx.entity();
-        let saver = ws.clone();
+        let close = {
+            let (ws, ids) = (ws.clone(), ids.clone());
+            move |window: &mut Window, cx: &mut App| {
+                ws.update(cx, |ws, cx| ws.close_now(&ids, then, window, cx))
+            }
+        };
+        let busy = busy.join(" ");
+        if unsaved.is_empty() {
+            let title = if one {
+                "Close the terminal?".to_string()
+            } else {
+                format!("Close {} blocks?", ids.len())
+            };
+            prompt::confirm(title, busy, "Close", close, window, cx);
+            return;
+        }
+        let mut why = format!("Unsaved: {}", unsaved.join(", "));
+        if !busy.is_empty() {
+            why = format!("{why}. {busy}");
+        }
+        let save = close.clone();
         prompt::save_or_discard(
             "Save changes?",
-            format!("Unsaved: {}", unsaved.join(", ")),
+            why,
             move |window, cx| {
-                saver.update(cx, |ws, cx| {
-                    let saved = ws.save_all(id, window, cx);
-                    if saved {
-                        ws.close_now(&[id], window, cx);
+                // Every one is tried, even after a failure.
+                let saved = ws.update(cx, |ws, cx| {
+                    let mut ok = true;
+                    for id in &ids {
+                        ok &= ws.save_all(*id, window, cx);
                     }
-                    saved
-                })
+                    ok
+                });
+                if saved {
+                    save(window, cx);
+                }
+                saved
             },
-            move |window, cx| ws.update(cx, |ws, cx| ws.close_now(&[id], window, cx)),
+            close,
             window,
             cx,
         );
+    }
+
+    /// Closes the blocks `ids` now, kept for Ctrl+Z (or Ctrl+Shift+Z, after an undo) as one
+    /// step. Nothing is focused after: the keyboard stays on the canvas, so Ctrl+Z reaches it,
+    /// not a terminal.
+    pub(super) fn close_now(
+        &mut self,
+        ids: &[BlockId],
+        then: Then,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.take_step(then) {
+            return;
+        }
+        let items: Vec<_> = self
+            .space
+            .canvas
+            .blocks()
+            .iter()
+            .filter(|b| ids.contains(&b.id))
+            .map(|b| (b.id, self.space.blocks[&b.id].item(b.rect, cx)))
+            .collect();
+        let was_focused = self.space.focused.is_some_and(|id| ids.contains(&id));
+        for id in ids {
+            self.remove_block(*id, window, cx);
+        }
+        if was_focused {
+            self.space.focused = None;
+        }
+        if !items.is_empty() {
+            self.keep(Change::Open(items), then);
+        }
     }
 
     /// Removes a block and kills its shell (dropping the Terminal shuts it down).

@@ -8,7 +8,7 @@ use gpui_kit::{
     Bounds, ClipboardItem, Context, EntityInputHandler, KeyDownEvent, MouseDownEvent, PinchEvent,
     Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, UTF16Selection, Window, px,
 };
-use templum_canvas::{BlockId, Drawing, Edges, Gesture, Point, STRING_PX, chrome, constrain};
+use templum_canvas::{BlockId, Drawing, Edges, Gesture, Point, Rect, STRING_PX, chrome, constrain};
 use templum_terminal::{KeyInput, SelectionKind, Side, Target};
 
 use crate::keys::{self, Command};
@@ -67,6 +67,7 @@ impl Workspace {
     pub(crate) fn begin_move(&mut self, id: BlockId, pos: PixelPoint<Pixels>) {
         let p = self.local(pos);
         self.drag = Gesture::move_block(&self.space.canvas, id, p).map(Drag::Canvas);
+        self.placing(&[id]);
     }
 
     pub(crate) fn begin_resize(&mut self, id: BlockId, edges: Edges, pos: PixelPoint<Pixels>) {
@@ -79,6 +80,15 @@ impl Workspace {
                 b.min_size(self.cell.size)
             });
         self.drag = Gesture::resize_block(&self.space.canvas, id, edges, p, min).map(Drag::Canvas);
+        self.placing(&[id]);
+    }
+
+    /// A terminal block's grid follows its rect.
+    pub(super) fn fit_terminal(&mut self, id: BlockId, rect: Rect) {
+        let (cols, rows) = chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
+        if let Some(pane) = self.space.terminal_mut(id) {
+            pane.term.resize(cols, rows, self.cell.px());
+        }
     }
 
     pub(super) fn drag_to(&mut self, pos: PixelPoint<Pixels>, shift: bool, cx: &mut Context<Self>) {
@@ -88,11 +98,7 @@ impl Workspace {
                 let update = gesture.update(&mut self.space.canvas, p);
                 self.space.guides = update.guides;
                 if let Some((id, rect)) = update.resized {
-                    let (cols, rows) =
-                        chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
-                    if let Some(pane) = self.space.terminal_mut(id) {
-                        pane.term.resize(cols, rows, self.cell.px());
-                    }
+                    self.fit_terminal(id, rect);
                 }
             }
             Some(Drag::Select(id)) => {
@@ -256,6 +262,7 @@ impl Workspace {
         self.drag = None;
         self.press = None;
         self.space.guides.clear();
+        self.end_placing();
     }
 
     /// Mouse up: a press on the empty canvas that didn't pan is a click, and leaves no terminal
@@ -463,12 +470,12 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
-        // Ctrl+Z on the canvas, no terminal's, nor a drawing's or a board's: reopens the last
-        // closed blocks.
-        if undo_key(k, cfg!(target_os = "macos")) == Some(false)
+        // Ctrl+Z and Ctrl+Shift+Z on the canvas, no terminal's, nor a drawing's or a board's:
+        // undo and redo the blocks' changes.
+        if let Some(redo) = undo_key(k, cfg!(target_os = "macos"))
             && self.space.focused_terminal().is_none()
             && self.canvas_has_keys(window)
-            && self.reopen_closed(window, cx)
+            && self.undo_canvas(redo, window, cx)
         {
             cx.stop_propagation();
             return;

@@ -106,7 +106,10 @@ impl Workspace {
             let vp = self.viewport(window);
             let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
             let rect = Rect::new((vp.w - size.w) / 2.0, (vp.h - size.h) / 2.0, size.w, size.h);
+            // Templum's, not a change of the person's to take back.
+            self.quiet = true;
             self.open(rect, window, cx);
+            self.quiet = false;
         }
     }
 

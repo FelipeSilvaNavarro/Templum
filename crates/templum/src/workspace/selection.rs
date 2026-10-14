@@ -1,14 +1,15 @@
 //! Selecting blocks: a rectangle (Shift+drag on the empty canvas) or Shift+click on a title; and
 //! what acts on the selected blocks, or on the focused one: a selected title's drag moves them
-//! together, Delete closes them, Copy and Paste copy them. Ctrl+Z reopens closed blocks.
+//! together, Delete closes them, Copy and Paste copy them.
 
-use gpui_kit::{App, ClipboardItem, Context, Pixels, Point as PixelPoint, Window};
+use gpui_kit::{ClipboardItem, Context, Pixels, Point as PixelPoint, Window};
 use serde::{Deserialize, Serialize};
 use templum_canvas::{BlockId, Gesture, Point, Rect};
 
-use crate::{alert, prompt, session};
+use crate::session;
 
-use super::{CLOSED_UNDO, Drag, Workspace};
+use super::history::{Change, Then};
+use super::{Drag, Workspace};
 
 /// What Copy puts on the clipboard for blocks: JSON that Paste knows, here or in another
 /// Templum. A terminal comes back as a fresh shell in its folder, without its agent.
@@ -51,6 +52,7 @@ impl Workspace {
         self.space.pristine = false;
         self.drag =
             Gesture::move_blocks(&self.space.canvas, &self.space.selected, p).map(Drag::Canvas);
+        self.placing(&self.space.selected.clone());
     }
 
     /// Shift+click on a block's title: it joins the selection, or leaves it.
@@ -138,67 +140,37 @@ impl Workspace {
                 t.agent = None;
             }
         }
-        self.add_selected(&items, window, cx);
+        let pasted: Vec<_> = self
+            .add_selected(&items, window, cx)
+            .into_iter()
+            .flatten()
+            .collect();
+        if !pasted.is_empty() {
+            self.keep(Change::Close(pasted), Then::New);
+        }
         true
     }
 
-    /// Ctrl+Z on the canvas: reopens the blocks the last close took away, where they were,
-    /// selected. False when nothing was closed.
-    pub(super) fn reopen_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(items) = self.space.closed.pop() else {
-            return false;
-        };
-        self.add_selected(&items, window, cx);
-        true
-    }
-
-    /// Adds the blocks `items`, selected, with the keyboard on the canvas.
-    fn add_selected(
+    /// Adds the blocks `items`, selected, with the keyboard on the canvas: what each one became
+    /// (None: it couldn't come back). Ctrl+Z is the caller's to keep.
+    pub(super) fn add_selected(
         &mut self,
         items: &[session::Item],
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Vec<Option<BlockId>> {
         self.space.pristine = false;
-        let added = items
+        self.quiet = true;
+        let added: Vec<_> = items
             .iter()
-            .filter_map(|item| self.add_saved(item, window, cx))
+            .map(|item| self.add_saved(item, window, cx))
             .collect();
+        self.quiet = false;
         self.space.focused = None;
-        self.space.selected = added;
+        self.space.selected = added.iter().flatten().copied().collect();
         window.focus(&self.focus_handle, cx);
         cx.notify();
-    }
-
-    /// Closes the blocks `ids` now, kept for Ctrl+Z as one step. Nothing is focused after: the
-    /// keyboard stays on the canvas, so Ctrl+Z reaches it, not a terminal.
-    pub(super) fn close_now(
-        &mut self,
-        ids: &[BlockId],
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let items: Vec<_> = self
-            .space
-            .canvas
-            .blocks()
-            .iter()
-            .filter(|b| ids.contains(&b.id))
-            .map(|b| self.space.blocks[&b.id].item(b.rect, cx))
-            .collect();
-        if !items.is_empty() {
-            self.space.closed.push(items);
-            if self.space.closed.len() > CLOSED_UNDO {
-                self.space.closed.remove(0);
-            }
-        }
-        let was_focused = self.space.focused.is_some_and(|id| ids.contains(&id));
-        for id in ids {
-            self.remove_block(*id, window, cx);
-        }
-        if was_focused {
-            self.space.focused = None;
-        }
+        added
     }
 
     /// Delete or Backspace on the canvas: closes the selected blocks, else the focused one. A
@@ -218,80 +190,7 @@ impl Workspace {
                 .filter(|id| self.space.selected.contains(id))
                 .collect()
         };
-        self.close_blocks(ids, window, cx);
+        self.close_blocks(ids, Then::New, window, cx);
         true
-    }
-
-    /// Closes blocks. One asks as its close button does; several ask once: Save, Don't save or
-    /// Cancel when an editor has unsaved files, Close or Cancel when a terminal is at work.
-    pub(crate) fn close_blocks(
-        &mut self,
-        ids: Vec<BlockId>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let [id] = ids[..] {
-            self.close(id, window, cx);
-            return;
-        }
-        let busy: Vec<String> = ids
-            .iter()
-            .filter_map(|id| {
-                let pane = self.space.terminal(*id)?;
-                let why = alert::busy(&pane.term.status(), self.agent_name(pane))?;
-                Some(format!("{}: {why}", pane.term.title()))
-            })
-            .collect();
-        let unsaved: Vec<String> = ids
-            .iter()
-            .flat_map(|id| self.space.unsaved(Some(*id)))
-            .collect();
-        if busy.is_empty() && unsaved.is_empty() {
-            self.close_now(&ids, window, cx);
-            return;
-        }
-        let ws = cx.entity();
-        let remove = {
-            let (ws, ids) = (ws.clone(), ids.clone());
-            move |window: &mut Window, cx: &mut App| {
-                ws.update(cx, |ws, cx| ws.close_now(&ids, window, cx))
-            }
-        };
-        let busy = busy.join(" ");
-        if unsaved.is_empty() {
-            prompt::confirm(
-                format!("Close {} blocks?", ids.len()),
-                busy,
-                "Close",
-                remove,
-                window,
-                cx,
-            );
-            return;
-        }
-        let save = remove.clone();
-        prompt::save_or_discard(
-            "Save changes?",
-            format!("Unsaved: {}. {busy}", unsaved.join(", "))
-                .trim_end()
-                .to_string(),
-            move |window, cx| {
-                // Every one is tried, even after a failure.
-                let saved = ws.update(cx, |ws, cx| {
-                    let mut ok = true;
-                    for id in &ids {
-                        ok &= ws.save_all(*id, window, cx);
-                    }
-                    ok
-                });
-                if saved {
-                    save(window, cx);
-                }
-                saved
-            },
-            remove,
-            window,
-            cx,
-        );
     }
 }

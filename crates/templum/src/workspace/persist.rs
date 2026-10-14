@@ -26,6 +26,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         self.space.pristine = false;
+        // What was saved isn't a change to take back.
+        self.quiet = true;
         let c = saved.camera;
         if c.x.is_finite() && c.y.is_finite() {
             self.space.canvas.camera = Camera::at(Point::new(c.x, c.y), c.zoom);
@@ -62,6 +64,7 @@ impl Workspace {
             }
             ids.push(id);
         }
+        self.quiet = false;
         self.space.focused = saved.focused.and_then(|i| ids.get(i).copied().flatten());
         if failed {
             // A shell setting with a typo: fixing it must bring the canvas back, so it isn't

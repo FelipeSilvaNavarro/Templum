@@ -504,6 +504,75 @@ fn add_remote(repo: &std::path::Path) -> tempfile::TempDir {
     remote
 }
 
+#[cfg(target_os = "macos")]
+pub(super) const COPY: &str = "cmd-c";
+#[cfg(not(target_os = "macos"))]
+pub(super) const COPY: &str = "ctrl-c";
+#[cfg(target_os = "macos")]
+pub(super) const PASTE: &str = "cmd-v";
+#[cfg(not(target_os = "macos"))]
+pub(super) const PASTE: &str = "ctrl-v";
+#[cfg(target_os = "macos")]
+pub(super) const UNDO: &str = "cmd-z";
+#[cfg(not(target_os = "macos"))]
+pub(super) const UNDO: &str = "ctrl-z";
+#[cfg(target_os = "macos")]
+pub(super) const REDO: &str = "cmd-shift-z";
+#[cfg(not(target_os = "macos"))]
+pub(super) const REDO: &str = "ctrl-shift-z";
+
+pub(super) const SHIFT: Modifiers = Modifiers {
+    shift: true,
+    control: false,
+    alt: false,
+    platform: false,
+    function: false,
+};
+
+/// The startup terminal moved down, a kanban block and a note ("hello") beside each other above
+/// it, the camera at 100% on the world's origin: (kanban, note, terminal).
+pub(super) fn three_blocks(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> (BlockId, BlockId, BlockId) {
+    let terminal = first_id(ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        let ids = ws.update(cx, |ws, cx| {
+            // Touched: the startup terminal no longer pulls the camera to it.
+            ws.space.pristine = false;
+            ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 1.0);
+            ws.space.canvas.get_mut(terminal).unwrap().rect = Rect::new(40.0, 400.0, 400.0, 300.0);
+            let kanban = crate::session::Item::Kanban(crate::session::KanbanItem {
+                rect: Rect::new(40.0, 40.0, 220.0, 200.0).into(),
+                board: None,
+            });
+            let note = crate::session::Item::Note(crate::session::NoteItem {
+                rect: Rect::new(300.0, 40.0, 220.0, 200.0).into(),
+                text: "hello".into(),
+                preview: true,
+                color: None,
+            });
+            // Set up, not a change of the person's to take back.
+            ws.quiet = true;
+            let kanban = ws.add_saved(&kanban, window, cx).unwrap();
+            let note = ws.add_saved(&note, window, cx).unwrap();
+            ws.quiet = false;
+            ws.space.appearing.clear();
+            (kanban, note, terminal)
+        });
+        window.render_frame(cx);
+        ids
+    })
+    .unwrap()
+}
+
+/// A local canvas point as a window position.
+pub(super) fn at(ws: &Entity<Workspace>, cx: &mut TestAppContext, p: (f32, f32)) -> (f32, f32) {
+    let o = ws.read_with(cx, |ws, _| ws.origin);
+    (f32::from(o.x) + p.0, f32::from(o.y) + p.1)
+}
+
 mod agents;
 mod blocks;
 mod config_reload;
@@ -525,6 +594,7 @@ mod git_status;
 mod git_switch;
 mod git_sync;
 mod git_trash;
+mod history;
 mod kanban;
 mod lod;
 mod menus;

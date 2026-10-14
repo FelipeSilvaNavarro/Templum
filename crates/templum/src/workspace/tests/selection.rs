@@ -2,69 +2,7 @@
 //! Delete, Copy and Paste; Ctrl+Z reopening closed blocks.
 
 use super::*;
-use crate::session::{Item, KanbanItem, NoteItem};
-
-#[cfg(target_os = "macos")]
-const COPY: &str = "cmd-c";
-#[cfg(not(target_os = "macos"))]
-const COPY: &str = "ctrl-c";
-#[cfg(target_os = "macos")]
-const PASTE: &str = "cmd-v";
-#[cfg(not(target_os = "macos"))]
-const PASTE: &str = "ctrl-v";
-#[cfg(target_os = "macos")]
-const UNDO: &str = "cmd-z";
-#[cfg(not(target_os = "macos"))]
-const UNDO: &str = "ctrl-z";
-
-const SHIFT: Modifiers = Modifiers {
-    shift: true,
-    control: false,
-    alt: false,
-    platform: false,
-    function: false,
-};
-
-/// The startup terminal moved down, a kanban block and a note ("hello") beside each other above
-/// it, the camera at 100% on the world's origin: (kanban, note, terminal).
-fn three_blocks(
-    handle: AnyWindowHandle,
-    ws: &Entity<Workspace>,
-    cx: &mut TestAppContext,
-) -> (BlockId, BlockId, BlockId) {
-    let terminal = first_id(ws, cx);
-    cx.update_window(handle, |_, window, cx| {
-        let ids = ws.update(cx, |ws, cx| {
-            // Touched: the startup terminal no longer pulls the camera to it.
-            ws.space.pristine = false;
-            ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 1.0);
-            ws.space.canvas.get_mut(terminal).unwrap().rect = Rect::new(40.0, 400.0, 400.0, 300.0);
-            let kanban = Item::Kanban(KanbanItem {
-                rect: Rect::new(40.0, 40.0, 220.0, 200.0).into(),
-                board: None,
-            });
-            let note = Item::Note(NoteItem {
-                rect: Rect::new(300.0, 40.0, 220.0, 200.0).into(),
-                text: "hello".into(),
-                preview: true,
-                color: None,
-            });
-            let kanban = ws.add_saved(&kanban, window, cx).unwrap();
-            let note = ws.add_saved(&note, window, cx).unwrap();
-            ws.space.appearing.clear();
-            (kanban, note, terminal)
-        });
-        window.render_frame(cx);
-        ids
-    })
-    .unwrap()
-}
-
-/// A local canvas point as a window position.
-fn at(ws: &Entity<Workspace>, cx: &mut TestAppContext, p: (f32, f32)) -> (f32, f32) {
-    let o = ws.read_with(cx, |ws, _| ws.origin);
-    (f32::from(o.x) + p.0, f32::from(o.y) + p.1)
-}
+use crate::workspace::history::Then;
 
 #[gpui_kit::test]
 fn shift_drag_selects_the_blocks_it_touches_and_a_click_clears_them(cx: &mut TestAppContext) {
@@ -261,7 +199,8 @@ fn ctrl_z_reopens_the_blocks_delete_closed_where_they_were(cx: &mut TestAppConte
         assert_eq!(ws.space.canvas.get(back[1]).unwrap().rect, rects[1]);
         assert!(ws.space.kanban(back[0]).is_some());
         assert_eq!(ws.space.blocks[&back[1]].note().unwrap().text(cx), "hello");
-        assert!(ws.space.closed.is_empty());
+        assert!(ws.space.undo.is_empty());
+        assert_eq!(ws.space.redo.len(), 1, "Ctrl+Shift+Z closes them again");
     });
 }
 
@@ -308,8 +247,8 @@ fn a_reopened_terminal_resumes_its_agent_but_a_pasted_one_does_not(cx: &mut Test
             let pane = ws.space.terminal_mut(terminal).unwrap();
             pane.seen.agent = Some("claude".into());
             pane.seen.folder = Some(folder.path().to_path_buf());
-            ws.close_now(&[terminal], window, cx);
-            assert!(ws.reopen_closed(window, cx));
+            ws.close_now(&[terminal], Then::New, window, cx);
+            assert!(ws.undo_canvas(false, window, cx));
         });
         let back = ws.read(cx).space.selected[0];
         assert_eq!(agent_of(ws.read(cx), back).as_deref(), Some("claude"));
