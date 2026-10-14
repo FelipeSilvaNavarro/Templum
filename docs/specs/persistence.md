@@ -58,10 +58,10 @@ What doesn't come back: the text that was on screen, and programs other than the
 
 | Situation | Start |
 |---|---|
-| No saved canvas (first run) | One terminal in the middle, as today. |
+| No saved canvas (first run) | The welcome ([welcome.md](welcome.md)), then one terminal in the middle. |
 | A saved canvas with no blocks (the user closed them all) | The empty canvas and its hint. |
-| A saved file Templum can't read ([Errors](#errors)) | As on a first run. |
-| `--bench` | As on a first run. Nothing is read or written. |
+| A saved file Templum can't read ([Errors](#errors)) | As on a first run, without the welcome. |
+| `--bench` | As on a first run, without the welcome. Nothing is read or written. |
 
 ## Agents
 

@@ -26,6 +26,9 @@ cargo run -p templum
 
 ## Using it
 
+The first time Templum opens, a welcome lets you pick a theme, a shell and your AI agents, and shows the keys worth
+knowing. **Welcome** in the settings panel's footer shows it again.
+
 | Mouse | Result |
 |---|---|
 | Double-click empty canvas | New terminal there |

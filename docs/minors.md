@@ -374,3 +374,9 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   (`crates/templum/src/workspace/spaces.rs`) reads the whole process table on the UI thread (and on Unix asks each
   process its session), once per Stop or Delete. Fix: read the tree on the background executor, then drop the
   workspace's blocks when it is read.
+
+## Welcome
+
+- [ ] **The frosted canvas shows the blocks' shapes, not their text.** GPUI's scene has no backdrop filter, so
+  `frost` (`crates/templum/src/welcome.rs`) draws each block as a blurred shadow of its shape. Fix: blur the real
+  canvas when GPUI gains a backdrop blur, or draws a frame to a texture outside tests.

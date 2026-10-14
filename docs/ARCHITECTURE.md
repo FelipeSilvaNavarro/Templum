@@ -112,6 +112,9 @@ A file holds one responsibility; a module that grows past a few hundred lines be
 - `sidebar.rs`: the workspaces' tiles and a workspace's face (its image, icon or initials, in its color);
   `spaces_screen.rs`: the workspaces screen (cards, search, keys, dragging to reorder); `space_dialog.rs`: a
   workspace's look and its Edit… dialog ([specs/cockpit.md](specs/cockpit.md#6-the-workspaces-screen)).
+- `welcome.rs`: the welcome a first run opens over a frosted canvas (each block a soft shadow of its shape: GPUI has
+  no backdrop blur), five pages whose settings are the panel's rows (`settings/welcome.rs`); the first terminal
+  opens when it closes ([specs/welcome.md](specs/welcome.md)).
 - `usage.rs`: the title bar's usage meter, its popover and a terminal's usage chip.
 - `update.rs`: where an update stands (`Update`), its title-bar pill and its lines in Settings ▸ Updates;
   `workspace/update.rs` checks GitHub at start and every day, downloads through `templum-update`, tells the news,
