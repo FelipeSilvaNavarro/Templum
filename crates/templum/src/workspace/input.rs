@@ -468,7 +468,7 @@ impl Workspace {
         self.end_drag();
     }
 
-    pub(super) fn run(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn run(&mut self, command: Command, window: &mut Window, cx: &mut Context<Self>) {
         match command {
             Command::NewTerminal => self.new_terminal(window, cx),
             Command::CloseTerminal => self.close_terminal(window, cx),
@@ -512,6 +512,7 @@ impl Workspace {
             Command::PreviousWorkspace => self.cycle_space(-1, window, cx),
             Command::NewWorkspace => self.add_space(window, cx),
             Command::ToggleSidebar => self.toggle_sidebar(window, cx),
+            Command::Workspaces => self.toggle_screen(window, cx),
             Command::GoToWaiting => self.go_to_waiting(window, cx),
             Command::Find => self.open_find(window, cx),
             Command::OpenFile => self.open_file_by_name(window, cx),

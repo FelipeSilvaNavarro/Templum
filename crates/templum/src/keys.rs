@@ -38,6 +38,7 @@ pub(crate) enum Command {
     PreviousWorkspace,
     NewWorkspace,
     ToggleSidebar,
+    Workspaces,
     GoToWaiting,
     Find,
     OpenFile,
@@ -46,7 +47,7 @@ pub(crate) enum Command {
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 37] = [
+    pub const ALL: [Command; 38] = [
         Command::NewTerminal,
         Command::NewKanban,
         Command::NewNote,
@@ -80,6 +81,7 @@ impl Command {
         Command::PreviousWorkspace,
         Command::NewWorkspace,
         Command::ToggleSidebar,
+        Command::Workspaces,
         Command::GoToWaiting,
         Command::Find,
         Command::OpenFile,
@@ -122,6 +124,7 @@ impl Command {
             Command::PreviousWorkspace => "previous_workspace",
             Command::NewWorkspace => "new_workspace",
             Command::ToggleSidebar => "toggle_sidebar",
+            Command::Workspaces => "workspaces",
             Command::GoToWaiting => "go_to_waiting",
             Command::Find => "find",
             Command::OpenFile => "open_file",
@@ -165,6 +168,7 @@ impl Command {
             Command::PreviousWorkspace => "Previous workspace",
             Command::NewWorkspace => "New workspace",
             Command::ToggleSidebar => "Show or hide the sidebar",
+            Command::Workspaces => "The workspaces screen",
             Command::GoToWaiting => "Go to the terminal waiting for you",
             Command::Find => "Find in the terminal",
             Command::OpenFile => "Open a file by name (in an editor)",
@@ -269,6 +273,8 @@ impl Command {
             (Command::NewWorkspace, false) => &["ctrl-shift-n"],
             (Command::NewWorkspace, true) => &["cmd-shift-n"],
             (Command::ToggleSidebar, _) => &[],
+            (Command::Workspaces, false) => &["ctrl-shift-o"],
+            (Command::Workspaces, true) => &["cmd-shift-o"],
             (Command::GoToWaiting, false) => &["ctrl-shift-a"],
             (Command::GoToWaiting, true) => &["cmd-shift-a"],
             (Command::Find, false) => &["ctrl-shift-f"],
@@ -326,6 +332,7 @@ pub(crate) struct KeysConfig {
     pub previous_workspace: Option<Keys>,
     pub new_workspace: Option<Keys>,
     pub toggle_sidebar: Option<Keys>,
+    pub workspaces: Option<Keys>,
     pub go_to_waiting: Option<Keys>,
     pub find: Option<Keys>,
     pub open_file: Option<Keys>,
@@ -368,6 +375,7 @@ impl KeysConfig {
             Command::PreviousWorkspace => self.previous_workspace.as_ref(),
             Command::NewWorkspace => self.new_workspace.as_ref(),
             Command::ToggleSidebar => self.toggle_sidebar.as_ref(),
+            Command::Workspaces => self.workspaces.as_ref(),
             Command::GoToWaiting => self.go_to_waiting.as_ref(),
             Command::Find => self.find.as_ref(),
             Command::OpenFile => self.open_file.as_ref(),
@@ -410,6 +418,7 @@ impl KeysConfig {
             Command::PreviousWorkspace => &mut self.previous_workspace,
             Command::NewWorkspace => &mut self.new_workspace,
             Command::ToggleSidebar => &mut self.toggle_sidebar,
+            Command::Workspaces => &mut self.workspaces,
             Command::GoToWaiting => &mut self.go_to_waiting,
             Command::Find => &mut self.find,
             Command::OpenFile => &mut self.open_file,

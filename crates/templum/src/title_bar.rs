@@ -46,14 +46,9 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
             ),
         )
         .child(
-            div()
-                .id("workspace-name")
-                .flex()
-                .items_center()
+            button("workspace-name", ui)
                 .gap(px(6.0))
-                .text_size(px(12.0))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(ui.title)
                 .when(
                     ws.space.look.icon.is_some() || ws.space.look.image.is_some(),
                     |el| {
@@ -68,6 +63,9 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                     },
                 )
                 .child(ws.space.name.clone())
+                .on_click(
+                    cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_screen(window, cx)),
+                )
                 .test_support(),
         )
         .child(

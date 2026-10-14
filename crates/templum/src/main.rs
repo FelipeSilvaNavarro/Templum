@@ -26,6 +26,7 @@ mod settings;
 mod sidebar;
 mod silhouette;
 mod space_dialog;
+mod spaces_screen;
 mod theme;
 mod theme_picker;
 mod title_bar;

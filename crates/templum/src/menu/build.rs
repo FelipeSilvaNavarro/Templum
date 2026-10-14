@@ -1110,6 +1110,7 @@ impl Items {
                 id,
                 name,
                 only_one,
+                active,
                 unsaved,
                 busy,
             } => {
@@ -1120,7 +1121,16 @@ impl Items {
                 for b in &busy {
                     why = format!("{why} {b}");
                 }
-                menu.item(item(
+                let open_id = id.clone();
+                menu.item(
+                    item(ws, "Open", None, move |ws, window, cx| {
+                        if let Some(at) = ws.order().iter().position(|s| s.id == open_id) {
+                            ws.switch_to(at, window, cx);
+                        }
+                    })
+                    .disabled(active),
+                )
+                .item(item(
                     ws,
                     "Edit…",
                     Some(IconName::Pencil),

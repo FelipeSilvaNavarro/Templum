@@ -344,6 +344,14 @@ impl Render for Workspace {
                 self.settings = None;
             }
         }
+        if let Some(screen) = &self.screen {
+            let t = motion::progress(screen.since, now, motion::SLIDE);
+            if t < 1.0 {
+                window.request_animation_frame();
+            } else if screen.closing {
+                self.screen = None;
+            }
+        }
         if !self.space.appearing.is_empty() || !self.space.ghosts.is_empty() {
             window.request_animation_frame();
         }
@@ -584,6 +592,10 @@ impl Render for Workspace {
             .as_ref()
             .map(|p| theme_picker::render(self, p, cx));
         let usage = self.usage_open.then(|| crate::usage::popover(self, cx));
+        let screen = self
+            .screen
+            .as_ref()
+            .map(|s| crate::spaces_screen::render(self, s, now, window, cx));
         if self.recording.is_some() && !self.settings_focus.is_focused(window) {
             self.recording = None;
             self.key_note = None;
@@ -614,6 +626,7 @@ impl Render for Workspace {
             .children(panel)
             .children(picker)
             .children(usage)
+            .children(screen)
             .children(self.menu.as_ref().map(|m| menu::render(m, window)))
     }
 }

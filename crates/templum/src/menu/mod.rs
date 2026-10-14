@@ -435,6 +435,7 @@ impl Workspace {
                     .find(|s| s.id == *id)
                     .map_or_else(String::new, |s| s.name.clone()),
                 only_one: self.others.is_empty(),
+                active: self.space.id == *id,
                 unsaved: self
                     .spaces()
                     .find(|s| s.id == *id)
@@ -601,6 +602,8 @@ enum Items {
         id: String,
         name: String,
         only_one: bool,
+        /// It is the one shown.
+        active: bool,
         /// Its editors' changed files.
         unsaved: Vec<String>,
         /// Its terminals at work, and why.

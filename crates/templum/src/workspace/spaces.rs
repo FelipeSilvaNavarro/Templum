@@ -175,8 +175,15 @@ impl Workspace {
         if to == self.active || to > self.others.len() {
             return;
         }
-        // A menu for something on the canvas left behind.
+        // A menu for something on the canvas left behind, and the screen it was picked on.
         self.menu = None;
+        if let Some(screen) = self.screen.take() {
+            self.screen = Some(if screen.closing {
+                screen
+            } else {
+                screen.reversed(std::time::Instant::now())
+            });
+        }
         let left = &mut self.space;
         // Their shells close now.
         left.ghosts.clear();

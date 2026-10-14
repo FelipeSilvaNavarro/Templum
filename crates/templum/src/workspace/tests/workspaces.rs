@@ -242,8 +242,8 @@ fn editing_a_workspace_sets_its_look_and_cancel_keeps_the_old_one(cx: &mut TestA
             )
         });
         window.render_frame(cx);
-        // Edit….
-        window.within("popup-menu").click(0usize, cx);
+        // Open, Edit….
+        window.within("popup-menu").click(1usize, cx);
         window.render_frame(cx);
         window.within("dialog").click("space-color-blue", cx);
         window.within("dialog").click("space-icon-rocket", cx);

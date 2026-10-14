@@ -767,6 +767,8 @@ pub struct Workspace {
     quit_armed: Option<Instant>,
     /// The settings panel, open or sliding out.
     pub(crate) settings: Option<Panel>,
+    /// The workspaces screen, open or sliding out.
+    pub(crate) screen: Option<crate::spaces_screen::Screen>,
     /// The panel's keyboard focus: Esc and the settings shortcut close it from there.
     pub(crate) settings_focus: FocusHandle,
     /// The command whose shortcut the panel is recording: keys go there before anything else.
@@ -1065,6 +1067,7 @@ impl Workspace {
             drafts: HashMap::new(),
             quit_armed: None,
             settings: None,
+            screen: None,
             settings_focus: cx.focus_handle(),
             recording: None,
             key_note: None,
@@ -1201,7 +1204,7 @@ fn secondary(k: &Keystroke, key: &str, macos: bool) -> bool {
 }
 
 /// Ctrl+1 to Ctrl+9 (Cmd on macOS), with no other modifier: the position of a workspace.
-fn workspace_digit(k: &Keystroke, macos: bool) -> Option<usize> {
+pub(crate) fn workspace_digit(k: &Keystroke, macos: bool) -> Option<usize> {
     let m = &k.modifiers;
     let held = if macos {
         m.platform && !m.control

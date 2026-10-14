@@ -49,6 +49,23 @@ pub(crate) fn slide(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
+/// How much of a panel sliding in since `since` (out, when `closing`) is in view at `now`: 0
+/// hidden, 1 all.
+pub(crate) fn slid(since: Instant, closing: bool, now: Instant) -> f32 {
+    let t = slide(progress(since, now, SLIDE));
+    if closing { 1.0 - t } else { t }
+}
+
+/// When a slide turned the other way at `now` must have started, to go on from where it is (no
+/// jump when turned back mid-slide).
+pub(crate) fn turned(since: Instant, closing: bool, now: Instant) -> Instant {
+    let shown = slid(since, closing, now);
+    let eased = if closing { shown } else { 1.0 - shown };
+    // `slide` inverted: the progress that eases to `eased`.
+    let progress = 1.0 - (1.0 - eased).cbrt();
+    now.checked_sub(SLIDE.mul_f32(progress)).unwrap_or(now)
+}
+
 /// Ease-out that goes a little past 1 and settles back ("back out"), peaking near 1.13.
 pub(crate) fn back_out(t: f32) -> f32 {
     const C1: f32 = 2.0;

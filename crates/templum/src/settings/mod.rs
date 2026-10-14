@@ -154,22 +154,14 @@ impl Panel {
 
     /// How much of the panel is in view at `now`: 0 hidden, 1 all.
     pub fn shown(&self, now: Instant) -> f32 {
-        let t = motion::slide(motion::progress(self.since, now, motion::SLIDE));
-        if self.closing { 1.0 - t } else { t }
+        motion::slid(self.since, self.closing, now)
     }
 
     /// The panel sliding the other way, from where it is (no jump when turned back mid-slide).
     pub fn reversed(&self, now: Instant) -> Panel {
-        let closing = !self.closing;
-        let shown = self.shown(now);
-        let eased = if closing { 1.0 - shown } else { shown };
-        // motion::slide inverted: the progress that eases to `eased`.
-        let progress = 1.0 - (1.0 - eased).cbrt();
         Panel {
-            since: now
-                .checked_sub(motion::SLIDE.mul_f32(progress))
-                .unwrap_or(now),
-            closing,
+            since: motion::turned(self.since, self.closing, now),
+            closing: !self.closing,
             section: self.section,
         }
     }

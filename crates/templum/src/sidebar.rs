@@ -28,6 +28,25 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         .enumerate()
         .map(|(i, space)| tile(ws, i, space, cx))
         .collect();
+    let screen = div()
+        .id("workspaces-button")
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .size(px(TILE))
+        .rounded(px(10.0))
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .active(move |s| s.bg(ui.pressed))
+        .child(
+            Icon::new(IconName::LayoutGrid)
+                .size(px(16.0))
+                .text_color(ui.title),
+        )
+        .tooltip(|window, cx| Tooltip::new("Workspaces").build(window, cx))
+        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_screen(window, cx)))
+        .test_support();
     let plus = div()
         .id("new-workspace")
         .flex()
@@ -61,6 +80,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         .border_r_1()
         .border_color(ui.hairline)
         .overflow_y_scroll()
+        .child(screen)
         .children(tiles)
         .child(plus)
 }
