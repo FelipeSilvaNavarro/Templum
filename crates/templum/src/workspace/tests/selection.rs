@@ -370,3 +370,48 @@ fn a_shift_press_near_the_edge_leaves_the_camera_still(cx: &mut TestAppContext) 
         Point::new(0.0, 0.0)
     );
 }
+
+/// While a title is held, its block (or every selected block, from a selected title) is moving:
+/// the title shows a closed hand; let go, an open one again.
+#[gpui_kit::test]
+fn a_held_title_moves_its_block_until_let_go(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let title = at(&ws, cx, (150.0, 40.0 + chrome::TITLE_H / 2.0));
+    let press = |cx: &mut TestAppContext, down: bool| {
+        let position = point(px(title.0), px(title.1));
+        cx.update_window(handle, |_, window, cx| {
+            let event = if down {
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                })
+            } else {
+                PlatformInput::MouseUp(MouseUpEvent {
+                    button: MouseButton::Left,
+                    position,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                })
+            };
+            window.dispatch_event(event, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    let moving = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| [kanban, note, terminal].map(|id| ws.moving(id)))
+    };
+    press(cx, true);
+    assert_eq!(moving(cx), [true, false, false]);
+    press(cx, false);
+    assert_eq!(moving(cx), [false, false, false]);
+    ws.update(cx, |ws, _| ws.space.selected = vec![kanban, note]);
+    press(cx, true);
+    assert_eq!(moving(cx), [true, true, false], "the selection moves");
+    press(cx, false);
+    assert_eq!(moving(cx), [false, false, false]);
+}

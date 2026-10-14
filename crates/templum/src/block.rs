@@ -209,6 +209,15 @@ pub(crate) fn render(
             .overflow_hidden()
             .child(title_text)
     }
+    // The title is where the block is held to move it: an open hand over it, a closed one
+    // while it moves (CSS's grab and grabbing).
+    .when(live, |el| {
+        if ws.moving(id) {
+            el.cursor_grabbing()
+        } else {
+            el.cursor_grab()
+        }
+    })
     .when(live, |el| {
         el.on_mouse_down(
             MouseButton::Left,

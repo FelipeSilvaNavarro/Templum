@@ -70,6 +70,15 @@ impl Workspace {
         self.placing(&[id]);
     }
 
+    /// Block `id` is being moved by a title: its own, or a selected block's.
+    pub(crate) fn moving(&self, id: BlockId) -> bool {
+        match &self.drag {
+            Some(Drag::Canvas(Gesture::Move { id: moved, .. })) => *moved == id,
+            Some(Drag::Canvas(Gesture::MoveGroup { ids, .. })) => ids.contains(&id),
+            _ => false,
+        }
+    }
+
     pub(crate) fn begin_resize(&mut self, id: BlockId, edges: Edges, pos: PixelPoint<Pixels>) {
         let p = self.local(pos);
         let min = self
@@ -265,6 +274,10 @@ impl Workspace {
     /// Mouse up: a press on the empty canvas that didn't pan is a click, and leaves no terminal
     /// focused (typing then reaches none; panning keeps the focus) and no block selected.
     pub(super) fn release(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
+        // Its title's hand opens again.
+        if self.space.canvas.blocks().iter().any(|b| self.moving(b.id)) {
+            cx.notify();
+        }
         if let Some(start) = self.press {
             let p = self.local(pos);
             let moved = (p.x - start.x).abs().max((p.y - start.y).abs());
