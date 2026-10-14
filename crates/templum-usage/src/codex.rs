@@ -26,28 +26,32 @@ pub fn sessions(procs: &[&Proc], codex_dir: &Path, now: u64) -> Vec<Option<Sessi
     // The newest process first: an older one in the same folder can't take its file.
     order.sort_by(|&a, &b| procs[b].started.cmp(&procs[a].started));
     let mut found = vec![None; procs.len()];
-    for i in order {
+    // The file a process has open is its own, even one from long ago it resumed: those first.
+    #[cfg(target_os = "linux")]
+    let open: Vec<Option<PathBuf>> = procs.iter().map(|p| open_rollout(p.pid)).collect();
+    #[cfg(not(target_os = "linux"))]
+    let open: Vec<Option<PathBuf>> = vec![None; procs.len()];
+    for (i, path) in open.iter().enumerate() {
+        if let Some(path) = path {
+            if let Some(j) = metas.iter().position(|(p, ..)| p == path) {
+                taken[j] = true;
+            }
+            found[i] = usage(path);
+        }
+    }
+    for i in order.into_iter().filter(|&i| open[i].is_none()) {
         let p = procs[i];
         let Some(cwd) = &p.cwd else { continue };
-        #[cfg(target_os = "linux")]
-        let open = open_rollout(p.pid);
-        #[cfg(not(target_os = "linux"))]
-        let open: Option<PathBuf> = None;
-        let pick = match open {
-            Some(open) => metas.iter().position(|(path, ..)| *path == open),
-            None => {
-                let ours = |j: &usize| !taken[*j] && metas[*j].1.cwd == *cwd;
-                // Started by this process; else one it resumed and writes to.
+        let ours = |j: &usize| !taken[*j] && metas[*j].1.cwd == *cwd;
+        // Started by this process; else one it resumed and writes to.
+        let pick = (0..metas.len())
+            .filter(|j| ours(j) && metas[*j].1.start + 5 >= p.started)
+            .max_by_key(|&j| metas[j].1.start)
+            .or_else(|| {
                 (0..metas.len())
-                    .filter(|j| ours(j) && metas[*j].1.start + 5 >= p.started)
-                    .max_by_key(|&j| metas[j].1.start)
-                    .or_else(|| {
-                        (0..metas.len())
-                            .filter(|j| ours(j) && metas[*j].2 + 2 >= p.started)
-                            .max_by_key(|&j| metas[j].2)
-                    })
-            }
-        };
+                    .filter(|j| ours(j) && metas[*j].2 + 2 >= p.started)
+                    .max_by_key(|&j| metas[j].2)
+            });
         if let Some(j) = pick {
             taken[j] = true;
             found[i] = usage(&metas[j].0);
@@ -56,11 +60,20 @@ pub fn sessions(procs: &[&Proc], codex_dir: &Path, now: u64) -> Vec<Option<Sessi
     found
 }
 
-/// The plan limits in the newest rollout of the last week: they are the account's.
+/// The plan limits in the newest rollout of the last week that has them: they are the
+/// account's. A session just started, or one on an API key, has none yet.
 pub fn limits(codex_dir: &Path, now: u64) -> Option<Limits> {
-    let files = rollouts(codex_dir, now.saturating_sub(7 * DAY), now + DAY);
-    let (path, at) = files.into_iter().max_by_key(|(_, mtime)| *mtime)?;
-    let text = tail(&path, TAIL)?;
+    let mut files = rollouts(codex_dir, now.saturating_sub(7 * DAY), now + DAY);
+    files.sort_by_key(|(_, mtime)| std::cmp::Reverse(*mtime));
+    // ponytail: the 10 newest only, so a week of keyless sessions isn't read every 5 s
+    files
+        .into_iter()
+        .take(10)
+        .find_map(|(path, at)| limits_in(&path, at))
+}
+
+fn limits_in(path: &Path, at: u64) -> Option<Limits> {
+    let text = tail(path, TAIL)?;
     text.lines().rev().find_map(|line| {
         let event = token_count(line)?;
         let rate = event.rate_limits?;
@@ -70,10 +83,12 @@ pub fn limits(codex_dir: &Path, now: u64) -> Option<Limits> {
         let windows: Vec<Window> = [rate.primary, rate.secondary]
             .into_iter()
             .flatten()
-            .map(|w| Window {
-                minutes: w.window_minutes,
-                used_percent: w.used_percent,
-                resets_at: w.resets_at,
+            .filter_map(|w| {
+                Some(Window {
+                    minutes: w.window_minutes?,
+                    used_percent: w.used_percent?,
+                    resets_at: w.resets_at?,
+                })
             })
             .collect();
         (!windows.is_empty()).then_some(Limits { windows, at })
@@ -108,18 +123,28 @@ fn rollouts(codex_dir: &Path, from: u64, to: u64) -> Vec<(PathBuf, u64)> {
     files
 }
 
-/// The rollout a Codex process has open: exact, even for a session it resumed.
+/// The rollout a Codex process has open, or one of its children has (npm's `codex` is a Node
+/// script that starts the native one): exact, even for a session it resumed.
 #[cfg(target_os = "linux")]
 fn open_rollout(pid: u32) -> Option<PathBuf> {
-    std::fs::read_dir(format!("/proc/{pid}/fd"))
-        .ok()?
-        .flatten()
-        .filter_map(|e| std::fs::read_link(e.path()).ok())
-        .find(|p| {
-            p.extension().is_some_and(|e| e == "jsonl")
-                && p.file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with("rollout-"))
-        })
+    let open = |pid: u32| {
+        std::fs::read_dir(format!("/proc/{pid}/fd"))
+            .ok()?
+            .flatten()
+            .filter_map(|e| std::fs::read_link(e.path()).ok())
+            .find(|p| {
+                p.extension().is_some_and(|e| e == "jsonl")
+                    && p.file_name()
+                        .is_some_and(|n| n.to_string_lossy().starts_with("rollout-"))
+            })
+    };
+    open(pid).or_else(|| {
+        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+            .ok()?
+            .split_whitespace()
+            .filter_map(|c| c.parse().ok())
+            .find_map(open)
+    })
 }
 
 /// What a rollout's first line says about its session.
@@ -173,7 +198,8 @@ struct Info {
     model_context_window: Option<u64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
+#[serde(default)]
 struct TokenUsage {
     input_tokens: u64,
     total_tokens: u64,
@@ -186,11 +212,12 @@ struct RateLimits {
     secondary: Option<RateWindow>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
+#[serde(default)]
 struct RateWindow {
-    used_percent: f32,
-    window_minutes: u32,
-    resets_at: u64,
+    used_percent: Option<f32>,
+    window_minutes: Option<u32>,
+    resets_at: Option<u64>,
 }
 
 fn token_count(line: &str) -> Option<TokenCount> {
@@ -300,6 +327,46 @@ mod tests {
         assert_eq!(sessions(&[&late], dir.path(), START + 3700), vec![None]);
     }
 
+    /// On Linux the file a Codex has open is its own, even a session from long ago it resumed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_rollout_a_process_has_open_is_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("sessions/2020/01/01");
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("rollout-old.jsonl");
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n{}",
+                r#"{"type":"session_meta","payload":{"cwd":"/srv/app","timestamp":"2020-01-01T00:00:00Z"}}"#,
+                count(1, 444, "null")
+            ),
+        )
+        .unwrap();
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exec 3<\"$0\"; sleep 10")
+            .arg(&path)
+            .spawn()
+            .unwrap();
+        let p = Proc {
+            pid: child.id(),
+            ..proc("/srv/app", START)
+        };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let found = loop {
+            let found = sessions(&[&p], dir.path(), START + 60);
+            if found[0].is_some() || std::time::Instant::now() > deadline {
+                break found;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(found[0].as_ref().map(|s| s.tokens), Some(Some(444)));
+    }
+
     #[test]
     fn a_turn_without_info_is_skipped() {
         let dir = tempfile::tempdir().unwrap();
@@ -356,6 +423,13 @@ mod tests {
         );
         let l = limits(dir.path(), START + 60).unwrap();
         assert_eq!(l.windows.len(), 1);
+        assert_eq!(l.windows[0].used_percent, 100.0);
+        // A Codex just started has no limits yet: the older file's stay.
+        let c = rollout(dir.path(), "c", "/srv/app", "2026-10-08T22:35:12Z", &[]);
+        let file = std::fs::File::options().write(true).open(&c).unwrap();
+        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+            .unwrap();
+        let l = limits(dir.path(), START + 60).unwrap();
         assert_eq!(l.windows[0].used_percent, 100.0);
     }
 }

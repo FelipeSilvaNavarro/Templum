@@ -106,7 +106,12 @@ fn relay() {
     use std::io::{Read as _, Write as _};
     let mut input = Vec::new();
     let _ = std::io::stdin().read_to_end(&mut input);
-    let dirs = session::dir().map(|data| templum_usage::Dirs::of(&data));
+    // The folder Templum named in the settings file: Claude Code's environment may name another.
+    let data = std::env::args_os()
+        .nth(2)
+        .map(std::path::PathBuf::from)
+        .or_else(session::dir);
+    let dirs = data.map(|data| templum_usage::Dirs::of(&data));
     let terminal = std::env::var("TEMPLUM_TERMINAL").ok();
     let out = match &dirs {
         Some(dirs) => templum_usage::claude::relay(

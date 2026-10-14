@@ -63,10 +63,11 @@ struct RateLimits {
     seven_day: Option<RateWindow>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
+#[serde(default)]
 struct RateWindow {
-    used_percentage: f32,
-    resets_at: u64,
+    used_percentage: Option<f32>,
+    resets_at: Option<u64>,
 }
 
 #[derive(Default, Deserialize)]
@@ -147,8 +148,10 @@ fn run(command: &str, input: &[u8]) -> Vec<u8> {
     // use Git Bash); check by hand, then pick the same shell.
     #[cfg(windows)]
     let mut cmd = {
+        use std::os::windows::process::CommandExt as _;
         let mut c = Command::new("cmd");
-        c.arg("/C").arg(command);
+        // CREATE_NO_WINDOW: the relay has no console, and cmd would open one after each answer.
+        c.arg("/C").arg(command).creation_flags(0x0800_0000);
         c
     };
     let child = cmd
@@ -170,16 +173,21 @@ fn run(command: &str, input: &[u8]) -> Vec<u8> {
 }
 
 /// Writes the settings file the Claude Code Templum opens is given, naming `exe` (Templum's
-/// program) as its status line, and returns its path as typed after `--settings` in a shell.
-/// None when either path can't be typed safely in every shell.
+/// program) as its status line, with Templum's data folder `data`, and returns its path as typed
+/// after `--settings` in a shell. None when a path can't be typed safely in every shell.
 pub fn settings_arg(data: &Path, exe: &Path, windows: bool) -> Option<String> {
     let path = data.join(SETTINGS);
     let typed = typed_path(&path.to_string_lossy(), windows)?;
-    let exe = typed_path(&exe.to_string_lossy(), windows)?;
+    // Linux names a program replaced while it runs (an upgrade) "<path> (deleted)": the new one
+    // is at the path.
+    let exe = exe.to_string_lossy();
+    let exe = typed_path(exe.strip_suffix(" (deleted)").unwrap_or(&exe), windows)?;
+    // The relay is told the folder: Claude Code's environment may name another one.
+    let folder = typed_path(&data.to_string_lossy(), windows)?;
     let settings = serde_json::json!({
         "statusLine": {
             "type": "command",
-            "command": format!("{exe} {RELAY_FLAG}"),
+            "command": format!("{exe} {RELAY_FLAG} {folder}"),
             "padding": 0,
         }
     });
@@ -266,6 +274,10 @@ fn transcript(proc: &Proc, claude_dir: &Path) -> Option<Session> {
             return None;
         }
         let message = entry.get("message")?;
+        // Claude Code's own notes ("You've hit your limit"), with no usage of their own.
+        if message.get("model").and_then(|m| m.as_str()) == Some("<synthetic>") {
+            return None;
+        }
         let usage = message.get("usage")?;
         let count = |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
         Some(Session {
@@ -316,8 +328,8 @@ pub fn limits(relay_dir: &Path) -> Option<Limits> {
                 let w = w?;
                 Some(Window {
                     minutes,
-                    used_percent: w.used_percentage,
-                    resets_at: w.resets_at,
+                    used_percent: w.used_percentage?,
+                    resets_at: w.resets_at?,
                 })
             })
             .collect();
@@ -472,6 +484,19 @@ mod tests {
         assert!(session(&proc("1-0", now() - 101), dir.path(), None).is_some());
     }
 
+    /// A window missing a field is left out; the rest of the read stays.
+    #[test]
+    fn a_broken_window_drops_only_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let broken = STATUS.replace(r#""resets_at": 1738857600"#, r#""resets_at": null"#);
+        std::fs::write(dir.path().join("1-0.json"), broken).unwrap();
+        let l = limits(dir.path()).unwrap();
+        assert_eq!(l.windows.len(), 1);
+        assert_eq!(l.windows[0].minutes, 300);
+        let s = session(&proc("1-0", now() - 60), dir.path(), None).unwrap();
+        assert_eq!(s.cost_usd, Some(3.1));
+    }
+
     #[test]
     fn the_newest_relay_file_with_limits_wins() {
         let dir = tempfile::tempdir().unwrap();
@@ -510,6 +535,7 @@ mod tests {
             line(false, 2),
             line(true, 9),
             r#"{"type":"user"}"#.to_string(),
+            r#"{"type":"assistant","isSidechain":false,"message":{"model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}}"#.to_string(),
         ]
         .join("\n");
         std::fs::write(project.join("abc-1.jsonl"), text).unwrap();
@@ -546,11 +572,21 @@ mod tests {
             serde_json::from_slice(&std::fs::read(dir.path().join(SETTINGS)).unwrap()).unwrap();
         assert_eq!(
             written["statusLine"]["command"],
-            "/opt/Templum/templum --claude-statusline"
+            format!(
+                "/opt/Templum/templum --claude-statusline {}",
+                dir.path().display()
+            )
         );
         assert_eq!(
             settings_arg(dir.path(), Path::new("/opt/$x/templum"), false),
             None
+        );
+        // Upgraded while it runs: the new program is at the old path.
+        settings_arg(dir.path(), Path::new("/usr/bin/templum (deleted)"), false).unwrap();
+        let written = std::fs::read_to_string(dir.path().join(SETTINGS)).unwrap();
+        assert!(
+            written.contains("\"/usr/bin/templum --claude-statusline"),
+            "{written}"
         );
     }
 

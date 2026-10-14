@@ -186,6 +186,8 @@ pub(crate) fn popover(ws: &Workspace, cx: &mut Context<Workspace>) -> AnyElement
         .top(TITLE_BAR_HEIGHT + px(4.0))
         .right(px(8.0))
         .w(px(340.0))
+        .max_h(px(480.0))
+        .overflow_y_scroll()
         .bg(ui.surface)
         .text_color(foreground)
         .border_1()

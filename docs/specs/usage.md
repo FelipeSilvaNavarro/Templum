@@ -55,7 +55,8 @@ subscribers after the first answer, `rate_limits.five_hour` and `rate_limits.sev
 
 - **Only the Claude Code Templum types** (the canvas menu's **AI agent ▸**, and resuming on restore) gets
   `--settings <data>/claude-statusline.json`. That file sets `statusLine` to Templum's own program,
-  `templum --claude-statusline`, the **relay**. `--settings` lasts one session and writes nothing. A `claude`
+  `templum --claude-statusline <data>`, the **relay** (the data folder is named: Claude Code's environment may say
+  another one; a program replaced by an upgrade while Templum runs is named by its path). `--settings` lasts one session and writes nothing. A `claude`
   typed by hand gets nothing added.
 - **The relay** reads the document and writes it as is to `<data>/usage/claude/<terminal>.json`, where
   `<terminal>` is the terminal's `TEMPLUM_TERMINAL` environment variable (every terminal gets a unique one). Then it
@@ -86,9 +87,10 @@ the session's `cwd` and `timestamp`. `event_msg` lines of type `token_count` car
   Codex in one folder each get their own file, newest process first.
 - **Session:** the last `token_count` with `info`: tokens `total_token_usage.total_tokens`, context
   `last_token_usage.input_tokens / model_context_window`.
-- **Plan limits:** the last `rate_limits` whose `limit_id` is `codex` (or absent), in the newest rollout of the last
-  week; null windows are skipped.
-- **On Linux** the rollout a Codex process has open (`/proc/<pid>/fd`) is its own, even one it resumed.
+- **Plan limits:** the last `rate_limits` whose `limit_id` is `codex` (or absent), in the newest of the last week's
+  rollouts that has them (of the 10 newest); a window missing a field is skipped.
+- **On Linux** the rollout a Codex process, or its child (npm's `codex` starts the native one), has open
+  (`/proc/<pid>/fd`) is its own, even one it resumed long ago.
 
 ## What a person sees
 

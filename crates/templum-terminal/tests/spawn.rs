@@ -270,10 +270,7 @@ fn inspect_finds_an_agent_and_its_folder() {
                 .unwrap()
                 .as_secs();
             let started = found.started.expect("a start time");
-            assert!(
-                started <= now + 2 && now - started < 60,
-                "started {started}, now {now}"
-            );
+            assert!(now.abs_diff(started) < 60, "started {started}, now {now}");
             break;
         }
         assert!(Instant::now() < deadline, "found {found:?}");
