@@ -10,7 +10,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Animation, AnimationExt as _, AnyElement, BoxShadow, ClickEvent, Context, ElementId, Hsla,
+    Animation, AnimationExt as _, AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Hsla,
     MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt, Window, div,
     point, px,
 };
@@ -110,7 +110,6 @@ pub(crate) fn render(
     } else {
         level
     };
-    let target = Target::Block(id);
     let hovered = live && ws.space.hovered == Some(id);
     let ui = ws.ui;
     // 0 at rest, 1 hovered; eased both ways.
@@ -150,12 +149,8 @@ pub(crate) fn render(
         .text_size(px(TITLE_FONT * if labeled { 1.0 } else { z }))
         .text_color(if focused { ui.title } else { ui.title_dim })
         .child(match body {
-            Body::Terminal(pane) => SharedString::from(pane.term.title()),
-            Body::Kanban(k) => k.title(ws),
-            Body::Note(n) => n.title(cx),
-            Body::Editor(e) => e.title(),
             Body::Git(g) if labeled => format!("Git · {}", g.title()).into(),
-            Body::Git(g) => g.title(),
+            body => title(ws, body, cx),
         })
         .test_support();
     // A terminal's state: on the left of its header, or in its label.
@@ -593,12 +588,19 @@ pub(crate) fn render(
                         cx.stop_propagation();
                     }),
                 )
-                // Its menu acts on it: it is focused first (copy, paste).
+                // Its menu acts on it: it is focused first (copy, paste). The selection it is in
+                // goes along (Fullscreen takes it), read before focusing drops it.
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                        let group = if ws.space.selected.contains(&id) {
+                            ws.space.selected.clone()
+                        } else {
+                            Vec::new()
+                        };
                         ws.focus_block(id, window, cx);
-                        ws.open_menu(target.clone(), e.position, window, cx);
+                        let target = Target::Block { id, group };
+                        ws.open_menu(target, e.position, window, cx);
                         cx.stop_propagation();
                     }),
                 )
@@ -617,6 +619,18 @@ pub(crate) fn render(
         })
         .test_support()
         .into_any_element()
+}
+
+/// A block's title: a terminal's, a kanban block's board, a note's first line, an editor's file,
+/// a Git block's repository.
+pub(crate) fn title(ws: &Workspace, body: &Body, cx: &App) -> SharedString {
+    match body {
+        Body::Terminal(pane) => SharedString::from(pane.term.title()),
+        Body::Kanban(k) => k.title(ws),
+        Body::Note(n) => n.title(cx),
+        Body::Editor(e) => e.title(),
+        Body::Git(g) => g.title(),
+    }
 }
 
 /// A terminal's find field, over its top right corner; "No matches" beside it when so.

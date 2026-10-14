@@ -144,6 +144,24 @@ impl Tile {
         Some(tile)
     }
 
+    /// The pair holding block `id`'s tile turns: side by side becomes one above the other, and
+    /// back. False when `id` has no pair.
+    pub fn flip(&mut self, id: BlockId) -> bool {
+        let Tile::Pair(split, a, b) = self else {
+            return false;
+        };
+        let holds = |t: &Tile| matches!(t, Tile::Leaf(leaf) if *leaf == id);
+        if holds(a) || holds(b) {
+            *split = match split {
+                Split::Beside => Split::Above,
+                Split::Above => Split::Beside,
+            };
+            true
+        } else {
+            a.flip(id) || b.flip(id)
+        }
+    }
+
     /// Blocks `a` and `b` trade tiles.
     pub fn swap(&mut self, a: BlockId, b: BlockId) {
         match self {
@@ -275,6 +293,27 @@ mod tests {
         let after = tile.rects(area, 8.0);
         assert_eq!(after[0], (C, before[0].1));
         assert_eq!(after[2], (A, before[2].1));
+    }
+
+    #[test]
+    fn flipping_turns_the_pair_holding_a_tile() {
+        let area = Rect::new(0.0, 0.0, 1000.0, 600.0);
+        let mut tile = Tile::dwindle(&[A, B, C], area, 8.0).unwrap();
+        assert!(tile.flip(C));
+        assert_eq!(
+            tile,
+            Tile::Pair(
+                Split::Beside,
+                Box::new(Tile::Leaf(A)),
+                Box::new(Tile::Pair(
+                    Split::Beside,
+                    Box::new(Tile::Leaf(B)),
+                    Box::new(Tile::Leaf(C))
+                ))
+            ),
+            "b | c now"
+        );
+        assert!(!Tile::Leaf(A).flip(A), "no pair");
     }
 
     #[test]

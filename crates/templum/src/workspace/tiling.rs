@@ -158,6 +158,48 @@ impl Workspace {
         }
     }
 
+    /// Leave the grid: block `id` goes back to its place on the canvas, its tile's other half
+    /// taking the pair's place; the keyboard goes to a tile still there.
+    pub(crate) fn leave_tile(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        self.release_focus(id, window, cx);
+        let Some(home) = self.untile(id) else {
+            return;
+        };
+        if let Some(b) = self.space.canvas.get_mut(id) {
+            b.rect = home;
+            self.fit_terminal(id, home);
+        }
+        self.retile();
+        match self.space.top() {
+            Some(top) if self.space.grid.is_some() => self.focus_block(top, window, cx),
+            _ => self.focus_block(id, window, cx),
+        }
+        cx.notify();
+    }
+
+    /// Flip the split: the pair holding block `id`'s tile turns.
+    pub(crate) fn flip_tile(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        if let Some(grid) = &mut self.space.grid
+            && grid.tiles.flip(id)
+        {
+            self.retile();
+            cx.notify();
+        }
+    }
+
+    /// Add to the grid ▸: block `id`, from the canvas, takes half of tile `at`, with the keyboard.
+    pub(crate) fn add_to_grid(
+        &mut self,
+        id: BlockId,
+        at: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.join_grid(id, Some(at));
+        self.focus_block(id, window, cx);
+        cx.notify();
+    }
+
     /// The focused tile and the one on its `to` side.
     fn beside(&self, to: Direction) -> Option<(BlockId, BlockId)> {
         let grid = self.space.grid.as_ref()?;

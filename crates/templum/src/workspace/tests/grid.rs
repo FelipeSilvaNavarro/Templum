@@ -503,3 +503,71 @@ fn a_title_dropped_on_another_tile_swaps_them(cx: &mut TestAppContext) {
     press(handle, TOGGLE, cx);
     assert_eq!((rect_of(&ws, cx, kanban), rect_of(&ws, cx, note)), homes);
 }
+
+/// Right-clicks block `id`'s title and picks its menu's item `index` (separators count), then
+/// the submenu's `sub`, if any.
+fn pick(
+    handle: AnyWindowHandle,
+    cx: &mut TestAppContext,
+    id: BlockId,
+    index: usize,
+    sub: Option<usize>,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(("title", id.0 as usize), cx);
+        window.render_frame(cx);
+        window.within("popup-menu").click(index, cx);
+        window.render_frame(cx);
+        if let Some(sub) = sub {
+            window.within("submenu").within("popup-menu").click(sub, cx);
+            window.render_frame(cx);
+        }
+    })
+    .unwrap();
+}
+
+/// A selected block's Fullscreen takes the selection along; a tile's menu flips its split, adds
+/// a block from the canvas, sends one back, and ends grid mode.
+#[gpui_kit::test]
+fn a_blocks_menu_goes_in_flips_adds_leaves_and_comes_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    ws.update(cx, |ws, _| ws.space.selected = vec![kanban, terminal]);
+    // Copy, Paste, —, Fullscreen, Close terminal.
+    pick(handle, cx, terminal, 3, None);
+    let tiles = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.grid.as_ref().map(|g| g.tiles.ids()))
+    };
+    assert_eq!(
+        tiles(cx),
+        Some(vec![kanban, terminal]),
+        "the selection went in"
+    );
+    // Copy, Paste, —, Back to the canvas, Leave the grid, Flip the split, Add to the grid ▸,
+    // Close terminal.
+    pick(handle, cx, terminal, 5, None);
+    let (k, t) = (rect_of(&ws, cx, kanban), rect_of(&ws, cx, terminal));
+    assert!(
+        t.y > k.bottom() && t.x == k.x,
+        "one above the other: {k:?} {t:?}"
+    );
+    pick(handle, cx, terminal, 6, Some(0));
+    assert_eq!(tiles(cx).map(|t| t.len()), Some(3));
+    assert!(
+        ws.read_with(cx, |ws, _| ws.space.shown(note)),
+        "the note came in"
+    );
+    pick(handle, cx, terminal, 4, None);
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.space.shown(terminal), "back on the canvas");
+        assert!(ws.space.focused.is_some_and(|f| ws.space.shown(f)));
+    });
+    assert_eq!(
+        rect_of(&ws, cx, terminal),
+        Rect::new(40.0, 400.0, 400.0, 300.0)
+    );
+    // Board list, —, Back to the canvas…
+    pick(handle, cx, kanban, 2, None);
+    assert_eq!(tiles(cx), None, "the canvas again");
+}

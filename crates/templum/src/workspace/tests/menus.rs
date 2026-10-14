@@ -208,8 +208,8 @@ fn the_innermost_menu_opens_and_acts_on_what_was_clicked(cx: &mut TestAppContext
         // A second right-click replaces the menu.
         window.right_click(("body", terminal.0 as usize), cx);
         window.render_frame(cx);
-        // Copy, Paste, —, Close terminal.
-        window.within("popup-menu").click(3usize, cx);
+        // Copy, Paste, —, Fullscreen, Close terminal.
+        window.within("popup-menu").click(4usize, cx);
         window.render_frame(cx);
         assert!(
             !ws.read(cx).space.terminal(terminal).is_some(),

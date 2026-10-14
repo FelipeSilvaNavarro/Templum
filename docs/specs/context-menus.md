@@ -25,14 +25,14 @@ would have opened together with the block's. The canvas and the blocks had no me
 | Right-click on | Items |
 |---|---|
 | The empty canvas | **AI agent ▸** (the agents), **Add ▸** Terminal, Kanban board, Note, Editor, Git, **Notes…** (the Notes dialog). The block's top-left corner goes where you clicked. |
-| A terminal block (header or body) | Copy (disabled without a selection), Paste, Close terminal |
-| A kanban block (header, or its empty space) | Board list (or Back to the board, while the list shows), Close |
-| A note block | All notes… (the Notes dialog), Copy all (the note on screen), Send to ▸ (the workspace's terminals), Color ▸ (None and the six label colors, for the note on screen), Close |
-| An editor block | Change folder…, Hide (or Show) the file tree, Turn soft wrap on (or off), Send to ▸, Close |
+| A terminal block (header or body) | Copy (disabled without a selection), Paste, *the grid's items*, Close terminal |
+| A kanban block (header, or its empty space) | Board list (or Back to the board, while the list shows), *the grid's items*, Close |
+| A note block | All notes… (the Notes dialog), Copy all (the note on screen), Send to ▸ (the workspace's terminals), Color ▸ (None and the six label colors, for the note on screen), *the grid's items*, Close |
+| An editor block | Change folder…, Hide (or Show) the file tree, Turn soft wrap on (or off), Send to ▸, *the grid's items*, Close |
 | A file in an editor's tree | Open, Reveal in file manager, File history, Blame (in the Git block open on its repository, else a new one beside the editor), Rename…, Delete… |
 | A folder in an editor's tree | New file…, New folder…, Open a terminal here, Rename…, Delete…, Reveal in file manager |
 | An editor tree's empty space | New file…, New folder…, Refresh |
-| A Git block | Change folder…, Refresh, Open a terminal here, Close |
+| A Git block | Change folder…, Refresh, Open a terminal here, *the grid's items*, Close |
 | The ⋯ of a Git block's top bar (a click) | Fetch, Pull, Push, Recently discarded… (with a data folder), Clone a repository… |
 | A Git block's Publish branch, with several remotes (a click) | Publish to *remote*, one per remote, as `git remote` lists them |
 | The ▾ beside a Git block's Commit | Commit (or Commit all changes), and the same & Push |
@@ -50,6 +50,10 @@ would have opened together with the block's. The canvas and the blocks had no me
 | A card | Open, Send to ▸, Delete card (asks first) |
 | A workspace tile in the sidebar | Rename…, Delete… (disabled for the last workspace) |
 | A drawing (with the Select tool) | Delete |
+
+*The grid's items*, before Close in every block's menu ([grid.md](grid.md)): on the canvas, **Fullscreen** (with the
+blocks selected along with it); in grid mode, **Back to the canvas**, **Leave the grid**, **Flip the split** (a tile
+with a neighbour) and **Add to the grid ▸** (the workspace's blocks left on the canvas).
 
 - Right-clicking a block focuses it first, so Copy and Paste act on that terminal.
 - The menu closes on a choice, Esc, or a click anywhere else. The keyboard goes back where it was.

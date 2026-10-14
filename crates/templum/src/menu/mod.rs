@@ -7,6 +7,7 @@ mod build;
 use std::path::PathBuf;
 
 use crate::agents::AgentEntry;
+use gpui_kit::SharedString;
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -24,8 +25,12 @@ use crate::workspace::{Body, Workspace};
 pub(crate) enum Target {
     /// The empty canvas, at a world point: blocks are added there.
     Canvas(Point),
-    /// A block, whatever it holds: the menu is built for its kind.
-    Block(BlockId),
+    /// A block, whatever it holds: the menu is built for its kind. `group`: the blocks selected
+    /// with it when it was right-clicked (focusing it drops the selection).
+    Block {
+        id: BlockId,
+        group: Vec<BlockId>,
+    },
     /// The AI agents alone (the toolbar): the chosen one opens at this world point.
     Agents(Point),
     /// A row of a kanban block's board list.
@@ -150,6 +155,30 @@ impl Workspace {
             .collect()
     }
 
+    /// How block `block`'s menu ends: in grid mode, the tile's items; on the canvas, Fullscreen
+    /// (with `group`, the selection it is in).
+    fn tail(&self, block: BlockId, group: Vec<BlockId>, cx: &App) -> Tail {
+        match &self.space.grid {
+            None => Tail::Canvas { group },
+            Some(grid) => Tail::Tile {
+                flip: grid.tiles.ids().len() > 1 && grid.homes.contains_key(&block),
+                others: self
+                    .space
+                    .canvas
+                    .blocks()
+                    .iter()
+                    .filter(|b| !self.space.shown(b.id))
+                    .map(|b| {
+                        (
+                            b.id,
+                            crate::block::title(self, &self.space.blocks[&b.id], cx),
+                        )
+                    })
+                    .collect(),
+            },
+        }
+    }
+
     /// A menu's Send to: `text`, and the terminals it can go to.
     fn send_to_menu(&self, text: String) -> SendTo {
         SendTo {
@@ -160,7 +189,7 @@ impl Workspace {
 
     /// What the menu for `target` needs to know, read now: building it can't read the workspace.
     fn items(&self, target: &Target, cx: &App) -> Option<Items> {
-        Some(match *target {
+        Some(match target.clone() {
             Target::Canvas(at) => Items::Canvas {
                 at,
                 agents: self.agents_for_menu(),
@@ -169,31 +198,43 @@ impl Workspace {
                 at,
                 agents: self.agents_for_menu(),
             },
-            Target::Block(block) => match self.space.blocks.get(&block)? {
-                Body::Terminal(pane) => Items::Terminal {
+            Target::Block { id: block, group } => {
+                let body = self.space.blocks.get(&block)?;
+                let inner = match body {
+                    Body::Terminal(pane) => Items::Terminal {
+                        selection: pane.term.shared().selection_text().is_some(),
+                    },
+                    Body::Kanban(k) => Items::Kanban {
+                        block,
+                        listing: k.shown(self).is_none() && k.board.is_some(),
+                    },
+                    Body::Note(n) => Items::Note {
+                        block,
+                        color: n.tab().map(|t| self.notes.get(t.id).and_then(|e| e.color)),
+                        send: self.send_to_menu(n.to_send(cx)),
+                    },
+                    Body::Editor(e) => Items::Editor {
+                        block,
+                        tree: e.show_tree,
+                        wrap: e.wrap,
+                        send: self.send_to_menu(e.to_send(cx).unwrap_or_default()),
+                    },
+                    Body::Git(_) => Items::Git {
+                        block,
+                        folder: body.folder(),
+                    },
+                };
+                Items::Block {
                     block,
-                    selection: pane.term.shared().selection_text().is_some(),
-                },
-                Body::Kanban(k) => Items::Kanban {
-                    block,
-                    listing: k.shown(self).is_none() && k.board.is_some(),
-                },
-                Body::Note(n) => Items::Note {
-                    block,
-                    color: n.tab().map(|t| self.notes.get(t.id).and_then(|e| e.color)),
-                    send: self.send_to_menu(n.to_send(cx)),
-                },
-                Body::Editor(e) => Items::Editor {
-                    block,
-                    tree: e.show_tree,
-                    wrap: e.wrap,
-                    send: self.send_to_menu(e.to_send(cx).unwrap_or_default()),
-                },
-                body @ Body::Git(_) => Items::Git {
-                    block,
-                    folder: body.folder(),
-                },
-            },
+                    inner: Box::new(inner),
+                    tail: self.tail(block, group, cx),
+                    close: if body.terminal().is_some() {
+                        "Close terminal"
+                    } else {
+                        "Close"
+                    },
+                }
+            }
             Target::Board { block, board } => Items::Board {
                 block,
                 board,
@@ -404,8 +445,27 @@ struct SendTo {
     to: Vec<(BlockId, String)>,
 }
 
+/// How a block's menu ends, before Close.
+enum Tail {
+    /// On the canvas: Fullscreen, for the block or the selection it was in.
+    Canvas { group: Vec<BlockId> },
+    /// In grid mode: back to the canvas, leave the grid, flip the split (with a neighbour), and
+    /// the blocks left on the canvas to add.
+    Tile {
+        flip: bool,
+        others: Vec<(BlockId, SharedString)>,
+    },
+}
+
 /// A target's menu, with what it shows read from the workspace.
 enum Items {
+    /// A block's menu: its kind's, then the same end for every kind.
+    Block {
+        block: BlockId,
+        inner: Box<Items>,
+        tail: Tail,
+        close: &'static str,
+    },
     Canvas {
         at: Point,
         /// Each agent the menu lists, and whether its program was found.
@@ -416,7 +476,6 @@ enum Items {
         agents: Vec<(AgentEntry, bool)>,
     },
     Terminal {
-        block: BlockId,
         selection: bool,
     },
     Kanban {

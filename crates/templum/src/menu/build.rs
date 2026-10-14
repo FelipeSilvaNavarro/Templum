@@ -11,7 +11,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, ClipboardItem, Context, Entity, SharedString, Window, px};
 use templum_canvas::{BlockId, Point};
 
-use super::{Items, SendTo};
+use super::{Items, SendTo, Tail};
 use crate::board::Label;
 use crate::git_block;
 use crate::kanban;
@@ -124,6 +124,66 @@ impl Items {
         cx: &mut Context<PopupMenu>,
     ) -> PopupMenu {
         match self {
+            // Every block's menu ends the same way: grid mode's items, then Close.
+            Items::Block {
+                block,
+                inner,
+                tail,
+                close,
+            } => {
+                let menu = inner.build(ws, menu, window, cx).separator();
+                let menu = match tail {
+                    Tail::Canvas { group } => menu.item(item(
+                        ws,
+                        "Fullscreen",
+                        Some(IconName::Maximize2),
+                        move |ws, window, cx| {
+                            let ids = if group.contains(&block) {
+                                group.clone()
+                            } else {
+                                vec![block]
+                            };
+                            ws.enter_grid(ids, window, cx)
+                        },
+                    )),
+                    Tail::Tile { flip, others } => {
+                        let add = ws.clone();
+                        menu.item(item(
+                            ws,
+                            "Back to the canvas",
+                            Some(IconName::Minimize2),
+                            |ws, window, cx| ws.leave_grid(window, cx),
+                        ))
+                        .item(item(ws, "Leave the grid", None, move |ws, window, cx| {
+                            ws.leave_tile(block, window, cx)
+                        }))
+                        .when(flip, |menu| {
+                            menu.item(item(ws, "Flip the split", None, move |ws, _, cx| {
+                                ws.flip_tile(block, cx)
+                            }))
+                        })
+                        .when(!others.is_empty(), |menu| {
+                            menu.submenu("Add to the grid", window, cx, move |menu, _, _| {
+                                others.iter().fold(menu, |menu, (id, title)| {
+                                    let id = *id;
+                                    menu.item(item(
+                                        &add,
+                                        title.clone(),
+                                        None,
+                                        move |ws, window, cx| ws.add_to_grid(id, block, window, cx),
+                                    ))
+                                })
+                            })
+                        })
+                    }
+                };
+                menu.item(item(
+                    ws,
+                    close,
+                    Some(IconName::Close),
+                    move |ws, window, cx| ws.close(block, window, cx),
+                ))
+            }
             Items::Canvas { at, agents } => {
                 let add = ws.clone();
                 let notes = item(
@@ -181,39 +241,24 @@ impl Items {
                 )
                 .item(notes)
             }
-            Items::Terminal { block, selection } => menu
+            Items::Terminal { selection } => menu
                 .item(
                     item(ws, "Copy", Some(IconName::Copy), |ws, _, cx| {
                         ws.copy_selection(cx)
                     })
                     .disabled(!selection),
                 )
-                .item(item(ws, "Paste", None, |ws, _, cx| ws.paste_clipboard(cx)))
-                .separator()
-                .item(item(
-                    ws,
-                    "Close terminal",
-                    Some(IconName::Close),
-                    move |ws, window, cx| ws.close(block, window, cx),
-                )),
-            Items::Kanban { block, listing } => menu
-                .item(item(
-                    ws,
-                    if listing {
-                        "Back to the board"
-                    } else {
-                        "Board list"
-                    },
-                    Some(IconName::ChevronsUpDown),
-                    move |ws, _, cx| ws.pick_board(block, cx),
-                ))
-                .separator()
-                .item(item(
-                    ws,
-                    "Close",
-                    Some(IconName::Close),
-                    move |ws, window, cx| ws.close(block, window, cx),
-                )),
+                .item(item(ws, "Paste", None, |ws, _, cx| ws.paste_clipboard(cx))),
+            Items::Kanban { block, listing } => menu.item(item(
+                ws,
+                if listing {
+                    "Back to the board"
+                } else {
+                    "Board list"
+                },
+                Some(IconName::ChevronsUpDown),
+                move |ws, _, cx| ws.pick_board(block, cx),
+            )),
             Items::Agents { at, agents } => agent_items(ws, menu, agents, at),
             Items::Tree {
                 block,
@@ -820,14 +865,7 @@ impl Items {
                             }
                         },
                     ))
-                })
-                .separator()
-                .item(item(
-                    ws,
-                    "Close",
-                    Some(IconName::Close),
-                    move |ws, window, cx| ws.close(block, window, cx),
-                )),
+                }),
             Items::Editor {
                 block,
                 tree,
@@ -860,14 +898,7 @@ impl Items {
                     None,
                     move |ws, window, cx| ws.toggle_wrap(block, window, cx),
                 ))
-                .map(|menu| send_to(ws, menu, send, window, cx))
-                .separator()
-                .item(item(
-                    ws,
-                    "Close",
-                    Some(IconName::Close),
-                    move |ws, window, cx| ws.close(block, window, cx),
-                )),
+                .map(|menu| send_to(ws, menu, send, window, cx)),
             Items::Reveal { terminals } => {
                 terminal_items(ws, menu, &terminals, |ws, id, window, cx| {
                     let space = ws.space.id.clone();
@@ -921,14 +952,7 @@ impl Items {
                             })
                         },
                     )
-                })
-                .separator()
-                .item(item(
-                    ws,
-                    "Close",
-                    Some(IconName::Close),
-                    move |ws, window, cx| ws.close(block, window, cx),
-                )),
+                }),
             Items::Board {
                 block,
                 board,
