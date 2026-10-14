@@ -10,6 +10,7 @@ use templum_canvas::{Rect, chrome};
 use crate::alert;
 use crate::board;
 use crate::notes;
+use crate::prompt;
 use crate::session;
 use crate::space_dialog::{self, Look};
 
@@ -126,6 +127,8 @@ impl Workspace {
                 .as_deref()
                 .map(|d| session::load(d, &entry.id))
             {
+                // A stopped one keeps its canvas to start when it is opened.
+                Some(Loaded::Saved(saved)) if entry.stopped => self.space.saved = Some(saved),
                 Some(Loaded::Saved(saved)) => {
                     first_saved |= i == 0;
                     self.restore(saved, window, cx);
@@ -148,6 +151,7 @@ impl Workspace {
                 }
                 Some(Loaded::Nothing) | None => {}
             }
+            self.space.stopped = entry.stopped;
             // Its file may hold notes' text only it keeps until notes.json can be written.
             self.space.frozen |= self.notes_frozen;
             spaces.push(std::mem::take(&mut self.space));
@@ -200,6 +204,9 @@ impl Workspace {
         self.others.insert(self.active, current);
         self.space = self.others.remove(to);
         self.active = to;
+        if self.space.stopped {
+            self.start_space(window, cx);
+        }
         self.space.view = self.space.canvas.camera;
         window.focus(&self.focus_handle, cx);
         self.write_index(window, cx);
@@ -325,6 +332,113 @@ impl Workspace {
         self.end_later(tree, cx);
         self.write_index(window, cx);
         cx.notify();
+    }
+
+    /// Stops the workspace with `id` (see `stop_now`); a terminal at work or an unsaved file
+    /// asks first, naming them.
+    pub(crate) fn stop_space(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(space) = self.spaces().find(|s| s.id == id) else {
+            return;
+        };
+        if !self.can_stop(space) {
+            return;
+        }
+        let (name, busy, unsaved) = (space.name.clone(), self.busy_in(space), space.unsaved(None));
+        if busy.is_empty() && unsaved.is_empty() {
+            self.stop_now(id, window, cx);
+            return;
+        }
+        let ws = cx.entity();
+        let id = id.to_string();
+        let title = format!("Stop {name}?");
+        let then = "Opening it starts its terminals again.";
+        if unsaved.is_empty() {
+            prompt::confirm(
+                title,
+                format!("{} {then}", busy.join(" ")),
+                "Stop",
+                move |window, cx| ws.update(cx, |ws, cx| ws.stop_now(&id, window, cx)),
+                window,
+                cx,
+            );
+            return;
+        }
+        let (saver, save_id) = (ws.clone(), id.clone());
+        let mut why = format!("Unsaved: {}.", unsaved.join(", "));
+        for b in &busy {
+            why = format!("{why} {b}");
+        }
+        prompt::save_or_discard(
+            title,
+            why,
+            move |window, cx| {
+                saver.update(cx, |ws, cx| {
+                    let saved = ws.save_spaces(Some(&save_id), window, cx);
+                    if saved {
+                        ws.stop_now(&save_id, window, cx);
+                    }
+                    saved
+                })
+            },
+            move |window, cx| ws.update(cx, |ws, cx| ws.stop_now(&id, window, cx)),
+            window,
+            cx,
+        );
+    }
+
+    /// A workspace can be stopped unless it is the last one, or stopped already.
+    pub(crate) fn can_stop(&self, space: &Space) -> bool {
+        !self.others.is_empty() && !space.stopped
+    }
+
+    /// Ends every program of the workspace with `id`, as quitting would: its canvas is written
+    /// (the agents in it found, to resume), its blocks dropped and its processes ended. The one
+    /// shown first gives its place to the one before it. Opening it starts it again.
+    pub(crate) fn stop_now(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(at) = self.order().iter().position(|s| s.id == id) else {
+            return;
+        };
+        if self.others.is_empty() {
+            return;
+        }
+        if at == self.active {
+            self.switch_to(if at > 0 { at - 1 } else { 1 }, window, cx);
+        }
+        let known = self.known_agents();
+        // A snapshot still being written is older: it can't replace this one.
+        self.generation += 1;
+        let generation = self.generation;
+        let dir = self.data_dir.clone();
+        let Some(space) = self.others.iter_mut().find(|s| s.id == id) else {
+            return;
+        };
+        let (saved, _) = space.layout(known, cx).snapshot();
+        let mut failed = None;
+        if let Some(dir) = dir.filter(|_| !space.frozen && space.saved.as_ref() != Some(&saved))
+            && let Err(err) = session::save(&dir, &space.id, &saved, generation)
+        {
+            failed = Some(format!("Couldn't save {}'s canvas: {err}", space.name));
+        }
+        space.saved = Some(saved);
+        let tree = tree_of(space);
+        space.empty();
+        space.stopped = true;
+        if let Some(message) = failed {
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::error(message));
+        }
+        self.end_later(tree, cx);
+        self.write_index(window, cx);
+        cx.notify();
+    }
+
+    /// Brings the shown workspace, stopped, back as Templum starts one: its canvas, terminals in
+    /// their folders, agents resumed.
+    fn start_space(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.space.stopped = false;
+        if let Some(saved) = self.space.saved.clone() {
+            self.restore(saved, window, cx);
+        }
     }
 
     /// Kills, KILL_AFTER from now, what of `tree` the hangup left running.

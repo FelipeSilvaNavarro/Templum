@@ -90,7 +90,11 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
 fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
     let active = i == ws.active;
-    let name = SharedString::from(space.name.clone());
+    let name = SharedString::from(if space.stopped {
+        format!("{} (stopped)", space.name)
+    } else {
+        space.name.clone()
+    });
     let id = space.id.clone();
     let color = space.look.color.as_deref().and_then(|c| tint(c, &ws.theme));
     let fg = hsla(ws.theme.palette.foreground, 1.0);
@@ -179,6 +183,7 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
     div()
         .rounded(px(10.0))
         .when_some(color, |el, c| el.bg(c.opacity(0.18)))
+        .when(space.stopped, |el| el.opacity(0.45))
         .child(inner)
         .into_any_element()
 }

@@ -64,6 +64,8 @@ pub(crate) struct Counts {
     pub gits: usize,
     /// The agents running, by name, with how many.
     pub agents: Vec<(String, usize)>,
+    /// Its programs were ended: the counts are its saved canvas's.
+    pub stopped: bool,
 }
 
 impl Counts {
@@ -89,10 +91,15 @@ impl Counts {
                 .map(|(agent, n)| format!("{n} {agent} running")),
         )
         .collect();
-        if parts.is_empty() {
+        let line = if parts.is_empty() {
             "Empty".to_string()
         } else {
             parts.join(" · ")
+        };
+        if self.stopped {
+            format!("Stopped · {line}")
+        } else {
+            line
         }
     }
 
@@ -312,7 +319,23 @@ impl Workspace {
 
     /// What `space` holds: its blocks by kind and the agents running in its terminals.
     pub(crate) fn counts(&self, space: &Space) -> Counts {
-        let mut counts = Counts::default();
+        let mut counts = Counts {
+            stopped: space.stopped,
+            ..Counts::default()
+        };
+        if space.stopped {
+            use crate::session::Item;
+            for item in space.saved.iter().flat_map(|s| &s.items) {
+                match item {
+                    Item::Terminal(_) => counts.terminals += 1,
+                    Item::Note(_) => counts.notes += 1,
+                    Item::Kanban(_) => counts.boards += 1,
+                    Item::Editor(_) => counts.editors += 1,
+                    Item::Git(_) => counts.gits += 1,
+                }
+            }
+            return counts;
+        }
         for body in space.blocks.values() {
             match body {
                 Body::Terminal(pane) => {
@@ -588,6 +611,12 @@ mod tests {
             "3 terminals · 1 note · 2 boards · 1 Git block · 2 Claude Code running · 1 Codex running"
         );
         assert_eq!(Counts::default().line(), "Empty");
+        let stopped = Counts {
+            terminals: 2,
+            stopped: true,
+            ..Counts::default()
+        };
+        assert_eq!(stopped.line(), "Stopped · 2 terminals");
     }
 
     #[test]

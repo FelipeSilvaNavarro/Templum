@@ -1111,9 +1111,11 @@ impl Items {
                 name,
                 only_one,
                 active,
+                stoppable,
                 unsaved,
                 busy,
             } => {
+                let stop_id = id.clone();
                 let delete_id = id.clone();
                 let delete_name = name.clone();
                 // What closing it loses, as closing blocks says.
@@ -1137,6 +1139,12 @@ impl Items {
                     move |ws, window, cx| crate::space_dialog::open(ws, &id, window, cx),
                 ))
                 .separator()
+                .item(
+                    item(ws, "Stop", Some(IconName::Power), move |ws, window, cx| {
+                        ws.stop_space(&stop_id, window, cx)
+                    })
+                    .disabled(!stoppable),
+                )
                 .item(
                     item(
                         ws,

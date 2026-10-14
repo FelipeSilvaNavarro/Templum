@@ -42,6 +42,9 @@ fn a_workspace_shows_an_agent_from_its_last_snapshot() {
         !crate::workspace::Space::default().has_agent(&known),
         "no snapshot yet"
     );
+    let mut stopped = with(Some("claude"));
+    stopped.stopped = true;
+    assert!(!stopped.has_agent(&known), "a stopped workspace runs none");
 }
 
 #[test]
@@ -346,4 +349,171 @@ fn deleting_a_workspace_removes_its_image(cx: &mut TestAppContext) {
     .unwrap();
     assert!(!kept.exists());
     assert!(png.exists(), "the file chosen stays");
+}
+
+/// Waits for the process `pid` to end.
+fn ended(pid: u32) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !templum_terminal::tree(&[pid]).is_empty() {
+        assert!(std::time::Instant::now() < deadline, "{pid} still runs");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+/// The canvas saved in `data` for workspace `id`: how many blocks.
+fn saved_blocks(data: &std::path::Path, id: &str) -> usize {
+    match crate::session::load(data, id) {
+        crate::session::Loaded::Saved(saved) => saved.items.len(),
+        other => panic!("{id}: {other:?}"),
+    }
+}
+
+/// A second workspace, "w2", with a terminal; Main shown again. Gives the terminal's id and
+/// its shell's pid.
+fn second_with_a_terminal(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> (BlockId, u32) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.new_space(window, cx);
+            ws.open(Rect::new(0.0, 0.0, 600.0, 400.0), window, cx);
+            let (id, pane) = ws.space.terminals().next().unwrap();
+            let pid = pane.term.processes().shell.unwrap();
+            ws.switch_to(0, window, cx);
+            (id, pid)
+        })
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn stopping_a_workspace_ends_its_programs_and_keeps_its_canvas(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let (_, pid) = second_with_a_terminal(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.stop_space("w2", window, cx))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let w2 = &ws.others[0];
+        assert!(w2.stopped, "nothing at work: stopped at once");
+        assert!(w2.blocks.is_empty() && w2.canvas.blocks().is_empty());
+        assert_eq!(ws.counts(w2).line(), "Stopped · 1 terminal");
+    });
+    ended(pid);
+    assert_eq!(saved_blocks(data.path(), "w2"), 1);
+    // The next snapshot doesn't write the stopped workspace's empty canvas over its file.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.snapshot(window, cx))
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(saved_blocks(data.path(), "w2"), 1);
+    assert!(written_index(data.path()).workspaces[1].stopped);
+}
+
+#[gpui_kit::test]
+fn a_snapshot_in_flight_during_stop_doesnt_empty_the_file(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    second_with_a_terminal(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.snapshot(window, cx);
+            ws.stop_now("w2", window, cx);
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(saved_blocks(data.path(), "w2"), 1);
+    ws.read_with(cx, |ws, _| {
+        let w2 = &ws.others[0];
+        assert!(w2.stopped);
+        assert_eq!(w2.saved.as_ref().map(|s| s.items.len()), Some(1));
+    });
+}
+
+#[gpui_kit::test]
+fn a_stopped_workspace_starts_when_opened(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (old, _) = second_with_a_terminal(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.stop_now("w2", window, cx);
+            ws.switch_to(1, window, cx);
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.space.stopped);
+        let (id, pane) = ws.space.terminals().next().expect("its terminal, back");
+        assert!(!pane.term.exited());
+        assert!(id.0 > old.0, "blocks started again get new ids");
+    });
+}
+
+#[gpui_kit::test]
+fn a_stopped_workspace_stays_stopped_after_a_restart(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    second_with_a_terminal(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.stop_now("w2", window, cx);
+            ws.save_canvas_now(cx);
+        })
+    })
+    .unwrap();
+    let (again_handle, again) = open_in(cx, None, Some(data.path().to_path_buf()));
+    again.read_with(cx, |ws, _| {
+        let w2 = &ws.others[0];
+        assert!(w2.stopped && w2.blocks.is_empty(), "its shell didn't start");
+        assert_eq!(w2.saved.as_ref().map(|s| s.items.len()), Some(1));
+    });
+    cx.update_window(again_handle, |_, window, cx| {
+        again.update(cx, |ws, cx| ws.switch_to(1, window, cx))
+    })
+    .unwrap();
+    again.read_with(cx, |ws, _| assert_eq!(ws.space.terminals().count(), 1));
+}
+
+#[gpui_kit::test]
+fn stopping_the_active_workspace_shows_the_one_before(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    second_with_a_terminal(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.switch_to(1, window, cx);
+            ws.stop_now("w2", window, cx);
+            assert_eq!((ws.active, ws.space.name.as_str()), (0, "Main"));
+            assert!(ws.others[0].stopped);
+        })
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn stopping_asks_first_when_a_terminal_is_at_work(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (id, _) = second_with_a_terminal(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let pane = ws.others[0].terminal_mut(id).unwrap();
+            pane.seen.agent = Some("claude".into());
+            ws.stop_space("w2", window, cx);
+        });
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "Claude Code is running in it");
+        assert!(!ws.read(cx).others[0].stopped);
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+        assert!(ws.read(cx).others[0].stopped);
+    })
+    .unwrap();
 }

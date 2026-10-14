@@ -229,8 +229,10 @@ impl Workspace {
         self.generation += 1;
         let generation = self.generation;
         let known = self.known_agents();
+        // A stopped workspace's file holds its canvas until it starts: it isn't written.
         let jobs: Vec<_> = self
             .spaces()
+            .filter(|s| !s.stopped)
             .map(|s| {
                 let layout = s.layout(known.clone(), cx);
                 // A frozen workspace's file is never written, but its terminals are read.
@@ -313,8 +315,9 @@ impl Workspace {
                 None => {}
                 Some(Ok(())) => {
                     wrote = true;
-                    // A workspace deleted meanwhile is gone: nothing to update.
-                    if let Some(space) = self.space_by_id_mut(&id) {
+                    // A workspace deleted meanwhile is gone, and one stopped meanwhile keeps the
+                    // canvas it was stopped with: nothing to update.
+                    if let Some(space) = self.space_by_id_mut(&id).filter(|s| !s.stopped) {
                         space.saved = Some(saved);
                     }
                 }
@@ -364,7 +367,7 @@ impl Workspace {
         }
         let known = self.known_agents();
         for space in std::iter::once(&mut self.space).chain(&mut self.others) {
-            if space.frozen {
+            if space.frozen || space.stopped {
                 continue;
             }
             let (saved, _) = space.layout(known.clone(), cx).snapshot();

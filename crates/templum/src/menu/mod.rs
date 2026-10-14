@@ -436,6 +436,10 @@ impl Workspace {
                     .map_or_else(String::new, |s| s.name.clone()),
                 only_one: self.others.is_empty(),
                 active: self.space.id == *id,
+                stoppable: self
+                    .spaces()
+                    .find(|s| s.id == *id)
+                    .is_some_and(|s| self.can_stop(s)),
                 unsaved: self
                     .spaces()
                     .find(|s| s.id == *id)
@@ -604,6 +608,8 @@ enum Items {
         only_one: bool,
         /// It is the one shown.
         active: bool,
+        /// Stop applies: it isn't the last one, nor stopped already.
+        stoppable: bool,
         /// Its editors' changed files.
         unsaved: Vec<String>,
         /// Its terminals at work, and why.

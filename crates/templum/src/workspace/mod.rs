@@ -502,17 +502,45 @@ impl Space {
         }
     }
 
-    /// The last snapshot found one of `agents` running in one of its terminals.
+    /// The last snapshot found one of `agents` running in one of its terminals (a stopped
+    /// workspace runs none).
     pub fn has_agent(&self, agents: &[AgentEntry]) -> bool {
-        self.saved.as_ref().is_some_and(|saved| {
-            saved.items.iter().any(|item| match item {
-                session::Item::Terminal(t) => t
-                    .agent
-                    .as_ref()
-                    .is_some_and(|id| agents.iter().any(|a| a.id == *id)),
-                _ => false,
+        !self.stopped
+            && self.saved.as_ref().is_some_and(|saved| {
+                saved.items.iter().any(|item| match item {
+                    session::Item::Terminal(t) => t
+                        .agent
+                        .as_ref()
+                        .is_some_and(|id| agents.iter().any(|a| a.id == *id)),
+                    _ => false,
+                })
             })
-        })
+    }
+
+    /// Drops every block (their shells hang up) and what only made sense with them. The canvas
+    /// keeps counting ids: a block started again is never taken for one of these (a Git job
+    /// still running finds its block by id).
+    fn empty(&mut self) {
+        let ids: Vec<BlockId> = self.canvas.blocks().iter().map(|b| b.id).collect();
+        for id in ids {
+            self.canvas.remove(id);
+        }
+        self.blocks.clear();
+        self.focused = None;
+        self.selected.clear();
+        self.hovered = None;
+        self.guides.clear();
+        self.flight = None;
+        self.appearing.clear();
+        self.ghosts.clear();
+        self.framed = None;
+        self.ink.clear();
+        self.selected_ink = None;
+        self.undo.clear();
+        self.redo.clear();
+        self.ink_undo.clear();
+        self.ink_redo.clear();
+        self.grid = None;
     }
 
     /// The terminal blocks back to front: the order of a snapshot's terminal items.
