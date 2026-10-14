@@ -37,7 +37,8 @@ Measured on Arch Linux + Hyprland (Wayland) with an i5-13420H and an RTX 3050 La
 ## Decision
 
 Use GPUI through **`gpui-kit`**, pinned exactly (`gpui-kit = "=0.7.3"`, which pins the `gpui-pre` 0.3.9 snapshot).
-`use gpui_kit::*` gives GPUI itself plus the widget library. Only `crates/templum` depends on it.
+`use gpui_kit::*` gives GPUI itself plus the widget library. Only `crates/templum` depends on it. Since
+[ADR-0003](0003-gpui-fast-engine.md) the engine under gpui-kit is gpui-fast.
 
 ## Consequences
 
