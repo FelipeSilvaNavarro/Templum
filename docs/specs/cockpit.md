@@ -366,8 +366,9 @@ does for all of them:
 - The canvas is written as on quit (the agents found in it are kept, to resume), then its blocks are dropped. Each
   shell gets SIGHUP as when a block closes; 2 s later, every process that was below a shell and still runs is
   killed (SIGKILL; TerminateProcess on Windows), so programs that ignore the hangup end too.
-- **Stopping the active workspace** first shows the one before it, as deleting does. Stop is disabled for the last
-  workspace, and for one whose file couldn't be read.
+- **Stopping the active workspace** first shows the one before it, as deleting does. Stop is disabled while it is
+  the only workspace, and for one stopped already. A workspace whose file couldn't be read still stops: its file is
+  kept as it is, and starting it in the same session brings back what was stopped.
 - A stopped workspace's tile is dimmed and has no dots; its card says "Stopped" and counts what its saved canvas
   holds.
 - **Opening it starts it** (a click, the screen, Ctrl+Tab, Ctrl+digit): its canvas comes back as on a start of

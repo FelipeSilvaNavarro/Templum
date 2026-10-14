@@ -109,6 +109,9 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   working changes never touches another tab's. `git_block/history.rs` draws History's left column: the commits
   with their graph, or the commit shown. `git_block/words.rs` holds the Git words' tooltips and the sentences the block says;
   `git_block/switcher.rs` the branch switcher.
+- `sidebar.rs`: the workspaces' tiles and a workspace's face (its image, icon or initials, in its color);
+  `spaces_screen.rs`: the workspaces screen (cards, search, keys, dragging to reorder); `space_dialog.rs`: a
+  workspace's look and its Edit… dialog ([specs/cockpit.md](specs/cockpit.md#6-the-workspaces-screen)).
 - `usage.rs`: the title bar's usage meter, its popover and a terminal's usage chip.
 - `update.rs`: where an update stands (`Update`), its title-bar pill and its lines in Settings ▸ Updates;
   `workspace/update.rs` checks GitHub at start and every day, downloads through `templum-update`, tells the news,
@@ -139,7 +142,11 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   hand.
 - The workspace on screen is `Workspace::space`; the hidden ones (`others`) keep their terminals running, unarmed so
   their output never wakes the UI. The sidebar (`sidebar.rs`) switches them by swapping. `session.rs` keeps their
-  order and names in `workspaces/index.json` ([specs/workspaces.md](specs/workspaces.md)).
+  order, names and looks in `workspaces/index.json` ([specs/workspaces.md](specs/workspaces.md)). A stopped one
+  (`Space::stopped`) has no blocks: its canvas waits in `Space::saved`, which the snapshots never write over, and
+  `switch_to` restores it as a start does. Its processes end through `templum_terminal::tree` (read before the
+  shells hang up) and `kill_left` two seconds later. Moving blocks takes them off one space (`take_block`) and adds
+  them to another swapped in as the one shown (`with_space`), still running.
 - Every block's content is a `Body` in `Space::blocks`: a terminal, a kanban block, a note block (`note.rs`: tabs
   of plain-text notes in gpui-kit's editor, and the Notes dialog; the notes themselves are app-wide in `notes.rs`, saved
   in `notes.json` with the snapshot, every change written there as it is typed; `workspace/note_tabs.rs` opens, closes

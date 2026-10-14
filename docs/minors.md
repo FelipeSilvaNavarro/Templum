@@ -358,3 +358,15 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **The check's steps aren't tested end to end.** `check_update` (`workspace/update.rs`) calls GitHub directly,
   so the headless tests set the states by hand and never go Checking → Downloading → Ready, nor the offline case
   that keeps "available". Fix: hand `check_update` the release source, a local server in tests.
+
+## Workspaces
+
+- [ ] **A note open in a stopped workspace can be opened elsewhere, and then leaves the stopped one.**
+  `note_open_at` (`crates/templum/src/workspace/note_tabs.rs`) looks at live blocks only, so a stopped workspace's
+  note tabs (in its saved canvas) don't count as open; opening one elsewhere, then starting the stopped workspace,
+  drops that tab there (`add_saved`, `persist.rs`, keeps a note in one tab at most). Fix: look in a stopped space's
+  `saved` items too, and show "Open in *name* (stopped)".
+- [ ] **Stop doesn't reach programs inside WSL.** `tree` (`crates/templum-terminal/src/terminal.rs`) walks Windows
+  processes below the shell; what runs in a WSL distribution under `wsl.exe` isn't one of them, so a server started
+  there may outlive the hangup. Fix: run `wsl.exe --terminate` for a distribution only that workspace's terminals
+  use, or kill the session through `wsl.exe -e pkill -s`.

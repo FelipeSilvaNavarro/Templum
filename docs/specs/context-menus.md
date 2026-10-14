@@ -48,8 +48,11 @@ would have opened together with the block's. The canvas and the blocks had no me
 | A board in a block's board list | Open, Rename…, Delete… |
 | A column's title | Rename…, Add a card, Delete |
 | A card | Open, Send to ▸, Delete card (asks first) |
-| A workspace tile in the sidebar | Rename…, Delete… (disabled for the last workspace) |
+| A workspace tile in the sidebar, or its card on the workspaces screen | Open (disabled for the one shown), Edit…, Stop (disabled while it is the only workspace, or stopped), Delete… (disabled for the last workspace) |
 | A drawing (with the Select tool) | Delete |
+
+Every block's menu ends with **Move to workspace ▸** (the other workspaces, a stopped one disabled, and New
+workspace; the selection the block is in moves with it), then Close.
 
 *The grid's items*, before Close in every block's menu ([grid.md](grid.md)): on the canvas, **Fullscreen** (with the
 blocks selected along with it); in grid mode, **AI agent ▸** and **Add ▸** (a new block taking half of the tile), **From the canvas ▸** (the
