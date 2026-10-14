@@ -532,7 +532,7 @@ impl Workspace {
         let Some(space) = self.others.iter_mut().find(|s| s.id == id && !s.stopped) else {
             return;
         };
-        let (saved, _) = space.layout(known, cx).snapshot();
+        let (saved, _) = space.layout(known, cx).snapshot(dir.as_deref());
         let mut failed = None;
         // Written even when it looks unchanged: a snapshot in flight may have written an older one.
         if let Some(dir) = dir.filter(|_| !space.frozen)

@@ -15,6 +15,9 @@ pub struct Spec {
     /// Resumes the folder's latest session. Only for agents whose resume is limited to the
     /// folder: any other would bring back another project's conversation.
     pub resume: Option<&'static str>,
+    /// Resumes one session, by its id (`{id}`): each block its own, when several run in a
+    /// folder.
+    pub resume_id: Option<&'static str>,
     /// How to install it, for someone who hasn't.
     pub install: &'static str,
     /// Its process or script names (the program, a renamed process title, a native child).
@@ -29,6 +32,7 @@ const SPECS: [Spec; 20] = [
         title: "Claude Code",
         command: "claude",
         resume: Some("claude --continue"),
+        resume_id: Some("claude --resume {id}"),
         install: "curl -fsSL https://claude.ai/install.sh | bash",
         names: &["claude"],
         packages: &["@anthropic-ai/claude-code"],
@@ -38,6 +42,7 @@ const SPECS: [Spec; 20] = [
         title: "Codex",
         command: "codex",
         resume: Some("codex resume --last"),
+        resume_id: Some("codex resume {id}"),
         install: "npm install -g @openai/codex",
         names: &["codex"],
         packages: &["@openai/codex"],
@@ -47,6 +52,7 @@ const SPECS: [Spec; 20] = [
         title: "Gemini CLI",
         command: "gemini",
         resume: Some("gemini --resume"),
+        resume_id: None,
         install: "npm install -g @google/gemini-cli",
         names: &["gemini"],
         packages: &["@google/gemini-cli"],
@@ -56,6 +62,7 @@ const SPECS: [Spec; 20] = [
         title: "GitHub Copilot CLI",
         command: "copilot",
         resume: None,
+        resume_id: None,
         install: "curl -fsSL https://gh.io/copilot-install | bash",
         names: &["copilot"],
         packages: &["@github/copilot"],
@@ -65,6 +72,7 @@ const SPECS: [Spec; 20] = [
         title: "Cursor CLI",
         command: "cursor-agent",
         resume: None,
+        resume_id: None,
         install: "curl https://cursor.com/install -fsS | bash",
         names: &["cursor-agent"],
         packages: &["cursor-agent/"],
@@ -74,6 +82,7 @@ const SPECS: [Spec; 20] = [
         title: "OpenCode",
         command: "opencode",
         resume: Some("opencode --continue"),
+        resume_id: None,
         install: "curl -fsSL https://opencode.ai/install | bash",
         names: &["opencode"],
         packages: &["node_modules/opencode-ai/"],
@@ -83,6 +92,7 @@ const SPECS: [Spec; 20] = [
         title: "Amp",
         command: "amp",
         resume: Some("amp threads continue --last"),
+        resume_id: None,
         install: "curl -fsSL https://ampcode.com/install.sh | bash",
         names: &["amp"],
         packages: &["@sourcegraph/amp"],
@@ -92,6 +102,7 @@ const SPECS: [Spec; 20] = [
         title: "Kiro CLI",
         command: "kiro-cli chat",
         resume: Some("kiro-cli chat --resume"),
+        resume_id: None,
         install: "curl -fsSL https://cli.kiro.dev/install | bash",
         names: &["kiro-cli"],
         packages: &[],
@@ -101,6 +112,7 @@ const SPECS: [Spec; 20] = [
         title: "Qwen Code",
         command: "qwen",
         resume: Some("qwen --continue"),
+        resume_id: Some("qwen --resume {id}"),
         install: "npm install -g @qwen-code/qwen-code@latest",
         names: &["qwen"],
         packages: &["@qwen-code/qwen-code"],
@@ -110,6 +122,7 @@ const SPECS: [Spec; 20] = [
         title: "Grok Build",
         command: "grok",
         resume: Some("grok --continue"),
+        resume_id: None,
         install: "curl -fsSL https://x.ai/cli/install.sh | bash",
         names: &["grok"],
         packages: &["@xai-official/grok"],
@@ -119,6 +132,7 @@ const SPECS: [Spec; 20] = [
         title: "Kimi Code",
         command: "kimi",
         resume: Some("kimi --continue"),
+        resume_id: None,
         install: "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
         names: &["kimi", "kimi-code"],
         packages: &["@moonshot-ai/kimi-code"],
@@ -128,6 +142,7 @@ const SPECS: [Spec; 20] = [
         title: "Mistral Vibe",
         command: "vibe",
         resume: Some("vibe --continue"),
+        resume_id: None,
         install: "curl -LsSf https://mistral.ai/vibe/install.sh | bash",
         names: &["vibe"],
         packages: &[],
@@ -137,6 +152,7 @@ const SPECS: [Spec; 20] = [
         title: "Aider",
         command: "aider",
         resume: Some("aider --restore-chat-history"),
+        resume_id: None,
         install: "curl -LsSf https://aider.chat/install.sh | sh",
         names: &["aider"],
         packages: &[],
@@ -146,6 +162,7 @@ const SPECS: [Spec; 20] = [
         title: "Goose",
         command: "goose session",
         resume: None,
+        resume_id: None,
         install: "curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | bash",
         names: &["goose"],
         packages: &[],
@@ -155,6 +172,7 @@ const SPECS: [Spec; 20] = [
         title: "Crush",
         command: "crush",
         resume: None,
+        resume_id: None,
         install: "npm install -g @charmland/crush",
         names: &["crush"],
         packages: &["@charmland/crush"],
@@ -164,6 +182,7 @@ const SPECS: [Spec; 20] = [
         title: "Droid",
         command: "droid",
         resume: None,
+        resume_id: None,
         install: "curl -fsSL https://app.factory.ai/cli | sh",
         names: &["droid"],
         packages: &["node_modules/droid/"],
@@ -173,6 +192,7 @@ const SPECS: [Spec; 20] = [
         title: "Auggie",
         command: "auggie",
         resume: None,
+        resume_id: None,
         install: "npm install -g @augmentcode/auggie",
         names: &["auggie"],
         packages: &["@augmentcode/auggie"],
@@ -182,6 +202,7 @@ const SPECS: [Spec; 20] = [
         title: "Kilo Code",
         command: "kilo",
         resume: Some("kilo --continue"),
+        resume_id: None,
         install: "npm install -g @kilocode/cli",
         names: &["kilo", "kilocode", ".kilo"],
         packages: &["@kilocode/cli"],
@@ -191,6 +212,7 @@ const SPECS: [Spec; 20] = [
         title: "Cline",
         command: "cline",
         resume: None,
+        resume_id: None,
         install: "npm install -g cline",
         names: &["cline", ".cline"],
         packages: &["node_modules/cline/"],
@@ -200,6 +222,7 @@ const SPECS: [Spec; 20] = [
         title: "Pi",
         command: "pi",
         resume: Some("pi --continue"),
+        resume_id: None,
         install: "curl -fsSL https://pi.dev/install.sh | sh",
         names: &["pi"],
         packages: &["@earendil-works/pi-coding-agent"],
@@ -264,6 +287,15 @@ impl Agent {
     /// folder, else a new session.
     pub fn resume_command(self) -> &'static str {
         self.spec().resume.unwrap_or(self.command())
+    }
+
+    /// What brings back its session `id` (as the agent's files name it), when it can resume one
+    /// by id and `id` is one.
+    pub fn resume_session(self, id: &str) -> Option<String> {
+        let template = self.spec().resume_id?;
+        // Typed into a shell: letters, digits and `-` only.
+        let valid = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        valid.then(|| template.replace("{id}", id))
     }
 
     /// How to tell it from its processes.
@@ -586,6 +618,17 @@ mod tests {
     fn only_a_resume_limited_to_the_folder_is_used() {
         assert_eq!(Agent::CLAUDE.resume_command(), "claude --continue");
         assert_eq!(Agent::CODEX.resume_command(), "codex resume --last");
+        assert_eq!(
+            Agent::CLAUDE.resume_session("0d5e-a1").as_deref(),
+            Some("claude --resume 0d5e-a1")
+        );
+        assert_eq!(
+            Agent::CODEX.resume_session("0d5e-a1").as_deref(),
+            Some("codex resume 0d5e-a1")
+        );
+        // An id is typed into a shell: anything but letters, digits and `-` isn't one.
+        assert_eq!(Agent::CLAUDE.resume_session("x; rm -rf ~"), None);
+        assert_eq!(Agent::CLAUDE.resume_session(""), None);
         // Copilot's resume may reopen another folder's session: a new one instead.
         let by = |id| Agent::from_name(id).unwrap();
         assert_eq!(by("copilot").resume_command(), "copilot");

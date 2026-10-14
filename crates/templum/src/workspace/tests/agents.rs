@@ -82,23 +82,37 @@ fn a_saved_agent_is_resumed_in_its_block(cx: &mut TestAppContext) {
         data.path(),
         &format!(
             r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
-                  {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{folder}","agent":"claude"}}]}}"#
+                  {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{folder}","agent":"claude"}},
+                  {{"kind":"terminal","rect":{{"x":800,"y":0,"w":700,"h":450}},"folder":"{folder}","agent":"claude","session":"aaa-1"}},
+                  {{"kind":"terminal","rect":{{"x":1600,"y":0,"w":700,"h":450}},"folder":"{folder}","agent":"claude","session":"bbb-2"}}]}}"#
         ),
     );
     let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
-    let id = first_id(&ws, cx);
+    let ids: Vec<_> = ws.read_with(cx, |ws, _| ws.space.terminals().map(|(id, _)| id).collect());
+    // Without a session, the folder's latest; with one, each block its own.
+    let wanted = [
+        "claude --continue",
+        "claude --resume aaa-1",
+        "claude --resume bbb-2",
+    ];
     // The test shell echoes what it is typed.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let shown = ws.read_with(cx, |ws, _| {
-            let mut snap = Snapshot::default();
-            snap.refresh(
-                ws.space.terminal(id).unwrap().term.shared(),
-                &ws.theme.palette,
-            );
-            snap.text()
-        });
-        if shown.contains("claude --continue") {
+        let shown: Vec<String> = ids
+            .iter()
+            .map(|&id| {
+                ws.read_with(cx, |ws, _| {
+                    let mut snap = Snapshot::default();
+                    snap.refresh(
+                        ws.space.terminal(id).unwrap().term.shared(),
+                        &ws.theme.palette,
+                    );
+                    snap.text()
+                })
+            })
+            .collect();
+        let once = |want: &str| shown.iter().filter(|s| s.contains(want)).count() == 1;
+        if wanted.iter().all(|w| once(w)) {
             break;
         }
         assert!(Instant::now() < deadline, "not typed: {shown:?}");

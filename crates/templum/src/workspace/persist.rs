@@ -61,7 +61,7 @@ impl Workspace {
             let id = self.spawn_block(rect, folder, window, cx);
             failed |= id.is_none();
             if let (Some(id), true) = (id, in_its_folder) {
-                self.resume_agent(id, t.agent.as_deref());
+                self.resume_agent(id, t);
             }
             ids.push(id);
         }
@@ -106,13 +106,19 @@ impl Workspace {
         self.space.saved = Some(saved);
     }
 
-    /// Types the resume command of `agent` (an id; one Templum knows) into the terminal `id`,
-    /// just started. The shell reads it once it is ready.
-    fn resume_agent(&mut self, id: BlockId, agent: Option<&str>) {
-        let Some(agent) = agent.and_then(|a| self.agents.iter().find(|known| known.id == a)) else {
+    /// Types what brings back the agent of the saved terminal `saved` (one Templum knows), its
+    /// session when it was found, into the terminal `id`, just started. The shell reads it once
+    /// it is ready.
+    fn resume_agent(&mut self, id: BlockId, saved: &session::TerminalItem) {
+        let Some(agent) = saved
+            .agent
+            .as_deref()
+            .and_then(|a| self.agents.iter().find(|known| known.id == a))
+        else {
             return;
         };
-        let line = format!("{}\r", self.typed(Some(agent), agent.resume_command()));
+        let command = agent.resume_command_for(saved.session.as_deref());
+        let line = format!("{}\r", self.typed(Some(agent), &command));
         let agent = agent.id.clone();
         if let Some(pane) = self.space.terminal_mut(id) {
             pane.term.write(line.into_bytes());
@@ -137,7 +143,7 @@ impl Workspace {
                 let in_its_folder = folder.is_some();
                 let id = self.spawn_block(rect, folder, window, cx)?;
                 if in_its_folder {
-                    self.resume_agent(id, t.agent.as_deref());
+                    self.resume_agent(id, t);
                 }
                 Some(id)
             }
@@ -257,7 +263,7 @@ impl Workspace {
                     let done = jobs
                         .into_iter()
                         .map(|(id, terminals, layout, last)| {
-                            let (saved, found) = layout.snapshot();
+                            let (saved, found) = layout.snapshot(Some(&dir));
                             let terminals = terminals.into_iter().zip(found).collect();
                             let written = last
                                 .filter(|last| notes_kept && last.as_ref() != Some(&saved))
@@ -371,7 +377,7 @@ impl Workspace {
             if space.frozen || space.stopped {
                 continue;
             }
-            let (saved, _) = space.layout(known.clone(), cx).snapshot();
+            let (saved, _) = space.layout(known.clone(), cx).snapshot(Some(&dir));
             if space.saved.as_ref() == Some(&saved) {
                 continue;
             }

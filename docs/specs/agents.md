@@ -29,7 +29,11 @@ project folder you pick, and each workspace remembers the folders you opened age
 
 Researched on 2026-10-10 from each agent's docs, repository and package files. **Resume** is used only when the
 agent documents it as limited to the current folder; any other resume would bring back another project's
-conversation, so those agents start a new session on restore.
+conversation, so those agents start a new session on restore. Claude Code, Codex and Qwen Code resume the block's
+own session by its id (`claude --resume <id>`, `codex resume <id>`, `qwen --resume <id>`), read from their files
+while saving ([persistence.md](persistence.md#agents); Qwen keeps `~/.qwen/sessions/<pid>.json` as Claude Code
+does), so several in one folder each get theirs back. The command below is for a block whose session wasn't found,
+or when the user changed the resume command.
 
 | Agent | Command | Resume on restore | Install (the menu shows it) | Recognized by |
 |---|---|---|---|---|

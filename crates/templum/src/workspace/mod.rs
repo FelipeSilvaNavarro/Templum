@@ -284,6 +284,8 @@ impl Body {
                 rect: rect.into(),
                 folder: pane.seen.folder.clone().and_then(session::utf8),
                 agent: pane.seen.agent.clone(),
+                // Pasted, it resumes no agent.
+                session: None,
             }),
             Body::Kanban(k) => session::Item::Kanban(session::KanbanItem {
                 rect: rect.into(),

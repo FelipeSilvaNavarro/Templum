@@ -35,8 +35,6 @@ for them, so adding them later needs no migration. Only one workspace and termin
 - **Other block kinds:** notes, kanban, images, shapes, text and groups.
 - **What was on screen:** the text and scrollback of a terminal.
 - **Programs other than the two agents:** vim, htop or a server don't restart; their block gets a shell.
-- **Resuming each agent's exact conversation:** two agents in one folder both resume that folder's latest one. Exact
-  resume needs each block to know its agent's session, which belongs to a later agent integration.
 - A setting to start with an empty canvas, and more than one window.
 
 ## What comes back
@@ -84,13 +82,17 @@ What doesn't come back: the text that was on screen, and programs other than the
 - **Restore:** right after the block's shell starts, Templum types the agent's resume command and Enter into it,
   only when the block starts in its saved folder. Anywhere else (a folder that's gone, or wasn't known) it would
   resume another folder's conversation.
-  - Claude Code: `claude --continue`, which continues the most recent conversation in the folder.
-  - Codex: `codex resume --last`, which continues the most recent session in the folder.
+  - Claude Code: `claude --resume <id>`, the block's own session, so two blocks in one folder each get theirs back.
+    The id is read while saving from Claude Code's `sessions/<pid>.json` (undocumented). Without one, `claude
+    --continue`, which continues the most recent conversation in the folder.
+  - Codex: `codex resume <id>`, the `session_meta` id of the rollout the process has open (Linux) or matched by
+    folder and start time. Without one, `codex resume --last`, which continues the most recent session in the folder.
 
   The terminal buffers the typed text until the shell is ready. When the agent exits, the user is back in the shell.
   If the agent isn't installed, the shell says so ("command not found") and nothing else happens.
-- **Safety:** the file stores only the agent's name, never a command. A `"agent"` value other than `"claude"` or
-  `"codex"` is ignored, so an edited file can't make Templum type anything else.
+- **Safety:** the file stores only the agent's name and its session's id, never a command. A `"agent"` value other
+  than `"claude"` or `"codex"` is ignored, and a `"session"` is typed only when it is letters, digits and `-`, so an
+  edited file can't make Templum type anything else.
 
 ## The file
 
@@ -115,7 +117,8 @@ What doesn't come back: the text that was on screen, and programs other than the
         "kind": "terminal",
         "rect": { "x": 0.0, "y": 0.0, "w": 720.0, "h": 460.0 },
         "folder": "/home/winx/proj",
-        "agent": "claude"
+        "agent": "claude",
+        "session": "0d5e5f4b-1c2d-4e3f-8a9b-0c1d2e3f4a5b"
       }
     ],
     "focused": 0
@@ -131,7 +134,8 @@ What doesn't come back: the text that was on screen, and programs other than the
   - **A terminal's fields:**
     - `folder` is missing when the OS wouldn't say (another user's process, already gone), and the shell then starts
       in the home folder;
-    - `agent` is `"claude"`, `"codex"` or missing.
+    - `agent` is `"claude"`, `"codex"` or missing;
+    - `session` is the agent's session id, missing when its files don't tell it.
   - **`focused`:** the index of the focused item, or `null`.
   - **`grid`:** grid mode's tiles, when the workspace was left in it ([grid.md](grid.md)): items by index, pairs as
     `{"split": "beside" | "above", "a": …, "b": …}`. `camera` and the items' rects stay the canvas's. Missing on the
@@ -204,7 +208,8 @@ Tests are written first, as always. Everything runs in CI on Linux, macOS and Wi
 - Two blocks moved, one raised, the canvas panned and zoomed, then saved: a new workspace opened on the same folder
   has the same rects, order, camera and focus.
 - A saved canvas with no items opens empty, with the hint.
-- A saved block with `"agent": "claude"` gets `claude --continue` typed into its terminal (the test shell echoes it).
+- A saved block with `"agent": "claude"` gets `claude --continue` typed into its terminal (the test shell echoes it),
+  and one with a `"session"` too gets `claude --resume <id>`.
 - A saved folder that doesn't exist starts its shell in the home folder, with one notification.
 - A broken file: the notification shows, `default.json.bak` holds the old bytes, and one terminal opens.
 - The snapshot writes only when something changed (two ticks with no change: one write).

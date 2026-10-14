@@ -108,6 +108,8 @@ pub struct Dirs {
     pub claude: Option<PathBuf>,
     /// `$CODEX_HOME` or `~/.codex`.
     pub codex: Option<PathBuf>,
+    /// `~/.qwen`.
+    pub qwen: Option<PathBuf>,
 }
 
 impl Dirs {
@@ -123,6 +125,7 @@ impl Dirs {
             relay: relay_dir(data),
             claude: env("CLAUDE_CONFIG_DIR").or_else(|| home.as_ref().map(|h| h.join(".claude"))),
             codex: env("CODEX_HOME").or_else(|| home.as_ref().map(|h| h.join(".codex"))),
+            qwen: home.as_ref().map(|h| h.join(".qwen")),
         }
     }
 }
@@ -166,6 +169,39 @@ pub fn read(
         }
     }
     (sessions, limits)
+}
+
+/// The ids of the sessions the agents `procs` have open, in order, to resume each one's own:
+/// Claude Code's, Qwen Code's and Codex's. Reads files: off the UI thread.
+pub fn session_ids(procs: &[Proc], dirs: &Dirs, now: u64) -> Vec<Option<String>> {
+    let mut ids: Vec<Option<String>> = procs
+        .iter()
+        .map(|p| {
+            let dir = match p.agent.as_str() {
+                "claude" => dirs.claude.as_deref(),
+                // Qwen Code keeps the same file for each of its processes.
+                "qwen" => dirs.qwen.as_deref(),
+                _ => None,
+            };
+            claude::session_id(p.pid, dir?)
+        })
+        .collect();
+    let (at, codex): (Vec<usize>, Vec<&Proc>) = procs
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.agent == "codex")
+        .unzip();
+    if let (Some(dir), false) = (&dirs.codex, codex.is_empty()) {
+        for (i, id) in at.into_iter().zip(codex::session_ids(&codex, dir, now)) {
+            ids[i] = id;
+        }
+    }
+    ids
+}
+
+/// A session id names a file and is typed into a shell: letters, digits and `-` only.
+pub fn valid_session_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// The end of a file, at most `max` bytes, from its first whole line: where an agent's latest
@@ -221,6 +257,7 @@ mod tests {
             relay: relay_dir(data),
             claude: None,
             codex: Some(data.join("codex")),
+            qwen: Some(data.join("qwen")),
         };
         std::fs::create_dir_all(&dirs.relay).unwrap();
         std::fs::write(
@@ -245,6 +282,32 @@ mod tests {
         assert_eq!(sessions[1], None);
         assert_eq!(limits.len(), 1);
         assert_eq!(limits[0].0, "claude");
+    }
+
+    #[test]
+    fn claude_and_qwen_tell_a_process_its_session_in_the_same_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs {
+            relay: dir.path().join("relay"),
+            claude: Some(dir.path().join("claude")),
+            codex: None,
+            qwen: Some(dir.path().join("qwen")),
+        };
+        for (agent, id) in [("claude", "c-1"), ("qwen", "q-2")] {
+            let sessions = dir.path().join(agent).join("sessions");
+            std::fs::create_dir_all(&sessions).unwrap();
+            let json = format!(r#"{{"pid": 7, "sessionId": "{id}", "cwd": "/srv"}}"#);
+            std::fs::write(sessions.join("7.json"), json).unwrap();
+        }
+        let proc = |agent: &str| Proc {
+            agent: agent.into(),
+            pid: 7,
+            started: 0,
+            cwd: Some("/srv".into()),
+            terminal: String::new(),
+        };
+        let ids = session_ids(&[proc("claude"), proc("qwen"), proc("gemini")], &dirs, 0);
+        assert_eq!(ids, [Some("c-1".into()), Some("q-2".into()), None]);
     }
 
     #[test]

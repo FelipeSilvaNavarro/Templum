@@ -14,11 +14,29 @@ const DAY: u64 = 24 * 3600;
 
 /// The sessions of the Codex processes `procs`, in order: each process gets its own file.
 pub fn sessions(procs: &[&Proc], codex_dir: &Path, now: u64) -> Vec<Option<Session>> {
+    files(procs, codex_dir, now)
+        .iter()
+        .map(|f| usage(f.as_ref()?))
+        .collect()
+}
+
+/// The ids of the sessions of the Codex processes `procs`, in order, for `codex resume`.
+pub fn session_ids(procs: &[&Proc], codex_dir: &Path, now: u64) -> Vec<Option<String>> {
+    files(procs, codex_dir, now)
+        .iter()
+        .map(|f| meta(f.as_ref()?)?.id)
+        .collect()
+}
+
+/// The rollout of each of the Codex processes `procs`, in order: each process gets its own.
+fn files(procs: &[&Proc], codex_dir: &Path, now: u64) -> Vec<Option<PathBuf>> {
     let earliest = procs.iter().map(|p| p.started).min().unwrap_or(now);
     let files = rollouts(codex_dir, earliest.saturating_sub(DAY), now + DAY);
     let metas: Vec<(PathBuf, Meta, u64)> = files
         .into_iter()
         .filter_map(|(path, mtime)| Some((meta(&path)?, mtime, path)))
+        // A subagent's thread is no process's session.
+        .filter(|(m, ..)| !m.subagent)
         .map(|(m, mtime, path)| (path, m, mtime))
         .collect();
     let mut taken = vec![false; metas.len()];
@@ -36,7 +54,7 @@ pub fn sessions(procs: &[&Proc], codex_dir: &Path, now: u64) -> Vec<Option<Sessi
             if let Some(j) = metas.iter().position(|(p, ..)| p == path) {
                 taken[j] = true;
             }
-            found[i] = usage(path);
+            found[i] = Some(path.clone());
         }
     }
     for i in order.into_iter().filter(|&i| open[i].is_none()) {
@@ -54,7 +72,7 @@ pub fn sessions(procs: &[&Proc], codex_dir: &Path, now: u64) -> Vec<Option<Sessi
             });
         if let Some(j) = pick {
             taken[j] = true;
-            found[i] = usage(&metas[j].0);
+            found[i] = Some(metas[j].0.clone());
         }
     }
     found
@@ -125,26 +143,35 @@ fn rollouts(codex_dir: &Path, from: u64, to: u64) -> Vec<(PathBuf, u64)> {
 }
 
 /// The rollout a Codex process has open, or one of its children has (npm's `codex` is a Node
-/// script that starts the native one): exact, even for a session it resumed.
+/// script that starts the native one): exact, even for a session it resumed. After `/new` the
+/// old one stays open, and a subagent opens its own: the newest of the session's own.
 #[cfg(target_os = "linux")]
 fn open_rollout(pid: u32) -> Option<PathBuf> {
-    let open = |pid: u32| {
-        std::fs::read_dir(format!("/proc/{pid}/fd"))
-            .ok()?
-            .flatten()
+    let open = |pid: u32| -> Vec<PathBuf> {
+        let Ok(fds) = std::fs::read_dir(format!("/proc/{pid}/fd")) else {
+            return Vec::new();
+        };
+        fds.flatten()
             .filter_map(|e| std::fs::read_link(e.path()).ok())
-            .find(|p| {
+            .filter(|p| {
                 p.extension().is_some_and(|e| e == "jsonl")
                     && p.file_name()
                         .is_some_and(|n| n.to_string_lossy().starts_with("rollout-"))
             })
+            .collect()
     };
-    open(pid).or_else(|| {
-        std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
-            .ok()?
-            .split_whitespace()
-            .filter_map(|c| c.parse().ok())
-            .find_map(open)
+    let children = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children"))
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|c| c.parse().ok())
+        .flat_map(open)
+        .collect::<Vec<_>>();
+    // Named `rollout-<start>-<id>`: by name is by start.
+    open(pid).into_iter().chain(children).max_by_key(|p| {
+        (
+            meta(p).map(|m| !m.subagent),
+            p.file_name().map(|n| n.to_owned()),
+        )
     })
 }
 
@@ -153,6 +180,11 @@ struct Meta {
     cwd: PathBuf,
     /// When it started, in seconds since the epoch.
     start: u64,
+    /// What `codex resume` takes, the session's (a subagent's names its parent); None unless it
+    /// names a file.
+    id: Option<String>,
+    /// A subagent's thread, not a session of its own.
+    subagent: bool,
 }
 
 #[derive(Deserialize)]
@@ -166,6 +198,10 @@ struct Line<T> {
 struct SessionMeta {
     cwd: PathBuf,
     timestamp: String,
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    session_id: String,
 }
 
 fn meta(path: &Path) -> Option<Meta> {
@@ -177,10 +213,24 @@ fn meta(path: &Path) -> Option<Meta> {
     if line.kind != "session_meta" {
         return None;
     }
-    let start = DateTime::parse_from_rfc3339(&line.payload.timestamp).ok()?;
+    let SessionMeta {
+        cwd,
+        timestamp,
+        id,
+        session_id,
+    } = line.payload;
+    let start = DateTime::parse_from_rfc3339(&timestamp).ok()?;
+    let subagent = !session_id.is_empty() && session_id != id;
+    let id = if session_id.is_empty() {
+        id
+    } else {
+        session_id
+    };
     Some(Meta {
-        cwd: line.payload.cwd,
+        cwd,
         start: u64::try_from(start.timestamp()).ok()?,
+        id: crate::valid_session_id(&id).then_some(id),
+        subagent,
     })
 }
 
@@ -323,6 +373,23 @@ mod tests {
         let found = sessions(&[&a, &b], dir.path(), START + 900);
         assert_eq!(found[0].as_ref().unwrap().tokens, Some(111));
         assert_eq!(found[1].as_ref().unwrap().tokens, Some(222));
+        // Each resumes its own on restore.
+        let ids = session_ids(&[&a, &b], dir.path(), START + 900);
+        assert_eq!(ids, [Some("a".to_string()), Some("b".to_string())]);
+        // A subagent of `b`'s, started later in the same folder, is no one's session.
+        let sub = dir.path().join("sessions/2026/10/08/rollout-c.jsonl");
+        std::fs::write(
+            &sub,
+            format!(
+                "{}\n{}",
+                r#"{"type":"session_meta","payload":{"id":"c","session_id":"b","cwd":"/srv/app","timestamp":"2026-10-08T22:26:12Z"}}"#,
+                count(1, 333, "null")
+            ),
+        )
+        .unwrap();
+        let found = sessions(&[&b], dir.path(), START + 900);
+        assert_eq!(found[0].as_ref().unwrap().tokens, Some(222));
+        assert_eq!(meta(&sub).unwrap().id.as_deref(), Some("b"), "its parent's");
         // Started after both files were last written, elsewhere: none is its.
         let late = proc("/srv/other", START + 3600);
         assert_eq!(sessions(&[&late], dir.path(), START + 3700), vec![None]);
@@ -335,20 +402,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join("sessions/2020/01/01");
         std::fs::create_dir_all(&folder).unwrap();
-        let path = folder.join("rollout-old.jsonl");
-        std::fs::write(
-            &path,
-            format!(
-                "{}\n{}",
-                r#"{"type":"session_meta","payload":{"cwd":"/srv/app","timestamp":"2020-01-01T00:00:00Z"}}"#,
-                count(1, 444, "null")
-            ),
-        )
-        .unwrap();
+        let file = |name: &str, ids: &str, tokens: u64| {
+            let path = folder.join(format!("rollout-2020-01-01T{name}.jsonl"));
+            let meta = format!(
+                r#"{{"type":"session_meta","payload":{{{ids}"cwd":"/srv/app","timestamp":"2020-01-01T00:00:00Z"}}}}"#
+            );
+            std::fs::write(&path, format!("{meta}\n{}", count(1, tokens, "null"))).unwrap();
+            path
+        };
+        // A session, the one `/new` started after it (the old stays open), and its subagent's.
+        let old = file("00-00-00-old", r#""id":"old","session_id":"old","#, 444);
+        let new = file("01-00-00-new", r#""id":"new","session_id":"new","#, 555);
+        let sub = file("02-00-00-sub", r#""id":"sub","session_id":"new","#, 666);
         let mut child = std::process::Command::new("sh")
             .arg("-c")
-            .arg("exec 3<\"$0\"; sleep 10")
-            .arg(&path)
+            .arg("exec 3<\"$0\" 4<\"$1\" 5<\"$2\"; sleep 10")
+            .args([&old, &new, &sub])
             .spawn()
             .unwrap();
         let p = Proc {
@@ -356,16 +425,18 @@ mod tests {
             ..proc("/srv/app", START)
         };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        let found = loop {
+        let (found, ids) = loop {
             let found = sessions(&[&p], dir.path(), START + 60);
-            if found[0].is_some() || std::time::Instant::now() > deadline {
-                break found;
+            let ids = session_ids(&[&p], dir.path(), START + 60);
+            if ids[0].as_deref() == Some("new") || std::time::Instant::now() > deadline {
+                break (found, ids);
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         };
         let _ = child.kill();
         let _ = child.wait();
-        assert_eq!(found[0].as_ref().map(|s| s.tokens), Some(Some(444)));
+        assert_eq!(ids[0].as_deref(), Some("new"));
+        assert_eq!(found[0].as_ref().map(|s| s.tokens), Some(Some(555)));
     }
 
     #[test]

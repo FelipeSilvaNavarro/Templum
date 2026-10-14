@@ -45,6 +45,17 @@ impl AgentEntry {
         self.resume.as_deref().unwrap_or(&self.command)
     }
 
+    /// What brings back its session `session` (an id) on restore: that session, when it is one
+    /// of Templum's agents that resumes by id and its resume command is Templum's own; else its
+    /// resume command, which brings back the folder's latest.
+    pub fn resume_command_for(&self, session: Option<&str>) -> String {
+        self.builtin
+            .filter(|agent| self.resume.as_deref() == agent.spec().resume)
+            .zip(session)
+            .and_then(|(agent, id)| agent.resume_session(id))
+            .unwrap_or_else(|| self.resume_command().to_string())
+    }
+
     /// How to tell it from a terminal's processes: Templum's names for its own, and the program
     /// of the command in effect (a wrapper the user set).
     pub fn detect(&self) -> Detect {
@@ -386,6 +397,33 @@ mod tests {
             by(&list, "copilot").resume_command(),
             "copilot",
             "a new session"
+        );
+    }
+
+    #[test]
+    fn a_saved_session_is_resumed_by_its_id_unless_the_user_set_the_resume() {
+        let list = agents("");
+        let id = Some("0d5e5f4b-1c2d");
+        assert_eq!(
+            by(&list, "claude").resume_command_for(id),
+            "claude --resume 0d5e5f4b-1c2d"
+        );
+        assert_eq!(
+            by(&list, "codex").resume_command_for(id),
+            "codex resume 0d5e5f4b-1c2d"
+        );
+        assert_eq!(
+            by(&list, "claude").resume_command_for(None),
+            "claude --continue"
+        );
+        assert_eq!(
+            by(&list, "gemini").resume_command_for(id),
+            "gemini --resume"
+        );
+        let list = agents("[agents]\nclaude = { resume = \"claude -c --fast\" }\n");
+        assert_eq!(
+            by(&list, "claude").resume_command_for(id),
+            "claude -c --fast"
         );
     }
 

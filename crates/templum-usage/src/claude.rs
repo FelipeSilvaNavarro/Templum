@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-use crate::{Limits, Proc, Session, TAIL, Window, modified, tail};
+use crate::{Limits, Proc, Session, TAIL, Window, modified, tail, valid_session_id};
 
 /// The argument that makes Templum the relay.
 pub const RELAY_FLAG: &str = "--claude-statusline";
@@ -253,15 +253,21 @@ struct Running {
     cwd: PathBuf,
 }
 
+fn running(pid: u32, claude_dir: &Path) -> Option<Running> {
+    let path = claude_dir.join("sessions").join(format!("{pid}.json"));
+    let running: Running = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    valid_session_id(&running.session_id).then_some(running)
+}
+
+/// The id of the session the Claude Code process `pid` has open, for `claude --resume`; Qwen
+/// Code's, given its folder (`~/.qwen`), for `qwen --resume`.
+pub fn session_id(pid: u32, claude_dir: &Path) -> Option<String> {
+    running(pid, claude_dir).map(|r| r.session_id)
+}
+
 /// The context in tokens of the session's last answer, from its transcript.
 fn transcript(proc: &Proc, claude_dir: &Path) -> Option<Session> {
-    let running = claude_dir
-        .join("sessions")
-        .join(format!("{}.json", proc.pid));
-    let running: Running = serde_json::from_slice(&std::fs::read(running).ok()?).ok()?;
-    if !valid_session_id(&running.session_id) {
-        return None;
-    }
+    let running = running(proc.pid, claude_dir)?;
     let file = claude_dir
         .join("projects")
         .join(project_folder(&running.cwd))
@@ -294,11 +300,6 @@ fn transcript(proc: &Proc, claude_dir: &Path) -> Option<Session> {
             ..Session::default()
         })
     })
-}
-
-/// A session id names a file: letters, digits and `-` only.
-fn valid_session_id(id: &str) -> bool {
-    !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// The folder Claude Code keeps a project's transcripts in: its path with every character
@@ -652,6 +653,8 @@ mod tests {
         .join("\n");
         std::fs::write(project.join("abc-1.jsonl"), text).unwrap();
         let s = session(&proc("1-0", 0), &dir.path().join("relay"), Some(claude)).unwrap();
+        assert_eq!(session_id(4242, claude).as_deref(), Some("abc-1"));
+        assert_eq!(session_id(4243, claude), None);
         assert_eq!(s.context_tokens, Some(1102));
         assert_eq!(s.model.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(s.context_percent, None);

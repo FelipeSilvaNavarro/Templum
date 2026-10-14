@@ -23,6 +23,7 @@ fn a_workspace_shows_an_agent_from_its_last_snapshot() {
                 },
                 folder: None,
                 agent: agent.map(String::from),
+                session: None,
             })],
             focused: None,
             recent: Vec::new(),

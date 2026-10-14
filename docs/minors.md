@@ -303,10 +303,16 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **A wrapper as Claude Code's command still gets `--settings`.** `typed` (`crates/templum/src/workspace/usage.rs`)
   adds it to any command of the built-in Claude Code, so `claude; echo done` passes it to `echo`. Fix: add it only
   when the command's program is `claude`.
-- [ ] **Two Codex resumed in one folder may swap sessions, outside Linux.** Without `/proc` (`sessions`,
+- [ ] **Two Codex resumed in one folder may swap sessions, outside Linux.** Without `/proc` (`files`,
   `crates/templum-usage/src/codex.rs`), a resumed session is matched by its folder and its file's last write, and a
-  resumed one older than the scanned days isn't found. Fix: ask the OS for the process's open files on macOS and
-  Windows too.
+  resumed one older than the scanned days isn't found: its meter shows the other's numbers, and on restore each block
+  may get the other's conversation (or the folder's latest). Fix: ask the OS for the process's open files on macOS
+  and Windows too.
+- [ ] **A Codex session from another folder asks for a folder on restore.** `codex resume <id>` (`resume_id`,
+  `crates/templum-terminal/src/agent.rs`) is typed in the folder the Codex process ran in; a session Codex started
+  with `-C <dir>`, or one resumed from elsewhere, has its own folder, and Codex then shows its "Choose working
+  directory" picker. Fix: save the session's `cwd` from its rollout and type `codex resume -C <cwd> <id>` when it
+  differs, quoted as `typed_path` does.
 - [ ] **Codex's context reads higher than Codex's own.** `usage` (`codex.rs`) divides the last turn's input by the
   whole window; Codex leaves out a baseline it reserves. Fix: use Codex's formula once its source says it.
 - [ ] **Limits of a session closed long ago still show.** The meter (`crates/templum/src/usage.rs`) shows a window

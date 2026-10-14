@@ -600,6 +600,10 @@ pub(crate) struct TerminalItem {
     /// (one of its own, or one in `[agents]`); any other value is ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// The agent's session, by its id: the one resumed, so blocks in the same folder each get
+    /// their own back. Missing when the agent's files don't tell it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -649,9 +653,10 @@ pub(crate) enum LayoutBlock {
 }
 
 impl Layout {
-    /// Reads the processes (folders, agents) and builds the file's content, with what was found
-    /// in each terminal, in order. Slow: off the UI thread.
-    pub fn snapshot(self) -> (Saved, Vec<templum_terminal::Inspection>) {
+    /// Reads the processes (folders, agents, and the agents' sessions in their files, under
+    /// Templum's data folder `data`) and builds the file's content, with what was found in each
+    /// terminal, in order. Slow: off the UI thread.
+    pub fn snapshot(self, data: Option<&Path>) -> (Saved, Vec<templum_terminal::Inspection>) {
         let processes: Vec<Processes> = self
             .blocks
             .iter()
@@ -661,6 +666,8 @@ impl Layout {
             })
             .collect();
         let inspections = templum_terminal::inspect(&processes, &self.agents);
+        let sessions = data.map_or_else(Vec::new, |data| session_ids(&inspections, data));
+        let mut sessions = sessions.into_iter();
         let mut found = inspections.iter().cloned();
         let saved = Saved {
             version: VERSION,
@@ -680,6 +687,7 @@ impl Layout {
                             rect: (*rect).into(),
                             folder: found.folder.and_then(utf8),
                             agent: found.agent,
+                            session: sessions.next().flatten(),
                         })
                     }
                     LayoutBlock::Saved(item) => item.clone(),
@@ -692,6 +700,23 @@ impl Layout {
         };
         (saved, inspections)
     }
+}
+
+/// The session each terminal's agent has open, in order, from the agents' files.
+fn session_ids(found: &[templum_terminal::Inspection], data: &Path) -> Vec<Option<String>> {
+    let procs: Vec<templum_usage::Proc> = found
+        .iter()
+        .map(|f| templum_usage::Proc {
+            agent: f.agent.clone().unwrap_or_default(),
+            pid: f.pid.unwrap_or(0),
+            started: f.started.unwrap_or(0),
+            cwd: f.folder.clone(),
+            // The relay's file isn't read for a session's id.
+            terminal: String::new(),
+        })
+        .collect();
+    let dirs = templum_usage::Dirs::of(data);
+    templum_usage::session_ids(&procs, &dirs, crate::notes::now())
 }
 
 /// A path as JSON can hold it.
@@ -846,6 +871,7 @@ mod tests {
                     },
                     folder: Some("/home/u/proj".into()),
                     agent: Some("claude".into()),
+                    session: Some("0d5e5f4b-1c2d-4e3f-8a9b-0c1d2e3f4a5b".into()),
                 }),
                 Item::Terminal(TerminalItem {
                     rect: SavedRect {
@@ -856,6 +882,7 @@ mod tests {
                     },
                     folder: None,
                     agent: None,
+                    session: None,
                 }),
                 Item::Kanban(KanbanItem {
                     rect: SavedRect {
@@ -943,6 +970,7 @@ mod tests {
             "\"rect\":{\"x\":0.0,\"y\":0.0,\"w\":720.0,\"h\":460.0}",
             "\"folder\":\"/home/u/proj\"",
             "\"agent\":\"claude\"",
+            "\"session\":\"0d5e5f4b-1c2d-4e3f-8a9b-0c1d2e3f4a5b\"",
             "\"kind\":\"kanban\"",
             "\"board\":7",
             "\"focused\":1",
@@ -956,6 +984,7 @@ mod tests {
             "a missing folder isn't written"
         );
         assert_eq!(text.matches("agent").count(), 1, "nor a missing agent");
+        assert_eq!(text.matches("session").count(), 1, "nor a missing session");
     }
 
     #[test]
@@ -1435,7 +1464,7 @@ mod tests {
             ink: Vec::new(),
             grid: None,
         };
-        let (saved, _) = layout.snapshot();
+        let (saved, _) = layout.snapshot(None);
         assert_eq!(saved.recent, ["/a", "/b"], "recent folders, newest first");
         assert_eq!(saved.version, VERSION);
         assert_eq!(
