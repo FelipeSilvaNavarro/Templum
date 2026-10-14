@@ -407,3 +407,17 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **The gallery's cache keeps themes GitHub no longer lists.** `refresh` (`crates/templum/src/gallery.rs`) only
   adds files to `<data folder>/theme-gallery/`; a theme changed upstream leaves its old file there (a few hundred
   bytes each). Fix: after a refresh, delete the `.toml` files `index.json` doesn't name.
+
+## GPUI engine (gpui-fast)
+
+- [ ] **A note tab's text is saved without telling the window.** The editor subscription in `note_tab`
+  (`crates/templum/src/workspace/note_tabs.rs`) writes `ws.notes` without `cx.notify()`. Today the tab still follows
+  typing because `Workspace`'s render reads the note's editor; if that read goes away, gpui-fast reuses the old frame
+  and the tab looks stale until something else redraws. Fix: `cx.notify()` after `set_text`.
+- [ ] **Zooming a note is 6% slower on gpui-fast.** `--bench-zoom=note` p95 51.6 → 54.0 ms (ADR-0003); a person sees
+  the same stutter as before, slightly longer. Fix: the note re-wrap work already owed (hold the text size while the
+  zoom glides, or the upstream gpui-kit fix), which removes the cost under both engines.
+- [ ] **The diff list never gets gpui-fast's scroll cache.** `top_file`
+  (`crates/templum/src/git_block/diff_view/mod.rs:327`) reads the list's scroll offset while `Workspace` renders, and
+  gpui-fast repaints every scrolled frame of a list whose offset `render` read. A person sees nothing; scrolling a long
+  diff costs what it did before. Fix: pick the sticky header's file in a `canvas` prepaint instead of in `render`.
