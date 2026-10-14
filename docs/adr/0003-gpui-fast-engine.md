@@ -26,7 +26,7 @@ RTX 3050). Median p95 frame interval, and Templum's own CPU time divided by fram
 | `--bench-zoom=editor` | 12.68 → 11.48 ms | 4.7 → 4.0 ms (−15%) |
 | `--bench-zoom=terminal` | 8.45 → 8.18 ms | 2.4 → 2.0 ms (−17%) |
 | `--bench-git` | 9.01 → 7.75 ms | 3.2 → 2.7 ms (−16%) |
-| `--bench-zoom=note` | 51.6 → 54.0 ms | 13.7 → 14.5 ms (+6%) |
+| `--bench-zoom=note` | 51.6 → 54.2 ms | 13.7 → 14.6 ms (+7%) |
 
 The note zoom was already far over the bar (gpui-kit's editor re-wraps the whole note at each size) and is slightly
 slower. Memory is 2–7 MB higher.

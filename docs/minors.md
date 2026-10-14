@@ -414,7 +414,7 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   (`crates/templum/src/workspace/note_tabs.rs`) writes `ws.notes` without `cx.notify()`. Today the tab still follows
   typing because `Workspace`'s render reads the note's editor; if that read goes away, gpui-fast reuses the old frame
   and the tab looks stale until something else redraws. Fix: `cx.notify()` after `set_text`.
-- [ ] **Zooming a note is 6% slower on gpui-fast.** `--bench-zoom=note` p95 51.6 → 54.0 ms (ADR-0003); a person sees
+- [ ] **Zooming a note is 5% slower on gpui-fast.** `--bench-zoom=note` p95 51.6 → 54.2 ms (ADR-0003); a person sees
   the same stutter as before, slightly longer. Fix: the note re-wrap work already owed (hold the text size while the
   zoom glides, or the upstream gpui-kit fix), which removes the cost under both engines.
 - [ ] **The diff list never gets gpui-fast's scroll cache.** `top_file`
