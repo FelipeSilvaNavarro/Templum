@@ -12,6 +12,7 @@ mod gesture;
 mod ink;
 mod lod;
 mod snap;
+mod tile;
 
 pub use camera::{Camera, FIT_MARGIN, ZOOM_STEPS};
 pub use canvas::{BESIDE, Block, BlockId, CASCADE, Canvas};
@@ -25,3 +26,4 @@ pub use ink::{
 };
 pub use lod::{CARD_BELOW, GREEK_BELOW, Level, level};
 pub use snap::{Guide, SNAP_PX, Snapped, snap_move, snap_resize};
+pub use tile::{GAP, Split, Tile};
