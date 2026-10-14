@@ -5,8 +5,10 @@
 use semver::Version;
 use serde::Deserialize;
 
+mod fetch;
 mod install;
 
+pub use fetch::{agent, download, latest};
 pub use install::{Install, Why, detect_in};
 
 /// Where releases are published.
