@@ -386,6 +386,13 @@ pub(crate) struct Space {
     /// Names its file; chosen once, never changed.
     pub id: String,
     pub name: String,
+    /// Its icon, color and image.
+    pub look: crate::space_dialog::Look,
+    /// Where its new terminals start.
+    pub folder: Option<PathBuf>,
+    /// Its programs were ended and its blocks dropped; `saved` holds its canvas, which opening
+    /// it brings back.
+    pub stopped: bool,
     pub canvas: Canvas,
     /// What each block of the canvas holds. Inserted and removed together with `canvas`'s blocks.
     pub blocks: HashMap<BlockId, Body>,

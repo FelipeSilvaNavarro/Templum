@@ -1111,24 +1111,22 @@ impl Items {
                 name,
                 only_one,
                 unsaved,
+                busy,
             } => {
                 let delete_id = id.clone();
                 let delete_name = name.clone();
-                menu.item(item(ws, "Rename…", None, move |_, window, cx| {
-                    let ws = cx.entity();
-                    let id = id.clone();
-                    prompt::ask_text(
-                        "Rename workspace",
-                        "Rename",
-                        name.clone(),
-                        move |text, window, cx| {
-                            ws.update(cx, |ws, cx| ws.rename_space(&id, &text, window, cx))
-                                .is_ok()
-                        },
-                        window,
-                        cx,
-                    )
-                }))
+                // What closing it loses, as closing blocks says.
+                let mut why = "Its terminals will close.".to_string();
+                for b in &busy {
+                    why = format!("{why} {b}");
+                }
+                menu.item(item(
+                    ws,
+                    "Edit…",
+                    Some(IconName::Pencil),
+                    move |ws, window, cx| crate::space_dialog::open(ws, &id, window, cx),
+                ))
+                .separator()
                 .item(
                     item(
                         ws,
@@ -1140,7 +1138,7 @@ impl Items {
                             if unsaved.is_empty() {
                                 prompt::confirm(
                                     format!("Delete {delete_name}?"),
-                                    "Its terminals will close.",
+                                    why.clone(),
                                     "Delete",
                                     move |window, cx| {
                                         ws.update(cx, |ws, cx| ws.delete_space(&id, window, cx))
@@ -1154,10 +1152,7 @@ impl Items {
                             let (saver, save_id) = (ws.clone(), id.clone());
                             prompt::save_or_discard(
                                 format!("Delete {delete_name}?"),
-                                format!(
-                                    "Its terminals will close. Unsaved: {}",
-                                    unsaved.join(", ")
-                                ),
+                                format!("{why} Unsaved: {}", unsaved.join(", ")),
                                 move |window, cx| {
                                     saver.update(cx, |ws, cx| {
                                         let saved = ws.save_spaces(Some(&save_id), window, cx);

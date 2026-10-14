@@ -579,8 +579,8 @@ fn deleting_a_workspace_with_unsaved_files_asks_and_can_save_them(cx: &mut TestA
             );
         });
         window.render_frame(cx);
-        // Rename…, Delete….
-        window.within("popup-menu").click(1usize, cx);
+        // Edit…, a separator, Delete….
+        window.within("popup-menu").click(2usize, cx);
         window.render_frame(cx);
         assert!(window.has_active_dialog(cx));
         window.within("dialog").click("save", cx);

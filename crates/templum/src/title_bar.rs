@@ -10,6 +10,7 @@ use gpui_kit::{
     transparent_black,
 };
 
+use crate::sidebar;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
 
@@ -47,9 +48,25 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         .child(
             div()
                 .id("workspace-name")
+                .flex()
+                .items_center()
+                .gap(px(6.0))
                 .text_size(px(12.0))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(ui.title)
+                .when(
+                    ws.space.look.icon.is_some() || ws.space.look.image.is_some(),
+                    |el| {
+                        el.child(sidebar::face(
+                            &ws.space.look,
+                            &ws.space.name,
+                            14.0,
+                            14.0,
+                            &ws.theme,
+                            ui.title,
+                        ))
+                    },
+                )
                 .child(ws.space.name.clone())
                 .test_support(),
         )

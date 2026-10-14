@@ -6,12 +6,14 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, ElementId, FontWeight, MouseButton, MouseDownEvent,
-    SharedString, TestSupportExt, div, px,
+    AnyElement, ClickEvent, Context, ElementId, FontWeight, Hsla, MouseButton, MouseDownEvent,
+    ObjectFit, SharedString, TestSupportExt, div, img, px,
 };
 
 use crate::grid::hsla;
 use crate::menu::Target;
+use crate::space_dialog::{Look, tint};
+use crate::theme::{Theme, Ui};
 use crate::workspace::{Space, Workspace};
 
 /// The sidebar's width; the canvas gets the rest.
@@ -44,7 +46,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                 .text_color(ui.title),
         )
         .tooltip(|window, cx| Tooltip::new("New workspace").build(window, cx))
-        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.new_space(window, cx)))
+        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.add_space(window, cx)))
         .test_support();
     div()
         .id("sidebar")
@@ -63,13 +65,15 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         .child(plus)
 }
 
-/// One workspace: its initials, an accent bar when active, a dot while an agent runs in it, and
-/// one when a terminal there has news.
+/// One workspace: its face, a bar when active (in its color, or the accent), a dot while an
+/// agent runs in it, and one when a terminal there has news. Its color tints it.
 fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
     let active = i == ws.active;
     let name = SharedString::from(space.name.clone());
     let id = space.id.clone();
+    let color = space.look.color.as_deref().and_then(|c| tint(c, &ws.theme));
+    let fg = hsla(ws.theme.palette.foreground, 1.0);
     let inner = div()
         .id(ElementId::Name(format!("workspace-{}", space.id).into()))
         .relative()
@@ -94,7 +98,14 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
             }
         })
         .active(move |s| s.bg(ui.pressed))
-        .child(initials(&space.name))
+        .child(face(
+            &space.look,
+            &space.name,
+            TILE - 2.0,
+            (TILE * 0.45).round(),
+            &ws.theme,
+            if active { fg } else { ui.title },
+        ))
         .when(active, |el| {
             el.child(
                 div()
@@ -104,7 +115,7 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
                     .w(px(3.0))
                     .h(px(18.0))
                     .rounded_full()
-                    .bg(ui.accent),
+                    .bg(color.unwrap_or(ui.accent)),
             )
         })
         .when(space.has_agent(&ws.agents), |el| {
@@ -144,7 +155,72 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
             }),
         )
         .test_support();
-    inner.into_any_element()
+    // The hover and active fills go over the color's.
+    div()
+        .rounded(px(10.0))
+        .when_some(color, |el, c| el.bg(c.opacity(0.18)))
+        .child(inner)
+        .into_any_element()
+}
+
+/// What a workspace shows in a square of `size`: its image, else its icon (`icon` px) in its
+/// color, else its initials; `plain` colors what has no color.
+pub(crate) fn face(
+    look: &Look,
+    name: &str,
+    size: f32,
+    icon: f32,
+    theme: &Theme,
+    plain: Hsla,
+) -> AnyElement {
+    let color = look.color.as_deref().and_then(|c| tint(c, theme));
+    let (symbol, initials) = (look.icon, initials(name));
+    let mark = move || match symbol {
+        Some(symbol) => Icon::new(symbol)
+            .size(px(icon))
+            .text_color(color.unwrap_or(plain))
+            .into_any_element(),
+        None => div()
+            .text_size(px((size * 0.35).round()))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(plain)
+            .child(initials.clone())
+            .into_any_element(),
+    };
+    match &look.image {
+        // An image that can't be read shows the icon instead.
+        Some(path) => img(path.clone())
+            .size(px(size))
+            .rounded(px(size / 4.0))
+            .object_fit(ObjectFit::Cover)
+            .with_fallback(mark)
+            .into_any_element(),
+        None => mark(),
+    }
+}
+
+/// The sidebar's tile as a picture: the edit dialog's preview, the screen's cards.
+pub(crate) fn tile_face(look: &Look, name: &str, theme: &Theme, ui: Ui) -> AnyElement {
+    let color = look.color.as_deref().and_then(|c| tint(c, theme));
+    div()
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .size(px(TILE))
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(ui.hairline)
+        .bg(color.map_or(ui.card, |c| c.opacity(0.18)))
+        .child(face(
+            look,
+            name,
+            TILE - 2.0,
+            (TILE * 0.45).round(),
+            theme,
+            ui.title,
+        ))
+        .into_any_element()
 }
 
 /// "Side project" is "SP", "main" is "M".

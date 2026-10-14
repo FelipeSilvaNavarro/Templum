@@ -510,7 +510,7 @@ impl Workspace {
             Command::NewGit => self.new_git(window, cx),
             Command::NextWorkspace => self.cycle_space(1, window, cx),
             Command::PreviousWorkspace => self.cycle_space(-1, window, cx),
-            Command::NewWorkspace => self.new_space(window, cx),
+            Command::NewWorkspace => self.add_space(window, cx),
             Command::ToggleSidebar => self.toggle_sidebar(window, cx),
             Command::GoToWaiting => self.go_to_waiting(window, cx),
             Command::Find => self.open_find(window, cx),

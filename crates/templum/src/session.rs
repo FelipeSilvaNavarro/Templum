@@ -10,7 +10,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use templum_canvas::{
     BlockId, Camera, Color, Drawing, MAX_WIDTH, MIN_WIDTH, Point, Rect, ShapeKind, Split, Tile,
 };
@@ -83,11 +83,63 @@ fn shown() -> bool {
     true
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct IndexEntry {
     /// Names its file; chosen once, never changed.
     pub id: String,
     pub name: String,
+    /// A Lucide icon's name; one Templum doesn't know is none.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "known_icon"
+    )]
+    pub icon: Option<String>,
+    /// One of `space_dialog::COLORS`; another is none.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "known_color"
+    )]
+    pub color: Option<String>,
+    /// A file in `workspaces/icons/`, shown instead of the icon; a name that could leave the
+    /// folder is none.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "safe_image"
+    )]
+    pub image: Option<String>,
+    /// Where its new terminals start.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<PathBuf>,
+    /// Its programs were ended; opening it starts them again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopped: bool,
+}
+
+fn known_icon<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let name = Option::<String>::deserialize(d)?;
+    Ok(name.filter(|n| crate::space_dialog::icon(n).is_some()))
+}
+
+fn known_color<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let name = Option::<String>::deserialize(d)?;
+    Ok(name.filter(|n| crate::space_dialog::COLORS.contains(&n.as_str())))
+}
+
+fn safe_image<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let name = Option::<String>::deserialize(d)?;
+    Ok(name.filter(|n| safe_file_name(n)))
+}
+
+/// Letters, digits, `-`, `_` and `.`, and no `..`: a name that stays in its folder.
+fn safe_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains("..")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 impl Index {
@@ -99,6 +151,7 @@ impl Index {
             workspaces: vec![IndexEntry {
                 id: DEFAULT_ID.into(),
                 name: "Main".into(),
+                ..IndexEntry::default()
             }],
             active: 0,
             sidebar: true,
@@ -142,6 +195,8 @@ pub(crate) fn load_index(dir: &Path) -> Loaded<Index> {
                 return Loaded::Saved(Index::first_run());
             }
             index.active = index.active.min(index.workspaces.len() - 1);
+            // The one shown is never stopped.
+            index.workspaces[index.active].stopped = false;
             Loaded::Saved(index)
         }
         other => other,
@@ -153,6 +208,67 @@ pub(crate) fn save_index(dir: &Path, index: &Index) -> io::Result<()> {
     let text = serde_json::to_string_pretty(index).map_err(io::Error::other)?;
     std::fs::create_dir_all(path.parent().expect("a workspaces folder"))?;
     config::write_whole(&path, &text)
+}
+
+/// The images workspaces show instead of their icons.
+pub(crate) fn icons_dir(dir: &Path) -> PathBuf {
+    dir.join("workspaces").join("icons")
+}
+
+/// The image kinds a workspace can show.
+pub(crate) const IMAGE_KINDS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "svg"];
+
+/// The largest image a workspace takes.
+pub(crate) const IMAGE_MAX: u64 = 4 * 1024 * 1024;
+
+/// Why `file` can't be a workspace's image: not one of IMAGE_KINDS, too big, or unreadable.
+pub(crate) fn image_refused(file: &Path) -> Option<String> {
+    let kind = file
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if !IMAGE_KINDS.contains(&kind.as_str()) {
+        return Some("Choose a PNG, JPG, WebP or SVG image".into());
+    }
+    match std::fs::metadata(file) {
+        Ok(m) if m.len() > IMAGE_MAX => Some("That image is over 4 MB".into()),
+        Ok(_) => None,
+        Err(err) => Some(format!("Couldn't read the image: {err}")),
+    }
+}
+
+/// Copies `file` as workspace `id`'s image, `<id>.<kind>` in `icons_dir`, in place of an older
+/// one; gives its name.
+pub(crate) fn copy_icon(dir: &Path, id: &str, file: &Path) -> io::Result<String> {
+    if let Some(why) = image_refused(file) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, why));
+    }
+    let kind = file
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let icons = icons_dir(dir);
+    std::fs::create_dir_all(&icons)?;
+    let name = format!("{id}.{kind}");
+    // Copied aside first: the file chosen may be the older image itself.
+    let part = icons.join(format!("{name}.part"));
+    std::fs::copy(file, &part)?;
+    for older in IMAGE_KINDS {
+        remove_icon(dir, &format!("{id}.{older}"))?;
+    }
+    std::fs::rename(&part, icons.join(&name))?;
+    Ok(name)
+}
+
+/// Removes a workspace's image (`name` in `icons_dir`); one already gone is fine.
+pub(crate) fn remove_icon(dir: &Path, name: &str) -> io::Result<()> {
+    if !safe_file_name(name) {
+        return Ok(());
+    }
+    match std::fs::remove_file(icons_dir(dir).join(name)) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
 }
 
 /// A deleted workspace's canvas is kept as `<id>.json.bak`, replacing an older one.
@@ -1077,10 +1193,12 @@ mod tests {
                 IndexEntry {
                     id: DEFAULT_ID.into(),
                     name: "Main".into(),
+                    ..IndexEntry::default()
                 },
                 IndexEntry {
                     id: "w2".into(),
                     name: "Side project".into(),
+                    ..IndexEntry::default()
                 },
             ],
             active: 1,
@@ -1095,6 +1213,104 @@ mod tests {
         assert_eq!(load_index(d.path()), Loaded::Saved(two()));
         let text = std::fs::read_to_string(index_path(d.path())).unwrap();
         assert!(text.contains("\"name\": \"Side project\""), "{text}");
+    }
+
+    #[test]
+    fn an_index_entry_keeps_its_look_folder_and_state() {
+        let d = tempfile::tempdir().unwrap();
+        let mut index = two();
+        index.active = 0;
+        index.workspaces[1] = IndexEntry {
+            icon: Some("rocket".into()),
+            color: Some("blue".into()),
+            image: Some("w2.png".into()),
+            folder: Some(PathBuf::from("/home/me/side")),
+            stopped: true,
+            ..index.workspaces[1].clone()
+        };
+        save_index(d.path(), &index).unwrap();
+        assert_eq!(load_index(d.path()), Loaded::Saved(index));
+    }
+
+    #[test]
+    fn an_index_from_before_loads_and_saves_unchanged() {
+        let d = tempfile::tempdir().unwrap();
+        let text = r#"{"version":1,"workspaces":[{"id":"default","name":"Main"}],"active":0}"#;
+        std::fs::create_dir_all(d.path().join("workspaces")).unwrap();
+        std::fs::write(index_path(d.path()), text).unwrap();
+        let Loaded::Saved(index) = load_index(d.path()) else {
+            panic!("unread")
+        };
+        assert_eq!(index.workspaces[0], Index::first_run().workspaces[0]);
+        let written = serde_json::to_string(&index).unwrap();
+        for key in ["icon", "color", "image", "folder", "stopped"] {
+            assert!(!written.contains(key), "{key} in {written}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_color_or_icon_keeps_the_rest_of_the_index() {
+        let d = tempfile::tempdir().unwrap();
+        let text = r#"{"version":1,"workspaces":[
+            {"id":"default","name":"Main","icon":"no-such-icon","color":"orange"},
+            {"id":"w2","name":"Side","icon":"rocket","color":"accent","stopped":true}
+        ],"active":1}"#;
+        std::fs::create_dir_all(d.path().join("workspaces")).unwrap();
+        std::fs::write(index_path(d.path()), text).unwrap();
+        let Loaded::Saved(index) = load_index(d.path()) else {
+            panic!("unread")
+        };
+        let (main, side) = (&index.workspaces[0], &index.workspaces[1]);
+        assert_eq!((main.icon.as_deref(), main.color.as_deref()), (None, None));
+        assert_eq!(side.icon.as_deref(), Some("rocket"));
+        assert_eq!(side.color.as_deref(), Some("accent"));
+        assert!(!side.stopped, "the active one is never stopped");
+    }
+
+    #[test]
+    fn unsafe_image_names_are_dropped() {
+        let entry = |image: &str| {
+            let text = format!(r#"{{"id":"w2","name":"x","image":{image:?}}}"#);
+            serde_json::from_str::<IndexEntry>(&text).unwrap().image
+        };
+        assert_eq!(entry("w2.png").as_deref(), Some("w2.png"));
+        for bad in ["../x.png", "a/b.png", "a\\b.png", "..", ""] {
+            assert_eq!(entry(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn copying_an_icon_replaces_the_older_one_and_refuses_big_files() {
+        let d = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let png = src.path().join("a.PNG");
+        std::fs::write(&png, b"png").unwrap();
+        assert_eq!(copy_icon(d.path(), "w2", &png).unwrap(), "w2.png");
+        let webp = src.path().join("b.webp");
+        std::fs::write(&webp, b"webp").unwrap();
+        assert_eq!(copy_icon(d.path(), "w2", &webp).unwrap(), "w2.webp");
+        let mut left: Vec<_> = std::fs::read_dir(icons_dir(d.path()))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["w2.webp"]);
+        // The older image chosen again is copied before it is removed.
+        let again = icons_dir(d.path()).join("w2.webp");
+        assert_eq!(copy_icon(d.path(), "w2", &again).unwrap(), "w2.webp");
+        assert_eq!(std::fs::read(&again).unwrap(), b"webp");
+        let big = src.path().join("big.jpg");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(IMAGE_MAX + 1)
+            .unwrap();
+        assert!(copy_icon(d.path(), "w2", &big).is_err());
+        let text = src.path().join("a.txt");
+        std::fs::write(&text, b"x").unwrap();
+        assert!(copy_icon(d.path(), "w2", &text).is_err());
+        remove_icon(d.path(), "w2.webp").unwrap();
+        remove_icon(d.path(), "w2.webp").unwrap();
+        assert!(!again.exists());
     }
 
     #[test]

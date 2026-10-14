@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
+use gpui_kit::component::Icon;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, SharedString, Window};
 use templum_canvas::{BlockId, Point, Rect, chrome};
@@ -577,7 +578,9 @@ impl Workspace {
                         if several {
                             title = format!("{title} · {}", space.name);
                         }
-                        news.push((space.id.clone(), id, title, alert.clone()));
+                        // Another workspace's news shows its icon.
+                        let icon = space.look.icon.filter(|_| i > 0);
+                        news.push((space.id.clone(), id, title, alert.clone(), icon));
                     }
                     pane.alert = Some(alert);
                 }
@@ -601,12 +604,16 @@ impl Workspace {
         }
         let delivery = self.delivery(window);
         let ws = cx.entity().downgrade();
-        for (space, block, title, alert) in news {
+        for (space, block, title, alert, icon) in news {
             let ws = ws.clone();
             let key = SharedString::from(format!("alert-{space}-{}", block.0));
-            let notification = Notification::new()
-                .id1::<Alert>(key)
-                .with_type(alert.kind())
+            let notification = Notification::new().id1::<Alert>(key);
+            // A notification's type would draw its own icon over the workspace's.
+            let notification = match icon {
+                Some(icon) => notification.icon(Icon::new(icon)),
+                None => notification.with_type(alert.kind()),
+            };
+            let notification = notification
                 .title(title)
                 .message(alert.text())
                 .delivery(delivery)

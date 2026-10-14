@@ -439,6 +439,10 @@ impl Workspace {
                     .spaces()
                     .find(|s| s.id == *id)
                     .map_or_else(Vec::new, |s| s.unsaved(None)),
+                busy: self
+                    .spaces()
+                    .find(|s| s.id == *id)
+                    .map_or_else(Vec::new, |s| self.busy_in(s)),
             },
         })
     }
@@ -599,6 +603,8 @@ enum Items {
         only_one: bool,
         /// Its editors' changed files.
         unsaved: Vec<String>,
+        /// Its terminals at work, and why.
+        busy: Vec<String>,
     },
     Ink {
         index: usize,

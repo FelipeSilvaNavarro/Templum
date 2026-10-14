@@ -1,14 +1,34 @@
 //! The workspaces: loading, switching, adding, renaming and deleting them, and their index.
 
+use std::path::PathBuf;
+use std::time::Duration;
+
 use gpui_kit::component::notification::Notification;
-use gpui_kit::{Context, Window};
+use gpui_kit::{Context, ImageSource, Window};
 use templum_canvas::{Rect, chrome};
 
+use crate::alert;
 use crate::board;
 use crate::notes;
 use crate::session;
+use crate::space_dialog::{self, Look};
 
 use super::{DEFAULT_COLS, DEFAULT_ROWS, Space, Workspace, show_notification};
+
+/// How long a workspace's processes have, once hung up, before what is left is killed.
+const KILL_AFTER: Duration = Duration::from_secs(2);
+
+/// Every process of a workspace's terminals, read now, while they still name their parents.
+fn tree_of(space: &Space) -> Vec<templum_terminal::Running> {
+    let shells: Vec<u32> = space
+        .terminals()
+        .filter_map(|(_, pane)| pane.term.processes().shell)
+        .collect();
+    if shells.is_empty() {
+        return Vec::new();
+    }
+    templum_terminal::tree(&shells)
+}
 
 impl Workspace {
     /// Opens every workspace of the index (without one: `default`, as the version without
@@ -89,6 +109,16 @@ impl Workspace {
             self.space = Space {
                 id: entry.id.clone(),
                 name: entry.name.clone(),
+                look: Look {
+                    icon: entry.icon.as_deref().and_then(space_dialog::icon),
+                    color: entry.color.clone(),
+                    image: self
+                        .data_dir
+                        .as_deref()
+                        .zip(entry.image.as_ref())
+                        .map(|(d, name)| session::icons_dir(d).join(name)),
+                },
+                folder: entry.folder.clone(),
                 ..Space::default()
             };
             match self
@@ -196,28 +226,66 @@ impl Workspace {
         self.switch_to(total, window, cx);
     }
 
-    /// Renames the workspace with `id`; an empty name is refused.
-    pub(crate) fn rename_space(
+    /// A new workspace, shown, with its Edit… dialog open to name it.
+    pub(crate) fn add_space(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_space(window, cx);
+        let id = self.space.id.clone();
+        space_dialog::open(self, &id, window, cx);
+    }
+
+    /// Gives the workspace with `id` a name (an empty one is refused), a look and a folder. A
+    /// new image is copied into the data folder, and one taken away removed from it.
+    pub(crate) fn edit_space(
         &mut self,
         id: &str,
         name: &str,
+        mut look: Look,
+        folder: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Result<(), &'static str> {
+    ) -> Result<(), String> {
         let name = name.trim();
         if name.is_empty() {
-            return Err("A workspace needs a name");
+            return Err("A workspace needs a name".into());
+        }
+        let Some(old) = self
+            .spaces()
+            .find(|s| s.id == id)
+            .map(|s| s.look.image.clone())
+        else {
+            return Ok(());
+        };
+        if let Some(dir) = self.data_dir.clone()
+            && look.image != old
+        {
+            match &look.image {
+                Some(file) => {
+                    let kept = session::copy_icon(&dir, id, file).map_err(|e| e.to_string())?;
+                    let kept = session::icons_dir(&dir).join(kept);
+                    // The same file name may still show the image it replaced.
+                    ImageSource::from(kept.clone()).remove_asset(cx);
+                    look.image = Some(kept);
+                }
+                None => {
+                    if let Some(gone) = old.as_ref().and_then(|p| p.file_name()) {
+                        session::remove_icon(&dir, &gone.to_string_lossy())
+                            .map_err(|e| format!("Couldn't remove the image: {e}"))?;
+                    }
+                }
+            }
         }
         if let Some(space) = self.space_by_id_mut(id) {
             space.name = name.to_string();
+            space.look = look;
+            space.folder = folder;
         }
         self.write_index(window, cx);
         cx.notify();
         Ok(())
     }
 
-    /// Deletes the workspace with `id`, closing its terminals and keeping its file as `.bak`.
-    /// The last one stays.
+    /// Deletes the workspace with `id`: its processes end (see `end_later`), its file is kept
+    /// as `.bak` and its image removed. The last one stays.
     pub(crate) fn delete_space(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let Some(at) = self.order().iter().position(|s| s.id == id) else {
             return;
@@ -234,15 +302,48 @@ impl Workspace {
         if at < self.active {
             self.active -= 1;
         }
-        if let Some(dir) = &self.data_dir
-            && let Err(err) = session::set_aside(dir, &space.id)
-        {
-            eprintln!("templum: couldn't set {}.json aside: {err}", space.id);
+        if let Some(dir) = &self.data_dir {
+            if let Err(err) = session::set_aside(dir, &space.id) {
+                eprintln!("templum: couldn't set {}.json aside: {err}", space.id);
+            }
+            if let Some(image) = space.look.image.as_ref().and_then(|p| p.file_name())
+                && let Err(err) = session::remove_icon(dir, &image.to_string_lossy())
+            {
+                eprintln!("templum: couldn't remove {}'s image: {err}", space.id);
+            }
         }
-        // Dropping its terminals shuts their shells down.
+        let tree = tree_of(&space);
+        // Dropping its terminals hangs their shells up.
         drop(space);
+        self.end_later(tree, cx);
         self.write_index(window, cx);
         cx.notify();
+    }
+
+    /// Kills, KILL_AFTER from now, what of `tree` the hangup left running.
+    pub(super) fn end_later(&self, tree: Vec<templum_terminal::Running>, cx: &mut Context<Self>) {
+        if tree.is_empty() {
+            return;
+        }
+        let executor = cx.background_executor().clone();
+        let timer = executor.timer(KILL_AFTER);
+        executor
+            .spawn(async move {
+                timer.await;
+                templum_terminal::kill_left(&tree);
+            })
+            .detach();
+    }
+
+    /// Why ending a workspace's terminals would lose work: each one at work, by its title.
+    pub(crate) fn busy_in(&self, space: &Space) -> Vec<String> {
+        space
+            .terminals()
+            .filter_map(|(_, pane)| {
+                let why = alert::busy(&pane.term.status(), self.agent_name(pane))?;
+                Some(format!("{}: {why}", pane.term.title()))
+            })
+            .collect()
     }
 
     pub(crate) fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -261,6 +362,16 @@ impl Workspace {
                 .map(|s| session::IndexEntry {
                     id: s.id.clone(),
                     name: s.name.clone(),
+                    icon: s.look.icon.map(|i| space_dialog::icon_name(i).to_string()),
+                    color: s.look.color.clone(),
+                    image: s
+                        .look
+                        .image
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .map(|n| n.to_string_lossy().into_owned()),
+                    folder: s.folder.clone(),
+                    stopped: s.stopped,
                 })
                 .collect(),
             active: self.active,
