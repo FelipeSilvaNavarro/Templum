@@ -82,6 +82,8 @@ const MAX_ROWS: u16 = 1000;
 const CLICK_SLOP: f32 = 4.0;
 /// Drawing changes kept for undo, per workspace.
 pub(crate) const INK_UNDO: usize = 50;
+/// Closes kept for Ctrl+Z, per workspace.
+const CLOSED_UNDO: usize = 50;
 /// Board changes kept for undo, for the whole app (the boards are).
 pub(crate) const BOARD_UNDO: usize = 50;
 /// Cursor blink half-period.
@@ -263,14 +265,14 @@ impl Body {
         }
     }
 
-    /// The block as a saved item at `rect`. A terminal's is its folder as last seen, without its
-    /// agent: a snapshot reads both in the background.
+    /// The block as a saved item at `rect`. A terminal's folder and agent are those last seen (a
+    /// snapshot reads them in the background).
     pub fn item(&self, rect: templum_canvas::Rect, cx: &App) -> session::Item {
         match self {
             Body::Terminal(pane) => session::Item::Terminal(session::TerminalItem {
                 rect: rect.into(),
                 folder: pane.seen.folder.clone().and_then(session::utf8),
-                agent: None,
+                agent: pane.seen.agent.clone(),
             }),
             Body::Kanban(k) => session::Item::Kanban(session::KanbanItem {
                 rect: rect.into(),
@@ -376,6 +378,8 @@ pub(crate) struct Space {
     pub ink: Vec<Drawing>,
     /// The selected drawing, by its index in `ink`.
     pub selected_ink: Option<usize>,
+    /// The blocks each close took away, newest last, at most CLOSED_UNDO: Ctrl+Z reopens them.
+    pub closed: Vec<Vec<session::Item>>,
     /// `ink` before each change, newest last, at most INK_UNDO; and the undone ones.
     pub ink_undo: Vec<Vec<Drawing>>,
     pub ink_redo: Vec<Vec<Drawing>>,

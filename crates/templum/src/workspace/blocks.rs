@@ -428,7 +428,7 @@ impl Workspace {
                 "Close the terminal?",
                 why,
                 "Close",
-                move |window, cx| ws.update(cx, |ws, cx| ws.remove_block(id, window, cx)),
+                move |window, cx| ws.update(cx, |ws, cx| ws.close_now(&[id], window, cx)),
                 window,
                 cx,
             );
@@ -437,7 +437,7 @@ impl Workspace {
         // Only this workspace: block ids count from 0 in every one.
         let unsaved = self.space.unsaved(Some(id));
         if unsaved.is_empty() {
-            self.remove_block(id, window, cx);
+            self.close_now(&[id], window, cx);
             return;
         }
         let ws = cx.entity();
@@ -449,12 +449,12 @@ impl Workspace {
                 saver.update(cx, |ws, cx| {
                     let saved = ws.save_all(id, window, cx);
                     if saved {
-                        ws.remove_block(id, window, cx);
+                        ws.close_now(&[id], window, cx);
                     }
                     saved
                 })
             },
-            move |window, cx| ws.update(cx, |ws, cx| ws.remove_block(id, window, cx)),
+            move |window, cx| ws.update(cx, |ws, cx| ws.close_now(&[id], window, cx)),
             window,
             cx,
         );
@@ -631,6 +631,10 @@ impl Workspace {
     pub(super) fn close_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.space.focused {
             self.close(id, window, cx);
+            // The keyboard goes on to the block on top, as a terminal app's next tab.
+            if self.space.focused.is_none() {
+                self.space.focused = self.space.canvas.top();
+            }
         }
     }
 }

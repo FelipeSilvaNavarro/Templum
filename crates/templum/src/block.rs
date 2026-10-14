@@ -221,6 +221,11 @@ pub(crate) fn render(
                 // A double-click frames the block; the camera flies, so nothing moves.
                 if e.click_count == 2 {
                     ws.frame_block(id, window, cx);
+                } else if ws.space.selected.contains(&id) {
+                    // A selected block's title moves every selected block, still selected.
+                    ws.begin_group_move(e.position);
+                    cx.stop_propagation();
+                    return;
                 } else {
                     ws.begin_move(id, e.position);
                 }

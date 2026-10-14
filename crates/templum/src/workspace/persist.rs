@@ -57,17 +57,8 @@ impl Workspace {
             let in_its_folder = folder.is_some();
             let id = self.spawn_block(rect, folder, window, cx);
             failed |= id.is_none();
-            // The shell reads it once it is ready.
-            let agent = t
-                .agent
-                .as_ref()
-                .and_then(|a| self.agents.iter().find(|known| known.id == *a));
-            if let (Some(id), Some(agent), true) = (id, agent, in_its_folder) {
-                let line = format!("{}\r", agent.resume_command());
-                let agent = agent.id.clone();
-                let pane = self.space.terminal_mut(id).expect("just spawned");
-                pane.term.write(line.into_bytes());
-                pane.seen.agent = Some(agent);
+            if let (Some(id), true) = (id, in_its_folder) {
+                self.resume_agent(id, t.agent.as_deref());
             }
             ids.push(id);
         }
@@ -100,9 +91,23 @@ impl Workspace {
         self.space.saved = Some(saved);
     }
 
+    /// Types the resume command of `agent` (an id; one Templum knows) into the terminal `id`,
+    /// just started. The shell reads it once it is ready.
+    fn resume_agent(&mut self, id: BlockId, agent: Option<&str>) {
+        let Some(agent) = agent.and_then(|a| self.agents.iter().find(|known| known.id == a)) else {
+            return;
+        };
+        let line = format!("{}\r", agent.resume_command());
+        let agent = agent.id.clone();
+        if let Some(pane) = self.space.terminal_mut(id) {
+            pane.term.write(line.into_bytes());
+            pane.seen.agent = Some(agent);
+        }
+    }
+
     /// A block from a saved item, on top and focused. A terminal starts a fresh shell in the
-    /// item's folder (the home folder when it is gone). None when its rect has a number that
-    /// isn't finite, or its shell couldn't start.
+    /// item's folder (the home folder when it is gone), resuming its agent there. None when its
+    /// rect has a number that isn't finite, or its shell couldn't start.
     pub(super) fn add_saved(
         &mut self,
         item: &session::Item,
@@ -113,7 +118,13 @@ impl Workspace {
             session::Item::Terminal(t) => {
                 let rect = self.restorable(t.rect.into())?;
                 let folder = t.folder.as_ref().map(PathBuf::from).filter(|f| f.is_dir());
-                self.spawn_block(rect, folder, window, cx)
+                // An agent resumes the folder's latest conversation: anywhere else, it's another one.
+                let in_its_folder = folder.is_some();
+                let id = self.spawn_block(rect, folder, window, cx)?;
+                if in_its_folder {
+                    self.resume_agent(id, t.agent.as_deref());
+                }
+                Some(id)
             }
             session::Item::Kanban(k) => clamped_rect(k.rect.into(), kanban::MIN).map(|rect| {
                 self.add_block(

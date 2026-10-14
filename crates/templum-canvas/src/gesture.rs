@@ -40,12 +40,15 @@ impl Edges {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Gesture {
     /// Dragging empty canvas; `last` is the previous pointer position.
     Pan { last: Point },
     /// Dragging a title bar; `grab` is the pointer's world offset from the block's top-left.
     Move { id: BlockId, grab: Point },
+    /// Dragging several blocks by one's title; `grab` is the pointer's world offset from their
+    /// bounds' top-left. They keep their places to each other, and their bounds snap.
+    MoveGroup { ids: Vec<BlockId>, grab: Point },
     /// Dragging `edges` of a block; `grab` is the pointer's world offset from them.
     Resize {
         id: BlockId,
@@ -65,6 +68,15 @@ impl Gesture {
         let w = canvas.camera.to_world(pointer);
         Some(Gesture::Move {
             id,
+            grab: Point::new(w.x - r.x, w.y - r.y),
+        })
+    }
+
+    pub fn move_blocks(canvas: &Canvas, ids: &[BlockId], pointer: Point) -> Option<Self> {
+        let r = bounds_of(canvas, ids)?;
+        let w = canvas.camera.to_world(pointer);
+        Some(Gesture::MoveGroup {
+            ids: ids.to_vec(),
             grab: Point::new(w.x - r.x, w.y - r.y),
         })
     }
@@ -110,6 +122,32 @@ impl Gesture {
                 let raw = Rect::new(w.x - grab.x, w.y - grab.y, b.rect.w, b.rect.h);
                 let snapped = snap_move(raw, &others, threshold);
                 b.rect = snapped.rect;
+                Update {
+                    resized: None,
+                    guides: snapped.guides,
+                }
+            }
+            Gesture::MoveGroup { ids, grab } => {
+                let Some(bounds) = bounds_of(canvas, ids) else {
+                    return Update::default();
+                };
+                let w = canvas.camera.to_world(pointer);
+                let others: Vec<Rect> = canvas
+                    .blocks()
+                    .iter()
+                    .filter(|b| !ids.contains(&b.id))
+                    .map(|b| b.rect)
+                    .collect();
+                let threshold = SNAP_PX / canvas.camera.zoom();
+                let raw = Rect::new(w.x - grab.x, w.y - grab.y, bounds.w, bounds.h);
+                let snapped = snap_move(raw, &others, threshold);
+                let (dx, dy) = (snapped.rect.x - bounds.x, snapped.rect.y - bounds.y);
+                for id in ids.iter() {
+                    if let Some(b) = canvas.get_mut(*id) {
+                        b.rect.x += dx;
+                        b.rect.y += dy;
+                    }
+                }
                 Update {
                     resized: None,
                     guides: snapped.guides,
@@ -162,6 +200,14 @@ fn clamp(r: Rect, edges: Edges, x: f32, y: f32, min: Size) -> Rect {
         bottom = y.max(top + min.h);
     }
     Rect::new(left, top, right - left, bottom - top)
+}
+
+/// The rect around the blocks `ids` still on the canvas; None when none is.
+fn bounds_of(canvas: &Canvas, ids: &[BlockId]) -> Option<Rect> {
+    ids.iter()
+        .filter_map(|id| canvas.get(*id))
+        .map(|b| b.rect)
+        .reduce(|a, b| a.union(&b))
 }
 
 /// Every block's rect but `id`'s: what it can snap to.
@@ -251,6 +297,29 @@ mod tests {
         let u = g.update(&mut c, Point::new(120.0, 500.0));
         assert_eq!(c.get(id).unwrap().rect.x, 120.0);
         assert!(u.guides.is_empty());
+    }
+
+    #[test]
+    fn a_group_moves_together_and_snaps_its_bounds() {
+        let mut c = Canvas::default();
+        let a = c.add(Rect::new(500.0, 500.0, 100.0, 50.0));
+        let b = c.add(Rect::new(650.0, 520.0, 50.0, 50.0));
+        let still = c.add(Rect::new(100.0, 100.0, 200.0, 100.0));
+        // Grabbed on a's title, 10 units into the group's bounds.
+        let mut g = Gesture::move_blocks(&c, &[a, b], Point::new(510.0, 505.0)).unwrap();
+        let u = g.update(&mut c, Point::new(540.0, 545.0));
+        assert_eq!(c.get(a).unwrap().rect, Rect::new(530.0, 540.0, 100.0, 50.0));
+        assert_eq!(c.get(b).unwrap().rect, Rect::new(680.0, 560.0, 50.0, 50.0));
+        assert!(u.guides.is_empty());
+        // The bounds' left edge would be at 105: within 8 of `still`'s, and both follow.
+        let u = g.update(&mut c, Point::new(115.0, 545.0));
+        assert_eq!(c.get(a).unwrap().rect.x, 100.0);
+        assert_eq!(c.get(b).unwrap().rect.x, 250.0);
+        assert_eq!(u.guides.len(), 1);
+        assert_eq!(
+            c.get(still).unwrap().rect,
+            Rect::new(100.0, 100.0, 200.0, 100.0)
+        );
     }
 
     #[test]

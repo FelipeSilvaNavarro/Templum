@@ -1,17 +1,17 @@
 //! Selecting blocks: a rectangle (Shift+drag on the empty canvas) or Shift+click on a title; and
-//! what acts on the selected blocks, or on the focused one: Delete closes them, Copy and Paste
-//! copy them.
+//! what acts on the selected blocks, or on the focused one: a selected title's drag moves them
+//! together, Delete closes them, Copy and Paste copy them. Ctrl+Z reopens closed blocks.
 
-use gpui_kit::{App, ClipboardItem, Context, Window};
+use gpui_kit::{App, ClipboardItem, Context, Pixels, Point as PixelPoint, Window};
 use serde::{Deserialize, Serialize};
-use templum_canvas::{BlockId, Point, Rect};
+use templum_canvas::{BlockId, Gesture, Point, Rect};
 
 use crate::{alert, prompt, session};
 
-use super::{Drag, Workspace};
+use super::{CLOSED_UNDO, Drag, Workspace};
 
 /// What Copy puts on the clipboard for blocks: JSON that Paste knows, here or in another
-/// Templum. A terminal comes back as a fresh shell in its folder.
+/// Templum. A terminal comes back as a fresh shell in its folder, without its agent.
 #[derive(Serialize, Deserialize)]
 struct Clip {
     templum_blocks: Vec<session::Item>,
@@ -43,6 +43,14 @@ impl Workspace {
             }
         }
         self.space.selected = selected;
+    }
+
+    /// A press on a selected block's title: dragging moves every selected block.
+    pub(crate) fn begin_group_move(&mut self, pos: PixelPoint<Pixels>) {
+        let p = self.local(pos);
+        self.space.pristine = false;
+        self.drag =
+            Gesture::move_blocks(&self.space.canvas, &self.space.selected, p).map(Drag::Canvas);
     }
 
     /// Shift+click on a block's title: it joins the selection, or leaves it.
@@ -121,19 +129,76 @@ impl Workspace {
         let near = Point::new(center.x - bounds.w / 2.0, center.y - bounds.h / 2.0);
         let at = self.space.canvas.place_new(bounds.size(), near);
         let (dx, dy) = (at.x - bounds.x, at.y - bounds.y);
-        self.space.pristine = false;
-        let mut pasted = Vec::new();
         for item in &mut items {
             let rect = item.rect_mut();
             rect.x += dx;
             rect.y += dy;
-            pasted.extend(self.add_saved(item, window, cx));
+            // A second agent resuming the same conversation would fight over it.
+            if let session::Item::Terminal(t) = item {
+                t.agent = None;
+            }
         }
+        self.add_selected(&items, window, cx);
+        true
+    }
+
+    /// Ctrl+Z on the canvas: reopens the blocks the last close took away, where they were,
+    /// selected. False when nothing was closed.
+    pub(super) fn reopen_closed(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(items) = self.space.closed.pop() else {
+            return false;
+        };
+        self.add_selected(&items, window, cx);
+        true
+    }
+
+    /// Adds the blocks `items`, selected, with the keyboard on the canvas.
+    fn add_selected(
+        &mut self,
+        items: &[session::Item],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.space.pristine = false;
+        let added = items
+            .iter()
+            .filter_map(|item| self.add_saved(item, window, cx))
+            .collect();
         self.space.focused = None;
-        self.space.selected = pasted;
+        self.space.selected = added;
         window.focus(&self.focus_handle, cx);
         cx.notify();
-        true
+    }
+
+    /// Closes the blocks `ids` now, kept for Ctrl+Z as one step. Nothing is focused after: the
+    /// keyboard stays on the canvas, so Ctrl+Z reaches it, not a terminal.
+    pub(super) fn close_now(
+        &mut self,
+        ids: &[BlockId],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let items: Vec<_> = self
+            .space
+            .canvas
+            .blocks()
+            .iter()
+            .filter(|b| ids.contains(&b.id))
+            .map(|b| self.space.blocks[&b.id].item(b.rect, cx))
+            .collect();
+        if !items.is_empty() {
+            self.space.closed.push(items);
+            if self.space.closed.len() > CLOSED_UNDO {
+                self.space.closed.remove(0);
+            }
+        }
+        let was_focused = self.space.focused.is_some_and(|id| ids.contains(&id));
+        for id in ids {
+            self.remove_block(*id, window, cx);
+        }
+        if was_focused {
+            self.space.focused = None;
+        }
     }
 
     /// Delete or Backspace on the canvas: closes the selected blocks, else the focused one. A
@@ -182,20 +247,14 @@ impl Workspace {
             .flat_map(|id| self.space.unsaved(Some(*id)))
             .collect();
         if busy.is_empty() && unsaved.is_empty() {
-            for id in ids {
-                self.remove_block(id, window, cx);
-            }
+            self.close_now(&ids, window, cx);
             return;
         }
         let ws = cx.entity();
         let remove = {
             let (ws, ids) = (ws.clone(), ids.clone());
             move |window: &mut Window, cx: &mut App| {
-                ws.update(cx, |ws, cx| {
-                    for id in &ids {
-                        ws.remove_block(*id, window, cx);
-                    }
-                })
+                ws.update(cx, |ws, cx| ws.close_now(&ids, window, cx))
             }
         };
         let busy = busy.join(" ");

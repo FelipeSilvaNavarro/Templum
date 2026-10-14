@@ -463,6 +463,16 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
+        // Ctrl+Z on the canvas, no terminal's, nor a drawing's or a board's: reopens the last
+        // closed blocks.
+        if undo_key(k, cfg!(target_os = "macos")) == Some(false)
+            && self.space.focused_terminal().is_none()
+            && self.canvas_has_keys(window)
+            && self.reopen_closed(window, cx)
+        {
+            cx.stop_propagation();
+            return;
+        }
         if let Some(to) = workspace_digit(&e.keystroke, cfg!(target_os = "macos"))
             && to <= self.others.len()
         {

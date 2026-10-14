@@ -1,4 +1,5 @@
-//! Selecting blocks (Shift+drag, Shift+click on a title), and Delete, Copy and Paste on them.
+//! Selecting blocks (Shift+drag, Shift+click on a title), and what acts on them: a title's drag,
+//! Delete, Copy and Paste; Ctrl+Z reopening closed blocks.
 
 use super::*;
 use crate::session::{Item, KanbanItem, NoteItem};
@@ -11,6 +12,10 @@ const COPY: &str = "ctrl-c";
 const PASTE: &str = "cmd-v";
 #[cfg(not(target_os = "macos"))]
 const PASTE: &str = "ctrl-v";
+#[cfg(target_os = "macos")]
+const UNDO: &str = "cmd-z";
+#[cfg(not(target_os = "macos"))]
+const UNDO: &str = "ctrl-z";
 
 const SHIFT: Modifiers = Modifiers {
     shift: true,
@@ -194,4 +199,125 @@ fn text_on_the_clipboard_is_not_pasted_as_blocks(cx: &mut TestAppContext) {
     })
     .unwrap();
     assert_eq!(ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len()), 3);
+}
+
+#[gpui_kit::test]
+fn dragging_a_selected_title_moves_every_selected_block(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let before = ws.read_with(cx, |ws, _| {
+        [kanban, note, terminal].map(|id| ws.space.canvas.get(id).unwrap().rect)
+    });
+    let (from, to) = (at(&ws, cx, (20.0, 20.0)), at(&ws, cx, (330.0, 100.0)));
+    let title = at(&ws, cx, (150.0, 40.0 + chrome::TITLE_H / 2.0));
+    cx.update_window(handle, |_, window, cx| {
+        press_with(window, cx, MouseButton::Left, SHIFT, from, to);
+        window.render_frame(cx);
+        press_with(
+            window,
+            cx,
+            MouseButton::Left,
+            Modifiers::default(),
+            title,
+            (title.0 + 100.0, title.1 + 50.0),
+        );
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let moved = |id, r: Rect| {
+            assert_eq!(
+                ws.space.canvas.get(id).unwrap().rect,
+                Rect::new(r.x + 100.0, r.y + 50.0, r.w, r.h)
+            )
+        };
+        moved(kanban, before[0]);
+        moved(note, before[1]);
+        assert_eq!(ws.space.canvas.get(terminal).unwrap().rect, before[2]);
+        assert_eq!(ws.space.selected, [kanban, note], "still selected");
+        assert_eq!(ws.space.focused, None);
+    });
+}
+
+#[gpui_kit::test]
+fn ctrl_z_reopens_the_blocks_delete_closed_where_they_were(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    let rects = ws.read_with(cx, |ws, _| {
+        [kanban, note].map(|id| ws.space.canvas.get(id).unwrap().rect)
+    });
+    let (from, to) = (at(&ws, cx, (20.0, 20.0)), at(&ws, cx, (330.0, 100.0)));
+    cx.update_window(handle, |_, window, cx| {
+        press_with(window, cx, MouseButton::Left, SHIFT, from, to);
+        window.press("delete", cx);
+    })
+    .unwrap();
+    assert_eq!(ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len()), 1);
+    cx.update_window(handle, |_, window, cx| window.press(UNDO, cx))
+        .unwrap();
+    ws.read_with(cx, |ws, cx| {
+        let back = ws.space.selected.clone();
+        assert_eq!(back.len(), 2, "reopened, selected");
+        assert_eq!(ws.space.canvas.get(back[0]).unwrap().rect, rects[0]);
+        assert_eq!(ws.space.canvas.get(back[1]).unwrap().rect, rects[1]);
+        assert!(ws.space.kanban(back[0]).is_some());
+        assert_eq!(ws.space.blocks[&back[1]].note().unwrap().text(cx), "hello");
+        assert!(ws.space.closed.is_empty());
+    });
+}
+
+#[gpui_kit::test]
+fn a_closed_block_leaves_no_focus_and_ctrl_z_never_reaches_past_a_terminal(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        // As its close button does: the block is focused by the press, then closed.
+        ws.update(cx, |ws, cx| {
+            ws.focus_block(note, window, cx);
+            ws.close(note, window, cx);
+        });
+        assert_eq!(
+            ws.read(cx).space.focused,
+            None,
+            "the keyboard stays on the canvas"
+        );
+        // A focused terminal's Ctrl+Z is its shell's.
+        ws.update(cx, |ws, cx| ws.focus_block(terminal, window, cx));
+        window.press(UNDO, cx);
+        assert_eq!(ws.read(cx).space.canvas.blocks().len(), 2);
+        ws.update(cx, |ws, cx| ws.focus_block(kanban, window, cx));
+        window.press(UNDO, cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, cx| {
+        assert_eq!(ws.space.canvas.blocks().len(), 3);
+        let back = ws.space.selected[0];
+        assert_eq!(ws.space.blocks[&back].note().unwrap().text(cx), "hello");
+    });
+}
+
+#[gpui_kit::test]
+fn a_reopened_terminal_resumes_its_agent_but_a_pasted_one_does_not(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, terminal) = three_blocks(handle, &ws, cx);
+    let folder = tempfile::tempdir().unwrap();
+    let agent_of = |ws: &Workspace, id: BlockId| ws.space.terminal(id).unwrap().seen.agent.clone();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let pane = ws.space.terminal_mut(terminal).unwrap();
+            pane.seen.agent = Some("claude".into());
+            pane.seen.folder = Some(folder.path().to_path_buf());
+            ws.close_now(&[terminal], window, cx);
+            assert!(ws.reopen_closed(window, cx));
+        });
+        let back = ws.read(cx).space.selected[0];
+        assert_eq!(agent_of(ws.read(cx), back).as_deref(), Some("claude"));
+        window.press(COPY, cx);
+        window.press(PASTE, cx);
+        let pasted = ws.read(cx).space.selected[0];
+        assert_ne!(pasted, back);
+        assert_eq!(agent_of(ws.read(cx), pasted), None);
+    })
+    .unwrap();
 }
