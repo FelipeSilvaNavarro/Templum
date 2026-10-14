@@ -569,10 +569,19 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
+        // A program that took over the focused terminal gets the keys of the shortcuts that
+        // yield to it (Ctrl+- undoes in Claude Code).
+        let (modes, agent) = self
+            .space
+            .focused_terminal()
+            .map(|pane| (pane.term.shared().modes(), pane.seen.agent.is_some()))
+            .unwrap_or_default();
+        let program = modes.full_screen || modes.kitty_keys || modes.mouse || agent;
         let command = effective(
             self.keymap.command(&e.keystroke),
             self.focused_editor().is_some(),
             self.space.grid.is_some(),
+            program,
         );
         // A terminal's find field has the keyboard: what it leaves (Enter, Esc, shortcuts)
         // never reaches the shell. Copy and paste are the field's own; text goes on to it.
@@ -688,10 +697,7 @@ impl Workspace {
         // Shift+Enter starts a new line in an agent: with the kitty keyboard on (Claude Code,
         // Codex) it says Shift+Enter itself; otherwise ESC CR, as Alt+Enter sends. A shell still
         // gets Enter.
-        let newline = k.key == "enter"
-            && k.modifiers.shift
-            && pane.seen.agent.is_some()
-            && !pane.term.shared().modes().kitty_keys;
+        let newline = k.key == "enter" && k.modifiers.shift && agent && !modes.kitty_keys;
         let input = KeyInput {
             key: &k.key,
             key_char: k.key_char.as_deref(),

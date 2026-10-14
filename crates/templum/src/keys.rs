@@ -196,6 +196,23 @@ impl Command {
         )
     }
 
+    /// Left to the program that took over a terminal (full screen, the mouse, the kitty keyboard,
+    /// an agent): its own hotkeys use these keys (Ctrl+- undoes in Claude Code), and they mean
+    /// little there. The window's shortcuts (blocks, workspaces, grid, copy, paste) stay.
+    pub fn yields_to_programs(self) -> bool {
+        matches!(
+            self,
+            Command::ZoomIn
+                | Command::ZoomOut
+                | Command::ZoomReset
+                | Command::Settings
+                | Command::ThemePicker
+                | Command::OpenConfig
+                | Command::PreviousPrompt
+                | Command::NextPrompt
+        )
+    }
+
     /// Shift+1 is reported as "!" on some layouts: fit_all binds both.
     pub fn defaults(self, macos: bool) -> &'static [&'static str] {
         match (self, macos) {

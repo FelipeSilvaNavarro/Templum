@@ -117,7 +117,9 @@ A file holds one responsibility; a module that grows past a few hundred lines be
 - Shortcuts are Templum's own keymap (`crates/templum/src/keys.rs`), matched in the workspace's key handler, so a
   reload can replace them. GPUI key bindings are only used to keep Tab for the shell. Commands that only make sense
   in an editor (`save`, `close_tab`, `go_to_line`) are dropped by `effective` when no editor block has the focus, so
-  their keys reach the terminal.
+  their keys reach the terminal; so are zoom, settings, the theme picker and the prompt jumps
+  (`Command::yields_to_programs`) when a program took over the focused terminal (full screen, an agent, the mouse or
+  the kitty keyboard asked for): its own hotkeys use them.
 - `templum-terminal` encodes keys as xterm does, and in the kitty keyboard protocol for programs that turn it on
   (Claude Code and Codex hear Shift+Enter); mouse events go to programs that asked for them (xterm's 1000/1002/1003,
   SGR or UTF-8), Shift keeping a drag Templum's selection.

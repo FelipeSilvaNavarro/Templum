@@ -63,6 +63,8 @@ cargo run -p templum
 | Ctrl+Shift+N | Cmd+Shift+N | New workspace |
 | Ctrl+Shift+Q, twice | Cmd+Q, twice | Quit (the first press only asks for the second) |
 
+In a terminal taken over by a program (full screen, an AI agent, or one that asked for the mouse or the kitty
+keyboard), zoom, settings, the theme picker and the prompt jumps leave their keys to it: Ctrl+- undoes in Claude Code.
 Shift+Enter is a new line in Claude Code and Codex.
 
 ## Workspaces

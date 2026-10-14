@@ -1026,3 +1026,27 @@ fn shift_enter_in_the_kitty_keyboard(cx: &mut TestAppContext) {
         screen_of(ws, id).contains("^[[13;2u")
     });
 }
+
+/// A program full screen gets the keys of the shortcuts that yield to it: Ctrl+- (Claude Code's
+/// undo) reaches it, the canvas doesn't zoom. New terminal stays Templum's.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_program_full_screen_gets_the_shortcuts_that_yield(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    program_asks("\x1b[?1049h", handle, &ws, cx, |m| m.full_screen);
+    let zoom = ws.read_with(cx, |ws, _| ws.space.canvas.camera.zoom());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl--", cx);
+        window.press(NEW, cx);
+    })
+    .unwrap();
+    until("Ctrl+-", handle, &ws, cx, |ws| {
+        screen_of(ws, id).contains("^_")
+    });
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.canvas.camera.zoom(), zoom);
+        assert_eq!(ws.space.canvas.blocks().len(), 2, "a new terminal");
+    });
+}

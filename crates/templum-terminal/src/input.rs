@@ -90,7 +90,7 @@ pub(crate) fn encode_key(k: &KeyInput, mode: TermMode) -> Option<Vec<u8>> {
                 b'4' => 0x1c,
                 b'5' => 0x1d,
                 b'6' => 0x1e,
-                b'7' | b'/' => 0x1f,
+                b'7' | b'/' | b'-' => 0x1f,
                 b'8' => 0x7f,
                 _ => return None,
             };
@@ -471,6 +471,15 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn ctrl_minus_is_ctrl_underscore() {
+        let ctrl_minus = KeyInput {
+            ctrl: true,
+            ..key("-")
+        };
+        assert_eq!(enc(ctrl_minus).unwrap(), [0x1f]);
     }
 
     fn kitty(k: KeyInput, mode: TermMode) -> String {
