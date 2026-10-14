@@ -86,8 +86,9 @@ Every field reads the active `Config`. A change applies at once, except in Shell
 
 The theme picker in the title bar keeps working and writes the same keys.
 
-Under these rows, a card for the theme in use: **Duplicate…** for a built-in one; **New theme…** and **Open file**
-for one of yours ([themes.md](themes.md#making-a-theme)).
+Under these rows, a card for the theme in use: **Duplicate…** for a built-in one; **New theme…**, **Open file** and
+its colors as swatches with color pickers for one of yours, written to its file ([themes.md](themes.md#making-a-theme),
+[the color editor](themes.md#the-color-editor)).
 
 **Font**
 

@@ -380,3 +380,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **The frosted canvas shows the blocks' shapes, not their text.** GPUI's scene has no backdrop filter, so
   `frost` (`crates/templum/src/welcome.rs`) draws each block as a blurred shadow of its shape. Fix: blur the real
   canvas when GPUI gains a backdrop blur, or draws a frame to a texture outside tests.
+
+## Themes
+
+- [ ] **The color picker shows an alpha slider that does nothing.** gpui-kit's popover always has it, and theme
+  colors are opaque (`crates/templum/src/settings/colors.rs`). Fix: hide it when gpui-kit's `ColorPicker` gains an
+  option for that, or draw our own sliders.
+- [ ] **Switching light and dark may show the other theme as it was for half a second.** When its file was saved
+  while it wasn't in use, `refresh_theme` (`crates/templum/src/workspace/preferences.rs`) applies the copy read
+  before, and `poll_theme` applies the file at the next poll. Fix: read the picked theme's file in `refresh_theme`.
