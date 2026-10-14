@@ -1,9 +1,10 @@
 //! The theme gallery: the themes of alacritty-theme, cached in the data folder, shown as cards in
 //! their own colors; hovering one previews it, a click installs it (docs/specs/themes.md).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use gpui_kit::component::WindowExt as _;
@@ -117,15 +118,22 @@ fn load(cache: &Path) -> Vec<Card> {
 // ponytail: files GitHub no longer lists stay in the cache (a few hundred bytes each); prune what
 // the index doesn't name if the folder ever grows.
 fn refresh(cache: &Path) -> Result<(), String> {
+    // One at a time: a gallery opened again during the first download waits for it (its files
+    // and the listing are written through the same temporary names), then finds them cached.
+    static REFRESHING: Mutex<()> = Mutex::new(());
+    let _one = REFRESHING.lock().unwrap_or_else(|e| e.into_inner());
     let agent = templum_update::agent();
     let json = templum_update::get(&agent, LIST)?;
     let listed = listing(&json)?;
     std::fs::create_dir_all(cache)
         .map_err(|e| format!("Couldn't create {}: {e}", cache.display()))?;
-    let missing: Vec<&Listed> = listed
+    let mut missing: Vec<&Listed> = listed
         .iter()
         .filter(|l| !cache.join(format!("{}.toml", l.sha)).is_file())
         .collect();
+    // Two names may share a file (the same colors): it is downloaded once.
+    missing.sort_by_key(|l| &l.sha);
+    missing.dedup_by_key(|l| &l.sha);
     let (next, failed) = (AtomicUsize::new(0), AtomicUsize::new(0));
     std::thread::scope(|scope| {
         for _ in 0..WORKERS.min(missing.len()) {
@@ -133,6 +141,11 @@ fn refresh(cache: &Path) -> Result<(), String> {
                 while let Some(l) = missing.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let url = l.download_url.as_deref().unwrap_or_default();
                     let saved = templum_update::get(&agent, url).and_then(|text| {
+                        // A file not matching its hash (a stale copy GitHub's CDN still serves)
+                        // is not kept under it: the next refresh tries again.
+                        if blob_sha(&text) != l.sha.to_lowercase() {
+                            return Err("not the file GitHub lists".to_string());
+                        }
                         config::write_whole(&cache.join(format!("{}.toml", l.sha)), &text)
                             .map_err(|e| e.to_string())
                     });
@@ -151,11 +164,21 @@ fn refresh(cache: &Path) -> Result<(), String> {
         .map_err(|e| format!("Couldn't write {}: {e}", cache.join(INDEX).display()))
 }
 
+/// The hash git gives a file's content, as GitHub's listing names it.
+fn blob_sha(text: &str) -> String {
+    let mut sha = sha1_smol::Sha1::new();
+    sha.update(format!("blob {}\0", text.len()).as_bytes());
+    sha.update(text.as_bytes());
+    sha.digest().to_string()
+}
+
 /// An installed theme's file: the downloaded one, under a line that names its source and license.
 pub(crate) fn credited(card: &Card) -> String {
+    // A byte-order mark is only allowed first: under the line it would break the file.
+    let text = card.text.strip_prefix('\u{feff}').unwrap_or(&card.text);
     format!(
-        "# From https://github.com/alacritty/alacritty-theme (themes/{}), Apache-2.0.\n{}",
-        card.file, card.text
+        "# From https://github.com/alacritty/alacritty-theme (themes/{}), Apache-2.0.\n{text}",
+        card.file
     )
 }
 
@@ -201,6 +224,8 @@ pub(crate) fn open(ws: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
         .detach();
     }
     let entity = cx.entity();
+    // Cleared when the dialog closes: a hover the last frame still dispatches mustn't preview then.
+    let open = Rc::new(Cell::new(true));
     let search = cx.new(|cx| InputState::new(window, cx).placeholder("Find a theme"));
     let field = search.clone();
     {
@@ -234,6 +259,7 @@ pub(crate) fn open(ws: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
                 let shown = installed.clone().unwrap_or_else(|| card.theme.clone());
                 let id = ElementId::Name(format!("gallery-theme-{name}").into());
                 let (hover, click, card) = (entity.clone(), entity.clone(), card.clone());
+                let (hover_open, click_open) = (open.clone(), open.clone());
                 theme_card(
                     id,
                     &shown,
@@ -245,12 +271,13 @@ pub(crate) fn open(ws: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
                     el.child(div().text_size(px(10.0)).opacity(0.7).child("Installed"))
                 })
                 .on_hover(move |hovered: &bool, _, cx| {
-                    if *hovered {
+                    if *hovered && hover_open.get() {
                         hover.update(cx, |ws, cx| ws.apply(shown.clone(), cx));
                     }
                 })
                 .on_click(move |_: &ClickEvent, window, cx| {
                     // Closing this way skips `on_close`, which would put the old theme back.
+                    click_open.set(false);
                     window.close_dialog(cx);
                     click.update(cx, |ws, cx| ws.install_theme(&card, window, cx));
                 })
@@ -280,13 +307,16 @@ pub(crate) fn open(ws: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
                     "No theme has that name."
                 })
         });
-        let restore = entity.clone();
+        let (restore, closing) = (entity.clone(), open.clone());
         alert
             .title(if dark { "Dark themes" } else { "Light themes" })
             .w(px(600.0))
             .button_props(DialogButtonProps::default().ok_text("Done"))
             // Esc, Done or a click outside: back to the mode's theme, whatever was previewed.
-            .on_close(move |_, _, cx| restore.update(cx, |ws, cx| ws.refresh_theme(cx)))
+            .on_close(move |_, _, cx| {
+                closing.set(false);
+                restore.update(cx, |ws, cx| ws.refresh_theme(cx))
+            })
             .child(
                 div()
                     .flex()
@@ -353,10 +383,11 @@ pub(crate) mod tests {
     fn listing_keeps_theme_files() {
         let sha = "a".repeat(40);
         let json = format!(
-            "[{}, {}, {}, {}, {}]",
+            "[{}, {}, {}, {}, {}, {}]",
             entry("dracula.toml", &sha),
             entry("README.md", &sha),
             entry("short.toml", "abc"),
+            entry("escape.toml", "../../../../../../../../../../config.tom"),
             entry("evil.toml", &sha).replace(RAW, "https://example.com/"),
             r#"{"name": "dir.toml", "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "type": "dir", "download_url": null}"#,
         );
@@ -406,6 +437,23 @@ pub(crate) mod tests {
             ["Dracula"],
             "broken, missing and the same name twice left out"
         );
+    }
+
+    #[test]
+    fn blob_sha_is_gits() {
+        // `printf 'hello\n' | git hash-object --stdin`
+        assert_eq!(
+            blob_sha("hello\n"),
+            "ce013625030ba8dba906f756967f9e9ca394464a"
+        );
+    }
+
+    #[test]
+    fn credited_drops_a_byte_order_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        seed(dir.path(), &[("bom.toml", &format!("\u{feff}{DRACULA}"))]);
+        let card = load(&dir.path().join(CACHE)).remove(0);
+        assert!(theme::parse("x", &credited(&card)).is_ok());
     }
 
     #[test]

@@ -6780,6 +6780,7 @@ dependencies = [
  "lyon_tessellation",
  "serde",
  "serde_json",
+ "sha1_smol",
  "tempfile",
  "templum-canvas",
  "templum-git",

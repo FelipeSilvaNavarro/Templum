@@ -52,7 +52,8 @@ Settings ▸ Appearance has a card for the theme in use, under the mode and them
 - **One of yours** shows its file (`themes/X.toml`) and has **New theme…**, **Open file** and the color editor.
 - **Duplicate…** and **New theme…** ask for a name (proposing "<name> copy"), write `themes/<name>.toml` from the
   theme in use, and make it the theme of the mode in effect.
-  - The name can't be empty, start with a dot, or hold `/ \ : * ? " < > |` or control characters.
+  - The name can't be empty, start with a dot, hold `/ \ : * ? " < > |` or control characters, or be one Windows
+    keeps for a device (`CON`, `NUL`, `COM1`…).
   - A theme of that name already in the folder is never overwritten: the dialog stays open and says so.
   - A name equal to a built-in's makes a copy that replaces it, as any file in the folder does.
 - The new file is a template: comments explain every key and what it colors in Templum, the 20 terminal colors are
@@ -86,7 +87,8 @@ For one of your themes, the card lists its colors in four groups, each a swatch 
 - **Opens from** "Get more themes…" at the bottom of the title bar's theme picker, and from **Get more themes…** in
   Settings ▸ Appearance. It needs the config and data folders (not `--bench`).
 - **Source:** the `themes` folder of `alacritty/alacritty-theme` (Apache-2.0): one GitHub API call lists the files
-  with their hashes, and each file not cached yet is downloaded from `raw.githubusercontent.com`, sixteen at a time.
+  with their hashes, and each file not cached yet is downloaded from `raw.githubusercontent.com`, sixteen at a time, and
+  kept only if its git hash is the one listed (a stale copy is tried again next time). One refresh runs at a time.
   Only URLs under `https://raw.githubusercontent.com/alacritty/alacritty-theme/` and 40-hex hashes are accepted.
 - **Cache:** `<data folder>/theme-gallery/`: `index.json` (the listing) and one `<hash>.toml` per file. Opening shows
   the cache at once, then refreshes it; offline, or past GitHub's hourly limit, the cache stays with a line saying

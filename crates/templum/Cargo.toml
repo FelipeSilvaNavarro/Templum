@@ -40,6 +40,8 @@ lyon_tessellation = "1"
 ignore = "0.4"
 # Already in the tree (GPUI's, with its clock): when an agent's plan limit resets, in local time.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Already in the tree (uuid's): a downloaded theme checked against the git hash GitHub lists.
+sha1_smol = { version = "1", features = ["std"] }
 
 [dev-dependencies]
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
