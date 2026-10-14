@@ -12,8 +12,9 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 | `templum-canvas` | lib | Pure model: camera (pan, zoom), blocks, hit-testing, snapping, level of detail, layout (de)serialization | No |
 | `templum-terminal` | lib | Wraps `alacritty_terminal`: shell in a PTY, input, resize, key encoding, events | No |
 | `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values, finds conflict regions by their markers (`conflict.rs`), lays History's commits out in lanes from their parents (`graph.rs`), turns a blame into the diff panel's rows (`blame.rs`), keeps the trash of discarded changes, and asks an AI agent for a commit message (`message.rs`) | No |
+| `templum-usage` | lib | Reads what CLI agents write about their sessions and plan limits: Claude Code's status line through Templum's relay, and its transcripts (`claude.rs`); Codex's rollout files (`codex.rs`); when to warn about a limit or tell its reset (`watch.rs`). Never an agent's credentials ([specs/usage.md](specs/usage.md)) | No |
 
-All four crates exist. New library crates are created together with the first real code that needs
+All five crates exist. New library crates are created together with the first real code that needs
 them, never as empty scaffolding. The behavior of the current version is specified in
 [specs/walking-skeleton.md](specs/walking-skeleton.md), [specs/design-system.md](specs/design-system.md) and
 [specs/config.md](specs/config.md).
@@ -95,7 +96,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   `git_branches.rs`, `git_history.rs`, `git_discard.rs` (discards through the trash), `git_keys.rs` (the
   block's keys), `git_switch.rs` (switching branches without losing work), `git_sync.rs` (Sync, Publish, Clone),
   `git_compare.rs` (a branch against the default one), `git_conflicts.rs` (conflicts region by region) and
-  `git_message.rs` (commit messages from an agent) (Git blocks). Methods a sibling or a test calls are `pub(super)`.
+  `git_message.rs` (commit messages from an agent) (Git blocks), `usage.rs` (the agents' usage read after each
+  snapshot, the limits' notifications, the `--settings` the Claude Code Templum opens gets). Methods a sibling or a test calls are `pub(super)`.
   `workspace/tests/` holds its tests, one file per area, with the shared helpers in `tests/mod.rs`.
 - `settings/`, `git_block/` and `menu/`: the panel's sections, the Git block's tabs, and what each menu lists, each
   in its own file behind the folder's `mod.rs`, which keeps the paths the rest of the crate uses. `git_block/diff_view/`
@@ -106,6 +108,7 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   working changes never touches another tab's. `git_block/history.rs` draws History's left column: the commits
   with their graph, or the commit shown. `git_block/words.rs` holds the Git words' tooltips and the sentences the block says;
   `git_block/switcher.rs` the branch switcher.
+- `usage.rs`: the title bar's usage meter, its popover and a terminal's usage chip.
 
 ## Configuration
 

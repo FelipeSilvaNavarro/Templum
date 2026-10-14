@@ -1,7 +1,7 @@
 # Agent usage and plan limits
 
 - **Date:** 2026-10-14
-- **Status:** Batch 1 in progress
+- **Status:** Batch 1 (Claude Code, Codex) implemented; batches 2 to 4 planned
 - **Builds on:** [agents.md](agents.md) (detecting agents, opening them), [shell-integration.md](shell-integration.md)
   (notifications), [settings.md](settings.md) and [config.md](config.md)
 
@@ -86,8 +86,9 @@ the session's `cwd` and `timestamp`. `event_msg` lines of type `token_count` car
   Codex in one folder each get their own file, newest process first.
 - **Session:** the last `token_count` with `info`: tokens `total_token_usage.total_tokens`, context
   `last_token_usage.input_tokens / model_context_window`.
-- **Plan limits:** the last `rate_limits` whose `limit_id` is `codex` (or absent); null windows are skipped;
-  `rate_limit_reached_type` set means the limit was reached.
+- **Plan limits:** the last `rate_limits` whose `limit_id` is `codex` (or absent), in the newest rollout of the last
+  week; null windows are skipped.
+- **On Linux** the rollout a Codex process has open (`/proc/<pid>/fd`) is its own, even one it resumed.
 
 ## What a person sees
 
@@ -121,7 +122,7 @@ it isn't. Clicking one reveals a terminal running that agent.
 | `reset` | Notifies when the window's peak was |
 |---|---|
 | `off` | never |
-| `reached` (default) | 95% or more, or the agent said the limit was reached |
+| `reached` (default) | 95% or more |
 | `half` | 50% or more |
 | `always` | above 0% |
 
@@ -147,6 +148,23 @@ claude_limits = true
 
 `warn` outside those values and an unknown `reset` are config errors.
 
+## Later batches
+
+Each gets its own plan in `docs/plans/` when its turn comes; every format is checked against the agent's source and a
+real file before its reader is written, since several weren't.
+
+- **Batch 2, session files:** Pi (`~/.pi/agent/sessions/`, documented, with cost), Grok Build (`~/.grok/sessions/`,
+  `updates.jsonl`), Gemini CLI (`~/.gemini/tmp/<project>/chats/`), Qwen Code (`~/.qwen/projects/`), Kimi Code
+  (`~/.kimi-code/sessions/`, `wire.jsonl`), Mistral Vibe (`~/.vibe/logs/session/`), Droid (`~/.factory/sessions/`), Amp
+  (`~/.local/share/amp/threads/`), Cline (`~/.cline/data/sessions/`); Aider through `--analytics-log` added to the
+  command Templum types. One reader per agent in `templum-usage`, `Proc` to `Session`.
+- **Batch 3, SQLite** (`rusqlite`, bundled, in `templum-usage` only; read-only): OpenCode and Kilo Code (their
+  `session` table), Crush (`<project>/.crush/crush.db`), Goose (`sessions.db`).
+- **Batch 4, plan limits through official commands**, polled every few minutes while that agent runs: Copilot CLI
+  (`account.getQuota` over `copilot --headless --stdio`; also its OpenTelemetry file for the session), Kiro CLI
+  (`/usage`), Auggie (`account status --json`), Amp (`amp usage`).
+- **Cursor CLI:** nothing on disk, its quota only through a private API.
+
 ## Architecture
 
 | File | Change |
@@ -167,8 +185,7 @@ process table is read once. Without a data folder (`--bench`) nothing is read.
 already passed or for limits older than Templum; the relay keeps its input, prints the user's status line, prefers
 `settings.local.json`, never runs itself, writes nothing for a bad terminal id; a stale relay file is ignored; the
 newest relay file with limits wins; the transcript's last main answer; the typed path's quoting; pruning; Codex:
-two processes in one folder, a file older than its process, null `info`, other `limit_id`, null windows, the
-reached flag.
+two processes in one folder, a file older than its process, null `info`, other `limit_id`, null windows.
 
 **Unit (`templum`):** `[usage]` parses and rejects bad values; the template has it; the chip's text; reset times;
 window labels.

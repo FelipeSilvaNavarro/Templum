@@ -290,3 +290,25 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **A pasted group comes into the grid one block at a time.** Each pasted block splits the one before
   (`added`, `crates/templum/src/workspace/blocks.rs`), so their arrangement on the canvas is lost. Fix: tile a
   pasted group as a dwindle of its own in the focused tile's half.
+
+## Agent usage
+
+- [ ] **A user's own status line on Windows runs under `cmd`.** The relay (`run`,
+  `crates/templum-usage/src/claude.rs`) runs it with `cmd /C`; Claude Code may run status lines with Git Bash there,
+  so a bash one prints an error instead of the user's line. Fix: check by hand which shell Claude Code uses on
+  Windows and run the same.
+- [ ] **A status line that refreshes on a timer refreshes less.** The settings file Templum writes
+  (`settings_arg`, `claude.rs`) has no `refreshInterval`, so a user's status line that showed a clock updates only
+  after each answer. Fix: copy the user's `refreshInterval` into it.
+- [ ] **A wrapper as Claude Code's command still gets `--settings`.** `typed` (`crates/templum/src/workspace/usage.rs`)
+  adds it to any command of the built-in Claude Code, so `claude; echo done` passes it to `echo`. Fix: add it only
+  when the command's program is `claude`.
+- [ ] **Two Codex resumed in one folder may swap sessions, outside Linux.** Without `/proc` (`sessions`,
+  `crates/templum-usage/src/codex.rs`), a resumed session is matched by its folder and its file's last write, and a
+  resumed one older than the scanned days isn't found. Fix: ask the OS for the process's open files on macOS and
+  Windows too.
+- [ ] **Codex's context reads higher than Codex's own.** `usage` (`codex.rs`) divides the last turn's input by the
+  whole window; Codex leaves out a baseline it reserves. Fix: use Codex's formula once its source says it.
+- [ ] **Limits of a session closed long ago still show.** The meter (`crates/templum/src/usage.rs`) shows a window
+  until its reset time, even when the last session that read it closed hours ago and the user may have used it
+  elsewhere. Fix: say "as of" with the read's time in the popover.
