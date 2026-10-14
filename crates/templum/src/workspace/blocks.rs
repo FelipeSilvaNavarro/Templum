@@ -632,14 +632,24 @@ impl Workspace {
         }
     }
 
-    /// Where a new terminal starts (None: the home folder).
+    /// Where a new terminal starts (None: the home folder): the focused block's folder when
+    /// the settings say so, else the workspace's, else the settings'.
     pub(super) fn start_dir(&self, window: &mut Window, cx: &mut App) -> Option<PathBuf> {
-        match &self.config.shell.working_directory {
-            WorkingDirectory::Inherit => self
+        let setting = &self.config.shell.working_directory;
+        if matches!(setting, WorkingDirectory::Inherit)
+            && let Some(folder) = self
                 .space
                 .focused
-                .and_then(|id| self.space.blocks.get(&id)?.folder()),
-            WorkingDirectory::Home => None,
+                .and_then(|id| self.space.blocks.get(&id)?.folder())
+        {
+            return Some(folder);
+        }
+        // The workspace's choice is nearer than the settings'.
+        if let Some(folder) = self.space.folder.clone().filter(|f| f.is_dir()) {
+            return Some(folder);
+        }
+        match setting {
+            WorkingDirectory::Inherit | WorkingDirectory::Home => None,
             WorkingDirectory::Path(path) if path.is_dir() => Some(path.clone()),
             WorkingDirectory::Path(path) => {
                 let message = format!(

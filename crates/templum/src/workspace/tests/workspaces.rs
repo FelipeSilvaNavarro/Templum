@@ -517,3 +517,27 @@ fn stopping_asks_first_when_a_terminal_is_at_work(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn a_new_terminal_starts_in_the_workspace_folder_when_nothing_focused_has_one(
+    cx: &mut TestAppContext,
+) {
+    let project = tempfile::tempdir().unwrap();
+    let (handle, ws) = open(cx);
+    let id = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.new_space(window, cx);
+                let folder = Some(project.path().to_path_buf());
+                ws.edit_space("w2", "Project", Look::default(), folder, window, cx)
+                    .unwrap();
+                ws.new_terminal(window, cx);
+                ws.space.focused.unwrap()
+            })
+        })
+        .unwrap();
+    assert_eq!(
+        folder_of(&ws, id, cx),
+        project.path().canonicalize().unwrap()
+    );
+}
