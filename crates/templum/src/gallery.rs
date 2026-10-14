@@ -244,11 +244,15 @@ pub(crate) fn open(ws: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
         let font = ws_now.cell.font.family.clone();
         let chosen = ws_now.config.theme.name(dark);
         let shelf_now = shelf.borrow();
-        let cards: Vec<_> = shelf_now
+        // The mode in effect's themes first, then the other mode's; a click makes any of them the
+        // theme of the mode in effect, as the picker does.
+        let (mut same, mut other) = (Vec::new(), Vec::new());
+        for card in shelf_now
             .cards
             .iter()
-            .filter(|c| c.theme.is_dark == dark && c.theme.name.to_lowercase().contains(&query))
-            .map(|card| {
+            .filter(|c| c.theme.name.to_lowercase().contains(&query))
+        {
+            let element = {
                 let name = &card.theme.name;
                 // One already there is shown, and chosen, as it is.
                 let installed = ws_now
@@ -282,8 +286,35 @@ pub(crate) fn open(ws: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
                     click.update(cx, |ws, cx| ws.install_theme(&card, window, cx));
                 })
                 .test_support()
+            };
+            if card.theme.is_dark == dark {
+                same.push(element);
+            } else {
+                other.push(element);
+            }
+        }
+        let found = !same.is_empty() || !other.is_empty();
+        let group = |title: &'static str, cards: Vec<_>| {
+            (!cards.is_empty()).then(|| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(ui.title_dim)
+                            .child(title),
+                    )
+                    .child(div().grid().grid_cols(3).gap(px(10.0)).children(cards))
             })
-            .collect();
+        };
+        let (first, second) = if dark {
+            ("Dark", "Light")
+        } else {
+            ("Light", "Dark")
+        };
+        let groups = [group(first, same), group(second, other)];
         let status: SharedString = match (&shelf_now.refreshed, shelf_now.cards.is_empty()) {
             (None, true) => "Downloading the themes…".into(),
             (None, false) => "Looking for new themes…".into(),
@@ -296,20 +327,16 @@ pub(crate) fn open(ws: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
                     .into()
             }
         };
-        let none = (cards.is_empty() && !shelf_now.cards.is_empty()).then(|| {
+        let none = (!found && !shelf_now.cards.is_empty()).then(|| {
             div()
                 .py(px(16.0))
                 .text_size(px(13.0))
                 .text_color(ui.title_dim)
-                .child(if query.is_empty() {
-                    "No theme for this mode yet."
-                } else {
-                    "No theme has that name."
-                })
+                .child("No theme has that name.")
         });
         let (restore, closing) = (entity.clone(), open.clone());
         alert
-            .title(if dark { "Dark themes" } else { "Light themes" })
+            .title("Themes")
             .w(px(600.0))
             .button_props(DialogButtonProps::default().ok_text("Done"))
             // Esc, Done or a click outside: back to the mode's theme, whatever was previewed.
@@ -333,7 +360,10 @@ pub(crate) fn open(ws: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
                             .id("gallery-list")
                             .max_h(px(420.0))
                             .overflow_y_scroll()
-                            .child(div().grid().grid_cols(3).gap(px(10.0)).children(cards))
+                            .flex()
+                            .flex_col()
+                            .gap(px(16.0))
+                            .children(groups.into_iter().flatten())
                             .children(none)
                             .test_support(),
                     )

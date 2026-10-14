@@ -590,8 +590,8 @@ fn the_gallery_previews_restores_and_installs(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         assert!(window.try_find("gallery-theme-Paper").is_some());
         assert!(
-            window.try_find("gallery-theme-Night Owl").is_none(),
-            "a dark theme, in light mode"
+            window.try_find("gallery-theme-Night Owl").is_some(),
+            "the other mode's themes too"
         );
         window.hover("gallery-theme-Dawn Light", cx);
     })
@@ -651,6 +651,18 @@ fn the_gallery_previews_restores_and_installs(cx: &mut TestAppContext) {
         light_theme("#ffffff")
     );
     assert_eq!(notification_count(handle, cx), 0);
+
+    // A dark theme, chosen in light mode, becomes the light theme, as in the picker.
+    open_gallery(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("gallery-theme-Night Owl", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.name, "Night Owl");
+        assert_eq!(ws.config.theme.light, "Night Owl");
+    });
 }
 
 #[gpui_kit::test]

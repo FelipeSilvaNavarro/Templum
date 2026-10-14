@@ -392,6 +392,3 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **The gallery's cache keeps themes GitHub no longer lists.** `refresh` (`crates/templum/src/gallery.rs`) only
   adds files to `<data folder>/theme-gallery/`; a theme changed upstream leaves its old file there (a few hundred
   bytes each). Fix: after a refresh, delete the `.toml` files `index.json` doesn't name.
-- [ ] **The gallery shows only the themes of the mode in effect.** A theme for the other mode can't be seen or
-  installed until the mode changes (`crates/templum/src/gallery.rs`). Fix: a Light / Dark switch in the dialog that
-  installs for that mode, without previewing over the other mode's colors.
