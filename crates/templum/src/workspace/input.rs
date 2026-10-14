@@ -715,7 +715,7 @@ impl Workspace {
     }
 
     /// The theme picker's keys while it is open, else `command`.
-    pub(super) fn command_key(
+    pub(crate) fn command_key(
         &mut self,
         e: &KeyDownEvent,
         command: Option<Command>,

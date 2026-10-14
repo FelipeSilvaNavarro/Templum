@@ -24,6 +24,8 @@ impl Workspace {
         let Some(to) = self.order().iter().position(|s| s.id == space) else {
             return;
         };
+        // The block gets the keyboard: a welcome over it makes way.
+        self.close_welcome(window, cx);
         self.switch_to(to, window, cx);
         let Some(rect) = self.space.canvas.get(block).map(|b| b.rect) else {
             return;

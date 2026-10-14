@@ -84,6 +84,8 @@ impl Workspace {
             }
             Some(Loaded::Nothing) | None => {}
         }
+        // A file that was there but couldn't be read: not a new install, so no welcome.
+        let mut damaged = false;
         let (index, no_index) = match self.data_dir.as_deref().map(session::load_index) {
             Some(Loaded::Saved(index)) => (index, false),
             Some(Loaded::Moved { to, why }) => {
@@ -93,6 +95,7 @@ impl Workspace {
                 );
                 eprintln!("templum: {message}");
                 show_notification(window, cx, Notification::warning(message));
+                damaged = true;
                 (session::Index::first_run(), true)
             }
             Some(Loaded::Unreadable(why)) => {
@@ -102,6 +105,7 @@ impl Workspace {
                 eprintln!("templum: {message}");
                 show_notification(window, cx, Notification::error(message));
                 self.index_frozen = true;
+                damaged = true;
                 (session::Index::first_run(), true)
             }
             Some(Loaded::Nothing) | None => (session::Index::first_run(), true),
@@ -142,6 +146,7 @@ impl Workspace {
                     );
                     eprintln!("templum: {message}");
                     show_notification(window, cx, Notification::warning(message));
+                    damaged |= i == 0;
                 }
                 Some(Loaded::Unreadable(why)) => {
                     let message = format!(
@@ -150,6 +155,7 @@ impl Workspace {
                     eprintln!("templum: {message}");
                     show_notification(window, cx, Notification::error(message));
                     self.space.frozen = true;
+                    damaged |= i == 0;
                 }
                 Some(Loaded::Nothing) | None => {}
             }
@@ -163,16 +169,26 @@ impl Workspace {
         self.space = spaces.remove(self.active);
         self.others = spaces;
         if no_index && !first_saved {
-            // A first run: one terminal, centered.
-            self.space.pristine = true;
-            let vp = self.viewport(window);
-            let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
-            let rect = Rect::new((vp.w - size.w) / 2.0, (vp.h - size.h) / 2.0, size.w, size.h);
-            // Templum's, not a change of the person's to take back.
-            self.quiet = true;
-            self.open(rect, window, cx);
-            self.quiet = false;
+            // A first run: the welcome, whose closing opens the first terminal in the shell
+            // picked there. Without a data folder (`--bench`) nothing is kept: no welcome.
+            if self.data_dir.is_some() && !damaged {
+                self.open_welcome(true, window, cx);
+            } else {
+                self.open_first_terminal(window, cx);
+            }
         }
+    }
+
+    /// A first run's terminal: one, centered.
+    pub(crate) fn open_first_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.space.pristine = true;
+        let vp = self.viewport(window);
+        let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
+        let rect = Rect::new((vp.w - size.w) / 2.0, (vp.h - size.h) / 2.0, size.w, size.h);
+        // Templum's, not a change of the person's to take back.
+        self.quiet = true;
+        self.open(rect, window, cx);
+        self.quiet = false;
     }
 
     /// Shows workspace `to` (a position in the sidebar). What only makes sense on screen ends
@@ -181,8 +197,10 @@ impl Workspace {
         if to == self.active || to > self.others.len() {
             return;
         }
-        // A menu for something on the canvas left behind, and the screen it was picked on.
+        // A menu for something on the canvas left behind, and the screen it was picked on. A
+        // welcome makes way: a first run's terminal opens in the workspace it was for.
         self.menu = None;
+        self.close_welcome(window, cx);
         if let Some(screen) = self.screen.take() {
             self.screen = Some(if screen.closing {
                 screen
@@ -632,7 +650,11 @@ impl Workspace {
 
     /// Writes the index at once: it changes only on a user's action.
     pub(super) fn write_index(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(dir) = self.data_dir.as_ref().filter(|_| !self.index_frozen) else {
+        let Some(dir) = self
+            .data_dir
+            .as_ref()
+            .filter(|_| !self.index_frozen && !self.first_run_welcome())
+        else {
             return;
         };
         if let Err(err) = session::save_index(dir, &self.index()) {

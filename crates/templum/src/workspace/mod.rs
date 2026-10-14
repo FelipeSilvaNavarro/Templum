@@ -754,7 +754,7 @@ pub struct Workspace {
     _update_loop: Task<()>,
     pub(crate) themes: Vec<Entry>,
     /// The system's appearance.
-    dark: bool,
+    pub(crate) dark: bool,
     /// What everything is drawn with.
     pub(crate) theme: Rc<Theme>,
     /// The chrome's colors this frame: the theme's, or on their way to them after a change.
@@ -802,6 +802,8 @@ pub struct Workspace {
     pub(crate) settings: Option<Panel>,
     /// The workspaces screen, open or sliding out.
     pub(crate) screen: Option<crate::spaces_screen::Screen>,
+    /// The welcome, open or fading out.
+    pub(crate) welcome: Option<crate::welcome::Welcome>,
     /// The panel's keyboard focus: Esc and the settings shortcut close it from there.
     pub(crate) settings_focus: FocusHandle,
     /// The command whose shortcut the panel is recording: keys go there before anything else.
@@ -1101,6 +1103,7 @@ impl Workspace {
             quit_armed: None,
             settings: None,
             screen: None,
+            welcome: None,
             settings_focus: cx.focus_handle(),
             recording: None,
             key_note: None,

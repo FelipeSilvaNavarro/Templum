@@ -46,6 +46,11 @@ impl Row {
         }
     }
 
+    /// Its `table.key`.
+    pub(super) fn key(&self) -> &str {
+        &self.key
+    }
+
     pub(super) fn description(mut self, text: impl Into<SharedString>) -> Row {
         self.description = Some(text.into());
         self

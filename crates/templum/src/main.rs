@@ -33,6 +33,7 @@ mod title_bar;
 mod toolbar;
 mod update;
 mod usage;
+mod welcome;
 mod workspace;
 
 use gpui_kit::component::TitleBar;

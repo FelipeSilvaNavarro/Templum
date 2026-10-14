@@ -219,7 +219,7 @@ impl Workspace {
     /// Every session::EVERY: reads the processes and writes each workspace's file in the
     /// background, when its snapshot differs from the last one written.
     pub(super) fn snapshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(dir) = self.data_dir.clone() else {
+        let Some(dir) = self.data_dir.clone().filter(|_| !self.first_run_welcome()) else {
             return;
         };
         if self.snapshotting {
@@ -344,7 +344,8 @@ impl Workspace {
     /// When the window closes or Templum quits: the last snapshot of every workspace, read and
     /// written at once.
     pub(super) fn save_canvas_now(&mut self, cx: &App) {
-        let Some(dir) = self.data_dir.clone() else {
+        // A first run's welcome still open: the next start is a first run too.
+        let Some(dir) = self.data_dir.clone().filter(|_| !self.first_run_welcome()) else {
             return;
         };
         self.generation += 1;

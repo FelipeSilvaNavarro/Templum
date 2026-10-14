@@ -352,6 +352,14 @@ impl Render for Workspace {
                 self.screen = None;
             }
         }
+        if let Some(welcome) = &self.welcome {
+            let t = motion::progress(welcome.since, now, motion::SLIDE);
+            if t < 1.0 {
+                window.request_animation_frame();
+            } else if welcome.closing {
+                self.welcome = None;
+            }
+        }
         if !self.space.appearing.is_empty() || !self.space.ghosts.is_empty() {
             window.request_animation_frame();
         }
@@ -596,6 +604,10 @@ impl Render for Workspace {
             .screen
             .as_ref()
             .map(|s| crate::spaces_screen::render(self, s, now, window, cx));
+        let welcome = self
+            .welcome
+            .as_ref()
+            .map(|w| crate::welcome::render(self, w, now, window, cx));
         if self.recording.is_some() && !self.settings_focus.is_focused(window) {
             self.recording = None;
             self.key_note = None;
@@ -623,6 +635,8 @@ impl Render for Workspace {
                     .when(self.sidebar, |el| el.child(sidebar::render(self, cx)))
                     .child(area),
             )
+            // Under what the title bar opens: the settings, the theme picker, the screen.
+            .children(welcome)
             .children(panel)
             .children(picker)
             .children(usage)

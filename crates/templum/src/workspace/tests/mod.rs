@@ -57,6 +57,27 @@ fn open_as(
     config_dir: Option<std::path::PathBuf>,
     data_dir: Option<std::path::PathBuf>,
 ) -> (AnyWindowHandle, Entity<Workspace>) {
+    let (handle, ws) = open_welcomed(cx, command, config_dir, data_dir);
+    // An empty data folder is a first run: the welcome, then the first terminal. The tests
+    // of everything else start where the welcome leaves them.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.close_welcome(window, cx);
+            ws.welcome = None;
+        })
+    })
+    .unwrap();
+    ws.update(cx, |ws, _| ws.space.appearing.clear());
+    (handle, ws)
+}
+
+/// `open_as`, with the welcome of a first run still open.
+fn open_welcomed(
+    cx: &mut TestAppContext,
+    command: Option<(String, Vec<String>)>,
+    config_dir: Option<std::path::PathBuf>,
+    data_dir: Option<std::path::PathBuf>,
+) -> (AnyWindowHandle, Entity<Workspace>) {
     // PTY threads wake the UI from outside the test scheduler.
     cx.executor().allow_parking();
     let opened = cx.update(|cx| {
@@ -614,4 +635,5 @@ mod terminals;
 mod themes;
 mod update;
 mod usage;
+mod welcome;
 mod workspaces;

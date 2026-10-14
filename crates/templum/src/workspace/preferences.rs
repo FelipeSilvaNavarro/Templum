@@ -247,6 +247,15 @@ impl Workspace {
         }
     }
 
+    /// Applies the settings changes now rather than on the next frame, and writes them: what
+    /// opens next (the welcome's first terminal) uses them.
+    pub(crate) fn apply_and_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(config) = self.pending.take() {
+            self.apply_config(config, window, cx);
+        }
+        self.save_or_notify(window, cx);
+    }
+
     /// `save`, with a notification when it fails.
     pub(super) fn save_or_notify(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(message) = self.save() {
@@ -363,16 +372,22 @@ impl Workspace {
         }
     }
 
+    /// What the settings' rows choose from: the themes (the folder read again), the installed
+    /// monospaced fonts and the shells found. Read when the panel or the welcome opens.
+    pub(crate) fn load_lists(&mut self, window: &mut Window) {
+        self.themes = theme::load(self.config_dir.as_deref());
+        self.fonts = settings::monospace_families(window);
+        self.shells = templum_terminal::available_shells();
+        self.default_shell = templum_terminal::default_shell_label();
+    }
+
     /// Opens the settings panel (re-reading the themes folder for its lists), or closes it.
     pub(crate) fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings.as_ref().is_some_and(|p| !p.closing) {
             self.close_settings(window, cx);
             return;
         }
-        self.themes = theme::load(self.config_dir.as_deref());
-        self.fonts = settings::monospace_families(window);
-        self.shells = templum_terminal::available_shells();
-        self.default_shell = templum_terminal::default_shell_label();
+        self.load_lists(window);
         self.git_version = None;
         let program = self.config.git.program().to_string();
         cx.spawn_in(window, async move |ws, cx| {
@@ -389,8 +404,9 @@ impl Workspace {
             .ok();
         })
         .detach();
-        // The panel would open under the screen.
+        // The panel would open under the screen; it has everything the welcome has.
         self.close_screen(window, cx);
+        self.close_welcome(window, cx);
         let now = Instant::now();
         self.settings = Some(match &self.settings {
             // Still sliding out: it turns back from where it is.

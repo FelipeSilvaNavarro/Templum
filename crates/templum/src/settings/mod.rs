@@ -30,6 +30,7 @@ mod sections;
 #[cfg(test)]
 mod tests;
 mod updates;
+mod welcome;
 
 use agents::add_agent;
 pub(crate) use edits::{
@@ -41,8 +42,9 @@ pub(crate) use fonts::monospace_families;
 // What the Git section's text areas call on each change: the tests type through them.
 #[cfg(test)]
 pub(crate) use git::{set_commit_instructions, set_commit_prompt};
-use row::Reset;
+use row::{Reset, Row};
 use sections::rows;
+pub(crate) use welcome::welcome_groups;
 
 /// The panel's width, at most 60% of the canvas.
 const WIDTH: f32 = 480.0;
@@ -267,18 +269,7 @@ pub(crate) fn render(
                     .test_support(),
             )
         });
-    let card = div()
-        .flex()
-        .flex_col()
-        .rounded(px(10.0))
-        .border_1()
-        .border_color(ui.hairline)
-        .bg(ui.card)
-        .children(
-            rows.into_iter()
-                .enumerate()
-                .map(|(i, row)| row.render(ui, i == 0)),
-        );
+    let card = card(ui, rows);
     let content = div()
         .id("settings-scroll")
         .flex_1()
@@ -393,6 +384,22 @@ pub(crate) fn render(
         .child(footer)
         .test_support()
         .into_any_element()
+}
+
+/// Rows in one rounded card, hairlines between them.
+fn card(ui: Ui, rows: Vec<Row>) -> gpui_kit::Div {
+    div()
+        .flex()
+        .flex_col()
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(ui.hairline)
+        .bg(ui.card)
+        .children(
+            rows.into_iter()
+                .enumerate()
+                .map(|(i, row)| row.render(ui, i == 0)),
+        )
 }
 
 fn tab(ui: Ui, section: Section, selected: bool, cx: &mut Context<Workspace>) -> AnyElement {
