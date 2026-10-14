@@ -556,3 +556,131 @@ fn a_broken_theme_file_is_not_overwritten_by_the_editor(cx: &mut TestAppContext)
     // The message, "Not saved: mine.toml has an error on line 1", is `describe`'s (config.rs).
     assert_eq!(notification_count(handle, cx), 1, "one for both changes");
 }
+
+/// A dark theme, with `background` as its background.
+fn dark_theme(background: &str) -> String {
+    light_theme(background).replace("#202020", "#e0e0e0")
+}
+
+fn open_gallery(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| crate::gallery::open(ws, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_gallery_previews_restores_and_installs(cx: &mut TestAppContext) {
+    let (config, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    crate::gallery::tests::seed(
+        data.path(),
+        &[
+            ("dawn_light.toml", &light_theme("#fdf6e3")),
+            ("paper.toml", &light_theme("#f2eede")),
+            ("night_owl.toml", &dark_theme("#011627")),
+        ],
+    );
+    let (handle, ws) = open_in(
+        cx,
+        Some(config.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    open_gallery(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.try_find("gallery-theme-Paper").is_some());
+        assert!(
+            window.try_find("gallery-theme-Night Owl").is_none(),
+            "a dark theme, in light mode"
+        );
+        window.hover("gallery-theme-Dawn Light", cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.palette.background, rgb(0xfdf6e3), "previewed")
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.name, "Catppuccin Latte", "put back")
+    });
+    assert!(!config.path().join("themes").exists(), "nothing installed");
+
+    open_gallery(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.hover("gallery-theme-Paper", cx);
+        window.click("gallery-theme-Paper", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let file = config.path().join("themes").join("Paper.toml");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(
+        text.starts_with("# From https://github.com/alacritty/alacritty-theme (themes/paper.toml)")
+    );
+    ws.update(cx, |ws, _| ws.save());
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.name, "Paper");
+        assert_eq!(ws.theme_path(), Some(file.clone()), "yours now: editable");
+    });
+    let saved = std::fs::read_to_string(config.path().join("config.toml")).unwrap();
+    assert!(saved.contains("light = \"Paper\""), "{saved}");
+
+    // Installed already: chosen as it is, nothing written over.
+    std::fs::write(&file, light_theme("#ffffff")).unwrap();
+    ws.update(cx, |ws, cx| ws.set_mode_theme("Catppuccin Latte", cx));
+    open_gallery(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("gallery-theme-Paper", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.name, "Paper");
+        assert_eq!(
+            ws.theme.palette.background,
+            rgb(0xffffff),
+            "the installed one"
+        );
+    });
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        light_theme("#ffffff")
+    );
+    assert_eq!(notification_count(handle, cx), 0);
+}
+
+#[gpui_kit::test]
+fn the_picker_opens_the_gallery(cx: &mut TestAppContext) {
+    let (config, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    crate::gallery::tests::seed(data.path(), &[("paper.toml", &light_theme("#f2eede"))]);
+    let (handle, ws) = open_in(
+        cx,
+        Some(config.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("theme-button", cx);
+        window.render_frame(cx);
+        window.click("picker-gallery", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("gallery-theme-Paper").is_some());
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.picker.is_none(), "the picker closed")
+    });
+    // Without a data folder there is no cache: no way in.
+    let (handle, _) = open_with(cx, Some(config.path().to_path_buf()));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("theme-button", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("picker-gallery").is_none());
+    })
+    .unwrap();
+}

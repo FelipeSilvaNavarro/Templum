@@ -46,7 +46,7 @@ pub(crate) use git::{set_commit_instructions, set_commit_prompt};
 use row::{Reset, Row};
 use sections::rows;
 pub(crate) use sections::set_theme;
-pub(crate) use welcome::welcome_groups;
+pub(crate) use welcome::{theme_card, welcome_groups};
 
 /// The panel's width, at most 60% of the canvas.
 const WIDTH: f32 = 480.0;

@@ -9,6 +9,7 @@ mod block;
 mod board;
 mod config;
 mod editor;
+mod gallery;
 mod git_block;
 mod grid;
 mod ink;

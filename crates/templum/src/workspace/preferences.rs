@@ -12,6 +12,7 @@ use templum_terminal::Rgb;
 
 use crate::agents;
 use crate::config::{self, Config, Edit};
+use crate::gallery;
 use crate::grid::CellMetrics;
 use crate::keys::{self, Command, Keymap, Keys};
 use crate::settings::{self, Panel};
@@ -91,7 +92,7 @@ impl Workspace {
     }
 
     /// Picks the theme for the mode in effect (the system's, unless config.toml pins one).
-    pub(super) fn refresh_theme(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn refresh_theme(&mut self, cx: &mut Context<Self>) {
         self.dark = self.config.theme.mode.dark(self.system_dark);
         let theme = theme::pick(
             &self.themes,
@@ -485,6 +486,40 @@ impl Workspace {
                 eprintln!("templum: {message}");
                 show_notification(window, cx, Notification::warning(message));
                 false
+            }
+        }
+    }
+
+    /// A theme from the gallery, written to the themes folder and made the mode's theme. One of
+    /// that name already there (any case, a built-in too) is chosen instead: nothing is overwritten.
+    pub(crate) fn install_theme(
+        &mut self,
+        card: &gallery::Card,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.themes = theme::load(self.config_dir.as_deref());
+        let name = &card.theme.name;
+        if let Some(there) = self
+            .themes
+            .iter()
+            .find(|e| e.theme.name.eq_ignore_ascii_case(name))
+            .map(|e| e.theme.name.clone())
+        {
+            self.set_mode_theme(&there, cx);
+            return;
+        }
+        let made = match &self.config_dir {
+            Some(dir) => theme::create(dir, name, &gallery::credited(card)),
+            None => Err(NO_CONFIG_DIR.to_string()),
+        };
+        match made {
+            Ok(_) => self.set_mode_theme(name, cx),
+            Err(message) => {
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+                // The card was previewed: back to the mode's theme.
+                self.refresh_theme(cx);
             }
         }
     }

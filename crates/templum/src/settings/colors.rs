@@ -14,6 +14,7 @@ use gpui_kit::{
 use templum_terminal::Rgb;
 
 use super::{Row, card};
+use crate::gallery;
 use crate::grid::hsla;
 use crate::prompt;
 use crate::theme::{self, COLORS, Ui};
@@ -91,6 +92,16 @@ pub(super) fn theme_card(
                         ),
                 )
             })
+            .when(can_write && ws.data_dir.is_some(), |el| {
+                el.child(
+                    Button::new("theme-gallery")
+                        .label("Get more themes…")
+                        .small()
+                        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
+                            gallery::open(ws, window, cx)
+                        })),
+                )
+            })
             .when(can_write && path.is_none(), |el| {
                 el.child(
                     Button::new("theme-duplicate")
@@ -104,7 +115,8 @@ pub(super) fn theme_card(
     let mut rows = vec![
         Row::new("theme.in-use", ws.theme.name.clone())
             .description(description)
-            .control(buttons),
+            // Under the title, full width: up to three buttons would squeeze it.
+            .below(buttons),
     ];
     if path.is_some() {
         let colors = ws.theme.colors();

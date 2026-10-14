@@ -1,5 +1,5 @@
-//! GitHub over HTTPS: the newest release, and a file downloaded and checked against the SHA-256
-//! GitHub lists for it.
+//! GitHub over HTTPS: the newest release, a file downloaded and checked against the SHA-256
+//! GitHub lists for it, and a page as text.
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -34,17 +34,37 @@ pub fn latest(agent: &Agent) -> Result<Release, String> {
         .header("X-GitHub-Api-Version", "2022-11-28")
         .call()
         .map_err(|e| match e {
-            ureq::Error::StatusCode(403 | 429) => {
-                "GitHub's hourly limit for this network was reached".to_string()
-            }
             ureq::Error::StatusCode(404) => "No release is published yet".to_string(),
-            e => format!("Couldn't reach GitHub: {e}"),
+            e => github_error(e),
         })?;
     let text = answer
         .body_mut()
         .read_to_string()
         .map_err(|e| format!("Couldn't read GitHub's answer: {e}"))?;
     parse(&text)
+}
+
+/// A page on GitHub as text: an answer of its API, or a file of a repository.
+pub fn get(agent: &Agent, url: &str) -> Result<String, String> {
+    agent
+        .get(url)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .call()
+        .map_err(github_error)?
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| format!("Couldn't read GitHub's answer: {e}"))
+}
+
+/// What a failed request to GitHub says.
+fn github_error(e: ureq::Error) -> String {
+    match e {
+        ureq::Error::StatusCode(403 | 429) => {
+            "GitHub's hourly limit for this network was reached".to_string()
+        }
+        e => format!("Couldn't reach GitHub: {e}"),
+    }
 }
 
 /// Downloads `asset` to `to` and keeps it only if its SHA-256 is the one GitHub lists; `progress`
@@ -191,6 +211,13 @@ pub(crate) mod tests {
         heard.clear();
         download(&agent(), &asset, &to, &mut |got| heard.push(got)).unwrap();
         assert_eq!(heard, [BODY.len() as u64]);
+    }
+
+    #[test]
+    fn get_reads_a_page_as_text() {
+        let address = serve(b"[{\"name\": \"dracula.toml\"}]", 2);
+        let text = get(&agent(), &format!("{address}/moved")).unwrap();
+        assert_eq!(text, "[{\"name\": \"dracula.toml\"}]");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Templum's updates: the newest release on GitHub, the file in it made for this system and for
 //! the way Templum was installed, downloaded, checked against GitHub's checksum and put in place.
-//! No UI: see docs/specs/updates.md.
+//! Also GitHub pages as text, for the theme gallery. No UI: see docs/specs/updates.md.
 
 use serde::Deserialize;
 
@@ -9,7 +9,7 @@ mod fetch;
 mod install;
 
 pub use apply::{Launch, Ready, cleanup, prepare, swap};
-pub use fetch::{agent, download, latest};
+pub use fetch::{agent, download, get, latest};
 pub use install::{Install, Why, detect_in};
 pub use semver::Version;
 

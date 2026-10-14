@@ -3,8 +3,8 @@
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, ElementId, Entity, FontWeight, SharedString, TestSupportExt,
-    Window, div, px,
+    AnyElement, App, ClickEvent, Div, ElementId, Entity, FontWeight, SharedString, Stateful,
+    TestSupportExt, Window, div, px,
 };
 
 use super::agents::agent_row;
@@ -14,7 +14,7 @@ use super::sections::{rows, set_theme};
 use super::{Section, card};
 use crate::config::Edit;
 use crate::grid::hsla;
-use crate::theme::Ui;
+use crate::theme::{Theme, Ui};
 use crate::welcome::Page;
 use crate::workspace::Workspace;
 
@@ -211,44 +211,10 @@ fn theme_cards(ws: &Workspace, entity: &Entity<Workspace>) -> AnyElement {
         .iter()
         .filter(|e| e.theme.is_dark == dark)
         .map(|e| {
-            let theme = &e.theme;
-            let p = theme.palette;
-            let name = theme.name.clone();
-            let selected = name == current;
+            let name = e.theme.name.clone();
+            let id = ElementId::Name(format!("welcome-theme-{name}").into());
             let entity = entity.clone();
-            div()
-                .id(ElementId::Name(format!("welcome-theme-{name}").into()))
-                .flex()
-                .flex_col()
-                .gap(px(8.0))
-                .p(px(10.0))
-                .rounded(px(10.0))
-                .border_2()
-                .border_color(if selected { ui.accent } else { ui.hairline })
-                .bg(hsla(p.background, 1.0))
-                .text_color(hsla(p.foreground, 1.0))
-                .cursor_pointer()
-                .when(!selected, |el| {
-                    el.hover(move |s| s.border_color(ui.hover_border))
-                })
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .truncate()
-                        .child(SharedString::from(name.clone())),
-                )
-                .child(div().flex().gap(px(4.0)).children(
-                    (1..7).map(|c| div().size(px(10.0)).rounded_full().bg(hsla(p.ansi[c], 1.0))),
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .font_family(font.clone())
-                        .text_size(px(11.0))
-                        .child(div().text_color(hsla(p.ansi[2], 1.0)).child("❯ "))
-                        .child("git status"),
-                )
+            theme_card(id, &e.theme, ui, font.clone(), name == current)
                 .on_click(move |_: &ClickEvent, _, cx| {
                     let name = name.clone();
                     entity.update(cx, |ws, cx| {
@@ -267,6 +233,53 @@ fn theme_cards(ws: &Workspace, entity: &Entity<Workspace>) -> AnyElement {
         .gap(px(10.0))
         .children(cards)
         .into_any_element()
+}
+
+/// A theme as a card in its own colors: its name, six of its colors and a prompt. `selected`
+/// draws the accent around it.
+pub(crate) fn theme_card(
+    id: ElementId,
+    theme: &Theme,
+    ui: Ui,
+    font: SharedString,
+    selected: bool,
+) -> Stateful<Div> {
+    let p = theme.palette;
+    div()
+        .id(id)
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .p(px(10.0))
+        .rounded(px(10.0))
+        .border_2()
+        .border_color(if selected { ui.accent } else { ui.hairline })
+        .bg(hsla(p.background, 1.0))
+        .text_color(hsla(p.foreground, 1.0))
+        .cursor_pointer()
+        .when(!selected, |el| {
+            el.hover(move |s| s.border_color(ui.hover_border))
+        })
+        .child(
+            div()
+                .text_size(px(12.0))
+                .font_weight(FontWeight::MEDIUM)
+                .truncate()
+                .child(SharedString::from(theme.name.clone())),
+        )
+        .child(
+            div().flex().gap(px(4.0)).children(
+                (1..7).map(|c| div().size(px(10.0)).rounded_full().bg(hsla(p.ansi[c], 1.0))),
+            ),
+        )
+        .child(
+            div()
+                .flex()
+                .font_family(font)
+                .text_size(px(11.0))
+                .child(div().text_color(hsla(p.ansi[2], 1.0)).child("❯ "))
+                .child("git status"),
+        )
 }
 
 /// The default shell and each one found on this computer, the one new terminals run checked. A
