@@ -331,3 +331,92 @@ fn a_theme_edited_while_the_other_mode_is_on_shows_when_switching(cx: &mut TestA
         assert_eq!(ws.theme.palette.background, rgb(0x202030));
     });
 }
+
+fn new_theme(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    name: &str,
+    cx: &mut TestAppContext,
+) -> bool {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.new_theme(name, window, cx))
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn new_theme_copies_the_colors_and_becomes_the_modes_theme(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    let latte = ws.read_with(cx, |ws, _| ws.theme.clone());
+    assert!(new_theme(handle, &ws, " Mine ", cx));
+    frame(handle, cx);
+    let path = dir.path().join("themes").join("Mine.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.starts_with("# Mine: a Templum theme, made from Catppuccin Latte."));
+    ws.update(cx, |ws, _| ws.save());
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.name, "Mine");
+        assert_eq!(ws.theme.palette, latte.palette, "the same colors");
+        assert_eq!(ws.theme_path(), Some(path.clone()));
+        assert_eq!(ws.config.theme.light, "Mine");
+    });
+    let config = std::fs::read_to_string(dir.path().join("config.toml")).unwrap();
+    assert!(config.contains("light = \"Mine\""), "{config}");
+    assert!(!new_theme(handle, &ws, "Mine", cx), "taken");
+    assert!(!new_theme(handle, &ws, "a/b", cx), "not a file name");
+    assert_eq!(notification_count(handle, cx), 2, "both said why");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        text,
+        "not overwritten"
+    );
+}
+
+#[gpui_kit::test]
+fn open_theme_file_opens_it_in_an_editor_block(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_theme(dir.path(), "mine", &light_theme("#fafafa"));
+    write_config(dir.path(), "[theme]\nlight = \"mine\"\n");
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_theme_file(window, cx))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let open = ws
+            .space
+            .blocks
+            .values()
+            .filter_map(|b| b.editor())
+            .any(|e| e.tabs.iter().any(|t| t.path == path));
+        assert!(open, "a tab on the theme's file");
+    });
+}
+
+#[gpui_kit::test]
+fn appearance_offers_duplicate_for_builtins_and_open_for_mine(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    write_theme(dir.path(), "mine", &light_theme("#fafafa"));
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("theme-duplicate").is_some(),
+            "Latte is built in"
+        );
+        assert!(window.try_find("theme-open-file").is_none());
+    })
+    .unwrap();
+    ws.update(cx, |ws, cx| ws.set_mode_theme("mine", cx));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("theme-open-file").is_some(), "yours");
+        assert!(window.try_find("theme-new").is_some());
+        assert!(window.try_find("theme-duplicate").is_none());
+    })
+    .unwrap();
+}

@@ -21,6 +21,7 @@ use crate::theme::Ui;
 use crate::workspace::Workspace;
 
 mod agents;
+mod colors;
 mod edits;
 mod fields;
 mod fonts;
@@ -44,6 +45,7 @@ pub(crate) use fonts::monospace_families;
 pub(crate) use git::{set_commit_instructions, set_commit_prompt};
 use row::{Reset, Row};
 use sections::rows;
+pub(crate) use sections::set_theme;
 pub(crate) use welcome::welcome_groups;
 
 /// The panel's width, at most 60% of the canvas.
@@ -292,7 +294,10 @@ pub(crate) fn render(
                     )
                 })
                 .child(div().mt(px(4.0)).child(card))
-                .when(section == Section::Agents, |el| el.child(add_agent(ui, cx))),
+                .when(section == Section::Agents, |el| el.child(add_agent(ui, cx)))
+                .when(section == Section::Appearance, |el| {
+                    el.child(colors::theme_card(ws, cx))
+                }),
         );
 
     let path = ws.config_dir.as_ref().map(|d| d.join(config::FILE));

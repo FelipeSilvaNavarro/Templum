@@ -581,7 +581,7 @@ fn shell_row(ws: &Workspace, entity: &Entity<Workspace>) -> Row {
         })
 }
 
-pub(super) fn set_theme(c: &mut Config, dark: bool, name: String) {
+pub(crate) fn set_theme(c: &mut Config, dark: bool, name: String) {
     if dark {
         c.theme.dark = name;
     } else {

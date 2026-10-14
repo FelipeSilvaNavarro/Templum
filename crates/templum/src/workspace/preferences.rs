@@ -1,5 +1,6 @@
 //! config.toml, the themes and the settings panel: reading, applying and saving them.
 
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -119,12 +120,7 @@ impl Workspace {
     /// editor), and applies it. A file that doesn't read keeps the last good colors and says so
     /// once: the stamp is kept, so only the next save is read.
     fn poll_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self
-            .themes
-            .iter()
-            .find(|e| e.theme.name == self.theme.name)
-            .and_then(|e| e.path.clone())
-        else {
+        let Some(path) = self.theme_path() else {
             self.theme_file = None;
             return;
         };
@@ -331,6 +327,68 @@ impl Workspace {
                 }
             }
         }
+    }
+
+    /// The file of the theme in use; None for a built-in (or a theme previewed from the gallery).
+    pub(crate) fn theme_path(&self) -> Option<PathBuf> {
+        self.themes
+            .iter()
+            .find(|e| e.theme.name == self.theme.name)
+            .and_then(|e| e.path.clone())
+    }
+
+    /// Makes `name` the theme of the mode in effect, as a click in the settings does, and shows it
+    /// now: a preview on screen must not stay when the config already names `name`.
+    pub(crate) fn set_mode_theme(&mut self, name: &str, cx: &mut Context<Self>) {
+        // It may be a file just written.
+        self.themes = theme::load(self.config_dir.as_deref());
+        let (dark, owned) = (self.dark, name.to_string());
+        self.edit(
+            Edit::set("theme", if dark { "dark" } else { "light" }, name),
+            |c| settings::set_theme(c, dark, owned),
+            cx,
+        );
+        if let Some(theme) = theme::find(&self.themes, name) {
+            self.apply(theme, cx);
+        }
+    }
+
+    /// A new theme file from the theme in use, made the mode's theme. False, with a notification,
+    /// when it can't be made (a name taken or not allowed): the name dialog stays open.
+    pub(crate) fn new_theme(
+        &mut self,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let made = match &self.config_dir {
+            Some(dir) => theme::create(dir, name, &theme::template(name, &self.theme)),
+            None => Err(NO_CONFIG_DIR.to_string()),
+        };
+        match made {
+            Ok(_) => {
+                self.set_mode_theme(name.trim(), cx);
+                true
+            }
+            Err(message) => {
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+                false
+            }
+        }
+    }
+
+    /// Opens the theme in use's file in an editor block, closing the settings panel (which writes
+    /// what's pending). Saving it there applies it: `poll_theme` reads it.
+    pub(crate) fn open_theme_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.theme_path() else {
+            return;
+        };
+        let Some(folder) = path.parent().map(Path::to_path_buf) else {
+            return;
+        };
+        self.close_settings(window, cx);
+        self.open_in_editor(&folder, &path, None, None, window, cx);
     }
 
     /// Opens the theme picker (re-reading the user's themes folder), or closes it like Esc.
@@ -639,7 +697,7 @@ impl Workspace {
     /// Opens config.toml in the system's editor, writing the commented template first if needed.
     pub(crate) fn open_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(dir) = self.config_dir.clone() else {
-            let message = "No config folder: neither HOME nor APPDATA is set".to_string();
+            let message = NO_CONFIG_DIR.to_string();
             eprintln!("templum: {message}");
             show_notification(window, cx, Notification::error(message));
             return;
@@ -657,6 +715,8 @@ impl Workspace {
         }
     }
 }
+
+const NO_CONFIG_DIR: &str = "No config folder: neither HOME nor APPDATA is set";
 
 /// A shortcut needs Ctrl, Alt or Super (Cmd), or is an F key: any other key is typing, which the
 /// terminals must keep getting.

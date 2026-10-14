@@ -18,6 +18,22 @@ const ANSI_NAMES: [&str; 8] = [
 /// The interface colors a theme file may set in its `[templum]` table.
 const INTERFACE: [&str; 3] = ["accent", "canvas", "dots"];
 
+/// The colors a theme file sets, in `key` order: 20 for the terminal, 3 for the interface.
+pub(crate) const COLORS: usize = 23;
+
+/// Color `i`'s table and key in a theme file.
+pub(crate) fn key(i: usize) -> (&'static str, &'static str) {
+    match i {
+        0 => ("colors.primary", "background"),
+        1 => ("colors.primary", "foreground"),
+        2 => ("colors.cursor", "cursor"),
+        3 => ("colors.selection", "background"),
+        4..12 => ("colors.normal", ANSI_NAMES[i - 4]),
+        12..20 => ("colors.bright", ANSI_NAMES[i - 12]),
+        _ => ("templum", INTERFACE[i - 20]),
+    }
+}
+
 /// A terminal palette plus the interface colors derived from it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Theme {
@@ -133,6 +149,25 @@ impl Theme {
         }
     }
 
+    /// Every color, in `key` order, as drawn: a derived one as worked out now. Dots that are
+    /// derived are translucent, so theirs is the blend over the canvas they look like.
+    pub fn colors(&self) -> [Rgb; COLORS] {
+        let p = &self.palette;
+        let canvas = rgb(self.ui.canvas);
+        let dots =
+            self.interface[2].unwrap_or_else(|| mix(canvas, rgb(self.ui.dot), self.ui.dot.a));
+        let mut colors = [BLACK; COLORS];
+        colors[0] = p.background;
+        colors[1] = p.foreground;
+        colors[2] = rgb(self.ui.cursor);
+        colors[3] = rgb(self.ui.selection);
+        colors[4..20].copy_from_slice(&p.ansi);
+        colors[20] = rgb(self.ui.accent);
+        colors[21] = canvas;
+        colors[22] = dots;
+        colors
+    }
+
     /// The `[templum]` colors in place of the derived ones. Dots are drawn as written, opaque.
     fn with_interface(mut self, interface: [Option<Rgb>; 3]) -> Self {
         let [accent, canvas, dots] = interface;
@@ -222,6 +257,22 @@ fn parse_hex(s: &str) -> Option<Rgb> {
         g: (v >> 8) as u8,
         b: v as u8,
     })
+}
+
+/// `c` without its alpha, rounded (GPUI's own conversions truncate, which can turn 255 into 254).
+pub(crate) fn rgb(c: Hsla) -> Rgb {
+    let c = c.to_rgb();
+    let f = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    Rgb {
+        r: f(c.r),
+        g: f(c.g),
+        b: f(c.b),
+    }
+}
+
+/// "#rrggbb".
+pub(crate) fn hex(c: Rgb) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b)
 }
 
 /// WCAG relative luminance.
@@ -375,6 +426,109 @@ fn read_folder(folder: &Path) -> Vec<(Theme, PathBuf)> {
         }
     }
     themes
+}
+
+/// The file of a new theme called `name`: `theme`'s colors, with comments that say what each one
+/// colors. The `[templum]` colors `theme` doesn't set are written commented out, with their value
+/// now.
+pub(crate) fn template(name: &str, theme: &Theme) -> String {
+    let colors = theme.colors();
+    let mut out = format!(
+        "# {name}: a Templum theme, made from {from}.\n\
+         # The format is Alacritty's (https://alacritty.org/config-alacritty.html#colors): it works there\n\
+         # too. Change a color here, or in Templum's Settings > Appearance; saving this file shows it at once.\n\
+         # Colors are \"#rrggbb\".\n",
+        name = name.trim(),
+        from = theme.name,
+    );
+    let notes: [(usize, &str); 6] = [
+        (
+            0,
+            "\n[colors.primary]\n# Behind the text: terminals, editors, notes, the blocks' cards.\n",
+        ),
+        (
+            1,
+            "# The text, and the base of titles, borders and the dot grid.\n",
+        ),
+        (2, "\n[colors.cursor]\n"),
+        (
+            3,
+            "\n[colors.selection]\n# Drawn at 35% over selected text.\n",
+        ),
+        (
+            4,
+            "\n# The 16 colors programs print with. Blue is the accent unless [templum] sets one, and\n\
+             # the others tint colored notes and labels.\n[colors.normal]\n",
+        ),
+        (12, "\n[colors.bright]\n"),
+    ];
+    for (i, color) in colors.iter().enumerate().take(20) {
+        if let Some((_, note)) = notes.iter().find(|(at, _)| *at == i) {
+            out.push_str(note);
+        }
+        out.push_str(&format!("{} = \"{}\"\n", key(i).1, hex(*color)));
+    }
+    out.push_str(
+        "\n# Templum's own colors. Left commented out, each is worked out from the colors above: take\n\
+         # out the # before one to set it.\n[templum]\n",
+    );
+    let about = [
+        "The focused block's border and ring, the picker's selection.",
+        "Behind the blocks.",
+        "The dot grid.",
+    ];
+    for (k, about) in about.iter().enumerate() {
+        let off = if theme.interface[k].is_some() {
+            ""
+        } else {
+            "# "
+        };
+        out.push_str(&format!(
+            "# {about}\n{off}{} = \"{}\"\n",
+            INTERFACE[k],
+            hex(colors[20 + k])
+        ));
+    }
+    out
+}
+
+/// A theme's file name: refuses what no file system takes, and a leading dot (a hidden file).
+pub(crate) fn file_name(name: &str) -> Result<String, &'static str> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Type a name");
+    }
+    if name.starts_with('.') {
+        return Err("A name can't start with a dot");
+    }
+    if name
+        .chars()
+        .any(|c| c.is_control() || r#"/\:*?"<>|"#.contains(c))
+    {
+        return Err(r#"A name can't have / \ : * ? " < > |"#);
+    }
+    Ok(format!("{name}.toml"))
+}
+
+/// Writes a new theme file, `<config_dir>/themes/<name>.toml`, never over one already there.
+pub(crate) fn create(config_dir: &Path, name: &str, text: &str) -> Result<PathBuf, String> {
+    let file = file_name(name)?;
+    let folder = config_dir.join("themes");
+    std::fs::create_dir_all(&folder)
+        .map_err(|e| format!("Couldn't create {}: {e}", folder.display()))?;
+    let path = folder.join(file);
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()));
+    match written {
+        Ok(()) => Ok(path),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(format!("A theme named \"{}\" already exists", name.trim()))
+        }
+        Err(e) => Err(format!("Couldn't write {}: {e}", path.display())),
+    }
 }
 
 pub(crate) fn find(themes: &[Entry], name: &str) -> Option<Rc<Theme>> {
@@ -547,6 +701,88 @@ white = "#aaaaaa"
         );
         let canvas = format!("{MINIMAL}\n[templum]\ncanvas = \"#000000\"\n");
         assert_eq!(parse("x", &canvas).unwrap().ui.canvas, hsla(rgb(0), 1.0));
+    }
+
+    #[test]
+    fn rgb_rounds_back() {
+        for builtin in BUILTIN {
+            let theme = parse(builtin.name, builtin.toml).unwrap();
+            for c in theme.palette.ansi {
+                assert_eq!(super::rgb(hsla(c, 1.0)), c, "{}", builtin.name);
+                assert_eq!(super::rgb(hsla(c, 0.35)), c, "alpha is dropped");
+            }
+        }
+        assert_eq!(hex(rgb(0x0a84ff)), "#0a84ff");
+    }
+
+    #[test]
+    fn template_round_trips_every_builtin() {
+        for builtin in BUILTIN {
+            let theme = parse(builtin.name, builtin.toml).unwrap();
+            let text = template("Mine", &theme);
+            assert!(text.starts_with("# Mine: a Templum theme, made from "));
+            let back = parse(builtin.name, &text).unwrap();
+            assert_eq!(back.palette, theme.palette, "{}", builtin.name);
+            assert_eq!(back.ui, theme.ui, "{}", builtin.name);
+            assert_eq!(back.interface, [None; 3], "commented out");
+            assert_eq!(back.colors(), theme.colors());
+        }
+        let set = format!("{MINIMAL}\n[templum]\naccent = \"#ff8800\"\n");
+        let theme = parse("x", &set).unwrap();
+        let back = parse("x", &template("y", &theme)).unwrap();
+        assert_eq!(back, theme, "a set color stays set");
+        // The derived dots, written as a solid color, look the same over the canvas.
+        let mocha = parse("m", MOCHA).unwrap();
+        let canvas = super::rgb(mocha.ui.canvas);
+        assert_eq!(
+            mocha.colors()[22],
+            mix(canvas, mocha.palette.foreground, 0.30)
+        );
+    }
+
+    #[test]
+    fn color_slots_name_their_keys() {
+        assert_eq!(key(0), ("colors.primary", "background"));
+        assert_eq!(key(3), ("colors.selection", "background"));
+        assert_eq!(key(5), ("colors.normal", "red"));
+        assert_eq!(key(19), ("colors.bright", "white"));
+        assert_eq!(key(22), ("templum", "dots"));
+        let mocha = parse("m", MOCHA).unwrap();
+        let colors = mocha.colors();
+        assert_eq!(colors[5], rgb(0xf38ba8));
+        assert_eq!(colors[2], rgb(0xf5e0dc), "the cursor");
+        assert_eq!(colors[20], rgb(0x89b4fa), "the accent is blue");
+    }
+
+    #[test]
+    fn file_names_refuse_separators_and_dots() {
+        assert_eq!(file_name("  My Theme "), Ok("My Theme.toml".into()));
+        assert_eq!(file_name("Frappé"), Ok("Frappé.toml".into()));
+        for bad in [
+            "",
+            "   ",
+            ".hidden",
+            "a/b",
+            "a\\b",
+            "a:b",
+            "what?",
+            "tab\tname",
+        ] {
+            assert!(file_name(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn create_never_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = create(dir.path(), "Mine", "one").unwrap();
+        assert_eq!(path, dir.path().join("themes").join("Mine.toml"));
+        assert_eq!(
+            create(dir.path(), " Mine ", "two"),
+            Err("A theme named \"Mine\" already exists".into())
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "one");
+        assert!(create(dir.path(), "a/b", "x").is_err());
     }
 
     #[test]
