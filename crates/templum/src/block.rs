@@ -134,7 +134,8 @@ pub(crate) fn render(
     // The card's background, a note's tint included; a label sits on it too.
     let bg = match body {
         Body::Note(note) => note
-            .color
+            .tab()
+            .and_then(|t| ws.notes.get(t.id)?.color)
             .map_or(ws.ui.surface, |color| ws.theme.note_bg(color)),
         _ => ws.ui.surface,
     };
@@ -287,38 +288,9 @@ pub(crate) fn render(
         ),
         _ => None,
     };
-    // A note's preview toggle, on the left of its header (over the title: no move).
+    // A note block's button to every note, on the left of its header (over the title: no move).
     let preview = match body {
-        Body::Note(note) if live && !labeled => {
-            let on = note.preview;
-            Some(
-                div()
-                    .id(("preview", n))
-                    .absolute()
-                    .top(px(4.0 * z))
-                    .left(px(4.0 * z))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size(px(20.0 * z))
-                    .rounded(px(5.0 * z))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(ui.hover))
-                    .child(
-                        Icon::new(if on { IconName::EyeOff } else { IconName::Eye })
-                            .size(px(12.0 * z))
-                            .text_color(ui.title),
-                    )
-                    .tooltip(move |window, cx| {
-                        Tooltip::new(if on { "Edit" } else { "Preview" }).build(window, cx)
-                    })
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.toggle_preview(id, window, cx)
-                    }))
-                    .test_support(),
-            )
-        }
+        Body::Note(_) if live && !labeled => Some(note::notes_button(ws, id, z, cx)),
         _ => None,
     };
     // An editor's file-tree toggle, on the left of its header (over the title: no move).
@@ -465,7 +437,7 @@ pub(crate) fn render(
             // A fading note is drawn empty, like a kanban block.
             // Below Full a note shown rendered is its tinted card, empty: gpui-kit's Markdown view
             // has no layout to draw bars from.
-            Body::Note(n) => frame.when(live && !(n.preview && level != Level::Full), |el| {
+            Body::Note(n) => frame.when(live, |el| {
                 el.child(settled_box(
                     block,
                     settled,

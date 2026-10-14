@@ -325,6 +325,7 @@ fn a_snapshot_tells_each_terminal_its_folder_and_agent(cx: &mut TestAppContext) 
             ws.snapshot_done(
                 vec![(space.clone(), vec![id], saved, None)],
                 None,
+                None,
                 window,
                 cx,
             );
@@ -339,7 +340,13 @@ fn a_snapshot_tells_each_terminal_its_folder_and_agent(cx: &mut TestAppContext) 
                 unreachable!()
             };
             (t.folder, t.agent) = (None, None);
-            ws.snapshot_done(vec![(space, vec![id], unread, None)], None, window, cx);
+            ws.snapshot_done(
+                vec![(space, vec![id], unread, None)],
+                None,
+                None,
+                window,
+                cx,
+            );
             let seen = &ws.space.terminal(id).unwrap().seen;
             assert_eq!(
                 seen.folder.as_deref(),

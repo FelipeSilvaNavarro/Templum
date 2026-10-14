@@ -212,13 +212,17 @@ impl Item {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct NoteItem {
     pub rect: SavedRect,
-    /// The Markdown text.
+    /// The notes it shows as tabs, by their ids in `notes.json`, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<u64>,
+    /// The tab on screen, by its index in `notes`.
     #[serde(default)]
+    pub active: usize,
+    /// A file from before `notes.json`: its one note's text, moved there when it is read.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub text: String,
-    /// Shown rendered instead of the editor.
-    #[serde(default)]
-    pub preview: bool,
-    /// Its card's color, by name ("yellow"); none when missing or unknown.
+    /// Before `notes.json` too: that note's color, by name ("yellow"); none when missing or
+    /// unknown.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -754,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn a_note_item_reads_back_and_preview_defaults_to_false() {
+    fn a_note_item_reads_back_and_an_old_one_keeps_its_text() {
         let d = tempfile::tempdir().unwrap();
         let mut saved = sample();
         saved.items.push(Item::Note(NoteItem {
@@ -764,19 +768,20 @@ mod tests {
                 w: 360.0,
                 h: 280.0,
             },
-            text: "# Hi\n- one".into(),
-            preview: true,
+            notes: vec![3, 5],
+            active: 1,
+            text: String::new(),
             color: None,
         }));
         save(d.path(), "n", &saved, 1).unwrap();
         assert_eq!(load(d.path(), "n"), Loaded::Saved(saved));
         let text = r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[
-            {"kind":"note","rect":{"x":0,"y":0,"w":300,"h":200},"text":"t"}]}"#;
+            {"kind":"note","rect":{"x":0,"y":0,"w":300,"h":200},"text":"t","preview":true}]}"#;
         std::fs::write(path(d.path(), "m"), text).unwrap();
         let Loaded::Saved(read) = load(d.path(), "m") else {
             panic!("not read");
         };
-        assert!(matches!(&read.items[0], Item::Note(n) if n.text == "t" && !n.preview));
+        assert!(matches!(&read.items[0], Item::Note(n) if n.text == "t" && n.notes.is_empty()));
     }
 
     #[test]

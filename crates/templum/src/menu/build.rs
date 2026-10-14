@@ -126,6 +126,12 @@ impl Items {
         match self {
             Items::Canvas { at, agents } => {
                 let add = ws.clone();
+                let notes = item(
+                    ws,
+                    "Notes…",
+                    Some(IconName::NotebookText),
+                    |_, window, cx| crate::note::open_notes(None, window, cx),
+                );
                 let ws = ws.clone();
                 menu.submenu_with_icon(
                     Some(Icon::new(IconName::Bot)),
@@ -173,6 +179,7 @@ impl Items {
                         ))
                     },
                 )
+                .item(notes)
             }
             Items::Terminal { block, selection } => menu
                 .item(
@@ -873,35 +880,24 @@ impl Items {
                 Some(IconName::Delete),
                 move |ws, _, cx| ws.delete_ink(index, cx),
             )),
-            Items::Note {
-                block,
-                preview,
-                color,
-                send,
-            } => menu
+            Items::Note { block, color, send } => menu
                 .item(item(
                     ws,
-                    if preview { "Edit" } else { "Preview" },
-                    Some(if preview {
-                        IconName::EyeOff
-                    } else {
-                        IconName::Eye
-                    }),
-                    move |ws, window, cx| ws.toggle_preview(block, window, cx),
+                    "All notes…",
+                    Some(IconName::NotebookText),
+                    move |_, window, cx| crate::note::open_notes(Some(block), window, cx),
                 ))
-                .item(item(
-                    ws,
-                    "Copy all",
-                    Some(IconName::Copy),
-                    move |ws, _, cx| {
+                .item(
+                    item(ws, "Copy all", Some(IconName::Copy), move |ws, _, cx| {
                         if let Some(note) = ws.space.blocks.get(&block).and_then(|b| b.note()) {
                             let text = note.text(cx);
                             cx.write_to_clipboard(ClipboardItem::new_string(text));
                         }
-                    },
-                ))
+                    })
+                    .disabled(color.is_none()),
+                )
                 .map(|menu| send_to(ws, menu, send, window, cx))
-                .map(|menu| {
+                .when_some(color, |menu, color| {
                     let ws = ws.clone();
                     menu.submenu_with_icon(
                         Some(Icon::new(IconName::Palette)),

@@ -24,10 +24,10 @@ would have opened together with the block's. The canvas and the blocks had no me
 
 | Right-click on | Items |
 |---|---|
-| The empty canvas | **AI agent ▸** (the agents), **Add ▸** Terminal, Kanban board, Note, Editor, Git. The block's top-left corner goes where you clicked. |
+| The empty canvas | **AI agent ▸** (the agents), **Add ▸** Terminal, Kanban board, Note, Editor, Git, **Notes…** (the Notes dialog). The block's top-left corner goes where you clicked. |
 | A terminal block (header or body) | Copy (disabled without a selection), Paste, Close terminal |
 | A kanban block (header, or its empty space) | Board list (or Back to the board, while the list shows), Close |
-| A note block | Preview (or Edit), Copy all, Send to ▸ (the workspace's terminals), Color ▸ (None and the six label colors), Close |
+| A note block | All notes… (the Notes dialog), Copy all (the note on screen), Send to ▸ (the workspace's terminals), Color ▸ (None and the six label colors, for the note on screen), Close |
 | An editor block | Change folder…, Hide (or Show) the file tree, Turn soft wrap on (or off), Send to ▸, Close |
 | A file in an editor's tree | Open, Reveal in file manager, File history, Blame (in the Git block open on its repository, else a new one beside the editor), Rename…, Delete… |
 | A folder in an editor's tree | New file…, New folder…, Open a terminal here, Rename…, Delete…, Reveal in file manager |

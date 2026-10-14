@@ -13,7 +13,7 @@ use crate::alert::{self, Alert};
 use crate::board::Boards;
 use crate::config::WorkingDirectory;
 use crate::kanban::{self, Kanban};
-use crate::note::{self, Note};
+use crate::note::Note;
 use crate::prompt;
 
 use super::history::{Change, Then};
@@ -42,31 +42,6 @@ impl Workspace {
         }
     }
 
-    /// A note at the viewport's center, focused, in edit mode.
-    pub(crate) fn new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let center = self.space.canvas.camera.to_world(self.center(window));
-        let size = note::SIZE;
-        let at = self
-            .space
-            .canvas
-            .place_new(
-                size,
-                Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
-            )
-            .origin();
-        self.add_note_at(at, window, cx);
-    }
-
-    /// An empty note, its top-left corner at `at` (world units), with the keyboard.
-    pub(crate) fn add_note_at(&mut self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
-        self.space.pristine = false;
-        let rect = Rect::new(at.x, at.y, note::SIZE.w, note::SIZE.h);
-        let note = Note::new("", false, window, cx);
-        note.focus(window, cx);
-        self.add_block(rect, Body::Note(note));
-        cx.notify();
-    }
-
     /// Changes the boards with `f`, keeping them as they were for Ctrl+Z (when it changed
     /// them).
     pub(crate) fn edit_boards<R>(&mut self, f: impl FnOnce(&mut Boards) -> R) -> R {
@@ -91,37 +66,6 @@ impl Workspace {
         self.boards = before;
         cx.notify();
         true
-    }
-
-    /// Tints a note's card with `color` (None: the blocks' own).
-    pub(crate) fn set_note_color(
-        &mut self,
-        id: BlockId,
-        color: Option<crate::board::Label>,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(Body::Note(note)) = self.space.blocks.get_mut(&id) {
-            note.color = color;
-            cx.notify();
-        }
-    }
-
-    /// A note shows its rendered text, or its editor again. Leaving the editor hands the keyboard
-    /// to the canvas; going back to it gives the editor the keyboard.
-    pub(crate) fn toggle_preview(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.release_focus(id, window, cx);
-        if let Some(Body::Note(note)) = self.space.blocks.get_mut(&id) {
-            note.preview = !note.preview;
-            if !note.preview {
-                note.focus(window, cx);
-            }
-            cx.notify();
-        }
     }
 
     /// A terminal in `folder`, placed to the right of `block`, with `command` typed in (not
@@ -551,6 +495,15 @@ impl Workspace {
         self.space.canvas.remove(id);
         self.space.appearing.remove(&id);
         let body = self.space.blocks.remove(&id);
+        // Its notes stay in the Notes dialog, but for blank ones: nothing is lost.
+        for note in body
+            .as_ref()
+            .and_then(Body::note)
+            .map(Note::ids)
+            .unwrap_or_default()
+        {
+            self.drop_if_blank(note);
+        }
         if let (Some(block), Some(body)) = (block, body) {
             self.space.ghosts.push(Ghost {
                 block,

@@ -256,7 +256,7 @@ pub(crate) struct Tab {
     pub conflict: bool,
     /// A Markdown file shown rendered.
     pub preview: bool,
-    pub preview_scroll: crate::note::PreviewScroll,
+    pub preview_scroll: crate::markdown::PreviewScroll,
     /// Its word map, drawn far away (`silhouette.rs`).
     pub far: RefCell<Far>,
     _edits: Subscription,
@@ -457,7 +457,7 @@ impl Editor {
             mtime: mtime(path),
             conflict: false,
             preview: false,
-            preview_scroll: crate::note::PreviewScroll::default(),
+            preview_scroll: crate::markdown::PreviewScroll::default(),
             far: RefCell::default(),
             _edits,
         });
@@ -961,7 +961,7 @@ fn files(
                     // from, and everything around it stays in place.
                     div().into_any_element()
                 } else if tab.preview {
-                    crate::note::preview(
+                    crate::markdown::preview(
                         ("file-preview", n).into(),
                         ("file-markdown", n).into(),
                         tab.editor.read(cx).value(),

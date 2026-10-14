@@ -5,6 +5,7 @@ use gpui_kit::{Context, Window};
 use templum_canvas::{Rect, chrome};
 
 use crate::board;
+use crate::notes;
 use crate::session;
 
 use super::{DEFAULT_COLS, DEFAULT_ROWS, Space, Workspace, show_notification};
@@ -34,6 +35,29 @@ impl Workspace {
                 eprintln!("templum: {message}");
                 show_notification(window, cx, Notification::error(message));
                 self.boards_frozen = true;
+            }
+            Some(Loaded::Nothing) | None => {}
+        }
+        match self.data_dir.as_deref().map(notes::load) {
+            Some(Loaded::Saved(notes)) => {
+                self.notes_saved = Some(notes.clone());
+                self.notes = notes;
+            }
+            Some(Loaded::Moved { to, why }) => {
+                let message = format!(
+                    "Couldn't read the notes ({why}); they were kept as {}",
+                    to.display()
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+            }
+            Some(Loaded::Unreadable(why)) => {
+                let message = format!(
+                    "Couldn't read the notes ({why}); neither they nor the canvas will be saved this session"
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::error(message));
+                self.notes_frozen = true;
             }
             Some(Loaded::Nothing) | None => {}
         }
@@ -94,6 +118,8 @@ impl Workspace {
                 }
                 Some(Loaded::Nothing) | None => {}
             }
+            // Its file may hold notes' text only it keeps until notes.json can be written.
+            self.space.frozen |= self.notes_frozen;
             spaces.push(std::mem::take(&mut self.space));
         }
         self.sidebar = index.sidebar;

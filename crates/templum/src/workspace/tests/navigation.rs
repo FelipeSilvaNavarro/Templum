@@ -629,7 +629,13 @@ fn a_notes_rows_and_letters_glide_together(cx: &mut TestAppContext) {
     .unwrap();
     let (n, note, inner) = ws.read_with(cx, |ws, _| {
         let id = ws.space.canvas.top().unwrap();
-        let note = ws.space.blocks[&id].note().unwrap().editor.clone();
+        let note = ws.space.blocks[&id]
+            .note()
+            .unwrap()
+            .tab()
+            .unwrap()
+            .editor
+            .clone();
         let rect = ws.space.canvas.get(id).unwrap().rect;
         (
             id.0 as usize,
@@ -686,20 +692,22 @@ fn a_notes_rows_and_letters_glide_together(cx: &mut TestAppContext) {
         at_100 < mid && mid < landed,
         "the rows glide: {at_100} at 100%, {mid} mid-glide, {landed} landed"
     );
-    // The zoom the text is drawn at, from its box: its rows are 1.5 x its letters, exactly.
-    let s = f32::from(text.size.height) / inner.h;
+    // The zoom the text is drawn at, from its box (under the tabs): its rows are 1.5 x its
+    // letters, exactly.
+    let tabs = crate::note::TABS_H;
+    let s = f32::from(text.size.height) / (inner.h - tabs);
     assert!(
         (mid - 1.5 * crate::note::FONT * s).abs() < 0.05,
         "rows of {mid} px at zoom {s}"
     );
-    // The note's point under the pivot doesn't move on screen while the frame glides; the text
-    // drawn at `s` puts that same point on the same pixel.
+    // The note's point under the pivot doesn't move on screen while the frame glides; the body
+    // drawn at `s` (the text below its tabs) puts that same point on the same pixel.
     let pad = templum_canvas::chrome::PAD;
     for (t, f, f_landed) in [
-        (text.origin.x, frame.x, frame_landed.x),
-        (text.origin.y, frame.y, frame_landed.y),
+        (f32::from(text.origin.x), frame.x, frame_landed.x),
+        (f32::from(text.origin.y) - tabs * s, frame.y, frame_landed.y),
     ] {
-        let (t, f, f_landed) = (f32::from(t), f32::from(f) + pad * z, f32::from(f_landed));
+        let (f, f_landed) = (f32::from(f) + pad * z, f32::from(f_landed));
         let still = (f_landed + pad * z_landed - f) / (z - z_landed);
         let off = t - f + still * (s - z);
         assert!(off.abs() < 1.0, "the text under the pivot moved {off} px");
@@ -718,7 +726,13 @@ fn zooming_keeps_the_rows_a_scrolled_note_shows(cx: &mut TestAppContext) {
                 ws.add_note_at(Point::new(40.0, 40.0), window, cx);
                 ws.space.appearing.clear();
                 let id = ws.space.canvas.top().unwrap();
-                let note = ws.space.blocks[&id].note().unwrap().editor.clone();
+                let note = ws.space.blocks[&id]
+                    .note()
+                    .unwrap()
+                    .tab()
+                    .unwrap()
+                    .editor
+                    .clone();
                 (ws.space.canvas.get(id).unwrap().rect, note)
             });
             found
@@ -756,7 +770,7 @@ fn zooming_keeps_the_rows_a_scrolled_note_shows(cx: &mut TestAppContext) {
 }
 
 /// At rest, a text-heavy body's box is the frame's inner area: inside its 1 px border and its
-/// padding, at any zoom.
+/// padding, at any zoom; a note's text is below its tabs.
 #[gpui_kit::test]
 fn a_notes_box_fills_its_frame_at_rest(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
@@ -787,12 +801,16 @@ fn a_notes_box_fills_its_frame_at_rest(cx: &mut TestAppContext) {
             })
             .unwrap();
         let pad = templum_canvas::chrome::PAD * zoom;
+        let tabs = crate::note::TABS_H * zoom;
         let close = |a: gpui_kit::Pixels, b: f32| (f32::from(a) - b).abs() < 0.01;
         assert!(
             close(inner.origin.x, f32::from(frame.origin.x) + pad)
-                && close(inner.origin.y, f32::from(frame.origin.y) + pad)
+                && close(inner.origin.y, f32::from(frame.origin.y) + pad + tabs)
                 && close(inner.size.width, f32::from(frame.size.width) - 2.0 * pad)
-                && close(inner.size.height, f32::from(frame.size.height) - 2.0 * pad),
+                && close(
+                    inner.size.height,
+                    f32::from(frame.size.height) - 2.0 * pad - tabs
+                ),
             "zoom {zoom}: frame {frame:?}, box {inner:?}"
         );
     }
@@ -814,7 +832,13 @@ fn a_note_wraps_the_same_at_every_zoom(cx: &mut TestAppContext) {
                 ws.add_note_at(Point::new(40.0, 40.0), window, cx);
                 ws.space.appearing.clear();
                 let id = ws.space.canvas.top().unwrap();
-                let note = ws.space.blocks[&id].note().unwrap().editor.clone();
+                let note = ws.space.blocks[&id]
+                    .note()
+                    .unwrap()
+                    .tab()
+                    .unwrap()
+                    .editor
+                    .clone();
                 (ws.space.canvas.get(id).unwrap().rect, note)
             });
             found
@@ -899,30 +923,26 @@ fn zooming_keeps_the_rows_a_scrolled_file_tree_shows(cx: &mut TestAppContext) {
     }
 }
 
-/// A note shown rendered zooms like a photo: its headings, code and spacing scale with its
-/// text, so its content is as tall, measured at zoom 1, at every zoom.
+/// A Markdown file shown rendered zooms like a photo: its headings, code and spacing scale with
+/// its text, so its content is as tall, measured at zoom 1, at every zoom.
 #[gpui_kit::test]
-fn a_note_preview_zooms_like_a_photo(cx: &mut TestAppContext) {
-    let (handle, ws) = open(cx);
+fn a_markdown_preview_zooms_like_a_photo(cx: &mut TestAppContext) {
     let mut text =
         String::from("# A heading long enough to wrap over two lines, it goes on and on\n\n");
     for i in 1..=30 {
         text.push_str(&format!("Paragraph {i} with a few words.\n\n"));
     }
     text.push_str("## Code\n\n```\nlet x = 1;\n```\n");
-    let (rect, id) = cx
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.md"), &text).unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_editor(handle, &ws, cx, dir.path());
+    click_file(handle, 0, cx);
+    let rect = cx
         .update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
-                ws.add_note_at(Point::new(40.0, 40.0), window, cx);
-                ws.space.appearing.clear();
-                let id = ws.space.canvas.top().unwrap();
-                let Some(crate::workspace::Body::Note(note)) = ws.space.blocks.get_mut(&id) else {
-                    unreachable!()
-                };
-                note.editor
-                    .update(cx, |e, cx| e.set_value(text.clone(), window, cx));
-                note.preview = true;
-                (ws.space.canvas.get(id).unwrap().rect, id)
+                ws.toggle_file_preview(id, window, cx);
+                ws.space.canvas.get(id).unwrap().rect
             })
         })
         .unwrap();
@@ -940,7 +960,8 @@ fn a_note_preview_zooms_like_a_photo(cx: &mut TestAppContext) {
         cx.update_window(handle, |_, window, cx| window.render_frame(cx))
             .unwrap();
         let height = ws.read_with(cx, |ws, _| {
-            let scroll = &ws.space.blocks[&id].note().unwrap().preview_scroll.handle;
+            let editor = ws.space.editor(id).unwrap();
+            let scroll = &editor.tabs[editor.active.unwrap()].preview_scroll.handle;
             (f32::from(scroll.max_offset().y) + f32::from(scroll.bounds().size.height)) / zoom
         });
         heights.push((zoom, height));

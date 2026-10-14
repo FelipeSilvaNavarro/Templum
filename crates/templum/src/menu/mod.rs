@@ -180,8 +180,7 @@ impl Workspace {
                 },
                 Body::Note(n) => Items::Note {
                     block,
-                    preview: n.preview,
-                    color: n.color,
+                    color: n.tab().map(|t| self.notes.get(t.id).and_then(|e| e.color)),
                     send: self.send_to_menu(n.to_send(cx)),
                 },
                 Body::Editor(e) => Items::Editor {
@@ -427,9 +426,8 @@ enum Items {
     },
     Note {
         block: BlockId,
-        /// It shows rendered.
-        preview: bool,
-        color: Option<crate::board::Label>,
+        /// The color of the note on screen; None without one.
+        color: Option<Option<crate::board::Label>>,
         send: SendTo,
     },
     Editor {

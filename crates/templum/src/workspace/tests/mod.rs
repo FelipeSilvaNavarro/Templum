@@ -547,10 +547,12 @@ pub(super) fn three_blocks(
                 rect: Rect::new(40.0, 40.0, 220.0, 200.0).into(),
                 board: None,
             });
+            let hello = ws.notes.add("hello".into(), None, 0);
             let note = crate::session::Item::Note(crate::session::NoteItem {
                 rect: Rect::new(300.0, 40.0, 220.0, 200.0).into(),
-                text: "hello".into(),
-                preview: true,
+                notes: vec![hello],
+                active: 0,
+                text: String::new(),
                 color: None,
             });
             // Set up, not a change of the person's to take back.

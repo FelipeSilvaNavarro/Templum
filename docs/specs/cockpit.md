@@ -11,7 +11,7 @@
 Templum is a whiteboard that developers work in, and a cockpit for their CLI agents. Today it has terminals and
 kanban boards. This spec adds what keeps a developer from leaving it:
 
-1. **Notes:** a block to write in Markdown.
+1. **Notes:** plain-text notes, kept app-wide, shown as tabs in note blocks.
 2. **Drawing:** pens, a highlighter, shapes and an eraser, on the canvas itself.
 3. **Snapping:** blocks line up with their neighbours while they are moved or resized, as in Figma, with no key held.
 4. **A toolbar:** a floating bar at the bottom of the canvas holds every tool; the title bar loses its add buttons.
@@ -253,35 +253,44 @@ paint, the tool's pointer handling, the undo stack, serde in `session.rs`).
 
 ## 5. Notes
 
-A **note block** holds Markdown text. It is a block like the others: title bar, close, resize, move, focus, hover
-lift, pop-in and fade-out, menus, zoom.
+Notes are plain text, kept app-wide like the kanban boards: closing a tab or a block never loses one. A **note block**
+shows some of them as **tabs**; only the **Notes** dialog deletes a note. It is a block like the others: title bar,
+close, resize, move, focus, hover lift, pop-in and fade-out, menus, zoom.
 
-- **Opening one:** the toolbar's Note, **Add ▸ Note** in the canvas menu, or `new_note`. It opens at the viewport's
-  center, 360 × 280, at least 200 × 140, empty and focused, in edit mode.
-- **Edit mode:** gpui-kit's `Editor` with `language("markdown")`, soft wrap on, no line numbers, no border, the
-  block's `surface` behind it, in the terminal font at 13 world units × zoom. Tree-sitter highlights headings,
-  lists, code and emphasis; Tab and Shift+Tab indent and outdent list items (gpui-kit's indentation).
-- **Preview mode:** `TextView::markdown` of the text, selectable and scrollable, in the UI font, with code blocks
-  highlighted and links opening in the browser. The toggle is an eye button at the left of the header (like the
-  kanban's ⇅) and in the block's menu.
-- **Title:** the first line that starts with `#`, without the hashes, trimmed; "Note" when there is none.
-- **Keyboard:** focusing the block focuses its editor, so typing goes there. Templum's shortcuts (Ctrl+Shift+…)
+- **Opening one:** the toolbar's Note, **Add ▸ Note** in the canvas menu, or `new_note` open a block with a new, empty
+  note at the viewport's center, 360 × 280, at least 200 × 140, its editor with the keyboard.
+- **Text:** gpui-kit's `Editor` with no language: plain text, no highlighting, nothing rendered. Soft wrap on, no line
+  numbers, no border, in the terminal font at 13 world units × zoom. Markdown is just text: no list goes on by itself,
+  Ctrl+B types nothing.
+- **Title:** the note's first line with text, trimmed, cut at 60 characters with "…"; "Untitled" when it has none. The
+  block's title is the note on screen's; "Notes" with no tab open.
+- **Tabs:** a strip of 28 world units under the header: each open note's title, the one on screen underlined in the
+  accent color. A click shows a tab; its × closes the tab (the note stays); **+** opens a new note in a new tab.
+  A note is open in **one tab at most**: opening it again shows that tab, in its block, in its workspace.
+- **No tab open:** the block says "No note open here" with **New note** and **Open a note…** (the dialog, for it).
+- **Notes dialog** (the header's notebook button, **All notes…** in the block's menu, **Notes…** in the canvas
+  menu): every note, the most recently changed first; each row its title, when it last changed ("5 min ago"), where
+  it is open ("Open", "Open in Workspace 2") and its next line with text. The field on top finds notes by their text,
+  in any case. A click opens a note: as a tab of the block the dialog was opened from, where it is open already, or
+  in a new block. **New note** adds one. The trash deletes a note on its **second** click ("Delete for good" shows
+  after the first), from every block that shows it.
+- **Saved as it is typed:** each change to a note's text goes into the notes at once, and they are written to
+  `notes.json` in the data folder with the canvas's snapshot (every 5 s, and when Templum quits). A canvas is written
+  only once its notes are. If `notes.json` can't be read, neither it nor the canvases are written that session.
+- **Blank notes go:** a note with no text whose tab or block closes is removed; nothing is lost.
+- **Keyboard:** focusing the block focuses the note on screen, so typing goes there. Templum's shortcuts (Ctrl+Shift+…)
   keep working from inside it. Copy, paste, undo and search are the editor's own.
-- **Markdown keys** (in the note's text, not in code editors): Enter on a list item (`- `, `* `, `+ `, `1. `,
-  `- [ ] `) starts the next one, and on an empty item ends the list; Ctrl+Enter (Cmd+Enter) ticks or unticks the
-  line's task, or makes the line one; Ctrl+B and Ctrl+I put `**` or `*` around the selection, or the cursor.
-- **Preview at any zoom:** headings, code and the space between paragraphs scale with the text (a `ScaledRem`
-  element lays the preview out with the rem size × zoom), and it wraps at the same width in world units, so it
-  zooms like a photo. A Markdown file's preview in an editor is the same.
-- **Color:** Color ▸ in the menu tints the card with one of the six label colors (the background mixed with the
-  label's ANSI color, readable in every built-in theme); saved as `"color": "yellow"`.
-- **Right-click a note:** Preview (or Edit), Copy all, Send to ▸, Color ▸, Close.
-- **File:** `{ "kind": "note", "rect": {…}, "text": "# Plan\n- …", "preview": false }`. The text is read from the
-  editor at each snapshot. Any size of text is accepted; a text that isn't valid UTF-8 can't be in JSON, so none is.
+- **Color:** Color ▸ in the menu tints the note on screen (the background mixed with the label's ANSI color, readable
+  in every built-in theme); a note keeps its color in every block.
+- **Right-click a note block:** All notes…, Copy all, Send to ▸, Color ▸, Close.
+- **Copy and paste** a note block (canvas selection): the pasted block shows copies of its notes.
+- **Files:** `notes.json`: `{ "version": 1, "next_id": 7, "notes": [{ "id": 3, "text": "…", "color": "yellow",
+  "changed": 1760000000 }] }` (`changed` in seconds since 1970). A block in a canvas: `{ "kind": "note", "rect": {…},
+  "notes": [3, 5], "active": 1 }`. A canvas from before `notes.json` held the note's `text` (and `color`) in the
+  block: read once, it becomes a note in `notes.json`.
 
-Architecture: `note.rs` (new): `Note { editor: Entity<EditorState>, preview: bool }`, the body, the title. The
-gpui-kit feature `tree-sitter-markdown` comes on with this sub-project (the rest of `tree-sitter-languages` with
-the editor).
+Architecture: `notes.rs` (the notes, `notes.json`), `note.rs` (`Note { tabs, active }`, the body, the tabs, the Notes
+dialog), `workspace/note_tabs.rs` (opening, closing and deleting). An editor's Markdown preview lives in `markdown.rs`.
 
 ## 6. The workspaces screen
 

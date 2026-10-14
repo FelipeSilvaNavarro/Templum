@@ -13,6 +13,7 @@ use crate::editor::{self, Editor};
 use crate::git_block::{self, Git};
 use crate::kanban::{self, Kanban};
 use crate::note::{self, Note};
+use crate::notes;
 use crate::session;
 
 use super::{Body, MAX_COLS, MAX_ROWS, Workspace, show_notification};
@@ -138,11 +139,23 @@ impl Workspace {
                     }),
                 )
             }),
-            session::Item::Note(n) => clamped_rect(n.rect.into(), note::MIN).map(|rect| {
-                let mut note = Note::new(&n.text, n.preview, window, cx);
-                note.color = n.color;
-                self.add_block(rect, Body::Note(note))
-            }),
+            session::Item::Note(n) => {
+                let rect = clamped_rect(n.rect.into(), note::MIN)?;
+                let mut ids = n.notes.clone();
+                // A file from before notes.json: its text becomes a note there.
+                if ids.is_empty() && !n.text.trim().is_empty() {
+                    ids.push(self.notes.add(n.text.clone(), n.color, notes::now()));
+                }
+                let shown = n.notes.get(n.active).copied();
+                // A note is open in one tab at most; a deleted one is gone.
+                ids.retain(|id| self.note_open_at(*id).is_none());
+                let tabs: Vec<_> = ids
+                    .into_iter()
+                    .filter_map(|id| self.note_tab(id, window, cx))
+                    .collect();
+                let active = tabs.iter().position(|t| Some(t.id) == shown).unwrap_or(0);
+                Some(self.add_block(rect, Body::Note(Note { tabs, active })))
+            }
             session::Item::Git(g) => {
                 let id = clamped_rect(g.rect.into(), git_block::MIN).map(|rect| {
                     let mut git = Git::new(
@@ -216,16 +229,24 @@ impl Workspace {
             .collect();
         let boards = (!self.boards_frozen && self.boards_saved.as_ref() != Some(&self.boards))
             .then(|| self.boards.clone());
+        let notes = (!self.notes_frozen && self.notes_saved.as_ref() != Some(&self.notes))
+            .then(|| self.notes.clone());
         cx.spawn_in(window, async move |ws, cx| {
-            let (done, boards) = cx
+            let (done, boards, notes) = cx
                 .background_executor()
                 .spawn(async move {
+                    let notes = notes.map(|n| {
+                        let written = notes::save(&dir, &n, generation);
+                        (n, written)
+                    });
+                    // A canvas names its notes by id: it is written once they are.
+                    let notes_kept = !matches!(notes, Some((_, Err(_))));
                     let done = jobs
                         .into_iter()
                         .map(|(id, terminals, layout, last)| {
                             let saved = layout.snapshot();
                             let written = last
-                                .filter(|last| last.as_ref() != Some(&saved))
+                                .filter(|last| notes_kept && last.as_ref() != Some(&saved))
                                 .map(|_| session::save(&dir, &id, &saved, generation));
                             (id, terminals, saved, written)
                         })
@@ -234,11 +255,11 @@ impl Workspace {
                         let written = board::save(&dir, &b, generation);
                         (b, written)
                     });
-                    (done, boards)
+                    (done, boards, notes)
                 })
                 .await;
             ws.update_in(cx, |ws, window, cx| {
-                ws.snapshot_done(done, boards, window, cx)
+                ws.snapshot_done(done, boards, notes, window, cx)
             })
             .ok();
         })
@@ -249,6 +270,7 @@ impl Workspace {
         &mut self,
         done: Vec<SpaceSnapshot>,
         boards: Option<(Boards, std::io::Result<()>)>,
+        notes: Option<(notes::Notes, std::io::Result<()>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -259,6 +281,14 @@ impl Workspace {
             Some((boards, Ok(()))) => {
                 wrote = true;
                 self.boards_saved = Some(boards);
+            }
+            Some((_, Err(err))) => failed = Some(err),
+            None => {}
+        }
+        match notes {
+            Some((notes, Ok(()))) => {
+                wrote = true;
+                self.notes_saved = Some(notes);
             }
             Some((_, Err(err))) => failed = Some(err),
             None => {}
@@ -307,6 +337,16 @@ impl Workspace {
             match board::save(&dir, &self.boards, generation) {
                 Ok(()) => self.boards_saved = Some(self.boards.clone()),
                 Err(err) => eprintln!("templum: couldn't save the boards: {err}"),
+            }
+        }
+        if !self.notes_frozen && self.notes_saved.as_ref() != Some(&self.notes) {
+            match notes::save(&dir, &self.notes, generation) {
+                Ok(()) => self.notes_saved = Some(self.notes.clone()),
+                Err(err) => {
+                    // A canvas names its notes by id: it is written once they are.
+                    eprintln!("templum: couldn't save the notes: {err}");
+                    return;
+                }
             }
         }
         let known = self.known_agents();

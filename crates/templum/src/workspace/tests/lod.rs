@@ -324,12 +324,9 @@ fn the_headers_buttons_hide_behind_a_far_label(cx: &mut TestAppContext) {
         })
         .unwrap();
     rest_at(handle, &ws, cx, Point::new(4990.0, -10.0), 1.0);
-    assert!(shown(handle, cx, ("preview", note)));
+    assert!(shown(handle, cx, ("notes", note)));
     rest_at(handle, &ws, cx, Point::new(4990.0, -10.0), 0.25);
-    assert!(
-        !shown(handle, cx, ("preview", note)),
-        "the label sits there"
-    );
+    assert!(!shown(handle, cx, ("notes", note)), "the label sits there");
 }
 
 /// A focused terminal at 25% is Full: its letters, its cursor (the IME popup follows it) and the
@@ -630,8 +627,8 @@ fn going_to_a_far_waiting_terminal_draws_it_in_full(cx: &mut TestAppContext) {
     assert!(!shown(handle, cx, ("silhouette", n)), "gone to: Full");
 }
 
-/// Below Full, rendered Markdown is an empty area: a note shown rendered is its tinted card, an
-/// editor's Markdown file keeps its tab row. A kanban block is drawn in full there.
+/// Below Full, rendered Markdown is an empty area: an editor's Markdown file keeps its tab row. A
+/// kanban block is drawn in full there.
 #[gpui_kit::test]
 fn far_rendered_markdown_is_left_out_and_kanban_drawn_in_full(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
@@ -639,17 +636,14 @@ fn far_rendered_markdown_is_left_out_and_kanban_drawn_in_full(cx: &mut TestAppCo
     let (handle, ws) = open(cx);
     let editor = open_editor(handle, &ws, cx, dir.path());
     click_file(handle, 0, cx);
-    let (note, kanban) = cx
+    let kanban = cx
         .update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
                 ws.toggle_file_preview(editor, window, cx);
-                ws.add_note_at(Point::new(40.0, 900.0), window, cx);
-                let note = ws.space.canvas.top().unwrap();
-                ws.toggle_preview(note, window, cx);
                 ws.add_kanban_at(Point::new(1200.0, 40.0), window, cx);
                 let kanban = ws.space.canvas.top().unwrap();
                 ws.space.appearing.clear();
-                (note.0 as usize, kanban.0 as usize)
+                kanban.0 as usize
             })
         })
         .unwrap();
@@ -657,18 +651,10 @@ fn far_rendered_markdown_is_left_out_and_kanban_drawn_in_full(cx: &mut TestAppCo
     unfocus(handle, &ws, cx);
     rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 0.5);
     assert!(
-        shown(handle, cx, ("note-preview", note)),
-        "the note rendered at 50%"
-    );
-    assert!(
         shown(handle, cx, ("file-preview", e)),
         "the file rendered at 50%"
     );
     rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 0.33);
-    assert!(
-        !shown(handle, cx, ("note-preview", note)),
-        "the note is its card"
-    );
     assert!(
         !shown(handle, cx, ("file-preview", e)),
         "the file's area is empty"
@@ -696,7 +682,16 @@ fn note_with(
             ws.add_note_at(at, window, cx);
             ws.space.appearing.clear();
             let id = ws.space.canvas.top().unwrap();
-            (id, ws.space.blocks[&id].note().unwrap().editor.clone())
+            (
+                id,
+                ws.space.blocks[&id]
+                    .note()
+                    .unwrap()
+                    .tab()
+                    .unwrap()
+                    .editor
+                    .clone(),
+            )
         });
         editor.update(cx, |e, cx| e.set_value(text.to_string(), window, cx));
         window.render_frame(cx);
@@ -709,6 +704,8 @@ fn note_map(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> Opt
     ws.read_with(cx, |ws, _| {
         ws.space.blocks[&id]
             .note()
+            .unwrap()
+            .tab()
             .unwrap()
             .far
             .borrow()
@@ -907,7 +904,13 @@ fn a_far_note_with_no_word_map_yet_gets_one_after_its_first_frames(cx: &mut Test
             ws.update(cx, |ws, cx| {
                 ws.add_note_at(Point::new(40.0, 40.0), window, cx);
                 let id = ws.space.canvas.top().unwrap();
-                let editor = ws.space.blocks[&id].note().unwrap().editor.clone();
+                let editor = ws.space.blocks[&id]
+                    .note()
+                    .unwrap()
+                    .tab()
+                    .unwrap()
+                    .editor
+                    .clone();
                 editor.update(cx, |e, cx| {
                     e.set_value(
                         "# Plan\nwrite the bars\nthen the label\n".to_string(),

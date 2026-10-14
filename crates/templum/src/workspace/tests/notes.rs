@@ -1,8 +1,11 @@
-//! Note blocks.
+//! Note blocks: plain text in tabs, kept in the notes (never lost with a block), and the Notes
+//! dialog that finds, opens and deletes them.
+
+use gpui_kit::Entity;
+use gpui_kit::component::input::EditorState;
 
 use super::*;
 
-/// The kanban block on top.
 #[cfg(target_os = "macos")]
 const NEW_NOTE: &str = "cmd-shift-m";
 #[cfg(not(target_os = "macos"))]
@@ -12,10 +15,7 @@ fn top_note(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
     ws.read_with(cx, |ws, _| {
         let id = ws.space.canvas.top().unwrap();
         assert!(
-            matches!(
-                ws.space.blocks.get(&id),
-                Some(crate::workspace::Body::Note(_))
-            ),
+            ws.space.blocks.get(&id).and_then(|b| b.note()).is_some(),
             "the top block is a note"
         );
         id
@@ -34,49 +34,86 @@ fn new_note(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppCon
     top_note(ws, cx)
 }
 
+/// The editor of the note on screen in `block`.
+fn editor(ws: &Entity<Workspace>, cx: &mut TestAppContext, block: BlockId) -> Entity<EditorState> {
+    ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&block]
+            .note()
+            .unwrap()
+            .tab()
+            .unwrap()
+            .editor
+            .clone()
+    })
+}
+
+/// The note on screen's id in `block`.
+fn shown(ws: &Entity<Workspace>, cx: &mut TestAppContext, block: BlockId) -> u64 {
+    ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&block].note().unwrap().tab().unwrap().id
+    })
+}
+
+fn text_of(ws: &Entity<Workspace>, cx: &mut TestAppContext, note: u64) -> Option<String> {
+    ws.read_with(cx, |ws, _| ws.notes.get(note).map(|n| n.text.clone()))
+}
+
 #[gpui_kit::test]
-fn new_note_adds_a_focused_note_whose_heading_titles_it(cx: &mut TestAppContext) {
+fn a_new_note_takes_the_keyboard_and_keeps_every_key_in_the_notes(cx: &mut TestAppContext) {
     use gpui_kit::Focusable as _;
     let (handle, ws) = open(cx);
     let id = new_note(handle, &ws, cx);
+    let note = shown(&ws, cx, id);
+    let edit = editor(&ws, cx, id);
     cx.update_window(handle, |_, window, cx| {
         let ws_now = ws.read(cx);
         assert_eq!(ws_now.space.focused, Some(id));
         let rect = ws_now.space.canvas.get(id).unwrap().rect;
         assert_eq!((rect.w, rect.h), (crate::note::SIZE.w, crate::note::SIZE.h));
-        let crate::workspace::Body::Note(note) = &ws_now.space.blocks[&id] else {
-            unreachable!()
-        };
         assert!(
-            note.editor.read(cx).focus_handle(cx).is_focused(window),
+            edit.read(cx).focus_handle(cx).is_focused(window),
             "the editor has the keyboard"
         );
     })
     .unwrap();
-    // Typed text reaches the editor.
-    cx.simulate_input(handle, "hi");
+    cx.simulate_input(handle, "  Groceries\nmilk");
+    assert_eq!(text_of(&ws, cx, note).as_deref(), Some("  Groceries\nmilk"));
     ws.read_with(cx, |ws, cx| {
-        let crate::workspace::Body::Note(note) = &ws.space.blocks[&id] else {
-            unreachable!()
-        };
-        assert_eq!(note.text(cx), "hi");
-        assert_eq!(note.title(cx).as_ref(), "Note");
+        assert_eq!(
+            ws.space.blocks[&id].note().unwrap().title(cx).as_ref(),
+            "Groceries",
+            "the first line with text"
+        );
     });
-    // A heading becomes the title.
+}
+
+/// Markdown is text: no list goes on, no bold markers, nothing is rendered.
+#[gpui_kit::test]
+fn a_note_is_plain_text(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = new_note(handle, &ws, cx);
+    let secondary = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    cx.simulate_input(handle, "# Plan\n- a");
     cx.update_window(handle, |_, window, cx| {
-        let crate::workspace::Body::Note(note) = &ws.read(cx).space.blocks[&id] else {
-            unreachable!()
-        };
-        let editor = note.editor.clone();
-        editor.update(cx, |e, cx| e.set_value("# Hello\nhi", window, cx));
+        window.press("enter", cx);
+        window.press(&format!("{secondary}-b"), cx);
         window.render_frame(cx);
     })
     .unwrap();
+    let edit = editor(&ws, cx, id);
+    assert_eq!(
+        edit.read_with(cx, |e, _| e.value().to_string()),
+        "# Plan\n- a\n"
+    );
     ws.read_with(cx, |ws, cx| {
-        let crate::workspace::Body::Note(note) = &ws.space.blocks[&id] else {
-            unreachable!()
-        };
-        assert_eq!(note.title(cx).as_ref(), "Hello");
+        assert_eq!(
+            ws.space.blocks[&id].note().unwrap().title(cx).as_ref(),
+            "# Plan"
+        );
     });
 }
 
@@ -97,6 +134,7 @@ fn clicking_a_note_focuses_its_editor(cx: &mut TestAppContext) {
     use gpui_kit::Focusable as _;
     let (handle, ws) = open(cx);
     let id = new_note(handle, &ws, cx);
+    let edit = editor(&ws, cx, id);
     let terminal = ws.read_with(cx, |ws, _| ws.space.terminals().next().unwrap().0);
     cx.update_window(handle, |_, window, cx| {
         // The terminal gets the keyboard, but stays under the note (focus_block would raise
@@ -117,36 +155,11 @@ fn clicking_a_note_focuses_its_editor(cx: &mut TestAppContext) {
             1,
         );
         window.render_frame(cx);
-        let ws_now = ws.read(cx);
-        assert_eq!(ws_now.space.focused, Some(id));
-        let crate::workspace::Body::Note(note) = &ws_now.space.blocks[&id] else {
-            unreachable!()
-        };
+        assert_eq!(ws.read(cx).space.focused, Some(id));
         assert!(
-            note.editor.read(cx).focus_handle(cx).is_focused(window),
+            edit.read(cx).focus_handle(cx).is_focused(window),
             "the editor keeps the keyboard"
         );
-    })
-    .unwrap();
-}
-
-#[gpui_kit::test]
-fn the_preview_button_shows_the_rendered_note(cx: &mut TestAppContext) {
-    let (handle, ws) = open(cx);
-    let id = new_note(handle, &ws, cx);
-    let n = id.0 as usize;
-    cx.update_window(handle, |_, window, cx| {
-        window.find(("note-editor", n));
-        window.hover(("block", n), cx);
-        window.render_frame(cx);
-        window.click(("preview", n), cx);
-        window.render_frame(cx);
-        window.find(("note-preview", n));
-        assert!(window.try_find(("note-editor", n)).is_none());
-        let crate::workspace::Body::Note(note) = &ws.read(cx).space.blocks[&id] else {
-            unreachable!()
-        };
-        assert!(note.preview);
     })
     .unwrap();
 }
@@ -170,55 +183,215 @@ fn closing_a_focused_note_gives_the_keyboard_back_to_the_canvas(cx: &mut TestApp
     });
 }
 
+/// + opens a new note in a new tab; a click shows a tab; its × closes it, and the note stays.
 #[gpui_kit::test]
-fn previewing_a_focused_note_gives_the_keyboard_back_to_the_canvas(cx: &mut TestAppContext) {
+fn tabs_hold_several_notes_and_closing_one_keeps_it(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let id = new_note(handle, &ws, cx);
     let n = id.0 as usize;
+    let first = shown(&ws, cx, id);
+    cx.simulate_input(handle, "first");
     cx.update_window(handle, |_, window, cx| {
-        window.hover(("block", n), cx);
+        window.click(("note-tab-new", n), cx);
         window.render_frame(cx);
-        window.click(("preview", n), cx);
+    })
+    .unwrap();
+    let second = shown(&ws, cx, id);
+    assert_ne!(second, first);
+    cx.simulate_input(handle, "second");
+    let tab = |i: usize| gpui_kit::ElementId::Name(format!("note-tab-{n}-{i}").into());
+    let close = |i: usize| gpui_kit::ElementId::Name(format!("note-tab-close-{n}-{i}").into());
+    cx.update_window(handle, |_, window, cx| {
+        window.click(tab(0), cx);
         window.render_frame(cx);
-        window.press(NEW, cx);
+    })
+    .unwrap();
+    assert_eq!(shown(&ws, cx, id), first);
+    cx.update_window(handle, |_, window, cx| {
+        window.click(close(1), cx);
+        window.render_frame(cx);
     })
     .unwrap();
     ws.read_with(cx, |ws, _| {
-        assert_eq!(ws.space.terminals().count(), 2, "the shortcut still works");
+        assert_eq!(ws.space.blocks[&id].note().unwrap().ids(), [first]);
+    });
+    assert_eq!(text_of(&ws, cx, second).as_deref(), Some("second"), "kept");
+    assert_eq!(text_of(&ws, cx, first).as_deref(), Some("first"));
+}
+
+/// Closing a block keeps its notes for the Notes dialog, but a blank one: nothing is lost.
+#[gpui_kit::test]
+fn a_closed_block_keeps_its_written_notes_and_drops_blank_ones(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let written = new_note(handle, &ws, cx);
+    let kept = shown(&ws, cx, written);
+    cx.simulate_input(handle, "keep me");
+    let blank = new_note(handle, &ws, cx);
+    let dropped = shown(&ws, cx, blank);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.close(written, window, cx);
+            ws.close(blank, window, cx);
+        })
+    })
+    .unwrap();
+    assert_eq!(text_of(&ws, cx, kept).as_deref(), Some("keep me"));
+    assert_eq!(text_of(&ws, cx, dropped), None);
+    // Opened again, without a block to go in: a new block shows it.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_note(kept, None, window, cx))
+    })
+    .unwrap();
+    let again = top_note(&ws, cx);
+    assert_eq!(shown(&ws, cx, again), kept);
+    assert_eq!(
+        editor(&ws, cx, again).read_with(cx, |e, _| e.value().to_string()),
+        "keep me"
+    );
+}
+
+/// Opening a note open in another block shows it there; the other block is left as it is.
+#[gpui_kit::test]
+fn a_note_is_open_in_one_tab_at_most(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = new_note(handle, &ws, cx);
+    let note = shown(&ws, cx, first);
+    cx.simulate_input(handle, "here");
+    let second = new_note(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_note(note, Some(second), window, cx))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.focused, Some(first), "shown where it is");
+        assert_eq!(ws.space.blocks[&second].note().unwrap().tabs.len(), 1);
     });
 }
 
+/// The dialog lists the notes a search finds; a click on one opens it; the trash deletes a note
+/// on its second click, from the blocks that show it too.
 #[gpui_kit::test]
-fn a_note_comes_back_with_its_text_and_mode(cx: &mut TestAppContext) {
+fn the_notes_dialog_finds_opens_and_deletes_notes(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let block = new_note(handle, &ws, cx);
+    let pie = shown(&ws, cx, block);
+    cx.simulate_input(handle, "Apple pie");
+    let banana = ws.update(cx, |ws, _| ws.notes.add("Banana bread".into(), None, 1));
+    let row = |id: u64| gpui_kit::ElementId::Name(format!("note-row-{id}").into());
+    let trash = |id: u64| gpui_kit::ElementId::Name(format!("note-delete-{id}").into());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |_, cx| crate::note::open_notes(None, window, cx));
+        window.render_frame(cx);
+        window.find(row(pie));
+        window.find(row(banana));
+    })
+    .unwrap();
+    cx.simulate_input(handle, "BANANA");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(row(pie)).is_none(),
+            "the search leaves it out"
+        );
+        window.click(row(banana), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let opened = top_note(&ws, cx);
+    assert_eq!(shown(&ws, cx, opened), banana, "a new block shows it");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |_, cx| crate::note::open_notes(None, window, cx));
+        window.render_frame(cx);
+        window.click(trash(pie), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(text_of(&ws, cx, pie).is_some(), "one click asks");
+    cx.update_window(handle, |_, window, cx| {
+        window.click(trash(pie), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(text_of(&ws, cx, pie), None, "deleted");
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.blocks[&block].note().unwrap().tabs.is_empty());
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.find(("note-empty", block.0 as usize));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn notes_and_their_tabs_come_back_after_a_restart(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
     let id = new_note(handle, &ws, cx);
+    cx.simulate_input(handle, "one");
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| {
-            let crate::workspace::Body::Note(note) = &ws.space.blocks[&id] else {
-                unreachable!()
-            };
-            note.editor
-                .update(cx, |e, cx| e.set_value("# Keep me\n- x", window, cx));
-            ws.toggle_preview(id, window, cx);
-            ws.save_canvas_now(cx);
-        });
+        window.click(("note-tab-new", id.0 as usize), cx);
+        window.render_frame(cx);
     })
     .unwrap();
-    // As the_canvas_comes_back_as_it_was_left does: a second workspace on the same folder.
+    cx.simulate_input(handle, "two");
+    let set_aside = ws.update(cx, |ws, _| ws.notes.add("set aside".into(), None, 1));
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    assert!(crate::notes::path(dir.path()).exists());
     let (_, again) = open_in(cx, None, Some(dir.path().to_path_buf()));
     again.read_with(cx, |ws, cx| {
-        let notes: Vec<_> = ws
+        let note = ws
             .space
             .blocks
             .values()
-            .filter_map(|b| match b {
-                crate::workspace::Body::Note(n) => Some((n.text(cx), n.preview)),
-                _ => None,
-            })
+            .find_map(|b| b.note())
+            .expect("the note block");
+        let texts: Vec<String> = note
+            .tabs
+            .iter()
+            .map(|t| t.editor.read(cx).value().to_string())
             .collect();
-        assert_eq!(notes, [("# Keep me\n- x".to_string(), true)]);
+        assert_eq!(texts, ["one", "two"]);
+        assert_eq!(note.active, 1);
+        assert_eq!(
+            ws.notes.get(set_aside).map(|n| n.text.as_str()),
+            Some("set aside"),
+            "a note no block shows"
+        );
     });
+}
+
+/// A canvas from before notes.json: its note's text and color become a note there, and the
+/// canvas names it by its id from then on.
+#[gpui_kit::test]
+fn an_older_note_block_moves_its_text_into_the_notes(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    write_canvas(
+        dir.path(),
+        r##"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[
+            {"kind":"note","rect":{"x":0,"y":0,"w":360,"h":280},"text":"# Old\n- x",
+             "preview":true,"color":"yellow"}]}"##,
+    );
+    let (_, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
+    let note = ws.read_with(cx, |ws, cx| {
+        let note = ws.space.blocks.values().find_map(|b| b.note()).unwrap();
+        assert_eq!(note.text(cx), "# Old\n- x");
+        let id = note.tab().unwrap().id;
+        let entry = ws.notes.get(id).unwrap();
+        assert_eq!(entry.color, Some(crate::board::Label::Yellow));
+        id
+    });
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    let Ok(crate::session::Loaded::Saved(saved)) =
+        Ok::<_, ()>(crate::session::load(dir.path(), crate::session::DEFAULT_ID))
+    else {
+        panic!("not saved");
+    };
+    assert!(matches!(
+        &saved.items[0],
+        crate::session::Item::Note(n) if n.notes == [note] && n.text.is_empty()
+    ));
 }
 
 /// Send to ▸ a terminal types the note's selection there (never Enter) and shows the terminal
@@ -235,21 +408,20 @@ fn send_to_types_a_notes_selection_into_the_chosen_terminal(cx: &mut TestAppCont
             ws.update(cx, |ws, cx| {
                 ws.add_note_at(Point::new(900.0, 40.0), window, cx);
                 ws.space.appearing.clear();
-                let id = ws.space.canvas.top().unwrap();
-                let editor = ws.space.blocks[&id].note().unwrap().editor.clone();
-                editor.update(cx, |e, cx| {
-                    e.set_value("one two", window, cx);
-                    e.set_selected_range(4..7, cx);
-                });
-                id
+                ws.space.canvas.top().unwrap()
             })
         })
         .unwrap();
+    let edit = editor(&ws, cx, note);
     cx.update_window(handle, |_, window, cx| {
+        edit.update(cx, |e, cx| {
+            e.set_value("one two", window, cx);
+            e.set_selected_range(4..7, cx);
+        });
         window.render_frame(cx);
         window.right_click(("title", note.0 as usize), cx);
         window.render_frame(cx);
-        // Preview, Copy all, Send to ▸, —, Close.
+        // All notes…, Copy all, Send to ▸, Color ▸, —, Close.
         window.within("popup-menu").click(2usize, cx);
         window.render_frame(cx);
         window
@@ -280,9 +452,9 @@ fn send_to_types_a_notes_selection_into_the_chosen_terminal(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
-fn the_note_menu_colors_the_note(cx: &mut TestAppContext) {
+fn the_note_menu_colors_the_note_on_screen(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
-    let note = cx
+    let block = cx
         .update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
                 ws.add_note_at(Point::new(900.0, 40.0), window, cx);
@@ -291,11 +463,12 @@ fn the_note_menu_colors_the_note(cx: &mut TestAppContext) {
             })
         })
         .unwrap();
+    let note = shown(&ws, cx, block);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        window.right_click(("title", note.0 as usize), cx);
+        window.right_click(("title", block.0 as usize), cx);
         window.render_frame(cx);
-        // Preview, Copy all, Color ▸ (an empty note has nothing to send), —, Close.
+        // All notes…, Copy all, Color ▸ (an empty note has nothing to send), —, Close.
         window.within("popup-menu").click(2usize, cx);
         window.render_frame(cx);
         // None, Red, Yellow…
@@ -308,82 +481,8 @@ fn the_note_menu_colors_the_note(cx: &mut TestAppContext) {
     .unwrap();
     ws.read_with(cx, |ws, _| {
         assert_eq!(
-            ws.space.blocks[&note].note().unwrap().color,
+            ws.notes.get(note).unwrap().color,
             Some(crate::board::Label::Yellow)
         );
     });
-}
-
-/// Markdown keys in a note: Enter continues a list and ends it on an empty item, Ctrl+Enter
-/// ticks a task, Ctrl+B wraps the cursor in bold markers.
-#[gpui_kit::test]
-fn a_note_continues_lists_ticks_tasks_and_bolds(cx: &mut TestAppContext) {
-    let (handle, ws) = open(cx);
-    let id = new_note(handle, &ws, cx);
-    let text = |cx: &mut TestAppContext| {
-        ws.read_with(cx, |ws, cx| ws.space.blocks[&id].note().unwrap().text(cx))
-    };
-    let press = |cx: &mut TestAppContext, key: &str| {
-        cx.update_window(handle, |_, window, cx| {
-            window.press(key, cx);
-            window.render_frame(cx);
-        })
-        .unwrap();
-    };
-    let secondary = if cfg!(target_os = "macos") {
-        "cmd"
-    } else {
-        "ctrl"
-    };
-    cx.simulate_input(handle, "- a");
-    press(cx, "enter");
-    assert_eq!(text(cx), "- a\n- ");
-    press(cx, "enter");
-    assert_eq!(text(cx), "- a\n", "an empty item ends the list");
-    cx.simulate_input(handle, "x");
-    press(cx, &format!("{secondary}-enter"));
-    assert_eq!(text(cx), "- a\n- [ ] x");
-    press(cx, &format!("{secondary}-enter"));
-    assert_eq!(text(cx), "- a\n- [x] x");
-    press(cx, &format!("{secondary}-b"));
-    cx.simulate_input(handle, "b");
-    assert_eq!(text(cx), "- a\n- [x] x**b**");
-}
-
-/// With several cursors, Enter continues the list at the main cursor only: gpui-kit would
-/// type the same item at every cursor.
-#[gpui_kit::test]
-fn enter_with_several_cursors_continues_one_list_item(cx: &mut TestAppContext) {
-    let (handle, ws) = open(cx);
-    let id = new_note(handle, &ws, cx);
-    cx.simulate_input(handle, "- a");
-    cx.update_window(handle, |_, window, cx| {
-        window.press("enter", cx);
-        window.press("backspace", cx);
-        window.press("backspace", cx);
-        window.render_frame(cx);
-    })
-    .unwrap();
-    cx.simulate_input(handle, "plain");
-    let editor = ws.read_with(cx, |ws, _| {
-        ws.space.blocks[&id].note().unwrap().editor.clone()
-    });
-    let text = |cx: &mut TestAppContext| editor.read_with(cx, |e, _| e.value().to_string());
-    assert_eq!(text(cx), "- a\nplain");
-    cx.update_window(handle, |_, window, cx| {
-        // The cursor after "- a", one more below it.
-        editor.update(cx, |e, cx| e.set_selected_range(3..3, cx));
-        let below = if cfg!(target_os = "macos") {
-            "cmd-alt-down"
-        } else if cfg!(windows) {
-            "ctrl-alt-down"
-        } else {
-            "shift-alt-down"
-        };
-        window.press(below, cx);
-        window.press("enter", cx);
-        window.render_frame(cx);
-    })
-    .unwrap();
-    assert_eq!(text(cx), "- a\n- \nplain");
 }

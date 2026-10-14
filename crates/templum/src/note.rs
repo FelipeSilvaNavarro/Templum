@@ -1,24 +1,24 @@
-//! A note block: Markdown text, edited in gpui-kit's editor (tree-sitter highlights it) or shown
-//! rendered. Its title is its first heading. See docs/specs/cockpit.md, section 5.
+//! A note block: tabs of plain-text notes (`notes.rs` keeps them, app-wide), each edited in
+//! gpui-kit's editor; with none open, a way to open one. And the Notes dialog, where every note is
+//! found, opened and deleted. See docs/specs/cockpit.md, section 5.
 
 use std::cell::{Cell, RefCell};
-use std::ops::Range;
-use std::sync::Arc;
+use std::rc::Rc;
 
-use gpui_kit::component::input::{Editor, EditorState, Enter};
-use gpui_kit::component::text::{TextView, TextViewStyle};
+use gpui_kit::assets::IconName;
+use gpui_kit::component::dialog::DialogButtonProps;
+use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
+use gpui_kit::component::{Icon, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, Bounds, Context, Element, ElementId, Entity, Focusable as _, GlobalElementId,
-    InspectorElementId, IntoElement, KeyDownEvent, Keystroke, LayoutId, Pixels, ScrollHandle,
-    ScrollWheelEvent, SharedString, StyleRefinement, TestSupportExt, Window, div, px, relative,
-    rems,
+    AnyElement, App, ClickEvent, Context, ElementId, Entity, FontWeight, MouseButton,
+    MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt, Window, div, px, relative,
 };
 use templum_canvas::{BlockId, Level, Size, chrome};
 
 use crate::block::BORDER;
-use crate::board::Label;
 use crate::grid::{BAR_OPACITY, hsla};
+use crate::notes;
 use crate::silhouette::{self, Far};
 use crate::workspace::Workspace;
 
@@ -27,6 +27,8 @@ pub(crate) const SIZE: Size = Size { w: 360.0, h: 280.0 };
 pub(crate) const MIN: Size = Size { w: 200.0, h: 140.0 };
 /// The text's size at zoom 1, world units.
 pub(crate) const FONT: f32 = 13.0;
+/// The tab strip's height, world units.
+pub(crate) const TABS_H: f32 = 28.0;
 /// What gpui-kit's code editor keeps at fixed pixel sizes at any zoom: its padding
 /// (gpui-component-0.7.3 src/input/input.rs:591-600 and sizing.rs:147-166, size Medium: 6 left
 /// in a code editor, 10 right, 8 top and bottom) and, inside it, left of the text, the line
@@ -37,79 +39,82 @@ const FIXED_RIGHT: f32 = 10.0 + 10.0;
 pub(crate) const FIXED_TOP: f32 = 8.0;
 const FIXED_BOTTOM: f32 = 8.0;
 
-/// A note block: its text lives in the editor; `preview` shows it rendered instead.
+/// A note block: the notes it shows as tabs, and the one on screen.
 pub(crate) struct Note {
+    pub tabs: Vec<NoteTab>,
+    pub active: usize,
+}
+
+/// A note open in a block: its id in `Workspace::notes`, and its editor, whose every change is
+/// written there.
+pub(crate) struct NoteTab {
+    pub id: u64,
     pub editor: Entity<EditorState>,
-    pub preview: bool,
-    /// Its card's tint, a post-it's color; None: the blocks' own.
-    pub color: Option<Label>,
-    pub preview_scroll: PreviewScroll,
     /// Its word map, drawn far away (`silhouette.rs`).
     pub far: RefCell<Far>,
 }
 
 impl Note {
-    pub fn new(text: &str, preview: bool, window: &mut Window, cx: &mut App) -> Note {
-        let text = text.to_string();
-        let editor = cx.new(|cx| {
-            EditorState::new(window, cx)
-                .language("markdown")
-                .soft_wrap(true)
-                .line_number(false)
-                .default_value(text)
-        });
-        Note {
-            editor,
-            preview,
-            color: None,
-            preview_scroll: PreviewScroll::default(),
-            far: RefCell::default(),
-        }
+    pub fn tab(&self) -> Option<&NoteTab> {
+        self.tabs.get(self.active)
     }
 
+    /// The notes it shows, in tab order.
+    pub fn ids(&self) -> Vec<u64> {
+        self.tabs.iter().map(|t| t.id).collect()
+    }
+
+    /// The note on screen's text; "" without one.
     pub fn text(&self, cx: &App) -> String {
-        self.editor.read(cx).value().to_string()
+        self.tab()
+            .map(|t| t.editor.read(cx).value().to_string())
+            .unwrap_or_default()
     }
 
-    /// What sending it to a terminal types: its selection, or all of it (always while it shows
-    /// rendered: a selection there is hidden).
+    /// What sending it to a terminal types: the selection, or the whole note.
     pub fn to_send(&self, cx: &App) -> String {
-        let selected = self.editor.read(cx).selected_value();
-        if self.preview || selected.trim().is_empty() {
+        let Some(tab) = self.tab() else {
+            return String::new();
+        };
+        let selected = tab.editor.read(cx).selected_value();
+        if selected.trim().is_empty() {
             self.text(cx)
         } else {
             selected.to_string()
         }
     }
 
+    /// The note on screen's title; "Notes" without one.
     pub fn title(&self, cx: &App) -> SharedString {
-        title(&self.text(cx)).into()
+        match self.tab() {
+            Some(_) => notes::title(&self.text(cx)).into(),
+            None => "Notes".into(),
+        }
     }
 
-    /// Typing goes to the editor.
-    pub fn focus(&self, window: &mut Window, cx: &mut App) {
-        self.editor
-            .update(cx, |editor, cx| editor.focus(window, cx));
+    /// Typing goes to the note on screen; false without one.
+    pub fn focus(&self, window: &mut Window, cx: &mut App) -> bool {
+        let Some(tab) = self.tab() else {
+            return false;
+        };
+        tab.editor.update(cx, |editor, cx| editor.focus(window, cx));
+        true
     }
 }
 
-/// The first heading with text (`#` to `######`, a space, text), without its hashes; "Note"
-/// without one.
-pub(crate) fn title(text: &str) -> String {
-    text.lines()
-        .find_map(|line| {
-            let line = line.trim_start();
-            let rest = line.trim_start_matches('#');
-            let hashes = line.len() - rest.len();
-            let heading = (1..=6).contains(&hashes) && rest.starts_with(' ');
-            let rest = rest.trim();
-            (heading && !rest.is_empty()).then(|| rest.to_string())
-        })
-        .unwrap_or_else(|| "Note".to_string())
+/// A note's editor: plain text, wrapped at the block's width.
+pub(crate) fn editor(text: &str, window: &mut Window, cx: &mut App) -> Entity<EditorState> {
+    let text = text.to_string();
+    cx.new(|cx| {
+        EditorState::new(window, cx)
+            .soft_wrap(true)
+            .line_number(false)
+            .default_value(text)
+    })
 }
 
-/// The body below the header at the block's zoom `z`: the editor, or the rendered text; below
-/// Full, the text's bars (`block.rs` leaves a note shown rendered out there).
+/// The body below the header at the block's zoom `z`: the tab strip, then the note on screen
+/// (below Full, its text's bars), or a way to open one.
 pub(crate) fn body(
     ws: &Workspace,
     id: BlockId,
@@ -124,105 +129,249 @@ pub(crate) fn body(
         .canvas
         .get(id)
         .map_or(Size::default(), |b| chrome::content_rect(b.rect).size());
-    // What its word map is of.
-    let taken = silhouette::Taken {
-        len: note.editor.read(cx).text().len(),
-        size: (content.w, content.h),
-        font: ws.cell.font.family.clone(),
-        wrap: true,
-        tree: false,
-    };
-    if level != Level::Full {
-        // Its words as bars: no Markdown keys, and the wheel moves the canvas.
-        return silhouette::body(
-            ("silhouette", n).into(),
-            &note.editor,
-            &note.far,
-            taken,
-            z,
-            FONT,
-            silhouette::note_origin,
-            hsla(ws.theme.palette.foreground, BAR_OPACITY),
-            |cx| editor_box(ws, n, note, content, z, cx),
-            cx,
-        );
-    }
-    let inner = if note.preview {
-        preview(
-            ("note-preview", n).into(),
-            ("note-markdown", n).into(),
-            note.text(cx).into(),
-            &note.preview_scroll,
-            content.w - 2.0 * BORDER,
-            FONT,
-            z,
-        )
+    // The text's area, below the tabs.
+    let area = Size::new(content.w, (content.h - TABS_H).max(0.0));
+    // Far away the tabs' place stays, empty: the bars stay where the text was.
+    let strip = if level == Level::Full {
+        tabs(ws, id, note, z, cx)
     } else {
-        note.far.borrow_mut().full = Some((z, taken));
-        editor_box(ws, n, note, content, z, cx)
+        div().h(px(TABS_H * z)).into_any_element()
     };
-    // The wheel scrolls the note and stops there; with Ctrl it zooms the canvas.
-    let (enter, key) = (note.editor.clone(), note.editor.clone());
+    let inner = match note.tab() {
+        None if level == Level::Full => empty(ws, id, z, cx),
+        None => div().into_any_element(),
+        Some(tab) => {
+            // What its word map is of.
+            let taken = silhouette::Taken {
+                len: tab.editor.read(cx).text().len(),
+                size: (area.w, area.h),
+                font: ws.cell.font.family.clone(),
+                wrap: true,
+                tree: false,
+            };
+            if level == Level::Full {
+                tab.far.borrow_mut().full = Some((z, taken));
+                editor_box(ws, n, &tab.editor, area, z, cx)
+            } else {
+                // Its words as bars; the wheel moves the canvas.
+                silhouette::body(
+                    ("silhouette", n).into(),
+                    &tab.editor,
+                    &tab.far,
+                    taken,
+                    z,
+                    FONT,
+                    silhouette::note_origin,
+                    hsla(ws.theme.palette.foreground, BAR_OPACITY),
+                    |cx| editor_box(ws, n, &tab.editor, area, z, cx),
+                    cx,
+                )
+            }
+        }
+    };
     div()
         .size_full()
+        .flex()
+        .flex_col()
         .text_size(px(FONT * z))
-        .on_scroll_wheel(|e: &ScrollWheelEvent, _, cx| {
-            if !e.modifiers.control {
-                cx.stop_propagation();
-            }
-        })
-        // Markdown keys, in the note's own text only (not its search field): before the editor
-        // takes Enter, which it binds; Ctrl+B and Ctrl+I it doesn't.
-        .when(!note.preview, |el| {
-            el.capture_action(move |e: &Enter, window, cx| {
-                let done = enter.update(cx, |state, cx| {
-                    state.focus_handle(cx).is_focused(window)
-                        && !e.shift
-                        && if e.secondary {
-                            tick(state, window, cx)
-                        } else {
-                            continue_list(state, window, cx)
-                        }
-                });
-                if done {
-                    cx.stop_propagation();
-                }
-            })
-            .on_key_down(move |e: &KeyDownEvent, window, cx| {
-                let Some(marker) = emphasis(&e.keystroke) else {
-                    return;
-                };
-                let done = key.update(cx, |state, cx| {
-                    let focused = state.focus_handle(cx).is_focused(window);
-                    if focused {
-                        emphasize(state, marker, window, cx);
-                    }
-                    focused
-                });
-                if done {
+        // The wheel scrolls the note and stops there; with Ctrl it zooms the canvas.
+        .when(level == Level::Full, |el| {
+            el.on_scroll_wheel(|e: &ScrollWheelEvent, _, cx| {
+                if !e.modifiers.control {
                     cx.stop_propagation();
                 }
             })
         })
-        .child(inner)
+        .child(strip)
+        .child(div().relative().flex_1().min_h(px(0.0)).child(inner))
         .into_any_element()
 }
 
-/// The note's editor as Full draws it, at zoom `z`. Its fixed parts would make the text start
-/// further in, wrap at other words and show fewer lines the further the canvas is zoomed out:
-/// the editor is as much larger (or smaller) and moved by its fixed left and top parts' share,
-/// so the text starts, wraps and fits as if they zoomed too. Its lines change only when the
-/// block is resized. At zoom 1, exactly the note's box.
+fn name(prefix: &str, n: usize, i: usize) -> ElementId {
+    ElementId::Name(format!("{prefix}-{n}-{i}").into())
+}
+
+/// The tabs: a click shows one, its × closes it (the note stays), + opens a new note.
+fn tabs(
+    ws: &Workspace,
+    block: BlockId,
+    note: &Note,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let ui = ws.ui;
+    let n = block.0 as usize;
+    let tabs: Vec<AnyElement> = note
+        .tabs
+        .iter()
+        .enumerate()
+        .map(|(i, tab)| {
+            let on = i == note.active;
+            let title = notes::title(&tab.editor.read(cx).value());
+            let close = div()
+                .id(name("note-tab-close", n, i))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(16.0 * z))
+                .rounded(px(4.0 * z))
+                .hover(move |s| s.bg(ui.hover))
+                .child(Icon::new(IconName::Close).size(px(10.0 * z)))
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.close_note_tab(block, i, window, cx)
+                }))
+                .test_support();
+            div()
+                .id(name("note-tab", n, i))
+                .flex_shrink_0()
+                .max_w(px(170.0 * z))
+                .h_full()
+                .flex()
+                .items_center()
+                .gap(px(4.0 * z))
+                .pl(px(10.0 * z))
+                .pr(px(4.0 * z))
+                .border_b_2()
+                .border_color(if on {
+                    ui.accent
+                } else {
+                    gpui_kit::transparent_black()
+                })
+                .text_size(px(12.0 * z))
+                .text_color(if on { ui.title } else { ui.title_dim })
+                .cursor_pointer()
+                .hover(move |s| s.bg(ui.hover))
+                .child(div().truncate().child(title))
+                .child(close)
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.show_note_tab(block, i, window, cx)
+                }))
+                .test_support()
+                .into_any_element()
+        })
+        .collect();
+    let new = div()
+        .id(("note-tab-new", n))
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(22.0 * z))
+        .mx(px(4.0 * z))
+        .rounded(px(5.0 * z))
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .child(
+            Icon::new(IconName::Plus)
+                .size(px(12.0 * z))
+                .text_color(ui.title),
+        )
+        .on_click(
+            cx.listener(move |ws, _: &ClickEvent, window, cx| ws.new_note_tab(block, window, cx)),
+        )
+        .test_support();
+    div()
+        .id(("note-tabs", n))
+        .flex_shrink_0()
+        .h(px(TABS_H * z))
+        .flex()
+        .items_center()
+        .border_b_1()
+        .border_color(ui.hairline)
+        .overflow_x_scroll()
+        .children(tabs)
+        .child(new)
+        .test_support()
+        .into_any_element()
+}
+
+/// A button of the empty block and of the Notes dialog: an icon and a label.
+fn button(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    label: &'static str,
+    ws: &Workspace,
+    z: f32,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let ui = ws.ui;
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(px(6.0 * z))
+        .px(px(12.0 * z))
+        .py(px(8.0 * z))
+        .rounded(px(8.0 * z))
+        .border_1()
+        .border_color(ui.hairline)
+        .text_size(px(13.0 * z))
+        .text_color(ui.title)
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .active(move |s| s.bg(ui.pressed))
+        .child(Icon::new(icon).size(px(14.0 * z)))
+        .child(label)
+}
+
+/// A block with no note open: a new one, or one of those there are.
+fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
+    let n = block.0 as usize;
+    div()
+        .id(("note-empty", n))
+        .size_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(8.0 * z))
+        .child(
+            div()
+                .text_size(px(13.0 * z))
+                .text_color(ws.ui.title_dim)
+                .child("No note open here"),
+        )
+        .child(
+            button(("note-new-here", n), IconName::Plus, "New note", ws, z)
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.new_note_tab(block, window, cx)
+                }))
+                .test_support(),
+        )
+        .child(
+            button(
+                ("note-open-here", n),
+                IconName::NotebookText,
+                "Open a note…",
+                ws,
+                z,
+            )
+            .on_click(
+                cx.listener(move |_, _: &ClickEvent, window, cx| {
+                    open_notes(Some(block), window, cx)
+                }),
+            )
+            .test_support(),
+        )
+        .test_support()
+        .into_any_element()
+}
+
+/// The note's editor as Full draws it, at zoom `z`, in the text's `area`. Its fixed parts would
+/// make the text start further in, wrap at other words and show fewer lines the further the
+/// canvas is zoomed out: the editor is as much larger (or smaller) and moved by its fixed left
+/// and top parts' share, so the text starts, wraps and fits as if they zoomed too. Its lines
+/// change only when the block is resized. At zoom 1, exactly the text's area.
 fn editor_box(
     ws: &Workspace,
     n: usize,
-    note: &Note,
-    content: Size,
+    editor: &Entity<EditorState>,
+    area: Size,
     z: f32,
     cx: &mut App,
 ) -> AnyElement {
     let (across, down) = (FIXED_LEFT + FIXED_RIGHT, FIXED_TOP + FIXED_BOTTOM);
-    crate::editor::keep_rows(&note.editor, FONT, z, cx);
+    crate::editor::keep_rows(editor, FONT, z, cx);
     div()
         .id(("note-editor", n))
         .size_full()
@@ -233,14 +382,12 @@ fn editor_box(
                 .relative()
                 .left(px(-FIXED_LEFT * (1.0 - z)))
                 .top(px(-FIXED_TOP * (1.0 - z)))
-                .w(px(
-                    ((content.w - 2.0 * BORDER - across) * z + across).max(0.0)
-                ))
-                .h(px(((content.h - down) * z + down).max(0.0)))
+                .w(px(((area.w - 2.0 * BORDER - across) * z + across).max(0.0)))
+                .h(px(((area.h - down) * z + down).max(0.0)))
                 .child(
                     // On the editor itself: it sets the theme's code size on itself, over a
                     // parent's.
-                    Editor::new(&note.editor)
+                    Editor::new(editor)
                         .appearance(false)
                         .bordered(false)
                         .text_size(px(FONT * z))
@@ -252,334 +399,232 @@ fn editor_box(
         .into_any_element()
 }
 
-/// A Markdown preview's scroll, kept through zooms (see `preview`).
-#[derive(Default)]
-pub(crate) struct PreviewScroll {
-    pub(crate) handle: ScrollHandle,
-    /// The zoom it was last drawn at.
-    zoom: Cell<f32>,
+/// The Notes dialog: every note, the most recently changed first, and a field that finds them by
+/// their text. A click opens one: in the block `into` it was asked from, where it is open
+/// already, or in a new block. Its trash deletes it on a second click, from every block too.
+pub(crate) fn open_notes(into: Option<BlockId>, window: &mut Window, cx: &mut Context<Workspace>) {
+    let ws = cx.entity();
+    let search = cx.new(|cx| InputState::new(window, cx).placeholder("Find a note"));
+    let field = search.clone();
+    {
+        let ws = ws.clone();
+        App::subscribe(cx, &search, move |_, event: &InputEvent, cx| {
+            if let InputEvent::Change = event {
+                ws.update(cx, |_, cx| cx.notify());
+            }
+        })
+        .detach();
+    }
+    // The note whose trash was clicked once: the next click deletes it.
+    let armed: Rc<Cell<Option<u64>>> = Rc::default();
+    window.open_alert_dialog(cx, move |alert, _, cx| {
+        let query = search.read(cx).value().to_string();
+        let ws_now = ws.read(cx);
+        let ui = ws_now.ui;
+        let red = hsla(ws_now.theme.palette.ansi[1], 1.0);
+        let now = notes::now();
+        let rows: Vec<AnyElement> = ws_now
+            .notes
+            .find(&query)
+            .into_iter()
+            .map(|note| {
+                let id = note.id;
+                let at = ws_now.note_open_at(id).map(|(space, _)| {
+                    if space.id == ws_now.space.id {
+                        "Open".to_string()
+                    } else {
+                        format!("Open in {}", space.name)
+                    }
+                });
+                let when = notes::ago(note.changed, now);
+                let line = note
+                    .text
+                    .lines()
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
+                let is_armed = armed.get() == Some(id);
+                let trash = {
+                    let (ws, armed) = (ws.clone(), armed.clone());
+                    div()
+                        .id(ElementId::Name(format!("note-delete-{id}").into()))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .px(px(8.0))
+                        .py(px(4.0))
+                        .rounded(px(6.0))
+                        .text_size(px(12.0))
+                        .text_color(if is_armed { red } else { ui.title_dim })
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(ui.hover).text_color(red))
+                        .child(Icon::new(IconName::Trash).size(px(14.0)))
+                        .when(is_armed, |el| el.child("Delete for good"))
+                        // The row behind opens the note: not on this press.
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(move |_: &ClickEvent, window, cx| {
+                            if armed.get() == Some(id) {
+                                armed.set(None);
+                                ws.update(cx, |ws, cx| ws.delete_note(id, window, cx));
+                            } else {
+                                armed.set(Some(id));
+                                ws.update(cx, |_, cx| cx.notify());
+                            }
+                        })
+                        .test_support()
+                };
+                let open = ws.clone();
+                div()
+                    .id(ElementId::Name(format!("note-row-{id}").into()))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.0))
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(ui.hairline)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(ui.hover).border_color(ui.hover_border))
+                    .when_some(note.color, |el, color| {
+                        el.child(
+                            div()
+                                .flex_shrink_0()
+                                .size(px(10.0))
+                                .rounded_full()
+                                .bg(hsla(ws_now.theme.palette.ansi[color.ansi()], 1.0)),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(notes::title(&note.text)),
+                            )
+                            .child(
+                                div()
+                                    .truncate()
+                                    .text_size(px(12.0))
+                                    .text_color(ui.title_dim)
+                                    .child(match at {
+                                        Some(at) => format!("{when} · {at}"),
+                                        None => when,
+                                    })
+                                    .when(!line.is_empty(), |el| el.child(format!(" · {line}"))),
+                            ),
+                    )
+                    .child(trash)
+                    .on_click(move |_: &ClickEvent, window, cx| {
+                        // First: closing gives the keyboard back to what had it before.
+                        window.close_dialog(cx);
+                        open.update(cx, |ws, cx| ws.open_note(id, into, window, cx));
+                    })
+                    .test_support()
+                    .into_any_element()
+            })
+            .collect();
+        let none = rows.is_empty().then(|| {
+            div()
+                .py(px(16.0))
+                .text_size(px(13.0))
+                .text_color(ui.title_dim)
+                .child(if query.trim().is_empty() {
+                    "No notes yet."
+                } else {
+                    "No note holds that."
+                })
+        });
+        let new = {
+            let ws = ws.clone();
+            button("notes-new", IconName::Plus, "New note", ws_now, 1.0).on_click(
+                move |_: &ClickEvent, window, cx| {
+                    window.close_dialog(cx);
+                    ws.update(cx, |ws, cx| match into {
+                        Some(block) => ws.new_note_tab(block, window, cx),
+                        None => ws.new_note(window, cx),
+                    });
+                },
+            )
+        };
+        alert
+            .title("Notes")
+            .w(px(560.0))
+            .button_props(DialogButtonProps::default().ok_text("Done"))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .id("notes-find")
+                            .child(Input::new(&search))
+                            .test_support(),
+                    )
+                    .child(
+                        div()
+                            .id("notes-list")
+                            .max_h(px(380.0))
+                            .overflow_y_scroll()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .children(rows)
+                            .children(none)
+                            .test_support(),
+                    )
+                    .child(div().flex().child(new.test_support())),
+            )
+    });
+    // After opening: the dialog takes the focus when it opens.
+    field.update(cx, |input, cx| input.focus(window, cx));
 }
 
-/// Markdown `text` rendered at zoom `z` like a photo of it at zoom 1: `w` world units wide, its
-/// text `font`, headings, code and spacing (in rems) all scaled by `z`, so it wraps at the same
-/// words at every zoom; its scroll follows the zoom.
-pub(crate) fn preview(
-    id: ElementId,
-    markdown: ElementId,
-    text: SharedString,
-    scroll: &PreviewScroll,
-    w: f32,
-    font: f32,
+/// A press on the header's notes button: opens the dialog for this block.
+pub(crate) fn notes_button(
+    ws: &Workspace,
+    block: BlockId,
     z: f32,
+    cx: &mut Context<Workspace>,
 ) -> AnyElement {
-    crate::editor::keep_list_rows(&scroll.handle, &scroll.zoom, z);
-    // gpui-kit 0.7.1's look at zoom 1: headings from 14 px, code 13 px, paragraphs 1 rem apart.
-    let style = TextViewStyle {
-        paragraph_gap: rems(1.0),
-        heading_base_font_size: px(14.0 * z),
-        // Pinned at every zoom: with a 14 px base and no resolver gpui-kit sizes headings from
-        // the body text instead (gpui-component-0.7.3 src/text/compat.rs:339-345), so they
-        // would shrink at zoom 1 exactly. The resolver is that default's own scale.
-        heading_font_size: Some(Arc::new(|level, base| {
-            base * match level {
-                1 => 2.0,
-                2 => 1.5,
-                3 => 1.25,
-                4 => 1.125,
-                _ => 1.0,
-            }
-        })),
-        code_block: StyleRefinement::default().text_size(px(13.0 * z)),
-        ..TextViewStyle::default()
-    };
+    let ui = ws.ui;
+    let n = block.0 as usize;
     div()
-        .id(id)
-        .h_full()
-        .w(px(w.max(0.0) * z))
-        .overflow_y_scroll()
-        .track_scroll(&scroll.handle)
-        .text_size(px(font * z))
-        .px(px(6.0 * z))
-        .child(ScaledRem {
-            scale: z,
-            child: TextView::markdown(markdown, text)
-                .style(style)
-                .into_any_element(),
+        .id(("notes", n))
+        .absolute()
+        .top(px(4.0 * z))
+        .left(px(4.0 * z))
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(20.0 * z))
+        .rounded(px(5.0 * z))
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .child(
+            Icon::new(IconName::NotebookText)
+                .size(px(12.0 * z))
+                .text_color(ui.title),
+        )
+        .tooltip(|window, cx| {
+            gpui_kit::component::tooltip::Tooltip::new("All notes").build(window, cx)
         })
+        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+            cx.stop_propagation()
+        })
+        .on_click(
+            cx.listener(move |_, _: &ClickEvent, window, cx| open_notes(Some(block), window, cx)),
+        )
         .test_support()
         .into_any_element()
-}
-
-/// Lays out and paints its child with the window's rem size times `scale`: Markdown's spacing
-/// is in rems, which no style can scale for one element (gpui-pre-0.3.9 src/window.rs:3150).
-struct ScaledRem {
-    scale: f32,
-    child: AnyElement,
-}
-
-impl IntoElement for ScaledRem {
-    type Element = Self;
-
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
-impl Element for ScaledRem {
-    /// The rem size it laid its child out with.
-    type RequestLayoutState = Pixels;
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-
-    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, Pixels) {
-        let rem = window.rem_size() * self.scale;
-        let layout =
-            window.with_rem_size(Some(rem), |window| self.child.request_layout(window, cx));
-        (layout, rem)
-    }
-
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        rem: &mut Pixels,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        window.with_rem_size(Some(*rem), |window| {
-            self.child.prepaint(window, cx);
-        });
-    }
-
-    fn paint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        rem: &mut Pixels,
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        window.with_rem_size(Some(*rem), |window| self.child.paint(window, cx));
-    }
-}
-
-/// The byte range of the line holding byte `at` of `text`.
-fn line_at(text: &str, at: usize) -> Range<usize> {
-    let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
-    let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
-    start..end
-}
-
-/// Enter on a list item: the next item starts on the new line; on an empty item the list
-/// ends. False (a plain Enter) anywhere else, or with text selected.
-fn continue_list(
-    state: &mut EditorState,
-    window: &mut Window,
-    cx: &mut Context<EditorState>,
-) -> bool {
-    if !state.selected_range().is_empty() {
-        return false;
-    }
-    let text = state.value().to_string();
-    let at = state.cursor();
-    let line = line_at(&text, at);
-    let Some(next) = next_item(&text[line.clone()], at - line.start) else {
-        return false;
-    };
-    // The main cursor only: gpui-kit's replace types at every cursor (setting the range drops
-    // the others).
-    if next.is_empty() {
-        state.set_selected_range(line, cx);
-        state.replace("", window, cx);
-    } else {
-        state.set_selected_range(at..at, cx);
-        state.replace(format!("\n{next}"), window, cx);
-    }
-    true
-}
-
-/// Ctrl+Enter: the cursor's line becomes a task, or its box is ticked or unticked.
-fn tick(state: &mut EditorState, window: &mut Window, cx: &mut Context<EditorState>) -> bool {
-    let text = state.value().to_string();
-    let at = state.cursor();
-    let line = line_at(&text, at);
-    let new = toggle_task(&text[line.clone()]);
-    // The text after the box keeps the cursor where it was.
-    let cursor = (at + new.len())
-        .saturating_sub(line.len())
-        .clamp(line.start, line.start + new.len());
-    state.set_selected_range(line, cx);
-    state.replace(new, window, cx);
-    state.set_selected_range(cursor..cursor, cx);
-    true
-}
-
-/// `marker` around the selection, or a pair with the cursor between.
-fn emphasize(
-    state: &mut EditorState,
-    marker: &str,
-    window: &mut Window,
-    cx: &mut Context<EditorState>,
-) {
-    let range = state.selected_range();
-    let selected = state.value()[range.clone()].to_string();
-    // The main selection only (see `continue_list`).
-    state.set_selected_range(range.clone(), cx);
-    state.replace(format!("{marker}{selected}{marker}"), window, cx);
-    if selected.is_empty() {
-        let at = range.start + marker.len();
-        state.set_selected_range(at..at, cx);
-    }
-}
-
-/// A list item's indent and marker (`- `, `* `, `+ `, `1. `, `1) `, `- [ ] `), their length in
-/// bytes, and the next item's.
-fn item_prefix(line: &str) -> Option<(usize, String)> {
-    let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
-    let rest = &line[indent..];
-    let (len, next) = match ["- ", "* ", "+ "].into_iter().find(|b| rest.starts_with(b)) {
-        Some(bullet) => {
-            let task = ["[ ] ", "[x] ", "[X] "]
-                .iter()
-                .any(|t| rest[2..].starts_with(t));
-            if task {
-                (6, format!("{bullet}[ ] "))
-            } else {
-                (2, bullet.to_string())
-            }
-        }
-        None => {
-            let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-            let n: u64 = rest[..digits].parse().ok()?;
-            let sep = rest[digits..]
-                .chars()
-                .next()
-                .filter(|c| matches!(c, '.' | ')'))?;
-            if !rest[digits + 1..].starts_with(' ') {
-                return None;
-            }
-            (digits + 2, format!("{}{sep} ", n + 1))
-        }
-    };
-    Some((indent + len, format!("{}{next}", &line[..indent])))
-}
-
-/// What Enter on `line`, the cursor at its byte `at`, types after the line break: the next
-/// item's start, or "" when the item is empty (the list ends). None: not after a marker.
-fn next_item(line: &str, at: usize) -> Option<String> {
-    let (len, next) = item_prefix(line)?;
-    if at < len {
-        return None;
-    }
-    Some(if line[len..].trim().is_empty() {
-        String::new()
-    } else {
-        next
-    })
-}
-
-/// A task's box ticked or unticked; a list item or a plain line made a task.
-fn toggle_task(line: &str) -> String {
-    let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
-    let (head, rest) = line.split_at(indent);
-    for bullet in ["- ", "* ", "+ "] {
-        if let Some(after) = rest.strip_prefix(bullet) {
-            if let Some(text) = after.strip_prefix("[ ]") {
-                return format!("{head}{bullet}[x]{text}");
-            }
-            if let Some(text) = after
-                .strip_prefix("[x]")
-                .or_else(|| after.strip_prefix("[X]"))
-            {
-                return format!("{head}{bullet}[ ]{text}");
-            }
-            return format!("{head}{bullet}[ ] {after}");
-        }
-    }
-    format!("{head}- [ ] {rest}")
-}
-
-/// Ctrl+B (bold) and Ctrl+I (italic), Cmd on macOS: their Markdown marker.
-fn emphasis(k: &Keystroke) -> Option<&'static str> {
-    let m = &k.modifiers;
-    if !m.secondary() || m.alt || m.shift || m.function {
-        return None;
-    }
-    match k.key.as_str() {
-        "b" => Some("**"),
-        "i" => Some("*"),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn enter_continues_bullets_numbers_and_tasks() {
-        assert_eq!(next_item("- a", 3).as_deref(), Some("- "));
-        assert_eq!(next_item("  * a", 5).as_deref(), Some("  * "));
-        assert_eq!(next_item("9. a", 4).as_deref(), Some("10. "));
-        assert_eq!(next_item("1) a", 4).as_deref(), Some("2) "));
-        assert_eq!(next_item("- [x] done", 10).as_deref(), Some("- [ ] "));
-        assert_eq!(next_item("- a", 1), None, "inside the marker");
-        assert_eq!(next_item("plain", 5), None);
-        assert_eq!(next_item("1.5 kg", 6), None);
-    }
-
-    #[test]
-    fn enter_on_an_empty_item_ends_the_list() {
-        assert_eq!(next_item("- ", 2).as_deref(), Some(""));
-        assert_eq!(next_item("- [ ] ", 6).as_deref(), Some(""));
-    }
-
-    #[test]
-    fn ctrl_enter_toggles_a_task() {
-        assert_eq!(toggle_task("- [ ] a"), "- [x] a");
-        assert_eq!(toggle_task("  - [x] a"), "  - [ ] a");
-        assert_eq!(toggle_task("* a"), "* [ ] a");
-        assert_eq!(toggle_task("buy milk"), "- [ ] buy milk");
-    }
-
-    #[test]
-    fn emphasis_keys() {
-        let k = |s: &str| Keystroke::parse(s).unwrap();
-        let (bold, italic) = if cfg!(target_os = "macos") {
-            ("cmd-b", "cmd-i")
-        } else {
-            ("ctrl-b", "ctrl-i")
-        };
-        assert_eq!(emphasis(&k(bold)), Some("**"));
-        assert_eq!(emphasis(&k(italic)), Some("*"));
-        assert_eq!(emphasis(&k("b")), None);
-        assert_eq!(emphasis(&k(&format!("shift-{bold}"))), None);
-    }
-
-    #[test]
-    fn the_title_is_the_first_heading_or_note() {
-        assert_eq!(title("# Plan\n- x"), "Plan");
-        assert_eq!(title("text\n\n## Second  \n"), "Second");
-        assert_eq!(title("  ###   Spaced   "), "Spaced");
-        assert_eq!(title("#NoSpace\n# Real"), "Real", "a heading needs a space");
-        assert_eq!(title("#\n# "), "Note", "empty headings don't count");
-        assert_eq!(title("no heading"), "Note");
-        assert_eq!(title(""), "Note");
-    }
 }

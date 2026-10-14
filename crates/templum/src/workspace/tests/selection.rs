@@ -106,7 +106,12 @@ fn copy_paste_and_delete_selected_blocks(cx: &mut TestAppContext) {
         assert!(ws.space.kanban(pasted[0]).is_some());
         let copy = ws.space.blocks[&pasted[1]].note().unwrap();
         assert_eq!(copy.text(cx), "hello");
-        assert!(copy.preview);
+        let original = ws.space.blocks[&note].note().unwrap();
+        assert_ne!(
+            copy.ids(),
+            original.ids(),
+            "a copy of the note, not the note"
+        );
         // Kept side by side, somewhere else.
         let (a, b) = (
             ws.space.canvas.get(pasted[0]).unwrap().rect,

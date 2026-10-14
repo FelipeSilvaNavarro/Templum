@@ -22,7 +22,7 @@ use gpui_kit::{AnyWindowHandle, App, AppContext as _, Context, Entity, Window};
 use templum_canvas::{Camera, Color, Drawing, Point, Rect, ZOOM_STEPS, chrome};
 
 use crate::board::Boards;
-use crate::workspace::{Body, DEFAULT_COLS, DEFAULT_ROWS, Workspace};
+use crate::workspace::{DEFAULT_COLS, DEFAULT_ROWS, Workspace};
 use crate::{editor, git_block, kanban, note};
 
 /// Typed into the terminals of the mixed scenario: 24 colored lines redrawn 10× a second,
@@ -164,8 +164,8 @@ pub(crate) fn run_zoom(window: AnyWindowHandle, ws: Entity<Workspace>, kind: Str
                     "note" => {
                         ws.add_note_at(at, window, cx);
                         let id = ws.space.canvas.top().expect("just added");
-                        if let Some(note) = ws.space.blocks.get(&id).and_then(Body::note) {
-                            note.editor
+                        if let Some(tab) = ws.space.blocks.get(&id).and_then(|b| b.note()?.tab()) {
+                            tab.editor
                                 .update(cx, |e, cx| e.set_value(readme.clone(), window, cx));
                         }
                     }
@@ -277,8 +277,8 @@ pub(crate) fn run_far(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut A
                 for _ in 0..4 {
                     ws.add_note_at(next(), window, cx);
                     let id = ws.space.canvas.top().expect("just added");
-                    if let Some(note) = ws.space.blocks.get(&id).and_then(Body::note) {
-                        note.editor
+                    if let Some(tab) = ws.space.blocks.get(&id).and_then(|b| b.note()?.tab()) {
+                        tab.editor
                             .update(cx, |e, cx| e.set_value(readme.clone(), window, cx));
                     }
                 }

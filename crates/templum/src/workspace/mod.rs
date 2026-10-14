@@ -18,6 +18,7 @@ mod git_switch;
 mod git_sync;
 mod history;
 mod input;
+mod note_tabs;
 mod persist;
 mod preferences;
 mod render;
@@ -203,6 +204,13 @@ impl Body {
         }
     }
 
+    pub fn note_mut(&mut self) -> Option<&mut Note> {
+        match self {
+            Body::Note(note) => Some(note),
+            _ => None,
+        }
+    }
+
     pub fn editor(&self) -> Option<&Editor> {
         match self {
             Body::Editor(editor) => Some(editor),
@@ -235,10 +243,7 @@ impl Body {
     /// file. False when nothing does.
     pub fn focus_inner(&self, window: &mut Window, cx: &mut App) -> bool {
         match self {
-            Body::Note(note) if !note.preview => {
-                note.focus(window, cx);
-                true
-            }
+            Body::Note(note) => note.focus(window, cx),
             Body::Editor(e) => e.focus(window, cx),
             // A field (the summary, a filter) keeps the keyboard it just took on the click;
             // otherwise the block takes it.
@@ -281,9 +286,10 @@ impl Body {
             }),
             Body::Note(n) => session::Item::Note(session::NoteItem {
                 rect: rect.into(),
-                text: n.text(cx),
-                preview: n.preview,
-                color: n.color,
+                notes: n.ids(),
+                active: n.active,
+                text: String::new(),
+                color: None,
             }),
             Body::Editor(e) => session::Item::Editor(e.item(rect)),
             Body::Git(g) => session::Item::Git(g.item(rect, cx)),
@@ -293,11 +299,12 @@ impl Body {
     /// The keyboard is inside the block.
     pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
         match self {
-            Body::Note(note) => note
-                .editor
-                .read(cx)
-                .focus_handle(cx)
-                .contains_focused(window, cx),
+            Body::Note(note) => note.tabs.iter().any(|t| {
+                t.editor
+                    .read(cx)
+                    .focus_handle(cx)
+                    .contains_focused(window, cx)
+            }),
             Body::Editor(e) => e.has_focus(window, cx),
             Body::Git(g) => g.focus.contains_focused(window, cx),
             Body::Terminal(pane) => pane.find.as_ref().is_some_and(|b| b.has_focus(window, cx)),
@@ -550,6 +557,13 @@ pub struct Workspace {
     pub(crate) active: usize,
     /// Every kanban board, shown by kanban blocks in any workspace.
     pub(crate) boards: Boards,
+    /// Every note, shown by note blocks in any workspace (`notes.rs`).
+    pub(crate) notes: crate::notes::Notes,
+    /// The notes as last read or written, to write only what changed.
+    notes_saved: Option<crate::notes::Notes>,
+    /// `notes.json` couldn't be read: neither it nor the canvases are written this session (a
+    /// canvas from before it holds notes' text that only it would keep).
+    notes_frozen: bool,
     /// `boards` before each change, newest last, at most BOARD_UNDO (see `edit_boards`).
     boards_undo: Vec<Boards>,
     /// The boards as last read or written, to write only what changed.
@@ -846,6 +860,9 @@ impl Workspace {
             boards_undo: Vec::new(),
             boards_saved: None,
             boards_frozen: false,
+            notes: Default::default(),
+            notes_saved: None,
+            notes_frozen: false,
             index_frozen: false,
             sidebar: true,
             cell,

@@ -256,3 +256,17 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   `crates/templum/src/workspace/selection.rs`): resuming it would put two agents on one conversation, so a copied
   Claude Code terminal pastes as a shell in its folder. Fix: type the agent's own command (not its resume command)
   into the pasted shell.
+
+## Notes
+
+- [ ] **Undoing a blank note's close brings back an empty block.** A blank note goes when its block closes
+  (`drop_if_blank`, `crates/templum/src/workspace/note_tabs.rs`), so Ctrl+Z after closing it, or Ctrl+Shift+Z after
+  undoing a new note block, shows "No note open here". Fix: in `add_saved`, a note item whose notes are all gone opens
+  a new blank note.
+- [ ] **Two canvases naming one note both show it after a restart.** `note_open_at` looks in the workspaces already
+  loaded (`self.spaces()`), but `load_spaces` keeps the ones it restored in a local list
+  (`crates/templum/src/workspace/spaces.rs`), so a hand-edited file that names a note in two workspaces opens it twice,
+  and the last tab typed in wins. Fix: look in that list too while loading.
+- [ ] **A note block copied in another Templum pastes empty.** The clipboard names notes by their ids
+  (`Body::item`, `crates/templum/src/workspace/mod.rs`), which another Templum's notes don't have. Fix: put each
+  note's text in the copied item's `text`, and let `paste_blocks` make a note of it when the id isn't known.

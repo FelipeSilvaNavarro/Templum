@@ -88,7 +88,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   closing blocks), `view.rs` (the camera), `input.rs` (keys and the pointer), `selection.rs` (selected blocks: Shift+drag,
   Shift+click on a title; moving them together, Delete, Copy and Paste), `history.rs` (Ctrl+Z and Ctrl+Shift+Z on the
   blocks: added, closed, moved, resized; each step keeps the change that takes it back), `render.rs` (drawing a frame),
-  `drawing.rs` (the drawing tools), `persist.rs` (restoring and saving the canvas), `preferences.rs` (config,
+  `drawing.rs` (the drawing tools), `note_tabs.rs` (note blocks' tabs and the notes they open), `persist.rs`
+  (restoring and saving the canvas), `preferences.rs` (config,
   themes, settings panel), `files.rs` and `file_tree.rs` (editor blocks), `git_ops.rs`, `git_changes.rs`,
   `git_branches.rs`, `git_history.rs`, `git_discard.rs` (discards through the trash), `git_keys.rs` (the
   block's keys), `git_switch.rs` (switching branches without losing work), `git_sync.rs` (Sync, Publish, Clone),
@@ -125,8 +126,10 @@ A file holds one responsibility; a module that grows past a few hundred lines be
 - The workspace on screen is `Workspace::space`; the hidden ones (`others`) keep their terminals running, unarmed so
   their output never wakes the UI. The sidebar (`sidebar.rs`) switches them by swapping. `session.rs` keeps their
   order and names in `workspaces/index.json` ([specs/workspaces.md](specs/workspaces.md)).
-- Every block's content is a `Body` in `Space::blocks`: a terminal, a kanban block, a note (`note.rs`, gpui-kit's
-  editor with the Markdown grammar), an editor (`editor.rs`: a lazy folder model behind gpui-base's `Tree`, tabs of
+- Every block's content is a `Body` in `Space::blocks`: a terminal, a kanban block, a note block (`note.rs`: tabs
+  of plain-text notes in gpui-kit's editor, and the Notes dialog; the notes themselves are app-wide in `notes.rs`, saved
+  in `notes.json` with the snapshot, every change written there as it is typed; `workspace/note_tabs.rs` opens, closes
+  and deletes them), an editor (`editor.rs`: a lazy folder model behind gpui-base's `Tree`, tabs of
   gpui-kit `EditorState`s, files read and written on the UI thread) or a Git block (`git_block/`: the repository's
   state read in the background by `templum-git`, one command at a time per block with the others waiting in turn,
   the lists, the diff view and the commit form; a failed `git` is a notification that can hand the command to a

@@ -185,9 +185,19 @@ impl Workspace {
             let rect = item.rect_mut();
             rect.x += dx;
             rect.y += dy;
-            // A second agent resuming the same conversation would fight over it.
-            if let session::Item::Terminal(t) = item {
-                t.agent = None;
+            match item {
+                // A second agent resuming the same conversation would fight over it.
+                session::Item::Terminal(t) => t.agent = None,
+                // A note is open in one tab at most: the copy shows copies.
+                session::Item::Note(n) => {
+                    let now = crate::notes::now();
+                    n.notes = n
+                        .notes
+                        .iter()
+                        .filter_map(|id| self.notes.duplicate(*id, now))
+                        .collect();
+                }
+                _ => {}
             }
         }
         let pasted: Vec<_> = self
