@@ -326,7 +326,12 @@ fn a_snapshot_tells_each_terminal_its_folder_and_agent(cx: &mut TestAppContext) 
                 started: Some(1_700_000_000),
             };
             ws.snapshot_done(
-                vec![(space.clone(), vec![(id, found.clone())], saved.clone(), None)],
+                vec![(
+                    space.clone(),
+                    vec![(id, found.clone())],
+                    saved.clone(),
+                    None,
+                )],
                 None,
                 None,
                 window,

@@ -5,7 +5,7 @@ use gpui_kit::component::input::{InputEvent, InputState, NumberInputEvent, StepA
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, Subscription, Window};
 
-use crate::config::{Config, Edit, Mode, Shape};
+use crate::config::{Config, Edit, Mode, Reset, Shape};
 use crate::workspace::Workspace;
 
 /// A dropdown setting: its options (value, label), the option the config is at, and what
@@ -59,6 +59,51 @@ pub(super) static CURSOR: Choice = Choice {
         }
     },
     toml: |v| v.into(),
+};
+
+pub(super) static RESET: Choice = Choice {
+    table: "usage",
+    key: "reset",
+    options: &[
+        ("off", "Off"),
+        ("reached", "When a limit was reached"),
+        ("half", "After half of it"),
+        ("always", "Always"),
+    ],
+    get: |c| match c.usage.reset {
+        Reset::Off => "off",
+        Reset::Reached => "reached",
+        Reset::Half => "half",
+        Reset::Always => "always",
+    },
+    set: |c, v| {
+        c.usage.reset = match v {
+            "off" => Reset::Off,
+            "half" => Reset::Half,
+            "always" => Reset::Always,
+            _ => Reset::Reached,
+        }
+    },
+    toml: |v| v.into(),
+};
+
+pub(super) static WARN: Choice = Choice {
+    table: "usage",
+    key: "warn",
+    options: &[
+        ("0", "Off"),
+        ("80", "At 80%"),
+        ("90", "At 90%"),
+        ("95", "At 95%"),
+    ],
+    get: |c| match c.usage.warn {
+        0 => "0",
+        80 => "80",
+        95 => "95",
+        _ => "90",
+    },
+    set: |c, v| c.usage.warn = v.parse().unwrap_or(90),
+    toml: |v| v.parse::<i64>().unwrap_or(0).into(),
 };
 
 /// A whole-number setting and its limits.

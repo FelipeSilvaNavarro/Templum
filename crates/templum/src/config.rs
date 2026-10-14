@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 use templum_terminal::{CursorShape, CursorStyle, TermOptions};
+pub(crate) use templum_usage::Reset;
 
 use toml_edit::{DocumentMut, TomlError};
 
@@ -36,6 +37,7 @@ pub(crate) struct Config {
     pub terminal: TerminalConfig,
     pub keys: KeysConfig,
     pub git: GitConfig,
+    pub usage: UsageConfig,
     /// `[agents.<id>]`: changes to one of Templum's AI agents (only what differs), or an agent of
     /// the user's own.
     pub agents: BTreeMap<String, AgentConfig>,
@@ -229,6 +231,32 @@ impl Default for TerminalConfig {
     }
 }
 
+/// `[usage]`: what Templum tells about the agents' plan limits.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct UsageConfig {
+    /// When a limit's reset is notified.
+    pub reset: Reset,
+    /// A limit's use, in percent, that is notified once per window: 0 (never), 80, 90 or 95.
+    pub warn: u8,
+    /// The Claude Code Templum opens gets Templum's status line, which hands it the plan's
+    /// limits.
+    pub claude_limits: bool,
+}
+
+impl Default for UsageConfig {
+    fn default() -> Self {
+        Self {
+            reset: Reset::default(),
+            warn: 90,
+            claude_limits: true,
+        }
+    }
+}
+
+/// The values `[usage] warn` takes: what Settings offers.
+pub(crate) const WARN_AT: [u8; 4] = [0, 80, 90, 95];
+
 /// `[git]`.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -364,6 +392,12 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
         "4 and 1024",
         message.max_diff_kb.to_string(),
     )?;
+    let warn = config.usage.warn;
+    if !WARN_AT.contains(&warn) {
+        return Err(format!(
+            "{FILE}: usage.warn must be 0, 80, 90 or 95 (it is {warn})"
+        ));
+    }
     // Shortcuts are part of the file's validity: an invalid one keeps the last valid config.
     Keymap::new(&config.keys, cfg!(target_os = "macos"))?;
     for (id, agent) in &config.agents {
@@ -740,6 +774,13 @@ pub(crate) fn template(macos: bool) -> String {
         "## A system notification when Templum is in the background and a long command ends or\n",
         "## a terminal asks for attention.\n",
         "# notifications = true\n\n",
+        "[usage]\n",
+        "## When a plan limit's reset is notified: \"off\", \"reached\" (95% or more of it was used),\n",
+        "## \"half\" or \"always\".\n",
+        "# reset = \"reached\"\n",
+        "# warn = 90   # notify once at this much of a limit: 0 (never), 80, 90 or 95\n",
+        "## The Claude Code Templum opens gets Templum's status line, which hands it the limits.\n",
+        "# claude_limits = true\n\n",
         "[git]\n",
         "# program = \"git\"   # a name on PATH, or a path\n\n",
         "[keys]\n",
@@ -1167,6 +1208,26 @@ scrollback = 500
             "LF only line: {text:?}"
         );
         assert!(text.contains("dark = \"One Dark\""), "{text:?}");
+    }
+
+    #[test]
+    fn usage_notifications_have_defaults_and_bad_values_fail() {
+        let c = parse("").unwrap();
+        assert_eq!(c.usage.reset, Reset::Reached);
+        assert_eq!(c.usage.warn, 90);
+        assert!(c.usage.claude_limits);
+        let c = parse("[usage]\nreset = \"always\"\nwarn = 0\nclaude_limits = false\n").unwrap();
+        assert_eq!(
+            c.usage,
+            UsageConfig {
+                reset: Reset::Always,
+                warn: 0,
+                claude_limits: false
+            }
+        );
+        let err = parse("[usage]\nwarn = 85\n").unwrap_err();
+        assert!(err.contains("usage.warn"), "{err}");
+        assert!(parse("[usage]\nreset = \"sometimes\"\n").is_err());
     }
 
     #[test]

@@ -56,11 +56,12 @@ pub(crate) enum Section {
     Tools,
     Git,
     Agents,
+    Usage,
     Shortcuts,
 }
 
 impl Section {
-    pub const ALL: [Section; 8] = [
+    pub const ALL: [Section; 9] = [
         Section::Appearance,
         Section::Font,
         Section::Terminal,
@@ -68,6 +69,7 @@ impl Section {
         Section::Tools,
         Section::Git,
         Section::Agents,
+        Section::Usage,
         Section::Shortcuts,
     ];
 
@@ -80,6 +82,7 @@ impl Section {
             Section::Tools => "Tools",
             Section::Git => "Git",
             Section::Agents => "Agents",
+            Section::Usage => "Usage",
             Section::Shortcuts => "Shortcuts",
         }
     }
@@ -94,6 +97,7 @@ impl Section {
             Section::Tools => "settings-tab-tools",
             Section::Git => "settings-tab-git",
             Section::Agents => "settings-tab-agents",
+            Section::Usage => "settings-tab-usage",
             Section::Shortcuts => "settings-tab-shortcuts",
         }
     }
@@ -112,6 +116,10 @@ impl Section {
             Section::Agents => Some(
                 "The AI agents in the canvas menu. Change one of Templum's, or add your own; ↺ puts \
                  one of Templum's back as it was.",
+            ),
+            Section::Usage => Some(
+                "Claude Code's and Codex's plan limits, shown in the title bar, and each agent's \
+                 session on its terminal. Templum reads what the agents write, never their login.",
             ),
             Section::Shortcuts => Some("Click a shortcut to record a new one"),
             _ => None,

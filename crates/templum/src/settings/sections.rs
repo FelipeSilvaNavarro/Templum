@@ -9,7 +9,7 @@ use gpui_kit::{App, ClickEvent, ElementId, Entity, SharedString, TestSupportExt,
 
 use super::agents::agent_row;
 use super::edits::set_shell;
-use super::fields::{CURSOR, Choice, FONT_SIZE, MODE, Number};
+use super::fields::{CURSOR, Choice, FONT_SIZE, MODE, Number, RESET, WARN};
 use super::row::{Row, menu_button, remove, text_input};
 use super::{
     NumberState, SCROLLBACK, Section, args_error, args_text, chip, folder_hint, folder_text,
@@ -217,6 +217,39 @@ pub(super) fn rows(
             .iter()
             .map(|agent| agent_row(ws, entity, agent))
             .collect(),
+        Section::Usage => {
+            let on = ws.config.usage.claude_limits;
+            let e = entity.clone();
+            vec![
+                choice_row(ws, entity, &RESET, "Limit reset notifications")
+                    .description("When a 5-hour or weekly limit is back"),
+                choice_row(ws, entity, &WARN, "Warn near a limit")
+                    .description("Once per limit, with when it resets"),
+                Row::new("usage.claude_limits", "Claude Code limits")
+                    .description(
+                        "The Claude Code Templum opens gets Templum's status line, which hands it \
+                         the limits. Yours still shows.",
+                    )
+                    .control(Switch::new("claude-limits-switch").checked(on).on_click(
+                        move |on: &bool, _, cx| {
+                            let on = *on;
+                            e.update(cx, |ws, cx| {
+                                ws.edit(
+                                    Edit::set("usage", "claude_limits", on),
+                                    |c| c.usage.claude_limits = on,
+                                    cx,
+                                )
+                            })
+                        },
+                    ))
+                    .reset(
+                        !on,
+                        remove(entity, "usage", "claude_limits", |c| {
+                            c.usage.claude_limits = true
+                        }),
+                    ),
+            ]
+        }
         Section::Shortcuts => Command::ALL
             .map(|command| shortcut_row(ws, entity, command))
             .into_iter()
