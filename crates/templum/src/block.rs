@@ -454,18 +454,25 @@ pub(crate) fn render(
                 // At the Card level nothing is inside: the grid isn't painted, so the terminal isn't
                 // re-armed and its output asks for no frames, as off screen.
                 .when(live && level != Level::Card, |el| {
-                    el.cursor_text().on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                    el.cursor_text().on_any_mouse_down(cx.listener(
+                        move |ws, e: &MouseDownEvent, window, cx| {
+                            let left = e.button == MouseButton::Left;
                             // Ctrl+click (Cmd on macOS) opens a path or a link; the block's own
                             // press would take the keyboard back from the editor it opened.
-                            if e.modifiers.secondary() && ws.open_link(id, e, window, cx) {
+                            if left && e.modifiers.secondary() && ws.open_link(id, e, window, cx) {
                                 cx.stop_propagation();
-                            } else {
+                            } else if ws.press_program(id, e) {
+                                // The card focuses on a left press; the middle and right ones
+                                // are the program's, not the canvas's pan nor the block's menu.
+                                if !left {
+                                    ws.focus_block(id, window, cx);
+                                    cx.stop_propagation();
+                                }
+                            } else if left {
                                 ws.begin_select(id, e);
                             }
-                        }),
-                    )
+                        },
+                    ))
                 })
                 // Over bars the wheel moves the canvas: a far terminal's history stays still.
                 .when(live && level == Level::Full, |el| {

@@ -444,6 +444,7 @@ impl Render for Workspace {
                                 ws.drag_to(e.position, e.modifiers.shift, cx);
                             } else {
                                 ws.end_drag();
+                                ws.hover_program(e.position, &e.modifiers);
                                 ws.pointer_moved = true;
                                 ws.follow_pointer(window, cx);
                             }
@@ -453,10 +454,15 @@ impl Render for Workspace {
                 let on_up = entity.clone();
                 window.on_mouse_event(move |e: &MouseUpEvent, phase, _, cx| {
                     if phase == DispatchPhase::Bubble {
-                        on_up.update(cx, |ws, cx| match e.button {
-                            MouseButton::Left => ws.release(e.position, cx),
-                            MouseButton::Middle => ws.end_drag(),
-                            _ => {}
+                        on_up.update(cx, |ws, cx| {
+                            if ws.release_program(e) {
+                                return;
+                            }
+                            match e.button {
+                                MouseButton::Left => ws.release(e.position, cx),
+                                MouseButton::Middle => ws.end_drag(),
+                                _ => {}
+                            }
                         });
                     }
                 });

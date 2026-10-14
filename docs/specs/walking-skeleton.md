@@ -26,7 +26,6 @@ The next plans pick these up:
 
 - **Next phase:** saving and restoring the workspace, and configuration (font, theme, keybindings).
 - **Later:**
-  - mouse reporting to apps (clicks in htop, vim mouse);
   - hyperlinks and search;
   - built-in box-drawing glyphs;
   - inheriting the focused terminal's working directory;

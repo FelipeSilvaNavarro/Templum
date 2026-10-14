@@ -35,6 +35,7 @@ cargo run -p templum
 | Hold Alt (Option on macOS), then drag or scroll anywhere | Pan, even over blocks: they don't react while Alt is held |
 | Drag with the middle button, anywhere | Pan |
 | Scroll over a terminal | Scroll its history |
+| Click, drag or scroll in a program that uses the mouse (htop, vim, Claude Code full screen) | The program gets it; hold Shift to select text instead |
 | Ctrl+scroll, or pinch | Zoom |
 | Drag in a terminal (double-click: word, triple-click: line) | Select text |
 | Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board, Note, Editor or Git, where you clicked |

@@ -321,6 +321,13 @@ enum Drag {
     Canvas(Gesture),
     /// Selecting text in a block's terminal.
     Select(BlockId),
+    /// A press the program in a terminal heard (it asked for the mouse): its moves, at another
+    /// `cell` (row, column), and its release go to the program too.
+    Program {
+        id: BlockId,
+        button: templum_terminal::Button,
+        cell: (usize, usize),
+    },
     /// Drawing with a pen, a highlighter or a shape tool.
     Ink(Drawing),
     /// Erasing: whether anything was erased yet (for undo), and the pointer's last world point.
@@ -657,6 +664,9 @@ pub struct Workspace {
     /// Sub-step accumulators: wheel zoom, terminal scrolling (in lines).
     zoom_acc: f32,
     scroll_acc: f32,
+    /// The terminal cell the pointer was last reported over, with no button down, to a program
+    /// that asked for every move.
+    hover_cell: Option<(BlockId, usize, usize)>,
     /// Program for new terminals instead of the login shell (tests).
     command: Option<(String, Vec<String>)>,
     /// Where config.toml and the themes folder live (None: defaults only, nothing saved).
@@ -985,6 +995,7 @@ impl Workspace {
             notify,
             zoom_acc: 0.0,
             scroll_acc: 0.0,
+            hover_cell: None,
             command,
             config_dir,
             trash: data_dir

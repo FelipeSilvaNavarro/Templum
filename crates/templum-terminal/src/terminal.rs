@@ -19,7 +19,7 @@ use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::CursorStyle;
 
 use crate::agent::{Detect, agent_of};
-use crate::input::{KeyInput, encode_key, paste_bytes, typed_bytes};
+use crate::input::{KeyInput, MouseInput, encode_key, encode_mouse, paste_bytes, typed_bytes};
 use crate::palette::{self, Palette};
 use crate::tap::{Mark, Status, Tap};
 
@@ -629,6 +629,26 @@ impl Terminal {
         match encode_key(input, mode) {
             Some(bytes) => {
                 self.write(bytes);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Reports a mouse event to the program, at its cell clamped to the grid. False when the
+    /// program didn't ask for this event.
+    pub fn mouse(&self, input: &MouseInput) -> bool {
+        let term = self.term.0.lock_unfair();
+        let mode = *term.mode();
+        let input = MouseInput {
+            row: input.row.min(term.screen_lines() - 1),
+            col: input.col.min(term.columns() - 1),
+            ..*input
+        };
+        drop(term);
+        match encode_mouse(&input, mode) {
+            Some(bytes) => {
+                let _ = self.pty.send(Msg::Input(bytes.into()));
                 true
             }
             None => false,

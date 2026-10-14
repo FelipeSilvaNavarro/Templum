@@ -975,6 +975,40 @@ fn screen_of(ws: &Workspace, id: BlockId) -> String {
     snap.text()
 }
 
+/// A program that asked for the mouse (SGR, with drags) hears a press, the drag and the
+/// release, and the wheel; no text gets selected.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_program_that_asked_for_the_mouse_hears_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    program_asks("\x1b[?1002h\x1b[?1006h", handle, &ws, cx, |m| m.mouse);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let body = window.find(("body", id.0 as usize)).bounds();
+        let from = point(body.origin.x + px(20.), body.origin.y + px(20.));
+        window.drag(from, point(from.x + px(80.), from.y), cx);
+        let at = (f32::from(from.x), f32::from(from.y));
+        wheel(window, cx, at, ScrollDelta::Lines(point(0., 1.)), false);
+    })
+    .unwrap();
+    until("the reports", handle, &ws, cx, |ws| {
+        screen_of(ws, id).contains("^[[<64;")
+    });
+    ws.read_with(cx, |ws, _| {
+        let shown = screen_of(ws, id);
+        assert_eq!(
+            shown.matches("^[[<0;").count(),
+            2,
+            "press, release: {shown:?}"
+        );
+        assert!(shown.contains("^[[<32;"), "the drag: {shown:?}");
+        let pane = ws.space.terminal(id).unwrap();
+        assert_eq!(pane.term.shared().selection_text(), None);
+        assert!(ws.drag.is_none());
+    });
+}
+
 /// With the kitty keyboard on, Shift+Enter says so itself, in an agent too (Claude Code makes it
 /// a new line).
 #[cfg(unix)]

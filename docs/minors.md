@@ -323,3 +323,8 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   repeat or release events nor a modifier key alone, and in every-key mode the arrows and F-keys keep their legacy
   bytes; a program that asked for them (a game, a key-chord editor) misses them. Fix: pass `is_held` and the
   workspace's key-up and modifiers-changed events to `Terminal::key`.
+- [ ] **A program's drag loses Ctrl and Alt.** `drag_to` (`crates/templum/src/workspace/input.rs`) reports a held
+  button's moves with no modifiers, since it only gets Shift. Fix: pass the move's `Modifiers` to `drag_to`.
+- [ ] **The pointer stays a text cursor over a program that uses the mouse.** The body's `cursor_text`
+  (`crates/templum/src/block.rs`) doesn't look at the mode, so htop's or Claude Code's buttons look like text to
+  select. Fix: show the arrow when `modes().mouse`, read in the snapshot rather than under the lock while painting.

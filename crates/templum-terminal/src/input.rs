@@ -1,5 +1,5 @@
-//! Bytes sent to the shell for key presses and pastes (xterm conventions, and the kitty keyboard
-//! protocol for programs that turn it on).
+//! Bytes sent to the shell for key presses, mouse events and pastes (xterm conventions, and the
+//! kitty keyboard protocol for programs that turn it on).
 
 use alacritty_terminal::term::TermMode;
 
@@ -162,6 +162,91 @@ fn kitty_key(k: &KeyInput, m: u8, mode: TermMode) -> Option<Vec<u8>> {
     }
     seq.push('u');
     Some(seq.into_bytes())
+}
+
+/// A mouse button, or a step of the wheel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Button {
+    Left,
+    Middle,
+    Right,
+    WheelUp,
+    WheelDown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseKind {
+    Press,
+    Release,
+    /// The pointer moved to another cell.
+    Move,
+}
+
+/// A mouse event over a terminal, for the program in it that asked for the mouse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MouseInput {
+    /// None: a move with no button down.
+    pub button: Option<Button>,
+    pub kind: MouseKind,
+    /// The viewport cell (row 0 = top visible line).
+    pub row: usize,
+    pub col: usize,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+}
+
+/// Bytes for a mouse event, as the program asked for them (xterm's 1000/1002/1003 and their SGR
+/// and UTF-8 forms). None: it didn't ask for this event, or a cell too far for the old form.
+pub(crate) fn encode_mouse(e: &MouseInput, mode: TermMode) -> Option<Vec<u8>> {
+    let wanted = match (e.kind, e.button) {
+        (MouseKind::Move, None) => mode.contains(TermMode::MOUSE_MOTION),
+        (MouseKind::Move, Some(_)) => {
+            mode.intersects(TermMode::MOUSE_MOTION | TermMode::MOUSE_DRAG)
+        }
+        _ => mode.intersects(TermMode::MOUSE_MODE),
+    };
+    if !wanted {
+        return None;
+    }
+    let button = match e.button {
+        None => 3,
+        Some(Button::Left) => 0,
+        Some(Button::Middle) => 1,
+        Some(Button::Right) => 2,
+        Some(Button::WheelUp) => 64,
+        Some(Button::WheelDown) => 65,
+    };
+    let extra = 4 * e.shift as u32
+        + 8 * e.alt as u32
+        + 16 * e.ctrl as u32
+        + if e.kind == MouseKind::Move { 32 } else { 0 };
+    let (col, row) = (e.col as u32 + 1, e.row as u32 + 1);
+    if mode.contains(TermMode::SGR_MOUSE) {
+        let end = if e.kind == MouseKind::Release {
+            'm'
+        } else {
+            'M'
+        };
+        return Some(format!("\x1b[<{};{col};{row}{end}", button + extra).into_bytes());
+    }
+    // The old form doesn't say which button was let go.
+    let button = if e.kind == MouseKind::Release {
+        3
+    } else {
+        button
+    };
+    let mut bytes = b"\x1b[M".to_vec();
+    bytes.push(u8::try_from(32 + button + extra).ok()?);
+    for v in [col, row] {
+        if mode.contains(TermMode::UTF8_MOUSE) {
+            let c = char::from_u32(32 + v).filter(|_| 32 + v < 0x800)?;
+            bytes.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
+        } else {
+            bytes.push(u8::try_from(32 + v).ok()?);
+        }
+    }
+    Some(bytes)
 }
 
 /// Bytes for pasted text. Bracketed when the app asked for it (and then any ESC is dropped,
@@ -451,6 +536,66 @@ mod tests {
         let all = every | TermMode::REPORT_ALTERNATE_KEYS | TermMode::REPORT_ASSOCIATED_TEXT;
         assert_eq!(kitty(upper, every), "\x1b[97;2u");
         assert_eq!(kitty(upper, all), "\x1b[97:65;2;65u");
+    }
+
+    fn mouse(button: Option<Button>, kind: MouseKind) -> MouseInput {
+        MouseInput {
+            button,
+            kind,
+            row: 2,
+            col: 4,
+            ctrl: false,
+            alt: false,
+            shift: false,
+        }
+    }
+
+    fn report(e: MouseInput, mode: TermMode) -> Option<String> {
+        encode_mouse(&e, mode).map(|b| String::from_utf8(b).unwrap())
+    }
+
+    #[test]
+    fn mouse_events_reach_only_programs_that_asked() {
+        use MouseKind::*;
+        let left = Some(Button::Left);
+        assert_eq!(report(mouse(left, Press), TermMode::empty()), None);
+        let clicks = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
+        assert_eq!(report(mouse(left, Press), clicks).unwrap(), "\x1b[<0;5;3M");
+        assert_eq!(
+            report(mouse(left, Release), clicks).unwrap(),
+            "\x1b[<0;5;3m"
+        );
+        let wheel = mouse(Some(Button::WheelDown), Press);
+        assert_eq!(report(wheel, clicks).unwrap(), "\x1b[<65;5;3M");
+        let ctrl_right = MouseInput {
+            ctrl: true,
+            ..mouse(Some(Button::Right), Press)
+        };
+        assert_eq!(report(ctrl_right, clicks).unwrap(), "\x1b[<18;5;3M");
+        // Moves: while a button is held for 1002, any for 1003.
+        assert_eq!(report(mouse(left, Move), clicks), None);
+        let drags = TermMode::MOUSE_DRAG | TermMode::SGR_MOUSE;
+        assert_eq!(report(mouse(left, Move), drags).unwrap(), "\x1b[<32;5;3M");
+        assert_eq!(report(mouse(None, Move), drags), None);
+        let moves = TermMode::MOUSE_MOTION | TermMode::SGR_MOUSE;
+        assert_eq!(report(mouse(None, Move), moves).unwrap(), "\x1b[<35;5;3M");
+    }
+
+    #[test]
+    fn mouse_events_in_the_old_forms() {
+        let clicks = TermMode::MOUSE_REPORT_CLICK;
+        let press = mouse(Some(Button::Left), MouseKind::Press);
+        assert_eq!(report(press, clicks).unwrap(), "\x1b[M %#");
+        let release = mouse(Some(Button::Left), MouseKind::Release);
+        assert_eq!(
+            report(release, clicks).unwrap(),
+            "\x1b[M#%#",
+            "no button said"
+        );
+        let far = MouseInput { col: 300, ..press };
+        assert_eq!(report(far, clicks), None, "past what a byte holds");
+        let utf8 = clicks | TermMode::UTF8_MOUSE;
+        assert_eq!(report(far, utf8).unwrap(), "\x1b[M \u{14d}#");
     }
 
     #[test]

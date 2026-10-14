@@ -119,7 +119,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   in an editor (`save`, `close_tab`, `go_to_line`) are dropped by `effective` when no editor block has the focus, so
   their keys reach the terminal.
 - `templum-terminal` encodes keys as xterm does, and in the kitty keyboard protocol for programs that turn it on
-  (Claude Code and Codex hear Shift+Enter).
+  (Claude Code and Codex hear Shift+Enter); mouse events go to programs that asked for them (xterm's 1000/1002/1003,
+  SGR or UTF-8), Shift keeping a drag Templum's selection.
 - `templum-terminal` gets settings as plain values (`TermOptions`, a start folder) and reports a shell's folder
   through `sysinfo`. It never reads the file.
 - The settings panel (`crates/templum/src/settings/`) builds gpui-kit `Settings` pages from the active `Config`

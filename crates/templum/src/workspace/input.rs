@@ -5,13 +5,14 @@ use std::time::Instant;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{
-    Bounds, ClipboardItem, Context, EntityInputHandler, KeyDownEvent, MouseDownEvent, PinchEvent,
-    Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, UTF16Selection, Window, px,
+    Bounds, ClipboardItem, Context, EntityInputHandler, KeyDownEvent, Modifiers, MouseButton,
+    MouseDownEvent, MouseUpEvent, PinchEvent, Pixels, Point as PixelPoint, ScrollDelta,
+    ScrollWheelEvent, UTF16Selection, Window, px,
 };
 use templum_canvas::{
     BlockId, Direction, Drawing, Edges, Gesture, Point, Rect, STRING_PX, chrome, constrain,
 };
-use templum_terminal::{KeyInput, SelectionKind, Side, Target};
+use templum_terminal::{Button, KeyInput, MouseInput, MouseKind, SelectionKind, Side, Target};
 
 use crate::keys::{self, Command};
 use crate::menu;
@@ -163,6 +164,22 @@ impl Workspace {
                     pane.term.shared().select_update(row, col, side);
                 }
             }
+            Some(Drag::Program { id, button, cell }) => {
+                let (id, button, was) = (*id, *button, *cell);
+                if let Some(now) = self.cell_of(id, pos).filter(|now| *now != was)
+                    && self.report(
+                        id,
+                        now,
+                        Some(button),
+                        MouseKind::Move,
+                        &Modifiers::default(),
+                    )
+                    && let Some(Drag::Program { cell, .. }) = &mut self.drag
+                {
+                    *cell = now;
+                }
+                return;
+            }
             Some(Drag::Ink(drawing)) => {
                 let camera = &self.space.canvas.camera;
                 let world = camera.to_world(p);
@@ -240,6 +257,89 @@ impl Workspace {
         let (row, col, right) = chrome::cell_at(block.rect, world, self.cell.size);
         let side = if right { Side::Right } else { Side::Left };
         Some((row, col, side))
+    }
+
+    fn cell_of(&self, id: BlockId, pos: PixelPoint<Pixels>) -> Option<(usize, usize)> {
+        self.cell_under(id, pos).map(|(row, col, _)| (row, col))
+    }
+
+    /// Tells the program in terminal `id` about the mouse at `cell` (row, column): false when it
+    /// didn't ask for such events.
+    fn report(
+        &self,
+        id: BlockId,
+        (row, col): (usize, usize),
+        button: Option<Button>,
+        kind: MouseKind,
+        m: &Modifiers,
+    ) -> bool {
+        let input = MouseInput {
+            button,
+            kind,
+            row,
+            col,
+            ctrl: m.control,
+            alt: m.alt,
+            shift: m.shift,
+        };
+        self.space
+            .terminal(id)
+            .is_some_and(|pane| pane.term.mouse(&input))
+    }
+
+    /// A press in terminal `id`'s body goes to its program when it asked for the mouse (a TUI,
+    /// Claude Code full screen), unless Shift is held: Shift keeps selecting text. Its moves and
+    /// its release follow it.
+    pub(crate) fn press_program(&mut self, id: BlockId, e: &MouseDownEvent) -> bool {
+        let Some(button) = button_of(e.button).filter(|_| !e.modifiers.shift) else {
+            return false;
+        };
+        let Some(cell) = self.cell_of(id, e.position) else {
+            return false;
+        };
+        if !self.report(id, cell, Some(button), MouseKind::Press, &e.modifiers) {
+            return false;
+        }
+        self.drag = Some(Drag::Program { id, button, cell });
+        true
+    }
+
+    /// A button let go while a program holds the press: it hears the release.
+    pub(super) fn release_program(&mut self, e: &MouseUpEvent) -> bool {
+        let Some(Drag::Program { id, cell, .. }) = self.drag else {
+            return false;
+        };
+        if let Some(button) = button_of(e.button) {
+            let at = self.cell_of(id, e.position).unwrap_or(cell);
+            self.report(id, at, Some(button), MouseKind::Release, &e.modifiers);
+        }
+        self.end_drag();
+        true
+    }
+
+    /// The pointer moved with no button down: a program that asked for every move hears it over
+    /// its terminal's text, once per cell.
+    pub(super) fn hover_program(&mut self, pos: PixelPoint<Pixels>, m: &Modifiers) {
+        let Some(id) = self
+            .space
+            .hovered
+            .filter(|id| self.space.terminal(*id).is_some())
+        else {
+            return;
+        };
+        let world = self.space.canvas.camera.to_world(self.local(pos));
+        let over_text = self
+            .space
+            .canvas
+            .get(id)
+            .is_some_and(|b| chrome::content_rect(b.rect).contains(world));
+        let Some(cell) = self.cell_of(id, pos).filter(|_| over_text) else {
+            return;
+        };
+        if self.hover_cell != Some((id, cell.0, cell.1)) {
+            self.hover_cell = Some((id, cell.0, cell.1));
+            self.report(id, cell, None, MouseKind::Move, m);
+        }
     }
 
     /// Mouse down in a body: 1 click selects by character, 2 by word, 3 by line.
@@ -751,11 +851,31 @@ impl Workspace {
         let lines = self.scroll_acc.trunc();
         self.scroll_acc -= lines;
         if lines != 0.0 {
-            if let Some(pane) = self.space.terminal(id) {
+            // A program that asked for the mouse gets the wheel; Shift scrolls the history.
+            let button = if lines > 0.0 {
+                Button::WheelUp
+            } else {
+                Button::WheelDown
+            };
+            let cell = self.cell_of(id, e.position).filter(|_| !e.modifiers.shift);
+            let told = cell.is_some_and(|cell| {
+                (0..lines.abs() as usize)
+                    .all(|_| self.report(id, cell, Some(button), MouseKind::Press, &e.modifiers))
+            });
+            if !told && let Some(pane) = self.space.terminal(id) {
                 pane.term.scroll(lines as i32);
             }
             cx.notify();
         }
+    }
+}
+
+fn button_of(button: MouseButton) -> Option<Button> {
+    match button {
+        MouseButton::Left => Some(Button::Left),
+        MouseButton::Middle => Some(Button::Middle),
+        MouseButton::Right => Some(Button::Right),
+        _ => None,
     }
 }
 
