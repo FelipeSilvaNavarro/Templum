@@ -318,11 +318,14 @@ enum Drag {
         last: Point,
     },
     /// Selecting blocks with a rectangle from `from` to `to` (world points): the blocks it touches
-    /// join those selected before (`base`).
+    /// join those selected before (`base`). `pointer` is where the pointer is on the canvas; near
+    /// its edge the camera moves, since when the last frame moved it (`scrolled`).
     Marquee {
         base: Vec<BlockId>,
         from: Point,
         to: Point,
+        pointer: Point,
+        scrolled: Option<Instant>,
     },
     /// Moving a selected drawing: `last` is the pointer's previous world point; `moved` once it
     /// has moved (and the undo step is taken).

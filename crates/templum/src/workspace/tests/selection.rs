@@ -260,3 +260,108 @@ fn a_reopened_terminal_resumes_its_agent_but_a_pasted_one_does_not(cx: &mut Test
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn a_rectangle_held_near_the_edge_moves_the_camera_to_blocks_beyond_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    three_blocks(handle, &ws, cx);
+    let (far, vp) = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let vp = ws.viewport(window);
+                let beyond = crate::session::Item::Kanban(crate::session::KanbanItem {
+                    rect: Rect::new(vp.w + 200.0, 60.0, 220.0, 200.0).into(),
+                    board: None,
+                });
+                ws.quiet = true;
+                let far = ws.add_saved(&beyond, window, cx).unwrap();
+                ws.quiet = false;
+                (far, vp)
+            })
+        })
+        .unwrap();
+    let (from, to) = (at(&ws, cx, (20.0, 20.0)), at(&ws, cx, (vp.w - 2.0, 100.0)));
+    let event = |p: (f32, f32)| point(px(p.0), px(p.1));
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: event(from),
+                modifiers: SHIFT,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: event(to),
+                pressed_button: Some(MouseButton::Left),
+                modifiers: SHIFT,
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    // The pointer stays still at the edge: frames keep moving the camera.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !ws.read_with(cx, |ws, _| ws.space.selected.contains(&far)) {
+        assert!(std::time::Instant::now() < deadline, "never reached");
+        frame(handle, cx);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin.x) > 0.0);
+    // Let go: the camera stops.
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: event(to),
+                modifiers: SHIFT,
+                click_count: 1,
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    let stopped = ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin);
+    frame(handle, cx);
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    frame(handle, cx);
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin),
+        stopped
+    );
+    assert!(ws.read_with(cx, |ws, _| ws.space.selected.contains(&far)));
+}
+
+#[gpui_kit::test]
+fn a_shift_press_near_the_edge_leaves_the_camera_still(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    three_blocks(handle, &ws, cx);
+    let vp = cx
+        .update_window(handle, |_, window, cx| ws.read(cx).viewport(window))
+        .unwrap();
+    let edge = at(&ws, cx, (vp.w - 2.0, 100.0));
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: point(px(edge.0), px(edge.1)),
+                modifiers: SHIFT,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    for _ in 0..3 {
+        frame(handle, cx);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin),
+        Point::new(0.0, 0.0)
+    );
+}

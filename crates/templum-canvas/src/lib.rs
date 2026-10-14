@@ -18,7 +18,7 @@ pub use canvas::{BESIDE, Block, BlockId, CASCADE, Canvas};
 pub use dots::{DOT_SPACING, DotGrid, MIN_DOT_GAP, dot_grid, dot_size};
 pub use flight::{CameraFlight, FLIGHT_ZOOM_STEP};
 pub use geometry::{Point, Rect, Size};
-pub use gesture::{Edges, Gesture, Update};
+pub use gesture::{EDGE_SPEED, EDGE_ZONE, Edges, Gesture, Update, edge_scroll};
 pub use ink::{
     Color, Drawing, HIT_PX, MAX_WIDTH, MIN_POINT_DISTANCE, MIN_SHAPE, MIN_WIDTH, STRING_PX,
     ShapeKind, constrain, simplify,

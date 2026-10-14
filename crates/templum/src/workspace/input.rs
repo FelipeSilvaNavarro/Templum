@@ -137,10 +137,7 @@ impl Workspace {
                     *erased = true;
                 }
             }
-            Some(Drag::Marquee { .. }) => {
-                let to = self.space.canvas.camera.to_world(p);
-                self.marquee_to(to);
-            }
+            Some(Drag::Marquee { .. }) => self.marquee_to(p),
             Some(Drag::MoveInk { index, last, moved }) => {
                 let world = self.space.canvas.camera.to_world(p);
                 let (dx, dy) = (world.x - last.x, world.y - last.y);
@@ -554,7 +551,7 @@ impl Workspace {
         let world = self.space.canvas.camera.to_world(p);
         if e.modifiers.shift && e.click_count == 1 {
             self.space.selected_ink = None;
-            self.begin_marquee(world);
+            self.begin_marquee(p);
             cx.notify();
             return;
         }

@@ -2,14 +2,16 @@
 //! what acts on the selected blocks, or on the focused one: a selected title's drag moves them
 //! together, Delete closes them, Copy and Paste copy them.
 
+use std::time::Instant;
+
 use gpui_kit::{ClipboardItem, Context, Pixels, Point as PixelPoint, Window};
 use serde::{Deserialize, Serialize};
-use templum_canvas::{BlockId, Gesture, Point, Rect};
+use templum_canvas::{BlockId, Gesture, Point, Rect, Size, edge_scroll};
 
 use crate::session;
 
 use super::history::{Change, Then};
-use super::{Drag, Workspace};
+use super::{CLICK_SLOP, Drag, Workspace};
 
 /// What Copy puts on the clipboard for blocks: JSON that Paste knows, here or in another
 /// Templum. A terminal comes back as a fresh shell in its folder, without its agent.
@@ -19,24 +21,36 @@ struct Clip {
 }
 
 impl Workspace {
-    /// Shift+press on the empty canvas at `at` (a world point): a rectangle from there selects
-    /// the blocks it touches, with those selected before. Selecting takes the focus away.
-    pub(super) fn begin_marquee(&mut self, at: Point) {
+    /// Shift+press on the empty canvas at `pointer` (a canvas point): a rectangle from there
+    /// selects the blocks it touches, with those selected before. Selecting takes the focus away.
+    pub(super) fn begin_marquee(&mut self, pointer: Point) {
         self.space.focused = None;
+        let at = self.space.canvas.camera.to_world(pointer);
         self.drag = Some(Drag::Marquee {
             base: self.space.selected.clone(),
             from: at,
             to: at,
+            pointer,
+            scrolled: None,
         });
         self.press = None;
     }
 
-    /// The rectangle's corner is at `to` (a world point).
-    pub(super) fn marquee_to(&mut self, to: Point) {
-        let Some(Drag::Marquee { base, from, to: at }) = &mut self.drag else {
+    /// The rectangle's corner is under `pointer` (a canvas point).
+    pub(super) fn marquee_to(&mut self, pointer: Point) {
+        let to = self.space.canvas.camera.to_world(pointer);
+        let Some(Drag::Marquee {
+            base,
+            from,
+            to: at,
+            pointer: under,
+            ..
+        }) = &mut self.drag
+        else {
             return;
         };
         *at = to;
+        *under = pointer;
         let mut selected = base.clone();
         for id in self.space.canvas.hits(Rect::corners(*from, to)) {
             if !selected.contains(&id) {
@@ -44,6 +58,42 @@ impl Workspace {
             }
         }
         self.space.selected = selected;
+    }
+
+    /// Every frame of a rectangle being dragged: with the pointer near the canvas's edge, the
+    /// camera goes that way (`edge_scroll`) and the rectangle grows with it. True while it goes:
+    /// the next frame is asked for.
+    pub(super) fn marquee_edge(&mut self, viewport: Size, now: Instant) -> bool {
+        let Some(Drag::Marquee {
+            from,
+            to,
+            pointer,
+            scrolled,
+            ..
+        }) = &mut self.drag
+        else {
+            return false;
+        };
+        let pointer = *pointer;
+        let v = edge_scroll(pointer, viewport);
+        // A Shift+click near the edge isn't a drag yet.
+        let dragged = (to.x - from.x).abs().max((to.y - from.y).abs())
+            * self.space.canvas.camera.zoom()
+            >= CLICK_SLOP;
+        if v == Point::default() || !dragged {
+            *scrolled = None;
+            return false;
+        }
+        // From the last frame that moved it; a stalled frame doesn't jump.
+        let dt = scrolled.map_or(0.0, |at| now.duration_since(at).as_secs_f32().min(0.05));
+        *scrolled = Some(now);
+        self.space.pristine = false;
+        self.space
+            .canvas
+            .camera
+            .pan_by(Point::new(-v.x * dt, -v.y * dt));
+        self.marquee_to(pointer);
+        true
     }
 
     /// A press on a selected block's title: dragging moves every selected block.

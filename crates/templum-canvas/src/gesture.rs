@@ -3,6 +3,23 @@
 use crate::snap::{Guide, SNAP_PX, snap_move, snap_resize};
 use crate::{BlockId, Canvas, Point, Rect, Size};
 
+/// How near the canvas's edge (screen pixels) a drag's pointer moves the camera.
+pub const EDGE_ZONE: f32 = 40.0;
+/// The camera's speed with the pointer at the edge or past it (screen pixels per second).
+pub const EDGE_SPEED: f32 = 900.0;
+
+/// Where the camera goes while a drag holds the pointer near the edge of a `viewport` (screen
+/// pixels per second, the way it pans: right is the world further right): faster the nearer
+/// the edge, full speed at it or past it. Zero away from the edges.
+pub fn edge_scroll(pointer: Point, viewport: Size) -> Point {
+    let speed = |at: f32, length: f32| {
+        let start = (EDGE_ZONE - at).clamp(0.0, EDGE_ZONE);
+        let end = (at - (length - EDGE_ZONE)).clamp(0.0, EDGE_ZONE);
+        (end - start) / EDGE_ZONE * EDGE_SPEED
+    };
+    Point::new(speed(pointer.x, viewport.w), speed(pointer.y, viewport.h))
+}
+
 /// What a pointer move did: the new rect of a resized block (to resize its PTY), and the guides
 /// of the snaps in effect.
 #[derive(Debug, Default, PartialEq)]
@@ -223,6 +240,28 @@ fn others(canvas: &Canvas, id: BlockId) -> Vec<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_edges_move_the_camera_faster_the_nearer() {
+        let vp = Size::new(800.0, 600.0);
+        assert_eq!(
+            edge_scroll(Point::new(400.0, 300.0), vp),
+            Point::new(0.0, 0.0)
+        );
+        assert_eq!(
+            edge_scroll(Point::new(EDGE_ZONE / 2.0, 300.0), vp),
+            Point::new(-EDGE_SPEED / 2.0, 0.0)
+        );
+        // At the edge or past it, outside the window: full speed, both ways in a corner.
+        assert_eq!(
+            edge_scroll(Point::new(900.0, -50.0), vp),
+            Point::new(EDGE_SPEED, -EDGE_SPEED)
+        );
+        assert_eq!(
+            edge_scroll(Point::new(400.0, 600.0), vp),
+            Point::new(0.0, EDGE_SPEED)
+        );
+    }
 
     #[test]
     fn pan_moves_the_camera_with_the_pointer() {

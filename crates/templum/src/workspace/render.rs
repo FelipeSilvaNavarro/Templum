@@ -202,6 +202,9 @@ impl Render for Workspace {
         }
         // Animations: drop the finished ones, and keep frames coming while any runs.
         let now = Instant::now();
+        if self.marquee_edge(vp, now) {
+            window.request_animation_frame();
+        }
         self.space
             .appearing
             .retain(|_, since| motion::progress(*since, now, motion::OPEN) < 1.0);
