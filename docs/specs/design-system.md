@@ -185,7 +185,8 @@ crediting its source and license.
 
 - **The palette button opens a popover** under it, listing:
   - three groups of built-ins: "Catppuccin", "One" and "Apple";
-  - then "My themes", only when the folder has valid themes, sorted by name.
+  - then "My themes", only when the folder has valid themes, sorted by name;
+  - last, "Get more themes…", which opens the gallery ([themes.md](themes.md#the-gallery)).
 - **The active theme has a ✓.**
 - **Previewing:** hovering an item, or moving to it with ↑/↓, applies it as a preview to the whole window, terminals
   included.

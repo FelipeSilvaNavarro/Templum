@@ -1,7 +1,7 @@
 # Themes you make, edit and download
 
 - **Date:** 2026-10-14
-- **Status:** Approved
+- **Status:** Implemented
 - **Builds on:** [design-system.md](design-system.md) (theme files, derived colors, the picker),
   [settings.md](settings.md) (the panel's rows and edits) and [updates.md](updates.md) (HTTP through
   `templum-update`)
@@ -86,7 +86,7 @@ For one of your themes, the card lists its colors in four groups, each a swatch 
 - **Opens from** "Get more themes…" at the bottom of the title bar's theme picker, and from **Get more themes…** in
   Settings ▸ Appearance. It needs the config and data folders (not `--bench`).
 - **Source:** the `themes` folder of `alacritty/alacritty-theme` (Apache-2.0): one GitHub API call lists the files
-  with their hashes, and each file not cached yet is downloaded from `raw.githubusercontent.com`, eight at a time.
+  with their hashes, and each file not cached yet is downloaded from `raw.githubusercontent.com`, sixteen at a time.
   Only URLs under `https://raw.githubusercontent.com/alacritty/alacritty-theme/` and 40-hex hashes are accepted.
 - **Cache:** `<data folder>/theme-gallery/`: `index.json` (the listing) and one `<hash>.toml` per file. Opening shows
   the cache at once, then refreshes it; offline, or past GitHub's hourly limit, the cache stays with a line saying

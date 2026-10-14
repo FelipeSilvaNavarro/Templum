@@ -80,6 +80,9 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - The file of the theme in use is polled with `config.toml` (`poll_theme` in `workspace/preferences.rs`): saving
   it applies it, and a file that stops reading keeps the last good colors. New themes are written from
   `theme::template`, never over an existing file.
+- `gallery.rs` lists alacritty-theme's files through GitHub's API (`templum_update::get`) and keeps them in
+  `<data folder>/theme-gallery/` (`index.json` and one `<git hash>.toml` per file); only files not cached are
+  downloaded. Installing copies one into the themes folder.
 - `templum-terminal` only knows a `Palette` (foreground, background, 16 ANSI colors). It never sees a theme.
 - `config.toml` holds the light and dark theme names; the picker edits it with `toml_edit`, keeping comments.
 

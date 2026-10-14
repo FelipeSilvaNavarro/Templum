@@ -389,3 +389,9 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **Switching light and dark may show the other theme as it was for half a second.** When its file was saved
   while it wasn't in use, `refresh_theme` (`crates/templum/src/workspace/preferences.rs`) applies the copy read
   before, and `poll_theme` applies the file at the next poll. Fix: read the picked theme's file in `refresh_theme`.
+- [ ] **The gallery's cache keeps themes GitHub no longer lists.** `refresh` (`crates/templum/src/gallery.rs`) only
+  adds files to `<data folder>/theme-gallery/`; a theme changed upstream leaves its old file there (a few hundred
+  bytes each). Fix: after a refresh, delete the `.toml` files `index.json` doesn't name.
+- [ ] **The gallery shows only the themes of the mode in effect.** A theme for the other mode can't be seen or
+  installed until the mode changes (`crates/templum/src/gallery.rs`). Fix: a Light / Dark switch in the dialog that
+  installs for that mode, without previewing over the other mode's colors.

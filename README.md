@@ -94,8 +94,10 @@ Templum follows your system's light or dark mode. Click the **palette** button i
 arrow keys preview it, and a click or Enter keeps it for the current mode. The default is Catppuccin: Latte in
 light mode, Mocha in dark mode.
 
-Any theme in [Alacritty's format](https://github.com/alacritty/alacritty-theme) works. Put its `.toml` file in the
-`themes` folder, and it shows up under "My themes" the next time you open the picker:
+**Get more themes…**, at the bottom of the picker, opens a gallery of the themes of
+[alacritty-theme](https://github.com/alacritty/alacritty-theme): hover one to see it on the whole window, click it to
+install it. Any other theme in [Alacritty's format](https://alacritty.org/config-alacritty.html#colors) works too:
+put its `.toml` file in the `themes` folder, and it shows up under "My themes" the next time you open the picker:
 
 | OS | Folder |
 |---|---|
