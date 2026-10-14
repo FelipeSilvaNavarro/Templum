@@ -1,4 +1,7 @@
-//! Bytes sent to the shell for key presses and pastes (xterm conventions).
+//! Bytes sent to the shell for key presses and pastes (xterm conventions, and the kitty keyboard
+//! protocol for programs that turn it on).
+
+use alacritty_terminal::term::TermMode;
 
 /// A key press, as the UI toolkit reports it (GPUI key names: "enter", "up", "f5", "a"...).
 #[derive(Clone, Copy, Debug, Default)]
@@ -11,9 +14,10 @@ pub struct KeyInput<'a> {
     pub shift: bool,
 }
 
-/// Bytes for a key press. `None` means "not a terminal key": printable text, IME and dead
-/// keys go through the UI's text-input path instead.
-pub fn encode_key(k: &KeyInput, app_cursor: bool) -> Option<Vec<u8>> {
+/// Bytes for a key press, in the terminal's `mode` (cursor keys, the kitty keyboard's flags).
+/// `None` means "not a terminal key": printable text, IME and dead keys go through the UI's
+/// text-input path instead.
+pub(crate) fn encode_key(k: &KeyInput, mode: TermMode) -> Option<Vec<u8>> {
     // Windows reports AltGr as Ctrl+Alt; when it types a printable char, that char is text.
     if k.ctrl
         && k.alt
@@ -22,8 +26,14 @@ pub fn encode_key(k: &KeyInput, app_cursor: bool) -> Option<Vec<u8>> {
     {
         return None;
     }
-    // xterm modifier parameter: 1 + shift + 2*alt + 4*ctrl.
+    // xterm modifier parameter (the kitty protocol's too): 1 + shift + 2*alt + 4*ctrl.
     let m = 1 + k.shift as u8 + 2 * k.alt as u8 + 4 * k.ctrl as u8;
+    if mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL)
+        && let Some(bytes) = kitty_key(k, m, mode)
+    {
+        return Some(bytes);
+    }
+    let app_cursor = mode.contains(TermMode::APP_CURSOR);
     let cursor = |f: char| match (m > 1, app_cursor) {
         (true, _) => format!("\x1b[1;{m}{f}").into_bytes(),
         (false, true) => format!("\x1bO{f}").into_bytes(),
@@ -97,6 +107,63 @@ pub fn encode_key(k: &KeyInput, app_cursor: bool) -> Option<Vec<u8>> {
     })
 }
 
+/// A key in the kitty keyboard protocol (sw.kovidgoyal.net/kitty/keyboard-protocol), as
+/// `CSI code[:shifted];modifiers[;text] u`: what legacy bytes can't tell apart (Shift+Enter,
+/// Ctrl+Shift+letter, Esc) or, when the program asked for every key, any key. None: the legacy
+/// bytes say it (arrows, F-keys, Home... already carry their modifiers; plain text is text).
+// ponytail: presses only, no repeat or release events nor lone modifier keys; they need key-up
+// events from the UI.
+fn kitty_key(k: &KeyInput, m: u8, mode: TermMode) -> Option<Vec<u8>> {
+    let every = mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC);
+    let (code, text_key) = match k.key {
+        "escape" => (27, false),
+        "enter" => (13, false),
+        "tab" => (9, false),
+        "backspace" => (127, false),
+        "space" => (32, true),
+        key => {
+            let mut chars = key.chars();
+            let c = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            (u32::from(c), true)
+        }
+    };
+    // Enter, Tab and Backspace alone keep their bytes, so a shell left in this mode by a crashed
+    // program still runs commands; text is text unless Ctrl or Alt is held.
+    let plain = if text_key {
+        !k.ctrl && !k.alt
+    } else {
+        m == 1 && k.key != "escape"
+    };
+    if plain && !every {
+        return None;
+    }
+    let mut seq = format!("\x1b[{code}");
+    let typed = k
+        .key_char
+        .filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
+    if mode.contains(TermMode::REPORT_ALTERNATE_KEYS)
+        && k.shift
+        && let Some(shifted) = typed.filter(|t| *t != k.key && t.chars().count() == 1)
+    {
+        seq += &format!(":{}", u32::from(shifted.chars().next()?));
+    }
+    let text = typed.filter(|_| {
+        text_key && every && !k.ctrl && !k.alt && mode.contains(TermMode::REPORT_ASSOCIATED_TEXT)
+    });
+    if m > 1 || text.is_some() {
+        seq += &format!(";{m}");
+    }
+    if let Some(text) = text {
+        let points: Vec<String> = text.chars().map(|c| u32::from(c).to_string()).collect();
+        seq += &format!(";{}", points.join(":"));
+    }
+    seq.push('u');
+    Some(seq.into_bytes())
+}
+
 /// Bytes for pasted text. Bracketed when the app asked for it (and then any ESC is dropped,
 /// so the payload can't close the bracket early and run commands); otherwise newlines
 /// become carriage returns, like typing Enter.
@@ -144,7 +211,7 @@ mod tests {
     }
 
     fn enc(k: KeyInput) -> Option<Vec<u8>> {
-        encode_key(&k, false)
+        encode_key(&k, TermMode::empty())
     }
 
     #[test]
@@ -162,7 +229,10 @@ mod tests {
         );
         assert_eq!(enc(key("escape")).unwrap(), b"\x1b");
         assert_eq!(enc(key("up")).unwrap(), b"\x1b[A");
-        assert_eq!(encode_key(&key("up"), true).unwrap(), b"\x1bOA");
+        assert_eq!(
+            encode_key(&key("up"), TermMode::APP_CURSOR).unwrap(),
+            b"\x1bOA"
+        );
         assert_eq!(enc(key("home")).unwrap(), b"\x1b[H");
         assert_eq!(enc(key("pageup")).unwrap(), b"\x1b[5~");
         assert_eq!(enc(key("delete")).unwrap(), b"\x1b[3~");
@@ -187,7 +257,7 @@ mod tests {
                     ctrl: true,
                     ..key("right")
                 },
-                true
+                TermMode::APP_CURSOR
             )
             .unwrap(),
             b"\x1b[1;5C"
@@ -316,6 +386,71 @@ mod tests {
             }),
             None
         );
+    }
+
+    fn kitty(k: KeyInput, mode: TermMode) -> String {
+        String::from_utf8(encode_key(&k, mode).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn the_kitty_keyboard_tells_apart_what_legacy_bytes_cant() {
+        let mode = TermMode::DISAMBIGUATE_ESC_CODES;
+        let shift = |k| KeyInput { shift: true, ..k };
+        let ctrl = |k| KeyInput { ctrl: true, ..k };
+        assert_eq!(
+            kitty(shift(key("enter")), mode),
+            "\x1b[13;2u",
+            "Shift+Enter"
+        );
+        assert_eq!(kitty(ctrl(key("enter")), mode), "\x1b[13;5u");
+        assert_eq!(kitty(shift(key("tab")), mode), "\x1b[9;2u");
+        assert_eq!(kitty(key("escape"), mode), "\x1b[27u");
+        assert_eq!(kitty(ctrl(key("c")), mode), "\x1b[99;5u");
+        assert_eq!(kitty(shift(ctrl(key("a"))), mode), "\x1b[97;6u");
+        assert_eq!(
+            kitty(ctrl(key("-")), mode),
+            "\x1b[45;5u",
+            "Claude Code's undo"
+        );
+        let alt_x = KeyInput {
+            alt: true,
+            key_char: Some("x"),
+            ..key("x")
+        };
+        assert_eq!(kitty(alt_x, mode), "\x1b[120;3u");
+        // A shell left in this mode still runs commands; text and arrows keep their bytes.
+        assert_eq!(kitty(key("enter"), mode), "\r");
+        assert_eq!(kitty(key("backspace"), mode), "\x7f");
+        assert_eq!(kitty(ctrl(key("up")), mode), "\x1b[1;5A");
+        let a = KeyInput {
+            key_char: Some("a"),
+            ..key("a")
+        };
+        assert_eq!(encode_key(&a, mode), None);
+        let upper = KeyInput {
+            key_char: Some("A"),
+            ..shift(key("a"))
+        };
+        assert_eq!(encode_key(&upper, mode), None);
+    }
+
+    #[test]
+    fn the_kitty_keyboard_can_report_every_key() {
+        let every = TermMode::DISAMBIGUATE_ESC_CODES | TermMode::REPORT_ALL_KEYS_AS_ESC;
+        let a = KeyInput {
+            key_char: Some("a"),
+            ..key("a")
+        };
+        assert_eq!(kitty(a, every), "\x1b[97u");
+        assert_eq!(kitty(key("enter"), every), "\x1b[13u");
+        let upper = KeyInput {
+            shift: true,
+            key_char: Some("A"),
+            ..key("a")
+        };
+        let all = every | TermMode::REPORT_ALTERNATE_KEYS | TermMode::REPORT_ASSOCIATED_TEXT;
+        assert_eq!(kitty(upper, every), "\x1b[97;2u");
+        assert_eq!(kitty(upper, all), "\x1b[97:65;2;65u");
     }
 
     #[test]

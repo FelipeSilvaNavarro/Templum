@@ -87,8 +87,9 @@ Interpreter, Qodo Command. Each is one more row in `templum-terminal/src/agent.r
 Each terminal knows its folder and its agent as the 5-second snapshot read them (`Pane::seen`; the folder also
 follows each finished command, with shell integration).
 
-- **Shift+Enter** sends Esc then Enter (what Claude Code's `/terminal-setup` binds, and Alt+Enter sends) in a
-  terminal running an agent: a new line in the prompt, not a send. A shell still gets Enter.
+- **Shift+Enter** is a new line in the prompt, not a send. An agent that turned on the kitty keyboard (Claude Code,
+  Codex) hears Shift+Enter itself; elsewhere a terminal running an agent sends Esc then Enter (what Claude Code's
+  `/terminal-setup` binds, and Alt+Enter sends). A shell still gets Enter.
 - **Closing** a terminal running an agent, or a command (shell integration), asks first and says why. A shell
   that exited closes at once.
 - **Find** (`find`, Ctrl+Shift+F, Cmd+F on macOS) opens a field over the terminal: the text typed, read literally

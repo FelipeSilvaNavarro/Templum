@@ -62,6 +62,8 @@ cargo run -p templum
 | Ctrl+Shift+N | Cmd+Shift+N | New workspace |
 | Ctrl+Shift+Q, twice | Cmd+Q, twice | Quit (the first press only asks for the second) |
 
+Shift+Enter is a new line in Claude Code and Codex.
+
 ## Workspaces
 
 Each workspace is a whole canvas of its own, such as one per project. The sidebar on the left shows them all: click

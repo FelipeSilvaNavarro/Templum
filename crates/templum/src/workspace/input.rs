@@ -585,9 +585,13 @@ impl Workspace {
             return;
         };
         let k = &e.keystroke;
-        // Shift+Enter starts a new line in an agent (Claude Code, Codex): ESC CR, as Alt+Enter
-        // sends. A shell still gets Enter.
-        let newline = k.key == "enter" && k.modifiers.shift && pane.seen.agent.is_some();
+        // Shift+Enter starts a new line in an agent: with the kitty keyboard on (Claude Code,
+        // Codex) it says Shift+Enter itself; otherwise ESC CR, as Alt+Enter sends. A shell still
+        // gets Enter.
+        let newline = k.key == "enter"
+            && k.modifiers.shift
+            && pane.seen.agent.is_some()
+            && !pane.term.shared().modes().kitty_keys;
         let input = KeyInput {
             key: &k.key,
             key_char: k.key_char.as_deref(),

@@ -943,3 +943,52 @@ fn the_paste_shortcut_pastes_into_the_find_field(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// `cat` prints back what it reads: written to it, `request` reaches the terminal as its
+/// program's (a TUI turning on the mouse, the kitty keyboard, the full screen).
+#[cfg(unix)]
+fn program_asks(
+    request: &str,
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    asked: impl Fn(templum_terminal::Modes) -> bool,
+) {
+    let id = first_id(ws, cx);
+    ws.read_with(cx, |ws, _| {
+        let term = &ws.space.terminal(id).unwrap().term;
+        term.write(format!("{request}\r").into_bytes())
+    });
+    until(request, handle, ws, cx, |ws| {
+        asked(ws.space.terminal(id).unwrap().term.shared().modes())
+    });
+}
+
+/// What `cat` shows: it echoes ESC as "^[".
+#[cfg(unix)]
+fn screen_of(ws: &Workspace, id: BlockId) -> String {
+    let mut snap = templum_terminal::Snapshot::default();
+    snap.refresh(
+        ws.space.terminal(id).unwrap().term.shared(),
+        &ws.theme.palette,
+    );
+    snap.text()
+}
+
+/// With the kitty keyboard on, Shift+Enter says so itself, in an agent too (Claude Code makes it
+/// a new line).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn shift_enter_in_the_kitty_keyboard(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    program_asks("\x1b[>1u", handle, &ws, cx, |m| m.kitty_keys);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into())
+    });
+    cx.update_window(handle, |_, window, cx| window.press("shift-enter", cx))
+        .unwrap();
+    until("Shift+Enter", handle, &ws, cx, |ws| {
+        screen_of(ws, id).contains("^[[13;2u")
+    });
+}

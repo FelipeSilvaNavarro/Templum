@@ -118,6 +118,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   reload can replace them. GPUI key bindings are only used to keep Tab for the shell. Commands that only make sense
   in an editor (`save`, `close_tab`, `go_to_line`) are dropped by `effective` when no editor block has the focus, so
   their keys reach the terminal.
+- `templum-terminal` encodes keys as xterm does, and in the kitty keyboard protocol for programs that turn it on
+  (Claude Code and Codex hear Shift+Enter).
 - `templum-terminal` gets settings as plain values (`TermOptions`, a start folder) and reports a shell's folder
   through `sysinfo`. It never reads the file.
 - The settings panel (`crates/templum/src/settings/`) builds gpui-kit `Settings` pages from the active `Config`

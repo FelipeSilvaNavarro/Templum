@@ -174,9 +174,22 @@ impl TermOptions {
         Config {
             scrolling_history: self.scrollback,
             default_cursor_style: self.cursor,
+            // Programs that ask for it (Claude Code, Codex) hear Shift+Enter, Ctrl+Shift+letters.
+            kitty_keyboard: true,
             ..Config::default()
         }
     }
+}
+
+/// What the program in a terminal asked of it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Modes {
+    /// Mouse events (clicks, the wheel; maybe moves).
+    pub mouse: bool,
+    /// Keys in the kitty keyboard protocol.
+    pub kitty_keys: bool,
+    /// The alternate screen: it runs full screen.
+    pub full_screen: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,6 +209,15 @@ impl SharedTerm {
     pub fn set_options(&self, options: TermOptions) {
         self.0.lock_unfair().set_options(options.config());
         self.touched();
+    }
+
+    pub fn modes(&self) -> Modes {
+        let mode = *self.0.lock_unfair().mode();
+        Modes {
+            mouse: mode.intersects(TermMode::MOUSE_MODE),
+            kitty_keys: mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL),
+            full_screen: mode.contains(TermMode::ALT_SCREEN),
+        }
     }
 
     /// Starts a selection at a viewport cell (row 0 = top visible line).
@@ -603,13 +625,8 @@ impl Terminal {
     /// Sends a key press. Returns false for printable text, which must come through the
     /// text-input path instead (IME, dead keys).
     pub fn key(&self, input: &KeyInput) -> bool {
-        let app_cursor = self
-            .term
-            .0
-            .lock_unfair()
-            .mode()
-            .contains(TermMode::APP_CURSOR);
-        match encode_key(input, app_cursor) {
+        let mode = *self.term.0.lock_unfair().mode();
+        match encode_key(input, mode) {
             Some(bytes) => {
                 self.write(bytes);
                 true
@@ -694,8 +711,7 @@ impl Terminal {
                 key: if lines > 0 { "up" } else { "down" },
                 ..KeyInput::default()
             };
-            let arrow = encode_key(&key, mode.contains(TermMode::APP_CURSOR))
-                .expect("arrow keys always encode");
+            let arrow = encode_key(&key, mode).expect("arrow keys always encode");
             let _ = self.pty.send(Msg::Input(
                 arrow.repeat(lines.unsigned_abs() as usize).into(),
             ));
@@ -751,7 +767,7 @@ pub(crate) fn headless(cols: u16, rows: u16) -> (SharedTerm, Arc<Shared>) {
         Palette::default(),
     ));
     let term = Term::new(
-        Config::default(),
+        TermOptions::default().config(),
         &TermSize::new(cols as usize, rows as usize),
         Listener(shared.clone()),
     );
@@ -780,6 +796,26 @@ pub(crate) fn feed_heard(term: &SharedTerm, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modes_say_what_the_program_asked_for() {
+        let (term, _) = headless(10, 2);
+        assert_eq!(term.modes(), Modes::default());
+        feed(&term, b"\x1b[>1u");
+        assert!(term.modes().kitty_keys, "the kitty keyboard is on offer");
+        // Each screen has its own keyboard flags.
+        feed(&term, b"\x1b[?1000h\x1b[?1049h");
+        assert!(!term.modes().kitty_keys);
+        feed(&term, b"\x1b[>1u");
+        assert_eq!(
+            term.modes(),
+            Modes {
+                mouse: true,
+                kitty_keys: true,
+                full_screen: true
+            }
+        );
+    }
 
     #[test]
     fn notifications_are_coalesced_until_rearmed() {

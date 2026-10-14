@@ -31,8 +31,7 @@ The next plans pick these up:
   - built-in box-drawing glyphs;
   - inheriting the focused terminal's working directory;
   - OSC 52 clipboard, which needs a security review;
-  - bell;
-  - the kitty keyboard protocol.
+  - bell.
 
 Level-of-detail drawing at low zoom, once listed under Later, is specified in [level-of-detail.md](level-of-detail.md).
 
