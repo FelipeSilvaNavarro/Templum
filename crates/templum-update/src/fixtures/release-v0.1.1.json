@@ -1,0 +1,192 @@
+{
+  "tag_name": "v0.1.1",
+  "name": "Templum 0.1.1",
+  "html_url": "https://github.com/KingDasWinx/Templum/releases/tag/v0.1.1",
+  "draft": false,
+  "prerelease": false,
+  "published_at": "2026-10-12T19:56:40Z",
+  "assets": [
+    {
+      "name": "PKGBUILD",
+      "state": "uploaded",
+      "size": 424,
+      "digest": "sha256:3d6e8c34a9996899bb14547f2d63f0ced237b9d0effaf8d2a496a456280fb572",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/PKGBUILD"
+    },
+    {
+      "name": "PKGBUILD.sha256",
+      "state": "uploaded",
+      "size": 75,
+      "digest": "sha256:9de34262e42909f8ef9a5f2da1d2ae751740db6b27047fdf1c1dd7799a76b753",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/PKGBUILD.sha256"
+    },
+    {
+      "name": "templum-aarch64-unknown-linux-gnu.tar.gz",
+      "state": "uploaded",
+      "size": 18258982,
+      "digest": "sha256:831c4dd145a49f48d710f9a820b9623ca108685f64a43d688235187f9368e4fd",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum-aarch64-unknown-linux-gnu.tar.gz"
+    },
+    {
+      "name": "templum-aarch64-unknown-linux-gnu.tar.gz.sha256",
+      "state": "uploaded",
+      "size": 107,
+      "digest": "sha256:a753a7ad7b0c5ce313bc648cae24edef0a56cf4a9a834459114fa3b5a56706af",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum-aarch64-unknown-linux-gnu.tar.gz.sha256"
+    },
+    {
+      "name": "templum-x86_64-pc-windows-msvc.exe",
+      "state": "uploaded",
+      "size": 44685824,
+      "digest": "sha256:6da8a1421f09998232c63e66f4ee66d1fe9aa312aa54d5a2c52d900df0c21064",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum-x86_64-pc-windows-msvc.exe"
+    },
+    {
+      "name": "templum-x86_64-pc-windows-msvc.exe.sha256",
+      "state": "uploaded",
+      "size": 101,
+      "digest": "sha256:7ce3e2a0929a6b3a8548be85ad0d6a247efb415e48a387ec4f552297c0b0b3e5",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum-x86_64-pc-windows-msvc.exe.sha256"
+    },
+    {
+      "name": "templum-x86_64-unknown-linux-gnu.tar.gz",
+      "state": "uploaded",
+      "size": 19462862,
+      "digest": "sha256:fcc39dd9acb10d8dbd9a32b3306bf2649bce957aa26c5f0e04e4b4ae36a9ac16",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum-x86_64-unknown-linux-gnu.tar.gz"
+    },
+    {
+      "name": "templum-x86_64-unknown-linux-gnu.tar.gz.sha256",
+      "state": "uploaded",
+      "size": 106,
+      "digest": "sha256:b869b19accefb1728cf95e44a1d7476fdacec0ccdbe2d579f6fafed96265457a",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum-x86_64-unknown-linux-gnu.tar.gz.sha256"
+    },
+    {
+      "name": "templum_0.1.1_aarch64.AppImage",
+      "state": "uploaded",
+      "size": 17504776,
+      "digest": "sha256:47fb3425472f33ac806245894d258180238ff5c1088393986d5a3f7fdaae1490",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum_0.1.1_aarch64.AppImage"
+    },
+    {
+      "name": "templum_0.1.1_aarch64.AppImage.sha256",
+      "state": "uploaded",
+      "size": 97,
+      "digest": "sha256:81a59696129f56d615f57937b34f3aad390c8576ea3cef75d3b6b811742052af",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum_0.1.1_aarch64.AppImage.sha256"
+    },
+    {
+      "name": "Templum_0.1.1_aarch64.dmg",
+      "state": "uploaded",
+      "size": 10629462,
+      "digest": "sha256:370f37f0329b409d9298b27bc5dfec2ecdc9d43cdf909f940c161f688d3abfe3",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/Templum_0.1.1_aarch64.dmg"
+    },
+    {
+      "name": "Templum_0.1.1_aarch64.dmg.sha256",
+      "state": "uploaded",
+      "size": 92,
+      "digest": "sha256:4e2ce7f391790b69e073d600d2aaee37766fb1232abf17b1834d6cec5a6e28ac",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/Templum_0.1.1_aarch64.dmg.sha256"
+    },
+    {
+      "name": "templum_0.1.1_amd64.deb",
+      "state": "uploaded",
+      "size": 19450910,
+      "digest": "sha256:758772152847795f5691a229066642fb6a117ba367069e573ca939d2e82ae089",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum_0.1.1_amd64.deb"
+    },
+    {
+      "name": "templum_0.1.1_amd64.deb.sha256",
+      "state": "uploaded",
+      "size": 90,
+      "digest": "sha256:3ca92035cb4f6a0edd44a0ca29fbadee411825759d8a4d1c598cb65081a4a04e",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum_0.1.1_amd64.deb.sha256"
+    },
+    {
+      "name": "templum_0.1.1_arm64.deb",
+      "state": "uploaded",
+      "size": 18245158,
+      "digest": "sha256:69a7ae74b47e5fc859565a8afabbfa30f05ffc2ef2c8bff830a22417f85bf6ee",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum_0.1.1_arm64.deb"
+    },
+    {
+      "name": "templum_0.1.1_arm64.deb.sha256",
+      "state": "uploaded",
+      "size": 90,
+      "digest": "sha256:737c34ada03fb76fa306b990a544ff4ecd1368fc8f30f0c777eb05c6d441dd12",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum_0.1.1_arm64.deb.sha256"
+    },
+    {
+      "name": "templum_0.1.1_x64-setup.exe",
+      "state": "uploaded",
+      "size": 9766497,
+      "digest": "sha256:0d175aed94d91d9023bbacc47eb1ad9130fb54962c21d14f5f1016d7222da015",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum_0.1.1_x64-setup.exe"
+    },
+    {
+      "name": "templum_0.1.1_x64-setup.exe.sha256",
+      "state": "uploaded",
+      "size": 94,
+      "digest": "sha256:e9bc4414b83f7c57c224899e4644f981db07b2cedf6f3bd082000b421f0947bf",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum_0.1.1_x64-setup.exe.sha256"
+    },
+    {
+      "name": "Templum_0.1.1_x64.dmg",
+      "state": "uploaded",
+      "size": 11020318,
+      "digest": "sha256:b49a68e00feccc8d16927b86d5de7aebad424928ac4f579ea05e4e24c7948833",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/Templum_0.1.1_x64.dmg"
+    },
+    {
+      "name": "Templum_0.1.1_x64.dmg.sha256",
+      "state": "uploaded",
+      "size": 88,
+      "digest": "sha256:3d5ecaa9e73d57394f4fb92374ebcbbf726e2d9e6e7aa499480ffd70946198e2",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/Templum_0.1.1_x64.dmg.sha256"
+    },
+    {
+      "name": "templum_0.1.1_x64_en-US.msi",
+      "state": "uploaded",
+      "size": 12910592,
+      "digest": "sha256:77e8c45d53acc5856f01ce01786ccf688f7be1047146556772aa6334f1d6c465",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum_0.1.1_x64_en-US.msi"
+    },
+    {
+      "name": "templum_0.1.1_x64_en-US.msi.sha256",
+      "state": "uploaded",
+      "size": 94,
+      "digest": "sha256:ae3e398f2be0d9bb541ac16464fdb7609b27ba9bee85e96a162da0b2c451305a",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum_0.1.1_x64_en-US.msi.sha256"
+    },
+    {
+      "name": "templum_0.1.1_x86_64.AppImage",
+      "state": "uploaded",
+      "size": 18614776,
+      "digest": "sha256:1bbe7fc482a88cb255155f3dc05872217eee1f614763c50e4ebe14b7f868eee1",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum_0.1.1_x86_64.AppImage"
+    },
+    {
+      "name": "templum_0.1.1_x86_64.AppImage.sha256",
+      "state": "uploaded",
+      "size": 96,
+      "digest": "sha256:d5657dcfe15cc75535d32e876ca8f3dd84dc40340f14b73f4bccc8602f4bed90",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum_0.1.1_x86_64.AppImage.sha256"
+    },
+    {
+      "name": "templum_0.1.1_x86_64.tar.gz",
+      "state": "uploaded",
+      "size": 19450251,
+      "digest": "sha256:e6355791e2ee6db2d4ca2f7a8c4fce78c474bf94cc7d00238eb75c3d255dd857",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum_0.1.1_x86_64.tar.gz"
+    },
+    {
+      "name": "templum_0.1.1_x86_64.tar.gz.sha256",
+      "state": "uploaded",
+      "size": 94,
+      "digest": "sha256:d3bd3b0c0d364723343f22d036f50b8d59e56b99291403f76325a92fe3a77a79",
+      "browser_download_url": "https://github.com/KingDasWinx/Templum/releases/download/v0.1.1/templum_0.1.1_x86_64.tar.gz.sha256"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+[package]
+name = "templum-update"
+description = "Templum's updates: the newest release on GitHub, the file in it for this installation, downloaded, checked and put in place. No UI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Already in the tree: GitHub's answer about a release.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Already in the tree (GPUI's on macOS): which release is newer, prereleases included.
+semver = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
