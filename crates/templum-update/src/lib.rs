@@ -5,9 +5,11 @@
 use semver::Version;
 use serde::Deserialize;
 
+mod apply;
 mod fetch;
 mod install;
 
+pub use apply::{Launch, Ready, cleanup, prepare, swap};
 pub use fetch::{agent, download, latest};
 pub use install::{Install, Why, detect_in};
 
