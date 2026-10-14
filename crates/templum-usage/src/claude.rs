@@ -7,9 +7,10 @@
 //! --claude-statusline`) that command: the relay writes the document where Templum reads it,
 //! then runs the user's own status line.
 
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -330,11 +331,121 @@ pub fn limits(relay_dir: &Path) -> Option<Limits> {
                     minutes,
                     used_percent: w.used_percentage?,
                     resets_at: w.resets_at?,
+                    scope: None,
                 })
             })
             .collect();
         (!windows.is_empty()).then_some(Limits { windows, at })
     })
+}
+
+/// How long Claude Code may take to say its plan's usage.
+const POLL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The plan's limits as Claude Code's `/usage` tells them, asked of `program` (Claude Code) at
+/// `now`: it reads its own login, asks nothing of the model and keeps no session. It runs in
+/// `dir`, an empty folder, with that folder's settings only, so the user's hooks and plugins
+/// don't run. None for an API key, which has no plan. Slow: off the UI thread.
+pub fn poll(program: &Path, dir: &Path, now: u64) -> Option<Limits> {
+    std::fs::create_dir_all(dir).ok()?;
+    let mut command = Command::new(program);
+    command
+        .args(["--setting-sources", "local", "-p", "/usage"])
+        .args(["--output-format", "stream-json", "--verbose"])
+        .arg("--no-session-persistence")
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        // CREATE_NO_WINDOW: no console flashing every few minutes.
+        command.creation_flags(0x0800_0000);
+    }
+    let mut child = command.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stdout.read_to_string(&mut text);
+        text
+    });
+    let deadline = Instant::now() + POLL_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(100)),
+            Ok(Some(_)) => break,
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+        }
+    }
+    usage_report(&reader.join().ok()?, now)
+}
+
+/// What `/usage` says, in its stream-json output.
+#[derive(Deserialize)]
+struct Reported {
+    usage_report: Option<UsageReport>,
+}
+
+#[derive(Deserialize)]
+struct UsageReport {
+    rate_limits: Option<ReportedLimits>,
+}
+
+#[derive(Deserialize)]
+struct ReportedLimits {
+    #[serde(default)]
+    limits: Vec<ReportedLimit>,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(default)]
+struct ReportedLimit {
+    /// `session`, `weekly_all`, `weekly_scoped`.
+    kind: String,
+    /// `session` or `weekly`.
+    group: String,
+    percent: Option<f32>,
+    /// ISO 8601.
+    resets_at: Option<String>,
+    scope: Option<serde_json::Value>,
+}
+
+/// The limits in `/usage`'s output, read at `at`.
+fn usage_report(output: &str, at: u64) -> Option<Limits> {
+    let limits = output.lines().find_map(|line| {
+        serde_json::from_str::<Reported>(line)
+            .ok()?
+            .usage_report?
+            .rate_limits
+    })?;
+    let windows: Vec<Window> = limits
+        .limits
+        .into_iter()
+        .filter_map(|l| {
+            let minutes = match (l.kind.as_str(), l.group.as_str()) {
+                ("session", _) => 300,
+                (_, "weekly") => 10080,
+                _ => return None,
+            };
+            let resets_at = chrono::DateTime::parse_from_rfc3339(l.resets_at.as_deref()?).ok()?;
+            let scope = l
+                .scope
+                .as_ref()
+                .and_then(|s| Some(s.get("model")?.get("display_name")?.as_str()?.to_string()));
+            Some(Window {
+                minutes,
+                used_percent: l.percent?,
+                resets_at: u64::try_from(resets_at.timestamp()).ok()?,
+                scope,
+            })
+        })
+        .collect();
+    (!windows.is_empty()).then_some(Limits { windows, at })
 }
 
 /// Deletes the relay files older than [`KEEP_SECS`] at `now`.
@@ -468,6 +579,7 @@ mod tests {
                 minutes: 300,
                 used_percent: 23.5,
                 resets_at: 1738425600,
+                scope: None,
             }
         );
         assert_eq!(l.windows[1].minutes, 10080);
@@ -588,6 +700,75 @@ mod tests {
             written.contains("\"/usr/bin/templum --claude-statusline"),
             "{written}"
         );
+    }
+
+    /// As Claude Code 2.1.286 printed it for a Max plan.
+    const USAGE: &str = r#"{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"Current session: 27% used"}]},"usage_report":{"session":{"total_cost_usd":0},"rate_limits":{"limits":[{"kind":"session","group":"session","percent":27,"resets_at":"2026-10-14T09:40:00.011014+00:00","scope":null,"severity":"normal","is_active":true},{"kind":"weekly_all","group":"weekly","percent":18,"resets_at":"2026-10-16T14:00:00.011037+00:00","scope":null,"severity":"normal","is_active":false},{"kind":"weekly_scoped","group":"weekly","percent":0,"resets_at":"2026-10-16T14:00:00+00:00","scope":{"model":{"display_name":"Fable"},"surface":null},"severity":"normal","is_active":false}],"extra_usage":{"is_enabled":false}}},"local_command_run":{"command":"usage","args":""}}"#;
+
+    #[test]
+    fn usage_reads_every_window_with_its_model() {
+        let output = format!("{{\"type\":\"system\",\"subtype\":\"init\"}}\n{USAGE}\n");
+        let l = usage_report(&output, 77).unwrap();
+        assert_eq!(l.at, 77);
+        assert_eq!(
+            l.windows,
+            vec![
+                Window {
+                    minutes: 300,
+                    used_percent: 27.0,
+                    resets_at: 1791970800,
+                    scope: None
+                },
+                Window {
+                    minutes: 10080,
+                    used_percent: 18.0,
+                    resets_at: 1792159200,
+                    scope: None
+                },
+                Window {
+                    minutes: 10080,
+                    used_percent: 0.0,
+                    resets_at: 1792159200,
+                    scope: Some("Fable".into())
+                },
+            ]
+        );
+        // An API key: no plan, no limits.
+        assert_eq!(
+            usage_report(r#"{"type":"result","total_cost_usd":0}"#, 77),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn poll_asks_claude_code_in_an_empty_folder() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("claude");
+        let printed = dir.path().join("usage.jsonl");
+        std::fs::write(&printed, USAGE).unwrap();
+        // Records its arguments, then prints what Claude Code would.
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\necho \"$@\" > \"{}/args\"\ncat \"{}\"\n",
+                dir.path().display(),
+                printed.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let probe = dir.path().join("probe");
+        let l = poll(&program, &probe, 5).unwrap();
+        assert_eq!(l.windows.len(), 3);
+        assert!(probe.is_dir());
+        let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
+        assert!(
+            args.starts_with("--setting-sources local -p /usage"),
+            "{args}"
+        );
+        assert!(args.contains("--no-session-persistence"), "{args}");
     }
 
     #[test]

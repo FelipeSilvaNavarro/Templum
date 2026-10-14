@@ -47,6 +47,7 @@ fn a_limit_near_its_end_is_told_once(cx: &mut TestAppContext) {
                 minutes: 300,
                 used_percent: 92.0,
                 resets_at: now + 2 * 3600,
+                scope: None,
             }],
             at: now,
         },
@@ -93,6 +94,7 @@ fn the_meter_opens_the_usage_and_a_session_shows_its_terminal(cx: &mut TestAppCo
                     minutes: 300,
                     used_percent: 73.0,
                     resets_at: now + 3 * 3600,
+                    scope: None,
                 }],
                 at: now,
             },
@@ -118,4 +120,122 @@ fn the_meter_opens_the_usage_and_a_session_shows_its_terminal(cx: &mut TestAppCo
     })
     .unwrap();
     ws.read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(first)));
+}
+
+fn limits_of(agent: &str, used: f32) -> (String, templum_usage::Limits) {
+    let now = crate::notes::now();
+    (
+        agent.to_string(),
+        templum_usage::Limits {
+            windows: vec![templum_usage::Window {
+                minutes: 300,
+                used_percent: used,
+                resets_at: now + 3 * 3600,
+                scope: None,
+            }],
+            at: now,
+        },
+    )
+}
+
+/// With several agents' limits known, the meter shows them in turn; one hidden in the settings
+/// never shows there.
+#[gpui_kit::test]
+fn the_meter_takes_the_agents_in_turn_but_not_a_hidden_one(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        ws.limits = vec![limits_of("claude", 27.0), limits_of("codex", 91.0)];
+    });
+    let shown = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            (
+                window.try_find("usage-meter-claude").is_some(),
+                window.try_find("usage-meter-codex").is_some(),
+            )
+        })
+        .unwrap()
+    };
+    assert_eq!(shown(cx), (true, false), "Claude first");
+    // A read after TURN_SECS turns it, unless the pointer is over the meter.
+    let read = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.meter_turned = 0;
+                let limits = ws.limits.clone();
+                ws.usage_done(Vec::new(), (Vec::new(), limits), window, cx)
+            })
+        })
+        .unwrap()
+    };
+    read(&ws, cx);
+    assert_eq!(shown(cx), (false, true), "then Codex");
+    ws.update(cx, |ws, _| ws.meter_hovered = true);
+    read(&ws, cx);
+    assert_eq!(shown(cx), (false, true), "held while hovered");
+    ws.update(cx, |ws, _| {
+        ws.meter_hovered = false;
+        ws.config.usage.hide = vec!["codex".into()];
+    });
+    for _ in 0..3 {
+        read(&ws, cx);
+        assert_eq!(shown(cx), (true, false), "Codex hidden");
+    }
+}
+
+/// Settings ▸ Usage hides an agent's limits from the title bar, and ↺ shows them again.
+#[gpui_kit::test]
+fn an_agent_is_taken_off_the_title_bar_and_back(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-tab-usage", cx);
+        window.render_frame(cx);
+        window.click("field-usage.hide.codex", cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.update(cx, |ws, _| ws.save());
+    let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap();
+    assert!(text.contains(r#"hide = ["codex"]"#), "{text}");
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.config.usage.hide.clone()),
+        ["codex"]
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.click("reset-usage.hide.codex", cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.update(cx, |ws, _| ws.save());
+    let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap();
+    assert!(!text.contains("hide"), "{text}");
+}
+
+/// Templum asks Claude Code for the plan's limits only with a data folder, when the user
+/// wants them, and runs the program Claude Code's command names.
+#[gpui_kit::test]
+fn claude_code_is_asked_for_its_limits_when_wanted(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let program = data.path().join("my-claude");
+    std::fs::write(&program, "").unwrap();
+    let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    ws.update(cx, |ws, _| {
+        let claude = ws.agents.iter_mut().find(|a| a.id == "claude").unwrap();
+        claude.command = format!("{} --model opus", program.display());
+        assert_eq!(
+            ws.claude_poll_job(),
+            Some((program.clone(), data.path().join("usage").join("probe")))
+        );
+        ws.config.usage.claude_limits = false;
+        assert_eq!(ws.claude_poll_job(), None);
+        ws.config.usage.claude_limits = true;
+        ws.data_dir = None;
+        assert_eq!(ws.claude_poll_job(), None);
+    });
 }

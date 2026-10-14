@@ -88,6 +88,7 @@ fn limits_in(path: &Path, at: u64) -> Option<Limits> {
                     minutes: w.window_minutes?,
                     used_percent: w.used_percent?,
                     resets_at: w.resets_at?,
+                    scope: None,
                 })
             })
             .collect();
@@ -406,11 +407,13 @@ mod tests {
                     minutes: 300,
                     used_percent: 2.0,
                     resets_at: 1791500000,
+                    scope: None,
                 },
                 Window {
                     minutes: 10080,
                     used_percent: 19.5,
                     resets_at: 1791900000,
+                    scope: None,
                 },
             ]
         );

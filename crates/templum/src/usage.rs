@@ -6,33 +6,97 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::{Icon, TITLE_BAR_HEIGHT};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, BoxShadow, ClickEvent, Context, Div, FontWeight, Hsla, MouseButton, MouseDownEvent,
-    TestSupportExt, div, point, px,
+    Animation, AnimationExt as _, AnyElement, BoxShadow, ClickEvent, Context, Div, FontWeight,
+    Hsla, MouseButton, MouseDownEvent, SharedString, TestSupportExt, div, point, px,
 };
 use templum_usage::{REACHED, Session, Window};
 
 use crate::grid::hsla;
+use crate::motion;
 use crate::notes;
 use crate::title_bar;
 use crate::workspace::Workspace;
 
-/// The title bar's meter: the known window closest to its limit. None when no limit is known.
-pub(crate) fn meter(ws: &Workspace, cx: &mut Context<Workspace>) -> Option<AnyElement> {
-    let now = notes::now();
-    let (agent, w) = ws
-        .limits
+/// The meter shows its next agent after this many seconds.
+pub(crate) const TURN_SECS: u64 = 8;
+
+/// The agents the title bar's meter shows in turn, with their windows for every model, shortest
+/// first: those with a limit known that the user didn't hide (Settings ▸ Usage).
+pub(crate) fn meter_agents(ws: &Workspace, now: u64) -> Vec<(&str, Vec<&Window>)> {
+    ws.limits
         .iter()
-        .flat_map(|(agent, l)| {
-            l.windows
+        .filter(|(agent, _)| !ws.config.usage.hide.contains(agent))
+        .filter_map(|(agent, l)| {
+            let mut windows: Vec<&Window> = l
+                .windows
                 .iter()
-                .filter(move |w| w.resets_at > now)
-                .map(move |w| (agent, w))
+                .filter(|w| w.resets_at > now && w.scope.is_none())
+                .collect();
+            windows.sort_by_key(|w| w.minutes);
+            (!windows.is_empty()).then_some((agent.as_str(), windows))
         })
-        .max_by(|a, b| a.1.used_percent.total_cmp(&b.1.used_percent))?;
+        .collect()
+}
+
+/// The title bar's meter: one agent's limits at a time ("Claude 5h 27% 7d 18%"), the next every
+/// few seconds, with a dot per agent. None when none is known.
+pub(crate) fn meter(ws: &Workspace, cx: &mut Context<Workspace>) -> Option<AnyElement> {
+    let agents = meter_agents(ws, notes::now());
+    if agents.is_empty() {
+        return None;
+    }
+    let turn = ws.meter_turn % agents.len();
+    let (agent, windows) = &agents[turn];
     let ui = ws.ui;
     let title = ws.agent_title(agent);
     // "Claude Code" is "Claude" here: the title bar is narrow.
-    let name = title.split_whitespace().next().unwrap_or(&title);
+    let name = title
+        .split_whitespace()
+        .next()
+        .unwrap_or(&title)
+        .to_string();
+    let content = div()
+        .id(SharedString::from(format!("usage-meter-{agent}")))
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .child(name)
+        .children(windows.iter().map(|w| {
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .child(format!(
+                    "{} {:.0}%",
+                    window_label(w.minutes),
+                    w.used_percent
+                ))
+                .child(bar(
+                    w.used_percent,
+                    24.0,
+                    level(ws, w.used_percent),
+                    ui.hairline,
+                ))
+        }))
+        .test_support()
+        // The next agent fades in.
+        .with_animation(
+            SharedString::from(format!("usage-meter-fade-{agent}")),
+            Animation::new(motion::HOVER),
+            |el, t| el.opacity(t),
+        );
+    let dots = (agents.len() > 1).then(|| {
+        div()
+            .flex()
+            .gap(px(3.0))
+            .children((0..agents.len()).map(|i| {
+                div().size(px(4.0)).rounded_full().bg(if i == turn {
+                    ui.title
+                } else {
+                    ui.hairline
+                })
+            }))
+    });
     Some(
         title_bar::button("usage-meter", ui)
             .gap(px(6.0))
@@ -41,17 +105,9 @@ pub(crate) fn meter(ws: &Workspace, cx: &mut Context<Workspace>) -> Option<AnyEl
                     .size(px(14.0))
                     .text_color(ui.title),
             )
-            .child(format!(
-                "{name} {} {:.0}%",
-                window_label(w.minutes),
-                w.used_percent
-            ))
-            .child(bar(
-                w.used_percent,
-                32.0,
-                level(ws, w.used_percent),
-                ui.hairline,
-            ))
+            .child(content)
+            .children(dots)
+            .on_hover(cx.listener(|ws, hovered: &bool, _, _| ws.meter_hovered = *hovered))
             .on_click(cx.listener(|ws, _: &ClickEvent, _, cx| ws.toggle_usage(cx)))
             .test_support()
             .into_any_element(),
@@ -103,13 +159,14 @@ pub(crate) fn popover(ws: &Workspace, cx: &mut Context<Workspace>) -> AnyElement
                     .text_size(px(12.0))
                     .child(
                         div()
-                            .w(px(52.0))
+                            .w(px(84.0))
+                            .truncate()
                             .text_color(ui.title_dim)
-                            .child(capitalized(&window_name(w.minutes))),
+                            .child(capitalized(&limit_name(w.minutes, w.scope.as_deref()))),
                     )
                     .child(bar(
                         w.used_percent,
-                        88.0,
+                        64.0,
                         level(ws, w.used_percent),
                         ui.hairline,
                     ))
@@ -308,6 +365,14 @@ pub(crate) fn window_name(minutes: u32) -> String {
         m if m % 1440 == 0 => format!("{}-day", m / 1440),
         m if m % 60 == 0 => format!("{}-hour", m / 60),
         m => format!("{m}-minute"),
+    }
+}
+
+/// A limit in a sentence: "5-hour", "weekly", "weekly Fable" (one model's).
+pub(crate) fn limit_name(minutes: u32, scope: Option<&str>) -> String {
+    match scope {
+        Some(model) => format!("{} {model}", window_name(minutes)),
+        None => window_name(minutes),
     }
 }
 

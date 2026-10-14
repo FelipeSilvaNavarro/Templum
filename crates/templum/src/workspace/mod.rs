@@ -680,6 +680,15 @@ pub struct Workspace {
     watch: templum_usage::Watch,
     /// The title bar's usage popover is open.
     pub(crate) usage_open: bool,
+    /// The plan's limits as Claude Code's `/usage` last told them.
+    pub(crate) claude_polled: Option<templum_usage::Limits>,
+    /// Asks Claude Code for them every few minutes.
+    _claude_poll: Task<()>,
+    /// The title bar's meter shows the agents in turn: this one (an index among those shown),
+    /// since `meter_turned` (seconds since the epoch); not while the pointer is over it.
+    pub(crate) meter_turn: usize,
+    pub(crate) meter_turned: u64,
+    pub(crate) meter_hovered: bool,
     /// Reading the agents' usage; the next read replaces it.
     _usage: Task<()>,
     pub(crate) themes: Vec<Entry>,
@@ -873,6 +882,33 @@ impl Workspace {
             ws.set_dark(is_dark(window.appearance()), cx)
         })
         .detach();
+        // Tests never run the user's Claude Code.
+        let claude_poll = if cfg!(test) {
+            Task::ready(())
+        } else {
+            cx.spawn_in(window, async move |ws, cx| {
+                loop {
+                    let Ok(job) = ws.update(cx, |ws, _| ws.claude_poll_job()) else {
+                        break;
+                    };
+                    if let Some((program, dir)) = job {
+                        let found = cx
+                            .background_executor()
+                            .spawn(async move {
+                                templum_usage::claude::poll(&program, &dir, crate::notes::now())
+                            })
+                            .await;
+                        // A failed ask keeps what the last one found.
+                        if found.is_some()
+                            && ws.update(cx, |ws, _| ws.claude_polled = found).is_err()
+                        {
+                            break;
+                        }
+                    }
+                    cx.background_executor().timer(usage::CLAUDE_EVERY).await;
+                }
+            })
+        };
         let blink = cx.spawn_in(window, async move |ws, cx| {
             loop {
                 cx.background_executor().timer(BLINK).await;
@@ -963,6 +999,11 @@ impl Workspace {
             limits: Vec::new(),
             watch: templum_usage::Watch::new(crate::notes::now()),
             usage_open: false,
+            claude_polled: None,
+            _claude_poll: claude_poll,
+            meter_turn: 0,
+            meter_turned: 0,
+            meter_hovered: false,
             _usage: Task::ready(()),
             themes,
             dark,

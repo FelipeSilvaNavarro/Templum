@@ -35,6 +35,33 @@ pub struct Window {
     pub used_percent: f32,
     /// When it resets, in seconds since the Unix epoch.
     pub resets_at: u64,
+    /// The model it is for ("Fable"); None: every model.
+    pub scope: Option<String>,
+}
+
+/// The agents whose plan limits Templum reads, in the order it shows them.
+pub const LIMITED: [&str; 2] = ["claude", "codex"];
+
+/// Puts `other` as `agent`'s limits in `limits` unless the ones there are newer.
+pub fn merge(limits: &mut Vec<(String, Limits)>, agent: &str, other: &Limits) {
+    match limits.iter_mut().find(|(a, _)| a == agent) {
+        Some((_, l)) if l.at >= other.at => {}
+        Some((_, l)) => *l = other.clone(),
+        None => {
+            // In LIMITED's order.
+            let rank = |a: &str| {
+                LIMITED
+                    .iter()
+                    .position(|l| *l == a)
+                    .unwrap_or(LIMITED.len())
+            };
+            let at = limits
+                .iter()
+                .position(|(a, _)| rank(a) > rank(agent))
+                .unwrap_or(limits.len());
+            limits.insert(at, (agent.to_string(), other.clone()));
+        }
+    }
 }
 
 /// An agent's plan limits: its account's, whichever session read them.
@@ -169,6 +196,22 @@ pub(crate) fn modified(path: &Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_newer_limits_win_and_keep_their_place() {
+        let at = |at: u64| Limits {
+            windows: Vec::new(),
+            at,
+        };
+        let mut limits = vec![("codex".to_string(), at(5))];
+        merge(&mut limits, "claude", &at(10));
+        assert_eq!(limits[0], ("claude".to_string(), at(10)));
+        merge(&mut limits, "claude", &at(7));
+        assert_eq!(limits[0].1.at, 10, "older");
+        merge(&mut limits, "claude", &at(12));
+        assert_eq!(limits[0].1.at, 12);
+        assert_eq!(limits.len(), 2);
+    }
 
     #[test]
     fn each_agent_is_read_by_its_own_reader() {

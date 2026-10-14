@@ -2,6 +2,9 @@
 //! reading what the agents write after each snapshot, and the notifications
 //! (docs/specs/usage.md).
 
+use std::path::PathBuf;
+use std::time::Duration;
+
 use gpui_kit::component::notification::{Notification, NotificationDelivery, NotificationType};
 use gpui_kit::{Context, SharedString, Window};
 use templum_canvas::BlockId;
@@ -10,8 +13,13 @@ use templum_usage::{Event, Limits, Proc, Session, Watch};
 
 use super::{Workspace, show_notification};
 use crate::agents::AgentEntry;
+use crate::config::Edit;
 use crate::notes;
-use crate::usage::{resets_local, window_name};
+use crate::usage::{TURN_SECS, limit_name, meter_agents, resets_local};
+
+/// How often Templum asks Claude Code for the plan's limits. Its `/usage` asks Anthropic, which
+/// limits how often.
+pub(super) const CLAUDE_EVERY: Duration = Duration::from_secs(5 * 60);
 
 /// What a read found: each terminal's session, in the order asked, and each agent's limits.
 pub(crate) type Read = (Vec<Option<Session>>, Vec<(String, Limits)>);
@@ -88,8 +96,22 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let mut limits = limits;
+        if let Some(polled) = &self.claude_polled {
+            templum_usage::merge(&mut limits, "claude", polled);
+        }
         let mut changed = self.limits != limits;
         self.limits = limits;
+        // The meter's next agent, every few seconds.
+        let now = notes::now();
+        if meter_agents(self, now).len() > 1
+            && !self.meter_hovered
+            && now >= self.meter_turned + TURN_SECS
+        {
+            self.meter_turn = self.meter_turn.wrapping_add(1);
+            self.meter_turned = now;
+            changed = true;
+        }
         for space in std::iter::once(&mut self.space).chain(&mut self.others) {
             let ids: Vec<BlockId> = space.terminals().map(|(id, _)| id).collect();
             for id in ids {
@@ -104,10 +126,8 @@ impl Workspace {
                 }
             }
         }
-        let usage = self.config.usage;
-        let events = self
-            .watch
-            .step(notes::now(), &self.limits, usage.reset, usage.warn);
+        let usage = &self.config.usage;
+        let events = self.watch.step(now, &self.limits, usage.reset, usage.warn);
         for event in events {
             self.tell(event, window, cx);
         }
@@ -126,17 +146,22 @@ impl Workspace {
                     "{}: {:.0}% of the {} limit used",
                     self.agent_title(agent),
                     window.used_percent,
-                    window_name(window.minutes)
+                    limit_name(window.minutes, window.scope.as_deref())
                 ),
                 format!("Resets {}", resets_local(window.resets_at, now)),
                 NotificationType::Warning,
             ),
-            Event::Reset { agent, minutes, .. } => (
+            Event::Reset {
+                agent,
+                minutes,
+                scope,
+                ..
+            } => (
                 agent,
                 format!(
                     "{}'s {} limit has reset",
                     self.agent_title(agent),
-                    window_name(*minutes)
+                    limit_name(*minutes, scope.as_deref())
                 ),
                 "It can work again".to_string(),
                 NotificationType::Success,
@@ -157,6 +182,53 @@ impl Workspace {
                 }
             });
         show_notification(window, cx, notification);
+    }
+
+    /// The Claude Code to ask for the plan's limits, and the empty folder to ask in; None when
+    /// the user turned it off, without a data folder, or when it isn't installed.
+    pub(super) fn claude_poll_job(&self) -> Option<(PathBuf, PathBuf)> {
+        let data = self.data_dir.as_ref()?;
+        if !self.config.usage.claude_limits {
+            return None;
+        }
+        let claude = self
+            .agents
+            .iter()
+            .find(|a| a.builtin == Some(Agent::CLAUDE))?;
+        let program = claude.command.split_whitespace().next()?;
+        let program = if program.contains(['/', '\\']) {
+            PathBuf::from(program)
+        } else {
+            templum_terminal::locate(program)?
+        };
+        Some((program, data.join("usage").join("probe")))
+    }
+
+    /// Shows `agent`'s limits in the title bar, or stops (Settings ▸ Usage).
+    pub(crate) fn show_in_title_bar(&mut self, agent: &str, shown: bool, cx: &mut Context<Self>) {
+        let current = self.pending.as_ref().unwrap_or(&self.config);
+        let mut hide: Vec<String> = current
+            .usage
+            .hide
+            .iter()
+            .filter(|a| *a != agent)
+            .cloned()
+            .collect();
+        if !shown {
+            hide.push(agent.to_string());
+        }
+        let edit = if hide.is_empty() {
+            Edit::remove("usage", "hide")
+        } else {
+            Edit::set(
+                "usage",
+                "hide",
+                hide.iter()
+                    .map(String::as_str)
+                    .collect::<toml_edit::Array>(),
+            )
+        };
+        self.edit(edit, move |c| c.usage.hide = hide, cx);
     }
 
     /// Opens or closes the title bar's usage popover.

@@ -232,16 +232,18 @@ impl Default for TerminalConfig {
 }
 
 /// `[usage]`: what Templum tells about the agents' plan limits.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct UsageConfig {
     /// When a limit's reset is notified.
     pub reset: Reset,
     /// A limit's use, in percent, that is notified once per window: 0 (never), 80, 90 or 95.
     pub warn: u8,
-    /// The Claude Code Templum opens gets Templum's status line, which hands it the plan's
-    /// limits.
+    /// Templum asks Claude Code for the plan's limits, and the Claude Code it opens gets
+    /// Templum's status line.
     pub claude_limits: bool,
+    /// The agents (ids) whose limits the title bar doesn't show.
+    pub hide: Vec<String>,
 }
 
 impl Default for UsageConfig {
@@ -250,6 +252,7 @@ impl Default for UsageConfig {
             reset: Reset::default(),
             warn: 90,
             claude_limits: true,
+            hide: Vec::new(),
         }
     }
 }
@@ -779,8 +782,10 @@ pub(crate) fn template(macos: bool) -> String {
         "## \"half\" or \"always\".\n",
         "# reset = \"reached\"\n",
         "# warn = 90   # notify once at this much of a limit: 0 (never), 80, 90 or 95\n",
-        "## The Claude Code Templum opens gets Templum's status line, which hands it the limits.\n",
-        "# claude_limits = true\n\n",
+        "## Templum asks Claude Code for its limits (`claude /usage`) every 5 minutes.\n",
+        "# claude_limits = true\n",
+        "## Agents whose limits the title bar doesn't show, as [\"codex\"].\n",
+        "# hide = []\n\n",
         "[git]\n",
         "# program = \"git\"   # a name on PATH, or a path\n\n",
         "[keys]\n",
@@ -1216,13 +1221,17 @@ scrollback = 500
         assert_eq!(c.usage.reset, Reset::Reached);
         assert_eq!(c.usage.warn, 90);
         assert!(c.usage.claude_limits);
-        let c = parse("[usage]\nreset = \"always\"\nwarn = 0\nclaude_limits = false\n").unwrap();
+        let c = parse(
+            "[usage]\nreset = \"always\"\nwarn = 0\nclaude_limits = false\nhide = [\"codex\"]\n",
+        )
+        .unwrap();
         assert_eq!(
             c.usage,
             UsageConfig {
                 reset: Reset::Always,
                 warn: 0,
-                claude_limits: false
+                claude_limits: false,
+                hide: vec!["codex".into()],
             }
         );
         let err = parse("[usage]\nwarn = 85\n").unwrap_err();

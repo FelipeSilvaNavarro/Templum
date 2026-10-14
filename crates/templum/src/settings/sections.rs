@@ -220,15 +220,16 @@ pub(super) fn rows(
         Section::Usage => {
             let on = ws.config.usage.claude_limits;
             let e = entity.clone();
-            vec![
+            let mut rows = vec![
                 choice_row(ws, entity, &RESET, "Limit reset notifications")
                     .description("When a 5-hour or weekly limit is back"),
                 choice_row(ws, entity, &WARN, "Warn near a limit")
                     .description("Once per limit, with when it resets"),
                 Row::new("usage.claude_limits", "Claude Code limits")
                     .description(
-                        "The Claude Code Templum opens gets Templum's status line, which hands it \
-                         the limits. Yours still shows.",
+                        "Templum asks Claude Code for them every 5 minutes (its /usage, which \
+                         costs nothing), and the Claude Code it opens hands them over as it \
+                         works. Your own status line still shows.",
                     )
                     .control(Switch::new("claude-limits-switch").checked(on).on_click(
                         move |on: &bool, _, cx| {
@@ -248,7 +249,31 @@ pub(super) fn rows(
                             c.usage.claude_limits = true
                         }),
                     ),
-            ]
+            ];
+            // Which agents' limits the title bar's meter shows, in turn.
+            for agent in templum_usage::LIMITED {
+                let shown = !ws.config.usage.hide.iter().any(|a| a == agent);
+                let (e, r) = (entity.clone(), entity.clone());
+                rows.push(
+                    Row::new(
+                        format!("usage.hide.{agent}"),
+                        format!("{} in the title bar", ws.agent_title(agent)),
+                    )
+                    .description("Its limits take turns with the others' in the title bar")
+                    .control(
+                        Switch::new(SharedString::from(format!("title-bar-{agent}-switch")))
+                            .checked(shown)
+                            .on_click(move |on: &bool, _, cx| {
+                                let on = *on;
+                                e.update(cx, |ws, cx| ws.show_in_title_bar(agent, on, cx))
+                            }),
+                    )
+                    .reset(!shown, move |_, cx| {
+                        r.update(cx, |ws, cx| ws.show_in_title_bar(agent, true, cx))
+                    }),
+                );
+            }
+            rows
         }
         Section::Shortcuts => Command::ALL
             .map(|command| shortcut_row(ws, entity, command))

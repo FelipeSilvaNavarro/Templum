@@ -72,7 +72,16 @@ subscribers after the first answer, `rate_limits.five_hour` and `rate_limits.sev
   (`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`), without a percentage.
 - **Stale files:** a relay file older than the agent's process (2 s of slack) is ignored. Relay files older than 8
   days are deleted when Templum starts.
-- **Plan limits** are the account's: they come from the newest relay file that has them.
+- **Plan limits** are the account's: they come from the newest relay file that has them, or from asking Claude
+  Code, whichever is newer.
+- **Asking Claude Code:** the status line doesn't carry `rate_limits` for every plan (a Max plan's had none on
+  2.1.286), so every 5 minutes, while `claude_limits` is on, Templum runs
+  `claude --setting-sources local -p /usage --output-format stream-json --verbose --no-session-persistence` in an
+  empty folder, `<data>/usage/probe` (30 s at most). `/usage` asks nothing of the model and costs nothing; with only
+  that folder's settings, the user's hooks and plugins don't run; Claude Code reads its own login. Its assistant line
+  carries `usage_report.rate_limits.limits[]`, each `{kind, group, percent, resets_at (ISO 8601), scope}`: `session`
+  is the 5-hour window, `weekly_all` the week, `weekly_scoped` one model's week (`scope.model.display_name`). An API
+  key has none. The program is the one Claude Code's command in effect names, found like any agent's.
 
 ### Codex
 
@@ -103,9 +112,11 @@ API prices, which is not what a subscription pays).
 
 ### In the title bar
 
-- **The meter**, left of the zoom level: the known window closest to its limit, as the agent's short name, the
-  window and the percentage, `Claude 5h 73%`, with a small bar. Yellow from the warning line, red from 95%. Hidden
-  when no limit is known. A window whose reset time has passed is gone.
+- **The meter**, left of the zoom level: one agent's limits at a time, its short name and each of its windows for
+  every model, shortest first, with a small bar: `Claude 5h 27% 7d 18%`. Bars are yellow from the warning line, red
+  from 95%. With several agents known, the next one fades in every 8 seconds or so (at the next read), never while
+  the pointer is over it, and a dot per agent says which is shown. An agent hidden in **Settings ▸ Usage** isn't
+  shown there. Hidden when no limit is known. A window whose reset time has passed is gone.
 - **Clicking it** opens **Agent usage** under it: each agent's windows (bar, percentage, when it resets: `in 25 min`
   within the hour, `15:40` today, `Mon 09:00` later), then **Open sessions**: every terminal with usage, in every
   workspace, as agent · folder · context · cost or tokens. Clicking a session reveals its terminal. Clicking outside
@@ -139,13 +150,15 @@ while Templum was closed isn't announced.
 |---|---|---|
 | Limit reset notifications | Off / When a limit was reached / After half of it / Always | `usage.reset` |
 | Warn near a limit | Off / 80% / 90% / 95% | `usage.warn` |
-| Claude Code limits | switch: Templum adds its status line to the Claude Code it opens | `usage.claude_limits` |
+| Claude Code limits | switch: Templum asks Claude Code for its limits, and adds its status line to the Claude Code it opens | `usage.claude_limits` |
+| *Agent* in the title bar | switch, one per agent with limits (Claude Code, Codex) | `usage.hide` |
 
 ```toml
 [usage]
 reset = "reached"      # "off", "reached", "half" or "always"
 warn = 90              # 0 (off), 80, 90 or 95
 claude_limits = true
+hide = ["codex"]       # agents whose limits the title bar doesn't show
 ```
 
 `warn` outside those values and an unknown `reset` are config errors.

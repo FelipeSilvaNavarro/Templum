@@ -322,7 +322,12 @@ fn agent_index(name: &str, args: &[&str], known: &[Detect]) -> Option<usize> {
 /// Whether `program` can be run: found in PATH, or in the folders npm, bun, cargo and the like
 /// install into (an app started from a desktop menu may not get the shell's PATH).
 pub fn installed(program: &str) -> bool {
-    find_program(program, &program_dirs()).is_some()
+    locate(program).is_some()
+}
+
+/// Where `program` is, as [`installed`] looks for it.
+pub fn locate(program: &str) -> Option<PathBuf> {
+    find_program(program, &program_dirs())
 }
 
 /// PATH, then the usual per-user install folders.

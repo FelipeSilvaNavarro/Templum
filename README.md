@@ -202,8 +202,9 @@ command instead. **Settings ▸ Agents** changes any agent's command or resume c
 the ones you don't use from the menu, and adds your own agents. The full list, with how each one resumes, is in [docs/specs/agents.md](docs/specs/agents.md).
 
 A terminal running Claude Code or Codex shows its session in its header: how much of the context is used, and the
-cost or the tokens. The title bar shows the plan limit closest to its end (the 5-hour and weekly windows of a Claude
-Pro/Max or ChatGPT plan); click it for every agent's limits, when each resets, and the open sessions. Templum tells
+cost or the tokens. The title bar shows each agent's plan limits in turn (the 5-hour and weekly windows of a Claude
+or ChatGPT plan; **Settings ▸ Usage** picks which agents); click it for every agent's limits, when each resets, and
+the open sessions. Templum asks Claude Code for its limits every 5 minutes (its `/usage`, which costs nothing). Templum tells
 you when a limit nears its end and when one you reached resets (**Settings ▸ Usage**). Claude Code hands its limits
 to its status line, so the Claude Code Templum opens gets `--settings` naming Templum's: your own status line still
 shows. Templum reads only what the agents write, never their login. See [docs/specs/usage.md](docs/specs/usage.md).
@@ -259,7 +260,8 @@ notifications = true   # system notifications while Templum is in the background
 [usage]
 reset = "reached"      # when a plan limit's reset is notified: "off" | "reached" | "half" | "always"
 warn = 90              # notify once at this much of a limit: 0 (never) | 80 | 90 | 95
-claude_limits = true   # the Claude Code Templum opens hands it its limits
+claude_limits = true   # Templum asks Claude Code for its limits
+hide = ["codex"]       # agents whose limits the title bar doesn't show
 
 [git]
 program = "git"   # the Git block's program: a name on PATH, or a path

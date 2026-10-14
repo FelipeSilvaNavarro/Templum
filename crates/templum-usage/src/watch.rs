@@ -7,15 +7,16 @@ use crate::{Limits, Reset, Window};
 pub enum Event {
     /// `window` crossed the warning line.
     Warn { agent: String, window: Window },
-    /// The window of `minutes` reset; `peak` was its highest use seen.
+    /// The window of `minutes` (for the model `scope`) reset; `peak` was its highest use seen.
     Reset {
         agent: String,
         minutes: u32,
+        scope: Option<String>,
         peak: f32,
     },
 }
 
-/// The windows seen since Templum started, one per agent and length.
+/// The windows seen since Templum started, one per agent, length and model.
 pub struct Watch {
     /// Limits read before this (seconds since the epoch) are old news.
     since: u64,
@@ -25,6 +26,7 @@ pub struct Watch {
 struct Tracked {
     agent: String,
     minutes: u32,
+    scope: Option<String>,
     resets_at: u64,
     peak: f32,
     warned: bool,
@@ -69,6 +71,7 @@ impl Watch {
                 events.push(Event::Reset {
                     agent: t.agent.clone(),
                     minutes: t.minutes,
+                    scope: t.scope.clone(),
                     peak: t.peak,
                 });
             }
@@ -76,10 +79,9 @@ impl Watch {
         });
         for (agent, limits) in limits.iter().filter(|(_, l)| l.at >= self.since) {
             for w in limits.windows.iter().filter(|w| w.resets_at > now) {
-                let i = self
-                    .tracked
-                    .iter()
-                    .position(|t| &t.agent == agent && t.minutes == w.minutes);
+                let i = self.tracked.iter().position(|t| {
+                    &t.agent == agent && t.minutes == w.minutes && t.scope == w.scope
+                });
                 let t = match i {
                     Some(i) if self.tracked[i].resets_at.abs_diff(w.resets_at) <= SAME => {
                         &mut self.tracked[i]
@@ -92,6 +94,7 @@ impl Watch {
                         self.tracked.push(Tracked {
                             agent: agent.clone(),
                             minutes: w.minutes,
+                            scope: w.scope.clone(),
                             resets_at: w.resets_at,
                             peak: 0.0,
                             warned: false,
@@ -128,6 +131,7 @@ mod tests {
                     minutes: 300,
                     used_percent: used,
                     resets_at,
+                    scope: None,
                 }],
                 at,
             },
@@ -214,10 +218,22 @@ mod tests {
             vec![Event::Reset {
                 agent: "claude".into(),
                 minutes: 300,
+                scope: None,
                 peak: 99.0
             }]
         );
         assert!(w.step(HOUR + 8, &[], Reset::Reached, 0).is_empty());
+    }
+
+    /// Claude Code's weekly limit of one model is a window of its own.
+    #[test]
+    fn a_models_own_window_is_tracked_apart() {
+        let mut w = Watch::new(0);
+        let mut l = limits(10, 92.0, HOUR);
+        let mut fable = l[0].1.windows[0].clone();
+        fable.scope = Some("Fable".into());
+        l[0].1.windows.push(fable);
+        assert_eq!(warns(&w.step(10, &l, Reset::Off, 90)), 2);
     }
 
     /// Old news: limits read before Templum started, and windows whose reset had passed.
