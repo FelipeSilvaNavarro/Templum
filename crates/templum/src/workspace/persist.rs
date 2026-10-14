@@ -117,7 +117,14 @@ impl Workspace {
         else {
             return;
         };
-        let command = agent.resume_command_for(saved.session.as_deref());
+        let session = saved.session.as_deref();
+        let kept = match (session, &self.data_dir) {
+            (Some(id), Some(data)) => {
+                templum_usage::session_kept(&agent.id, id, &templum_usage::Dirs::of(data))
+            }
+            _ => true,
+        };
+        let command = agent.resume_command_for(session, kept);
         let line = format!("{}\r", self.typed(Some(agent), &command));
         let agent = agent.id.clone();
         if let Some(pane) = self.space.terminal_mut(id) {

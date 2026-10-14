@@ -313,6 +313,15 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   with `-C <dir>`, or one resumed from elsewhere, has its own folder, and Codex then shows its "Choose working
   directory" picker. Fix: save the session's `cwd` from its rollout and type `codex resume -C <cwd> <id>` when it
   differs, quoted as `typed_path` does.
+- [ ] **Gemini, Grok and Pi come back on the session they were opened on.** Their id is read from the process's
+  arguments (`session_in`, `crates/templum-terminal/src/agent.rs`); after `/clear`, `/new` or `/resume` inside the
+  agent, the block still resumes the first one. Fix: read the current session from their files (Gemini's newest
+  `chats/session-*.jsonl` for the folder, Grok's `~/.grok/sessions/<cwd>/`, Pi's `~/.pi/agent/sessions/--<cwd>--/`)
+  and pick the one written since the process started.
+- [ ] **A Gemini killed before its first message can't come back.** Killed with SIGKILL, Gemini leaves its empty
+  session file; `session_kept` (`crates/templum-usage/src/lib.rs`) finds it, so restore types `gemini --resume <id>`,
+  which Gemini refuses ("Invalid session identifier") and the block shows a shell. Fix: count the file's message lines
+  too.
 - [ ] **Codex's context reads higher than Codex's own.** `usage` (`codex.rs`) divides the last turn's input by the
   whole window; Codex leaves out a baseline it reserves. Fix: use Codex's formula once its source says it.
 - [ ] **Limits of a session closed long ago still show.** The meter (`crates/templum/src/usage.rs`) shows a window

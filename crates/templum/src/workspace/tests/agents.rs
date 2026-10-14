@@ -146,15 +146,18 @@ fn an_agent_opens_in_its_folder_and_the_folder_becomes_recent(cx: &mut TestAppCo
     use templum_terminal::Snapshot;
     let (handle, ws) = open(cx);
     let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let id = cx
+    let (gemini, id) = cx
         .update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
+                let at = Point::new(0.0, 1800.0);
+                let gemini = ws.launch_agent("gemini", b.path(), at, window, cx);
                 ws.launch_agent("codex", b.path(), Point::new(0.0, 900.0), window, cx);
-                ws.launch_agent("claude", a.path(), Point::new(40.0, 0.0), window, cx)
+                let claude = ws.launch_agent("claude", a.path(), Point::new(40.0, 0.0), window, cx);
+                (gemini.expect("a block"), claude)
             })
         })
-        .unwrap()
-        .expect("a block");
+        .unwrap();
+    let id = id.expect("a block");
     ws.read_with(cx, |ws, _| {
         assert_eq!(ws.space.recent, [a.path(), b.path()]);
         assert_eq!(
@@ -181,6 +184,22 @@ fn an_agent_opens_in_its_folder_and_the_folder_becomes_recent(cx: &mut TestAppCo
             snap.text()
         });
         if shown.contains("claude") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "not typed: {shown:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // An agent that takes a session's id is started on one, to resume that one.
+    loop {
+        let shown = ws.read_with(cx, |ws, _| {
+            let mut snap = Snapshot::default();
+            snap.refresh(
+                ws.space.terminal(gemini).unwrap().term.shared(),
+                &ws.theme.palette,
+            );
+            snap.text()
+        });
+        if shown.contains("gemini --session-id ") {
             break;
         }
         assert!(Instant::now() < deadline, "not typed: {shown:?}");

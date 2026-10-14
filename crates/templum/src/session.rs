@@ -687,7 +687,8 @@ impl Layout {
                             rect: (*rect).into(),
                             folder: found.folder.and_then(utf8),
                             agent: found.agent,
-                            session: sessions.next().flatten(),
+                            // The agent's files first: they follow a switch inside it.
+                            session: sessions.next().flatten().or(found.session),
                         })
                     }
                     LayoutBlock::Saved(item) => item.clone(),

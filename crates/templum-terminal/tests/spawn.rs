@@ -353,6 +353,47 @@ fn fake_claude(bin: &std::path::Path) -> std::path::PathBuf {
     to
 }
 
+/// The session an agent was started on, from its arguments: a shell named `pi` that waits.
+#[cfg(unix)]
+#[test]
+fn inspect_reads_the_session_an_agent_was_started_on() {
+    let bin = tempfile::tempdir().unwrap();
+    let pi = bin.path().join("pi");
+    std::fs::copy("/bin/sh", &pi).unwrap();
+    let id = "019a1f2e-7b3c-7d4e-8f5a-6b7c8d9e0f1a";
+    // `; :` keeps the shell from becoming `sleep`.
+    let args = ["-c", "sleep 30; :", "pi", "--session-id", id];
+    let options = || SpawnOptions {
+        cols: 40,
+        rows: 5,
+        cell_px: (8, 16),
+        command: Some((pi.display().to_string(), args.map(String::from).to_vec())),
+        palette: Palette::default(),
+        options: TermOptions::default(),
+        working_directory: None,
+        integration: None,
+    };
+    // As in `inspect_finds_an_agent_and_its_folder`: a fork may hold the copy open a moment.
+    let term = loop {
+        match Terminal::spawn(options(), Arc::new(|| {})) {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            spawned => break spawned.expect("spawn"),
+        }
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let found = inspect(&[term.processes()], &known()).pop().unwrap();
+        if found.agent.as_deref() == Some("pi") {
+            assert_eq!(found.session.as_deref(), Some(id));
+            break;
+        }
+        assert!(Instant::now() < deadline, "found {found:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// The usual case: the user starts the agent from the shell, in another folder than the shell's.
 #[test]
 fn inspect_finds_an_agent_the_shell_started() {

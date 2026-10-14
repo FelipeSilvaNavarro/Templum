@@ -110,6 +110,8 @@ pub struct Dirs {
     pub codex: Option<PathBuf>,
     /// `~/.qwen`.
     pub qwen: Option<PathBuf>,
+    /// `~/.gemini`.
+    pub gemini: Option<PathBuf>,
 }
 
 impl Dirs {
@@ -126,6 +128,7 @@ impl Dirs {
             claude: env("CLAUDE_CONFIG_DIR").or_else(|| home.as_ref().map(|h| h.join(".claude"))),
             codex: env("CODEX_HOME").or_else(|| home.as_ref().map(|h| h.join(".codex"))),
             qwen: home.as_ref().map(|h| h.join(".qwen")),
+            gemini: home.as_ref().map(|h| h.join(".gemini")),
         }
     }
 }
@@ -199,6 +202,26 @@ pub fn session_ids(procs: &[Proc], dirs: &Dirs, now: u64) -> Vec<Option<String>>
     ids
 }
 
+/// Whether `agent` still has its session `id` to resume. Gemini CLI deletes a session that has
+/// no message yet when it exits, and can't resume one it doesn't find
+/// (`tmp/<project>/chats/session-<time>-<the id's first 8>.jsonl`); the others are taken to.
+pub fn session_kept(agent: &str, id: &str, dirs: &Dirs) -> bool {
+    let (Some(dir), "gemini") = (&dirs.gemini, agent) else {
+        return true;
+    };
+    let name = format!("-{}.jsonl", id.get(..8).unwrap_or(id));
+    let Ok(projects) = std::fs::read_dir(dir.join("tmp")) else {
+        return false;
+    };
+    projects.flatten().any(|project| {
+        std::fs::read_dir(project.path().join("chats"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|f| f.file_name().to_string_lossy().ends_with(&name))
+    })
+}
+
 /// A session id names a file and is typed into a shell: letters, digits and `-` only.
 pub fn valid_session_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
@@ -258,6 +281,7 @@ mod tests {
             claude: None,
             codex: Some(data.join("codex")),
             qwen: Some(data.join("qwen")),
+            gemini: None,
         };
         std::fs::create_dir_all(&dirs.relay).unwrap();
         std::fs::write(
@@ -292,6 +316,7 @@ mod tests {
             claude: Some(dir.path().join("claude")),
             codex: None,
             qwen: Some(dir.path().join("qwen")),
+            gemini: None,
         };
         for (agent, id) in [("claude", "c-1"), ("qwen", "q-2")] {
             let sessions = dir.path().join(agent).join("sessions");
@@ -308,6 +333,31 @@ mod tests {
         };
         let ids = session_ids(&[proc("claude"), proc("qwen"), proc("gemini")], &dirs, 0);
         assert_eq!(ids, [Some("c-1".into()), Some("q-2".into()), None]);
+    }
+
+    #[test]
+    fn a_gemini_session_is_kept_only_while_its_file_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let dirs = Dirs {
+            relay: dir.path().join("relay"),
+            claude: None,
+            codex: None,
+            qwen: None,
+            gemini: Some(dir.path().to_path_buf()),
+        };
+        let id = "019a1f2e-7b3c-7d4e-8f5a-6b7c8d9e0f1a";
+        assert!(!session_kept("gemini", id, &dirs), "no folder yet");
+        let chats = dir.path().join("tmp/my-app/chats");
+        std::fs::create_dir_all(&chats).unwrap();
+        assert!(!session_kept("gemini", id, &dirs));
+        std::fs::write(chats.join("session-2026-10-14T10-00-019a1f2e.jsonl"), "{}").unwrap();
+        assert!(session_kept("gemini", id, &dirs));
+        assert!(!session_kept(
+            "gemini",
+            "11111111-7b3c-7d4e-8f5a-6b7c8d9e0f1a",
+            &dirs
+        ));
+        assert!(session_kept("grok", id, &dirs), "the others keep theirs");
     }
 
     #[test]

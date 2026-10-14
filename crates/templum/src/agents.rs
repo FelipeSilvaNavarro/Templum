@@ -45,15 +45,34 @@ impl AgentEntry {
         self.resume.as_deref().unwrap_or(&self.command)
     }
 
+    /// What starts it: its command, which starts a new session with the id `id` when it is one
+    /// of Templum's agents that takes one and the command runs its program (not a wrapper).
+    pub fn start_command(&self, id: &str) -> String {
+        let arg = self
+            .builtin
+            .filter(|agent| self.program() == agent.program())
+            .and_then(|agent| agent.new_session(id));
+        match arg {
+            Some(arg) => format!("{} {arg}", self.command),
+            None => self.command.clone(),
+        }
+    }
+
     /// What brings back its session `session` (an id) on restore: that session, when it is one
     /// of Templum's agents that resumes by id and its resume command is Templum's own; else its
-    /// resume command, which brings back the folder's latest.
-    pub fn resume_command_for(&self, session: Option<&str>) -> String {
-        self.builtin
-            .filter(|agent| self.resume.as_deref() == agent.spec().resume)
-            .zip(session)
-            .and_then(|(agent, id)| agent.resume_session(id))
-            .unwrap_or_else(|| self.resume_command().to_string())
+    /// resume command, which brings back the folder's latest. `kept`: whether the agent still
+    /// has that session; one it dropped (Gemini's, with no message) starts again on its id.
+    pub fn resume_command_for(&self, session: Option<&str>, kept: bool) -> String {
+        let ours = self
+            .builtin
+            .filter(|agent| self.resume.as_deref() == agent.spec().resume);
+        match (ours, session) {
+            (Some(_), Some(id)) if !kept => self.start_command(id),
+            (Some(agent), Some(id)) => agent
+                .resume_session(id)
+                .unwrap_or_else(|| self.resume_command().to_string()),
+            _ => self.resume_command().to_string(),
+        }
     }
 
     /// How to tell it from a terminal's processes: Templum's names for its own, and the program
@@ -405,25 +424,68 @@ mod tests {
         let list = agents("");
         let id = Some("0d5e5f4b-1c2d");
         assert_eq!(
-            by(&list, "claude").resume_command_for(id),
+            by(&list, "claude").resume_command_for(id, true),
             "claude --resume 0d5e5f4b-1c2d"
         );
         assert_eq!(
-            by(&list, "codex").resume_command_for(id),
+            by(&list, "codex").resume_command_for(id, true),
             "codex resume 0d5e5f4b-1c2d"
         );
         assert_eq!(
-            by(&list, "claude").resume_command_for(None),
+            by(&list, "claude").resume_command_for(None, true),
             "claude --continue"
         );
         assert_eq!(
-            by(&list, "gemini").resume_command_for(id),
-            "gemini --resume"
+            by(&list, "gemini").resume_command_for(id, true),
+            "gemini --resume 0d5e5f4b-1c2d"
+        );
+        assert_eq!(
+            by(&list, "grok").resume_command_for(id, true),
+            "grok --resume 0d5e5f4b-1c2d"
+        );
+        // Pi's opens the session, or starts it when it has none.
+        assert_eq!(
+            by(&list, "pi").resume_command_for(id, true),
+            "pi --session-id 0d5e5f4b-1c2d"
+        );
+        assert_eq!(
+            by(&list, "kilo").resume_command_for(id, true),
+            "kilo --continue"
+        );
+        // Gemini dropped it (no message was sent): a new one on that id.
+        assert_eq!(
+            by(&list, "gemini").resume_command_for(id, false),
+            "gemini --session-id 0d5e5f4b-1c2d"
         );
         let list = agents("[agents]\nclaude = { resume = \"claude -c --fast\" }\n");
         assert_eq!(
-            by(&list, "claude").resume_command_for(id),
+            by(&list, "claude").resume_command_for(id, true),
             "claude -c --fast"
+        );
+    }
+
+    #[test]
+    fn an_agent_that_takes_a_session_id_is_started_on_one() {
+        let id = "019a1f2e-7b3c-7d4e-8f5a-6b7c8d9e0f1a";
+        let list = agents("");
+        assert_eq!(
+            by(&list, "gemini").start_command(id),
+            format!("gemini --session-id {id}")
+        );
+        assert_eq!(by(&list, "claude").start_command(id), "claude");
+        let list = agents(concat!(
+            "[agents]\n",
+            "pi = { command = \"pi --model m\" }\n",
+            "grok = { command = \"wrap-grok\" }\n",
+        ));
+        assert_eq!(
+            by(&list, "pi").start_command(id),
+            format!("pi --model m --session-id {id}")
+        );
+        assert_eq!(
+            by(&list, "grok").start_command(id),
+            "wrap-grok",
+            "a wrapper"
         );
     }
 

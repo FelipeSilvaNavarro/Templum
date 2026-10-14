@@ -271,8 +271,12 @@ impl Workspace {
         let rect = Rect::new(at.x, at.y, size.w, size.h);
         let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx)?;
         let entry = self.agents.iter().find(|a| a.command == command);
+        let command = entry.map_or_else(
+            || command.to_string(),
+            |a| a.start_command(&uuid::Uuid::new_v4().to_string()),
+        );
         // The shell reads it once it is ready.
-        let line = format!("{}\r", self.typed(entry, command));
+        let line = format!("{}\r", self.typed(entry, &command));
         // Known at once (Shift+Enter, closing), not at the next snapshot.
         let agent = entry.map(|a| a.id.clone());
         let pane = self.space.terminal_mut(id).expect("just spawned");

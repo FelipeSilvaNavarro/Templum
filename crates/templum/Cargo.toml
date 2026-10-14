@@ -42,6 +42,8 @@ ignore = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Already in the tree (uuid's): a downloaded theme checked against the git hash GitHub lists.
 sha1_smol = { version = "1", features = ["std"] }
+# Already in the tree, with its random source: the id of a session an agent is started on.
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }

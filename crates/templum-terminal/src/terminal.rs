@@ -314,6 +314,9 @@ pub struct Inspection {
     /// When the agent's process started, in seconds since the Unix epoch (about a second off
     /// on Linux).
     pub started: Option<u64>,
+    /// The id of the session the agent was started on, from its arguments
+    /// ([`Agent::session_in`](crate::Agent::session_in)); one of Templum's agents only.
+    pub session: Option<String>,
 }
 
 /// Reads several terminals' processes in one pass over the OS's process table: slow enough to
@@ -358,6 +361,11 @@ fn inspect_one(system: &sysinfo::System, p: &Processes, known: &[Detect]) -> Ins
         // Its folder: under PowerShell, the shell's own doesn't follow `cd`, but programs it starts do.
         Some((pid, agent)) => Inspection {
             folder: cwd(pid),
+            session: system.process(pid).and_then(|process| {
+                let args = args(process);
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                crate::Agent::from_name(&agent)?.session_in(&args)
+            }),
             agent: Some(agent),
             pid: Some(pid.as_u32()),
             started: system.process(pid).map(sysinfo::Process::start_time),
@@ -381,12 +389,16 @@ fn reported(p: &Processes) -> Option<PathBuf> {
         .filter(|dir| in_front && dir.is_absolute() && dir.is_dir())
 }
 
-fn agent_in(process: &sysinfo::Process, known: &[Detect]) -> Option<String> {
-    let args: Vec<String> = process
+fn args(process: &sysinfo::Process) -> Vec<String> {
+    process
         .cmd()
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+        .collect()
+}
+
+fn agent_in(process: &sysinfo::Process, known: &[Detect]) -> Option<String> {
+    let args = args(process);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     agent_of(&process.name().to_string_lossy(), &args, known)
 }

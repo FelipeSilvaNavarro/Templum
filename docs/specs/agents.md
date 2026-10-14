@@ -29,10 +29,19 @@ project folder you pick, and each workspace remembers the folders you opened age
 
 Researched on 2026-10-10 from each agent's docs, repository and package files. **Resume** is used only when the
 agent documents it as limited to the current folder; any other resume would bring back another project's
-conversation, so those agents start a new session on restore. Claude Code, Codex and Qwen Code resume the block's
-own session by its id (`claude --resume <id>`, `codex resume <id>`, `qwen --resume <id>`), read from their files
-while saving ([persistence.md](persistence.md#agents); Qwen keeps `~/.qwen/sessions/<pid>.json` as Claude Code
-does), so several in one folder each get theirs back. The command below is for a block whose session wasn't found,
+conversation, so those agents start a new session on restore.
+
+**One session per block.** Several blocks of one agent in a folder each get their own conversation back, by its id:
+
+- Claude Code, Codex and Qwen Code: the id is read from their files while saving
+  ([persistence.md](persistence.md#agents); Qwen keeps `~/.qwen/sessions/<pid>.json` as Claude Code does), and
+  restored with `claude --resume <id>`, `codex resume <id>`, `qwen --resume <id>`.
+- Gemini CLI, Grok Build and Pi: opened from the menu, they get `--session-id <a new UUID>`, and the id is read back
+  from the process's arguments (`--session-id` or the resume flag). Restored with `gemini --resume <id>`, `grok
+  --resume <id>`, `pi --session-id <id>` (Pi's opens it, or starts it when it has no message yet). Gemini deletes a
+  session with no message when it exits, and can't resume it: Templum then types `gemini --session-id <id>` again.
+
+The command in the table is for a block whose session isn't known (an agent started by hand, a canvas from before),
 or when the user changed the resume command.
 
 | Agent | Command | Resume on restore | Install (the menu shows it) | Recognized by |
