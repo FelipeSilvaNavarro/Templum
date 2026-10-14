@@ -6789,6 +6789,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "templum-usage"
+version = "0.1.1"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "tendril"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
