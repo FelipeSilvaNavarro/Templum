@@ -15,6 +15,8 @@ const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
 const ANSI_NAMES: [&str; 8] = [
     "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
 ];
+/// The interface colors a theme file may set in its `[templum]` table.
+const INTERFACE: [&str; 3] = ["accent", "canvas", "dots"];
 
 /// A terminal palette plus the interface colors derived from it.
 #[derive(Clone, Debug, PartialEq)]
@@ -22,6 +24,8 @@ pub(crate) struct Theme {
     pub name: String,
     pub palette: Palette,
     pub is_dark: bool,
+    /// The `[templum]` colors the file sets (accent, canvas, dots); None: derived.
+    pub interface: [Option<Rgb>; 3],
     pub ui: Ui,
 }
 
@@ -124,8 +128,26 @@ impl Theme {
             name: name.to_string(),
             palette,
             is_dark,
+            interface: [None; 3],
             ui,
         }
+    }
+
+    /// The `[templum]` colors in place of the derived ones. Dots are drawn as written, opaque.
+    fn with_interface(mut self, interface: [Option<Rgb>; 3]) -> Self {
+        let [accent, canvas, dots] = interface;
+        if let Some(accent) = accent {
+            self.ui.accent = hsla(accent, 1.0);
+            self.ui.ring = hsla(accent, 0.40);
+        }
+        if let Some(canvas) = canvas {
+            self.ui.canvas = hsla(canvas, 1.0);
+        }
+        if let Some(dots) = dots {
+            self.ui.dot = hsla(dots, 1.0);
+        }
+        self.interface = interface;
+        self
     }
 }
 
@@ -144,8 +166,8 @@ impl std::fmt::Display for ThemeError {
     }
 }
 
-/// Reads a theme in Alacritty's format. Only the colors Templum uses are read; everything else
-/// in the file is ignored.
+/// Reads a theme in Alacritty's format, plus Templum's own `[templum]` table. Only the colors
+/// Templum uses are read; everything else in the file is ignored.
 pub(crate) fn parse(name: &str, text: &str) -> Result<Theme, ThemeError> {
     // Windows editors may save a byte-order mark, which TOML doesn't allow.
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
@@ -174,12 +196,15 @@ pub(crate) fn parse(name: &str, text: &str) -> Result<Theme, ThemeError> {
         background,
         ansi,
     };
+    // A value that isn't a color counts as missing, as in `[colors]`.
+    let interface = INTERFACE.map(|key| doc.get("templum")?.get(key)?.as_str().and_then(parse_hex));
     Ok(Theme::new(
         name,
         palette,
         color("cursor", "cursor"),
         color("selection", "background"),
-    ))
+    )
+    .with_interface(interface))
 }
 
 /// "#rrggbb" or "0xrrggbb". Anything else (Alacritty's "CellForeground"...) is not a color.
@@ -483,6 +508,38 @@ white = "#aaaaaa"
             parse("x", &bad_bg),
             Err(ThemeError::Missing("colors.primary.background".into()))
         );
+    }
+
+    #[test]
+    fn templum_table_sets_interface_colors() {
+        let plain = parse("x", MINIMAL).unwrap();
+        assert_eq!(plain.interface, [None; 3]);
+        let text = format!(
+            "{MINIMAL}\n[templum]\naccent = \"#ff8800\"\ndots = \"0x333333\"\ncanvas = \"CellBackground\"\n"
+        );
+        let t = parse("x", &text).unwrap();
+        assert_eq!(
+            t.interface,
+            [Some(rgb(0xff8800)), None, Some(rgb(0x333333))]
+        );
+        assert_eq!(t.ui.accent, hsla(rgb(0xff8800), 1.0));
+        assert_eq!(
+            t.ui.ring,
+            hsla(rgb(0xff8800), 0.40),
+            "the ring follows the accent"
+        );
+        assert_eq!(
+            t.ui.dot,
+            hsla(rgb(0x333333), 1.0),
+            "dots are drawn as written"
+        );
+        assert_eq!(t.ui.canvas, plain.ui.canvas, "not a color: derived");
+        assert_eq!(
+            t.ui.selection, plain.ui.selection,
+            "the selection stays the file's"
+        );
+        let canvas = format!("{MINIMAL}\n[templum]\ncanvas = \"#000000\"\n");
+        assert_eq!(parse("x", &canvas).unwrap().ui.canvas, hsla(rgb(0), 1.0));
     }
 
     #[test]
