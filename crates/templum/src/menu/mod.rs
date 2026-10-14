@@ -161,6 +161,11 @@ impl Workspace {
         match &self.space.grid {
             None => Tail::Canvas { group },
             Some(grid) => Tail::Tile {
+                at: self.space.camera().to_world(Point::new(
+                    grid.area.x + grid.area.w / 2.0,
+                    grid.area.y + grid.area.h / 2.0,
+                )),
+                agents: self.agents_for_menu(),
                 flip: grid.tiles.ids().len() > 1 && grid.homes.contains_key(&block),
                 others: self
                     .space
@@ -449,11 +454,14 @@ struct SendTo {
 enum Tail {
     /// On the canvas: Fullscreen, for the block or the selection it was in.
     Canvas { group: Vec<BlockId> },
-    /// In grid mode: back to the canvas, leave the grid, flip the split (with a neighbour), and
-    /// the blocks left on the canvas to add.
+    /// In grid mode: new blocks (`agents`, placed on the canvas at `at`) and the blocks left on
+    /// the canvas, taking half of the tile; flip the split (with a neighbour), leave the grid,
+    /// back to the canvas.
     Tile {
         flip: bool,
         others: Vec<(BlockId, SharedString)>,
+        at: Point,
+        agents: Vec<(AgentEntry, bool)>,
     },
 }
 

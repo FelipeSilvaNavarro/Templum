@@ -544,21 +544,22 @@ fn a_blocks_menu_goes_in_flips_adds_leaves_and_comes_back(cx: &mut TestAppContex
         Some(vec![kanban, terminal]),
         "the selection went in"
     );
-    // Copy, Paste, —, Back to the canvas, Leave the grid, Flip the split, Add to the grid ▸,
-    // Close terminal.
-    pick(handle, cx, terminal, 5, None);
+    // Copy, Paste, —, AI agent ▸, Add ▸, From the canvas ▸, —, Flip the split, Leave the grid,
+    // Back to the canvas, Close terminal.
+    pick(handle, cx, terminal, 7, None);
     let (k, t) = (rect_of(&ws, cx, kanban), rect_of(&ws, cx, terminal));
     assert!(
         t.y > k.bottom() && t.x == k.x,
         "one above the other: {k:?} {t:?}"
     );
-    pick(handle, cx, terminal, 6, Some(0));
+    pick(handle, cx, terminal, 5, Some(0));
     assert_eq!(tiles(cx).map(|t| t.len()), Some(3));
     assert!(
         ws.read_with(cx, |ws, _| ws.space.shown(note)),
         "the note came in"
     );
-    pick(handle, cx, terminal, 4, None);
+    // Nothing left on the canvas: no From the canvas ▸.
+    pick(handle, cx, terminal, 7, None);
     ws.read_with(cx, |ws, _| {
         assert!(!ws.space.shown(terminal), "back on the canvas");
         assert!(ws.space.focused.is_some_and(|f| ws.space.shown(f)));
@@ -567,8 +568,9 @@ fn a_blocks_menu_goes_in_flips_adds_leaves_and_comes_back(cx: &mut TestAppContex
         rect_of(&ws, cx, terminal),
         Rect::new(40.0, 400.0, 400.0, 300.0)
     );
-    // Board list, —, Back to the canvas…
-    pick(handle, cx, kanban, 2, None);
+    // Board list, —, AI agent ▸, Add ▸, From the canvas ▸, —, Flip the split, Leave the grid,
+    // Back to the canvas…
+    pick(handle, cx, kanban, 8, None);
     assert_eq!(tiles(cx), None, "the canvas again");
 }
 
@@ -729,4 +731,50 @@ fn dragging_a_title_shows_the_swap_and_the_tiles_slide(cx: &mut TestAppContext) 
     std::thread::sleep(crate::motion::TILE + std::time::Duration::from_millis(50));
     frame(handle, cx);
     assert!((drawn(cx) - (origin + right.x)).abs() < 1.0, "arrived");
+}
+
+/// In grid mode, Add ▸ in a tile's menu opens a block that takes half of that tile; the gaps'
+/// menu adds blocks too.
+#[gpui_kit::test]
+fn the_grids_menus_add_blocks(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    ws.update(cx, |ws, _| ws.space.selected = vec![kanban, note]);
+    press(handle, TOGGLE, cx);
+    let half = rect_of(&ws, cx, kanban);
+    let count = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len());
+    // Board list, —, AI agent ▸, Add ▸: Terminal.
+    let before = count(cx);
+    pick(handle, cx, kanban, 3, Some(0));
+    let terminal = added_since(&ws, cx, before)[0];
+    let r = rect_of(&ws, cx, terminal);
+    assert!(
+        ws.read_with(cx, |ws, _| ws.space.shown(terminal)),
+        "it came into the grid"
+    );
+    assert!(
+        r.x >= half.x && r.right() <= half.right() && r.y >= half.y && r.bottom() <= half.bottom(),
+        "in the kanban block's half: {r:?} in {half:?}"
+    );
+    // The left gap's menu: AI agent ▸, Add ▸: Terminal, Kanban board, Note.
+    let gap = at(&ws, cx, (GAP / 2.0, 300.0));
+    let before = count(cx);
+    cx.update_window(handle, |_, window, cx| {
+        right_click(window, cx, gap);
+        window.render_frame(cx);
+        window.within("popup-menu").click(1usize, cx);
+        window.render_frame(cx);
+        window
+            .within("submenu")
+            .within("popup-menu")
+            .click(2usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let added = added_since(&ws, cx, before)[0];
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.blocks[&added].note().is_some());
+        assert!(ws.space.shown(added));
+        assert_eq!(ws.space.grid.as_ref().unwrap().tiles.ids().len(), 4);
+    });
 }

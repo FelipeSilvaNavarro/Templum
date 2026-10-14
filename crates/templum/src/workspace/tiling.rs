@@ -199,7 +199,7 @@ impl Workspace {
         }
     }
 
-    /// Add to the grid ▸: block `id`, from the canvas, takes half of tile `at`, with the keyboard.
+    /// From the canvas ▸: block `id`, left on the canvas, takes half of tile `at`, with the keyboard.
     pub(crate) fn add_to_grid(
         &mut self,
         id: BlockId,

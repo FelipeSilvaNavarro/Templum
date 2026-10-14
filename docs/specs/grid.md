@@ -38,7 +38,10 @@ tiled side by side, like Hyprland's dwindle layout, and go back to the canvas ex
 - A block opened in grid mode (a shortcut, Send to, Open in editor, Open a terminal here, a note from the Notes
   dialog, paste, Ctrl+Z reopening a closed block) takes half of the focused tile. Its place on the canvas, for when
   the grid ends, is where it would have opened on the canvas as it was left, off the places of the others.
-- **Add to the grid ▸** in a tile's menu lists the workspace's other blocks; the one chosen takes half of that tile.
+- **Right-click** a tile: **AI agent ▸** and **Add ▸** (Terminal, Kanban board, Note, Editor, Git) open a new block
+  that takes half of that tile, as the canvas menu does; **From the canvas ▸** lists the workspace's blocks left on
+  the canvas, and the one chosen takes half of the tile. Right-clicking a gap between tiles opens the canvas menu
+  (AI agent ▸, Add ▸, Notes…): the new block takes half of the focused tile.
 - Going to a block that isn't tiled (a notification, Go to waiting, Send to, an open note) brings it into the grid.
 
 ### Moving around

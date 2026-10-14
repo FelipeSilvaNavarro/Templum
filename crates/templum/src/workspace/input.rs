@@ -41,8 +41,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Grid mode's gaps hold nothing.
+        // In grid mode the gaps' menu adds blocks: they take half of the focused tile, and
+        // their place on the canvas is in the middle of the view left there.
         if self.space.grid.is_some() {
+            let at = self.space.camera().to_world(self.center(window));
+            self.open_menu(menu::Target::Canvas(at), e.position, window, cx);
             return;
         }
         let at = self.space.canvas.camera.to_world(self.local(e.position));

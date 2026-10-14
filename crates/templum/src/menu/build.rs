@@ -32,6 +32,66 @@ fn item(
         .on_click(move |_, window, cx| ws.update(cx, |ws, cx| act(ws, window, cx)))
 }
 
+/// Adding blocks, the canvas menu's and a tile's: AI agent ▸ and Add ▸ (Terminal, Kanban board,
+/// Note, Editor, Git), their top-left corner at `at` on the canvas. In grid mode they take half of
+/// the focused tile.
+fn adding(
+    ws: &Entity<Workspace>,
+    menu: PopupMenu,
+    agents: Vec<(AgentEntry, bool)>,
+    at: Point,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let (agent, add) = (ws.clone(), ws.clone());
+    menu.submenu_with_icon(
+        Some(Icon::new(IconName::Bot)),
+        "AI agent",
+        window,
+        cx,
+        move |menu, _, _| agent_items(&agent, menu, agents.clone(), at),
+    )
+    .submenu_with_icon(
+        Some(Icon::new(IconName::Plus)),
+        "Add",
+        window,
+        cx,
+        move |menu, _, _| {
+            let ws = &add;
+            menu.item(item(
+                ws,
+                "Terminal",
+                Some(IconName::SquareTerminal),
+                move |ws, window, cx| ws.add_terminal_at(at, window, cx),
+            ))
+            .item(item(
+                ws,
+                "Kanban board",
+                Some(IconName::LayoutDashboard),
+                move |ws, window, cx| ws.add_kanban_at(at, window, cx),
+            ))
+            .item(item(
+                ws,
+                "Note",
+                Some(IconName::StickyNote),
+                move |ws, window, cx| ws.add_note_at(at, window, cx),
+            ))
+            .item(item(
+                ws,
+                "Editor",
+                Some(IconName::FileCode),
+                move |ws, window, cx| ws.ask_editor_folder(at, window, cx),
+            ))
+            .item(item(
+                ws,
+                "Git",
+                Some(IconName::GitBranch),
+                move |ws, window, cx| ws.ask_git_folder(at, window, cx),
+            ))
+        },
+    )
+}
+
 /// The agents, installed first; the others say how to install them when chosen. `at`: where the
 /// agent's block goes.
 fn agent_items(
@@ -146,35 +206,45 @@ impl Items {
                             ws.enter_grid(ids, window, cx)
                         },
                     )),
-                    Tail::Tile { flip, others } => {
-                        let add = ws.clone();
-                        menu.item(item(
-                            ws,
-                            "Back to the canvas",
-                            Some(IconName::Minimize2),
-                            |ws, window, cx| ws.leave_grid(window, cx),
-                        ))
-                        .item(item(ws, "Leave the grid", None, move |ws, window, cx| {
-                            ws.leave_tile(block, window, cx)
-                        }))
-                        .when(flip, |menu| {
-                            menu.item(item(ws, "Flip the split", None, move |ws, _, cx| {
-                                ws.flip_tile(block, cx)
-                            }))
-                        })
-                        .when(!others.is_empty(), |menu| {
-                            menu.submenu("Add to the grid", window, cx, move |menu, _, _| {
-                                others.iter().fold(menu, |menu, (id, title)| {
-                                    let id = *id;
-                                    menu.item(item(
-                                        &add,
-                                        title.clone(),
-                                        None,
-                                        move |ws, window, cx| ws.add_to_grid(id, block, window, cx),
-                                    ))
+                    Tail::Tile {
+                        flip,
+                        others,
+                        at,
+                        agents,
+                    } => {
+                        let bring = ws.clone();
+                        // New blocks take half of this tile: it has the focus.
+                        adding(ws, menu, agents, at, window, cx)
+                            .when(!others.is_empty(), |menu| {
+                                menu.submenu("From the canvas", window, cx, move |menu, _, _| {
+                                    others.iter().fold(menu, |menu, (id, title)| {
+                                        let id = *id;
+                                        menu.item(item(
+                                            &bring,
+                                            title.clone(),
+                                            None,
+                                            move |ws, window, cx| {
+                                                ws.add_to_grid(id, block, window, cx)
+                                            },
+                                        ))
+                                    })
                                 })
                             })
-                        })
+                            .separator()
+                            .when(flip, |menu| {
+                                menu.item(item(ws, "Flip the split", None, move |ws, _, cx| {
+                                    ws.flip_tile(block, cx)
+                                }))
+                            })
+                            .item(item(ws, "Leave the grid", None, move |ws, window, cx| {
+                                ws.leave_tile(block, window, cx)
+                            }))
+                            .item(item(
+                                ws,
+                                "Back to the canvas",
+                                Some(IconName::Minimize2),
+                                |ws, window, cx| ws.leave_grid(window, cx),
+                            ))
                     }
                 };
                 menu.item(item(
@@ -185,61 +255,13 @@ impl Items {
                 ))
             }
             Items::Canvas { at, agents } => {
-                let add = ws.clone();
                 let notes = item(
                     ws,
                     "Notes…",
                     Some(IconName::NotebookText),
                     |_, window, cx| crate::note::open_notes(None, window, cx),
                 );
-                let ws = ws.clone();
-                menu.submenu_with_icon(
-                    Some(Icon::new(IconName::Bot)),
-                    "AI agent",
-                    window,
-                    cx,
-                    move |menu, _, _| agent_items(&ws, menu, agents.clone(), at),
-                )
-                .submenu_with_icon(
-                    Some(Icon::new(IconName::Plus)),
-                    "Add",
-                    window,
-                    cx,
-                    move |menu, _, _| {
-                        let ws = &add;
-                        menu.item(item(
-                            ws,
-                            "Terminal",
-                            Some(IconName::SquareTerminal),
-                            move |ws, window, cx| ws.add_terminal_at(at, window, cx),
-                        ))
-                        .item(item(
-                            ws,
-                            "Kanban board",
-                            Some(IconName::LayoutDashboard),
-                            move |ws, window, cx| ws.add_kanban_at(at, window, cx),
-                        ))
-                        .item(item(
-                            ws,
-                            "Note",
-                            Some(IconName::StickyNote),
-                            move |ws, window, cx| ws.add_note_at(at, window, cx),
-                        ))
-                        .item(item(
-                            ws,
-                            "Editor",
-                            Some(IconName::FileCode),
-                            move |ws, window, cx| ws.ask_editor_folder(at, window, cx),
-                        ))
-                        .item(item(
-                            ws,
-                            "Git",
-                            Some(IconName::GitBranch),
-                            move |ws, window, cx| ws.ask_git_folder(at, window, cx),
-                        ))
-                    },
-                )
-                .item(notes)
+                adding(ws, menu, agents, at, window, cx).item(notes)
             }
             Items::Terminal { selection } => menu
                 .item(

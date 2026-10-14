@@ -52,8 +52,9 @@ would have opened together with the block's. The canvas and the blocks had no me
 | A drawing (with the Select tool) | Delete |
 
 *The grid's items*, before Close in every block's menu ([grid.md](grid.md)): on the canvas, **Fullscreen** (with the
-blocks selected along with it); in grid mode, **Back to the canvas**, **Leave the grid**, **Flip the split** (a tile
-with a neighbour) and **Add to the grid ▸** (the workspace's blocks left on the canvas).
+blocks selected along with it); in grid mode, **AI agent ▸** and **Add ▸** (a new block taking half of the tile), **From the canvas ▸** (the
+workspace's blocks left on the canvas), then **Flip the split** (a tile with a neighbour), **Leave the grid** and
+**Back to the canvas**. In grid mode a gap between tiles opens the empty canvas's menu.
 
 - Right-clicking a block focuses it first, so Copy and Paste act on that terminal.
 - The menu closes on a choice, Esc, or a click anywhere else. The keyboard goes back where it was.
