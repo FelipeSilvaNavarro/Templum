@@ -56,7 +56,12 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         button(
             "tool-hand",
             IconName::Hand,
-            "Hand: move the canvas over blocks",
+            // Held, Alt is the hand while it lasts (Option on macOS).
+            if cfg!(target_os = "macos") {
+                "Hand: move the canvas over blocks · Option"
+            } else {
+                "Hand: move the canvas over blocks · Alt"
+            },
             tool == Tool::Hand,
             ui,
         )
