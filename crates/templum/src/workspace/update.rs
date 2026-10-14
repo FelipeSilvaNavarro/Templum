@@ -10,7 +10,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::{Notification, NotificationType};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, SharedString, Task, Window, div, px};
-use templum_update::{Install, Ready, VERSION};
+use templum_update::{Install, Ready, VERSION, Why};
 
 use super::{Workspace, show_notification};
 use crate::settings::Section;
@@ -20,9 +20,14 @@ use crate::{alert, notes, prompt};
 /// How often a running Templum looks again.
 const EVERY: Duration = Duration::from_secs(24 * 3600);
 
+/// The news last told (`ready-0.2.0`), in the data folder's `updates`.
+pub(super) const TOLD: &str = "told";
+
 impl Workspace {
     /// Deletes what an earlier update left, then checks at start and every day while
-    /// `[updates] check` is on. Nothing without a data folder (`--bench`), nor in tests.
+    /// `[updates] check` is on. Nothing without a data folder (`--bench`), nor in tests. A build
+    /// from source checks only on demand: each `cargo run` would ask GitHub, which allows 60 an
+    /// hour.
     pub(super) fn update_loop(
         install: &Install,
         data_dir: Option<&PathBuf>,
@@ -42,7 +47,7 @@ impl Workspace {
                 .await;
             loop {
                 let checked = ws.update_in(cx, |ws, window, cx| {
-                    if ws.config.updates.check {
+                    if ws.config.updates.check && ws.install != Install::Manual(Why::Source) {
                         ws.check_update(false, window, cx);
                     }
                 });
@@ -71,7 +76,7 @@ impl Workspace {
         let Some(updates) = self.data_dir.as_ref().map(|dir| dir.join("updates")) else {
             return;
         };
-        self.update = Update::Checking;
+        let before = std::mem::replace(&mut self.update, Update::Checking);
         cx.notify();
         let install = self.install.clone();
         // The download's progress, at most once per percent.
@@ -95,6 +100,8 @@ impl Workspace {
                 .spawn(async move { templum_update::latest(&asked) })
                 .await;
             let state = match found {
+                // Offline, a version known to be out stays known.
+                Err(_) if !manual && matches!(before, Update::Manual { .. }) => before,
                 Err(error) => Update::Failed(error),
                 Ok(release) if !release.newer_than(VERSION) => Update::UpToDate(notes::now()),
                 Ok(release) => {
@@ -244,6 +251,11 @@ impl Workspace {
         if !manual && self.update_told.as_deref() == Some(key.as_str()) {
             return;
         }
+        // Kept, so news isn't told again at every start.
+        if let Some(updates) = self.data_dir.as_ref().map(|dir| dir.join("updates")) {
+            let _ = std::fs::create_dir_all(&updates)
+                .and_then(|()| std::fs::write(updates.join(TOLD), &key));
+        }
         self.update_told = Some(key.clone());
         let ws = cx.entity();
         let notification = Notification::new()
@@ -334,7 +346,7 @@ impl Workspace {
     }
 
     /// Quits, then opens the new version: GPUI's restart waits for this process to end. An
-    /// installer runs once Templum has saved and quit ([`Workspace::finish_update`]).
+    /// installer starts once GPUI has quit (`main`).
     fn restart_into_update(&mut self, cx: &mut Context<Self>) {
         let Update::Ready { ready, .. } = &self.update else {
             return;
@@ -345,7 +357,9 @@ impl Workspace {
                 cx.restart();
             }
             Ready::Installer(launch) => {
-                self.relaunch = Some(launch.clone());
+                *crate::update::INSTALLER
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = Some(launch.clone());
                 cx.quit();
             }
         }
@@ -358,42 +372,39 @@ impl Workspace {
             ready: Ready::Terminal {
                 folder, command, ..
             },
-            typed,
             ..
-        } = &mut self.update
+        } = &self.update
         else {
             return;
         };
-        *typed = true;
         let (folder, command) = (folder.clone(), command.clone());
         let rect = self.new_terminal_rect(window);
-        if let Some(pane) = self
+        let Some(pane) = self
             .spawn_block(rect, Some(folder), window, cx)
             .and_then(|id| self.space.terminal(id))
-        {
-            pane.term.write(command.into_bytes());
+        else {
+            return;
+        };
+        pane.term.write(command.into_bytes());
+        if let Update::Ready { typed, .. } = &mut self.update {
+            *typed = true;
         }
         cx.notify();
     }
 
-    /// On quit: a downloaded file takes the old one's place, and an installer asked for by
-    /// Restart starts. After the canvas is saved: the NSIS installer closes every Templum.
+    /// On quit, or when the window closes (the workspace goes before GPUI quits): a downloaded
+    /// file takes the old one's place, once.
     pub(super) fn finish_update(&mut self) {
         if let Update::Ready {
             ready: Ready::Swap { new, target, .. },
             ..
-        } = &self.update
-            && let Err(e) = templum_update::swap(new, target)
+        } = std::mem::take(&mut self.update)
+            && let Err(e) = templum_update::swap(&new, &target)
         {
             eprintln!(
                 "templum: couldn't put the new version at {}: {e}",
                 target.display()
             );
-        }
-        if let Some(launch) = self.relaunch.take()
-            && let Err(e) = launch.spawn()
-        {
-            eprintln!("templum: couldn't start {}: {e}", launch.program.display());
         }
     }
 }

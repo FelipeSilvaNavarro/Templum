@@ -11,7 +11,7 @@ use std::process::{Command, Stdio};
 use semver::Version;
 use ureq::Agent;
 
-use crate::fetch::{cant_write, download};
+use crate::fetch::{cant_write, download, own};
 use crate::{Install, Release};
 
 /// A version downloaded and ready.
@@ -77,6 +77,9 @@ fn prepare_on(
     arch: &str,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<Ready, String> {
+    if let Install::Manual(_) = install {
+        return Err("This Templum can't replace itself".to_string());
+    }
     let files = install.files(release, os, arch)?;
     let folder = updates.join(release.version.to_string());
     let total = files.iter().map(|a| a.size).sum();
@@ -136,7 +139,7 @@ fn prepare_on(
             command: "makepkg -si".to_string(),
             restart: exe.clone(),
         },
-        Install::Manual(_) => return Err("This Templum can't replace itself".to_string()),
+        Install::Manual(_) => unreachable!("refused above"),
     })
 }
 
@@ -158,12 +161,29 @@ pub fn swap(new: &Path, target: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Deletes what an earlier update left: a swap's leftovers beside the target, and the downloads
-/// of versions up to `current` (installed, or passed by).
+/// Deletes what an earlier update left: the old version a swap moved aside, files an interrupted
+/// download or unpacking left beside the target, and the downloads of versions up to `current`
+/// (installed, or passed by). A ready `.<name>.update` stays: its download isn't done again.
 pub fn cleanup(install: &Install, updates: &Path, current: &str) {
     if let Some(target) = install.target() {
-        for what in ["old", "update", "update.part"] {
-            remove(&beside(target, what));
+        remove(&beside(target, "old"));
+        // Another Templum's may be on its way: only an hour old or more.
+        let unfinished = beside(target, "update.");
+        let unfinished = unfinished.file_name().unwrap_or_default().to_string_lossy();
+        let dir = target.parent().unwrap_or(Path::new("."));
+        for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let stale = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|at| at.elapsed().is_ok_and(|age| age >= STALE));
+            if stale
+                && entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(&*unfinished)
+            {
+                remove(&entry.path());
+            }
         }
     }
     let Ok(current) = Version::parse(current) else {
@@ -180,6 +200,9 @@ pub fn cleanup(install: &Install, updates: &Path, current: &str) {
         }
     }
 }
+
+/// How old a file left by a download or an unpacking must be to be deleted.
+const STALE: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// `target`'s hidden sibling: `templum.AppImage` and `update` make `.templum.AppImage.update`.
 fn beside(target: &Path, what: &str) -> PathBuf {
@@ -218,9 +241,11 @@ fn unpack(archive: &Path, to: &Path) -> Result<(), String> {
         if entry.header().entry_type().is_file()
             && path.file_name().is_some_and(|name| name == "templum")
         {
-            let mut out = File::create(to).map_err(|e| cant_write(to, &e))?;
-            io::copy(&mut entry, &mut out).map_err(|e| cant_write(to, &e))?;
-            return executable(to);
+            let part = own(to);
+            let mut out = File::create(&part).map_err(|e| cant_write(&part, &e))?;
+            io::copy(&mut entry, &mut out).map_err(|e| cant_write(&part, &e))?;
+            executable(&part)?;
+            return fs::rename(&part, to).map_err(|e| cant_write(to, &e));
         }
     }
     Err(format!("The archive {} has no templum", archive.display()))
@@ -229,7 +254,8 @@ fn unpack(archive: &Path, to: &Path) -> Result<(), String> {
 /// The disk image's app, copied to `new` (a new bundle: code is never written over, macOS would
 /// kill the running app).
 fn copy_app(dmg: &Path, mount: &Path, new: &Path) -> Result<(), String> {
-    remove(new);
+    let copy = own(new);
+    remove(&copy);
     fs::create_dir_all(mount).map_err(|e| cant_write(mount, &e))?;
     run(Command::new("hdiutil")
         .args([
@@ -248,11 +274,13 @@ fn copy_app(dmg: &Path, mount: &Path, new: &Path) -> Result<(), String> {
         .map(|entry| entry.path())
         .find(|path| path.extension().is_some_and(|e| e == "app"));
     let copied = match app {
-        Some(app) => run(Command::new("ditto").arg(app).arg(new)),
+        Some(app) => run(Command::new("ditto").arg(app).arg(&copy)),
         None => Err(format!("{} has no app", dmg.display())),
     };
     let _ = run(Command::new("hdiutil").arg("detach").arg(mount));
-    copied
+    copied?;
+    remove(new);
+    fs::rename(&copy, new).map_err(|e| cant_write(new, &e))
 }
 
 fn run(command: &mut Command) -> Result<(), String> {
@@ -484,8 +512,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("templum.exe");
         fs::write(&target, "").unwrap();
-        for what in ["old", "update", "update.part"] {
-            fs::write(beside(&target, what), "").unwrap();
+        let long_ago = std::time::SystemTime::now() - STALE;
+        for what in [
+            "old",
+            "update",
+            "update.4120.part",
+            "update.4121",
+            "update.4122.part",
+        ] {
+            let file = File::create(beside(&target, what)).unwrap();
+            if what != "update.4122.part" {
+                file.set_modified(long_ago).unwrap();
+            }
         }
         let updates = dir.path().join("updates");
         for folder in ["0.1.0", "0.1.1", "0.2.0", "notes"] {
@@ -497,7 +535,16 @@ mod tests {
             .map(|e| e.unwrap().file_name().into_string().unwrap())
             .collect();
         left.sort();
-        assert_eq!(left, ["templum.exe", "updates"]);
+        assert_eq!(
+            left,
+            [
+                ".templum.exe.update",
+                ".templum.exe.update.4122.part",
+                "templum.exe",
+                "updates"
+            ],
+            "a ready download and another Templum's stay"
+        );
         let mut kept: Vec<_> = fs::read_dir(&updates)
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())

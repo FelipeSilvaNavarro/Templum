@@ -4,11 +4,17 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
 use gpui_kit::prelude::*;
+use std::sync::Mutex;
+
 use gpui_kit::{AnyElement, ClickEvent, Context, TestSupportExt, px};
-use templum_update::{Ready, Release, Why};
+use templum_update::{Launch, Ready, Release, Why};
 
 use crate::title_bar;
 use crate::workspace::Workspace;
+
+/// The installer Restart asked for, started by `main` once GPUI has quit: on Windows, starting a
+/// process while GPUI shuts down can re-enter it (its own restart waits the same way).
+pub(crate) static INSTALLER: Mutex<Option<Launch>> = Mutex::new(None);
 
 /// Where an update stands.
 #[derive(Clone, Debug, Default, PartialEq)]

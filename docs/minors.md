@@ -351,3 +351,10 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **Nothing is signed by Templum.** A download is trusted because GitHub serves it over HTTPS with the SHA-256
   it computed (`download`, `fetch.rs`); someone who could publish a release could publish a bad one. Fix: sign the
   files in `release.yml` (minisign) and check the signature with a key built into Templum.
+- [ ] **A failed swap is only written to stderr.** `finish_update` (`crates/templum/src/workspace/update.rs`) prints
+  why the new file couldn't take the old one's place (a folder made read-only after the download); Templum then
+  opens the old version, which downloads again and offers Restart again. Fix: keep the error in the data folder and
+  tell it at the next start.
+- [ ] **The check's steps aren't tested end to end.** `check_update` (`workspace/update.rs`) calls GitHub directly,
+  so the headless tests set the states by hand and never go Checking → Downloading → Ready, nor the offline case
+  that keeps "available". Fix: hand `check_update` the release source, a local server in tests.

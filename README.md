@@ -308,9 +308,9 @@ What changed in each one is in [CHANGELOG.md](CHANGELOG.md). The builds are **un
 Templum looks for a new release at start and once a day, downloads the file made for your system and for the way
 you installed it (an AppImage replaces the AppImage, the installer runs again, and so on), checks it against the
 SHA-256 GitHub lists, and asks before restarting into it: **Restart to update** in the title bar. Templum installed
-with a `.deb` or the pacman package gets the install command typed in a terminal, for your password. A build from
-source, or run from the disk image on macOS, is only told a version is out. **Settings ▸ Updates** checks on demand
-and turns the automatic check off ([docs/specs/updates.md](docs/specs/updates.md)).
+with a `.deb` or the pacman package gets the install command typed in a terminal, for your password. Run from the
+disk image on macOS, it is only told a version is out; a build from source checks only on demand. **Settings ▸
+Updates** checks on demand and turns the automatic check off ([docs/specs/updates.md](docs/specs/updates.md)).
 
 ## Contributing
 

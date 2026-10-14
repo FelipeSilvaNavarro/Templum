@@ -709,8 +709,6 @@ pub struct Workspace {
     install: templum_update::Install,
     /// The news last told about an update ("ready-0.2.0"): each is told once.
     update_told: Option<String>,
-    /// An installer to start once Templum has quit (Restart).
-    relaunch: Option<templum_update::Launch>,
     /// Checking or downloading; the check at start and every day.
     _update: Task<()>,
     _update_loop: Task<()>,
@@ -971,10 +969,14 @@ impl Workspace {
         });
         let install = templum_update::Install::detect();
         let update_loop = Self::update_loop(&install, data_dir.as_ref(), window, cx);
+        let update_told = data_dir
+            .as_ref()
+            .and_then(|dir| std::fs::read_to_string(dir.join("updates").join(update::TOLD)).ok());
         let flush = vec![
             cx.on_release(|ws, cx| {
                 ws.save();
                 ws.save_canvas_now(cx);
+                ws.finish_update();
             }),
             cx.on_app_quit(|ws, cx| {
                 ws.save();
@@ -1034,8 +1036,7 @@ impl Workspace {
             _usage: Task::ready(()),
             update: Default::default(),
             install,
-            update_told: None,
-            relaunch: None,
+            update_told,
             _update: Task::ready(()),
             _update_loop: update_loop,
             themes,

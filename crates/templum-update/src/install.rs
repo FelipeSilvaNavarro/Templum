@@ -44,9 +44,19 @@ impl Install {
         let Ok(exe) = std::env::current_exe() else {
             return Install::Manual(Why::Package);
         };
-        // A link (~/.local/bin/templum) is followed to the file it names.
-        let exe = exe.canonicalize().unwrap_or(exe);
-        let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from);
+        // A link (~/.local/bin/templum) is followed to the file it names. Not on Windows, where
+        // that path starts with \\?\, which PowerShell can't start (GPUI's restart).
+        let canonical = |path: PathBuf| {
+            if cfg!(unix) {
+                path.canonicalize().unwrap_or(path)
+            } else {
+                path
+            }
+        };
+        let exe = canonical(exe);
+        let appimage = std::env::var_os("APPIMAGE")
+            .zip(std::env::var_os("APPDIR"))
+            .map(|(file, dir)| (PathBuf::from(file), canonical(dir.into())));
         detect_in(std::env::consts::OS, &exe, appimage, Path::new("/"))
     }
 
@@ -92,10 +102,15 @@ impl Install {
     }
 }
 
-/// How the executable at `exe` was installed, on `os` (`std::env::consts::OS`). `appimage` is the
-/// `APPIMAGE` variable the AppImage runtime sets; `root` is where `/var/lib` is looked for (`/`, a
-/// folder in tests).
-pub fn detect_in(os: &str, exe: &Path, appimage: Option<PathBuf>, root: &Path) -> Install {
+/// How the executable at `exe` was installed, on `os` (`std::env::consts::OS`). `appimage` is what
+/// the AppImage runtime sets: `APPIMAGE` (the file) and `APPDIR` (where it is mounted); `root` is
+/// where `/var/lib` is looked for (`/`, a folder in tests).
+pub fn detect_in(
+    os: &str,
+    exe: &Path,
+    appimage: Option<(PathBuf, PathBuf)>,
+    root: &Path,
+) -> Install {
     // `target/release/templum`, `target/<triple>/debug/templum`: Cargo marks its folder.
     if exe
         .ancestors()
@@ -109,7 +124,11 @@ pub fn detect_in(os: &str, exe: &Path, appimage: Option<PathBuf>, root: &Path) -
     let exe = exe.to_path_buf();
     match os {
         "linux" => {
-            if let Some(file) = appimage {
+            // Every program started from an AppImage's terminal inherits its variables (Cursor's):
+            // they are Templum's only when it runs from the mounted image.
+            if let Some((file, dir)) = appimage
+                && exe.starts_with(&dir)
+            {
                 return Install::AppImage(file);
             }
             if !exe.starts_with("/usr") {
@@ -207,14 +226,38 @@ mod tests {
     #[test]
     fn linux_installations() {
         let appimage = PathBuf::from("/home/ada/Apps/templum.AppImage");
+        let mounted = PathBuf::from("/tmp/.mount_templuX");
         assert_eq!(
             detect_in(
                 "linux",
-                Path::new("/tmp/.mount_templuX/usr/bin/templum"),
-                Some(appimage.clone()),
+                &mounted.join("usr/bin/templum"),
+                Some((appimage.clone(), mounted)),
                 Path::new("/")
             ),
             Install::AppImage(appimage)
+        );
+        // Run from another AppImage's terminal: its variables aren't Templum's.
+        let cursor = (
+            PathBuf::from("/home/ada/Apps/Cursor.AppImage"),
+            PathBuf::from("/tmp/.mount_CursorY"),
+        );
+        assert_eq!(
+            detect_in(
+                "linux",
+                Path::new("/usr/bin/templum"),
+                Some(cursor.clone()),
+                Path::new("/nonexistent")
+            ),
+            Install::Manual(Why::Package)
+        );
+        assert_eq!(
+            detect_in(
+                "linux",
+                Path::new("/home/ada/bin/templum"),
+                Some(cursor),
+                Path::new("/")
+            ),
+            Install::Portable("/home/ada/bin/templum".into())
         );
         assert_eq!(
             at("linux", "/home/ada/bin/templum"),

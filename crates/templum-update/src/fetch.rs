@@ -62,7 +62,7 @@ pub fn download(
         progress(asset.size);
         return Ok(());
     }
-    let part = suffixed(to, ".part");
+    let part = suffixed(&own(to), ".part");
     let got = receive(agent, asset, &part, progress);
     let checked = match got {
         Ok(have) if have == want => fs::rename(&part, to).map_err(|e| cant_write(to, &e)),
@@ -116,6 +116,12 @@ fn sha256(path: &Path) -> io::Result<String> {
     let mut hash = Sha256::new();
     io::copy(&mut File::open(path)?, &mut hash)?;
     Ok(format!("{:x}", hash.finalize()))
+}
+
+/// `path` with this process's id added to its name (`x.deb.4120`): two Templums running never
+/// write the same file.
+pub(crate) fn own(path: &Path) -> PathBuf {
+    suffixed(path, &format!(".{}", std::process::id()))
 }
 
 /// `path` with `suffix` added to its name: `x.deb` and `.part` make `x.deb.part`.
@@ -179,7 +185,7 @@ pub(crate) mod tests {
         download(&agent(), &asset, &to, &mut |got| heard.push(got)).unwrap();
         assert_eq!(fs::read(&to).unwrap(), BODY);
         assert_eq!(heard.last(), Some(&(BODY.len() as u64)));
-        assert!(!suffixed(&to, ".part").exists());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1, "no part left");
 
         // Already there and right: the server is gone, nothing is asked.
         heard.clear();
@@ -198,8 +204,7 @@ pub(crate) mod tests {
             error,
             "templum.AppImage was damaged on the way (its checksum doesn't match)"
         );
-        assert!(!to.exists());
-        assert!(!suffixed(&to, ".part").exists());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0, "nothing left");
     }
 
     #[test]

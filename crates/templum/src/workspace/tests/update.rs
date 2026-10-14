@@ -102,10 +102,11 @@ fn install_opens_a_terminal_in_the_downloads_folder(cx: &mut TestAppContext) {
     });
 }
 
-/// Quitting puts a downloaded file in the old one's place, restarted or not.
+/// Closing the window puts a downloaded file in the old one's place, restarted or not: the
+/// workspace goes before GPUI quits.
 #[gpui_kit::test]
-fn quitting_puts_the_new_version_in_place(cx: &mut TestAppContext) {
-    let (_, ws) = open(cx);
+fn closing_the_window_puts_the_new_version_in_place(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
     let dir = tempfile::tempdir().unwrap();
     let (new, target) = (
         dir.path().join(".templum.update"),
@@ -123,10 +124,31 @@ fn quitting_puts_the_new_version_in_place(cx: &mut TestAppContext) {
             },
             typed: false,
         };
-        ws.finish_update();
     });
+    drop(ws);
+    cx.update_window(handle, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "0.2.0");
     assert!(!new.exists());
+}
+
+/// News told once isn't told again at the next start.
+#[gpui_kit::test]
+fn told_news_is_remembered_across_starts(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let manual = Update::Manual {
+        release: release(),
+        blocked: Blocked::Install(Why::Package),
+    };
+    done(handle, &ws, manual, cx);
+    let told = data.path().join("updates").join(super::super::update::TOLD);
+    assert_eq!(std::fs::read_to_string(&told).unwrap(), "out-0.2.0");
+    let (_, again) = open_in(cx, None, Some(data.path().to_path_buf()));
+    again.read_with(cx, |ws, _| {
+        assert_eq!(ws.update_told.as_deref(), Some("out-0.2.0"));
+    });
 }
 
 /// Settings ▸ Updates turns the automatic check off in config.toml.

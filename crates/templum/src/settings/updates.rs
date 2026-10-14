@@ -65,14 +65,18 @@ pub(super) fn rows(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<Row> {
         Row::new("updates.check", "Check for updates automatically")
             .description("At start and once a day; a new version downloads by itself")
             .control(Switch::new("updates-check-switch").checked(on).on_click(
-                move |on: &bool, _, cx| {
+                move |on: &bool, window, cx| {
                     let on = *on;
                     s.update(cx, |ws, cx| {
                         ws.edit(
                             Edit::set("updates", "check", on),
                             |c| c.updates.check = on,
                             cx,
-                        )
+                        );
+                        // Turned on, it looks now rather than tomorrow.
+                        if on {
+                            ws.check_update(false, window, cx);
+                        }
                     })
                 },
             ))

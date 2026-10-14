@@ -16,8 +16,8 @@ AppImage, a `.deb` by a `.deb`), downloads it in the background, checks it, and 
 1. A Templum older than the newest release downloads it by itself and offers **Restart to update**.
 2. After the restart the new version runs, with the canvas as it was left.
 3. A Templum installed by a package manager that needs `sudo` (`.deb`, pacman) gets the command typed in a terminal.
-4. A Templum it can't replace (built from source, another package manager, run from the disk image) tells that a
-   version is out and links to it.
+4. A Templum it can't replace (another package manager, run from the disk image) tells that a version is out and
+   links to it; a build from source checks only on demand.
 5. **Settings ▸ Updates** shows the version, checks on demand, and turns the automatic check off.
 6. A file whose checksum doesn't match GitHub's is never run or put in place.
 
@@ -45,7 +45,7 @@ Read once at start from the running executable (`templum-update`'s `install.rs`)
 | Installed as | Recognized by | File taken | Put in place |
 |---|---|---|---|
 | Built from source | a `CACHEDIR.TAG` (Cargo's) up to 3 folders above the executable | — | told only |
-| AppImage | `APPIMAGE` (set by the AppImage runtime) | `templum_<v>_<arch>.AppImage` | renamed over the AppImage |
+| AppImage | `APPIMAGE` and `APPDIR` (set by the AppImage runtime), the executable inside `APPDIR` | `templum_<v>_<arch>.AppImage` | renamed over the AppImage |
 | `.deb` | an executable under `/usr` and `/var/lib/dpkg/info/templum.list` | `templum_<v>_<amd64\|arm64>.deb` | `sudo apt install ./<deb>` typed in a terminal |
 | pacman | an executable under `/usr` and `/var/lib/pacman/local/templum-<version>` | `PKGBUILD` and `templum_<v>_x86_64.tar.gz` | `makepkg -si` typed in a terminal |
 | Another package manager | an executable under `/usr` without either | — | told only |
@@ -56,30 +56,40 @@ Read once at start from the running executable (`templum-update`'s `install.rs`)
 | macOS app | an executable in `<name>.app/Contents/MacOS` | `Templum_<v>_<aarch64\|x64>.dmg` | the dmg's app copied beside the bundle, then swapped |
 | macOS, not installed | a path under `/Volumes/` or in `AppTranslocation` | — | told only: move Templum to Applications |
 
+- **Another AppImage's variables.** A program started from an AppImage's terminal (Cursor's) inherits its
+  `APPIMAGE`: Templum trusts it only when its own executable is inside `APPDIR`, the image mounted, so it never
+  renames itself over another app.
 - **Renames, never writes over.** A running AppImage reads through the file it opened, a running Windows executable
   can be renamed but not deleted, and macOS kills an app whose signed code is written over. So the new file is
   written beside the old one under a hidden name (`.<name>.update`) and renamed into place. On Unix one rename
   replaces a file; a running Windows executable and a macOS bundle (a folder) are moved aside first (`.<name>.old`),
   deleted at the next start.
-- **When.** Files to rename over are swapped when Templum quits, for any reason: closing Templum after a download is
-  enough. Installers run only after **Restart**, once Templum has saved and quit: the NSIS installer in passive mode
-  closes every running Templum and opens the new one (`/R`), without making shortcuts again (`/NS`). `msiexec`
-  doesn't open Templum again.
+- **When.** Files to rename over are swapped when Templum quits, for any reason: closing the window after a download
+  is enough (the workspace is released before GPUI quits, so the swap runs from both). Installers run only after
+  **Restart**, once GPUI's loop has ended (starting a process while it shuts down can re-enter it on Windows): the
+  NSIS installer in passive mode closes every running Templum and opens the new one (`/R`), without making
+  shortcuts again (`/NS`). `msiexec` doesn't open Templum again.
+- **Two Templums.** Each writes its downloads and unpackings under a name with its process id, then renames: one
+  never truncates the other's file.
 - **macOS:** `hdiutil attach -nobrowse -readonly -noautoopen` the dmg in the download folder, `ditto` its app to
   `.<bundle>.update` beside the bundle, `hdiutil detach`. A file Templum downloads itself gets no quarantine flag, so
   Gatekeeper doesn't ask again.
 - **Downloads** for installers and packages go to `<data>/updates/<version>/`; folders of versions up to the running
-  one are deleted at start, with the leftovers of a swap (`.<name>.old`, `.<name>.update`).
+  one are deleted at start, with a swap's `.<name>.old` and the unfinished files beside the target an hour old or
+  more. A ready `.<name>.update` stays: its download is skipped next time.
 
 ## What a person sees
 
-- **Automatically** (`[updates] check = true`): at start and every 24 hours. A newer release is downloaded at once,
-  in the background; a failed automatic check (no network) says nothing.
+- **Automatically** (`[updates] check = true`): at start and every 24 hours, and when the switch is turned on. A
+  newer release is downloaded at once, in the background; a failed automatic check (no network) says nothing and
+  keeps a version known to be out. A build from source checks only with **Check now**: every `cargo run` would ask
+  GitHub, which allows 60 requests an hour.
 - **The title bar** shows a pill left of the usage meter while there is news:
   - downloading: "0.2.0 · 45%";
   - ready: **Restart to update** (Restart), or **Install 0.2.0** for `.deb` and pacman (then Restart);
   - told only, or the download failed: "0.2.0 available", which opens the release page.
-- **A notification**, once per version: "Templum 0.2.0 is ready" with **Restart** and **What's new** (the release
+- **A notification**, once per version (the last news told is kept in `<data>/updates/told`, so a restart doesn't
+  tell it again): "Templum 0.2.0 is ready" with **Restart** and **What's new** (the release
   page); "Templum 0.2.0 is downloaded" with **Install** for `.deb` and pacman; "Templum 0.2.0 is out" with **What's
   new** when Templum can't replace itself, saying why; "Couldn't update to 0.2.0" with the error.
 - **Restart** asks first when a terminal is busy (an agent or a command running in it: Templum reopens the
@@ -122,11 +132,13 @@ version order (`0.2.0-rc.1` before `0.2.0`); each installation is recognized fro
 architecture takes its file from the v0.1.1 names, and a missing one is an error; a download from a local HTTP server
 follows a redirect, reports progress, keeps a file with the right digest, leaves nothing for a wrong one and skips a
 file already there; the portable archive gives only `templum`, executable; a swap replaces a file and a folder and
-keeps the old one aside where needed; cleanup keeps newer versions' downloads; the installers' and terminals' command
+keeps the old one aside where needed; cleanup keeps newer versions' downloads, a ready download and another
+Templum's unfinished one; another AppImage's variables aren't Templum's; the installers' and terminals' command
 lines.
 
 **Headless UI:** Settings ▸ Updates writes `check = false`; a ready update shows the pill and one notification per
-version; a release Templum can't install shows "available".
+version; news told is remembered by the next start; a release Templum can't install shows "available"; Install opens
+a terminal and the pill says Restart; closing the window swaps the files.
 
 **Manual:** a release build with its version set to `0.1.0`, copied out of `target/` and run, downloads v0.1.1 and
 restarts into it; the same with `APPIMAGE` pointing at a file; on Windows, the portable executable and the NSIS

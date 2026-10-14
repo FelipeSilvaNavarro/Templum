@@ -99,6 +99,16 @@ fn main() {
             cx.on_window_closed(|cx, _| cx.quit()).detach();
             cx.activate(true);
         });
+    // Restart into an installer (Windows): it replaces Templum, so it starts once Templum is done.
+    let installer = update::INSTALLER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(launch) = installer
+        && let Err(e) = launch.spawn()
+    {
+        eprintln!("templum: couldn't start {}: {e}", launch.program.display());
+    }
 }
 
 /// Hands Templum what Claude Code tells its status line, then prints the user's own status line
