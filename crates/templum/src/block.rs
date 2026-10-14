@@ -567,9 +567,9 @@ pub(crate) fn render(
             // Nothing behind a block reacts to its clicks; wheel events still bubble
             // (title bar pans).
             el.block_mouse_except_scroll()
-                .on_hover(
-                    cx.listener(move |ws, hovered: &bool, _, cx| ws.hover_block(id, *hovered, cx)),
-                )
+                .on_hover(cx.listener(move |ws, hovered: &bool, window, cx| {
+                    ws.hover_block(id, *hovered, window, cx)
+                }))
                 // Blocking hides the workspace from pinch (it hit-tests like a click): zoom
                 // here too.
                 .on_pinch(cx.listener(|ws, e, window, cx| ws.on_pinch(e, window, cx)))

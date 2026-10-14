@@ -132,6 +132,8 @@ impl Workspace {
             {
                 b.rect = rect;
                 self.fit_terminal(id, rect);
+                // The tile under the pointer is another now: it waits for the pointer to move.
+                self.pointer_moved = false;
             }
         }
     }
@@ -198,6 +200,23 @@ impl Workspace {
         self.join_grid(id, Some(at));
         self.focus_block(id, window, cx);
         cx.notify();
+    }
+
+    /// Grid mode's focus follows the pointer, as Hyprland's `follow_mouse` does: once the pointer
+    /// moves, the tile under it takes the keyboard. Not while a button is held or a menu is open.
+    pub(crate) fn follow_pointer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.space.grid.is_none()
+            || !self.pointer_moved
+            || self.drag.is_some()
+            || self.menu.is_some()
+        {
+            return;
+        }
+        if let Some(id) = self.space.hovered.filter(|id| self.space.shown(*id))
+            && self.space.focused != Some(id)
+        {
+            self.focus_block(id, window, cx);
+        }
     }
 
     /// The focused tile and the one on its `to` side.

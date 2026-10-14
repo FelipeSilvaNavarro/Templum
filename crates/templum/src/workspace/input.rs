@@ -53,7 +53,13 @@ impl Workspace {
         self.open_menu(menu::Target::Canvas(at), e.position, window, cx);
     }
 
-    pub(crate) fn hover_block(&mut self, id: BlockId, hovered: bool, cx: &mut Context<Self>) {
+    pub(crate) fn hover_block(
+        &mut self,
+        id: BlockId,
+        hovered: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let next = if hovered {
             Some(id)
         } else if self.space.hovered == Some(id) {
@@ -65,6 +71,7 @@ impl Workspace {
             self.space.hovered = next;
             cx.notify();
         }
+        self.follow_pointer(window, cx);
     }
 
     pub(super) fn local(&self, pos: PixelPoint<Pixels>) -> Point {

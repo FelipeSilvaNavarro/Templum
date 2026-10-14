@@ -296,7 +296,7 @@ impl Render for Workspace {
                 window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
                 entity.update(cx, |ws, _| ws.origin = bounds.origin);
                 let on_move = entity.clone();
-                window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
+                window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
                     if phase == DispatchPhase::Bubble {
                         on_move.update(cx, |ws, cx| {
                             // Alt let go while the window wasn't listening (another window had
@@ -309,6 +309,8 @@ impl Render for Workspace {
                                 ws.drag_to(e.position, e.modifiers.shift, cx);
                             } else {
                                 ws.end_drag();
+                                ws.pointer_moved = true;
+                                ws.follow_pointer(window, cx);
                             }
                         });
                     }
