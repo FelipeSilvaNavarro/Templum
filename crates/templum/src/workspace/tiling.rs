@@ -35,6 +35,18 @@ impl Workspace {
         self.enter_grid(ids, window, cx);
     }
 
+    /// A block's fullscreen button: the block in grid mode (with the selection it is in), or, in
+    /// grid mode, back to the canvas.
+    pub(crate) fn fullscreen(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.space.grid.is_some() {
+            self.leave_grid(window, cx);
+        } else if self.space.selected.contains(&id) {
+            self.enter_grid(self.space.selected.clone(), window, cx);
+        } else {
+            self.enter_grid(vec![id], window, cx);
+        }
+    }
+
     /// Grid mode for `ids`, in their order on the canvas: left to right, then top to bottom.
     pub(crate) fn enter_grid(
         &mut self,

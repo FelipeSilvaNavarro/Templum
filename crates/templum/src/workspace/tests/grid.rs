@@ -385,3 +385,34 @@ fn ctrl_z_brings_a_closed_tile_back_into_the_grid(cx: &mut TestAppContext) {
         assert!(tiles.contains(&kanban));
     });
 }
+
+/// The button beside a block's close button: full screen, with the selection it is in; again,
+/// back to the canvas.
+#[gpui_kit::test]
+fn the_fullscreen_button_takes_the_selection_and_comes_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    ws.update(cx, |ws, _| ws.space.selected = vec![kanban, note]);
+    // The note lies over the kanban block's right end: its button is the one in reach.
+    let n = note.0 as usize;
+    cx.update_window(handle, |_, window, cx| {
+        window.hover(("block", n), cx);
+        window.render_frame(cx);
+        window.click(("fullscreen", n), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let tiles = ws.space.grid.as_ref().expect("grid mode").tiles.ids();
+        assert_eq!(tiles, [kanban, note]);
+        assert!(!ws.space.shown(terminal));
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.hover(("block", n), cx);
+        window.render_frame(cx);
+        window.click(("fullscreen", n), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert!(ws.space.grid.is_none()));
+}

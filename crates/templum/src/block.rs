@@ -204,8 +204,8 @@ pub(crate) fn render(
             .flex()
             .items_center()
             .justify_center()
-            // Clear of the close button on the right, and centered.
-            .px(px(28.0 * z))
+            // Clear of the fullscreen and close buttons on the right, and centered.
+            .px(px(52.0 * z))
             .overflow_hidden()
             .child(title_text)
     }
@@ -269,6 +269,42 @@ pub(crate) fn render(
                 .text_color(ui.title),
         )
         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.close(id, window, cx)))
+        .test_support();
+
+    // Beside it: the block full screen (grid mode), or back to the canvas.
+    let tiled = ws.space.grid.is_some();
+    let fullscreen = div()
+        .id(("fullscreen", n))
+        .absolute()
+        .top(px(4.0 * z))
+        .right(px(28.0 * z))
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(20.0 * z))
+        .rounded(px(5.0 * z))
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .child(
+            Icon::new(if tiled {
+                IconName::Minimize2
+            } else {
+                IconName::Maximize2
+            })
+            .size(px(12.0 * z))
+            .text_color(ui.title),
+        )
+        .tooltip(move |window, cx| {
+            Tooltip::new(if tiled {
+                "Back to the canvas"
+            } else {
+                "Fullscreen"
+            })
+            .build(window, cx)
+        })
+        // The block isn't focused by this press: that would drop the selection going full screen.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.fullscreen(id, window, cx)))
         .test_support();
 
     // A kanban block's board list, on the left of its header (over the title: no move).
@@ -347,7 +383,6 @@ pub(crate) fn render(
     // inside the block): the top ones under the header's buttons, the others over the body.
     let edge = (EDGE * z).clamp(2.0, EDGE);
     // A tile's size is the grid's: it has no resize strips nor grip.
-    let tiled = ws.space.grid.is_some();
     let (top_zones, other_zones) = if hovered && !tiled {
         let mut zone = |edges| resize_zone(id, edges, edge, cx);
         (
@@ -377,7 +412,10 @@ pub(crate) fn render(
         .children(boards)
         .children(preview)
         .children(tree_toggle)
-        .when(hovered, |el| el.child(fade_in(close, ("close-fade", n))));
+        .when(hovered, |el| {
+            el.child(fade_in(fullscreen, ("fullscreen-fade", n)))
+                .child(fade_in(close, ("close-fade", n)))
+        });
 
     let frame = div()
         .id(("body", n))
