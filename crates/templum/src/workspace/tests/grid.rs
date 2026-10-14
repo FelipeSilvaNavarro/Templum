@@ -442,3 +442,64 @@ fn ctrl_alt_arrows_move_the_focus_and_with_shift_swap(cx: &mut TestAppContext) {
         assert_eq!(ws.space.focused, Some(kanban), "it moved along")
     });
 }
+
+/// A tile's title dropped on another tile: the two trade places, and keep theirs on the canvas.
+#[gpui_kit::test]
+fn a_title_dropped_on_another_tile_swaps_them(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    let homes = (rect_of(&ws, cx, kanban), rect_of(&ws, cx, note));
+    ws.update(cx, |ws, _| ws.space.selected = vec![kanban, note]);
+    press(handle, TOGGLE, cx);
+    let (left, right) = (rect_of(&ws, cx, kanban), rect_of(&ws, cx, note));
+    let title = at(
+        &ws,
+        cx,
+        (left.x + left.w / 2.0, left.y + chrome::TITLE_H / 2.0),
+    );
+    let target = at(&ws, cx, (right.x + right.w / 2.0, right.y + right.h / 2.0));
+    let position = |p: (f32, f32)| point(px(p.0), px(p.1));
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: position(title),
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: position(target),
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.dropping_on(note), "the target is marked");
+        assert!(ws.moving(kanban));
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: position(target),
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(rect_of(&ws, cx, kanban), right);
+    assert_eq!(rect_of(&ws, cx, note), left);
+    press(handle, TOGGLE, cx);
+    assert_eq!((rect_of(&ws, cx, kanban), rect_of(&ws, cx, note)), homes);
+}

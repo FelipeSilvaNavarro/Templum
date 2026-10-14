@@ -93,8 +93,9 @@ pub(crate) fn render(
         _ => Point::default(),
     };
     let focused = live && ws.space.focused == Some(id);
-    // Selected blocks wear the focused one's ring and border.
-    let marked = focused || (live && ws.space.selected.contains(&id));
+    // Selected blocks wear the focused one's ring and border, and so does the tile a held one
+    // would trade places with.
+    let marked = focused || (live && (ws.space.selected.contains(&id) || ws.dropping_on(id)));
     // How much of the body is drawn: by its text's size on screen at the zoom the camera rests at
     // (docs/specs/level-of-detail.md, section 1); the block worked in (focused, or holding the
     // keyboard: GPUI drops the focus of what isn't drawn) is always Full, asked only below Full.

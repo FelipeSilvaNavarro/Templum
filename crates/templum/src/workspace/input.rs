@@ -75,8 +75,9 @@ impl Workspace {
     }
 
     pub(crate) fn begin_move(&mut self, id: BlockId, pos: PixelPoint<Pixels>) {
-        // A tile stays in its place.
+        // A tile is dropped on another to trade places.
         if self.space.grid.is_some() {
+            self.drag = Some(Drag::Swap { id, over: None });
             return;
         }
         let p = self.local(pos);
@@ -84,10 +85,18 @@ impl Workspace {
         self.placing(&[id]);
     }
 
-    /// Block `id` is being moved by a title: its own, or a selected block's.
+    /// Grid mode: the tile held by its title would trade places with tile `id` if let go now.
+    pub(crate) fn dropping_on(&self, id: BlockId) -> bool {
+        matches!(self.drag, Some(Drag::Swap { over: Some(over), .. }) if over == id)
+    }
+
+    /// Block `id` is being moved by a title: its own, or a selected block's; in grid mode, held
+    /// to trade places.
     pub(crate) fn moving(&self, id: BlockId) -> bool {
         match &self.drag {
-            Some(Drag::Canvas(Gesture::Move { id: moved, .. })) => *moved == id,
+            Some(Drag::Canvas(Gesture::Move { id: moved, .. }) | Drag::Swap { id: moved, .. }) => {
+                *moved == id
+            }
             Some(Drag::Canvas(Gesture::MoveGroup { ids, .. })) => ids.contains(&id),
             _ => false,
         }
@@ -161,6 +170,17 @@ impl Workspace {
                 }
             }
             Some(Drag::Marquee { .. }) => self.marquee_to(p),
+            Some(Drag::Swap { id, over }) => {
+                // Grid mode's camera is at the origin at zoom 1: canvas points are the pointer's.
+                let held = *id;
+                *over = self
+                    .space
+                    .canvas
+                    .blocks()
+                    .iter()
+                    .find(|b| b.id != held && self.space.shown(b.id) && b.rect.contains(p))
+                    .map(|b| b.id);
+            }
             Some(Drag::MoveInk { index, last, moved }) => {
                 let world = self.space.canvas.camera.to_world(p);
                 let (dx, dy) = (world.x - last.x, world.y - last.y);
@@ -288,6 +308,14 @@ impl Workspace {
     /// Mouse up: a press on the empty canvas that didn't pan is a click, and leaves no terminal
     /// focused (typing then reaches none; panning keeps the focus) and no block selected.
     pub(super) fn release(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
+        // A tile let go over another trades places with it.
+        if let Some(Drag::Swap { id, over }) = self.drag {
+            if let (Some(other), Some(grid)) = (over, &mut self.space.grid) {
+                grid.tiles.swap(id, other);
+                self.retile();
+            }
+            cx.notify();
+        }
         // Its title's hand opens again.
         if self.space.canvas.blocks().iter().any(|b| self.moving(b.id)) {
             cx.notify();

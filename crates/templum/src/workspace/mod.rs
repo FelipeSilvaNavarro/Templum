@@ -335,6 +335,12 @@ enum Drag {
         pointer: Point,
         scrolled: Option<Instant>,
     },
+    /// Grid mode: a tile held by its title, and the tile under the pointer it would trade places
+    /// with on release.
+    Swap {
+        id: BlockId,
+        over: Option<BlockId>,
+    },
     /// Moving a selected drawing: `last` is the pointer's previous world point; `moved` once it
     /// has moved (and the undo step is taken).
     MoveInk {
