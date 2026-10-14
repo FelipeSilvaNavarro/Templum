@@ -419,3 +419,67 @@ fn inspect_finds_an_agent_the_shell_started() {
 fn known() -> Vec<templum_terminal::Detect> {
     Agent::all().map(Agent::detect).collect()
 }
+
+/// Processes that ignore the hangup a closing terminal sends still end: those read with `tree`
+/// before are killed by `kill_left`.
+#[cfg(unix)]
+#[test]
+fn a_tree_is_ended_even_when_it_ignores_hangup() {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+    let term = Terminal::spawn(
+        SpawnOptions {
+            cols: 40,
+            rows: 5,
+            cell_px: (8, 16),
+            command: Some((
+                "sh".to_string(),
+                vec![
+                    "-c".to_string(),
+                    "trap '' HUP; sleep 1000 & sleep 1000".to_string(),
+                ],
+            )),
+            palette: Palette::default(),
+            options: TermOptions::default(),
+            working_directory: None,
+            integration: None,
+        },
+        Arc::new(|| {}),
+    )
+    .expect("spawn");
+    let shell = term.processes().shell.expect("the shell's pid");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let tree = loop {
+        let tree = templum_terminal::tree(&[shell]);
+        if tree.len() >= 2 {
+            break tree;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the sleeps never started: {tree:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(tree.iter().any(|r| r.pid == shell), "the shell is in it");
+    let alive = || {
+        let pids: Vec<Pid> = tree.iter().map(|r| Pid::from_u32(r.pid)).collect();
+        let mut system = System::new();
+        system
+            .refresh_processes_specifics(ProcessesToUpdate::Some(&pids), ProcessRefreshKind::new());
+        tree.iter()
+            .filter(|r| {
+                system.process(Pid::from_u32(r.pid)).is_some_and(|p| {
+                    p.start_time() == r.started && p.status() != ProcessStatus::Zombie
+                })
+            })
+            .count()
+    };
+    drop(term);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(alive() > 0, "the hangup was ignored");
+    templum_terminal::kill_left(&tree);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while alive() > 0 {
+        assert!(Instant::now() < deadline, "{} still running", alive());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}

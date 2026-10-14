@@ -23,6 +23,6 @@ pub use shells::{ShellOption, available_shells, default_shell, default_shell_lab
 pub use snapshot::{Bar, Cursor, Row, Run, Snapshot, Span};
 pub use tap::{Mark, Outcome, Status};
 pub use terminal::{
-    Inspection, Modes, Notify, Processes, SelectionKind, SharedTerm, SpawnOptions, TermOptions,
-    Terminal, inspect,
+    Inspection, Modes, Notify, Processes, Running, SelectionKind, SharedTerm, SpawnOptions,
+    TermOptions, Terminal, inspect, kill_left, tree,
 };

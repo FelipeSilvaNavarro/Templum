@@ -401,20 +401,93 @@ fn candidates(system: &sysinfo::System, p: &Processes) -> Vec<sysinfo::Pid> {
     let Some(shell) = p.shell else {
         return Vec::new();
     };
-    let mut found = vec![Pid::from_u32(shell)];
+    descendants(system, Pid::from_u32(shell))
+}
+
+/// `root` and every process below it, nearest first. A child started before its parent names
+/// a parent that died and whose pid was taken again (Windows keeps stale parent ids): it isn't
+/// followed.
+fn descendants(system: &sysinfo::System, root: sysinfo::Pid) -> Vec<sysinfo::Pid> {
+    let started = |pid| system.process(pid).map_or(0, sysinfo::Process::start_time);
+    let mut found = vec![root];
     let mut i = 0;
     while i < found.len() {
         let parent = found[i];
-        let children: Vec<Pid> = system
+        let children: Vec<_> = system
             .processes()
             .iter()
-            .filter(|(pid, process)| process.parent() == Some(parent) && !found.contains(pid))
+            .filter(|(pid, process)| {
+                process.parent() == Some(parent)
+                    && process.thread_kind().is_none()
+                    && process.start_time() >= started(parent)
+                    && !found.contains(pid)
+            })
             .map(|(pid, _)| *pid)
             .collect();
         found.extend(children);
         i += 1;
     }
     found
+}
+
+/// A process to end later: its pid, and when it started, since a pid can be taken again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Running {
+    pub pid: u32,
+    pub started: u64,
+}
+
+/// Every process of these shells: each shell and what runs below it, and on Unix what runs in
+/// its session (a daemon that forked twice still does). Read before the shells are hung up,
+/// while the children still name their parents.
+pub fn tree(shells: &[u32]) -> Vec<Running> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::All, ProcessRefreshKind::new());
+    let mut pids: Vec<Pid> = Vec::new();
+    for shell in shells.iter().map(|s| Pid::from_u32(*s)) {
+        for pid in descendants(&system, shell) {
+            if !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+        // The shell leads its session (`setsid`): what it started and detached stays in it.
+        if cfg!(unix) {
+            for (pid, process) in system.processes() {
+                if process.thread_kind().is_none()
+                    && process.session_id() == Some(shell)
+                    && !pids.contains(pid)
+                {
+                    pids.push(*pid);
+                }
+            }
+        }
+    }
+    pids.into_iter()
+        .filter_map(|pid| {
+            Some(Running {
+                pid: pid.as_u32(),
+                started: system.process(pid)?.start_time(),
+            })
+        })
+        .collect()
+}
+
+/// Kills those of `procs` that still run, and are still the same process (SIGKILL on Unix,
+/// TerminateProcess on Windows): what ignored the hangup a closing terminal sends.
+pub fn kill_left(procs: &[Running]) {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+    let pids: Vec<Pid> = procs.iter().map(|p| Pid::from_u32(p.pid)).collect();
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), ProcessRefreshKind::new());
+    for running in procs {
+        if let Some(process) = system.process(Pid::from_u32(running.pid))
+            && process.start_time() == running.started
+            && process.status() != ProcessStatus::Zombie
+        {
+            process.kill();
+        }
+    }
 }
 
 pub struct SpawnOptions {
