@@ -96,7 +96,7 @@ dark = "Catppuccin Mocha"
 Press **Ctrl+,** (**Cmd+,** on macOS), or the ⚙ in the title bar, to open the settings panel on the right. It has
 Appearance (light/dark mode and themes), Font (with a preview), Terminal (cursor and
 scrollback, system notifications), Shell (for new terminals: pick one of the shells found on your computer, shell
-integration), Tools (the `git` program), Agents and Shortcuts. The terminals stay usable next to it, so you see each change
+integration), Tools (the `git` program), Agents, Usage (notifications about agents' plan limits) and Shortcuts. The terminals stay usable next to it, so you see each change
 as you make it.
 
 - Every change applies at once and is saved to `config.toml` a moment later, keeping your comments. Numbers apply
@@ -201,6 +201,13 @@ or a path you type. It opens a terminal there and starts the agent; agents you h
 command instead. **Settings ▸ Agents** changes any agent's command or resume command (↺ puts it back), hides
 the ones you don't use from the menu, and adds your own agents. The full list, with how each one resumes, is in [docs/specs/agents.md](docs/specs/agents.md).
 
+A terminal running Claude Code or Codex shows its session in its header: how much of the context is used, and the
+cost or the tokens. The title bar shows the plan limit closest to its end (the 5-hour and weekly windows of a Claude
+Pro/Max or ChatGPT plan); click it for every agent's limits, when each resets, and the open sessions. Templum tells
+you when a limit nears its end and when one you reached resets (**Settings ▸ Usage**). Claude Code hands its limits
+to its status line, so the Claude Code Templum opens gets `--settings` naming Templum's: your own status line still
+shows. Templum reads only what the agents write, never their login. See [docs/specs/usage.md](docs/specs/usage.md).
+
 ## Shell integration
 
 Templum loads a small script into bash, zsh, fish and PowerShell (Git Bash and Windows PowerShell included), as
@@ -248,6 +255,11 @@ blink = false
 [terminal]
 scrollback = 10000
 notifications = true   # system notifications while Templum is in the background
+
+[usage]
+reset = "reached"      # when a plan limit's reset is notified: "off" | "reached" | "half" | "always"
+warn = 90              # notify once at this much of a limit: 0 (never) | 80 | 90 | 95
+claude_limits = true   # the Claude Code Templum opens hands it its limits
 
 [git]
 program = "git"   # the Git block's program: a name on PATH, or a path
