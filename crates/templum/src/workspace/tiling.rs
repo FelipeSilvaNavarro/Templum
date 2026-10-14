@@ -5,7 +5,7 @@
 //! canvas's camera, wait in `Grid`.
 
 use gpui_kit::{Context, Window};
-use templum_canvas::{BlockId, Camera, GAP, Rect, Size, Tile};
+use templum_canvas::{BlockId, Camera, Direction, GAP, Rect, Size, Tile, neighbour};
 
 use super::{Grid, Tool, Workspace};
 
@@ -156,6 +156,41 @@ impl Workspace {
             grid.homes.insert(id, home);
             self.retile();
         }
+    }
+
+    /// The focused tile and the one on its `to` side.
+    fn beside(&self, to: Direction) -> Option<(BlockId, BlockId)> {
+        let grid = self.space.grid.as_ref()?;
+        let from = self
+            .space
+            .focused
+            .filter(|id| grid.homes.contains_key(id))?;
+        let rects = grid.tiles.rects(grid.area, GAP);
+        Some((from, neighbour(&rects, from, to)?))
+    }
+
+    /// Ctrl+Alt+arrows: the keyboard goes to the tile on that side.
+    pub(super) fn focus_tile(
+        &mut self,
+        to: Direction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((_, next)) = self.beside(to) {
+            self.focus_block(next, window, cx);
+        }
+    }
+
+    /// Ctrl+Alt+Shift+arrows: the focused tile trades places with the one on that side.
+    pub(super) fn swap_tile(&mut self, to: Direction, cx: &mut Context<Self>) {
+        let Some((from, other)) = self.beside(to) else {
+            return;
+        };
+        if let Some(grid) = &mut self.space.grid {
+            grid.tiles.swap(from, other);
+        }
+        self.retile();
+        cx.notify();
     }
 
     /// Block `id` is no tile anymore (it is closing): its tile's other half takes the pair's

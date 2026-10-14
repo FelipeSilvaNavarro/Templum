@@ -443,15 +443,33 @@ fn quit_works_from_the_settings_panel(cx: &mut TestAppContext) {
 fn editor_only_commands_need_a_focused_editor() {
     use crate::keys::Command;
     assert_eq!(
-        crate::workspace::effective(Some(Command::CloseTab), false),
+        crate::workspace::effective(Some(Command::CloseTab), false, false),
         None
     );
     assert_eq!(
-        crate::workspace::effective(Some(Command::CloseTab), true),
+        crate::workspace::effective(Some(Command::CloseTab), true, false),
         Some(Command::CloseTab)
     );
     assert_eq!(
-        crate::workspace::effective(Some(Command::NewTerminal), false),
+        crate::workspace::effective(Some(Command::NewTerminal), false, false),
         Some(Command::NewTerminal)
+    );
+}
+
+/// Moving between tiles is grid mode's: elsewhere Ctrl+Alt+arrows reach the terminal.
+#[test]
+fn grid_commands_need_grid_mode() {
+    use crate::keys::Command;
+    assert_eq!(
+        crate::workspace::effective(Some(Command::FocusLeft), false, false),
+        None
+    );
+    assert_eq!(
+        crate::workspace::effective(Some(Command::SwapDown), true, true),
+        Some(Command::SwapDown)
+    );
+    assert_eq!(
+        crate::workspace::effective(Some(Command::ToggleGrid), false, false),
+        Some(Command::ToggleGrid)
     );
 }

@@ -8,7 +8,9 @@ use gpui_kit::{
     Bounds, ClipboardItem, Context, EntityInputHandler, KeyDownEvent, MouseDownEvent, PinchEvent,
     Pixels, Point as PixelPoint, ScrollDelta, ScrollWheelEvent, UTF16Selection, Window, px,
 };
-use templum_canvas::{BlockId, Drawing, Edges, Gesture, Point, Rect, STRING_PX, chrome, constrain};
+use templum_canvas::{
+    BlockId, Direction, Drawing, Edges, Gesture, Point, Rect, STRING_PX, chrome, constrain,
+};
 use templum_terminal::{KeyInput, SelectionKind, Side, Target};
 
 use crate::keys::{self, Command};
@@ -338,6 +340,14 @@ impl Workspace {
             Command::ZoomReset => self.zoom_reset(window, cx),
             Command::FitAll => self.fit_all(window, cx),
             Command::ToggleGrid => self.toggle_grid(window, cx),
+            Command::FocusLeft => self.focus_tile(Direction::Left, window, cx),
+            Command::FocusRight => self.focus_tile(Direction::Right, window, cx),
+            Command::FocusUp => self.focus_tile(Direction::Up, window, cx),
+            Command::FocusDown => self.focus_tile(Direction::Down, window, cx),
+            Command::SwapLeft => self.swap_tile(Direction::Left, cx),
+            Command::SwapRight => self.swap_tile(Direction::Right, cx),
+            Command::SwapUp => self.swap_tile(Direction::Up, cx),
+            Command::SwapDown => self.swap_tile(Direction::Down, cx),
             Command::ThemePicker => self.toggle_theme_picker(cx),
             Command::OpenConfig => self.open_config(window, cx),
             Command::Settings => self.toggle_settings(window, cx),
@@ -402,6 +412,7 @@ impl Workspace {
         let command = effective(
             self.keymap.command(&e.keystroke),
             self.focused_editor().is_some(),
+            self.space.grid.is_some(),
         );
         // A terminal's find field has the keyboard: what it leaves (Enter, Esc, shortcuts)
         // never reaches the shell. Copy and paste are the field's own; text goes on to it.

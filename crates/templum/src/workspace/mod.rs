@@ -1045,8 +1045,9 @@ pub(crate) fn remember(recent: &mut Vec<PathBuf>, folder: PathBuf) {
 /// Ctrl+Z / Ctrl+Shift+Z (Cmd on macOS): Some(false) undoes, Some(true) redoes.
 /// The command a key press runs: one that only works in an editor is nothing without one, so
 /// the key goes on to the terminal (Ctrl+S is XOFF, Ctrl+W erases a word).
-fn effective(command: Option<Command>, in_editor: bool) -> Option<Command> {
-    command.filter(|c| in_editor || !c.editor_only())
+/// One that only works in grid mode is nothing outside it.
+fn effective(command: Option<Command>, in_editor: bool, tiled: bool) -> Option<Command> {
+    command.filter(|c| (in_editor || !c.editor_only()) && (tiled || !c.grid_only()))
 }
 
 fn undo_key(k: &Keystroke, macos: bool) -> Option<bool> {

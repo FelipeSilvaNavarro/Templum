@@ -416,3 +416,29 @@ fn the_fullscreen_button_takes_the_selection_and_comes_back(cx: &mut TestAppCont
     .unwrap();
     ws.read_with(cx, |ws, _| assert!(ws.space.grid.is_none()));
 }
+
+/// Ctrl+Alt+arrows move the keyboard to the tile on that side; with Shift, the tile trades
+/// places with it.
+#[gpui_kit::test]
+fn ctrl_alt_arrows_move_the_focus_and_with_shift_swap(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    ws.update(cx, |ws, _| ws.space.selected = vec![kanban, note]);
+    press(handle, TOGGLE, cx);
+    let (left, right) = (rect_of(&ws, cx, kanban), rect_of(&ws, cx, note));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.focused, Some(note), "it kept the keyboard")
+    });
+    press(handle, "ctrl-alt-left", cx);
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(kanban)));
+    press(handle, "ctrl-alt-left", cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.focused, Some(kanban), "nothing there")
+    });
+    press(handle, "ctrl-alt-shift-right", cx);
+    assert_eq!(rect_of(&ws, cx, kanban), right);
+    assert_eq!(rect_of(&ws, cx, note), left);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.focused, Some(kanban), "it moved along")
+    });
+}

@@ -26,4 +26,4 @@ pub use ink::{
 };
 pub use lod::{CARD_BELOW, GREEK_BELOW, Level, level};
 pub use snap::{Guide, SNAP_PX, Snapped, snap_move, snap_resize};
-pub use tile::{GAP, Split, Tile};
+pub use tile::{Direction, GAP, Split, Tile, neighbour};

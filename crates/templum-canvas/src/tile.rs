@@ -27,6 +27,36 @@ impl Split {
     }
 }
 
+/// A side of a tile: where its neighbour is looked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// The tile next to `from` on its `to` side, among `rects` (a tree's): the nearest past that
+/// edge that overlaps it across; the one overlapping it most, then the first, when several are
+/// as near.
+pub fn neighbour(rects: &[(BlockId, Rect)], from: BlockId, to: Direction) -> Option<BlockId> {
+    let f = rects.iter().find(|(id, _)| *id == from)?.1;
+    rects
+        .iter()
+        .filter(|(id, _)| *id != from)
+        .filter_map(|(id, r)| {
+            let (distance, overlap) = match to {
+                Direction::Right => (r.x - f.right(), r.bottom().min(f.bottom()) - r.y.max(f.y)),
+                Direction::Left => (f.x - r.right(), r.bottom().min(f.bottom()) - r.y.max(f.y)),
+                Direction::Down => (r.y - f.bottom(), r.right().min(f.right()) - r.x.max(f.x)),
+                Direction::Up => (f.y - r.bottom(), r.right().min(f.right()) - r.x.max(f.x)),
+            };
+            (distance >= -0.5 && overlap > 0.0).then_some((*id, distance, overlap))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1).then(b.2.total_cmp(&a.2)))
+        .map(|(id, _, _)| id)
+}
+
 /// A tree of tiles: a block's, or a pair sharing an area.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tile {
@@ -112,6 +142,19 @@ impl Tile {
             last = *id;
         }
         Some(tile)
+    }
+
+    /// Blocks `a` and `b` trade tiles.
+    pub fn swap(&mut self, a: BlockId, b: BlockId) {
+        match self {
+            Tile::Leaf(id) if *id == a => *id = b,
+            Tile::Leaf(id) if *id == b => *id = a,
+            Tile::Leaf(_) => {}
+            Tile::Pair(_, x, y) => {
+                x.swap(a, b);
+                y.swap(a, b);
+            }
+        }
     }
 
     /// The tree without block `id`: the other half of its pair takes the pair's place. None when
@@ -201,6 +244,37 @@ mod tests {
         );
         assert_eq!(tile.clone().without(BlockId(9)), Some(tile));
         assert_eq!(Tile::Leaf(A).without(A), None, "the last one");
+    }
+
+    #[test]
+    fn neighbours_are_the_nearest_tiles_on_a_side() {
+        // a | (b / c)
+        let area = Rect::new(0.0, 0.0, 1000.0, 600.0);
+        let rects = Tile::dwindle(&[A, B, C], area, 8.0)
+            .unwrap()
+            .rects(area, 8.0);
+        assert_eq!(
+            neighbour(&rects, A, Direction::Right),
+            Some(B),
+            "first of two"
+        );
+        assert_eq!(neighbour(&rects, C, Direction::Left), Some(A));
+        assert_eq!(neighbour(&rects, B, Direction::Down), Some(C));
+        assert_eq!(neighbour(&rects, C, Direction::Up), Some(B));
+        assert_eq!(neighbour(&rects, A, Direction::Left), None);
+        assert_eq!(neighbour(&rects, B, Direction::Right), None);
+        assert_eq!(neighbour(&rects, BlockId(9), Direction::Left), None);
+    }
+
+    #[test]
+    fn swapped_blocks_trade_tiles() {
+        let area = Rect::new(0.0, 0.0, 1000.0, 600.0);
+        let mut tile = Tile::dwindle(&[A, B, C], area, 8.0).unwrap();
+        let before = tile.rects(area, 8.0);
+        tile.swap(A, C);
+        let after = tile.rects(area, 8.0);
+        assert_eq!(after[0], (C, before[0].1));
+        assert_eq!(after[2], (A, before[2].1));
     }
 
     #[test]
