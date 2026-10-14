@@ -313,29 +313,39 @@ pub(crate) fn render(
         .border_t_1()
         .border_color(ui.hairline)
         .text_size(px(12.0))
-        .when_some(path, |el, path| {
-            el.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .truncate()
-                            .text_color(ui.title_dim)
-                            .child(path.display().to_string()),
-                    )
-                    .child(
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .text_color(ui.title_dim)
+                        .children(path.as_ref().map(|p| p.display().to_string())),
+                )
+                .child(
+                    Button::new("show-welcome")
+                        .label("Welcome")
+                        .small()
+                        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
+                            ws.close_settings(window, cx);
+                            ws.open_welcome(false, window, cx);
+                        })),
+                )
+                .when(path.is_some(), |el| {
+                    el.child(
                         Button::new("edit-config")
                             .label("Edit config.toml")
                             .small()
                             .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
                                 ws.open_config(window, cx)
                             })),
-                    ),
-            )
-        })
+                    )
+                }),
+        )
         .when_some(status, |el, (text, color)| {
             el.child(
                 div()

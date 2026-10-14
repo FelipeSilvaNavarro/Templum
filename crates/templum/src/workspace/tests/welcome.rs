@@ -230,6 +230,23 @@ fn the_agents_page_lists_the_agents_found(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn settings_show_the_welcome_again_without_a_new_terminal(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    cx.update_window(handle, |_, window, cx| window.click("show-welcome", cx))
+        .unwrap();
+    assert!(up(&ws, cx));
+    assert!(!panel_open(&ws, cx), "the panel makes way");
+    frame(handle, cx);
+    cx.update_window(handle, |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    assert!(!up(&ws, cx));
+    assert_eq!(blocks(&ws, cx), 1, "the terminal that was there, alone");
+}
+
+#[gpui_kit::test]
 fn quitting_from_a_first_runs_welcome_leaves_a_first_run(cx: &mut TestAppContext) {
     let (handle, ws, config, data) = first_run(cx);
     // The sidebar's button writes the workspace list; quitting writes the canvas.
