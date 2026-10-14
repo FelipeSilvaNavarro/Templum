@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
-use gpui_kit::component::notification::{Notification, NotificationDelivery};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, SharedString, Window};
 use templum_canvas::{BlockId, Point, Rect, chrome};
 use templum_terminal::{SpawnOptions, Terminal};
@@ -364,6 +364,7 @@ impl Workspace {
                             folder: start,
                             ..Default::default()
                         },
+                        usage: None,
                         find: None,
                     }),
                 );
@@ -598,11 +599,7 @@ impl Workspace {
         for id in repos {
             self.refresh_git(id, window, cx);
         }
-        let delivery = if self.config.terminal.notifications && !active {
-            NotificationDelivery::InAppAndSystem
-        } else {
-            NotificationDelivery::InApp
-        };
+        let delivery = self.delivery(window);
         let ws = cx.entity().downgrade();
         for (space, block, title, alert) in news {
             let ws = ws.clone();

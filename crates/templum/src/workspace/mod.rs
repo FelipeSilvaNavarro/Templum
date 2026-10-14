@@ -117,6 +117,8 @@ pub(crate) struct Pane {
     /// Its folder and its agent as last read: at most a snapshot old (5 s), cheap to ask every
     /// frame. The folder is the start folder until then, and follows each finished command.
     pub seen: templum_terminal::Inspection,
+    /// Its agent's session, as last read after a snapshot (docs/specs/usage.md).
+    pub usage: Option<templum_usage::Session>,
     /// Its find field, while open.
     pub find: Option<Box<find::FindBar>>,
 }
@@ -672,6 +674,12 @@ pub struct Workspace {
     /// The last canvas write failed (and said so); the next good one says it works again.
     canvas_save_failed: bool,
     _snapshots: Task<()>,
+    /// Each agent's plan limits, as last read after a snapshot (docs/specs/usage.md).
+    pub(crate) limits: Vec<(String, templum_usage::Limits)>,
+    /// When to tell the user about them.
+    watch: templum_usage::Watch,
+    /// Reading the agents' usage; the next read replaces it.
+    _usage: Task<()>,
     pub(crate) themes: Vec<Entry>,
     /// The system's appearance.
     dark: bool,
@@ -950,6 +958,9 @@ impl Workspace {
             snapshotting: false,
             canvas_save_failed: false,
             _snapshots: snapshots,
+            limits: Vec::new(),
+            watch: templum_usage::Watch::new(crate::notes::now()),
+            _usage: Task::ready(()),
             themes,
             dark,
             ui: theme.ui,
@@ -995,6 +1006,12 @@ impl Workspace {
             commit_agent,
             _wake: wake,
         };
+        // Relay files of Claude Code sessions long gone, at startup.
+        if let Some(relay) = ws.data_dir.as_deref().map(templum_usage::relay_dir) {
+            cx.background_executor()
+                .spawn(async move { templum_usage::claude::prune(&relay, crate::notes::now()) })
+                .detach();
+        }
         // The trash's old discards go at startup (and after each discard).
         if let Some(trash) = ws.trash.clone() {
             cx.background_executor()

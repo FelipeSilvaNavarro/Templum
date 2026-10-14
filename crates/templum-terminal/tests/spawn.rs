@@ -270,7 +270,10 @@ fn inspect_finds_an_agent_and_its_folder() {
                 .unwrap()
                 .as_secs();
             let started = found.started.expect("a start time");
-            assert!(started <= now + 2 && now - started < 60, "started {started}, now {now}");
+            assert!(
+                started <= now + 2 && now - started < 60,
+                "started {started}, now {now}"
+            );
             break;
         }
         assert!(Instant::now() < deadline, "found {found:?}");
@@ -310,7 +313,10 @@ fn each_terminal_gets_its_own_id_in_its_environment() {
     let command = || {
         (
             "sh".to_string(),
-            vec!["-c".to_string(), "printf 'id=%s;' \"$TEMPLUM_TERMINAL\"".to_string()],
+            vec![
+                "-c".to_string(),
+                "printf 'id=%s;' \"$TEMPLUM_TERMINAL\"".to_string(),
+            ],
         )
     };
     #[cfg(windows)]
@@ -324,8 +330,14 @@ fn each_terminal_gets_its_own_id_in_its_environment() {
     let (b, b_text) = printed(command());
     assert!(!a.is_empty());
     assert_ne!(a, b);
-    assert!(a_text.contains(&format!("id={a};")), "screen was: {a_text:?}");
-    assert!(b_text.contains(&format!("id={b};")), "screen was: {b_text:?}");
+    assert!(
+        a_text.contains(&format!("id={a};")),
+        "screen was: {a_text:?}"
+    );
+    assert!(
+        b_text.contains(&format!("id={b};")),
+        "screen was: {b_text:?}"
+    );
 }
 
 /// A harmless long-running program, copied under an agent's name into `bin`.

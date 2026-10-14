@@ -334,6 +334,7 @@ impl Workspace {
                 Notification::info("The canvas is saved again".to_string()),
             );
         }
+        self.read_usage(window, cx);
         cx.notify();
     }
 

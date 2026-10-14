@@ -29,6 +29,7 @@ mod theme;
 mod theme_picker;
 mod title_bar;
 mod toolbar;
+mod usage;
 mod workspace;
 
 use gpui_kit::component::TitleBar;
