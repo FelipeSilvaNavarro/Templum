@@ -312,10 +312,14 @@ slides it up over 200 ms like the settings panel; closing slides it down.
   "3 terminals · 1 note · 1 Claude Code running" (counts of blocks by kind, and the agents found by the last
   snapshot); the active card has the `accent` border and ring, the others a hairline that goes `hover_border`
   on hover.
-- **Click a card:** switches to it and closes the screen. **Right-click:** Open, Edit…, Delete… (disabled for the
-  last one, with the same confirmation as the sidebar).
+- **Click a card:** switches to it and closes the screen. **Right-click:** Open, Edit…, Stop (see
+  [Stopping a workspace](#stopping-a-workspace)), Delete… (disabled for the last one, with the same confirmation as
+  the sidebar). A sidebar tile's right-click menu is the same.
+- **The keyboard:** the search field has it. Typing filters; Up and Down move the highlight a row (Left and Right
+  stay with the field); Enter opens the highlighted card, the first one shown until an arrow is pressed; Ctrl+1 to
+  Ctrl+9 still jump; Esc closes. A card's tooltip names its Ctrl+digit.
 - **Drag a card onto another:** the dragged one takes that card's place (the kanban columns' drag and drop). The
-  sidebar follows at once, and `index.json` is written.
+  sidebar follows at once, and `index.json` is written. Sidebar tiles drag and drop the same way.
 - **New workspace** creates "Workspace *n*" as the sidebar's **+** does, switches to it, and opens its edit dialog
   with the name selected. The **+** does the same from now on.
 
@@ -329,8 +333,8 @@ Replaces the sidebar's **Rename…**, which becomes **Edit…** everywhere. A di
 - **Icon:** a grid of Lucide icons, 36 px each, with a search field above it that filters by name
   (`IconName::ALL`, 1,818 icons; "git" shows `git-branch`, `git-commit`…). The chosen icon is ringed. A first row
   of 24 suggested icons shows before any search: rocket, folder, code, terminal, server, database, globe, bug,
-  flask, book, briefcase, home, heart, star, zap, cloud, cpu, package, wrench, test-tube, gamepad-2, music,
-  camera, coffee.
+  flask-conical, book, briefcase, house, heart, star, zap, cloud, cpu, package, wrench, test-tube, gamepad-2,
+  music, camera, coffee.
 - **Image:** **Choose an image…** opens the system's file picker (PNG, JPG, JPEG, WebP, SVG); the file is copied
   to `<data folder>/workspaces/icons/<id>.<ext>` (replacing an older one) and shown instead of the icon, cropped to
   the tile's rounded square. **Remove image** goes back to the icon. A file over 4 MB is refused with a message.
@@ -342,24 +346,68 @@ Replaces the sidebar's **Rename…**, which becomes **Edit…** everywhere. A di
   as today. A color also tints the tile's fill at 18% (hover and active add their fills over it), and the active
   bar takes the color instead of the accent.
 - **Title bar:** the icon or image, 14 px, before the name.
-- **Notifications** about a terminal in another workspace show the workspace's icon when it has one.
+- **Notifications** about a terminal in another workspace show the workspace's icon when it has one (an image
+  can't show there: a notification's icon is an SVG).
+
+### The edit dialog's folder
+
+Below the image, **Folder**: the folder's path, or "None"; **Choose…** opens the system's folder picker, **Clear**
+removes it. A new terminal starts in the workspace's folder when the focused block gives none
+(`working_directory = "inherit"`), and in place of `"home"` or a configured path: the workspace's choice is the
+nearer one. One workspace per project then opens its terminals in the project.
+
+### Stopping a workspace
+
+**Stop** ends every program of a workspace (its shells, agents, servers) and keeps its canvas, as quitting Templum
+does for all of them:
+
+- It asks first when a terminal there is at work or an editor has unsaved files, naming them, as closing blocks
+  does. Nothing at work: it stops at once.
+- The canvas is written as on quit (the agents found in it are kept, to resume), then its blocks are dropped. Each
+  shell gets SIGHUP as when a block closes; 2 s later, every process that was below a shell and still runs is
+  killed (SIGKILL; TerminateProcess on Windows), so programs that ignore the hangup end too.
+- **Stopping the active workspace** first shows the one before it, as deleting does. Stop is disabled for the last
+  workspace, and for one whose file couldn't be read.
+- A stopped workspace's tile is dimmed and has no dots; its card says "Stopped" and counts what its saved canvas
+  holds.
+- **Opening it starts it** (a click, the screen, Ctrl+Tab, Ctrl+digit): its canvas comes back as on a start of
+  Templum, terminals in their folders and agents resumed.
+- It stays stopped across restarts, and its terminals don't start with Templum.
+- **Delete** ends a workspace's processes the same way.
+
+### Moving blocks to another workspace
+
+A block's right-click menu has **Move to workspace ▸**, listing the other workspaces and **New workspace**. It
+moves the block, or the selection it is part of:
+
+- The blocks keep running: a terminal's shell and its agent go on, an editor keeps its tabs and unsaved edits.
+- They land at the other workspace's view center, clear of its blocks, in the same arrangement; in grid mode they
+  join its grid as new blocks do.
+- A notification, "Moved to *name*", shows them there when clicked. Ctrl+Z doesn't take a move back.
+- A stopped workspace is listed but disabled. **New workspace** creates "Workspace *n*" and moves the blocks there,
+  without switching.
 
 ### Files
 
-`index.json` entries get three optional keys; missing means none, so a file from today loads unchanged:
+`index.json` entries get five optional keys; missing means none, so a file from today loads unchanged:
 
 ```json
-{ "id": "w2", "name": "Side project", "icon": "rocket", "color": "blue", "image": "w2.png" }
+{ "id": "w2", "name": "Side project", "icon": "rocket", "color": "blue", "image": "w2.png",
+  "folder": "/home/me/side", "stopped": true }
 ```
 
 - `icon` is a Lucide name; an unknown one is treated as none. `color` is one of the eight names; unknown is none.
   `image` is a file name inside `workspaces/icons/` (letters, digits, `-`, `_`, `.`, no path separators, no
   `..`); a file that doesn't exist or can't be decoded shows the icon instead and says nothing.
+- `folder` is an absolute path; one that isn't a folder anymore is ignored when a terminal starts. `stopped` is
+  true for a stopped workspace; the active one is never stopped (an index that says so starts it).
+- An unknown value never makes the whole index unreadable: only that key is dropped.
 - Deleting a workspace removes its image file along with setting its canvas aside.
 
 Architecture: `spaces_screen.rs` (new): the sheet, the cards, the drag and drop, the search; `space_dialog.rs`
-(new): the edit dialog; `session.rs`: the three fields, `icons_dir`, `copy_icon`, `remove_icon`; `sidebar.rs`
-and `title_bar.rs`: the look; `main.rs`: `AllAssets`.
+(new): the edit dialog; `session.rs`: the five fields, `icons_dir`, `copy_icon`, `remove_icon`; `sidebar.rs`
+and `title_bar.rs`: the look; `workspace/spaces.rs`: stopping, moving blocks; `templum-terminal`: `tree` and
+`kill_left`, a terminal's processes read and ended. `main.rs` already uses `AllAssets`.
 
 ## 7. The editor
 
