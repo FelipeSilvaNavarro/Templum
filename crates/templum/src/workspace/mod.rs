@@ -25,6 +25,7 @@ mod render;
 mod selection;
 mod spaces;
 mod tiling;
+mod usage;
 mod view;
 
 pub(crate) use find::FindBar;

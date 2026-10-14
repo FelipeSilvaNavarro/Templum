@@ -610,4 +610,5 @@ mod settings_panel;
 mod shortcuts;
 mod terminals;
 mod themes;
+mod usage;
 mod workspaces;

@@ -112,7 +112,7 @@ impl Workspace {
         let Some(agent) = agent.and_then(|a| self.agents.iter().find(|known| known.id == a)) else {
             return;
         };
-        let line = format!("{}\r", agent.resume_command());
+        let line = format!("{}\r", self.typed(Some(agent), agent.resume_command()));
         let agent = agent.id.clone();
         if let Some(pane) = self.space.terminal_mut(id) {
             pane.term.write(line.into_bytes());

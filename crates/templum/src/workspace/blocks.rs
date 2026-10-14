@@ -269,14 +269,11 @@ impl Workspace {
         let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, self.cell.size);
         let rect = Rect::new(at.x, at.y, size.w, size.h);
         let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx)?;
+        let entry = self.agents.iter().find(|a| a.command == command);
         // The shell reads it once it is ready.
-        let line = format!("{command}\r");
+        let line = format!("{}\r", self.typed(entry, command));
         // Known at once (Shift+Enter, closing), not at the next snapshot.
-        let agent = self
-            .agents
-            .iter()
-            .find(|a| a.command == command)
-            .map(|a| a.id.clone());
+        let agent = entry.map(|a| a.id.clone());
         let pane = self.space.terminal_mut(id).expect("just spawned");
         pane.term.write(line.into_bytes());
         pane.seen.agent = agent;

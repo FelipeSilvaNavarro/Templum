@@ -39,6 +39,11 @@ use gpui_kit::{
 use workspace::Workspace;
 
 fn main() {
+    // Claude Code runs it as its status line, in the Claude Code Templum opens: no window.
+    if std::env::args().nth(1).as_deref() == Some(templum_usage::claude::RELAY_FLAG) {
+        relay();
+        return;
+    }
     let mixed = std::env::args().any(|a| a == "--bench-mixed");
     let far = std::env::args().any(|a| a == "--bench-far");
     let zoom = std::env::args().find_map(|a| a.strip_prefix("--bench-zoom=").map(str::to_string));
@@ -92,4 +97,24 @@ fn main() {
             cx.on_window_closed(|cx, _| cx.quit()).detach();
             cx.activate(true);
         });
+}
+
+/// Hands Templum what Claude Code tells its status line, then prints the user's own status line
+/// (docs/specs/usage.md).
+fn relay() {
+    use std::io::{Read as _, Write as _};
+    let mut input = Vec::new();
+    let _ = std::io::stdin().read_to_end(&mut input);
+    let dirs = session::dir().map(|data| templum_usage::Dirs::of(&data));
+    let terminal = std::env::var("TEMPLUM_TERMINAL").ok();
+    let out = match &dirs {
+        Some(dirs) => templum_usage::claude::relay(
+            &input,
+            &dirs.relay,
+            terminal.as_deref(),
+            dirs.claude.as_deref(),
+        ),
+        None => templum_usage::claude::relay(&input, std::path::Path::new(""), None, None),
+    };
+    let _ = std::io::stdout().write_all(&out);
 }
