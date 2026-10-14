@@ -50,8 +50,11 @@ tiled side by side, like Hyprland's dwindle layout, and go back to the canvas ex
 - **Focus** (`focus_left`, `focus_right`, `focus_up`, `focus_down`; Ctrl+Alt+arrows): the keyboard goes to the
   nearest tile on that side.
 - **Swap** (`swap_left`…; Ctrl+Alt+Shift+arrows): the focused tile trades places with that neighbour.
-- **Drag a title onto another tile:** the two trade places; the tile under the pointer is outlined in the accent
-  color while dragging. A tile's title shows an open hand, a closed one while it is held.
+- **Drag a title onto another tile:** the two trade places. Once the pointer has moved past a click, the tile is
+  picked up (96%, faded), its place is outlined with an accent dashed line, its title follows the pointer in a
+  card, and the tile under the pointer is tinted with the accent color, saying "⇄ Swap with *its title*". Let go,
+  the two slide to their new places (220 ms); let go over no tile, nothing changes. Ctrl+Alt+Shift+arrows slide
+  them too. A tile's title shows an open hand, a closed one while it is held.
 - **Flip the split** in a tile's menu turns its pair from side by side to top and bottom, and back.
 - These keys reach the terminal outside grid mode. Ctrl+Alt+arrows switch workspaces on some desktops (GNOME) and
   are AltGr on some Windows layouts: `[keys]` changes them.

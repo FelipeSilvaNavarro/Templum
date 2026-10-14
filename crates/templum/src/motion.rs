@@ -13,6 +13,13 @@ pub(crate) const HOVER: Duration = Duration::from_millis(120);
 pub(crate) const THEME: Duration = Duration::from_millis(200);
 /// The camera glides to a new zoom (or a fit); eased with `slide`.
 pub(crate) const FLIGHT: Duration = Duration::from_millis(150);
+/// Two tiles trading places in grid mode slide to them; eased with `slide`.
+pub(crate) const TILE: Duration = Duration::from_millis(220);
+/// A tile held by its title to trade places: smaller and faded, picked up.
+pub(crate) const HELD: Look = Look {
+    scale: 0.96,
+    opacity: 0.45,
+};
 /// Blocks are scaled by redrawing them at zoom × scale, which rasterizes text at that size:
 /// scales snap to steps so only a few extra sizes are ever cached (like the zoom steps).
 const SCALE_STEP: f32 = 0.02;

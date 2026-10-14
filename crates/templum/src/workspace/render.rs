@@ -99,6 +99,125 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    /// Grid mode, a tile held by its title past a click: its place outlined, dashed; the tile it
+    /// would trade places with, tinted and saying so; and its title following the pointer. Grid
+    /// mode's camera is at the origin at zoom 1: tile rects are where they are drawn.
+    fn swap_overlay(&self, cx: &mut gpui_kit::Context<Self>) -> Vec<gpui_kit::AnyElement> {
+        let Some(Drag::Swap { id, over, at, .. }) = self.drag else {
+            return Vec::new();
+        };
+        if !self.held(id) {
+            return Vec::new();
+        }
+        let ui = self.ui;
+        let title = |id: BlockId| {
+            self.space
+                .blocks
+                .get(&id)
+                .map(|body| block::title(self, body, cx))
+                .unwrap_or_default()
+        };
+        let place = |r: Rect| {
+            div()
+                .absolute()
+                .left(px(r.x))
+                .top(px(r.y))
+                .w(px(r.w))
+                .h(px(r.h))
+                .rounded(px(10.0))
+        };
+        let mut layers = Vec::new();
+        if let Some(r) = self.space.canvas.get(id).map(|b| b.rect) {
+            layers.push(
+                place(r)
+                    .id("swap-from")
+                    .border_2()
+                    .border_dashed()
+                    .border_color(ui.accent.opacity(0.7))
+                    .test_support()
+                    .into_any_element(),
+            );
+        }
+        if let Some((r, name)) = over.and_then(|o| Some((self.space.canvas.get(o)?.rect, title(o))))
+        {
+            layers.push(
+                place(r)
+                    .id("swap-target")
+                    .border_2()
+                    .border_color(ui.accent)
+                    .bg(ui.accent.opacity(0.14))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .px(px(14.0))
+                            .py(px(8.0))
+                            .rounded(px(8.0))
+                            .bg(ui.surface)
+                            .border_1()
+                            .border_color(ui.accent)
+                            .shadow(vec![shadow(ui.shadow)])
+                            .text_size(px(13.0))
+                            .text_color(ui.title)
+                            .child(
+                                gpui_kit::component::Icon::new(
+                                    gpui_kit::assets::IconName::ArrowLeftRight,
+                                )
+                                .size(px(14.0))
+                                .text_color(ui.accent),
+                            )
+                            .child(
+                                div()
+                                    .max_w(px(320.0))
+                                    .truncate()
+                                    .child(format!("Swap with {name}")),
+                            ),
+                    )
+                    .test_support()
+                    .into_any_element(),
+            );
+        }
+        layers.push(
+            div()
+                .id("swap-chip")
+                .absolute()
+                .left(px(at.x + 14.0))
+                .top(px(at.y + 14.0))
+                .max_w(px(280.0))
+                .px(px(10.0))
+                .py(px(6.0))
+                .rounded(px(8.0))
+                .bg(ui.surface)
+                .border_1()
+                .border_color(ui.accent)
+                .shadow(vec![shadow(ui.shadow)])
+                .text_size(px(12.0))
+                .text_color(ui.title)
+                .truncate()
+                .child(title(id))
+                .test_support()
+                .into_any_element(),
+        );
+        layers
+    }
+}
+
+/// A floating card's drop shadow.
+fn shadow(color: Hsla) -> gpui_kit::BoxShadow {
+    gpui_kit::BoxShadow {
+        color,
+        offset: point(px(0.0), px(8.0)),
+        blur_radius: px(20.0),
+        spread_radius: px(0.0),
+        inset: false,
+    }
+}
+
 /// The dot grid under the blocks: round dots centered on the world lattice. One layer: the
 /// dots don't overlap and share a draw order, so GPUI skips the per-primitive bounds lookup.
 fn paint_dots(camera: &Camera, color: Hsla, bounds: Bounds<Pixels>, window: &mut Window) {
@@ -257,9 +376,17 @@ impl Render for Workspace {
             .filter(|b| self.space.shown(b.id))
             .copied()
             .collect();
+        // Tiles trading places slide there.
+        if let Some(grid) = &mut self.space.grid {
+            grid.slides
+                .retain(|_, (_, since)| motion::progress(*since, now, motion::TILE) < 1.0);
+            if !grid.slides.is_empty() {
+                window.request_animation_frame();
+            }
+        }
         let mut blocks: Vec<_> = visible
             .into_iter()
-            .map(|b| {
+            .map(|mut b| {
                 let look = self
                     .space
                     .appearing
@@ -267,6 +394,14 @@ impl Render for Workspace {
                     .map_or(motion::Look::REST, |since| {
                         motion::opening(motion::progress(*since, now, motion::OPEN))
                     });
+                // A tile held to trade places is picked up.
+                let look = if self.held(b.id) { motion::HELD } else { look };
+                if let Some((was, since)) =
+                    self.space.grid.as_ref().and_then(|g| g.slides.get(&b.id))
+                {
+                    let t = motion::slide(motion::progress(*since, now, motion::TILE));
+                    b.rect = super::tiling::between(*was, b.rect, t);
+                }
                 let body = &self.space.blocks[&b.id];
                 block::render(self, b, body, look, true, window, cx)
             })
@@ -340,6 +475,7 @@ impl Render for Workspace {
             }
             _ => None,
         };
+        let swapping = self.swap_overlay(cx);
         let area = div()
             .id("workspace")
             .relative()
@@ -374,6 +510,7 @@ impl Render for Workspace {
                     .border_color(self.ui.accent)
                     .bg(self.ui.accent.opacity(0.08))
             }))
+            .children(swapping)
             .when(self.tool.draws() && !tiled, |el| {
                 el.child(
                     div()

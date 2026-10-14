@@ -84,12 +84,24 @@ impl Workspace {
     pub(crate) fn begin_move(&mut self, id: BlockId, pos: PixelPoint<Pixels>) {
         // A tile is dropped on another to trade places.
         if self.space.grid.is_some() {
-            self.drag = Some(Drag::Swap { id, over: None });
+            let at = self.local(pos);
+            self.drag = Some(Drag::Swap {
+                id,
+                over: None,
+                from: at,
+                at,
+            });
             return;
         }
         let p = self.local(pos);
         self.drag = Gesture::move_block(&self.space.canvas, id, p).map(Drag::Canvas);
         self.placing(&[id]);
+    }
+
+    /// Grid mode: tile `id` is held by its title and moved past a click (it is drawn picked up).
+    pub(crate) fn held(&self, id: BlockId) -> bool {
+        matches!(self.drag, Some(Drag::Swap { id: held, from, at, .. })
+            if held == id && (at.x - from.x).abs().max((at.y - from.y).abs()) >= CLICK_SLOP)
     }
 
     /// Grid mode: the tile held by its title would trade places with tile `id` if let go now.
@@ -177,14 +189,18 @@ impl Workspace {
                 }
             }
             Some(Drag::Marquee { .. }) => self.marquee_to(p),
-            Some(Drag::Swap { id, over }) => {
+            Some(Drag::Swap { id, over, from, at }) => {
+                *at = p;
                 // Grid mode's camera is at the origin at zoom 1: canvas points are the pointer's.
+                // A click isn't a drag: nothing is picked up until the pointer moves past it.
                 let held = *id;
+                let lifted = (p.x - from.x).abs().max((p.y - from.y).abs()) >= CLICK_SLOP;
                 *over = self
                     .space
                     .canvas
                     .blocks()
                     .iter()
+                    .filter(|_| lifted)
                     .find(|b| b.id != held && self.space.shown(b.id) && b.rect.contains(p))
                     .map(|b| b.id);
             }
@@ -316,10 +332,9 @@ impl Workspace {
     /// focused (typing then reaches none; panning keeps the focus) and no block selected.
     pub(super) fn release(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
         // A tile let go over another trades places with it.
-        if let Some(Drag::Swap { id, over }) = self.drag {
-            if let (Some(other), Some(grid)) = (over, &mut self.space.grid) {
-                grid.tiles.swap(id, other);
-                self.retile();
+        if let Some(Drag::Swap { id, over, .. }) = self.drag {
+            if let Some(other) = over {
+                self.swap_tiles(id, other);
             }
             cx.notify();
         }

@@ -335,11 +335,14 @@ enum Drag {
         pointer: Point,
         scrolled: Option<Instant>,
     },
-    /// Grid mode: a tile held by its title, and the tile under the pointer it would trade places
-    /// with on release.
+    /// Grid mode: a tile held by its title, from the canvas point `from` (screen units, as grid
+    /// mode's camera is), the pointer now `at`; and the tile under it it would trade places with
+    /// on release, once it moved past a click.
     Swap {
         id: BlockId,
         over: Option<BlockId>,
+        from: Point,
+        at: Point,
     },
     /// Moving a selected drawing: `last` is the pointer's previous world point; `moved` once it
     /// has moved (and the undo step is taken).
@@ -361,6 +364,8 @@ pub(crate) struct Grid {
     pub camera: Camera,
     /// What the tiles fill, as last drawn: the workspace's area inside the gap.
     pub area: Rect,
+    /// Tiles sliding to the places they traded: where each was, since when.
+    pub slides: HashMap<BlockId, (Rect, Instant)>,
 }
 
 /// One canvas and everything on it: its blocks, their terminals, the focus, and what is

@@ -645,10 +645,88 @@ fn grid_modes_focus_follows_the_pointer(cx: &mut TestAppContext) {
     assert_eq!(focused(cx), Some(kanban), "no click needed");
     // The kanban block trades places with the note: the note comes under the still pointer.
     press(handle, "ctrl-alt-shift-right", cx);
-    frame(handle, cx);
-    frame(handle, cx);
     assert_eq!(rect_of(&ws, cx, note), left);
+    // The two slide there: the note arrives under the pointer, which hasn't moved.
+    std::thread::sleep(crate::motion::TILE + std::time::Duration::from_millis(50));
+    frame(handle, cx);
+    frame(handle, cx);
     assert_eq!(focused(cx), Some(kanban), "it stays with the block moved");
     point_at(handle, cx, (over_left.0 + 5.0, over_left.1));
     assert_eq!(focused(cx), Some(note), "the pointer moved");
+}
+
+/// Dragging a tile's title shows what letting go does: the tile picked up, its place dashed, the
+/// tile under the pointer saying it swaps, the title following the pointer. A press alone shows
+/// none of it. Let go, the two slide to their new places.
+#[gpui_kit::test]
+fn dragging_a_title_shows_the_swap_and_the_tiles_slide(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    ws.update(cx, |ws, _| ws.space.selected = vec![kanban, note]);
+    press(handle, TOGGLE, cx);
+    let (left, right) = (rect_of(&ws, cx, kanban), rect_of(&ws, cx, note));
+    let title = at(
+        &ws,
+        cx,
+        (left.x + left.w / 2.0, left.y + chrome::TITLE_H / 2.0),
+    );
+    let target = at(&ws, cx, (right.x + right.w / 2.0, right.y + right.h / 2.0));
+    let event = |kind: &str, p: (f32, f32)| {
+        let position = point(px(p.0), px(p.1));
+        match kind {
+            "down" => PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            "move" => PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Modifiers::default(),
+            }),
+            _ => PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }),
+        }
+    };
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(event("down", title), cx);
+        window.dispatch_event(event("move", (title.0 + 2.0, title.1)), cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("swap-chip").is_none(),
+            "a click isn't a drag"
+        );
+        window.dispatch_event(event("move", target), cx);
+        window.render_frame(cx);
+        window.find("swap-chip");
+        window.find("swap-from");
+        window.find("swap-target");
+    })
+    .unwrap();
+    assert!(ws.read_with(cx, |ws, _| ws.held(kanban)));
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(event("up", target), cx);
+        window.render_frame(cx);
+        assert!(window.try_find("swap-chip").is_none());
+    })
+    .unwrap();
+    // On its way: drawn short of its new place, which is its rect already.
+    let drawn = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, _| {
+            f32::from(window.find(("block", kanban.0 as usize)).bounds().origin.x)
+        })
+        .unwrap()
+    };
+    let origin = ws.read_with(cx, |ws, _| f32::from(ws.origin.x));
+    assert_eq!(rect_of(&ws, cx, kanban), right);
+    assert!(drawn(cx) < origin + right.x - 1.0, "still sliding");
+    std::thread::sleep(crate::motion::TILE + std::time::Duration::from_millis(50));
+    frame(handle, cx);
+    assert!((drawn(cx) - (origin + right.x)).abs() < 1.0, "arrived");
 }

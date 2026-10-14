@@ -4,10 +4,19 @@
 //! and a terminal's size work as they do on the canvas; their places on the canvas, and the
 //! canvas's camera, wait in `Grid`.
 
+use std::collections::HashMap;
+use std::time::Instant;
+
 use gpui_kit::{Context, Window};
 use templum_canvas::{BlockId, Camera, Direction, GAP, Rect, Size, Tile, neighbour};
 
 use super::{Grid, Tool, Workspace};
+
+/// `a` on its way to `b`, `t` of the way (0 to 1).
+pub(super) fn between(a: Rect, b: Rect, t: f32) -> Rect {
+    let mix = |x: f32, y: f32| x + (y - x) * t;
+    Rect::new(mix(a.x, b.x), mix(a.y, b.y), mix(a.w, b.w), mix(a.h, b.h))
+}
 
 /// What the tiles fill in a workspace area of `viewport`: all of it inside the gap.
 pub(super) fn grid_area(viewport: Size) -> Rect {
@@ -95,6 +104,7 @@ impl Workspace {
             homes,
             camera: space.canvas.camera,
             area,
+            slides: HashMap::new(),
         });
         space.canvas.camera = Camera::default();
         self.calm();
@@ -247,11 +257,23 @@ impl Workspace {
         let Some((from, other)) = self.beside(to) else {
             return;
         };
-        if let Some(grid) = &mut self.space.grid {
-            grid.tiles.swap(from, other);
-        }
-        self.retile();
+        self.swap_tiles(from, other);
         cx.notify();
+    }
+
+    /// Tiles `a` and `b` trade places, sliding there.
+    pub(super) fn swap_tiles(&mut self, a: BlockId, b: BlockId) {
+        let now = Instant::now();
+        let was: Vec<_> = [a, b]
+            .into_iter()
+            .filter_map(|id| Some((id, (self.space.canvas.get(id)?.rect, now))))
+            .collect();
+        let Some(grid) = &mut self.space.grid else {
+            return;
+        };
+        grid.tiles.swap(a, b);
+        grid.slides.extend(was);
+        self.retile();
     }
 
     /// Block `id` is no tile anymore (it is closing): its tile's other half takes the pair's
