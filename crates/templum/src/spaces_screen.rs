@@ -524,7 +524,9 @@ fn card(
         .gap(px(8.0))
         .p(px(14.0))
         .rounded(px(10.0))
-        .bg(ui.card)
+        // Opaque: the active card's ring is a shadow, which a see-through fill would show
+        // through, blue behind the text.
+        .bg(ui.surface.blend(ui.card))
         .border_1()
         .cursor_pointer()
         .map(|el| {
@@ -537,7 +539,8 @@ fn card(
                     inset: false,
                 }])
             } else if highlighted {
-                el.border_color(ui.hover_border).bg(ui.hover)
+                el.border_color(ui.hover_border)
+                    .bg(ui.surface.blend(ui.hover))
             } else {
                 el.border_color(ui.hairline)
                     .hover(move |s| s.border_color(ui.hover_border))
