@@ -425,10 +425,11 @@ pub(crate) fn open(ws: &Workspace, id: &str, window: &mut Window, cx: &mut Conte
         ui: ws.ui,
     });
     for field in [&name, &search] {
-        let view = view.clone();
+        // Weak: the view owns the fields, and the dialog's end drops them all.
+        let view = view.downgrade();
         App::subscribe(cx, field, move |_, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
-                view.update(cx, |_, cx| cx.notify());
+                view.update(cx, |_, cx| cx.notify()).ok();
             }
         })
         .detach();

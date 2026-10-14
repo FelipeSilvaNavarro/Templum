@@ -19,10 +19,12 @@ use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Space, Workspace, show_notificatio
 /// How long a workspace's processes have, once hung up, before what is left is killed.
 const KILL_AFTER: Duration = Duration::from_secs(2);
 
-/// Every process of a workspace's terminals, read now, while they still name their parents.
+/// Every process of a workspace's terminals, read now, while they still name their parents. A
+/// shell that exited is left out: its pid may be another program's by now.
 fn tree_of(space: &Space) -> Vec<templum_terminal::Running> {
     let shells: Vec<u32> = space
         .terminals()
+        .filter(|(_, pane)| !pane.term.exited())
         .filter_map(|(_, pane)| pane.term.processes().shell)
         .collect();
     if shells.is_empty() {
@@ -258,7 +260,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let to = match to {
-            Some(to) if self.others.iter().any(|s| s.id == to && !s.stopped) => to.to_string(),
+            Some(to) if self.others.iter().any(|s| s.id == to && s.takes_blocks()) => {
+                to.to_string()
+            }
             Some(_) => return,
             None => self.make_space(),
         };
@@ -287,11 +291,16 @@ impl Workspace {
             ws.quiet = true;
             let mut moved = Vec::new();
             for (r, mut body) in taken {
-                // Its commands in flight answer the block it was: they never come back to it.
-                if let Body::Git(git) = &mut body {
-                    git.busy = false;
-                    git.acting = 0;
-                    git.queued.clear();
+                match &mut body {
+                    // Its commands in flight answer the block it was: they never come back to it.
+                    Body::Git(git) => {
+                        git.busy = false;
+                        git.acting = 0;
+                        git.queued.clear();
+                    }
+                    // Its find field searches the block by the id it had.
+                    Body::Terminal(pane) => pane.find = None,
+                    _ => {}
                 }
                 moved.push(ws.add_block(Rect::new(r.x + dx, r.y + dy, r.w, r.h), body));
             }
@@ -502,12 +511,13 @@ impl Workspace {
         self.generation += 1;
         let generation = self.generation;
         let dir = self.data_dir.clone();
-        let Some(space) = self.others.iter_mut().find(|s| s.id == id) else {
+        let Some(space) = self.others.iter_mut().find(|s| s.id == id && !s.stopped) else {
             return;
         };
         let (saved, _) = space.layout(known, cx).snapshot();
         let mut failed = None;
-        if let Some(dir) = dir.filter(|_| !space.frozen && space.saved.as_ref() != Some(&saved))
+        // Written even when it looks unchanged: a snapshot in flight may have written an older one.
+        if let Some(dir) = dir.filter(|_| !space.frozen)
             && let Err(err) = session::save(&dir, &space.id, &saved, generation)
         {
             failed = Some(format!("Couldn't save {}'s canvas: {err}", space.name));

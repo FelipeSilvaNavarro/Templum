@@ -150,3 +150,35 @@ fn dropping_a_sidebar_tile_reorders_and_keeps_the_active_one(cx: &mut TestAppCon
         assert_eq!((ws.active, ws.space.name.as_str()), (1, "Web"));
     });
 }
+
+#[gpui_kit::test]
+fn settings_opened_from_the_screen_close_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    open_screen(handle, cx);
+    act(handle, cx, |w, cx| w.press(SETTINGS, cx));
+    assert!(!up(&ws, cx), "the panel would open under it");
+    assert!(panel_open(&ws, cx));
+}
+
+#[gpui_kit::test]
+fn closing_the_screen_gives_the_keyboard_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let before = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.new_note(window, cx));
+            window.render_frame(cx);
+            window.focused(cx)
+        })
+        .unwrap();
+    let canvas = ws.read_with(cx, |ws, _| ws.focus_handle.clone());
+    assert!(
+        before.is_some() && before.as_ref() != Some(&canvas),
+        "the note's field"
+    );
+    open_screen(handle, cx);
+    act(handle, cx, |w, cx| w.press("escape", cx));
+    let after = cx
+        .update_window(handle, |_, window, cx| window.focused(cx))
+        .unwrap();
+    assert_eq!(after, before);
+}

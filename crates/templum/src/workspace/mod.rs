@@ -517,6 +517,11 @@ impl Space {
             })
     }
 
+    /// Blocks moved here are kept: it isn't stopped, and its file is written.
+    pub fn takes_blocks(&self) -> bool {
+        !self.stopped && !self.frozen
+    }
+
     /// Drops every block (their shells hang up) and what only made sense with them. The canvas
     /// keeps counting ids: a block started again is never taken for one of these (a Git job
     /// still running finds its block by id).

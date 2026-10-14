@@ -9,9 +9,9 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, TITLE_BAR_HEIGHT};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Entity, FontWeight, Hsla,
-    KeyDownEvent, MouseButton, MouseDownEvent, SharedString, TestSupportExt, Window, div, point,
-    px,
+    AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Entity, FocusHandle, FontWeight,
+    Hsla, KeyDownEvent, MouseButton, MouseDownEvent, SharedString, TestSupportExt, Window, div,
+    point, px,
 };
 
 use crate::grid::hsla;
@@ -36,6 +36,8 @@ pub(crate) struct Screen {
     pub search: Entity<InputState>,
     /// The card the arrows moved to, among those shown; None: the first, until an arrow.
     pub highlight: Option<usize>,
+    /// What had the keyboard before: it gets it back.
+    pub before: Option<FocusHandle>,
 }
 
 impl Screen {
@@ -212,6 +214,7 @@ impl Workspace {
                     closing: false,
                     search,
                     highlight: None,
+                    before: window.focused(cx),
                 });
             }
         }
@@ -222,17 +225,18 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Slides the screen out, and gives the keyboard back to the canvas.
+    /// Slides the screen out, and gives the keyboard back to what had it.
     pub(crate) fn close_screen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(open) = self.screen.take() {
-            self.screen = Some(if open.closing {
-                open
-            } else {
-                open.reversed(Instant::now())
-            });
-            window.focus(&self.focus_handle, cx);
-            cx.notify();
+        if !self.screen.as_ref().is_some_and(|s| !s.closing) {
+            return;
         }
+        let Some(open) = self.screen.take() else {
+            return;
+        };
+        let before = open.before.clone();
+        self.screen = Some(open.reversed(Instant::now()));
+        window.focus(before.as_ref().unwrap_or(&self.focus_handle), cx);
+        cx.notify();
     }
 
     /// The cards shown: the workspaces whose name has the search's text, by their position.

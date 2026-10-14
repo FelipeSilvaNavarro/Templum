@@ -422,17 +422,25 @@ fn a_snapshot_in_flight_during_stop_doesnt_empty_the_file(cx: &mut TestAppContex
     second_with_a_terminal(handle, &ws, cx);
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
+            // The snapshot reads w2 with one terminal; it gets a second before Stop.
             ws.snapshot(window, cx);
+            ws.switch_to(1, window, cx);
+            ws.open(Rect::new(700.0, 0.0, 600.0, 400.0), window, cx);
+            ws.switch_to(0, window, cx);
             ws.stop_now("w2", window, cx);
         })
     })
     .unwrap();
     cx.run_until_parked();
-    assert_eq!(saved_blocks(data.path(), "w2"), 1);
+    assert_eq!(
+        saved_blocks(data.path(), "w2"),
+        2,
+        "the older snapshot lost"
+    );
     ws.read_with(cx, |ws, _| {
         let w2 = &ws.others[0];
         assert!(w2.stopped);
-        assert_eq!(w2.saved.as_ref().map(|s| s.items.len()), Some(1));
+        assert_eq!(w2.saved.as_ref().map(|s| s.items.len()), Some(2));
     });
 }
 
@@ -524,6 +532,120 @@ fn a_new_terminal_starts_in_the_workspace_folder_when_nothing_focused_has_one(
 ) {
     let project = tempfile::tempdir().unwrap();
     let (handle, ws) = open(cx);
+    let id = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.new_space(window, cx);
+                let folder = Some(project.path().to_path_buf());
+                ws.edit_space("w2", "Project", Look::default(), folder, window, cx)
+                    .unwrap();
+                ws.new_terminal(window, cx);
+                ws.space.focused.unwrap()
+            })
+        })
+        .unwrap();
+    assert_eq!(
+        folder_of(&ws, id, cx),
+        project.path().canonicalize().unwrap()
+    );
+}
+
+/// Whether the process `pid` still runs.
+fn runs(pid: u32) -> bool {
+    !templum_terminal::tree(&[pid]).is_empty()
+}
+
+/// Stop and Delete end what ignores the hangup: two seconds later, what is left is killed.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn stopping_and_deleting_end_programs_that_ignore_the_hangup(cx: &mut TestAppContext) {
+    use std::time::{Duration, Instant};
+    let stubborn = (
+        "sh".to_string(),
+        vec![
+            "-c".to_string(),
+            "trap '' HUP; sleep 1000 & sleep 1000".to_string(),
+        ],
+    );
+    let (handle, ws) = open_as(cx, Some(stubborn), None, None);
+    let main_shell = ws.read_with(cx, |ws, _| {
+        ws.space
+            .terminals()
+            .next()
+            .unwrap()
+            .1
+            .term
+            .processes()
+            .shell
+            .unwrap()
+    });
+    let (_, w2) = second_with_a_terminal(handle, &ws, cx);
+    let w3 = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.new_space(window, cx);
+                ws.open(Rect::new(0.0, 0.0, 600.0, 400.0), window, cx);
+                let shell = ws
+                    .space
+                    .terminals()
+                    .next()
+                    .unwrap()
+                    .1
+                    .term
+                    .processes()
+                    .shell;
+                ws.switch_to(0, window, cx);
+                shell.unwrap()
+            })
+        })
+        .unwrap();
+    // Each shell's two sleeps started.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let tree = loop {
+        let tree = templum_terminal::tree(&[w2, w3]);
+        if tree.len() >= 4 {
+            break tree;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the sleeps never started: {tree:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.stop_now("w2", window, cx);
+            ws.delete_space("w3", window, cx);
+        })
+    })
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(tree.iter().any(|r| runs(r.pid)), "the hangup was ignored");
+    cx.executor().advance_clock(Duration::from_secs(3));
+    cx.run_until_parked();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while let Some(left) = tree.iter().find(|r| runs(r.pid)) {
+        assert!(Instant::now() < deadline, "{left:?} still runs");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Main's own stubborn terminal doesn't outlive the test.
+    templum_terminal::kill_left(&templum_terminal::tree(&[main_shell]));
+}
+
+#[gpui_kit::test]
+fn the_workspace_folder_comes_before_the_configured_one(cx: &mut TestAppContext) {
+    let config = tempfile::tempdir().unwrap();
+    let configured = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    // A TOML literal string: Windows backslashes need no escaping.
+    write_config(
+        config.path(),
+        &format!(
+            "[shell]\nworking_directory = '{}'\n",
+            configured.path().display()
+        ),
+    );
+    let (handle, ws) = open_with(cx, Some(config.path().to_path_buf()));
     let id = cx
         .update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {

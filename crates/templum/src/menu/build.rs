@@ -254,18 +254,13 @@ impl Items {
                     let to_new = moving.clone();
                     spaces
                         .iter()
-                        .fold(menu, |menu, (id, name, stopped)| {
+                        .fold(menu, |menu, (id, name, takes)| {
                             let (id, ids) = (id.clone(), moving.clone());
-                            let label = if *stopped {
-                                format!("{name} (stopped)")
-                            } else {
-                                name.clone()
-                            };
                             menu.item(
-                                item(&mover, label, None, move |ws, window, cx| {
+                                item(&mover, name.clone(), None, move |ws, window, cx| {
                                     ws.move_blocks(ids.clone(), Some(&id), window, cx)
                                 })
-                                .disabled(*stopped),
+                                .disabled(!*takes),
                             )
                         })
                         .when(!spaces.is_empty(), |menu| menu.separator())

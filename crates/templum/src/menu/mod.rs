@@ -241,7 +241,7 @@ impl Workspace {
                     spaces: self
                         .others
                         .iter()
-                        .map(|s| (s.id.clone(), s.name.clone(), s.stopped))
+                        .map(|s| (s.id.clone(), s.name.clone(), s.takes_blocks()))
                         .collect(),
                     tail: self.tail(block, group, cx),
                     close: if body.terminal().is_some() {
@@ -495,7 +495,8 @@ enum Items {
         close: &'static str,
         /// What Move to workspace moves: the selection the block is in, else the block.
         moving: Vec<BlockId>,
-        /// The other workspaces, by id and name; a stopped one takes none.
+        /// The other workspaces, by id and name, and whether they take blocks (not a stopped
+        /// one, nor one whose file isn't written).
         spaces: Vec<(String, String, bool)>,
     },
     Canvas {

@@ -111,26 +111,50 @@ pub(crate) struct IndexEntry {
     )]
     pub image: Option<String>,
     /// Where its new terminals start.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "any_folder"
+    )]
     pub folder: Option<PathBuf>,
     /// Its programs were ended; opening it starts them again.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(
+        default,
+        skip_serializing_if = "std::ops::Not::not",
+        deserialize_with = "any_true"
+    )]
     pub stopped: bool,
 }
 
+// The keys a workspace's look added: a value Templum can't use (a typo, a newer version's) is
+// none, never a reason to set the whole list aside.
+
+/// A string, or none for anything else.
+fn any_string<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(s) => Some(s),
+        _ => None,
+    })
+}
+
 fn known_icon<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    let name = Option::<String>::deserialize(d)?;
-    Ok(name.filter(|n| crate::space_dialog::icon(n).is_some()))
+    Ok(any_string(d)?.filter(|n| crate::space_dialog::icon(n).is_some()))
 }
 
 fn known_color<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    let name = Option::<String>::deserialize(d)?;
-    Ok(name.filter(|n| crate::space_dialog::COLORS.contains(&n.as_str())))
+    Ok(any_string(d)?.filter(|n| crate::space_dialog::COLORS.contains(&n.as_str())))
 }
 
 fn safe_image<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    let name = Option::<String>::deserialize(d)?;
-    Ok(name.filter(|n| safe_file_name(n)))
+    Ok(any_string(d)?.filter(|n| safe_file_name(n)))
+}
+
+fn any_folder<'de, D: Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Error> {
+    Ok(any_string(d)?.map(PathBuf::from))
+}
+
+fn any_true<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(serde_json::Value::deserialize(d)? == serde_json::Value::Bool(true))
 }
 
 /// Letters, digits, `-`, `_` and `.`, and no `..`: a name that stays in its folder.
@@ -1252,7 +1276,8 @@ mod tests {
     fn an_unknown_color_or_icon_keeps_the_rest_of_the_index() {
         let d = tempfile::tempdir().unwrap();
         let text = r#"{"version":1,"workspaces":[
-            {"id":"default","name":"Main","icon":"no-such-icon","color":"orange"},
+            {"id":"default","name":"Main","icon":"no-such-icon","color":"orange",
+             "image":7,"folder":["x"],"stopped":"yes"},
             {"id":"w2","name":"Side","icon":"rocket","color":"accent","stopped":true}
         ],"active":1}"#;
         std::fs::create_dir_all(d.path().join("workspaces")).unwrap();
@@ -1261,6 +1286,8 @@ mod tests {
             panic!("unread")
         };
         let (main, side) = (&index.workspaces[0], &index.workspaces[1]);
+        assert_eq!(main.name, "Main");
+        assert!(main.image.is_none() && main.folder.is_none() && !main.stopped);
         assert_eq!((main.icon.as_deref(), main.color.as_deref()), (None, None));
         assert_eq!(side.icon.as_deref(), Some("rocket"));
         assert_eq!(side.color.as_deref(), Some("accent"));

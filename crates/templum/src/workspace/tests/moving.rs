@@ -147,3 +147,36 @@ fn a_stopped_workspace_cant_receive_blocks(cx: &mut TestAppContext) {
         assert!(ws.others[0].blocks.is_empty());
     });
 }
+
+#[gpui_kit::test]
+fn a_terminal_moved_with_its_find_field_open_leaves_it_closed(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    second(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.focus_block(first, window, cx);
+            ws.open_find(window, cx);
+            assert!(ws.space.terminal(first).unwrap().find.is_some());
+        })
+    })
+    .unwrap();
+    move_to(handle, &ws, cx, vec![first], Some("w2"));
+    ws.read_with(cx, |ws, _| {
+        let (_, pane) = ws.others[0].terminals().next().unwrap();
+        assert!(pane.find.is_none(), "it searched the block by its old id");
+    });
+}
+
+#[gpui_kit::test]
+fn a_workspace_whose_file_isnt_written_cant_receive_blocks(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    second(handle, &ws, cx);
+    ws.update(cx, |ws, _| ws.others[0].frozen = true);
+    move_to(handle, &ws, cx, vec![first], Some("w2"));
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.terminal(first).is_some(), "it stays");
+        assert!(ws.others[0].blocks.is_empty());
+    });
+}

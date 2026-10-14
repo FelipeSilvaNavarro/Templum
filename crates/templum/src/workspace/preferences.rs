@@ -389,6 +389,8 @@ impl Workspace {
             .ok();
         })
         .detach();
+        // The panel would open under the screen.
+        self.close_screen(window, cx);
         let now = Instant::now();
         self.settings = Some(match &self.settings {
             // Still sliding out: it turns back from where it is.

@@ -370,3 +370,7 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   processes below the shell; what runs in a WSL distribution under `wsl.exe` isn't one of them, so a server started
   there may outlive the hangup. Fix: run `wsl.exe --terminate` for a distribution only that workspace's terminals
   use, or kill the session through `wsl.exe -e pkill -s`.
+- [ ] **Stop and Delete may stutter for a moment with many processes.** `tree_of`
+  (`crates/templum/src/workspace/spaces.rs`) reads the whole process table on the UI thread (and on Unix asks each
+  process its session), once per Stop or Delete. Fix: read the tree on the background executor, then drop the
+  workspace's blocks when it is read.
