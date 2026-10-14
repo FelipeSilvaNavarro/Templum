@@ -270,3 +270,23 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **A note block copied in another Templum pastes empty.** The clipboard names notes by their ids
   (`Body::item`, `crates/templum/src/workspace/mod.rs`), which another Templum's notes don't have. Fix: put each
   note's text in the copied item's `text`, and let `paste_blocks` make a note of it when the id isn't known.
+
+## Grid mode
+
+- [ ] **Ctrl+Z in grid mode can take back a hidden block's change.** The canvas's undo steps (`workspace/history.rs`)
+  also name blocks left on the canvas, which grid mode doesn't show, so Ctrl+Z may move one there and nothing visible
+  happens. Fix: skip steps whose blocks are all hidden while in grid mode, keeping them for the canvas.
+- [ ] **A tile smaller than its block's minimum cuts it.** Splitting never stops (`Tile::insert`,
+  `crates/templum-canvas/src/tile.rs`), so with many tiles in a small window a terminal stays at its 20 × 4 cells and
+  is cut off, a kanban or Git block's body too. Fix: refuse a split that would make a tile smaller than its block's
+  `min_size`, and say so.
+- [ ] **Swapping and flipping tiles aren't Ctrl+Z steps.** `swap_tile`, the title drop and `flip_tile`
+  (`crates/templum/src/workspace/tiling.rs`) change the tree without a history step. Fix: a `Change::Tiles` step
+  holding the tree before.
+- [ ] **Grid mode comes and goes without a glide, and a last closed tile vanishes at once.** `calm` clears the ghosts
+  (`tiling.rs`). Fix: animate each block from its canvas rect to its tile and back, as camera flights do.
+- [ ] **The title bar shows 100% in grid mode.** It reads the camera's zoom (`title_bar.rs`), which is grid mode's.
+  Fix: show "Grid" there while a workspace is tiled.
+- [ ] **A pasted group comes into the grid one block at a time.** Each pasted block splits the one before
+  (`added`, `crates/templum/src/workspace/blocks.rs`), so their arrangement on the canvas is lost. Fix: tile a
+  pasted group as a dwindle of its own in the focused tile's half.

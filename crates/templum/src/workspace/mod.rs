@@ -473,6 +473,9 @@ impl Space {
             recent: self.recent.clone(),
             agents,
             ink: self.ink.iter().map(session::InkItem::of).collect(),
+            grid: self.grid.as_ref().and_then(|g| {
+                session::SavedTile::of(&g.tiles, &|id| blocks.iter().position(|b| b.id == id))
+            }),
         }
     }
 

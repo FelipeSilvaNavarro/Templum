@@ -319,6 +319,7 @@ fn a_snapshot_tells_each_terminal_its_folder_and_agent(cx: &mut TestAppContext) 
                 focused: None,
                 recent: Vec::new(),
                 ink: Vec::new(),
+                grid: None,
             };
             let space = ws.space.id.clone();
             let mut unread = saved.clone();

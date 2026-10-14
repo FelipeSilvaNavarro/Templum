@@ -67,6 +67,17 @@ impl Workspace {
         }
         self.quiet = false;
         self.space.focused = saved.focused.and_then(|i| ids.get(i).copied().flatten());
+        // Grid mode as it was left, over the canvas as it was.
+        if let Some(tiles) = saved
+            .grid
+            .as_ref()
+            .and_then(|g| g.tile(|i| ids.get(i).copied().flatten()))
+        {
+            self.tile_space(tiles, super::tiling::grid_area(self.viewport(window)));
+            if !self.space.focused.is_some_and(|f| self.space.shown(f)) {
+                self.space.focused = self.space.top();
+            }
+        }
         if failed {
             // A shell setting with a typo: fixing it must bring the canvas back, so it isn't
             // written over with the blocks that couldn't start.

@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use templum_canvas::{Camera, Color, Drawing, MAX_WIDTH, MIN_WIDTH, Point, Rect, ShapeKind};
+use templum_canvas::{
+    BlockId, Camera, Color, Drawing, MAX_WIDTH, MIN_WIDTH, Point, Rect, ShapeKind, Split, Tile,
+};
 use templum_terminal::Processes;
 
 use crate::config;
@@ -177,6 +179,85 @@ pub(crate) struct Saved {
     /// The drawings, above the blocks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ink: Vec<InkItem>,
+    /// Grid mode's tiles, by item index (docs/specs/grid.md); the camera and the items' rects are
+    /// the canvas's still.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<SavedTile>,
+}
+
+/// Grid mode's tree of tiles: an item, by its index in `items`, or a pair. `split` is "beside"
+/// (side by side), anything else one above the other: a word no Templum knows never loses the
+/// file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum SavedTile {
+    Item(usize),
+    Pair {
+        split: String,
+        a: Box<SavedTile>,
+        b: Box<SavedTile>,
+    },
+}
+
+impl SavedTile {
+    /// `tile` with each block as its item's index (`index`); None when a block isn't an item.
+    pub fn of(tile: &Tile, index: &impl Fn(BlockId) -> Option<usize>) -> Option<SavedTile> {
+        Some(match tile {
+            Tile::Leaf(id) => SavedTile::Item(index(*id)?),
+            Tile::Pair(split, a, b) => SavedTile::Pair {
+                split: match split {
+                    Split::Beside => "beside",
+                    Split::Above => "above",
+                }
+                .to_string(),
+                a: Box::new(SavedTile::of(a, index)?),
+                b: Box::new(SavedTile::of(b, index)?),
+            },
+        })
+    }
+
+    /// The tiles, `block` giving each item's block: items that didn't come back are left out (a
+    /// pair left with one half is that half). None without any, or when an item is in it twice.
+    pub fn tile(&self, block: impl Fn(usize) -> Option<BlockId> + Copy) -> Option<Tile> {
+        let mut items = Vec::new();
+        self.items(&mut items);
+        let count = items.len();
+        items.sort_unstable();
+        items.dedup();
+        if items.len() != count {
+            return None;
+        }
+        self.build(block)
+    }
+
+    fn items(&self, into: &mut Vec<usize>) {
+        match self {
+            SavedTile::Item(i) => into.push(*i),
+            SavedTile::Pair { a, b, .. } => {
+                a.items(into);
+                b.items(into);
+            }
+        }
+    }
+
+    fn build(&self, block: impl Fn(usize) -> Option<BlockId> + Copy) -> Option<Tile> {
+        match self {
+            SavedTile::Item(i) => block(*i).map(Tile::Leaf),
+            SavedTile::Pair { split, a, b } => match (a.build(block), b.build(block)) {
+                (Some(a), Some(b)) => Some(Tile::Pair(
+                    if split == "beside" {
+                        Split::Beside
+                    } else {
+                        Split::Above
+                    },
+                    Box::new(a),
+                    Box::new(b),
+                )),
+                (Some(only), None) | (None, Some(only)) => Some(only),
+                (None, None) => None,
+            },
+        }
+    }
 }
 
 /// The world point at the canvas's top left, and the zoom factor.
@@ -417,6 +498,7 @@ pub(crate) struct Layout {
     /// The agents to look for in the terminals.
     pub agents: std::sync::Arc<Vec<templum_terminal::Detect>>,
     pub ink: Vec<InkItem>,
+    pub grid: Option<SavedTile>,
 }
 
 pub(crate) enum LayoutBlock {
@@ -464,6 +546,7 @@ impl Layout {
             focused: self.focused,
             recent: self.recent.into_iter().filter_map(utf8).collect(),
             ink: self.ink,
+            grid: self.grid,
         }
     }
 }
@@ -644,6 +727,7 @@ mod tests {
             focused: Some(1),
             recent: vec!["/home/u/proj".into(), "/srv/site".into()],
             ink: Vec::new(),
+            grid: None,
         }
     }
 
@@ -782,6 +866,55 @@ mod tests {
             panic!("not read");
         };
         assert!(matches!(&read.items[0], Item::Note(n) if n.text == "t" && n.notes.is_empty()));
+    }
+
+    #[test]
+    fn a_grid_reads_back_by_item_index() {
+        let d = tempfile::tempdir().unwrap();
+        let mut saved = sample();
+        let tile = Tile::Pair(
+            Split::Beside,
+            Box::new(Tile::Leaf(BlockId(7))),
+            Box::new(Tile::Leaf(BlockId(3))),
+        );
+        let index = |id: BlockId| [BlockId(3), BlockId(7)].iter().position(|b| *b == id);
+        saved.grid = SavedTile::of(&tile, &index);
+        save(d.path(), "g", &saved, 1).unwrap();
+        let text = std::fs::read_to_string(path(d.path(), "g")).unwrap();
+        assert!(text.contains(r#""split": "beside""#), "{text}");
+        let Loaded::Saved(read) = load(d.path(), "g") else {
+            panic!("not read");
+        };
+        assert_eq!(read, saved);
+        let back = read
+            .grid
+            .unwrap()
+            .tile(|i| [BlockId(3), BlockId(7)].get(i).copied());
+        assert_eq!(back, Some(tile));
+    }
+
+    #[test]
+    fn a_grid_leaves_out_items_that_didnt_come_back() {
+        let grid: SavedTile =
+            serde_json::from_str(r#"{"split":"plaid","a":0,"b":{"split":"beside","a":1,"b":2}}"#)
+                .unwrap();
+        // Item 1 couldn't start: its pair is item 2 alone. An unknown split is one above the other.
+        let tile = grid.tile(|i| (i != 1).then_some(BlockId(i as u64)));
+        assert_eq!(
+            tile,
+            Some(Tile::Pair(
+                Split::Above,
+                Box::new(Tile::Leaf(BlockId(0))),
+                Box::new(Tile::Leaf(BlockId(2)))
+            ))
+        );
+        assert_eq!(grid.tile(|_| None), None, "nothing came back");
+        let twice: SavedTile = serde_json::from_str(r#"{"split":"beside","a":0,"b":0}"#).unwrap();
+        assert_eq!(
+            twice.tile(|i| Some(BlockId(i as u64))),
+            None,
+            "an item twice"
+        );
     }
 
     #[test]
@@ -1054,6 +1187,7 @@ mod tests {
             recent: vec![PathBuf::from("/a"), PathBuf::from("/b")],
             agents: Default::default(),
             ink: Vec::new(),
+            grid: None,
         };
         let saved = layout.snapshot();
         assert_eq!(saved.recent, ["/a", "/b"], "recent folders, newest first");

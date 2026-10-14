@@ -571,3 +571,40 @@ fn a_blocks_menu_goes_in_flips_adds_leaves_and_comes_back(cx: &mut TestAppContex
     pick(handle, cx, kanban, 2, None);
     assert_eq!(tiles(cx), None, "the canvas again");
 }
+
+/// Quit in grid mode and start again: the grid is back, and leaving it puts every block where it
+/// was on the canvas, under the camera as it was.
+#[gpui_kit::test]
+fn a_restart_brings_the_grid_back_with_the_canvas_intact(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    let camera = far_camera(&ws, cx);
+    let before: Vec<Rect> = ws.read_with(cx, |ws, _| {
+        ws.space.canvas.blocks().iter().map(|b| b.rect).collect()
+    });
+    ws.update(cx, |ws, _| ws.space.selected = vec![kanban, note]);
+    press(handle, TOGGLE, cx);
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    let (again_handle, again) = open_in(cx, None, Some(dir.path().to_path_buf()));
+    again.read_with(cx, |ws, _| {
+        let grid = ws.space.grid.as_ref().expect("grid mode again");
+        assert_eq!(grid.tiles.ids().len(), 2);
+        assert_eq!(grid.camera, camera);
+        assert!(ws.space.focused.is_some_and(|f| ws.space.shown(f)));
+        let homes: Vec<Rect> = ws
+            .space
+            .canvas
+            .blocks()
+            .iter()
+            .map(|b| ws.space.home(b))
+            .collect();
+        assert_eq!(homes, before);
+    });
+    press(again_handle, TOGGLE, cx);
+    again.read_with(cx, |ws, _| {
+        let rects: Vec<Rect> = ws.space.canvas.blocks().iter().map(|b| b.rect).collect();
+        assert_eq!(rects, before);
+        assert_eq!(ws.space.canvas.camera, camera);
+    });
+}

@@ -67,22 +67,29 @@ impl Workspace {
         self.grid_on(tiles, area, window, cx);
     }
 
-    /// `tiles` fill `area`; each block's canvas rect and the camera wait to go back. The focused
-    /// block keeps the keyboard if it is tiled; otherwise the first tile takes it.
-    pub(super) fn grid_on(
-        &mut self,
-        tiles: Tile,
-        area: Rect,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// `tiles` fill `area`. The focused block keeps the keyboard if it is tiled; otherwise the
+    /// first tile takes it.
+    fn grid_on(&mut self, tiles: Tile, area: Rect, window: &mut Window, cx: &mut Context<Self>) {
+        let first = tiles.ids()[0];
+        self.tile_space(tiles, area);
+        let focused = self
+            .space
+            .focused
+            .filter(|id| self.space.shown(*id))
+            .unwrap_or(first);
+        self.focus_block(focused, window, cx);
+        cx.notify();
+    }
+
+    /// The workspace in grid mode, `tiles` filling `area`; each block's canvas rect and the
+    /// camera wait to go back.
+    pub(super) fn tile_space(&mut self, tiles: Tile, area: Rect) {
         let space = &mut self.space;
         let homes = tiles
             .ids()
             .into_iter()
             .filter_map(|id| Some((id, space.canvas.get(id)?.rect)))
             .collect();
-        let first = tiles.ids()[0];
         space.grid = Some(Grid {
             tiles,
             homes,
@@ -92,13 +99,6 @@ impl Workspace {
         space.canvas.camera = Camera::default();
         self.calm();
         self.retile();
-        let focused = self
-            .space
-            .focused
-            .filter(|id| self.space.shown(*id))
-            .unwrap_or(first);
-        self.focus_block(focused, window, cx);
-        cx.notify();
     }
 
     /// Back to the canvas: every tiled block where it was on it, and the camera as it was.

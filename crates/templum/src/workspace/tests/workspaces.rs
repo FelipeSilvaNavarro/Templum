@@ -26,6 +26,7 @@ fn a_workspace_shows_an_agent_from_its_last_snapshot() {
             focused: None,
             recent: Vec::new(),
             ink: Vec::new(),
+            grid: None,
         }),
         ..crate::workspace::Space::default()
     };
