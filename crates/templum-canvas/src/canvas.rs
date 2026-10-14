@@ -100,15 +100,8 @@ impl Canvas {
     /// Where a new block of `size` goes: at `near`, shifted by [`CASCADE`] while another
     /// block's top-left corner is within 8 units.
     pub fn place_new(&self, size: Size, near: Point) -> Rect {
-        let mut p = near;
-        while self
-            .blocks
-            .iter()
-            .any(|b| (b.rect.x - p.x).abs() < 8.0 && (b.rect.y - p.y).abs() < 8.0)
-        {
-            p = Point::new(p.x + CASCADE, p.y + CASCADE);
-        }
-        Rect::new(p.x, p.y, size.w, size.h)
+        let taken: Vec<Rect> = self.blocks.iter().map(|b| b.rect).collect();
+        cascade(Rect::new(near.x, near.y, size.w, size.h), &taken)
     }
 
     /// A spot to the right of `anchor`, top-aligned, a BESIDE gap away; cascading down by
@@ -138,6 +131,19 @@ impl Canvas {
     fn index(&self, id: BlockId) -> Option<usize> {
         self.blocks.iter().position(|b| b.id == id)
     }
+}
+
+/// `rect`, shifted by [`CASCADE`] while one of `taken`'s top-left corners is within 8 units of
+/// its own.
+pub fn cascade(rect: Rect, taken: &[Rect]) -> Rect {
+    let mut p = rect.origin();
+    while taken
+        .iter()
+        .any(|t| (t.x - p.x).abs() < 8.0 && (t.y - p.y).abs() < 8.0)
+    {
+        p = Point::new(p.x + CASCADE, p.y + CASCADE);
+    }
+    Rect::new(p.x, p.y, rect.w, rect.h)
 }
 
 #[cfg(test)]

@@ -28,6 +28,10 @@ impl Workspace {
         let Some(rect) = self.space.canvas.get(block).map(|b| b.rect) else {
             return;
         };
+        // In grid mode a block on the canvas comes into the grid to be seen.
+        if !self.space.shown(block) {
+            self.join_grid(block, self.space.focused);
+        }
         self.focus_block(block, window, cx);
         let vp = self.viewport(window);
         let to = self

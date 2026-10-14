@@ -15,7 +15,7 @@ mod snap;
 mod tile;
 
 pub use camera::{Camera, FIT_MARGIN, ZOOM_STEPS};
-pub use canvas::{BESIDE, Block, BlockId, CASCADE, Canvas};
+pub use canvas::{BESIDE, Block, BlockId, CASCADE, Canvas, cascade};
 pub use dots::{DOT_SPACING, DotGrid, MIN_DOT_GAP, dot_grid, dot_size};
 pub use flight::{CameraFlight, FLIGHT_ZOOM_STEP};
 pub use geometry::{Point, Rect, Size};

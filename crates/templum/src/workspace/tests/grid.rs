@@ -254,3 +254,134 @@ fn the_grid_key_is_ctrl_shift_enter() {
         Some(crate::keys::Command::ToggleGrid)
     );
 }
+
+/// The blocks added since `before`, oldest first.
+fn added_since(ws: &Entity<Workspace>, cx: &mut TestAppContext, before: usize) -> Vec<BlockId> {
+    ws.read_with(cx, |ws, _| {
+        let mut ids: Vec<BlockId> = ws.space.canvas.blocks().iter().map(|b| b.id).collect();
+        ids.sort();
+        ids[before..].to_vec()
+    })
+}
+
+#[gpui_kit::test]
+fn a_new_block_takes_half_of_the_focused_tile(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    press(handle, TOGGLE, cx);
+    press(handle, NEW, cx);
+    let [second] = added_since(&ws, cx, 1)[..] else {
+        panic!("one new terminal");
+    };
+    let area = area(handle, &ws, cx);
+    let (a, b) = (rect_of(&ws, cx, first), rect_of(&ws, cx, second));
+    assert_eq!((a.x, a.y, a.h), (area.x, area.y, area.h), "side by side");
+    assert_eq!((b.right(), b.h), (area.right(), area.h));
+    // The new one has the keyboard, and is tall: the next one goes below it.
+    press(handle, NEW, cx);
+    let third = added_since(&ws, cx, 2)[0];
+    let (b, c) = (rect_of(&ws, cx, second), rect_of(&ws, cx, third));
+    assert_eq!((b.x, b.w), (c.x, c.w), "one above the other");
+    assert!(c.y > b.bottom());
+    assert_eq!(c.bottom(), area.bottom());
+}
+
+/// New blocks get places on the canvas where the view was, off each other's.
+#[gpui_kit::test]
+fn new_blocks_land_apart_on_the_canvas_in_the_view_left(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let camera = far_camera(&ws, cx);
+    press(handle, TOGGLE, cx);
+    press(handle, NEW, cx);
+    press(handle, NEW, cx);
+    let [second, third] = added_since(&ws, cx, 1)[..] else {
+        panic!("two new terminals");
+    };
+    press(handle, TOGGLE, cx);
+    let (b, c) = (rect_of(&ws, cx, second), rect_of(&ws, cx, third));
+    assert_eq!(
+        (c.x - b.x, c.y - b.y),
+        (templum_canvas::CASCADE, templum_canvas::CASCADE)
+    );
+    let center = cx
+        .update_window(handle, |_, window, cx| {
+            let ws = ws.read(cx);
+            camera.to_world(ws.center(window))
+        })
+        .unwrap();
+    assert!(
+        (b.x + b.w / 2.0 - center.x).abs() < 1.0 && (b.y + b.h / 2.0 - center.y).abs() < 1.0,
+        "{b:?} around {center:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn a_terminal_beside_a_tile_lands_beside_its_place_on_the_canvas(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open(cx);
+    let editor = open_editor(handle, &ws, cx, dir.path());
+    let home = rect_of(&ws, cx, editor);
+    ws.update(cx, |ws, _| ws.space.focused = Some(editor));
+    press(handle, TOGGLE, cx);
+    let terminal = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.terminal_beside(editor, dir.path(), None, window, cx)
+            })
+        })
+        .unwrap()
+        .unwrap();
+    ws.read_with(cx, |ws, _| assert!(ws.space.shown(terminal), "tiled"));
+    press(handle, TOGGLE, cx);
+    let r = rect_of(&ws, cx, terminal);
+    assert_eq!((r.x, r.y), (home.right() + templum_canvas::BESIDE, home.y));
+}
+
+#[gpui_kit::test]
+fn going_to_a_block_on_the_canvas_brings_it_into_the_grid(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, terminal) = three_blocks(handle, &ws, cx);
+    ws.update(cx, |ws, _| ws.space.focused = Some(kanban));
+    press(handle, TOGGLE, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let space = ws.space.id.clone();
+            ws.reveal(&space, terminal, window, cx);
+        })
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.shown(terminal));
+        assert_eq!(ws.space.focused, Some(terminal));
+    });
+    let area = area(handle, &ws, cx);
+    assert_eq!(
+        rect_of(&ws, cx, terminal).right(),
+        area.right(),
+        "beside it"
+    );
+    press(handle, TOGGLE, cx);
+    assert_eq!(
+        rect_of(&ws, cx, terminal),
+        Rect::new(40.0, 400.0, 400.0, 300.0),
+        "where it was"
+    );
+}
+
+#[gpui_kit::test]
+fn ctrl_z_brings_a_closed_tile_back_into_the_grid(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    ws.update(cx, |ws, _| ws.space.selected = vec![kanban, note]);
+    press(handle, TOGGLE, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close(note, window, cx))
+    })
+    .unwrap();
+    press(handle, UNDO, cx);
+    ws.read_with(cx, |ws, _| {
+        let tiles = ws.space.grid.as_ref().unwrap().tiles.ids();
+        assert_eq!(tiles.len(), 2, "back in the grid: {tiles:?}");
+        assert!(tiles.contains(&kanban));
+    });
+}

@@ -34,11 +34,28 @@ impl Workspace {
     /// A block was just added: it is focused, pops in, and Ctrl+Z takes it away (unless the
     /// canvas is being restored or blocks come back by an undo: `quiet`).
     fn added(&mut self, id: BlockId) {
+        let before = self.space.focused;
         self.space.focused = Some(id);
         self.space.selected.clear();
         self.space.appearing.insert(id, Instant::now());
         if !self.quiet {
             self.keep(Change::Close(vec![id]), Then::New);
+        }
+        // In grid mode it takes half of the focused tile; its place on the canvas, for when the
+        // grid ends, is off the others' places there.
+        if self.space.grid.is_some() {
+            let taken: Vec<Rect> = self
+                .space
+                .canvas
+                .blocks()
+                .iter()
+                .filter(|b| b.id != id)
+                .map(|b| self.space.home(b))
+                .collect();
+            if let Some(b) = self.space.canvas.get_mut(id) {
+                b.rect = templum_canvas::cascade(b.rect, &taken);
+            }
+            self.join_grid(id, before);
         }
     }
 
@@ -78,7 +95,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
-        let anchor = self.space.canvas.get(block)?.rect;
+        let anchor = self.space.home(self.space.canvas.get(block)?);
         self.space.pristine = false;
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
         let rect = self.space.canvas.place_beside(anchor, size);
@@ -197,7 +214,7 @@ impl Workspace {
 
     /// A kanban block at the viewport's center, showing the board list.
     pub(crate) fn new_kanban(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let center = self.space.canvas.camera.to_world(self.center(window));
+        let center = self.space.camera().to_world(self.center(window));
         let size = kanban::SIZE;
         let at = self
             .space
@@ -653,8 +670,7 @@ impl Workspace {
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
         let center = self
             .space
-            .canvas
-            .camera
+            .camera()
             .to_world(Point::new(vp.w / 2.0, vp.h / 2.0));
         let near = Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0);
         let rect = self.space.canvas.place_new(size, near);

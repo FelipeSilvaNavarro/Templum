@@ -124,6 +124,28 @@ impl Workspace {
         }
     }
 
+    /// Block `id`, on the canvas, takes half of `at`'s tile (of the last tile when `at` isn't
+    /// one); its rect there waits for the grid to end.
+    pub(super) fn join_grid(&mut self, id: BlockId, at: Option<BlockId>) {
+        let Some(home) = self.space.canvas.get(id).map(|b| b.rect) else {
+            return;
+        };
+        let Some(grid) = &mut self.space.grid else {
+            return;
+        };
+        if grid.homes.contains_key(&id) {
+            return;
+        }
+        let at = at
+            .filter(|at| grid.homes.contains_key(at))
+            .or_else(|| grid.tiles.ids().last().copied());
+        if let Some(at) = at {
+            grid.tiles.insert(at, id, grid.area, GAP);
+            grid.homes.insert(id, home);
+            self.retile();
+        }
+    }
+
     /// Block `id` is no tile anymore (it is closing): its tile's other half takes the pair's
     /// place; without tiles, the canvas comes back. Its canvas rect, if it was tiled.
     pub(super) fn untile(&mut self, id: BlockId) -> Option<Rect> {

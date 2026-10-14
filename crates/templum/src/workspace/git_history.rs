@@ -534,7 +534,7 @@ impl Workspace {
         let id = match open {
             Some(id) => id,
             None => {
-                let Some(anchor) = self.space.canvas.get(editor).map(|b| b.rect) else {
+                let Some(anchor) = self.space.canvas.get(editor).map(|b| self.space.home(b)) else {
                     return;
                 };
                 let at = self

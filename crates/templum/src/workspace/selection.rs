@@ -25,7 +25,7 @@ impl Workspace {
     /// selects the blocks it touches, with those selected before. Selecting takes the focus away.
     pub(super) fn begin_marquee(&mut self, pointer: Point) {
         self.space.focused = None;
-        let at = self.space.canvas.camera.to_world(pointer);
+        let at = self.space.camera().to_world(pointer);
         self.drag = Some(Drag::Marquee {
             base: self.space.selected.clone(),
             from: at,
@@ -38,7 +38,7 @@ impl Workspace {
 
     /// The rectangle's corner is under `pointer` (a canvas point).
     pub(super) fn marquee_to(&mut self, pointer: Point) {
-        let to = self.space.canvas.camera.to_world(pointer);
+        let to = self.space.camera().to_world(pointer);
         let Some(Drag::Marquee {
             base,
             from,
@@ -180,7 +180,7 @@ impl Workspace {
         else {
             return false;
         };
-        let center = self.space.canvas.camera.to_world(self.center(window));
+        let center = self.space.camera().to_world(self.center(window));
         let near = Point::new(center.x - bounds.w / 2.0, center.y - bounds.h / 2.0);
         let at = self.space.canvas.place_new(bounds.size(), near);
         let (dx, dy) = (at.x - bounds.x, at.y - bounds.y);

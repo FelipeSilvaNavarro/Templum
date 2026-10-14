@@ -20,7 +20,7 @@ use super::{Body, GitAt, Workspace, git_error_message, remember, show_notificati
 impl Workspace {
     /// Asks for a folder, then opens a Git block on its repository at the viewport's center.
     pub(crate) fn new_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let center = self.space.canvas.camera.to_world(self.center(window));
+        let center = self.space.camera().to_world(self.center(window));
         let size = git_block::SIZE;
         let at = self
             .space

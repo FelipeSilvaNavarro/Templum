@@ -16,7 +16,7 @@ use super::{Body, Space, Workspace};
 impl Workspace {
     /// A note block at the viewport's center with a new note, its editor with the keyboard.
     pub(crate) fn new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let center = self.space.canvas.camera.to_world(self.center(window));
+        let center = self.space.camera().to_world(self.center(window));
         let size = note::SIZE;
         let at = self
             .space
@@ -117,7 +117,7 @@ impl Workspace {
         match into.filter(|b| self.space.blocks.get(b).is_some_and(|b| b.note().is_some())) {
             Some(block) => self.add_tab(block, tab, window, cx),
             None => {
-                let center = self.space.canvas.camera.to_world(self.center(window));
+                let center = self.space.camera().to_world(self.center(window));
                 let near = Point::new(center.x - note::SIZE.w / 2.0, center.y - note::SIZE.h / 2.0);
                 let at = self.space.canvas.place_new(note::SIZE, near).origin();
                 self.add_note_block(at, vec![tab], window, cx);
