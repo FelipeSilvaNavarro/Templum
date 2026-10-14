@@ -61,6 +61,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                 .items_center()
                 .gap(px(2.0))
                 .pr(px(8.0))
+                .children(crate::usage::meter(ws, cx))
                 .child(
                     button("zoom-level", ui)
                         .child(zoom)
@@ -96,7 +97,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         )
 }
 
-fn button(id: &'static str, ui: Ui) -> Stateful<Div> {
+pub(crate) fn button(id: &'static str, ui: Ui) -> Stateful<Div> {
     div()
         .id(id)
         .flex()

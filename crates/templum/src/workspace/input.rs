@@ -462,6 +462,13 @@ impl Workspace {
     ) {
         // The cursor shows again on any key.
         self.blink_on = true;
+        // Esc closes the usage popover.
+        if self.usage_open && e.keystroke.key == "escape" {
+            self.usage_open = false;
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
         let command = effective(
             self.keymap.command(&e.keystroke),
             self.focused_editor().is_some(),

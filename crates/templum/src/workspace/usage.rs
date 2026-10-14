@@ -159,6 +159,24 @@ impl Workspace {
         show_notification(window, cx, notification);
     }
 
+    /// Opens or closes the title bar's usage popover.
+    pub(crate) fn toggle_usage(&mut self, cx: &mut Context<Self>) {
+        self.usage_open = !self.usage_open;
+        cx.notify();
+    }
+
+    /// Shows the terminal of a session listed in the usage popover, and closes it.
+    pub(crate) fn show_session(
+        &mut self,
+        space: &str,
+        block: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.usage_open = false;
+        self.reveal(space, block, window, cx);
+    }
+
     /// An agent's name in menus, from its id.
     pub(crate) fn agent_title(&self, id: &str) -> String {
         self.agents

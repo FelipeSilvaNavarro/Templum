@@ -678,6 +678,8 @@ pub struct Workspace {
     pub(crate) limits: Vec<(String, templum_usage::Limits)>,
     /// When to tell the user about them.
     watch: templum_usage::Watch,
+    /// The title bar's usage popover is open.
+    pub(crate) usage_open: bool,
     /// Reading the agents' usage; the next read replaces it.
     _usage: Task<()>,
     pub(crate) themes: Vec<Entry>,
@@ -960,6 +962,7 @@ impl Workspace {
             _snapshots: snapshots,
             limits: Vec::new(),
             watch: templum_usage::Watch::new(crate::notes::now()),
+            usage_open: false,
             _usage: Task::ready(()),
             themes,
             dark,

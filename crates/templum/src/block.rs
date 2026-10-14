@@ -173,6 +173,30 @@ pub(crate) fn render(
         _ => None,
     };
     let (label_dot, header_dot) = if labeled { (dot, None) } else { (None, dot) };
+    // Its agent's session, after the dot (docs/specs/usage.md); over the title, which moves the
+    // block as before.
+    let chip = match body {
+        Body::Terminal(pane) if live && !labeled => pane
+            .usage
+            .as_ref()
+            .and_then(crate::usage::chip)
+            .map(|(text, tip)| {
+                div()
+                    .id(("usage-chip", n))
+                    .absolute()
+                    .top(px(4.0 * z))
+                    .left(px(24.0 * z))
+                    .h(px(20.0 * z))
+                    .flex()
+                    .items_center()
+                    .text_size(px(11.0 * z))
+                    .text_color(ui.title_dim)
+                    .child(text)
+                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                    .test_support()
+            }),
+        _ => None,
+    };
     let title = if labeled {
         div()
             .id(("title", n))
@@ -200,8 +224,9 @@ pub(crate) fn render(
             .flex()
             .items_center()
             .justify_center()
-            // Clear of the fullscreen and close buttons on the right, and centered.
-            .px(px(52.0 * z))
+            // Clear of the fullscreen and close buttons on the right (and of a terminal's chip
+            // on the left), and centered.
+            .px(px(if chip.is_some() { 120.0 } else { 52.0 } * z))
             .overflow_hidden()
             .child(title_text)
     }
@@ -405,6 +430,7 @@ pub(crate) fn render(
         .child(title)
         .children(top_zones)
         .children(header_dot)
+        .children(chip)
         .children(boards)
         .children(preview)
         .children(tree_toggle)

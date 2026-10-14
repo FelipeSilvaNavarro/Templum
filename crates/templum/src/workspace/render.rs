@@ -577,6 +577,7 @@ impl Render for Workspace {
             .picker
             .as_ref()
             .map(|p| theme_picker::render(self, p, cx));
+        let usage = self.usage_open.then(|| crate::usage::popover(self, cx));
         if self.recording.is_some() && !self.settings_focus.is_focused(window) {
             self.recording = None;
             self.key_note = None;
@@ -606,6 +607,7 @@ impl Render for Workspace {
             )
             .children(panel)
             .children(picker)
+            .children(usage)
             .children(self.menu.as_ref().map(|m| menu::render(m, window)))
     }
 }

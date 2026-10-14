@@ -70,3 +70,52 @@ fn a_limit_near_its_end_is_told_once(cx: &mut TestAppContext) {
     assert!(shown[0].body.starts_with("Resets "), "{:?}", shown[0].body);
     assert_eq!(ws.read_with(cx, |ws, _| ws.limits.clone()), limits);
 }
+
+/// The title bar's meter shows only with a limit known; it opens the usage, whose sessions show
+/// their terminals. A terminal with usage has its chip.
+#[gpui_kit::test]
+fn the_meter_opens_the_usage_and_a_session_shows_its_terminal(cx: &mut TestAppContext) {
+    use templum_usage::{Limits, Session, Window};
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("usage-meter").is_none(), "no limit known");
+        window.press(NEW, cx);
+    })
+    .unwrap();
+    let now = crate::notes::now();
+    ws.update(cx, |ws, _| {
+        ws.limits = vec![(
+            "claude".into(),
+            Limits {
+                windows: vec![Window {
+                    minutes: 300,
+                    used_percent: 73.0,
+                    resets_at: now + 3 * 3600,
+                }],
+                at: now,
+            },
+        )];
+        let pane = ws.space.terminal_mut(first).unwrap();
+        pane.seen.agent = Some("claude".into());
+        pane.usage = Some(Session {
+            context_percent: Some(42.0),
+            cost_usd: Some(3.1),
+            ..Session::default()
+        });
+        assert_ne!(ws.space.focused, Some(first));
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("usage-chip", first.0 as usize)).is_some());
+        window.click("usage-meter", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("usage-popover").is_some());
+        window.click(("usage-session", 0_usize), cx);
+        window.render_frame(cx);
+        assert!(window.try_find("usage-popover").is_none());
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(first)));
+}
