@@ -9,7 +9,7 @@ use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::input::{EditorState, Position};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, SharedString, Window, px};
+use gpui_kit::{App, Context, Entity, SharedString, Window, px};
 use templum_canvas::{BlockId, Point, Rect};
 
 use crate::editor::{self, Editor};
@@ -337,22 +337,33 @@ impl Workspace {
     /// Asks before the window or Templum closes with unsaved files: Save all, Don't save or
     /// Cancel; either of the first two quits. True when nothing is unsaved and it may close now.
     pub(crate) fn may_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.may_close_then(|cx: &mut App| cx.quit(), window, cx)
+    }
+
+    /// [`Self::may_close`], with `then` instead of quitting (a restart).
+    pub(crate) fn may_close_then(
+        &mut self,
+        then: impl Fn(&mut App) + Clone + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let unsaved = self.unsaved_names();
         if unsaved.is_empty() {
             return true;
         }
         let ws = cx.entity();
+        let after_save = then.clone();
         prompt::save_or_discard(
             "Save changes before quitting?",
             format!("Unsaved: {}", unsaved.join(", ")),
             move |window, cx| {
                 let saved = ws.update(cx, |ws, cx| ws.save_spaces(None, window, cx));
                 if saved {
-                    cx.quit();
+                    after_save(cx);
                 }
                 saved
             },
-            |_, cx| cx.quit(),
+            move |_, cx| then(cx),
             window,
             cx,
         );

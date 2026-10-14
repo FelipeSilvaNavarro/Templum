@@ -25,6 +25,7 @@ mod render;
 mod selection;
 mod spaces;
 mod tiling;
+mod update;
 mod usage;
 mod view;
 
@@ -701,6 +702,18 @@ pub struct Workspace {
     pub(crate) meter_hovered: bool,
     /// Reading the agents' usage; the next read replaces it.
     _usage: Task<()>,
+    /// Where an update stands (docs/specs/updates.md).
+    pub(crate) update: crate::update::Update,
+    /// How this Templum was installed, read at start: after a swap, Linux names the running
+    /// executable "(deleted)".
+    install: templum_update::Install,
+    /// The news last told about an update ("ready-0.2.0"): each is told once.
+    update_told: Option<String>,
+    /// An installer to start once Templum has quit (Restart).
+    relaunch: Option<templum_update::Launch>,
+    /// Checking or downloading; the check at start and every day.
+    _update: Task<()>,
+    _update_loop: Task<()>,
     pub(crate) themes: Vec<Entry>,
     /// The system's appearance.
     dark: bool,
@@ -956,6 +969,8 @@ impl Workspace {
                 .update(cx, |ws, cx| ws.may_close(window, cx))
                 .unwrap_or(true)
         });
+        let install = templum_update::Install::detect();
+        let update_loop = Self::update_loop(&install, data_dir.as_ref(), window, cx);
         let flush = vec![
             cx.on_release(|ws, cx| {
                 ws.save();
@@ -964,6 +979,7 @@ impl Workspace {
             cx.on_app_quit(|ws, cx| {
                 ws.save();
                 ws.save_canvas_now(cx);
+                ws.finish_update();
                 async {}
             }),
         ];
@@ -1016,6 +1032,12 @@ impl Workspace {
             meter_turned: 0,
             meter_hovered: false,
             _usage: Task::ready(()),
+            update: Default::default(),
+            install,
+            update_told: None,
+            relaunch: None,
+            _update: Task::ready(()),
+            _update_loop: update_loop,
             themes,
             dark,
             ui: theme.ui,

@@ -61,6 +61,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                 .items_center()
                 .gap(px(2.0))
                 .pr(px(8.0))
+                .children(crate::update::pill(ws, cx))
                 .children(crate::usage::meter(ws, cx))
                 .child(
                     button("zoom-level", ui)

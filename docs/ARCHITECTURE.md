@@ -110,6 +110,10 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   with their graph, or the commit shown. `git_block/words.rs` holds the Git words' tooltips and the sentences the block says;
   `git_block/switcher.rs` the branch switcher.
 - `usage.rs`: the title bar's usage meter, its popover and a terminal's usage chip.
+- `update.rs`: where an update stands (`Update`), its title-bar pill and its lines in Settings ▸ Updates;
+  `workspace/update.rs` checks GitHub at start and every day, downloads through `templum-update`, tells the news,
+  restarts (GPUI's `cx.restart()`) or types the package manager's command in a terminal, and swaps the files when
+  Templum quits ([specs/updates.md](specs/updates.md)).
 
 ## Configuration
 

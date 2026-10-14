@@ -275,6 +275,7 @@ pub(super) fn rows(
             }
             rows
         }
+        Section::Updates => super::updates::rows(ws, entity),
         Section::Shortcuts => Command::ALL
             .map(|command| shortcut_row(ws, entity, command))
             .into_iter()

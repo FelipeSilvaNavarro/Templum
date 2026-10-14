@@ -328,3 +328,26 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **The pointer stays a text cursor over a program that uses the mouse.** The body's `cursor_text`
   (`crates/templum/src/block.rs`) doesn't look at the mode, so htop's or Claude Code's buttons look like text to
   select. Fix: show the arrow when `modes().mouse`, read in the snapshot rather than under the lock while painting.
+
+## Updates
+
+- [ ] **Templum doesn't open again after an MSI update.** `Ready::Installer` for the MSI
+  (`crates/templum-update/src/apply.rs`) runs `msiexec /i <msi> /passive`, which doesn't start the app it installed;
+  the person opens it from the Start menu. Fix: run msiexec through a PowerShell `Start-Process -Wait`, then start
+  `C:\Program Files\Templum\templum.exe`.
+- [ ] **macOS updates aren't checked by hand yet.** `copy_app` and the bundle swap (`apply.rs`) are tested on CI's
+  macOS (a dmg made with `hdiutil create`), never on a real Mac with Templum in /Applications. An ad-hoc-signed app is
+  a new app to macOS at each version, so permissions like Full Disk Access are asked again. Fix: update a real
+  install, and sign the app with a Developer ID.
+- [ ] **No prereleases.** `latest` (`crates/templum-update/src/fetch.rs`) asks for `releases/latest`, which skips
+  `-rc` tags, so nobody can test a release candidate through the updater. Fix: a `[updates] channel = "beta"` that
+  lists releases and takes the newest one, prereleases included.
+- [ ] **A proxy with its own certificate authority fails.** ureq trusts webpki-roots (Mozilla's list), not the
+  system's, so a company proxy that re-signs HTTPS makes every check fail with a certificate error. Fix: ureq's
+  `platform-verifier` feature (`RootCerts::PlatformVerifier` in `agent`).
+- [ ] **A stalled download waits up to 30 minutes.** `agent` (`fetch.rs`) has a limit for the whole download, not
+  for a pause in it, so a connection that stops sending keeps the pill at its percent until then. Fix: read the body
+  through a reader that fails after 60 s without bytes.
+- [ ] **Nothing is signed by Templum.** A download is trusted because GitHub serves it over HTTPS with the SHA-256
+  it computed (`download`, `fetch.rs`); someone who could publish a release could publish a bad one. Fix: sign the
+  files in `release.yml` (minisign) and check the signature with a key built into Templum.

@@ -2,7 +2,6 @@
 //! the way Templum was installed, downloaded, checked against GitHub's checksum and put in place.
 //! No UI: see docs/specs/updates.md.
 
-use semver::Version;
 use serde::Deserialize;
 
 mod apply;
@@ -12,6 +11,7 @@ mod install;
 pub use apply::{Launch, Ready, cleanup, prepare, swap};
 pub use fetch::{agent, download, latest};
 pub use install::{Install, Why, detect_in};
+pub use semver::Version;
 
 /// Where releases are published.
 pub const REPO: &str = "KingDasWinx/Templum";

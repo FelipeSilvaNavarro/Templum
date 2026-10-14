@@ -29,6 +29,7 @@ mod theme;
 mod theme_picker;
 mod title_bar;
 mod toolbar;
+mod update;
 mod usage;
 mod workspace;
 

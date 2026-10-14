@@ -29,6 +29,7 @@ mod row;
 mod sections;
 #[cfg(test)]
 mod tests;
+mod updates;
 
 use agents::add_agent;
 pub(crate) use edits::{
@@ -57,11 +58,12 @@ pub(crate) enum Section {
     Git,
     Agents,
     Usage,
+    Updates,
     Shortcuts,
 }
 
 impl Section {
-    pub const ALL: [Section; 9] = [
+    pub const ALL: [Section; 10] = [
         Section::Appearance,
         Section::Font,
         Section::Terminal,
@@ -70,6 +72,7 @@ impl Section {
         Section::Git,
         Section::Agents,
         Section::Usage,
+        Section::Updates,
         Section::Shortcuts,
     ];
 
@@ -83,6 +86,7 @@ impl Section {
             Section::Git => "Git",
             Section::Agents => "Agents",
             Section::Usage => "Usage",
+            Section::Updates => "Updates",
             Section::Shortcuts => "Shortcuts",
         }
     }
@@ -98,6 +102,7 @@ impl Section {
             Section::Git => "settings-tab-git",
             Section::Agents => "settings-tab-agents",
             Section::Usage => "settings-tab-usage",
+            Section::Updates => "settings-tab-updates",
             Section::Shortcuts => "settings-tab-shortcuts",
         }
     }
@@ -120,6 +125,10 @@ impl Section {
             Section::Usage => Some(
                 "Claude Code's and Codex's plan limits, shown in the title bar, and each agent's \
                  session on its terminal. Templum reads what the agents write, never their login.",
+            ),
+            Section::Updates => Some(
+                "New versions from GitHub Releases, for your system and the way Templum was \
+                 installed. Templum downloads them and asks before restarting.",
             ),
             Section::Shortcuts => Some("Click a shortcut to record a new one"),
             _ => None,

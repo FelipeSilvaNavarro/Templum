@@ -659,6 +659,12 @@ impl Workspace {
     }
 
     pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rect = self.new_terminal_rect(window);
+        self.open(rect, window, cx);
+    }
+
+    /// Where a new terminal goes: the view's center, clear of the other blocks.
+    pub(super) fn new_terminal_rect(&mut self, window: &Window) -> Rect {
         self.space.pristine = false;
         let vp = self.viewport(window);
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
@@ -667,8 +673,7 @@ impl Workspace {
             .camera()
             .to_world(Point::new(vp.w / 2.0, vp.h / 2.0));
         let near = Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0);
-        let rect = self.space.canvas.place_new(size, near);
-        self.open(rect, window, cx);
+        self.space.canvas.place_new(size, near)
     }
 
     pub(super) fn close_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {

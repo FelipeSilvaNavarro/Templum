@@ -38,6 +38,7 @@ pub(crate) struct Config {
     pub keys: KeysConfig,
     pub git: GitConfig,
     pub usage: UsageConfig,
+    pub updates: UpdatesConfig,
     /// `[agents.<id>]`: changes to one of Templum's AI agents (only what differs), or an agent of
     /// the user's own.
     pub agents: BTreeMap<String, AgentConfig>,
@@ -254,6 +255,20 @@ impl Default for UsageConfig {
             claude_limits: true,
             hide: Vec::new(),
         }
+    }
+}
+
+/// `[updates]`: new versions from GitHub Releases (docs/specs/updates.md).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct UpdatesConfig {
+    /// Look for a new version at start and once a day, and download it.
+    pub check: bool,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self { check: true }
     }
 }
 
@@ -786,6 +801,10 @@ pub(crate) fn template(macos: bool) -> String {
         "# claude_limits = true\n",
         "## Agents whose limits the title bar doesn't show, as [\"codex\"].\n",
         "# hide = []\n\n",
+        "[updates]\n",
+        "## Look for a new version on GitHub at start and once a day, and download it: Templum\n",
+        "## asks before restarting into it.\n",
+        "# check = true\n\n",
         "[git]\n",
         "# program = \"git\"   # a name on PATH, or a path\n\n",
         "[keys]\n",
@@ -1237,6 +1256,14 @@ scrollback = 500
         let err = parse("[usage]\nwarn = 85\n").unwrap_err();
         assert!(err.contains("usage.warn"), "{err}");
         assert!(parse("[usage]\nreset = \"sometimes\"\n").is_err());
+    }
+
+    #[test]
+    fn updates_are_checked_unless_turned_off() {
+        assert!(parse("").unwrap().updates.check);
+        assert!(!parse("[updates]\ncheck = false\n").unwrap().updates.check);
+        let err = parse("[updates]\nchannel = \"beta\"\n").unwrap_err();
+        assert!(err.contains("channel"), "{err}");
     }
 
     #[test]
