@@ -229,9 +229,20 @@ impl Workspace {
                         folder: body.folder(),
                     },
                 };
+                let moving = if group.contains(&block) {
+                    group.clone()
+                } else {
+                    vec![block]
+                };
                 Items::Block {
                     block,
                     inner: Box::new(inner),
+                    moving,
+                    spaces: self
+                        .others
+                        .iter()
+                        .map(|s| (s.id.clone(), s.name.clone(), s.stopped))
+                        .collect(),
                     tail: self.tail(block, group, cx),
                     close: if body.terminal().is_some() {
                         "Close terminal"
@@ -482,6 +493,10 @@ enum Items {
         inner: Box<Items>,
         tail: Tail,
         close: &'static str,
+        /// What Move to workspace moves: the selection the block is in, else the block.
+        moving: Vec<BlockId>,
+        /// The other workspaces, by id and name; a stopped one takes none.
+        spaces: Vec<(String, String, bool)>,
     },
     Canvas {
         at: Point,

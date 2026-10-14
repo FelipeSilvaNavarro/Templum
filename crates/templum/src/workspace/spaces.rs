@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, ImageSource, Window};
-use templum_canvas::{Rect, chrome};
+use templum_canvas::{BlockId, Rect, chrome};
 
 use crate::alert;
 use crate::board;
@@ -14,7 +14,7 @@ use crate::prompt;
 use crate::session;
 use crate::space_dialog::{self, Look};
 
-use super::{DEFAULT_COLS, DEFAULT_ROWS, Space, Workspace, show_notification};
+use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Space, Workspace, show_notification};
 
 /// How long a workspace's processes have, once hung up, before what is left is killed.
 const KILL_AFTER: Duration = Duration::from_secs(2);
@@ -222,6 +222,13 @@ impl Workspace {
 
     /// Creates an empty workspace after the last one and shows it.
     pub(crate) fn new_space(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.make_space();
+        self.switch_to(self.others.len(), window, cx);
+    }
+
+    /// Adds an empty workspace after the last one, hidden: its id. The index is the caller's
+    /// to write.
+    fn make_space(&mut self) -> String {
         let dir = self.data_dir.clone();
         let id = session::next_id(|id| {
             self.spaces().any(|s| s.id == id)
@@ -233,11 +240,97 @@ impl Workspace {
             .find(|name| !self.spaces().any(|s| s.name == *name))
             .expect("an unused name");
         self.others.push(Space {
-            id,
+            id: id.clone(),
             name,
             ..Space::default()
         });
-        self.switch_to(total, window, cx);
+        id
+    }
+
+    /// Moves blocks `ids` to the workspace `to` (None: a new one), running: a terminal's
+    /// shell goes on there. They land in its view, clear of its blocks, as they were arranged;
+    /// a notification shows them there. A stopped workspace takes none.
+    pub(crate) fn move_blocks(
+        &mut self,
+        ids: Vec<BlockId>,
+        to: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let to = match to {
+            Some(to) if self.others.iter().any(|s| s.id == to && !s.stopped) => to.to_string(),
+            Some(_) => return,
+            None => self.make_space(),
+        };
+        // Back to front, as they were.
+        let order: Vec<BlockId> = self
+            .space
+            .canvas
+            .blocks()
+            .iter()
+            .map(|b| b.id)
+            .filter(|id| ids.contains(id))
+            .collect();
+        let taken: Vec<(Rect, Body)> = order
+            .into_iter()
+            .filter_map(|id| {
+                let (_, home, body) = self.take_block(id, window, cx)?;
+                Some((home, body))
+            })
+            .collect();
+        let Some(bounds) = taken.iter().map(|(r, _)| *r).reduce(|a, b| a.union(&b)) else {
+            return;
+        };
+        let moved = self.with_space(&to, |ws| {
+            let (dx, dy) = ws.landing(bounds, window);
+            // Not a change to take back there.
+            ws.quiet = true;
+            let mut moved = Vec::new();
+            for (r, mut body) in taken {
+                // Its commands in flight answer the block it was: they never come back to it.
+                if let Body::Git(git) = &mut body {
+                    git.busy = false;
+                    git.acting = 0;
+                    git.queued.clear();
+                }
+                moved.push(ws.add_block(Rect::new(r.x + dx, r.y + dy, r.w, r.h), body));
+            }
+            ws.quiet = false;
+            ws.space.pristine = false;
+            for id in &moved {
+                if ws.space.git(*id).is_some() {
+                    ws.look_up_git(*id, window, cx);
+                }
+            }
+            (ws.space.name.clone(), moved)
+        });
+        self.write_index(window, cx);
+        if let Some((name, moved)) = moved
+            && let Some(&first) = moved.first()
+        {
+            let ws = cx.entity().downgrade();
+            let space = to.clone();
+            let notification = Notification::info(match moved.len() {
+                1 => format!("Moved to {name}"),
+                n => format!("Moved {n} blocks to {name}"),
+            })
+            .on_click(move |_, window, cx| {
+                ws.update(cx, |ws, cx| ws.reveal(&space, first, window, cx))
+                    .ok();
+            });
+            show_notification(window, cx, notification);
+        }
+        cx.notify();
+    }
+
+    /// Runs `f` with the hidden workspace `id` as the one shown, then puts them back, as
+    /// `load_spaces` does: what `f` reads of the order (`active`, `order`) is off meanwhile.
+    fn with_space<R>(&mut self, id: &str, f: impl FnOnce(&mut Self) -> R) -> Option<R> {
+        let i = self.others.iter().position(|s| s.id == id)?;
+        std::mem::swap(&mut self.space, &mut self.others[i]);
+        let result = f(self);
+        std::mem::swap(&mut self.space, &mut self.others[i]);
+        Some(result)
     }
 
     /// A new workspace, shown, with its Edit… dialog open to name it.

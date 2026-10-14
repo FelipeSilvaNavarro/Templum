@@ -7,7 +7,7 @@ use std::time::Instant;
 use gpui_kit::component::Icon;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, SharedString, Window};
-use templum_canvas::{BlockId, Point, Rect, chrome};
+use templum_canvas::{Block, BlockId, Point, Rect, chrome};
 use templum_terminal::{SpawnOptions, Terminal};
 
 use crate::alert::{self, Alert};
@@ -506,27 +506,34 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.release_focus(id, window, cx);
-        let block = self.space.canvas.get(id).copied();
-        self.space.canvas.remove(id);
-        self.space.appearing.remove(&id);
-        let body = self.space.blocks.remove(&id);
-        // Its notes stay in the Notes dialog, but for blank ones: nothing is lost.
-        for note in body
-            .as_ref()
-            .and_then(Body::note)
-            .map(Note::ids)
-            .unwrap_or_default()
-        {
-            self.drop_if_blank(note);
-        }
-        if let (Some(block), Some(body)) = (block, body) {
+        if let Some((block, _, body)) = self.take_block(id, window, cx) {
+            // Its notes stay in the Notes dialog, but for blank ones: nothing is lost.
+            for note in body.note().map(Note::ids).unwrap_or_default() {
+                self.drop_if_blank(note);
+            }
             self.space.ghosts.push(Ghost {
                 block,
                 body,
                 since: Instant::now(),
             });
         }
+        cx.notify();
+    }
+
+    /// Takes a block off the canvas with what it holds, still running: the block, its rect on
+    /// the canvas (also while it is a tile) and its body.
+    pub(super) fn take_block(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(Block, Rect, Body)> {
+        self.release_focus(id, window, cx);
+        let block = self.space.canvas.get(id).copied();
+        let home = block.map(|b| self.space.home(&b));
+        self.space.canvas.remove(id);
+        self.space.appearing.remove(&id);
+        let body = self.space.blocks.remove(&id);
         if self.space.hovered == Some(id) {
             self.space.hovered = None;
         }
@@ -538,7 +545,7 @@ impl Workspace {
         }
         // A gesture on a block that's gone would do nothing anyway; end it.
         self.drag = None;
-        cx.notify();
+        Some((block?, home?, body?))
     }
 
     /// Finds the news in every workspace's terminals (see [`alert::news`]). A terminal being looked

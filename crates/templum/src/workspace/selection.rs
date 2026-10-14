@@ -180,10 +180,7 @@ impl Workspace {
         else {
             return false;
         };
-        let center = self.space.camera().to_world(self.center(window));
-        let near = Point::new(center.x - bounds.w / 2.0, center.y - bounds.h / 2.0);
-        let at = self.space.canvas.place_new(bounds.size(), near);
-        let (dx, dy) = (at.x - bounds.x, at.y - bounds.y);
+        let (dx, dy) = self.landing(bounds, window);
         for item in &mut items {
             let rect = item.rect_mut();
             rect.x += dx;
@@ -212,6 +209,15 @@ impl Workspace {
             self.keep(Change::Close(pasted), Then::New);
         }
         true
+    }
+
+    /// Where blocks within `bounds` go to land in the view: centered, a cascade step off the
+    /// blocks already there; the offset to move them by.
+    pub(super) fn landing(&self, bounds: Rect, window: &Window) -> (f32, f32) {
+        let center = self.space.camera().to_world(self.center(window));
+        let near = Point::new(center.x - bounds.w / 2.0, center.y - bounds.h / 2.0);
+        let at = self.space.canvas.place_new(bounds.size(), near);
+        (at.x - bounds.x, at.y - bounds.y)
     }
 
     /// Adds the blocks `items`, selected, with the keyboard on the canvas: what each one became

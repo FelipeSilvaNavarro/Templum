@@ -601,6 +601,7 @@ mod history;
 mod kanban;
 mod lod;
 mod menus;
+mod moving;
 mod navigation;
 mod notes;
 mod persistence;

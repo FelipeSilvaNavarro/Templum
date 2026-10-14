@@ -190,6 +190,8 @@ impl Items {
                 inner,
                 tail,
                 close,
+                moving,
+                spaces,
             } => {
                 let menu = inner.build(ws, menu, window, cx).separator();
                 let menu = match tail {
@@ -247,7 +249,34 @@ impl Items {
                             ))
                     }
                 };
-                menu.item(item(
+                let mover = ws.clone();
+                menu.submenu("Move to workspace", window, cx, move |menu, _, _| {
+                    let to_new = moving.clone();
+                    spaces
+                        .iter()
+                        .fold(menu, |menu, (id, name, stopped)| {
+                            let (id, ids) = (id.clone(), moving.clone());
+                            let label = if *stopped {
+                                format!("{name} (stopped)")
+                            } else {
+                                name.clone()
+                            };
+                            menu.item(
+                                item(&mover, label, None, move |ws, window, cx| {
+                                    ws.move_blocks(ids.clone(), Some(&id), window, cx)
+                                })
+                                .disabled(*stopped),
+                            )
+                        })
+                        .when(!spaces.is_empty(), |menu| menu.separator())
+                        .item(item(
+                            &mover,
+                            "New workspace",
+                            Some(IconName::Plus),
+                            move |ws, window, cx| ws.move_blocks(to_new.clone(), None, window, cx),
+                        ))
+                })
+                .item(item(
                     ws,
                     close,
                     Some(IconName::Close),
