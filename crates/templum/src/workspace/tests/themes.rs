@@ -562,6 +562,13 @@ fn dark_theme(background: &str) -> String {
     light_theme(background).replace("#202020", "#e0e0e0")
 }
 
+/// Lets a hovered gallery card be previewed: it is once the mouse rests on it.
+fn rest_on_a_card(cx: &mut TestAppContext) {
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    cx.run_until_parked();
+}
+
 fn open_gallery(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| crate::gallery::open(ws, window, cx));
@@ -594,10 +601,22 @@ fn the_gallery_previews_restores_and_installs(cx: &mut TestAppContext) {
             "the other mode's themes too"
         );
         window.hover("gallery-theme-Dawn Light", cx);
+        window.hover("gallery-theme-Paper", cx);
     })
     .unwrap();
     ws.read_with(cx, |ws, _| {
-        assert_eq!(ws.theme.palette.background, rgb(0xfdf6e3), "previewed")
+        assert_eq!(
+            ws.theme.name, "Catppuccin Latte",
+            "passing over: no preview yet"
+        )
+    });
+    rest_on_a_card(cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.theme.palette.background,
+            rgb(0xf2eede),
+            "only the one it rests on"
+        )
     });
     cx.update_window(handle, |_, window, cx| {
         window.press("escape", cx);
@@ -781,7 +800,12 @@ fn an_install_that_fails_puts_the_theme_back(cx: &mut TestAppContext) {
     open_gallery(handle, &ws, cx);
     cx.update_window(handle, |_, window, cx| {
         window.hover("gallery-theme-Paper", cx);
-        window.click("gallery-theme-Paper", cx);
+    })
+    .unwrap();
+    rest_on_a_card(cx);
+    ws.read_with(cx, |ws, _| assert_eq!(ws.theme.name, "Paper", "previewed"));
+    cx.update_window(handle, |_, window, cx| {
+        window.click("gallery-theme-Paper", cx)
     })
     .unwrap();
     ws.read_with(cx, |ws, _| {

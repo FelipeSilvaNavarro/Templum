@@ -10,9 +10,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     App, ClickEvent, Context, ElementId, SharedString, TestSupportExt, Window, div, px,
+    uniform_list,
 };
 use serde::Deserialize;
 
@@ -31,6 +33,14 @@ const CACHE: &str = "theme-gallery";
 const INDEX: &str = "index.json";
 /// Downloads at a time.
 const WORKERS: usize = 16;
+/// The list: a card's height, the title strip above each row (empty but for a group's first
+/// row: the space between rows), a row's height, and the list's most.
+const CARD: f32 = 88.0;
+const LABEL: f32 = 22.0;
+const ROW: f32 = LABEL + CARD;
+const LIST_HEIGHT: f32 = 440.0;
+/// How long the mouse rests on a card before it is previewed.
+const PREVIEW_AFTER: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// One file of GitHub's listing.
 #[derive(Deserialize)]
@@ -237,84 +247,147 @@ pub(crate) fn open(ws: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
         })
         .detach();
     }
+    // The card the mouse is on: it is previewed once the mouse rests there (scrolling moves cards
+    // under a still mouse, and each preview repaints the whole window).
+    let hovered: Rc<RefCell<Option<String>>> = Rc::default();
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let query = search.read(cx).value().trim().to_lowercase();
         let ws_now = entity.read(cx);
         let (ui, dark) = (ws_now.ui, ws_now.dark);
-        let font = ws_now.cell.font.family.clone();
-        let chosen = ws_now.config.theme.name(dark);
         let shelf_now = shelf.borrow();
-        // The mode in effect's themes first, then the other mode's; a click makes any of them the
+        // Rows of three cards (indexes into the shelf): the mode in effect's themes first, then
+        // the other mode's, each group's first row under its title. A click makes any of them the
         // theme of the mode in effect, as the picker does.
-        let (mut same, mut other) = (Vec::new(), Vec::new());
-        for card in shelf_now
-            .cards
-            .iter()
-            .filter(|c| c.theme.name.to_lowercase().contains(&query))
-        {
-            let element = {
-                let name = &card.theme.name;
-                // One already there is shown, and chosen, as it is.
-                let installed = ws_now
-                    .themes
-                    .iter()
-                    .find(|e| e.theme.name.eq_ignore_ascii_case(name))
-                    .map(|e| e.theme.clone());
-                let shown = installed.clone().unwrap_or_else(|| card.theme.clone());
-                let id = ElementId::Name(format!("gallery-theme-{name}").into());
-                let (hover, click, card) = (entity.clone(), entity.clone(), card.clone());
-                let (hover_open, click_open) = (open.clone(), open.clone());
-                theme_card(
-                    id,
-                    &shown,
-                    ui,
-                    font.clone(),
-                    name.eq_ignore_ascii_case(chosen),
-                )
-                .when(installed.is_some(), |el| {
-                    el.child(div().text_size(px(10.0)).opacity(0.7).child("Installed"))
-                })
-                .on_hover(move |hovered: &bool, _, cx| {
-                    if *hovered && hover_open.get() {
-                        hover.update(cx, |ws, cx| ws.apply(shown.clone(), cx));
-                    }
-                })
-                .on_click(move |_: &ClickEvent, window, cx| {
-                    // Closing this way skips `on_close`, which would put the old theme back.
-                    click_open.set(false);
-                    window.close_dialog(cx);
-                    click.update(cx, |ws, cx| ws.install_theme(&card, window, cx));
-                })
-                .test_support()
-            };
-            if card.theme.is_dark == dark {
-                same.push(element);
-            } else {
-                other.push(element);
-            }
-        }
-        let found = !same.is_empty() || !other.is_empty();
-        let group = |title: &'static str, cards: Vec<_>| {
-            (!cards.is_empty()).then(|| {
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(ui.title_dim)
-                            .child(title),
-                    )
-                    .child(div().grid().grid_cols(3).gap(px(10.0)).children(cards))
-            })
-        };
         let (first, second) = if dark {
             ("Dark", "Light")
         } else {
             ("Light", "Dark")
         };
-        let groups = [group(first, same), group(second, other)];
+        let mut rows: Vec<(Option<&'static str>, Vec<usize>)> = Vec::new();
+        for (title, group_dark) in [(first, dark), (second, !dark)] {
+            let found: Vec<usize> = shelf_now
+                .cards
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| {
+                    c.theme.is_dark == group_dark && c.theme.name.to_lowercase().contains(&query)
+                })
+                .map(|(i, _)| i)
+                .collect();
+            for (k, three) in found.chunks(3).enumerate() {
+                rows.push(((k == 0).then_some(title), three.to_vec()));
+            }
+        }
+        let found = !rows.is_empty();
+        let height = (rows.len() as f32 * ROW).min(LIST_HEIGHT);
+        // A virtual list: only the rows on screen are built, each frame of a scroll.
+        let list = {
+            let (entity, shelf, open, hovered) =
+                (entity.clone(), shelf.clone(), open.clone(), hovered.clone());
+            uniform_list("gallery-list", rows.len(), move |range, _, cx| {
+                let ws = entity.read(cx);
+                let (ui, font) = (ws.ui, ws.cell.font.family.clone());
+                let chosen = ws.config.theme.name(ws.dark).to_string();
+                let shelf = shelf.borrow();
+                range
+                    .map(|r| {
+                        let (title, three) = &rows[r];
+                        let cards = three.iter().map(|&i| {
+                            let card = &shelf.cards[i];
+                            let name = card.theme.name.clone();
+                            // One already there is shown, and chosen, as it is.
+                            let installed = ws
+                                .themes
+                                .iter()
+                                .find(|e| e.theme.name.eq_ignore_ascii_case(&name))
+                                .map(|e| e.theme.clone());
+                            let shown = installed.clone().unwrap_or_else(|| card.theme.clone());
+                            let id = ElementId::Name(format!("gallery-theme-{name}").into());
+                            let selected = name.eq_ignore_ascii_case(&chosen);
+                            let (hover, click, card) =
+                                (entity.downgrade(), entity.clone(), card.clone());
+                            let (hover_open, click_open, hovered) =
+                                (open.clone(), open.clone(), hovered.clone());
+                            theme_card(id, &shown, ui, font.clone(), selected)
+                                .h(px(CARD))
+                                .min_w(px(0.0))
+                                .overflow_hidden()
+                                .relative()
+                                .when(installed.is_some(), |el| {
+                                    // Beside its colors: a narrow card has no room for a word.
+                                    el.child(
+                                        div()
+                                            .id(ElementId::Name(
+                                                format!("gallery-installed-{name}").into(),
+                                            ))
+                                            .absolute()
+                                            .right(px(10.0))
+                                            .top(px(36.0))
+                                            .text_size(px(12.0))
+                                            .opacity(0.7)
+                                            .child("✓")
+                                            .tooltip(|window, cx| {
+                                                Tooltip::new("Installed").build(window, cx)
+                                            }),
+                                    )
+                                })
+                                .on_hover(move |on: &bool, _, cx| {
+                                    if !*on || !hover_open.get() {
+                                        return;
+                                    }
+                                    *hovered.borrow_mut() = Some(name.clone());
+                                    let (hovered, open, name, shown, ws) = (
+                                        hovered.clone(),
+                                        hover_open.clone(),
+                                        name.clone(),
+                                        shown.clone(),
+                                        hover.clone(),
+                                    );
+                                    cx.spawn(async move |cx| {
+                                        cx.background_executor().timer(PREVIEW_AFTER).await;
+                                        if open.get() && hovered.borrow().as_ref() == Some(&name) {
+                                            ws.update(cx, |ws, cx| ws.apply(shown, cx)).ok();
+                                        }
+                                    })
+                                    .detach();
+                                })
+                                .on_click(move |_: &ClickEvent, window, cx| {
+                                    // Closing this way skips `on_close`, which would put the old
+                                    // theme back.
+                                    click_open.set(false);
+                                    window.close_dialog(cx);
+                                    click.update(cx, |ws, cx| ws.install_theme(&card, window, cx));
+                                })
+                                .test_support()
+                        });
+                        div()
+                            .w_full()
+                            .h(px(ROW))
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .h(px(LABEL))
+                                    .flex()
+                                    .items_end()
+                                    .pb(px(4.0))
+                                    .text_size(px(12.0))
+                                    .text_color(ui.title_dim)
+                                    .children(*title),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .grid()
+                                    .grid_cols(3)
+                                    .gap(px(10.0))
+                                    .children(cards),
+                            )
+                    })
+                    .collect()
+            })
+            .h(px(height))
+        };
         let status: SharedString = match (&shelf_now.refreshed, shelf_now.cards.is_empty()) {
             (None, true) => "Downloading the themes…".into(),
             (None, false) => "Looking for new themes…".into(),
@@ -355,18 +428,8 @@ pub(crate) fn open(ws: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
                             .child(Input::new(&search))
                             .test_support(),
                     )
-                    .child(
-                        div()
-                            .id("gallery-list")
-                            .max_h(px(420.0))
-                            .overflow_y_scroll()
-                            .flex()
-                            .flex_col()
-                            .gap(px(16.0))
-                            .children(groups.into_iter().flatten())
-                            .children(none)
-                            .test_support(),
-                    )
+                    .child(list)
+                    .children(none)
                     .child(
                         div()
                             .id("gallery-status")

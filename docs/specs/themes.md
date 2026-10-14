@@ -96,8 +96,9 @@ For one of your themes, the card lists its colors in four groups, each a swatch 
 - **Names:** the file name with `_` and `-` as spaces, each word capitalized: `github_dark_high_contrast` is
   "Github Dark High Contrast", `one_dark` is "One Dark".
 - **Showing:** every theme, as cards in their own colors in two groups (the mode in effect's first, then the other
-  mode's), with a search field. A theme already installed, or one whose name a theme already has, is marked.
-- **Previewing:** hovering a card applies it to the whole window. Esc, **Done** or a click outside goes back to the
+  mode's), with a search field. A theme already installed, or one whose name a theme already has, has a ✓.
+- **Previewing:** a card the mouse rests on (0.15 s) is applied to the whole window; scrolling past cards previews
+  none of them. The list is virtual: only the rows on screen are built, so scrolling stays smooth. Esc, **Done** or a click outside goes back to the
   mode's theme.
 - **Installing:** a click writes `themes/<Name>.toml` (the file as downloaded, under a comment naming its source and
   license), makes it the theme of the mode in effect (a dark theme too, in light mode, as in the picker), and closes
