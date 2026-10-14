@@ -110,7 +110,7 @@ impl Workspace {
             // brings back both them and what changed by hand. If the file still doesn't parse,
             // the reload says so.
             if !self.unsaved.is_empty() {
-                self.save();
+                self.save_config();
             }
             self.config_stamp = config::Stamp::of(self.config_dir.as_deref());
             self.reload_config(window, cx);
@@ -152,6 +152,12 @@ impl Workspace {
                     .find(|e| e.path.as_ref() == Some(&path))
                 {
                     entry.theme = read.clone();
+                }
+                // Esc in the picker must put back this, not the copy from before the save.
+                if let Some(picker) = &mut self.picker
+                    && picker.before.name == read.name
+                {
+                    picker.before = read.clone();
                 }
                 if read != self.theme {
                     self.apply(read, cx);
@@ -275,7 +281,10 @@ impl Workspace {
     /// config.toml. Returns why one failed.
     pub(super) fn save(&mut self) -> Option<String> {
         let theme = self.save_theme_edits();
-        self.save_config().or(theme)
+        match (self.save_config(), theme) {
+            (Some(config), Some(theme)) => Some(format!("{config}\n{theme}")),
+            (config, theme) => config.or(theme),
+        }
     }
 
     /// Writes the unsaved settings changes to config.toml. If that fails they stay in effect and
@@ -310,29 +319,19 @@ impl Workspace {
 
     /// Writes the color editor's changes to the theme's file. If that fails they are dropped, and
     /// the message says why: what the file holds wins (it may be broken mid-edit by hand), and the
-    /// poll shows it once it reads.
+    /// poll reads it again. After a good write the poll reads it once too, which applies nothing
+    /// new unless the list or the screen fell behind (a reload of the folder meanwhile).
     fn save_theme_edits(&mut self) -> Option<String> {
         let (path, edits) = self.theme_edits.take()?;
-        // The write merges in a hand edit the poll hasn't seen yet: then the poll must still read it.
-        let seen = self
-            .theme_file
-            .as_ref()
-            .is_some_and(|(p, s)| *p == path && *s == config::Stamp::file(&path));
-        match config::save_edits_to(&path, &edits) {
-            Ok(()) => {
-                // Templum's own write: what it holds is on screen already.
-                if seen {
-                    self.theme_file = Some((path.clone(), config::Stamp::file(&path)));
-                }
-                None
-            }
-            Err(err) => {
-                let file = path.file_name().unwrap_or_default().to_string_lossy();
-                let message = format!("Not saved: {}", err.describe(&file));
-                eprintln!("templum: {message}");
-                Some(message)
-            }
-        }
+        let saved = config::save_edits_to(&path, &edits);
+        // Read again at the next poll.
+        self.theme_file = None;
+        saved.err().map(|err| {
+            let file = path.file_name().unwrap_or_default().to_string_lossy();
+            let message = format!("Not saved: {}", err.describe(&file));
+            eprintln!("templum: {message}");
+            message
+        })
     }
 
     /// A color of the theme in use, from the color editor (`i` as in `theme::key`; None takes a
@@ -358,10 +357,11 @@ impl Workspace {
             Some(c) => Edit::set(table, key, theme::hex(c)),
             None => Edit::remove(table, key),
         };
+        // A copy: the pending ones stay if this one can't be shown.
         let mut edits = self
             .theme_edits
-            .take()
-            .map(|(_, edits)| edits)
+            .as_ref()
+            .map(|(_, edits)| edits.clone())
             .unwrap_or_default();
         edits.retain(|e| e.table != edit.table || e.key != edit.key);
         edits.push(edit);

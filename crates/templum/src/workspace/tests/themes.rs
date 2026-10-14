@@ -684,3 +684,119 @@ fn the_picker_opens_the_gallery(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn a_hand_edit_and_pending_color_edits_both_land(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_theme(dir.path(), "mine", &light_theme("#fafafa"));
+    write_config(dir.path(), "[theme]\nlight = \"mine\"\n");
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    poll(handle, &ws, cx);
+    set_color(handle, &ws, 5, Some(0xff0000), cx);
+    std::fs::write(&path, light_theme("#f0f0e0") + "# by hand\n").unwrap();
+    poll(handle, &ws, cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.palette.background, rgb(0xf0f0e0), "the hand's");
+        assert_eq!(ws.theme.palette.ansi[1], rgb(0xff0000), "the editor's");
+    });
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        text.contains("red = \"#ff0000\"") && text.contains("# by hand"),
+        "{text}"
+    );
+}
+
+#[gpui_kit::test]
+fn a_change_that_cant_show_keeps_the_ones_before(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_theme(dir.path(), "mine", &light_theme("#fafafa"));
+    write_config(dir.path(), "[theme]\nlight = \"mine\"\n");
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    set_color(handle, &ws, 5, Some(0xff0000), cx);
+    std::fs::write(&path, "[colors\n").unwrap();
+    set_color(handle, &ws, 6, Some(0x00ff00), cx);
+    assert_eq!(notification_count(handle, cx), 1, "this one can't show");
+    std::fs::write(&path, light_theme("#fafafa")).unwrap();
+    settle_save(cx);
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        text.contains("red = \"#ff0000\""),
+        "the first still written: {text}"
+    );
+    assert!(!text.contains("#00ff00"));
+}
+
+#[gpui_kit::test]
+fn choosing_the_theme_already_named_shows_it_at_once(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    ws.update(cx, |ws, cx| {
+        let previewed = crate::theme::find(&ws.themes, "One Light").unwrap();
+        ws.apply(previewed, cx);
+        // The config names it already: the edit changes nothing, the screen still must.
+        ws.set_mode_theme("Catppuccin Latte", cx);
+        assert_eq!(ws.theme.name, "Catppuccin Latte");
+    });
+}
+
+#[gpui_kit::test]
+fn esc_in_the_picker_keeps_a_theme_saved_meanwhile(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_theme(dir.path(), "mine", &light_theme("#fafafa"));
+    write_config(dir.path(), "[theme]\nlight = \"mine\"\n");
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    poll(handle, &ws, cx);
+    ws.update(cx, |ws, cx| ws.toggle_theme_picker(cx));
+    std::fs::write(&path, light_theme("#f0f0e0") + "\n").unwrap();
+    poll(handle, &ws, cx);
+    ws.update(cx, |ws, cx| ws.cancel_theme(cx));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.palette.background, rgb(0xf0f0e0), "the saved one")
+    });
+}
+
+#[gpui_kit::test]
+fn an_install_that_fails_puts_the_theme_back(cx: &mut TestAppContext) {
+    let (config, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    crate::gallery::tests::seed(data.path(), &[("paper.toml", &light_theme("#f2eede"))]);
+    // No themes folder can be made.
+    std::fs::write(config.path().join("themes"), "").unwrap();
+    let (handle, ws) = open_in(
+        cx,
+        Some(config.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    open_gallery(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.hover("gallery-theme-Paper", cx);
+        window.click("gallery-theme-Paper", cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.name, "Catppuccin Latte", "not the preview")
+    });
+    assert_eq!(notification_count(handle, cx), 1, "why");
+}
+
+#[gpui_kit::test]
+fn a_save_says_why_both_files_failed(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_theme(dir.path(), "mine", &light_theme("#fafafa"));
+    write_config(dir.path(), "[theme]\nlight = \"mine\"\n");
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    set_color(handle, &ws, 5, Some(0xff0000), cx);
+    ws.update(cx, |ws, cx| {
+        ws.edit(Edit::set("font", "size", 20), |c| c.font.size = 20.0, cx)
+    });
+    std::fs::write(&path, "[colors\n").unwrap();
+    write_config(dir.path(), "[font\n");
+    let message = ws.update(cx, |ws, _| ws.save()).unwrap();
+    assert!(
+        message.contains("config.toml has an error on line 1"),
+        "{message}"
+    );
+    assert!(
+        message.contains("mine.toml has an error on line 1"),
+        "{message}"
+    );
+}

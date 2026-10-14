@@ -507,6 +507,17 @@ pub(crate) fn file_name(name: &str) -> Result<String, &'static str> {
     {
         return Err(r#"A name can't have / \ : * ? " < > |"#);
     }
+    // Windows opens a device for these, with any extension.
+    let upper = name.to_uppercase();
+    let device = ["CON", "PRN", "AUX", "NUL"].contains(&upper.as_str())
+        || ["COM", "LPT"].iter().any(|p| {
+            upper
+                .strip_prefix(p)
+                .is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit() && n != "0")
+        });
+    if device {
+        return Err("Windows keeps that name for a device");
+    }
     Ok(format!("{name}.toml"))
 }
 
@@ -758,6 +769,8 @@ white = "#aaaaaa"
     fn file_names_refuse_separators_and_dots() {
         assert_eq!(file_name("  My Theme "), Ok("My Theme.toml".into()));
         assert_eq!(file_name("Frappé"), Ok("Frappé.toml".into()));
+        assert_eq!(file_name("Console"), Ok("Console.toml".into()));
+        assert_eq!(file_name("com0"), Ok("com0.toml".into()));
         for bad in [
             "",
             "   ",
@@ -767,6 +780,10 @@ white = "#aaaaaa"
             "a:b",
             "what?",
             "tab\tname",
+            "nul",
+            "Con",
+            "com1",
+            "LPT9",
         ] {
             assert!(file_name(bad).is_err(), "{bad:?}");
         }
