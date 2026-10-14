@@ -372,6 +372,7 @@ impl Workspace {
             .canvas
             .visible_from(&self.space.view, vp)
             .map(|b| b.id)
+            .filter(|id| self.space.shown(*id))
             // A block still reading is skipped: a slow repository never piles reads up.
             .filter(|id| {
                 self.space

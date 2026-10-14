@@ -191,6 +191,12 @@ impl Render for Workspace {
         self.hear(window, cx);
 
         let vp = self.viewport(window);
+        // Grid mode's tiles fill the area as it is now: the window or the sidebar may have changed.
+        if let Some(grid) = &mut self.space.grid {
+            grid.area = super::tiling::grid_area(vp);
+            self.retile();
+        }
+        let tiled = self.space.grid.is_some();
         if self.space.pristine
             && let Some(b) = self.space.canvas.bounds()
         {
@@ -248,6 +254,7 @@ impl Render for Workspace {
             .space
             .canvas
             .visible_from(&self.space.view, vp)
+            .filter(|b| self.space.shown(b.id))
             .copied()
             .collect();
         let mut blocks: Vec<_> = visible
@@ -281,8 +288,11 @@ impl Render for Workspace {
         let layer = canvas(
             |_, _, _| {},
             move |bounds, _, window, cx| {
-                paint_dots(&camera, dot, bounds, window);
-                paint_guides(&camera, accent, bounds, &guides, window);
+                // Grid mode shows no canvas.
+                if !tiled {
+                    paint_dots(&camera, dot, bounds, window);
+                    paint_guides(&camera, accent, bounds, &guides, window);
+                }
                 window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
                 entity.update(cx, |ws, _| ws.origin = bounds.origin);
                 let on_move = entity.clone();
@@ -319,7 +329,7 @@ impl Render for Workspace {
         .size_full();
 
         self.hand = window.modifiers().alt;
-        let hand = self.hand || self.tool == Tool::Hand;
+        let hand = (self.hand || self.tool == Tool::Hand) && !tiled;
         let panning = matches!(self.drag, Some(Drag::Canvas(Gesture::Pan { .. })));
         // The selection rectangle being dragged, on screen.
         let marquee = match &self.drag {
@@ -350,7 +360,7 @@ impl Render for Workspace {
             .children(blocks)
             // The drawings, above the blocks; with a drawing tool on, a layer over them takes the
             // pointer.
-            .child(self.ink_layer(cx))
+            .when(!tiled, |el| el.child(self.ink_layer(cx)))
             .children(marquee.map(|r| {
                 div()
                     .absolute()
@@ -362,7 +372,7 @@ impl Render for Workspace {
                     .border_color(self.ui.accent)
                     .bg(self.ui.accent.opacity(0.08))
             }))
-            .when(self.tool.draws(), |el| {
+            .when(self.tool.draws() && !tiled, |el| {
                 el.child(
                     div()
                         .id("ink-layer")
@@ -423,7 +433,7 @@ impl Render for Workspace {
                         .child(self.hint()),
                 )
             })
-            .child(toolbar::render(self, cx));
+            .when(!tiled, |el| el.child(toolbar::render(self, cx)));
         let picker = self
             .picker
             .as_ref()

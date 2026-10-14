@@ -24,6 +24,7 @@ mod preferences;
 mod render;
 mod selection;
 mod spaces;
+mod tiling;
 mod view;
 
 pub(crate) use find::FindBar;
@@ -45,8 +46,8 @@ use gpui_kit::{
     Point as PixelPoint, SharedString, Subscription, Task, Window, WindowAppearance, px,
 };
 use templum_canvas::{
-    Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, Point, ShapeKind,
-    Size, chrome,
+    Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, Point, Rect,
+    ShapeKind, Size, Tile, chrome,
 };
 use templum_git::GitError;
 use templum_terminal::{Notify, Snapshot, Terminal};
@@ -343,6 +344,19 @@ enum Drag {
     },
 }
 
+/// A workspace in grid mode (docs/specs/grid.md): some of its blocks tiled over its area, at
+/// zoom one. Meanwhile their canvas rects are their tiles'; their rects on the canvas, and the
+/// canvas's camera, wait here.
+pub(crate) struct Grid {
+    pub tiles: Tile,
+    /// Each tiled block's rect on the canvas.
+    pub homes: HashMap<BlockId, Rect>,
+    /// The canvas's camera.
+    pub camera: Camera,
+    /// What the tiles fill, as last drawn: the workspace's area inside the gap.
+    pub area: Rect,
+}
+
 /// One canvas and everything on it: its blocks, their terminals, the focus, and what is
 /// animating.
 #[derive(Default)]
@@ -398,21 +412,53 @@ pub(crate) struct Space {
     /// `ink` before each change, newest last, at most INK_UNDO; and the undone ones.
     pub ink_undo: Vec<Vec<Drawing>>,
     pub ink_redo: Vec<Vec<Drawing>>,
+    /// Grid mode, while it is on.
+    pub grid: Option<Grid>,
 }
 
 impl Space {
+    /// Block `id` is drawn: on the canvas every block is; in grid mode, the tiled ones.
+    pub fn shown(&self, id: BlockId) -> bool {
+        self.grid.as_ref().is_none_or(|g| g.homes.contains_key(&id))
+    }
+
+    /// The canvas's camera, also while grid mode puts its own in its place.
+    pub fn camera(&self) -> Camera {
+        self.grid.as_ref().map_or(self.canvas.camera, |g| g.camera)
+    }
+
+    /// A block's rect on the canvas, also while it is a tile.
+    pub fn home(&self, block: &Block) -> Rect {
+        self.grid
+            .as_ref()
+            .and_then(|g| g.homes.get(&block.id))
+            .copied()
+            .unwrap_or(block.rect)
+    }
+
+    /// The block on top among those drawn.
+    pub fn top(&self) -> Option<BlockId> {
+        self.canvas
+            .blocks()
+            .iter()
+            .rev()
+            .map(|b| b.id)
+            .find(|id| self.shown(*id))
+    }
+
     /// The canvas as a snapshot needs it: rects and process ids, cheap on the UI thread.
     fn layout(&self, agents: Arc<Vec<templum_terminal::Detect>>, cx: &App) -> session::Layout {
         let blocks = self.canvas.blocks();
+        // The canvas as it is, also in grid mode.
         session::Layout {
-            camera: self.canvas.camera,
+            camera: self.camera(),
             blocks: blocks
                 .iter()
                 .map(|b| match &self.blocks[&b.id] {
                     Body::Terminal(pane) => {
-                        session::LayoutBlock::Terminal(b.rect, pane.term.processes())
+                        session::LayoutBlock::Terminal(self.home(b), pane.term.processes())
                     }
-                    body => session::LayoutBlock::Saved(body.item(b.rect, cx)),
+                    body => session::LayoutBlock::Saved(body.item(self.home(b), cx)),
                 })
                 .collect(),
             focused: self

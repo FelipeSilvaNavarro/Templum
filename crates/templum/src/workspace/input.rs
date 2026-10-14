@@ -22,6 +22,10 @@ use super::{
 impl Workspace {
     /// Starts moving the canvas with the pointer, wherever it is (the hand, the middle button).
     pub(crate) fn begin_pan(&mut self, pos: PixelPoint<Pixels>) {
+        // Grid mode's camera stays put.
+        if self.space.grid.is_some() {
+            return;
+        }
         self.space.pristine = false;
         self.drag = Some(Drag::Canvas(Gesture::pan(self.local(pos))));
         // Not a click on the canvas: letting go keeps the focus where it is.
@@ -35,6 +39,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Grid mode's gaps hold nothing.
+        if self.space.grid.is_some() {
+            return;
+        }
         let at = self.space.canvas.camera.to_world(self.local(e.position));
         if let Some(index) = self.ink_at(at) {
             self.open_menu(menu::Target::Ink(index), e.position, window, cx);
@@ -65,6 +73,10 @@ impl Workspace {
     }
 
     pub(crate) fn begin_move(&mut self, id: BlockId, pos: PixelPoint<Pixels>) {
+        // A tile stays in its place.
+        if self.space.grid.is_some() {
+            return;
+        }
         let p = self.local(pos);
         self.drag = Gesture::move_block(&self.space.canvas, id, p).map(Drag::Canvas);
         self.placing(&[id]);
@@ -325,6 +337,7 @@ impl Workspace {
             Command::ZoomOut => self.zoom_out(window, cx),
             Command::ZoomReset => self.zoom_reset(window, cx),
             Command::FitAll => self.fit_all(window, cx),
+            Command::ToggleGrid => self.toggle_grid(window, cx),
             Command::ThemePicker => self.toggle_theme_picker(cx),
             Command::OpenConfig => self.open_config(window, cx),
             Command::Settings => self.toggle_settings(window, cx),
@@ -557,6 +570,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Grid mode's gaps hold nothing.
+        if self.space.grid.is_some() {
+            return;
+        }
         window.focus(&self.focus_handle, cx);
         self.space.pristine = false;
         let p = self.local(e.position);
@@ -605,6 +622,10 @@ impl Workspace {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Grid mode's camera stays put.
+        if self.space.grid.is_some() {
+            return;
+        }
         self.space.pristine = false;
         let p = self.local(e.position);
         // The hand (its tool, or Alt held) zooms without Ctrl: dragging moves the canvas.
@@ -626,6 +647,9 @@ impl Workspace {
     }
 
     pub(crate) fn on_pinch(&mut self, e: &PinchEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.space.grid.is_some() {
+            return;
+        }
         self.space.pristine = false;
         self.zoom_acc += e.delta;
         if self.zoom_acc.abs() >= 0.15 {

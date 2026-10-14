@@ -150,6 +150,11 @@ impl Workspace {
     fn place(&mut self, rects: Vec<(BlockId, Rect)>, then: Then, cx: &mut Context<Self>) {
         let mut before = Vec::new();
         for (id, rect) in rects {
+            // A tile's rect is the grid's: its place on the canvas is what moves.
+            if let Some(home) = self.space.grid.as_mut().and_then(|g| g.homes.get_mut(&id)) {
+                before.push((id, std::mem::replace(home, rect)));
+                continue;
+            }
             let Some(b) = self.space.canvas.get_mut(id) else {
                 continue;
             };

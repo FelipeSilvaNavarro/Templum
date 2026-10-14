@@ -22,6 +22,7 @@ pub(crate) enum Command {
     ZoomOut,
     ZoomReset,
     FitAll,
+    ToggleGrid,
     ThemePicker,
     OpenConfig,
     Settings,
@@ -37,7 +38,7 @@ pub(crate) enum Command {
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 28] = [
+    pub const ALL: [Command; 29] = [
         Command::NewTerminal,
         Command::NewKanban,
         Command::NewNote,
@@ -55,6 +56,7 @@ impl Command {
         Command::ZoomOut,
         Command::ZoomReset,
         Command::FitAll,
+        Command::ToggleGrid,
         Command::ThemePicker,
         Command::OpenConfig,
         Command::Settings,
@@ -88,6 +90,7 @@ impl Command {
             Command::ZoomOut => "zoom_out",
             Command::ZoomReset => "zoom_reset",
             Command::FitAll => "fit_all",
+            Command::ToggleGrid => "toggle_grid",
             Command::ThemePicker => "theme_picker",
             Command::OpenConfig => "open_config",
             Command::Settings => "settings",
@@ -122,6 +125,7 @@ impl Command {
             Command::ZoomOut => "Zoom out",
             Command::ZoomReset => "Zoom 100%",
             Command::FitAll => "Fit all blocks",
+            Command::ToggleGrid => "Fill the workspace with the block, or go back to the canvas",
             Command::ThemePicker => "Theme picker",
             Command::OpenConfig => "Edit config.toml",
             Command::Settings => "Settings",
@@ -180,6 +184,8 @@ impl Command {
             (Command::ZoomReset, true) => &["cmd-0"],
             (Command::FitAll, false) => &["ctrl-shift-1", "ctrl-!"],
             (Command::FitAll, true) => &["cmd-shift-1", "cmd-!"],
+            (Command::ToggleGrid, false) => &["ctrl-shift-enter"],
+            (Command::ToggleGrid, true) => &["cmd-shift-enter"],
             (Command::ThemePicker, false) => &["ctrl-shift-p"],
             (Command::ThemePicker, true) => &["cmd-shift-p"],
             (Command::OpenConfig, _) => &[],
@@ -231,6 +237,7 @@ pub(crate) struct KeysConfig {
     pub zoom_out: Option<Keys>,
     pub zoom_reset: Option<Keys>,
     pub fit_all: Option<Keys>,
+    pub toggle_grid: Option<Keys>,
     pub theme_picker: Option<Keys>,
     pub open_config: Option<Keys>,
     pub settings: Option<Keys>,
@@ -264,6 +271,7 @@ impl KeysConfig {
             Command::ZoomOut => self.zoom_out.as_ref(),
             Command::ZoomReset => self.zoom_reset.as_ref(),
             Command::FitAll => self.fit_all.as_ref(),
+            Command::ToggleGrid => self.toggle_grid.as_ref(),
             Command::ThemePicker => self.theme_picker.as_ref(),
             Command::OpenConfig => self.open_config.as_ref(),
             Command::Settings => self.settings.as_ref(),
@@ -297,6 +305,7 @@ impl KeysConfig {
             Command::ZoomOut => &mut self.zoom_out,
             Command::ZoomReset => &mut self.zoom_reset,
             Command::FitAll => &mut self.fit_all,
+            Command::ToggleGrid => &mut self.toggle_grid,
             Command::ThemePicker => &mut self.theme_picker,
             Command::OpenConfig => &mut self.open_config,
             Command::Settings => &mut self.settings,

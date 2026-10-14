@@ -346,7 +346,9 @@ pub(crate) fn render(
     // The resize strips, on the block under the pointer only (the pointer reaches an edge from
     // inside the block): the top ones under the header's buttons, the others over the body.
     let edge = (EDGE * z).clamp(2.0, EDGE);
-    let (top_zones, other_zones) = if hovered {
+    // A tile's size is the grid's: it has no resize strips nor grip.
+    let tiled = ws.space.grid.is_some();
+    let (top_zones, other_zones) = if hovered && !tiled {
         let mut zone = |edges| resize_zone(id, edges, edge, cx);
         (
             vec![
@@ -571,7 +573,9 @@ pub(crate) fn render(
             }
         })
         .children(other_zones)
-        .when(hovered, |el| el.child(fade_in(handle, ("handle-fade", n))))
+        .when(hovered && !tiled, |el| {
+            el.child(fade_in(handle, ("handle-fade", n)))
+        })
         .test_support()
         .into_any_element()
 }

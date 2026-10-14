@@ -468,7 +468,7 @@ impl Workspace {
             .blocks()
             .iter()
             .filter(|b| ids.contains(&b.id))
-            .map(|b| (b.id, self.space.blocks[&b.id].item(b.rect, cx)))
+            .map(|b| (b.id, self.space.blocks[&b.id].item(self.space.home(b), cx)))
             .collect();
         let was_focused = self.space.focused.is_some_and(|id| ids.contains(&id));
         for id in ids {
@@ -515,8 +515,10 @@ impl Workspace {
             self.space.hovered = None;
         }
         self.space.selected.retain(|s| *s != id);
+        // A tile's neighbour takes its place.
+        self.untile(id);
         if self.space.focused == Some(id) {
-            self.space.focused = self.space.canvas.top();
+            self.space.focused = self.space.top();
         }
         // A gesture on a block that's gone would do nothing anyway; end it.
         self.drag = None;
@@ -664,7 +666,7 @@ impl Workspace {
             self.close(id, window, cx);
             // The keyboard goes on to the block on top, as a terminal app's next tab.
             if self.space.focused.is_none() {
-                self.space.focused = self.space.canvas.top();
+                self.space.focused = self.space.top();
             }
         }
     }

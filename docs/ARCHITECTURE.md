@@ -87,7 +87,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   is an `impl Workspace` block for one area: `spaces.rs` (the workspaces), `blocks.rs` (adding, focusing and
   closing blocks), `view.rs` (the camera), `input.rs` (keys and the pointer), `selection.rs` (selected blocks: Shift+drag,
   Shift+click on a title; moving them together, Delete, Copy and Paste), `history.rs` (Ctrl+Z and Ctrl+Shift+Z on the
-  blocks: added, closed, moved, resized; each step keeps the change that takes it back), `render.rs` (drawing a frame),
+  blocks: added, closed, moved, resized; each step keeps the change that takes it back), `tiling.rs` (grid mode:
+  blocks tiled full screen like Hyprland, [specs/grid.md](specs/grid.md)), `render.rs` (drawing a frame),
   `drawing.rs` (the drawing tools), `note_tabs.rs` (note blocks' tabs and the notes they open), `persist.rs`
   (restoring and saving the canvas), `preferences.rs` (config,
   themes, settings panel), `files.rs` and `file_tree.rs` (editor blocks), `git_ops.rs`, `git_changes.rs`,

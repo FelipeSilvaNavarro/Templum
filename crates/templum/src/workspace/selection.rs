@@ -98,6 +98,9 @@ impl Workspace {
 
     /// A press on a selected block's title: dragging moves every selected block.
     pub(crate) fn begin_group_move(&mut self, pos: PixelPoint<Pixels>) {
+        if self.space.grid.is_some() {
+            return;
+        }
         let p = self.local(pos);
         self.space.pristine = false;
         self.drag =
@@ -145,7 +148,7 @@ impl Workspace {
             .blocks()
             .iter()
             .filter(|b| self.space.selected.contains(&b.id))
-            .map(|b| self.space.blocks[&b.id].item(b.rect, cx))
+            .map(|b| self.space.blocks[&b.id].item(self.space.home(b), cx))
             .collect();
         if items.is_empty() {
             return false;

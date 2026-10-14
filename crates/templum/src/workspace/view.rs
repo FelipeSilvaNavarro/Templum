@@ -44,6 +44,9 @@ impl Workspace {
         let Some(rect) = self.space.canvas.get(id).map(|b| b.rect) else {
             return;
         };
+        if self.space.grid.is_some() {
+            return;
+        }
         let vp = self.viewport(window);
         let camera = self.space.canvas.camera;
         let mut framed = camera;
@@ -78,6 +81,10 @@ impl Workspace {
     /// Moves the camera to `to`: the view glides there from where it is drawn, pivoting on the
     /// screen point `pivot`.
     pub(super) fn fly(&mut self, to: Camera, pivot: Point, cx: &mut Context<Self>) {
+        // Grid mode's camera stays put: zooming, framing and showing a block don't move it.
+        if self.space.grid.is_some() {
+            return;
+        }
         self.space.pristine = false;
         if to == self.space.canvas.camera {
             return;

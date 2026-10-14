@@ -596,6 +596,7 @@ mod git_status;
 mod git_switch;
 mod git_sync;
 mod git_trash;
+mod grid;
 mod history;
 mod kanban;
 mod lod;
