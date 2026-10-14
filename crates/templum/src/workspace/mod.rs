@@ -775,6 +775,9 @@ pub struct Workspace {
     config_stamp: config::Stamp,
     /// The file of the theme in use, as it was when last read, for polling.
     theme_file: Option<(PathBuf, config::Stamp)>,
+    /// The color editor's changes not yet written to that theme file, one per key; written with
+    /// `unsaved`.
+    theme_edits: Option<(PathBuf, Vec<Edit>)>,
     /// The last read failed: the next good one says so.
     config_failed: bool,
     /// The system's appearance. `dark` is what's in effect, since config.toml may pin a mode.
@@ -1092,6 +1095,7 @@ impl Workspace {
             config_failed: config_error.is_some(),
             config_stamp,
             theme_file: None,
+            theme_edits: None,
             system_dark,
             _poll: poll,
             pending: None,

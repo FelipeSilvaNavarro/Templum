@@ -296,7 +296,7 @@ pub(crate) fn render(
                 .child(div().mt(px(4.0)).child(card))
                 .when(section == Section::Agents, |el| el.child(add_agent(ui, cx)))
                 .when(section == Section::Appearance, |el| {
-                    el.child(colors::theme_card(ws, cx))
+                    el.child(colors::theme_card(ws, window, cx))
                 }),
         );
 

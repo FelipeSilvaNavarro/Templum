@@ -8,6 +8,7 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, KeyDownEvent, Keystroke, Window};
 use templum_canvas::chrome;
 use templum_git::Repo;
+use templum_terminal::Rgb;
 
 use crate::agents;
 use crate::config::{self, Config, Edit};
@@ -124,13 +125,21 @@ impl Workspace {
             self.theme_file = None;
             return;
         };
-        let stamp = config::Stamp::file(&path);
+        let mut stamp = config::Stamp::file(&path);
         if self
             .theme_file
             .as_ref()
             .is_some_and(|(p, s)| *p == path && *s == stamp)
         {
             return;
+        }
+        // The color editor's changes go in first: the write merges them with the file's, and the
+        // read below shows both.
+        if self.theme_edits.as_ref().is_some_and(|(p, _)| *p == path) {
+            if let Some(message) = self.save_theme_edits() {
+                show_notification(window, cx, Notification::error(message));
+            }
+            stamp = config::Stamp::file(&path);
         }
         self.theme_file = Some((path.clone(), stamp));
         match theme::read(&path) {
@@ -261,9 +270,16 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Writes the unsaved changes: the color editor's to the theme's file, the settings' to
+    /// config.toml. Returns why one failed.
+    pub(super) fn save(&mut self) -> Option<String> {
+        let theme = self.save_theme_edits();
+        self.save_config().or(theme)
+    }
+
     /// Writes the unsaved settings changes to config.toml. If that fails they stay in effect and
     /// unsaved, for the next try, and the message is returned and kept for the panel's footer.
-    pub(super) fn save(&mut self) -> Option<String> {
+    fn save_config(&mut self) -> Option<String> {
         let edits = std::mem::take(&mut self.unsaved);
         // No config folder: changes last until Templum quits (the panel's footer says so).
         let dir = self.config_dir.clone()?;
@@ -289,6 +305,101 @@ impl Workspace {
                 Some(message)
             }
         }
+    }
+
+    /// Writes the color editor's changes to the theme's file. If that fails they are dropped, and
+    /// the message says why: what the file holds wins (it may be broken mid-edit by hand), and the
+    /// poll shows it once it reads.
+    fn save_theme_edits(&mut self) -> Option<String> {
+        let (path, edits) = self.theme_edits.take()?;
+        // The write merges in a hand edit the poll hasn't seen yet: then the poll must still read it.
+        let seen = self
+            .theme_file
+            .as_ref()
+            .is_some_and(|(p, s)| *p == path && *s == config::Stamp::file(&path));
+        match config::save_edits_to(&path, &edits) {
+            Ok(()) => {
+                // Templum's own write: what it holds is on screen already.
+                if seen {
+                    self.theme_file = Some((path.clone(), config::Stamp::file(&path)));
+                }
+                None
+            }
+            Err(err) => {
+                let file = path.file_name().unwrap_or_default().to_string_lossy();
+                let message = format!("Not saved: {}", err.describe(&file));
+                eprintln!("templum: {message}");
+                Some(message)
+            }
+        }
+    }
+
+    /// A color of the theme in use, from the color editor (`i` as in `theme::key`; None takes a
+    /// `[templum]` color out): shown at once, written to the theme's file SAVE_DELAY after the
+    /// last change. A file that doesn't parse is never written: the change isn't shown, and a
+    /// notification (one, however many changes) says where the error is.
+    pub(crate) fn set_theme_color(
+        &mut self,
+        i: usize,
+        color: Option<Rgb>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = self.theme_path() else {
+            return;
+        };
+        // Changes to another theme (the mode switched) are written first.
+        if self.theme_edits.as_ref().is_some_and(|(p, _)| *p != path) {
+            self.save_or_notify(window, cx);
+        }
+        let (table, key) = theme::key(i);
+        let edit = match color {
+            Some(c) => Edit::set(table, key, theme::hex(c)),
+            None => Edit::remove(table, key),
+        };
+        let mut edits = self
+            .theme_edits
+            .take()
+            .map(|(_, edits)| edits)
+            .unwrap_or_default();
+        edits.retain(|e| e.table != edit.table || e.key != edit.key);
+        edits.push(edit);
+        let file = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let shown = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| config::apply_edits(&text, &edits).map_err(|e| e.describe(&file)))
+            .and_then(|text| theme::parse(&self.theme.name, &text).map_err(|e| e.to_string()));
+        let theme = match shown {
+            Ok(theme) => Rc::new(theme),
+            Err(err) => {
+                let message = format!("Not saved: {err}");
+                eprintln!("templum: {message}");
+                show_notification(
+                    window,
+                    cx,
+                    Notification::error(message).id1::<ThemeColor>(file),
+                );
+                return;
+            }
+        };
+        self.theme_edits = Some((path.clone(), edits));
+        if let Some(entry) = self
+            .themes
+            .iter_mut()
+            .find(|e| e.path.as_ref() == Some(&path))
+        {
+            entry.theme = theme.clone();
+        }
+        self.apply(theme, cx);
+        self._save = cx.spawn_in(window, async move |ws, cx| {
+            cx.background_executor().timer(super::SAVE_DELAY).await;
+            ws.update_in(cx, |ws, window, cx| ws.save_or_notify(window, cx))
+                .ok();
+        });
     }
 
     /// Applies the settings changes now rather than on the next frame, and writes them: what
@@ -715,6 +826,9 @@ impl Workspace {
         }
     }
 }
+
+/// Tells the color editor's notifications apart, so one stands for many changes.
+struct ThemeColor;
 
 const NO_CONFIG_DIR: &str = "No config folder: neither HOME nor APPDATA is set";
 

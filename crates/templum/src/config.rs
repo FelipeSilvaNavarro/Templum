@@ -535,14 +535,21 @@ pub(crate) enum SaveError {
     Io(io::Error),
 }
 
+impl SaveError {
+    /// The message, naming the file written (`file`: config.toml, a theme's file).
+    pub fn describe(&self, file: &str) -> String {
+        match self {
+            Self::NoDir => "no config folder".to_string(),
+            Self::Broken { line } => format!("{file} has an error on line {line}"),
+            Self::NotATable(table) => format!("`{table}` in {file} is not a table"),
+            Self::Io(e) => e.to_string(),
+        }
+    }
+}
+
 impl fmt::Display for SaveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoDir => write!(f, "no config folder"),
-            Self::Broken { line } => write!(f, "{FILE} has an error on line {line}"),
-            Self::NotATable(table) => write!(f, "`{table}` in {FILE} is not a table"),
-            Self::Io(e) => write!(f, "{e}"),
-        }
+        f.write_str(&self.describe(FILE))
     }
 }
 
@@ -612,16 +619,29 @@ fn table_at<'d>(
 /// endings, a byte-order mark). Creates the folder and the file; never writes over a file that
 /// doesn't parse.
 pub(crate) fn save_edits(dir: &Path, edits: &[Edit]) -> Result<(), SaveError> {
-    let path = dir.join(FILE);
-    let text = match std::fs::read_to_string(&path) {
+    save_edits_to(&dir.join(FILE), edits)
+}
+
+/// `save_edits` for any TOML file: a theme's.
+pub(crate) fn save_edits_to(path: &Path, edits: &[Edit]) -> Result<(), SaveError> {
+    let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(SaveError::Io(e)),
     };
+    let out = apply_edits(&text, edits)?;
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder).map_err(SaveError::Io)?;
+    }
+    write_whole(path, &out).map_err(SaveError::Io)
+}
+
+/// `text` with `edits` made, everything else kept; an error when `text` doesn't parse.
+pub(crate) fn apply_edits(text: &str, edits: &[Edit]) -> Result<String, SaveError> {
     let crlf = text.contains("\r\n");
     let bom = text.starts_with('\u{feff}');
     let mut doc: DocumentMut = text.parse().map_err(|e| SaveError::Broken {
-        line: line_of(&text, &e),
+        line: line_of(text, &e),
     })?;
     for edit in edits {
         match &edit.value {
@@ -654,8 +674,7 @@ pub(crate) fn save_edits(dir: &Path, edits: &[Edit]) -> Result<(), SaveError> {
     if bom && !out.starts_with('\u{feff}') {
         out.insert(0, '\u{feff}');
     }
-    std::fs::create_dir_all(dir).map_err(SaveError::Io)?;
-    write_whole(&path, &out).map_err(SaveError::Io)
+    Ok(out)
 }
 
 /// Writes `text` to `path` whole: a temporary file beside it, renamed over it, so a crash
@@ -920,6 +939,51 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(d.path().join(FILE)).unwrap(),
             broken
+        );
+    }
+
+    #[test]
+    fn save_edits_to_keeps_a_theme_files_comments() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("themes").join("Mine.toml");
+        std::fs::create_dir(d.path().join("themes")).unwrap();
+        let text = "# Mine\r\n[colors.normal]\n# Errors.\nred = \"#aa0000\" # on the line\ngreen = \"#00aa00\"\n\n[templum]\n# accent = \"#000000\"\n";
+        std::fs::write(&path, text).unwrap();
+        save_edits_to(
+            &path,
+            &[
+                Edit::set("colors.normal", "red", "#ff0000"),
+                Edit::set("templum", "canvas", "#101010"),
+            ],
+        )
+        .unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.contains("# Errors.\r\nred = \"#ff0000\" # on the line"),
+            "{saved}"
+        );
+        assert!(saved.contains("green = \"#00aa00\""));
+        assert!(saved.contains("canvas = \"#101010\""));
+        assert!(saved.contains("# accent = \"#000000\""), "{saved}");
+        save_edits_to(&path, &[Edit::remove("templum", "canvas")]).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("canvas"));
+    }
+
+    #[test]
+    fn describe_names_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("Mine.toml");
+        std::fs::write(&path, "[colors\n").unwrap();
+        let err =
+            save_edits_to(&path, &[Edit::set("colors.normal", "red", "#ff0000")]).unwrap_err();
+        assert_eq!(
+            err.describe("Mine.toml"),
+            "Mine.toml has an error on line 1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[colors\n",
+            "left alone"
         );
     }
 

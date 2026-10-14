@@ -409,6 +409,10 @@ fn appearance_offers_duplicate_for_builtins_and_open_for_mine(cx: &mut TestAppCo
             "Latte is built in"
         );
         assert!(window.try_find("theme-open-file").is_none());
+        assert!(
+            window.try_find("theme-color-5").is_none(),
+            "no colors to change"
+        );
     })
     .unwrap();
     ws.update(cx, |ws, cx| ws.set_mode_theme("mine", cx));
@@ -417,6 +421,138 @@ fn appearance_offers_duplicate_for_builtins_and_open_for_mine(cx: &mut TestAppCo
         assert!(window.try_find("theme-open-file").is_some(), "yours");
         assert!(window.try_find("theme-new").is_some());
         assert!(window.try_find("theme-duplicate").is_none());
+        assert!(window.try_find("theme-color-5").is_some(), "its colors");
+        assert!(
+            window.try_find("theme-color-reset-20").is_none(),
+            "accent derived"
+        );
     })
     .unwrap();
+}
+
+fn set_color(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    i: usize,
+    color: Option<u32>,
+    cx: &mut TestAppContext,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.set_theme_color(i, color.map(rgb), window, cx)
+        })
+    })
+    .unwrap();
+}
+
+/// Lets the color editor's write (SAVE_DELAY after the last change) happen.
+fn settle_save(cx: &mut TestAppContext) {
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(400));
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn color_edits_show_at_once_and_are_written_once_settled(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let text = format!(
+        "# Mine.\n{}",
+        light_theme("#fafafa").replace("red = ", "# Errors.\nred = ")
+    );
+    let path = write_theme(dir.path(), "mine", &text);
+    write_config(dir.path(), "[theme]\nlight = \"mine\"\n");
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    poll(handle, &ws, cx);
+    set_color(handle, &ws, 5, Some(0xff0000), cx);
+    set_color(handle, &ws, 5, Some(0xee1111), cx);
+    set_color(handle, &ws, 20, Some(0xff8800), cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.palette.ansi[1], rgb(0xee1111), "shown at once");
+        assert_eq!(ws.theme.ui.accent, crate::grid::hsla(rgb(0xff8800), 1.0));
+        for pane in ws.space.terminals().map(|(_, p)| p) {
+            assert_eq!(pane.term.palette(), ws.theme.palette);
+        }
+    });
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        text,
+        "not written yet"
+    );
+    settle_save(cx);
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("# Errors.\nred = \"#ee1111\""), "{saved}");
+    assert!(saved.starts_with("# Mine.\n"));
+    assert!(saved.contains("[templum]\naccent = \"#ff8800\""), "{saved}");
+    poll(handle, &ws, cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.palette.ansi[1], rgb(0xee1111))
+    });
+    assert_eq!(notification_count(handle, cx), 0);
+}
+
+#[gpui_kit::test]
+fn a_color_reset_takes_the_key_out(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let text = light_theme("#fafafa") + "\n[templum]\ncanvas = \"#000000\"\n";
+    let path = write_theme(dir.path(), "mine", &text);
+    write_config(dir.path(), "[theme]\nlight = \"mine\"\n");
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    let derived = crate::theme::parse("x", &light_theme("#fafafa"))
+        .unwrap()
+        .ui
+        .canvas;
+    set_color(handle, &ws, 21, None, cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.interface[1], None);
+        assert_eq!(ws.theme.ui.canvas, derived, "worked out again");
+    });
+    settle_save(cx);
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("canvas"));
+}
+
+#[gpui_kit::test]
+fn color_edits_reach_their_file_after_a_mode_switch(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let day = write_theme(dir.path(), "day", &light_theme("#fafafa"));
+    let night = write_theme(dir.path(), "night", &light_theme("#101010"));
+    write_config(dir.path(), "[theme]\nlight = \"day\"\ndark = \"night\"\n");
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    set_color(handle, &ws, 5, Some(0xff0000), cx);
+    ws.update(cx, |ws, cx| ws.set_dark(true, cx));
+    set_color(handle, &ws, 6, Some(0x00ff00), cx);
+    let written = std::fs::read_to_string(&day).unwrap();
+    assert!(
+        written.contains("red = \"#ff0000\""),
+        "day's, before night's: {written}"
+    );
+    settle_save(cx);
+    let night_text = std::fs::read_to_string(&night).unwrap();
+    assert!(night_text.contains("green = \"#00ff00\""));
+    assert!(
+        !night_text.contains("#ff0000"),
+        "day's change stayed in day"
+    );
+}
+
+#[gpui_kit::test]
+fn a_broken_theme_file_is_not_overwritten_by_the_editor(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_theme(dir.path(), "mine", &light_theme("#fafafa"));
+    write_config(dir.path(), "[theme]\nlight = \"mine\"\n");
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    poll(handle, &ws, cx);
+    std::fs::write(&path, "[colors\n").unwrap();
+    set_color(handle, &ws, 5, Some(0xff0000), cx);
+    set_color(handle, &ws, 5, Some(0xee0000), cx);
+    settle_save(cx);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "[colors\n",
+        "left alone"
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.theme.palette.ansi[1], rgb(0xaa0000), "not shown")
+    });
+    // The message, "Not saved: mine.toml has an error on line 1", is `describe`'s (config.rs).
+    assert_eq!(notification_count(handle, cx), 1, "one for both changes");
 }
