@@ -255,7 +255,8 @@ impl Workspace {
                     let done = jobs
                         .into_iter()
                         .map(|(id, terminals, layout, last)| {
-                            let saved = layout.snapshot();
+                            let (saved, found) = layout.snapshot();
+                            let terminals = terminals.into_iter().zip(found).collect();
                             let written = last
                                 .filter(|last| notes_kept && last.as_ref() != Some(&saved))
                                 .map(|_| session::save(&dir, &id, &saved, generation));
@@ -306,7 +307,7 @@ impl Workspace {
         }
         for (id, terminals, saved, written) in done {
             if let Some(space) = self.space_by_id_mut(&id) {
-                space.see(&terminals, &saved);
+                space.see(terminals);
             }
             match written {
                 None => {}
@@ -365,7 +366,7 @@ impl Workspace {
             if space.frozen {
                 continue;
             }
-            let saved = space.layout(known.clone(), cx).snapshot();
+            let (saved, _) = space.layout(known.clone(), cx).snapshot();
             if space.saved.as_ref() == Some(&saved) {
                 continue;
             }
@@ -405,11 +406,11 @@ fn clamped_rect(r: Rect, min: Size) -> Option<Rect> {
     })
 }
 
-/// A workspace's snapshot, read in the background: its id, its terminals in the order of the
-/// snapshot's terminal items, the file's content, and the write's outcome (None: unchanged).
+/// A workspace's snapshot, read in the background: its id, what was found in each of its
+/// terminals, the file's content, and the write's outcome (None: unchanged).
 pub(super) type SpaceSnapshot = (
     String,
-    Vec<BlockId>,
+    Vec<(BlockId, templum_terminal::Inspection)>,
     session::Saved,
     Option<std::io::Result<()>>,
 );

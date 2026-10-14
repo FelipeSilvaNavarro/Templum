@@ -295,11 +295,12 @@ fn shells_that_cant_start_leave_the_saved_canvas_alone(cx: &mut TestAppContext) 
     );
 }
 
-/// A snapshot's read of the processes tells each terminal its folder and its agent: what the
-/// menus and the Git block read every frame.
+/// A snapshot's read of the processes tells each terminal its folder and its agent, with the
+/// agent's process: what the menus, the Git block and the usage read.
 #[gpui_kit::test]
 fn a_snapshot_tells_each_terminal_its_folder_and_agent(cx: &mut TestAppContext) {
-    use crate::session::{Item, Saved, SavedCamera, TerminalItem};
+    use crate::session::{Saved, SavedCamera};
+    use templum_terminal::Inspection;
     let (handle, ws) = open(cx);
     let id = first_id(&ws, cx);
     cx.update_window(handle, |_, window, cx| {
@@ -311,38 +312,30 @@ fn a_snapshot_tells_each_terminal_its_folder_and_agent(cx: &mut TestAppContext) 
                     y: 0.0,
                     zoom: 1.0,
                 },
-                items: vec![Item::Terminal(TerminalItem {
-                    rect: Rect::new(0.0, 0.0, 1.0, 1.0).into(),
-                    folder: Some("/srv/app".into()),
-                    agent: Some("claude".into()),
-                })],
+                items: Vec::new(),
                 focused: None,
                 recent: Vec::new(),
                 ink: Vec::new(),
                 grid: None,
             };
             let space = ws.space.id.clone();
-            let mut unread = saved.clone();
-            ws.snapshot_done(
-                vec![(space.clone(), vec![id], saved, None)],
-                None,
-                None,
-                window,
-                cx,
-            );
-            let seen = &ws.space.terminal(id).unwrap().seen;
-            assert_eq!(
-                seen.folder.as_deref(),
-                Some(std::path::Path::new("/srv/app"))
-            );
-            assert_eq!(seen.agent.as_deref(), Some("claude"));
-            // A folder the next one couldn't read keeps the one known; the agent left.
-            let crate::session::Item::Terminal(t) = &mut unread.items[0] else {
-                unreachable!()
+            let found = Inspection {
+                folder: Some("/srv/app".into()),
+                agent: Some("claude".into()),
+                pid: Some(42),
+                started: Some(1_700_000_000),
             };
-            (t.folder, t.agent) = (None, None);
             ws.snapshot_done(
-                vec![(space, vec![id], unread, None)],
+                vec![(space.clone(), vec![(id, found.clone())], saved.clone(), None)],
+                None,
+                None,
+                window,
+                cx,
+            );
+            assert_eq!(ws.space.terminal(id).unwrap().seen, found);
+            // A folder the next one couldn't read keeps the one known; the agent left.
+            ws.snapshot_done(
+                vec![(space, vec![(id, Inspection::default())], saved, None)],
                 None,
                 None,
                 window,
@@ -353,7 +346,7 @@ fn a_snapshot_tells_each_terminal_its_folder_and_agent(cx: &mut TestAppContext) 
                 seen.folder.as_deref(),
                 Some(std::path::Path::new("/srv/app"))
             );
-            assert_eq!(seen.agent, None);
+            assert_eq!((&seen.agent, seen.pid, seen.started), (&None, None, None));
         })
     })
     .unwrap();

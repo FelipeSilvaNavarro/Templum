@@ -507,18 +507,13 @@ impl Space {
             .collect()
     }
 
-    /// Tells the terminals `ids` (a snapshot's `terminal_order`) what `saved` found in them.
-    fn see(&mut self, ids: &[BlockId], saved: &session::Saved) {
-        let found = saved.items.iter().filter_map(|item| match item {
-            session::Item::Terminal(t) => Some(t),
-            _ => None,
-        });
-        for (id, t) in ids.iter().zip(found) {
-            if let Some(pane) = self.terminal_mut(*id) {
-                // A folder the snapshot couldn't read (or write as JSON) keeps the one known.
-                let folder = t.folder.as_ref().map(PathBuf::from);
-                pane.seen.folder = folder.or(pane.seen.folder.take());
-                pane.seen.agent.clone_from(&t.agent);
+    /// Tells each terminal what a snapshot found in it.
+    fn see(&mut self, found: Vec<(BlockId, templum_terminal::Inspection)>) {
+        for (id, mut seen) in found {
+            if let Some(pane) = self.terminal_mut(id) {
+                // A folder the snapshot couldn't read keeps the one known.
+                seen.folder = seen.folder.or(pane.seen.folder.take());
+                pane.seen = seen;
             }
         }
     }

@@ -509,8 +509,9 @@ pub(crate) enum LayoutBlock {
 }
 
 impl Layout {
-    /// Reads the processes (folders) and builds the file's content. Slow: off the UI thread.
-    pub fn snapshot(self) -> Saved {
+    /// Reads the processes (folders, agents) and builds the file's content, with what was found
+    /// in each terminal, in order. Slow: off the UI thread.
+    pub fn snapshot(self) -> (Saved, Vec<templum_terminal::Inspection>) {
         let processes: Vec<Processes> = self
             .blocks
             .iter()
@@ -519,8 +520,9 @@ impl Layout {
                 LayoutBlock::Saved(_) => None,
             })
             .collect();
-        let mut found = templum_terminal::inspect(&processes, &self.agents).into_iter();
-        Saved {
+        let inspections = templum_terminal::inspect(&processes, &self.agents);
+        let mut found = inspections.iter().cloned();
+        let saved = Saved {
             version: VERSION,
             camera: SavedCamera {
                 x: self.camera.origin.x,
@@ -547,7 +549,8 @@ impl Layout {
             recent: self.recent.into_iter().filter_map(utf8).collect(),
             ink: self.ink,
             grid: self.grid,
-        }
+        };
+        (saved, inspections)
     }
 }
 
@@ -1189,7 +1192,7 @@ mod tests {
             ink: Vec::new(),
             grid: None,
         };
-        let saved = layout.snapshot();
+        let (saved, _) = layout.snapshot();
         assert_eq!(saved.recent, ["/a", "/b"], "recent folders, newest first");
         assert_eq!(saved.version, VERSION);
         assert_eq!(
