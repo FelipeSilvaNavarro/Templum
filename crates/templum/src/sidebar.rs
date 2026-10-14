@@ -94,8 +94,8 @@ fn tile(ws: &Workspace, i: usize, space: &Space, cx: &mut Context<Workspace>) ->
     let id = space.id.clone();
     let color = space.look.color.as_deref().and_then(|c| tint(c, &ws.theme));
     let fg = hsla(ws.theme.palette.foreground, 1.0);
-    let inner = div()
-        .id(ElementId::Name(format!("workspace-{}", space.id).into()))
+    let inner = div().id(ElementId::Name(format!("workspace-{}", space.id).into()));
+    let inner = crate::spaces_screen::draggable(inner, space, i, ui, cx)
         .relative()
         .flex()
         .items_center()

@@ -353,6 +353,33 @@ impl Workspace {
             .collect()
     }
 
+    /// Puts the workspace with `id` at position `to`, the others following; the one shown
+    /// stays shown.
+    pub(crate) fn move_space(
+        &mut self,
+        id: &str,
+        to: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(from) = self.order().iter().position(|s| s.id == id) else {
+            return;
+        };
+        if from == to || to > self.others.len() {
+            return;
+        }
+        let shown = self.space.id.clone();
+        let mut all = std::mem::take(&mut self.others);
+        all.insert(self.active, std::mem::take(&mut self.space));
+        let moved = all.remove(from);
+        all.insert(to, moved);
+        self.active = all.iter().position(|s| s.id == shown).unwrap_or(0);
+        self.space = all.remove(self.active);
+        self.others = all;
+        self.write_index(window, cx);
+        cx.notify();
+    }
+
     pub(crate) fn toggle_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar = !self.sidebar;
         self.write_index(window, cx);

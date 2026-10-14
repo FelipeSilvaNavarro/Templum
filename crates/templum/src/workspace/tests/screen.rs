@@ -110,3 +110,43 @@ fn down_and_enter_in_the_search_open_the_highlighted_card(cx: &mut TestAppContex
     act(handle, cx, |w, cx| w.press("enter", cx));
     ws.read_with(cx, |ws, _| assert_eq!(ws.space.name, "Api"));
 }
+
+fn names(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<String> {
+    ws.read_with(cx, |ws, _| {
+        ws.order().iter().map(|s| s.name.clone()).collect()
+    })
+}
+
+#[gpui_kit::test]
+fn dropping_a_card_on_another_takes_its_place(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    three(handle, &ws, cx);
+    open_screen(handle, cx);
+    act(handle, cx, |w, cx| {
+        w.drag_to("space-card-w3", "space-card-default", cx)
+    });
+    assert_eq!(names(&ws, cx), ["Web", "Main", "Api"]);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.active, 0);
+        assert_eq!(ws.space.name, "Web", "still shown");
+    });
+    let crate::session::Loaded::Saved(index) = crate::session::load_index(data.path()) else {
+        panic!("no index")
+    };
+    let ids: Vec<&str> = index.workspaces.iter().map(|w| w.id.as_str()).collect();
+    assert_eq!((ids, index.active), (vec!["w3", "default", "w2"], 0));
+}
+
+#[gpui_kit::test]
+fn dropping_a_sidebar_tile_reorders_and_keeps_the_active_one(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    three(handle, &ws, cx);
+    act(handle, cx, |w, cx| {
+        w.drag_to("workspace-default", "workspace-w3", cx)
+    });
+    assert_eq!(names(&ws, cx), ["Api", "Web", "Main"]);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!((ws.active, ws.space.name.as_str()), (1, "Web"));
+    });
+}

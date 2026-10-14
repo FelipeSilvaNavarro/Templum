@@ -19,6 +19,7 @@ use crate::keys::Command;
 use crate::menu::Target;
 use crate::motion;
 use crate::sidebar;
+use crate::theme::Ui;
 use crate::workspace::{Body, Space, Workspace, workspace_digit};
 
 /// The sheet's widest; narrower windows get a narrower one.
@@ -101,6 +102,60 @@ impl Counts {
             None => self.agents.push((name.to_string(), 1)),
         }
     }
+}
+
+/// A workspace being dragged by its card or its sidebar tile: dropped on another, it takes
+/// that one's place. It draws itself under the pointer.
+#[derive(Clone)]
+pub(crate) struct SpaceDrag {
+    pub id: String,
+    pub name: SharedString,
+    pub ui: Ui,
+}
+
+impl Render for SpaceDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let ui = self.ui;
+        div()
+            .px(px(10.0))
+            .py(px(6.0))
+            .rounded(px(8.0))
+            .bg(ui.surface)
+            .border_1()
+            .border_color(ui.accent)
+            .shadow(vec![BoxShadow {
+                color: ui.shadow,
+                offset: point(px(0.0), px(8.0)),
+                blur_radius: px(20.0),
+                spread_radius: px(0.0),
+                inset: false,
+            }])
+            .text_size(px(13.0))
+            .text_color(ui.title)
+            .opacity(0.92)
+            .child(self.name.clone())
+    }
+}
+
+/// Lets `el`, workspace `space`'s card or tile at position `at`, be dragged and dropped on.
+pub(crate) fn draggable(
+    el: gpui_kit::Stateful<gpui_kit::Div>,
+    space: &Space,
+    at: usize,
+    ui: Ui,
+    cx: &mut Context<Workspace>,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let drag = SpaceDrag {
+        id: space.id.clone(),
+        name: space.name.clone().into(),
+        ui,
+    };
+    el.on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+        .drag_over::<SpaceDrag>(move |s, _, _, _| s.border_color(ui.accent))
+        .on_drop(cx.listener(move |ws, drag: &SpaceDrag, window, cx| {
+            ws.move_space(&drag.id, at, window, cx);
+            cx.stop_propagation();
+        }))
 }
 
 /// Columns of cards in a sheet `width` wide.
@@ -393,7 +448,7 @@ pub(crate) fn render(
         .into_any_element()
 }
 
-fn header_button(id: &'static str, ui: crate::theme::Ui) -> gpui_kit::Stateful<gpui_kit::Div> {
+fn header_button(id: &'static str, ui: Ui) -> gpui_kit::Stateful<gpui_kit::Div> {
     div()
         .id(id)
         .flex()
@@ -433,8 +488,8 @@ fn card(
     let agent =
         space.has_agent(&ws.agents) || space.terminals().any(|(_, p)| p.seen.agent.is_some());
     let news = space.terminals().any(|(_, p)| p.alert.is_some());
-    div()
-        .id(ElementId::Name(format!("space-card-{}", space.id).into()))
+    let el = div().id(ElementId::Name(format!("space-card-{}", space.id).into()));
+    draggable(el, space, at, ui, cx)
         .h(px(CARD_H))
         .min_w(px(0.0))
         .flex()
