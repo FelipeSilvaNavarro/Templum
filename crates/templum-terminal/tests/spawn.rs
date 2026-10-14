@@ -263,11 +263,69 @@ fn inspect_finds_an_agent_and_its_folder() {
         let found = inspect(&[term.processes()], &known()).pop().unwrap();
         let folder = found.folder.as_ref().and_then(|f| f.canonicalize().ok());
         if found.agent.as_deref() == Some("claude") && folder.as_ref() == Some(&want) {
+            // The agent's process, for reading its usage: its pid and when it started.
+            assert!(found.pid.is_some(), "found {found:?}");
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let started = found.started.expect("a start time");
+            assert!(started <= now + 2 && now - started < 60, "started {started}, now {now}");
             break;
         }
         assert!(Instant::now() < deadline, "found {found:?}");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// What the terminal's programs read in `TEMPLUM_TERMINAL`: Claude Code's status line, run by
+/// Templum's relay, names its file after it.
+#[test]
+fn each_terminal_gets_its_own_id_in_its_environment() {
+    let printed = |command: (String, Vec<String>)| {
+        let term = Terminal::spawn(
+            SpawnOptions {
+                cols: 60,
+                rows: 5,
+                cell_px: (8, 16),
+                command: Some(command),
+                palette: Palette::default(),
+                options: TermOptions::default(),
+                working_directory: None,
+                integration: None,
+            },
+            Arc::new(|| {}),
+        )
+        .expect("spawn");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !term.exited() {
+            assert!(Instant::now() < deadline, "the command never exited");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut snapshot = Snapshot::default();
+        snapshot.refresh(term.shared(), &Palette::default());
+        (term.id().to_string(), snapshot.text())
+    };
+    #[cfg(unix)]
+    let command = || {
+        (
+            "sh".to_string(),
+            vec!["-c".to_string(), "printf 'id=%s;' \"$TEMPLUM_TERMINAL\"".to_string()],
+        )
+    };
+    #[cfg(windows)]
+    let command = || {
+        (
+            "cmd".to_string(),
+            vec!["/C".to_string(), "echo id=%TEMPLUM_TERMINAL%;".to_string()],
+        )
+    };
+    let (a, a_text) = printed(command());
+    let (b, b_text) = printed(command());
+    assert!(!a.is_empty());
+    assert_ne!(a, b);
+    assert!(a_text.contains(&format!("id={a};")), "screen was: {a_text:?}");
+    assert!(b_text.contains(&format!("id={b};")), "screen was: {b_text:?}");
 }
 
 /// A harmless long-running program, copied under an agent's name into `bin`.

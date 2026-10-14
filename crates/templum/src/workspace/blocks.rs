@@ -365,7 +365,7 @@ impl Workspace {
                         alert: None,
                         seen: templum_terminal::Inspection {
                             folder: start,
-                            agent: None,
+                            ..Default::default()
                         },
                         find: None,
                     }),

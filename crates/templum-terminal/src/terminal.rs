@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
@@ -287,6 +287,11 @@ pub struct Inspection {
     pub folder: Option<PathBuf>,
     /// The id of the agent open in the terminal, among those [`inspect`] was given.
     pub agent: Option<String>,
+    /// The agent's process, to find its session's files.
+    pub pid: Option<u32>,
+    /// When the agent's process started, in seconds since the Unix epoch (about a second off
+    /// on Linux).
+    pub started: Option<u64>,
 }
 
 /// Reads several terminals' processes in one pass over the OS's process table: slow enough to
@@ -332,12 +337,14 @@ fn inspect_one(system: &sysinfo::System, p: &Processes, known: &[Detect]) -> Ins
         Some((pid, agent)) => Inspection {
             folder: cwd(pid),
             agent: Some(agent),
+            pid: Some(pid.as_u32()),
+            started: system.process(pid).map(sysinfo::Process::start_time),
         },
         None => Inspection {
             folder: reported(p)
                 .or_else(|| p.foreground.map(Pid::from_u32).and_then(cwd))
                 .or_else(|| p.shell.map(Pid::from_u32).and_then(cwd)),
-            agent: None,
+            ..Inspection::default()
         },
     }
 }
@@ -418,6 +425,9 @@ pub struct Terminal {
     cols: u16,
     rows: u16,
     shell_name: String,
+    /// Unique among the terminals of every Templum running; its programs see it as
+    /// `TEMPLUM_TERMINAL`.
+    id: String,
 }
 
 impl Terminal {
@@ -440,6 +450,13 @@ impl Terminal {
             // Not the terminal Templum was started from.
             ("TERM_PROGRAM".into(), "templum".into()),
         ]);
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let id = format!(
+            "{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        );
+        env.insert("TEMPLUM_TERMINAL".into(), id.clone());
         if let Some(dir) = &opts.integration {
             // Without a command, alacritty runs $SHELL: as a login shell on macOS.
             let (program, args) = command.clone().unwrap_or_else(|| {
@@ -500,7 +517,13 @@ impl Terminal {
             cols: opts.cols,
             rows: opts.rows,
             shell_name,
+            id,
         })
+    }
+
+    /// The terminal's `TEMPLUM_TERMINAL`.
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     pub fn shared(&self) -> &SharedTerm {
