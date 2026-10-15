@@ -594,6 +594,48 @@ fn a_double_click_on_a_wire_starts_a_terminal_in_the_last_focused_folder(cx: &mu
     });
 }
 
+/// Grid mode hides wires: entering it lets a selected one go, so no Delete removes a wire no one
+/// sees.
+#[gpui_kit::test]
+fn entering_grid_mode_lets_the_wire_go(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = apart(handle, &ws, cx);
+    ws.update(cx, |ws, cx| {
+        ws.connect(kanban, note, cx);
+    });
+    let on = on_the_wire(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        click(window, cx, on, 1);
+        assert!(ws.read(cx).space.selected_wire.is_some());
+        ws.update(cx, |ws, cx| ws.enter_grid(vec![kanban, note], window, cx));
+        assert_eq!(ws.read(cx).space.selected_wire, None);
+    })
+    .unwrap();
+}
+
+/// A wire selected in a workspace left isn't selected when the workspace comes back.
+#[gpui_kit::test]
+fn a_workspace_left_lets_the_wire_go(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = apart(handle, &ws, cx);
+    ws.update(cx, |ws, cx| {
+        ws.connect(kanban, note, cx);
+    });
+    let on = on_the_wire(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        click(window, cx, on, 1);
+        assert!(ws.read(cx).space.selected_wire.is_some());
+        ws.update(cx, |ws, cx| {
+            ws.new_space(window, cx);
+            ws.switch_to(0, window, cx);
+        });
+        assert_eq!(ws.read(cx).space.selected_wire, None);
+    })
+    .unwrap();
+}
+
 /// A selected wire never takes a terminal's Backspace: a block that took the keyboard since
 /// (clicked, or just added) drops the wire's selection, and with a block focused the key is
 /// never the wire's.
