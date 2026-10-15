@@ -346,6 +346,70 @@ fn a_click_selects_a_wire_and_delete_removes_it(cx: &mut TestAppContext) {
         assert_eq!(ws.read(cx).space.selected_wire, None);
         window.press(UNDO, cx);
         assert_eq!(ws.read(cx).space.wires, [wire], "Ctrl+Z brings it back");
+        click(window, cx, on, 1);
+        window.press("delete", cx);
+        assert!(ws.read(cx).space.wires.is_empty(), "Delete too");
+    })
+    .unwrap();
+}
+
+/// Selecting blocks unselects the wire, so Delete closes the blocks: Shift+click on a title, or
+/// Shift+drag around them.
+#[gpui_kit::test]
+fn selecting_blocks_lets_the_wire_go(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = apart(handle, &ws, cx);
+    ws.update(cx, |ws, cx| {
+        ws.connect(kanban, note, cx);
+        // Straight down from the kanban block's bottom (y 320) to the terminal's top (y 400).
+        ws.connect(kanban, terminal, cx);
+    });
+    let (on, below) = (on_the_wire(&ws, cx), at(&ws, cx, (245.0, 360.0)));
+    let title = at(&ws, cx, (610.0, 80.0 + chrome::TITLE_H / 2.0));
+    let (from, to) = (at(&ws, cx, (700.0, 330.0)), at(&ws, cx, (300.0, 250.0)));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        click(window, cx, on, 1);
+        assert!(ws.read(cx).space.selected_wire.is_some());
+        press_with(window, cx, MouseButton::Left, SHIFT, title, title);
+        assert_eq!(ws.read(cx).space.selected, [note]);
+        window.press("delete", cx);
+        assert!(
+            ws.read(cx).space.canvas.get(note).is_none(),
+            "the note closed"
+        );
+        window.render_frame(cx);
+        click(window, cx, below, 1);
+        assert_eq!(
+            ws.read(cx).space.selected_wire,
+            Some(Wire::new(kanban, terminal).unwrap())
+        );
+        press_with(window, cx, MouseButton::Left, SHIFT, from, to);
+        assert_eq!(ws.read(cx).space.selected, [kanban]);
+        window.press("delete", cx);
+        assert!(
+            ws.read(cx).space.canvas.get(kanban).is_none(),
+            "the kanban block closed"
+        );
+    })
+    .unwrap();
+}
+
+/// A wire's step whose other block went (moved to another workspace) is skipped: one Ctrl+Z
+/// takes back the step before it.
+#[gpui_kit::test]
+fn a_wire_step_to_a_block_gone_is_skipped(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.connect(note, terminal, cx);
+            ws.connect(kanban, note, cx);
+            ws.move_blocks(vec![kanban], None, window, cx);
+            assert_eq!(ws.space.wires, [Wire::new(note, terminal).unwrap()]);
+            assert!(ws.undo_canvas(false, window, cx));
+            assert!(ws.space.wires.is_empty(), "the note–terminal wire's step");
+        })
     })
     .unwrap();
 }

@@ -13,8 +13,9 @@ pub(crate) fn width(zoom: f32) -> f32 {
 }
 
 /// Paints `curves` (world units) through `camera` into `bounds`, those off screen skipped.
-// ponytail: one path per wire per frame (gpui-fast keeps the triangles of a shape it built
-// before, path_cache.rs); cache them per zoom step as ink.rs does if a bench asks for it.
+// ponytail: one path per wire per frame. gpui-fast reuses the triangles of a shape built before
+// (path_cache.rs), but while the camera moves the shapes differ by fractions of a pixel and are
+// built again; cache them per zoom step as ink.rs does if a bench asks for it.
 pub(crate) fn paint(
     curves: &[(Curve, Hsla)],
     camera: &Camera,
