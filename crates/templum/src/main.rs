@@ -50,6 +50,19 @@ fn main() {
         relay();
         return;
     }
+    // `templum mcp`, `templum hook claude`, `templum read <block>`…: no window
+    // (docs/specs/connections.md).
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| templum_mcp::cli::is_verb(a)) {
+        let code = templum_mcp::cli::run(
+            &args,
+            &templum_mcp::cli::Env::of_process(),
+            Box::new(std::io::stdin()),
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        );
+        std::process::exit(code);
+    }
     let mixed = std::env::args().any(|a| a == "--bench-mixed");
     let far = std::env::args().any(|a| a == "--bench-far");
     let zoom = std::env::args().find_map(|a| a.strip_prefix("--bench-zoom=").map(str::to_string));

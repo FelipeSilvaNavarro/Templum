@@ -383,7 +383,7 @@ impl Workspace {
                 .integration
                 .clone()
                 .filter(|_| self.config.shell.integration),
-            env: Vec::new(),
+            env: self.bus_env.clone(),
         };
         let start = folder.or_else(std::env::home_dir);
         let id = match Terminal::spawn(opts, self.notify.clone()) {

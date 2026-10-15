@@ -277,3 +277,19 @@ impl Workspace {
         }
     }
 }
+
+/// Templum's program as an agent should run it: the AppImage when it runs from one (its mount
+/// goes away when it quits), else the running executable, without the " (deleted)" Linux adds
+/// to one an upgrade replaced.
+pub(super) fn program() -> Option<PathBuf> {
+    if let Some(image) = std::env::var_os("APPIMAGE") {
+        return Some(image.into());
+    }
+    let exe = std::env::current_exe().ok()?;
+    Some(
+        match exe.to_str().and_then(|e| e.strip_suffix(" (deleted)")) {
+            Some(path) => PathBuf::from(path),
+            None => exe,
+        },
+    )
+}

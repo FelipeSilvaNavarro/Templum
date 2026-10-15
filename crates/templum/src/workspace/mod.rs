@@ -1,6 +1,7 @@
 //! The main view: the canvas of terminal blocks.
 
 mod blocks;
+mod bus;
 mod drawing;
 mod file_tree;
 mod files;
@@ -483,6 +484,11 @@ impl Space {
             .find(|id| self.shown(*id))
     }
 
+    /// The block whose id is `uid`.
+    pub fn block_by_uid(&self, uid: &str) -> Option<BlockId> {
+        self.uids.iter().find(|(_, u)| *u == uid).map(|(id, _)| *id)
+    }
+
     /// A block as a saved item at its rect on the canvas, with its id.
     fn item_of(&self, block: &Block, cx: &App) -> session::Item {
         let mut item = self.blocks[&block.id].item(self.home(block), cx);
@@ -865,6 +871,16 @@ pub struct Workspace {
     pub(crate) git_version: Option<Result<String, String>>,
     /// Settings ▸ Git ▸ Try it, running or done.
     pub(crate) message_try: Option<TryIt>,
+    /// The bus the programs in Templum's terminals talk to (docs/specs/connections.md); None
+    /// without a data folder.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "held for its socket; typed() reads it next")
+    )]
+    pub(crate) bus: Option<templum_mcp::Bus>,
+    /// What every new terminal's environment gets while the bus runs.
+    bus_env: Vec<(String, String)>,
+    _bus: Task<()>,
     _wake: Task<()>,
 }
 
@@ -1052,6 +1068,7 @@ impl Workspace {
                 async {}
             }),
         ];
+        let (bus, bus_env, bus_task) = bus::start(data_dir.as_deref(), window, cx);
         let mut ws = Self {
             space: Space::default(),
             others: Vec::new(),
@@ -1153,6 +1170,9 @@ impl Workspace {
             keymap,
             agents: effective_agents,
             commit_agent,
+            bus,
+            bus_env,
+            _bus: bus_task,
             _wake: wake,
         };
         // Relay files of Claude Code sessions long gone, at startup.

@@ -6786,6 +6786,7 @@ dependencies = [
  "tempfile",
  "templum-canvas",
  "templum-git",
+ "templum-mcp",
  "templum-terminal",
  "templum-update",
  "templum-usage",

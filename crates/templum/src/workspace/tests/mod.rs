@@ -609,6 +609,7 @@ pub(super) fn at(ws: &Entity<Workspace>, cx: &mut TestAppContext, p: (f32, f32))
 mod agents;
 mod block_ids;
 mod blocks;
+mod bus;
 mod config_reload;
 mod drawing;
 mod editor;

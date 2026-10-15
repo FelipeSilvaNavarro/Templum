@@ -25,6 +25,8 @@ templum-git = { path = "../templum-git" }
 templum-terminal = { path = "../templum-terminal" }
 templum-usage = { path = "../templum-usage" }
 templum-update = { path = "../templum-update" }
+# The bus agents and the templum command talk to Templum over (docs/specs/connections.md).
+templum-mcp = { path = "../templum-mcp" }
 # Already in the tree through GPUI: its channel wakes the UI from PTY threads.
 futures = "0.3"
 # Already in the tree: reads theme files and edits config.toml without losing the user's comments.
