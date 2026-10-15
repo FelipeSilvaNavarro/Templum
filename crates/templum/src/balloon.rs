@@ -4,7 +4,10 @@
 //! shows, with "1 of 3".
 
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, ClickEvent, Context, ElementId, TestSupportExt, Window, div, px};
+use gpui_kit::{
+    AnyElement, ClickEvent, Context, ElementId, MouseButton, MouseDownEvent, TestSupportExt,
+    Window, div, px,
+};
 use templum_canvas::{BlockId, chrome};
 
 use crate::git_block::{self, widgets::small};
@@ -49,9 +52,15 @@ pub(crate) fn render(
             .text_size(px(git_block::FONT * z))
             .text_color(ui.title)
             // Its presses are its own: no selection starts in the terminal under it, a program
-            // there that asked for the mouse hears none, the block's menu doesn't open, the
-            // canvas doesn't pan. Not `block_mouse_except_scroll`: the block would lose its hover.
-            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
+            // there that asked for the mouse hears none, the block's menu doesn't open. The middle
+            // button still pans, as anywhere. Not `block_mouse_except_scroll`: the block would
+            // lose its hover.
+            .on_any_mouse_down(cx.listener(|ws, e: &MouseDownEvent, _, cx| {
+                if e.button == MouseButton::Middle {
+                    ws.begin_pan(e.position);
+                }
+                cx.stop_propagation();
+            }))
             .when(count > 1, |el| {
                 el.child(
                     div()

@@ -511,11 +511,13 @@ fn the_balloons_buttons_answer_a_question_then_a_request(cx: &mut TestAppContext
     .unwrap();
 }
 
-/// The balloon's presses are its own, whatever the button: a right one opens no block menu, a
-/// middle one doesn't pan the canvas (and neither reaches a program that asked for the mouse).
+/// The balloon's presses never reach a program under it that asked for the mouse: a right one
+/// opens no block menu either, and a middle drag pans the canvas, as anywhere.
 #[gpui_kit::test]
-fn the_balloons_right_and_middle_presses_stay_in_it(cx: &mut TestAppContext) {
+fn a_press_on_the_balloon_stays_in_it_and_a_middle_drag_pans(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
+    #[cfg(unix)]
+    super::terminals::program_asks("\x1b[?1002h\x1b[?1006h", handle, &ws, cx, |m| m.mouse);
     let (_, _, mine) = three_blocks(handle, &ws, cx);
     let (terminal, _) = me(&ws, cx, mine);
     let n = mine.0 as usize;
@@ -526,21 +528,35 @@ fn the_balloons_right_and_middle_presses_stay_in_it(cx: &mut TestAppContext) {
         window.render_frame(cx);
         let corner = window.find(("balloon", n)).bounds().origin;
         let at = (f32::from(corner.x) + 4.0, f32::from(corner.y) + 4.0);
-        right_click(window, cx, at);
-        let none = Modifiers::default();
-        press_with(
-            window,
+        let (position, modifiers) = (point(px(at.0), px(at.1)), Modifiers::default());
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Right,
+                position,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }),
             cx,
-            MouseButton::Middle,
-            none,
-            at,
-            (at.0 + 100.0, at.1),
         );
+        // A program's press would be held until its release.
+        assert!(ws.read(cx).drag.is_none(), "the program heard it");
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Right,
+                position,
+                modifiers,
+                click_count: 1,
+            }),
+            cx,
+        );
+        let to = (at.0 + 100.0, at.1);
+        press_with(window, cx, MouseButton::Middle, modifiers, at, to);
     })
     .unwrap();
     ws.read_with(cx, |ws, _| {
         assert!(ws.menu.is_none(), "no menu");
-        assert_eq!(ws.space.canvas.camera, camera, "no pan");
+        assert_ne!(ws.space.canvas.camera, camera, "a middle drag pans");
     });
 }
 
