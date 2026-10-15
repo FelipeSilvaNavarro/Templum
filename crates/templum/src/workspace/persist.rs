@@ -234,7 +234,7 @@ impl Workspace {
                 if let Some(a) = e.active.filter(|a| *a < editor.tabs.len()) {
                     editor.active = Some(a);
                 }
-                self.add_block(rect, Body::Editor(editor))
+                self.add_block(rect, Body::Editor(Box::new(editor)))
             }),
         }
     }

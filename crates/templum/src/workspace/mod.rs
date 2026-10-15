@@ -202,7 +202,8 @@ pub(crate) enum Body {
     Terminal(Box<Pane>),
     Kanban(Kanban),
     Note(Note),
-    Editor(Editor),
+    /// Boxed: on Windows, where a path takes more bytes, it is over 200 bytes larger than a note.
+    Editor(Box<Editor>),
     /// Boxed: its fields (the editors of its diff and commit form) outweigh the other kinds.
     Git(Box<Git>),
 }

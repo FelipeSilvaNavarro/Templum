@@ -66,7 +66,7 @@ impl Workspace {
         self.space.pristine = false;
         let rect = Rect::new(at.x, at.y, editor::SIZE.w, editor::SIZE.h);
         let editor = Editor::new(folder.to_path_buf(), true, cx);
-        let id = self.add_block(rect, Body::Editor(editor));
+        let id = self.add_block(rect, Body::Editor(Box::new(editor)));
         remember(&mut self.space.recent, folder.to_path_buf());
         window.focus(&self.focus_handle, cx);
         cx.notify();
