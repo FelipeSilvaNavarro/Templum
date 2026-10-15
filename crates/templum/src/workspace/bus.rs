@@ -222,7 +222,9 @@ impl Workspace {
         let Some(pane) = self.pane_mut(terminal) else {
             return;
         };
+        // Keys typed before this event answer nothing it brings (a dialog opening now).
         pane.looks.heard();
+        pane.typed.set(false);
         match event {
             AgentEvent::Working => pane.state = Some(AgentState::Working),
             AgentEvent::Started => {
@@ -273,6 +275,7 @@ impl Workspace {
         if pane.state == Some(AgentState::NeedsYou(Some(asked))) {
             pane.state = Some(AgentState::Working);
             pane.looks.heard();
+            pane.typed.set(false);
             cx.notify();
         }
     }

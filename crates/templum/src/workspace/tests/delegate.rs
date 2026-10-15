@@ -968,6 +968,10 @@ fn a_dialog_stays_yellow_until_its_person_answers(cx: &mut TestAppContext) {
         "wait_for_idle",
         json!({ "block": them }),
     );
+    // The person was typing as the dialog opened: those keys answer nothing.
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(theirs).unwrap().typed.set(true)
+    });
     let asks = json!({ "event": "needs_you", "message": "Allow Bash?" });
     event(handle, &ws, cx, &worker, asks);
     let asking = Some(AgentState::NeedsYou(Some("Allow Bash?".into())));
