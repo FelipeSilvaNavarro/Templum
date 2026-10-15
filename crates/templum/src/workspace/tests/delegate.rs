@@ -51,6 +51,26 @@ fn agents_running(
     (handle, ws, mine, theirs)
 }
 
+/// A snapshot that found `found` in the terminal block `id`, as one taken every few seconds.
+pub(super) fn snapshot(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+    found: templum_terminal::Inspection,
+) {
+    let space = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let saved: crate::session::Saved = serde_json::from_value(
+        json!({ "version": 1, "camera": { "x": 0, "y": 0, "zoom": 1 }, "items": [] }),
+    )
+    .unwrap();
+    let done = vec![(space, vec![(id, found)], saved, None)];
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.snapshot_done(done, None, None, window, cx))
+    })
+    .unwrap();
+}
+
 /// The Enter a typed task waits for.
 #[cfg(unix)]
 fn enter(cx: &mut TestAppContext) {
@@ -473,18 +493,7 @@ fn an_agent_that_leaves_without_a_word_ends_its_task(cx: &mut TestAppContext) {
     let (_, them) = me(&ws, cx, theirs);
     let task = json!({ "block": them, "task": "go", "wait": true });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
-    let space = ws.read_with(cx, |ws, _| ws.space.id.clone());
-    let saved: crate::session::Saved = serde_json::from_value(
-        json!({ "version": 1, "camera": { "x": 0, "y": 0, "zoom": 1 }, "items": [] }),
-    )
-    .unwrap();
-    let snapshot = |cx: &mut TestAppContext, found: Inspection| {
-        let done = vec![(space.clone(), vec![(theirs, found)], saved.clone(), None)];
-        cx.update_window(handle, |_, window, cx| {
-            ws.update(cx, |ws, cx| ws.snapshot_done(done, None, None, window, cx))
-        })
-        .unwrap();
-    };
+    let snapshot = |cx: &mut TestAppContext, found| snapshot(handle, &ws, cx, theirs, found);
     snapshot(cx, Inspection::default());
     assert!(
         answers.try_recv().is_err(),

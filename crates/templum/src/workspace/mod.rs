@@ -659,10 +659,13 @@ impl Space {
                 // mustn't come back with the next agent started there by hand.
                 if seen.agent.is_none() {
                     pane.state = None;
-                    // Found before, so it left; one not found yet may still be starting.
+                    // Found before, so it left; one not found yet may still be starting, and one
+                    // Templum started there stays known while its prompt waits.
                     if pane.seen.pid.is_some() {
                         pane.prompt = None;
                         gone.push(pane.term.id().to_string());
+                    } else if pane.prompt.is_some() {
+                        seen.agent = pane.seen.agent.take();
                     }
                 }
                 pane.seen = seen;

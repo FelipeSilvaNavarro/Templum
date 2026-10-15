@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 use super::bus::{after, answered, call, call_later, event, me, result_of, screen_with};
+use super::delegate::snapshot;
 use super::*;
 
 /// The startup terminal at (40, 100), 400 × 300, the camera at 100% on the origin, and Claude Code
@@ -150,6 +151,60 @@ fn a_claude_codes_prompt_is_typed_once_it_started(cx: &mut TestAppContext) {
         json!({ "event": "stopped", "message": "hi" }),
     );
     assert_eq!(answered(&waiting), (false, "hi".to_string()));
+}
+
+/// A snapshot taken while the new shell still starts (its rc files) finds no agent in it: the
+/// Claude Code Templum typed there stays known, and its prompt is sent once it started.
+#[gpui_kit::test]
+fn a_snapshot_before_the_agent_started_doesnt_stop_its_prompt(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "claude", "folder": folder.path(), "prompt": "say hi" });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    let (theirs, _) = me(&ws, cx, new);
+    snapshot(
+        handle,
+        &ws,
+        cx,
+        new,
+        templum_terminal::Inspection::default(),
+    );
+    in_front(&ws, cx, new, true);
+    event(handle, &ws, cx, &theirs, json!({ "event": "started" }));
+    screen_with(&ws, cx, new, "say hi");
+    enter(cx);
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(new).unwrap();
+        assert!(pane.handed.is_some(), "not taken: {:?}", pane.screen());
+    });
+    screen_with(&ws, cx, new, "say hisay hi");
+}
+
+/// `wait_for_idle` right after a spawn waits for the prompt's answer, though a snapshot taken
+/// while the new shell still started found no agent in it.
+#[gpui_kit::test]
+fn wait_for_idle_waits_on_an_agent_a_snapshot_found_no_trace_of_yet(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "claude", "folder": folder.path(), "prompt": "say hi" });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    let (_, uid) = me(&ws, cx, new);
+    snapshot(
+        handle,
+        &ws,
+        cx,
+        new,
+        templum_terminal::Inspection::default(),
+    );
+    let idle = json!({ "block": uid });
+    let waiting = call_later(handle, &ws, cx, &terminal, 1, "wait_for_idle", idle);
+    if let Ok(line) = waiting.try_recv() {
+        panic!("answered at once: {:?}", result_of(&line));
+    }
 }
 
 #[gpui_kit::test]
