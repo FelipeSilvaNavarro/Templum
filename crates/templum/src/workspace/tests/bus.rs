@@ -163,7 +163,9 @@ fn a_terminal_types_into_itself_and_reads_it_back(cx: &mut TestAppContext) {
     let typed = json!({ "block": uid, "text": "hello there", "enter": true });
     let (failed, text) = call(handle, &ws, cx, &terminal, "send_to_terminal", typed);
     assert!(!failed, "{text}");
-    screen_with(&ws, cx, first, "hello there");
+    // The tty shows the text as it is typed; `cat` prints it again on the next row only once
+    // Enter sends the line (rows are trimmed and joined without a break).
+    screen_with(&ws, cx, first, "hello therehello there");
     let (failed, text) = call(
         handle,
         &ws,
