@@ -209,6 +209,7 @@ pub fn run(
     // The request holds the person's code: in a folder only they can read, made new (never one
     // someone else put there first).
     let dir = std::env::temp_dir().join(format!("templum-{}-{n}", std::process::id()));
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut folder_of_files = std::fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut folder_of_files, 0o700);

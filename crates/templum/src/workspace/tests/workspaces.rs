@@ -552,6 +552,7 @@ fn a_new_terminal_starts_in_the_workspace_folder_when_nothing_focused_has_one(
 }
 
 /// Whether the process `pid` still runs.
+#[cfg(unix)]
 fn runs(pid: u32) -> bool {
     !templum_terminal::tree(&[pid]).is_empty()
 }
