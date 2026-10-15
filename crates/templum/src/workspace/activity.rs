@@ -37,6 +37,15 @@ impl Looks {
         self.count = self.count.saturating_add(1);
     }
 
+    /// A look right after the person's input, finding `hash`: it tells nothing, and the looks
+    /// before it count no more (the echoes of keys typed in pauses don't add up).
+    fn skip(&mut self, hash: u64) {
+        *self = Looks {
+            hash,
+            ..Looks::default()
+        };
+    }
+
     /// Its agent's hook spoke: the looks before it count no more (the spinner that ran until a
     /// turn ended or a dialog opened says nothing after).
     pub(super) fn heard(&mut self) {
@@ -80,7 +89,7 @@ impl Workspace {
             pane.screen().hash(&mut hasher);
             let hash = hasher.finish();
             if pane.typed.replace(false) {
-                pane.looks.hash = hash;
+                pane.looks.skip(hash);
                 continue;
             }
             pane.looks.see(hash);
@@ -184,5 +193,14 @@ mod tests {
             None
         );
         assert_eq!(looks.state(&Some(AgentState::Idle)), None);
+    }
+
+    #[test]
+    fn a_look_after_typing_starts_the_looks_over() {
+        // The echoes of keys typed in pauses don't add up to a screen at work.
+        let mut looks = saw(&[true, true]);
+        looks.skip(looks.hash + 1);
+        more(&mut looks, &[true]);
+        assert_eq!(looks.state(&None), None);
     }
 }
