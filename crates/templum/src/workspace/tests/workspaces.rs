@@ -601,11 +601,12 @@ fn stopping_and_deleting_end_programs_that_ignore_the_hangup(cx: &mut TestAppCon
             })
         })
         .unwrap();
-    // Each shell's two sleeps started.
+    // Each shell's two sleeps started: the 2 shells and their 4 sleeps. A sleep started after
+    // Stop reads the tree isn't killed, and keeps its shell's session running.
     let deadline = Instant::now() + Duration::from_secs(10);
     let tree = loop {
         let tree = templum_terminal::tree(&[w2, w3]);
-        if tree.len() >= 4 {
+        if tree.len() >= 6 {
             break tree;
         }
         assert!(

@@ -389,6 +389,10 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   (`crates/templum/src/workspace/spaces.rs`) reads the whole process table on the UI thread (and on Unix asks each
   process its session), once per Stop or Delete. Fix: read the tree on the background executor, then drop the
   workspace's blocks when it is read.
+- [ ] **A program started after Stop by one that ignores the hangup keeps running.** Stop reads the process tree
+  once (`tree_of`, `crates/templum/src/workspace/spaces.rs`) and two seconds later kills only what it read; a
+  program that ignores the hangup and starts another meanwhile leaves that one alive. Fix: at the kill, read the
+  tree again and also kill what is still in the stopped shells' sessions (Unix).
 
 ## Welcome
 
