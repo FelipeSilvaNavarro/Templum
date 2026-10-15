@@ -298,6 +298,61 @@ fn templums_folder_goes_first_on_path_without_empty_entries() {
     );
 }
 
+/// Windows's `templum.exe` in `<data>/bin`: made once, left alone while it is the program's,
+/// made again when the program changed.
+#[test]
+fn templums_own_copy_is_made_kept_and_made_again() {
+    use crate::workspace::bus::same_or_copy;
+    let dir = tempfile::tempdir().unwrap();
+    let (exe, copy) = (
+        dir.path().join("program.exe"),
+        dir.path().join("templum.exe"),
+    );
+    std::fs::write(&exe, "version 1").unwrap();
+    same_or_copy(&exe, &copy).unwrap();
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), "version 1");
+    // As long and as old as the program: left alone (its text shows it wasn't made again).
+    std::fs::remove_file(&copy).unwrap();
+    std::fs::write(&copy, "version 0").unwrap();
+    let modified = std::fs::metadata(&exe).unwrap().modified().unwrap();
+    let file = std::fs::File::options().write(true).open(&copy).unwrap();
+    file.set_modified(modified).unwrap();
+    drop(file);
+    same_or_copy(&exe, &copy).unwrap();
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), "version 0");
+    // A new program, of another length: made again.
+    std::fs::write(&exe, "version 10").unwrap();
+    same_or_copy(&exe, &copy).unwrap();
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), "version 10");
+}
+
+/// On another drive, where no hard link can be made, a copy: kept at the next start.
+#[cfg(target_os = "linux")]
+#[test]
+fn templums_own_copy_on_another_drive_is_kept() {
+    use crate::workspace::bus::same_or_copy;
+    use std::os::unix::fs::MetadataExt as _;
+    let here = tempfile::tempdir().unwrap();
+    // /dev/shm is a filesystem of its own; without it there is nothing to check.
+    let Ok(there) = tempfile::tempdir_in("/dev/shm") else {
+        return;
+    };
+    let device = |dir: &tempfile::TempDir| std::fs::metadata(dir.path()).unwrap().dev();
+    if device(&here) == device(&there) {
+        return;
+    }
+    let (exe, copy) = (
+        here.path().join("program"),
+        there.path().join("templum.exe"),
+    );
+    std::fs::write(&exe, "version 1").unwrap();
+    same_or_copy(&exe, &copy).unwrap();
+    assert_eq!(std::fs::read_to_string(&copy).unwrap(), "version 1");
+    let made = std::fs::metadata(&copy).unwrap().ino();
+    same_or_copy(&exe, &copy).unwrap();
+    assert_eq!(std::fs::metadata(&copy).unwrap().ino(), made, "made again");
+}
+
 #[gpui_kit::test]
 fn without_a_data_folder_there_is_no_bus(cx: &mut TestAppContext) {
     let (_, ws) = open(cx);

@@ -53,9 +53,9 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - **The bus** (`templum-mcp`'s `bus.rs`, [specs/connections.md](specs/connections.md)): a local socket (Unix) or
   loopback TCP with a token (Windows) in the data folder. A thread accepts connections; each has a reader thread and a
   writer thread, and its lines reach the UI thread through a channel that `workspace/bus.rs` drains: the UI thread
-  never touches a socket. Every terminal gets `TEMPLUM_BUS` and, on Unix, `<data>/bin` first in `PATH`, where a link
-  named `templum` points at this Templum. `templum mcp`, `templum hook …` and the verbs are the same program run
-  without a window (`main.rs`).
+  never touches a socket. Every terminal gets `TEMPLUM_BUS` and `<data>/bin` first in `PATH`, where `templum` is
+  this Templum: a link to it on Unix, a hard link or a copy named `templum.exe` on Windows. `templum mcp`,
+  `templum hook …` and the verbs are the same program run without a window (`main.rs`).
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.
   Far away, each block is drawn at a level of detail picked by its text's size on screen at the zoom the camera

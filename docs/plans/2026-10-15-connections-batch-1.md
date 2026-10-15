@@ -3232,7 +3232,8 @@ git commit -m "docs(connections): describe the bus, block ids and what agents ar
     other's tools turn the yellow back to Working (the minor "Parallel subagents can turn…").
 11. **`/mcp`:** open it and close it in an idle Claude Code: the dot doesn't stay on Working.
 12. **Windows, Codex through npm's `codex.cmd` under pwsh 7:** from AI agent ▸, `/mcp` lists `templum` and `whoami`
-    works; `templum blocks` in a Templum terminal runs this Templum (its folder first on PATH).
+    works; `templum blocks` in a Templum terminal runs this Templum: with the portable `.exe` started from Downloads,
+    `where templum` shows `<data>\bin\templum.exe` first, and Downloads isn't on the terminal's PATH.
 13. **A hook's time on an AppImage build:** in a terminal of the AppImage, run
     `time (echo '{"hook_event_name":"PostToolUse"}' | "$APPIMAGE" hook claude)`, and write the time in the minor
     "Each hook runs the AppImage again".

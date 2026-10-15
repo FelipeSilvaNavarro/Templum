@@ -69,25 +69,48 @@ pub(super) fn first_on_path(folder: PathBuf, path: &OsStr) -> Option<String> {
         .ok()
 }
 
-/// `<data>/bin`, where a link named `templum` points at this Templum.
-// ponytail: one link for every Templum sharing the data folder: the last one started wins.
-#[cfg(unix)]
+/// `<data>/bin`, where `templum` is this Templum: on Unix a link to it; on Windows
+/// `templum.exe`, the same file or a copy (its own folder may be Downloads, with no
+/// `templum.exe` and any other program in it).
+// ponytail: one entry for every Templum sharing the data folder: the last one started wins.
 fn templum_folder(data: &Path) -> Option<PathBuf> {
     let exe = super::usage::program()?;
     let bin = data.join("bin");
     std::fs::create_dir_all(&bin).ok()?;
-    let link = bin.join("templum");
-    if std::fs::read_link(&link).ok().as_deref() != Some(exe.as_path()) {
-        let _ = std::fs::remove_file(&link);
-        std::os::unix::fs::symlink(&exe, &link).ok()?;
+    #[cfg(unix)]
+    {
+        let link = bin.join("templum");
+        if std::fs::read_link(&link).ok().as_deref() != Some(exe.as_path()) {
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(&exe, &link).ok()?;
+        }
     }
+    #[cfg(not(unix))]
+    same_or_copy(&exe, &bin.join("templum.exe")).ok()?;
     Some(bin)
 }
 
-/// The folder of Templum's program, where `templum` is `templum.exe`: no link needed.
-#[cfg(not(unix))]
-fn templum_folder(_: &Path) -> Option<PathBuf> {
-    Some(super::usage::program()?.parent()?.to_path_buf())
+/// Makes `to` a hard link to `exe`, or a copy of it where a link can't be made (another drive),
+/// unless its length and modified time are already `exe`'s.
+#[cfg_attr(unix, allow(dead_code))] // Used on Windows; tested everywhere.
+pub(super) fn same_or_copy(exe: &Path, to: &Path) -> std::io::Result<()> {
+    let source = std::fs::metadata(exe)?;
+    let modified = source.modified()?;
+    if std::fs::metadata(to)
+        .is_ok_and(|m| m.len() == source.len() && m.modified().ok() == Some(modified))
+    {
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(to);
+    if std::fs::hard_link(exe, to).is_err() {
+        std::fs::copy(exe, to)?;
+        // A copy may get the time it is made (Unix's does): it would be made again at each start.
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(to)
+            .and_then(|f| f.set_modified(modified));
+    }
+    Ok(())
 }
 
 impl Workspace {
