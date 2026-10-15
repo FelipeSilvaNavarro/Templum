@@ -66,9 +66,9 @@ agents without MCP, scripts and hooks.
 - **A wire** is a curve from the edge of one block that faces the other to the edge of the other, drawn on the
   canvas below the blocks in the title's dim color, 2 units wide and never under a pixel. It follows its blocks as
   they move or are resized.
-- **Selecting:** a click on a wire where no block or drawing covers it selects it (accent color); Delete or
-  Backspace removes it while no block has the keyboard (focusing or adding one unselects it); Esc unselects;
-  right-click on it offers **Disconnect**.
+- **Selecting:** a click on a wire where no block or drawing covers it selects it (accent color), and a drag from it
+  still moves the canvas; Delete or Backspace removes it while no block has the keyboard (focusing, adding or
+  selecting a block unselects it); Esc unselects; right-click on it offers **Disconnect**.
 - **Undo:** connecting and disconnecting are steps of Ctrl+Z and Ctrl+Shift+Z. Closing a block removes its wires,
   and undoing the close brings them back.
 - **A block wired twice** to the same block, or to itself, is refused silently.
