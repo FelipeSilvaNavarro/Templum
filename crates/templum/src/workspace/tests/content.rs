@@ -636,6 +636,42 @@ fn open_file_shows_the_tab_already_open_under_a_linked_folder(cx: &mut TestAppCo
     );
 }
 
+/// A linked file (CLAUDE.md -> AGENTS.md) shows the tab open under its own name.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn open_file_shows_the_tab_already_open_under_a_linked_files_name(cx: &mut TestAppContext) {
+    let (dir, folder) = a_project();
+    std::fs::write(folder.join("AGENTS.md"), "# Agents\n").unwrap();
+    std::os::unix::fs::symlink("AGENTS.md", folder.join("CLAUDE.md")).unwrap();
+    let (handle, ws) = open(cx);
+    let terminal = terminal_in(handle, &ws, cx, dir.path());
+    let editor = open_editor(handle, &ws, cx, &folder);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            assert!(ws.connect(terminal, editor, cx));
+            let e = ws.space.editor_mut(editor).unwrap();
+            e.open_tab(&folder.join("CLAUDE.md"), window, cx).unwrap();
+        })
+    })
+    .unwrap();
+    let (me, _) = me(&ws, cx, terminal);
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "open_file",
+        json!({ "path": "CLAUDE.md" }),
+    );
+    assert!(!failed, "{text}");
+    ws.read_with(cx, |ws, _| {
+        let e = ws.space.editor(editor).unwrap();
+        let tabs: Vec<_> = e.tabs.iter().map(|t| t.path.clone()).collect();
+        assert_eq!(tabs, [folder.join("CLAUDE.md")], "no second tab");
+        assert_eq!(e.active, Some(0));
+    });
+}
+
 #[gpui_kit::test]
 fn open_file_refuses_what_it_cant_open_and_opens_no_block(cx: &mut TestAppContext) {
     let (_dir, folder) = a_project();

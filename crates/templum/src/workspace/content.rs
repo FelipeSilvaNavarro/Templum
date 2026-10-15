@@ -429,12 +429,18 @@ impl Workspace {
         }
         // The file as `folder` names it, when `folder` holds it. Canonical paths only to compare:
         // an editor's tabs are named under its folder as it was given (a link, Windows' `C:\`),
-        // and a tab is found again, and saved with the block, by that name.
+        // and a tab is found again, and saved with the block, by that name. Only the file's
+        // folder is made canonical: a linked file (CLAUDE.md -> AGENTS.md) keeps its own name.
+        let (dir, name) = (
+            given.parent().and_then(|p| std::fs::canonicalize(p).ok()),
+            given.file_name(),
+        );
         let under = |folder: &Path| {
-            let inside = real
+            let inside = dir
+                .as_deref()?
                 .strip_prefix(std::fs::canonicalize(folder).ok()?)
                 .ok()?;
-            Some(folder.join(inside))
+            Some(folder.join(inside).join(name?))
         };
         let wired = space
             .canvas
