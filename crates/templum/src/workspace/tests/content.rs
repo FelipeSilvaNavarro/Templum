@@ -436,6 +436,27 @@ fn a_project() -> (tempfile::TempDir, std::path::PathBuf) {
     (dir, path)
 }
 
+/// A terminal started in `folder`, focused.
+fn terminal_in(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    folder: &std::path::Path,
+) -> BlockId {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let rect = Rect::new(40.0, 400.0, 600.0, 300.0);
+            let id = ws
+                .spawn_block(rect, Some(folder.to_path_buf()), window, cx)
+                .unwrap();
+            ws.space.appearing.clear();
+            ws.focus_block(id, window, cx);
+            id
+        })
+    })
+    .unwrap()
+}
+
 #[gpui_kit::test]
 fn open_file_lands_at_the_line_in_the_wired_editor(cx: &mut TestAppContext) {
     let (_dir, folder) = a_project();
@@ -477,13 +498,12 @@ fn open_file_lands_at_the_line_in_the_wired_editor(cx: &mut TestAppContext) {
 fn open_file_with_no_wired_editor_opens_one_beside_the_caller(cx: &mut TestAppContext) {
     let (_dir, folder) = a_project();
     let (handle, ws) = open(cx);
-    let terminal = first_id(&ws, cx);
     // An editor holding the file, but not wired: not the one used.
     let unwired = open_editor(handle, &ws, cx, &folder);
-    cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.focus_block(terminal, window, cx))
-    })
-    .unwrap();
+    // The caller's folder can't hold the file's (the startup terminal's, home, holds the
+    // temporary folder on Windows).
+    let elsewhere = tempfile::tempdir().unwrap();
+    let terminal = terminal_in(handle, &ws, cx, elsewhere.path());
     let (me, _) = me(&ws, cx, terminal);
     let blocks = ws.read_with(cx, |ws, _| ws.space.blocks.len());
     let (failed, text) = call(
