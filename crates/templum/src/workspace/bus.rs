@@ -237,7 +237,10 @@ impl Workspace {
             // `PermissionRequest` opened) keeps what it asks: `allowed` looks for it.
             AgentEvent::NeedsYou { message: None }
                 if matches!(pane.state, Some(AgentState::NeedsYou(Some(_)))) => {}
-            AgentEvent::NeedsYou { message } => pane.state = Some(AgentState::NeedsYou(message)),
+            AgentEvent::NeedsYou { message } => {
+                pane.state = Some(AgentState::NeedsYou(message.clone()));
+                self.needs_you(terminal, message.as_deref(), cx);
+            }
             AgentEvent::Ended => {
                 pane.state = None;
                 self.agent_left(terminal, cx);
@@ -377,7 +380,12 @@ impl Workspace {
                 return self.wait_for_idle(terminal, &block, timeout);
             }
             Call::SpawnAgent(spawn) => return self.spawn_agent(terminal, spawn, window, cx),
-            Call::WaitFor { .. } | Call::Wire { .. } => Reply::err("Not in this Templum yet."),
+            Call::WaitFor {
+                block,
+                event,
+                timeout,
+            } => return self.wait_for(terminal, &block, event, timeout),
+            Call::Wire { .. } => Reply::err("Not in this Templum yet."),
             Call::ListCards { board, card } => {
                 self.list_cards(terminal, board.as_deref(), card, cx)
             }

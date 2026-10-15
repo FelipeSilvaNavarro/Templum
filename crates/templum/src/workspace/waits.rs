@@ -8,13 +8,16 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, Focusable as _, Subscription, Window};
 use serde_json::Value;
+use templum_mcp::tools::Event;
 use templum_mcp::{Replier, Reply, tools};
 
-use super::Workspace;
-use super::bus::Outcome;
+use super::bus::{Outcome, target};
+use super::{AgentState, Workspace};
 
 /// The lines of an agent's screen a turn's wait that times out gives.
-const LAST_LINES: usize = 40;
+pub(super) const LAST_LINES: usize = 40;
+/// How often a `wait_for` a command or an alert looks at its terminal's counters.
+const EVENT_LOOK: Duration = Duration::from_millis(250);
 
 /// A tool call waiting for its answer.
 pub(crate) struct Wait {
@@ -44,6 +47,15 @@ pub(crate) enum Waiting {
     /// `delegate` with `wait`, `wait_for_idle`: the end of the turn of the agent in the terminal
     /// `of` (the block `uid`).
     Turn { of: String, uid: String },
+    /// `wait_for`: `event` in the terminal `of` (the block `uid`). `since`: the commands that had
+    /// finished there and the alerts it had sent when the call came (`Status.finished`,
+    /// `Status.attention`).
+    Event {
+        of: String,
+        uid: String,
+        event: Event,
+        since: (u64, u64),
+    },
 }
 
 /// A tool call that waits, as `serve` hands it over: where its answer goes.
@@ -60,7 +72,7 @@ impl Wait {
         match &self.what {
             Waiting::Question { text, .. } => text.lines().next().unwrap_or_default().to_string(),
             Waiting::Connect { to } => format!("connect to {to}"),
-            Waiting::Turn { .. } => String::new(),
+            Waiting::Turn { .. } | Waiting::Event { .. } => String::new(),
         }
     }
 }
@@ -110,10 +122,25 @@ impl Workspace {
             from: asked.from,
             what,
         };
-        if !matches!(wait.what, Waiting::Turn { .. }) {
+        let looks = matches!(
+            wait.what,
+            Waiting::Event {
+                event: Event::CommandFinished | Event::Attention,
+                ..
+            }
+        );
+        if matches!(
+            wait.what,
+            Waiting::Question { .. } | Waiting::Connect { .. }
+        ) {
             self.tell_asking(&wait, window, cx);
+            // Its block waits for its person now.
+            self.needs_you(&wait.from, Some(&wait.summary()), cx);
         }
         self.waits.push(wait);
+        if looks {
+            self.look_until_it_comes(key, cx);
+        }
         cx.notify();
     }
 
@@ -133,21 +160,27 @@ impl Workspace {
         let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
             return;
         };
+        let screen = |of: &str| {
+            let lines = self
+                .pane(of)
+                .map(|pane| pane.term.shared().lines(LAST_LINES).join("\n"))
+                .unwrap_or_default();
+            tools::tail(&lines, tools::MAX_TEXT).to_string()
+        };
         let reply = match &wait.what {
             Waiting::Question { .. } | Waiting::Connect { .. } => Reply::err(format!(
                 "No one answered within {seconds} seconds; the request was withdrawn."
             )),
-            Waiting::Turn { of, uid } => {
-                let lines = self
-                    .pane(of)
-                    .map(|pane| pane.term.shared().lines(LAST_LINES).join("\n"))
-                    .unwrap_or_default();
-                Reply::err(format!(
-                    "No answer from {uid} within {seconds} seconds; it may still be working \
-                     (wait_for_idle(\"{uid}\") waits again). The last lines of its screen:\n{}",
-                    tools::tail(&lines, tools::MAX_TEXT)
-                ))
-            }
+            Waiting::Turn { of, uid } => Reply::err(format!(
+                "No answer from {uid} within {seconds} seconds; it may still be working \
+                 (wait_for_idle(\"{uid}\") waits again). The last lines of its screen:\n{}",
+                screen(of)
+            )),
+            Waiting::Event { of, uid, event, .. } => Reply::err(format!(
+                "No {} in {uid} within {seconds} seconds. The last lines of its screen:\n{}",
+                awaited(*event),
+                screen(of)
+            )),
         };
         self.answer(key, reply, cx);
     }
@@ -193,7 +226,13 @@ impl Workspace {
             Waiting::Turn { of, uid } if self.pane(of).is_none() => {
                 Some(Reply::err(format!("{uid} was closed before it answered.")))
             }
-            Waiting::Question { .. } | Waiting::Connect { .. } | Waiting::Turn { .. } => None,
+            Waiting::Event { of, uid, .. } if self.pane(of).is_none() => {
+                Some(Reply::err(format!("{uid} was closed while you waited.")))
+            }
+            Waiting::Question { .. }
+            | Waiting::Connect { .. }
+            | Waiting::Turn { .. }
+            | Waiting::Event { .. } => None,
         }
     }
 
@@ -316,10 +355,10 @@ impl Workspace {
     /// What the agent in terminal `terminal` asks the person, oldest first: the first, and how
     /// many.
     pub(crate) fn balloon(&self, terminal: &str) -> Option<(&Wait, usize)> {
-        let mut asking = self
-            .waits
-            .iter()
-            .filter(|w| w.from == terminal && !matches!(w.what, Waiting::Turn { .. }));
+        let mut asking = self.waits.iter().filter(|w| {
+            w.from == terminal
+                && matches!(w.what, Waiting::Question { .. } | Waiting::Connect { .. })
+        });
         let first = asking.next()?;
         Some((first, 1 + asking.count()))
     }
@@ -354,9 +393,128 @@ impl Workspace {
         let text = match &wait.what {
             Waiting::Question { text, .. } => format!("Asks you: {text}"),
             Waiting::Connect { .. } => self.connect_line(wait, cx),
-            Waiting::Turn { .. } => return,
+            Waiting::Turn { .. } | Waiting::Event { .. } => return,
         };
         self.notify_from(space_id, me, title, text, window, cx);
+    }
+
+    /// `wait_for` from the terminal `from`: `event` in the terminal `block`. `idle` is
+    /// `wait_for_idle`; `needs_you` answers at once when its agent, or its balloon, already asks
+    /// its person; the others wait for the next command or alert.
+    pub(super) fn wait_for(&self, from: &str, block: &str, event: Event, timeout: u64) -> Outcome {
+        if event == Event::Idle {
+            return self.wait_for_idle(from, block, timeout);
+        }
+        let (space_id, me) = self.caller(from).expect("call found the caller");
+        let space = self.space_named(&space_id).expect("the caller's workspace");
+        let to = match target(space, me, block) {
+            Ok(to) => to,
+            Err(refused) => return Outcome::Now(refused),
+        };
+        if to == me {
+            return Outcome::Now(Reply::err("This block is yours: wait for another block."));
+        }
+        let Some(pane) = space.terminal(to) else {
+            return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
+        };
+        let of = pane.term.id().to_string();
+        if event == Event::NeedsYou {
+            let asks = match &pane.state {
+                Some(AgentState::NeedsYou(what)) => Some(what.clone()),
+                _ => self.balloon(&of).map(|(wait, _)| Some(wait.summary())),
+            };
+            if let Some(what) = asks {
+                return Outcome::Now(waiting_for_person(block, what.as_deref()));
+            }
+        }
+        let status = pane.term.status();
+        let what = Waiting::Event {
+            of,
+            uid: block.to_string(),
+            event,
+            since: (status.finished, status.attention),
+        };
+        Outcome::Wait(what, timeout)
+    }
+
+    /// The block of the terminal `terminal` waits for its person (its agent asks for `what`, or
+    /// its balloon does): the `wait_for(needs_you)` on it are answered.
+    pub(super) fn needs_you(&mut self, terminal: &str, what: Option<&str>, cx: &mut Context<Self>) {
+        let waiting: Vec<(u64, String)> = self
+            .waits
+            .iter()
+            .filter_map(|w| match &w.what {
+                Waiting::Event {
+                    of,
+                    uid,
+                    event: Event::NeedsYou,
+                    ..
+                } if of == terminal => Some((w.key, uid.clone())),
+                _ => None,
+            })
+            .collect();
+        for (key, uid) in waiting {
+            self.answer(key, waiting_for_person(&uid, what), cx);
+        }
+    }
+
+    /// Looks at the terminal a `wait_for(command_finished | attention)` watches, every EVENT_LOOK,
+    /// until the wait `key` is gone: the terminal's own thread counts its commands and alerts, so
+    /// no frame has to come (a hidden window draws none).
+    fn look_until_it_comes(&self, key: u64, cx: &mut Context<Self>) {
+        cx.spawn(async move |ws, cx| {
+            loop {
+                cx.background_executor().timer(EVENT_LOOK).await;
+                let waiting = ws.update(cx, |ws, cx| ws.look(key, cx)).unwrap_or(false);
+                if !waiting {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// The wait `key` is answered when its command or alert came since the call. False once the
+    /// wait is gone.
+    fn look(&mut self, key: u64, cx: &mut Context<Self>) -> bool {
+        let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
+            return false;
+        };
+        let Waiting::Event {
+            of,
+            uid,
+            event,
+            since,
+        } = &wait.what
+        else {
+            return false;
+        };
+        // Its block closed: `drop_orphans` answers it.
+        let Some(pane) = self.pane(of) else {
+            return true;
+        };
+        let status = pane.term.status();
+        let reply = match event {
+            Event::CommandFinished if status.finished > since.0 => {
+                let code = match status.last.and_then(|o| o.code) {
+                    Some(code) => format!("with exit code {code}"),
+                    None => "without an exit code".to_string(),
+                };
+                let mut text = format!("A command finished in {uid}, {code}.");
+                if let Some(output) = pane.term.shared().last_command() {
+                    text.push('\n');
+                    text.push_str(tools::tail(&output, tools::MAX_TEXT));
+                }
+                Reply::ok(text)
+            }
+            Event::Attention if status.attention > since.1 => Reply::ok(match status.message {
+                Some(message) => format!("{uid} asks for attention: {message}"),
+                None => format!("{uid} rang its bell."),
+            }),
+            _ => return true,
+        };
+        self.answer(key, reply, cx);
+        false
     }
 }
 
@@ -367,4 +525,22 @@ fn field_focused(wait: &Wait, window: &Window, cx: &App) -> bool {
         Waiting::Question { field: Some((input, _)), .. }
             if input.read(cx).focus_handle(cx).is_focused(window)
     )
+}
+
+/// `wait_for(needs_you)`'s answer: block `uid` waits for its person, for `what` when it says.
+fn waiting_for_person(uid: &str, what: Option<&str>) -> Reply {
+    Reply::ok(match what.filter(|w| !w.is_empty()) {
+        Some(what) => format!("{uid} is waiting for its person: {what}"),
+        None => format!("{uid} is waiting for its person."),
+    })
+}
+
+/// What a `wait_for` waited for, as its timeout says it: "No call for attention in t4q8p…".
+fn awaited(event: Event) -> &'static str {
+    match event {
+        Event::Idle => "end of its turn",
+        Event::NeedsYou => "wait for its person",
+        Event::CommandFinished => "finished command",
+        Event::Attention => "call for attention",
+    }
 }

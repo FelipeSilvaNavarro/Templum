@@ -8,7 +8,7 @@ use templum_canvas::Wire;
 
 #[cfg(unix)]
 use super::bus::screen_with;
-use super::bus::{after, answered, call, call_later, event, me};
+use super::bus::{after, answered, call, call_later, event, me, result_of};
 use super::*;
 
 /// Two terminals side by side and wired: mine at (40, 100) and theirs at (900, 100), 700 × 300
@@ -608,4 +608,210 @@ fn an_agent_that_leaves_without_a_word_ends_its_task(cx: &mut TestAppContext) {
             "the dot stops"
         );
     });
+}
+
+#[gpui_kit::test]
+fn wait_for_needs_you_now_or_when_it_asks(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let needs_you = json!({ "block": them, "event": "needs_you" });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "wait_for", needs_you.clone());
+    assert!(answers.try_recv().is_err(), "it waits");
+    event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "needs_you", "message": "Allow Bash?" }),
+    );
+    let asks = format!("{them} is waiting for its person: Allow Bash?");
+    assert_eq!(answered(&answers), (false, asks.clone()));
+    let (failed, text) = call(handle, &ws, cx, &terminal, "wait_for", needs_you.clone());
+    assert_eq!((failed, text), (false, asks), "at once while it still asks");
+    // Its own question, in its balloon, is a wait for its person too.
+    event(handle, &ws, cx, &worker, json!({ "event": "working" }));
+    let answers = call_later(handle, &ws, cx, &terminal, 2, "wait_for", needs_you);
+    let _question = call_later(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        3,
+        "ask_user",
+        json!({ "question": "Which branch?" }),
+    );
+    assert_eq!(
+        answered(&answers),
+        (
+            false,
+            format!("{them} is waiting for its person: Which branch?")
+        )
+    );
+}
+
+#[gpui_kit::test]
+fn wait_for_idle_is_wait_for_idle_and_the_rest_need_a_wire(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "wait_for",
+        json!({ "block": them, "event": "idle" }),
+    );
+    assert!(!failed && text.contains("is idle"), "{text}");
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "wait_for",
+        json!({ "block": uid, "event": "attention" }),
+    );
+    assert!(failed && text.contains("yours"), "{text}");
+    ws.update(cx, |ws, cx| {
+        ws.disconnect(Wire::new(mine, theirs).unwrap(), cx);
+    });
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "wait_for",
+        json!({ "block": them, "event": "attention" }),
+    );
+    assert!(failed && text.contains("isn't connected to you"), "{text}");
+}
+
+/// `cat` in block `id` prints `bytes` back, as a program would.
+#[cfg(unix)]
+fn prints(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId, bytes: &'static [u8]) {
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(id).unwrap().term.write(bytes.to_vec())
+    });
+}
+
+/// The answer on `answers`, the test's clock running a look at a time: the terminal's own thread
+/// reads what `cat` prints back.
+#[cfg(unix)]
+fn heard(cx: &mut TestAppContext, answers: &std::sync::mpsc::Receiver<String>) -> (bool, String) {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        after(cx, 250);
+        if let Ok(line) = answers.try_recv() {
+            return result_of(&line);
+        }
+        assert!(Instant::now() < deadline, "no answer");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn wait_for_a_finished_command_or_a_call_for_attention(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    let event = |name: &str| json!({ "block": them, "event": name });
+    let finished = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        1,
+        "wait_for",
+        event("command_finished"),
+    );
+    let attention = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        2,
+        "wait_for",
+        event("attention"),
+    );
+    after(cx, 500);
+    assert!(
+        finished.try_recv().is_err() && attention.try_recv().is_err(),
+        "nothing yet"
+    );
+    // A command starts and ends with code 3: OSC 133 C, then D;3.
+    prints(&ws, cx, theirs, b"\x1b]133;C\x07\x1b]133;D;3\x07\r");
+    let (failed, text) = heard(cx, &finished);
+    assert!(
+        !failed && text.starts_with(&format!("A command finished in {them}, with exit code 3.")),
+        "{text}"
+    );
+    assert!(
+        attention.try_recv().is_err(),
+        "a command isn't a call for attention"
+    );
+    prints(&ws, cx, theirs, b"\x1b]777;notify;Build;done\x07\r");
+    assert_eq!(
+        heard(cx, &attention),
+        (false, format!("{them} asks for attention: done"))
+    );
+    let bell = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        3,
+        "wait_for",
+        event("attention"),
+    );
+    prints(&ws, cx, theirs, b"\x07\r");
+    assert_eq!(heard(cx, &bell), (false, format!("{them} rang its bell.")));
+}
+
+#[gpui_kit::test]
+fn a_wait_for_times_out_goes_with_its_block_and_shows_no_balloon(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    let soon = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        1,
+        "wait_for",
+        json!({ "block": them, "event": "attention", "timeout": 1 }),
+    );
+    assert!(
+        ws.read_with(cx, |ws, _| ws.balloon(&terminal).is_none()),
+        "a wait asks the person nothing"
+    );
+    after(cx, 1000);
+    let (failed, text) = answered(&soon);
+    assert!(
+        failed
+            && text.starts_with(&format!(
+                "No call for attention in {them} within 1 seconds."
+            )),
+        "{text}"
+    );
+    let closed = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        2,
+        "wait_for",
+        json!({ "block": them, "event": "command_finished" }),
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.remove_block(theirs, window, cx))
+    })
+    .unwrap();
+    frame(handle, cx);
+    assert_eq!(
+        answered(&closed),
+        (true, format!("{them} was closed while you waited."))
+    );
 }
