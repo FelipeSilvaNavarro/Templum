@@ -26,9 +26,10 @@ const MCP: &str = "mcp.json";
 /// What each hook runs after Templum's program (docs/specs/connections.md, Hooks).
 const HOOK: &str = "hook claude";
 /// The Claude Code hooks Templum follows a session's turns with.
-const HOOKED: [&str; 7] = [
+const HOOKED: [&str; 8] = [
     "SessionStart",
     "UserPromptSubmit",
+    "PermissionRequest",
     "PostToolUse",
     "Stop",
     "StopFailure",
@@ -800,6 +801,11 @@ mod tests {
             "/opt/templum hook claude"
         );
         assert_eq!(hooks["PostToolUse"][0]["hooks"][0]["timeout"], 5);
+        // The permission dialog opening: the wait for the person, at once.
+        assert_eq!(
+            hooks["PermissionRequest"][0]["hooks"][0]["command"],
+            "/opt/templum hook claude"
+        );
         // A turn an API error ends fires this instead of Stop.
         assert_eq!(
             hooks["StopFailure"][0]["hooks"][0]["command"],

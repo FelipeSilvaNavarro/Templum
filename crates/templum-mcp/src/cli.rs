@@ -345,6 +345,19 @@ mod tests {
                 }
             )
         );
+        // A permission dialog: told to Templum, and nothing printed, so the dialog still decides.
+        let asked = r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{}}"#;
+        assert_eq!(
+            run_with(&["hook", "claude"], &env(&bus), asked),
+            (0, String::new(), String::new())
+        );
+        assert_eq!(
+            events.recv().unwrap().1,
+            Incoming::Notification {
+                method: "templum/event".into(),
+                params: json!({ "event": "needs_you", "message": "Allow Bash?" }),
+            }
+        );
         let codex = r#"{"type":"agent-turn-complete","last-assistant-message":"Fixed."}"#;
         assert_eq!(run_with(&["hook", "codex", codex], &env(&bus), "").0, 0);
         assert_eq!(

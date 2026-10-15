@@ -32,6 +32,14 @@ pub fn claude(input: &Value) -> Option<AgentEvent> {
         "Stop" => AgentEvent::Stopped {
             message: text("last_assistant_message"),
         },
+        // The permission dialog just opened (its notification only comes after seconds
+        // without typing). The hook prints nothing, so the dialog still decides.
+        "PermissionRequest" => AgentEvent::NeedsYou {
+            message: Some(match input["tool_name"].as_str() {
+                Some(tool) => format!("Allow {tool}?"),
+                None => "Allow a tool?".to_string(),
+            }),
+        },
         // A turn an API error ended: no `Stop`, and no answer.
         "StopFailure" => AgentEvent::Stopped { message: None },
         "Notification" => match input["notification_type"].as_str()? {
@@ -100,6 +108,23 @@ mod tests {
             })),
             Some(AgentEvent::NeedsYou {
                 message: Some("Claude needs your permission to use Bash".into())
+            })
+        );
+        assert_eq!(
+            event(json!({
+                "hook_event_name": "PermissionRequest",
+                "tool_name": "Bash",
+                "tool_input": { "command": "rm -rf /tmp/build" },
+            })),
+            Some(AgentEvent::NeedsYou {
+                message: Some("Allow Bash?".into())
+            }),
+            "waiting for you as soon as the dialog opens"
+        );
+        assert_eq!(
+            event(json!({ "hook_event_name": "PermissionRequest" })),
+            Some(AgentEvent::NeedsYou {
+                message: Some("Allow a tool?".into())
             })
         );
         assert_eq!(
