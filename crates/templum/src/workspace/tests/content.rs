@@ -561,10 +561,11 @@ fn open_file_with_no_wired_editor_opens_one_beside_the_caller(cx: &mut TestAppCo
 /// A relative path is read from the caller's folder, `..` and all.
 #[gpui_kit::test]
 fn open_file_reads_a_relative_path_from_the_callers_folder(cx: &mut TestAppContext) {
-    let (_dir, folder) = a_project();
+    let (dir, folder) = a_project();
     std::fs::create_dir(folder.join("sub")).unwrap();
     let (handle, ws) = open(cx);
-    let terminal = terminal_in(handle, &ws, cx, &folder);
+    // The plain path: cmd.exe can't start in a canonical \\?\ one.
+    let terminal = terminal_in(handle, &ws, cx, dir.path());
     let (me, _) = me(&ws, cx, terminal);
     let (failed, text) = call(
         handle,
