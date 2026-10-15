@@ -1,7 +1,7 @@
 # Connections: blocks that talk to each other
 
 - **Date:** 2026-10-15
-- **Status:** Batches 1 to 3 implemented; batches 4 and 5 planned
+- **Status:** Batches 1 to 4 implemented; batch 5 planned
 - **Builds on:** [agents.md](agents.md) (opening agents), [usage.md](usage.md) (the `--settings` Templum types for
   Claude Code), [shell-integration.md](shell-integration.md) (command marks, notifications),
   [persistence.md](persistence.md), [kanban.md](kanban.md) and [cockpit.md](cockpit.md) (notes, the editor, drawing)
@@ -256,19 +256,20 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `reply` | `block`, `text` | Answers the task the block handed the caller; with none waiting, types `[reply from …]` and the text into it | wired | 3 |
 | `wait_for_idle` | `block`, `timeout` (300 s) | Waits until the agent finishes its turn, and for the answer to a task the caller handed it, past `delegate`'s timeout too; its last answer | wired | 3 |
 | `ask_user` | `question`, `options`, `timeout` (1800 s) | A question in a balloon ([Requests](#requests-from-agents)); the answer | — | 3 |
-| `list_cards` | `board` | The wired kanban block's board: columns, and each card's id, title, labels, assignee and comment count | wired kanban | 4 |
-| `create_card` | `board`, `column`, `title`, `description` | A new card at the column's end; its id | wired kanban | 4 |
+| `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, assignee and comment count; with `card`, that card whole: its description and comments | wired kanban | 4 |
+| `create_card` | `board`, `column`, `title`, `description` | A new card at the column's end (the board's first column when left out); its id | wired kanban | 4 |
 | `move_card` | `card`, `column` | Moves a card to the end of a column | wired kanban | 4 |
 | `comment_card` | `card`, `text` | Adds a comment signed with the caller's id | wired kanban | 4 |
 | `claim_card` | `card` | Makes the caller the card's assignee; refused when another block holds it | wired kanban | 4 |
 | `read_note` | `block` | The text of the note the note block shows | wired note | 4 |
 | `append_note` | `block`, `text` | Adds the text at the note's end, after a blank line; the note shows it at once and Ctrl+Z takes it back | wired note | 4 |
 | `open_file` | `path`, `line` | Opens the file at the line in the wired editor block whose folder holds it; with none, in a new editor block beside the caller, wired to it. Neither the keyboard nor the camera moves | — | 4 |
-| `git_status` | `block` | The wired Git block's branch, ahead and behind, and changed files as `git status --short` shows them | wired Git | 4 |
+| `git_status` | `block` (may be left out when one Git block is wired) | The wired Git block's branch, ahead and behind, and changed files as `git status --short --branch` prints them | wired Git | 4 |
 | `wait_for` | `block`, `event` (`idle`, `needs_you`, `command_finished`, `attention`), `timeout` | Waits for the event in the block | wired | 5 |
 
 - A block is named by its id. A **board** is named by its name or id, and may be left out when one wired kanban
   block shows one; a **column** by its title (either case) or id; a **card** by its id, as `list_cards` shows it.
+  `board`, `column` and `card` may be numbers or strings; a blank title, text or comment is refused.
 - `read_terminal` reads the terminal's own history, never what is painted, so a terminal off screen reads as
   current. The result is at most 256 KB.
 - Agents may stop waiting on long tool calls (Claude Code moves a call past 2 minutes to the background); the
@@ -389,7 +390,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum reply <block> <text>` | `reply` | 3 |
 | `templum wait <block> [--for <event>] [--timeout <s>]` | `wait_for_idle`, `wait_for` | 3, 5 |
 | `templum ask <question> [--option <o>]…` | `ask_user` | 3 |
-| `templum kanban list\|add\|move\|comment\|claim …` | the kanban tools | 4 |
+| `templum kanban list [<board>] [--card <card>] \| add <title> [--column <c>] [--description <d>] [--board <b>] \| move <card> <column> \| comment <card> <text> \| claim <card>` | the kanban tools | 4 |
 | `templum note read\|append <block> [text]` | `read_note`, `append_note` | 4 |
 | `templum open <path>[:<line>]` | `open_file` | 4 |
 | `templum git status [<block>]` | `git_status` | 4 |
@@ -426,7 +427,8 @@ the switch, the server's command for other agents, and Gemini CLI's setup.
 - **`boards.json`** (batch 4, [kanban.md](kanban.md#files)): a card gains `assignee` (a block id) and `comments`, each
   `{ "by": "<block id or 'you'>", "text": "…", "at": <unix seconds> }`. An older file loads with none; an older
   Templum ignores them. The card shows the assignee's block title and the comment count; its dialog lists the
-  comments and adds the person's.
+  comments, adds the person's, and frees the assignee (✕), each a step of the kanban's Ctrl+Z; `claim_card` refuses a
+  card another block holds until the person frees it.
 - **`<data>/mcp.json`** and the hooks in `<data>/claude-statusline.json` are written when an agent is opened, only
   when they changed, atomically.
 
@@ -446,6 +448,7 @@ the switch, the server's command for other agents, and Gemini CLI's setup.
 | `templum-canvas/src/wire.rs` (new) | `Wire`; the curve between two rects, a point on it, hitting it | 2 |
 | `templum/src/workspace/wires.rs` (new), `templum/src/wires.rs` (new) | wiring, unwiring, selecting, undo; painting wires and the dot | 2 |
 | `templum/src/workspace/waits.rs`, `delegate.rs`, `spawn.rs` (new) | the requests that wait and the balloon's answers; tasks handed over, `reply`, `wait_for_idle`; `spawn_agent` | 3 |
+| `templum/src/workspace/content.rs` (new) | the kanban, note, file and Git tools | 4 |
 | `templum/src/balloon.rs` (new) | the balloon | 3 |
 | `templum-git/src/repo.rs` | `Repo::add_worktree` | 3 |
 | `templum/src/toolbar.rs`, `menu/`, `workspace/history.rs`, `workspace/input.rs`, `workspace/render.rs` | the Wire tool, the menus, the undo steps, the pointer | 2 |

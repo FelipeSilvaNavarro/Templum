@@ -641,3 +641,20 @@ Left by the seventh review of batch 3; line numbers are those of `development` a
   agent's `delegate` or `reply` into it is refused (`takes_typing`, `crates/templum/src/workspace/delegate.rs:66`).
   Fix: the screen going still or changing (batch 5) ends the wait; or Enter or a digit typed into a block showing
   "Allow …?" turns it to Working (a denied dialog would then read Working too).
+
+Left by batch 4 (content); line numbers are those of `development` at 9e33f19.
+
+- [ ] **`list_cards` lists a board left on a kanban showing its board list.** `wired_boards`
+  (`crates/templum/src/workspace/content.rs:27`) counts `Kanban::board` also while the block picks (Decision 3 of
+  the plan): an agent reads and changes a board the person no longer sees in that block. Fix: count `shown()` only, if
+  that surprises anyone.
+- [ ] **The first Ctrl+Z after an agent's change can take back the person's typing in a card.** `edit_typed`
+  (`crates/templum/src/kanban.rs:567`) keeps the boards for undo only at the dialog's first change; when an agent
+  changes the boards while the dialog is open, the person's typing after that lands in no step, and the kanban's
+  Ctrl+Z (once the dialog is closed) takes it back together with the agent's change. A person sees the end of what
+  they typed in a card go with an agent's move. Fix: keep a new step in `edit_typed` when `boards_undo` grew since the
+  dialog's last one.
+- [ ] **`open_file` reads the file twice.** `open_file_for` (`crates/templum/src/workspace/content.rs:420`) reads it
+  with `read_file` to refuse what an editor can't show, then `open_tab` (`crates/templum/src/editor.rs:425`) reads it
+  again, both on the main thread: up to 32 MB twice. A person sees a short stall when an agent opens a big file. Fix:
+  refuse from the metadata and the first 8 KB only, or hand `open_tab` what was read.

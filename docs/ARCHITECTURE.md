@@ -117,8 +117,9 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   messages: the caller found by its `TEMPLUM_TERMINAL`, the tools, the agents' hook events), `waits.rs` (tool calls
   that wait: a question, a request to connect, an agent's turn; their deadlines, cancels and the balloon's answers),
   `delegate.rs` (tasks handed between agents: typing them, their answers, `reply`, `wait_for_idle`), `spawn.rs`
-  (`spawn_agent`: an agent beside the caller, its worktree, its prompt once it is ready). Methods a sibling or a
-  test calls are `pub(super)`.
+  (`spawn_agent`: an agent beside the caller, its worktree, its prompt once it is ready), `content.rs` (the tools on a
+  wired block's content: a kanban's cards, a note, a file opened in an editor, a Git block's status). Methods a
+  sibling or a test calls are `pub(super)`.
   `workspace/tests/` holds its tests, one file per area, with the shared helpers in `tests/mod.rs`.
 - `settings/`, `git_block/` and `menu/`: the panel's sections, the Git block's tabs, and what each menu lists, each
   in its own file behind the folder's `mod.rs`, which keeps the paths the rest of the crate uses. `git_block/diff_view/`
