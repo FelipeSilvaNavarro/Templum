@@ -188,6 +188,41 @@ fn another_agents_prompt_waits_for_its_process_and_a_still_screen(cx: &mut TestA
     screen_with(&ws, cx, new, "say hisay hi");
 }
 
+/// In grid mode the new agent takes half of the caller's tile, not of the one the person works in,
+/// which keeps the keyboard.
+#[gpui_kit::test]
+fn in_grid_mode_a_spawned_agent_takes_half_of_the_callers_tile(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let other = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open(Rect::new(500.0, 100.0, 400.0, 300.0), window, cx);
+                let other = ws.space.canvas.top().unwrap();
+                ws.enter_grid(vec![mine, other], window, cx);
+                other
+            })
+        })
+        .unwrap();
+    frame(handle, cx);
+    let rect = |cx: &mut TestAppContext, id| {
+        ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect)
+    };
+    let (half, theirs) = (rect(cx, mine), rect(cx, other));
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path() });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    assert!(!failed, "{text}");
+    let new = spawned(&ws, cx, mine);
+    let r = rect(cx, new);
+    assert!(
+        r.x >= half.x && r.right() <= half.right() && r.y >= half.y && r.bottom() <= half.bottom(),
+        "in the caller's half: {r:?} in {half:?}"
+    );
+    assert_eq!(rect(cx, other), theirs, "the person's tile stays whole");
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(other)));
+}
+
 /// A prompt the agent's screen doesn't show (a dialog that ignores pastes) gets no Enter, and
 /// whoever waits on it hears at once that the agent didn't take it.
 #[cfg(unix)]

@@ -121,8 +121,11 @@ impl Workspace {
                 let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, ws.cell.size);
                 let rect = ws.space.canvas.place_beside(anchor, size);
                 let (focused, selected) = (ws.space.focused, ws.space.selected.clone());
-                let id = ws.start_agent(Some(entry), &entry.command, folder, rect, window, cx)?;
+                // In grid mode a new block takes half of the focused tile: the caller's.
+                ws.space.focused = Some(me);
+                let id = ws.start_agent(Some(entry), &entry.command, folder, rect, window, cx);
                 (ws.space.focused, ws.space.selected) = (focused, selected);
+                let id = id?;
                 ws.space.add_wire(me, id);
                 let terminal = ws.space.terminal(id)?.term.id().to_string();
                 Some((ws.space.uids.get(&id)?.clone(), terminal))
