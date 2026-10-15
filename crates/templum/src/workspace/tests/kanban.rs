@@ -359,3 +359,91 @@ fn undoing_a_new_board_keeps_its_id_taken(cx: &mut TestAppContext) {
         assert_ne!(again, board);
     });
 }
+
+#[gpui_kit::test]
+fn a_card_shows_its_assignee_and_how_many_comments(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let terminal = first_id(&ws, cx);
+    let (block, board, card) = board_with_a_card(handle, &ws, cx);
+    let shown = |cx: &mut TestAppContext, what: &str| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let id = gpui_kit::ElementId::Name(format!("{what}-{}-{card}", block.0).into());
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    };
+    assert!(!shown(cx, "assignee") && !shown(cx, "comments"));
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&terminal].clone());
+    ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| {
+            b.edit_card(board, card, |c| {
+                c.assignee = Some(uid.clone());
+                c.comments.push(crate::board::Comment {
+                    by: "you".into(),
+                    text: "hi".into(),
+                    at: 0,
+                });
+            })
+        })
+    });
+    assert!(shown(cx, "assignee") && shown(cx, "comments"));
+    // The title it shows is the block's, as agents see it.
+    assert!(ws.read_with(cx, |ws, cx| ws.uid_title(&uid, cx)).is_some());
+}
+
+#[gpui_kit::test]
+fn the_open_card_adds_a_comment_and_frees_its_assignee(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (_, board, card) = board_with_a_card(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| b.edit_card(board, card, |c| c.assignee = Some("zzzzz".into())))
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        ws.update(cx, |ws, cx| {
+            let current = ws.boards.card(board, card).cloned().unwrap();
+            crate::kanban::open_card(board, current, false, window, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    // The dialog slides in for 0.25 s first: presses meanwhile are lost.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    // Type into the comment field, then Add comment.
+    cx.update_window(handle, |_, window, cx| {
+        window.click("comment-field", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.simulate_input(handle, "Looks good");
+    cx.update_window(handle, |_, window, cx| {
+        window.click("add-comment", cx);
+        window.render_frame(cx);
+        window.click("unassign", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let c = ws.boards.card(board, card).unwrap();
+        assert_eq!(c.comments.len(), 1);
+        assert_eq!(
+            (c.comments[0].by.as_str(), c.comments[0].text.as_str()),
+            ("you", "Looks good")
+        );
+        assert_eq!(c.assignee, None);
+    });
+    // Each is a step of the kanban's Ctrl+Z: the assignee comes back first.
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws
+            .boards
+            .card(board, card)
+            .unwrap()
+            .assignee
+            .clone())
+            .as_deref(),
+        Some("zzzzz")
+    );
+}
