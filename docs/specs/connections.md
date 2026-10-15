@@ -249,7 +249,7 @@ Claude Code's hooks:
 |---|---|
 | `SessionStart` | started; nothing when its `source` is `compact`: compacting, automatically in the middle of a turn, leaves the agent working |
 | `UserPromptSubmit` | working |
-| `PermissionRequest` | waiting for the person, "Allow *tool*?", as soon as the permission dialog opens. The hook prints nothing and exits 0, so the dialog still decides |
+| `PermissionRequest` | waiting for the person, "Allow *tool*?" ("Claude asks you a question" for `AskUserQuestion`, "Claude has a plan for you" for `ExitPlanMode`), as soon as the permission dialog opens. The hook prints nothing and exits 0, so the dialog still decides |
 | `PostToolUse` | working (again, after a permission) |
 | `PostToolUseFailure` | working (again, after a permission: an allowed tool may fail), or done without an answer when `is_interrupt` is true (Esc while the tool ran) |
 | `Stop` | done, with its last answer (`last_assistant_message`) |

@@ -45,6 +45,9 @@ pub fn claude(input: &Value) -> Option<AgentEvent> {
         // without typing). The hook prints nothing, so the dialog still decides.
         "PermissionRequest" => AgentEvent::NeedsYou {
             message: Some(match input["tool_name"].as_str() {
+                // Claude's own dialogs: nothing to allow.
+                Some("AskUserQuestion") => "Claude asks you a question".to_string(),
+                Some("ExitPlanMode") => "Claude has a plan for you".to_string(),
                 Some(tool) => format!("Allow {tool}?"),
                 None => "Allow a tool?".to_string(),
             }),
@@ -158,6 +161,18 @@ mod tests {
             }),
             "waiting for you as soon as the dialog opens"
         );
+        for (tool, message) in [
+            ("AskUserQuestion", "Claude asks you a question"),
+            ("ExitPlanMode", "Claude has a plan for you"),
+        ] {
+            assert_eq!(
+                event(json!({ "hook_event_name": "PermissionRequest", "tool_name": tool })),
+                Some(AgentEvent::NeedsYou {
+                    message: Some(message.into())
+                }),
+                "{tool} is Claude's own dialog, not a tool to allow"
+            );
+        }
         assert_eq!(
             event(json!({ "hook_event_name": "PermissionRequest" })),
             Some(AgentEvent::NeedsYou {
