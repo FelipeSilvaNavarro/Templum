@@ -83,7 +83,14 @@ fn choices(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let (key, ui) = (wait.key, ws.ui);
-    let row = div().flex().flex_wrap().items_center().gap(px(6.0 * z));
+    // Its key in its buttons' ids: a press on a request withdrawn before its release is no click
+    // on the next one's button drawn in its place.
+    let row = div()
+        .id(("balloon-wait", key))
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(px(6.0 * z));
     match &wait.what {
         Waiting::Question {
             field: Some((input, _)),

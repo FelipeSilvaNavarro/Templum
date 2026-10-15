@@ -555,6 +555,60 @@ fn a_double_click_answers_one_request(cx: &mut TestAppContext) {
     assert_eq!(answered(&request), (false, format!("Connected to {k}.")));
 }
 
+/// A request withdrawn between a button's press and its release: the next one's button, drawn in
+/// its place, isn't clicked by the release.
+#[gpui_kit::test]
+fn a_press_on_a_withdrawn_requests_button_answers_no_other(cx: &mut TestAppContext) {
+    use gpui_kit::{MouseDownEvent, MouseUpEvent, PlatformInput};
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let asked = json!({ "question": "Ship it?", "options": ["Yes"] });
+    // Three: the next one shows "1 of 2" as the first showed "1 of 3", its Yes in the same place.
+    let _first = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked.clone());
+    let next = call_later(handle, &ws, cx, &terminal, 2, "ask_user", asked.clone());
+    let _last = call_later(handle, &ws, cx, &terminal, 3, "ask_user", asked);
+    let yes = |window: &mut Window| {
+        window
+            .find(crate::balloon::part(n, "option-0"))
+            .bounds()
+            .center()
+    };
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let position = yes(window);
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    let cancel = json!({ "requestId": 1 });
+    bus_note(handle, &ws, cx, 1, "notifications/cancelled", cancel);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let position = yes(window);
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    assert_eq!(next.try_recv(), Err(TryRecvError::Empty), "it waits");
+}
+
 /// Ctrl+L and Enter typed in the balloon's field while the asking terminal is focused: the field
 /// takes them, the shell never sees them.
 #[cfg(target_os = "linux")]
