@@ -25,27 +25,55 @@ pub(super) const CLAUDE_EVERY: Duration = Duration::from_secs(5 * 60);
 pub(crate) type Read = (Vec<Option<Session>>, Vec<(String, Limits)>);
 
 impl Workspace {
-    /// `command` as typed to start `agent` in a terminal: the Claude Code Templum opens gets
-    /// Templum's status line, which hands Templum the plan's limits, unless the user turned it
-    /// off.
+    /// `command` as typed to start `agent` in a terminal (docs/specs/connections.md, What Templum
+    /// types into each agent): the Claude Code Templum opens gets its settings file (the status
+    /// line of the plan's limits, and the hooks) and its MCP server; Codex gets the server and
+    /// its `notify`, unless the shell is cmd (they go in single quotes). Nothing under WSL, where
+    /// Templum's paths aren't the shell's, nor without a data folder.
     pub(super) fn typed(&self, agent: Option<&AgentEntry>, command: &str) -> String {
-        let claude = agent.is_some_and(|a| a.builtin == Some(Agent::CLAUDE));
-        // Under WSL, Templum's paths aren't the shell's.
-        let wsl = self.config.shell.program.as_deref().is_some_and(|p| {
-            std::path::Path::new(p)
-                .file_stem()
-                .is_some_and(|s| s == "wsl")
-        });
-        let arg = match (&self.data_dir, std::env::current_exe()) {
-            (Some(data), Ok(exe)) if claude && !wsl && self.config.usage.claude_limits => {
-                templum_usage::claude::settings_arg(data, &exe, cfg!(windows), true, false)
-            }
-            _ => None,
+        let builtin = agent.and_then(|a| a.builtin);
+        let (Some(data), Some(exe), false) = (&self.data_dir, program(), self.shell_is("wsl"))
+        else {
+            return command.to_string();
         };
-        match arg {
-            Some(arg) => format!("{command} --settings {arg}"),
-            None => command.to_string(),
+        let connected = self.config.connections.enabled && self.bus.is_some();
+        let windows = cfg!(windows);
+        let mut line = command.to_string();
+        if builtin == Some(Agent::CLAUDE) {
+            let limits = self.config.usage.claude_limits;
+            if let Some(arg) =
+                templum_usage::claude::settings_arg(data, &exe, windows, limits, connected)
+            {
+                line.push_str(&format!(" --settings {arg}"));
+            }
+            // Last: it takes every word after it.
+            if connected && let Some(arg) = templum_usage::claude::mcp_arg(data, &exe, windows) {
+                line.push_str(&format!(" --mcp-config {arg}"));
+            }
+        } else if builtin == Some(Agent::CODEX)
+            && connected
+            && !self.shell_is("cmd")
+            && let Some(flags) = templum_mcp::codex_flags(&exe.to_string_lossy(), windows)
+        {
+            line.push_str(&flags);
         }
+        line
+    }
+
+    /// New terminals run the shell named `name` (its program's file name): the configured one,
+    /// else the system's default.
+    fn shell_is(&self, name: &str) -> bool {
+        let program = self
+            .config
+            .shell
+            .program
+            .clone()
+            .or_else(|| templum_terminal::default_shell().map(|s| s.program));
+        program.is_some_and(|p| {
+            std::path::Path::new(&p)
+                .file_stem()
+                .is_some_and(|s| s == name)
+        })
     }
 
     /// Reads, in the background, what the agents in every workspace's terminals wrote, from the

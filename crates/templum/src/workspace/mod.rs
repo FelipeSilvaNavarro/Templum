@@ -888,10 +888,6 @@ pub struct Workspace {
     pub(crate) message_try: Option<TryIt>,
     /// The bus the programs in Templum's terminals talk to (docs/specs/connections.md); None
     /// without a data folder.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "held for its socket; typed() reads it next")
-    )]
     pub(crate) bus: Option<templum_mcp::Bus>,
     /// What every new terminal's environment gets while the bus runs.
     bus_env: Vec<(String, String)>,

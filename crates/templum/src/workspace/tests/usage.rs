@@ -2,30 +2,82 @@
 
 use super::*;
 
-/// The Claude Code Templum types gets Templum's status line, which hands Templum the limits.
+/// The Claude Code and Codex Templum types get its server and hooks; Claude Code its status line
+/// too (docs/specs/connections.md, What Templum types into each agent).
 #[gpui_kit::test]
-fn the_claude_code_templum_opens_gets_its_status_line(cx: &mut TestAppContext) {
+fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAppContext) {
     let data = tempfile::tempdir().unwrap();
     let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
     ws.update(cx, |ws, _| {
         let agent = |id: &str| ws.agents.iter().find(|a| a.id == id).cloned();
         let (claude, codex) = (agent("claude"), agent("codex"));
-        let settings = data.path().join("claude-statusline.json");
-        let arg =
-            templum_usage::claude::typed_path(&settings.to_string_lossy(), cfg!(windows)).unwrap();
+        let typed = |name: &str| {
+            templum_usage::claude::typed_path(
+                &data.path().join(name).to_string_lossy(),
+                cfg!(windows),
+            )
+            .unwrap()
+        };
+        let (settings, mcp) = (typed("claude-statusline.json"), typed("mcp.json"));
         assert_eq!(
             ws.typed(claude.as_ref(), "claude --continue"),
-            format!("claude --continue --settings {arg}")
+            format!("claude --continue --settings {settings} --mcp-config {mcp}")
         );
-        let written = std::fs::read_to_string(&settings).unwrap();
-        assert!(written.contains("--claude-statusline"), "{written}");
-        assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex");
+        let written = std::fs::read_to_string(data.path().join("claude-statusline.json")).unwrap();
+        assert!(
+            written.contains("--claude-statusline") && written.contains(" hook claude"),
+            "{written}"
+        );
+        let server: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(data.path().join("mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            server["mcpServers"]["templum"]["args"],
+            serde_json::json!(["mcp"])
+        );
+        #[cfg(unix)]
+        assert!(
+            ws.typed(codex.as_ref(), "codex resume 0d5e")
+                .starts_with("codex resume 0d5e -c 'mcp_servers.templum.command="),
+            "{}",
+            ws.typed(codex.as_ref(), "codex resume 0d5e")
+        );
         assert_eq!(ws.typed(None, "claude"), "claude");
+        // Connections off: the status line only, and nothing for Codex.
+        ws.config.connections.enabled = false;
+        assert_eq!(
+            ws.typed(claude.as_ref(), "claude"),
+            format!("claude --settings {settings}")
+        );
+        assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex");
         ws.config.usage.claude_limits = false;
         assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
+        // Connections without the status line: the hooks still need the settings file.
+        ws.config.connections.enabled = true;
+        assert_eq!(
+            ws.typed(claude.as_ref(), "claude"),
+            format!("claude --settings {settings} --mcp-config {mcp}")
+        );
+        // A bus that couldn't start: no server, no hooks.
+        let bus = ws.bus.take();
+        assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
+        ws.bus = bus;
         // Without a data folder, nothing would read what the relay writes.
-        ws.config.usage.claude_limits = true;
         ws.data_dir = None;
+        assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
+    });
+}
+
+/// A data folder a shell would expand (`$`): the agent starts as typed, without a broken line.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_untypeable_data_folder_gives_no_connections(cx: &mut TestAppContext) {
+    let parent = tempfile::tempdir().unwrap();
+    let data = parent.path().join("a$b");
+    std::fs::create_dir(&data).unwrap();
+    let (_, ws) = open_in(cx, None, Some(data));
+    ws.update(cx, |ws, _| {
+        let claude = ws.agents.iter().find(|a| a.id == "claude").cloned();
         assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
     });
 }
