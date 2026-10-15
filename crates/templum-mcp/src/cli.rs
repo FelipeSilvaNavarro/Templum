@@ -232,13 +232,20 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
             json!({ "block": block, "text": text.join(" ") }),
         ),
         ("open", [target]) => {
+            // `path:line`, or `path:line:column` as compilers and grep print it (the column is
+            // dropped); a Windows drive's `C:` is part of the path.
+            fn split(at: &str) -> Option<(&str, u64)> {
+                let (path, n) = at.rsplit_once(':')?;
+                (!path.is_empty()).then_some((path, n.parse().ok()?))
+            }
             let mut arguments = json!({});
-            match target.rsplit_once(':') {
-                Some((path, line)) if !path.is_empty() && line.parse::<u64>().is_ok() => {
+            match split(target) {
+                Some((at, column)) => {
+                    let (path, line) = split(at).unwrap_or((at, column));
                     arguments["path"] = json!(path);
-                    arguments["line"] = json!(line.parse::<u64>().unwrap_or(1));
+                    arguments["line"] = json!(line);
                 }
-                _ => arguments["path"] = json!(target),
+                None => arguments["path"] = json!(target),
             }
             ("open_file", arguments)
         }
@@ -732,6 +739,15 @@ mod tests {
             (
                 &["open", r"C:\src\a.rs"][..],
                 json!({ "name": "open_file", "arguments": { "path": r"C:\src\a.rs" } }),
+            ),
+            (
+                &["open", r"C:\src\a.rs:12"][..],
+                json!({ "name": "open_file", "arguments": { "path": r"C:\src\a.rs", "line": 12 } }),
+            ),
+            // path:line:column, as compilers and grep print it: the column is dropped.
+            (
+                &["open", "src/main.rs:12:5"][..],
+                json!({ "name": "open_file", "arguments": { "path": "src/main.rs", "line": 12 } }),
             ),
             (
                 &["git", "status"][..],
