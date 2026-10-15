@@ -2,7 +2,7 @@
 //! reading what the agents write after each snapshot, and the notifications
 //! (docs/specs/usage.md).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui_kit::component::notification::{Notification, NotificationDelivery, NotificationType};
@@ -42,15 +42,7 @@ impl Workspace {
         let mut line = command.to_string();
         if builtin == Some(Agent::CLAUDE) {
             let limits = self.config.usage.claude_limits;
-            if let Some(arg) =
-                templum_usage::claude::settings_arg(data, &exe, windows, limits, connected)
-            {
-                line.push_str(&format!(" --settings {arg}"));
-            }
-            // Last: it takes every word after it.
-            if connected && let Some(arg) = templum_usage::claude::mcp_arg(data, &exe, windows) {
-                line.push_str(&format!(" --mcp-config {arg}"));
-            }
+            line.push_str(&claude_flags(data, &exe, windows, limits, connected));
         } else if builtin == Some(Agent::CODEX)
             && connected
             && !self.shell_is("cmd")
@@ -306,6 +298,31 @@ impl Workspace {
             NotificationDelivery::InApp
         }
     }
+}
+
+/// What the Claude Code Templum opens gets after its command, given Templum's data folder and
+/// program: the settings file (the status line when `limits`, the hooks when `connected`), then
+/// the MCP server, only when that file carries the hooks: without them its dot would never move.
+pub(super) fn claude_flags(
+    data: &Path,
+    exe: &Path,
+    windows: bool,
+    limits: bool,
+    connected: bool,
+) -> String {
+    let mut flags = String::new();
+    let settings = templum_usage::claude::settings_arg(data, exe, windows, limits, connected);
+    if let Some(arg) = &settings {
+        flags.push_str(&format!(" --settings {arg}"));
+    }
+    // Last: it takes every word after it.
+    if connected
+        && settings.is_some()
+        && let Some(arg) = templum_usage::claude::mcp_arg(data, exe, windows)
+    {
+        flags.push_str(&format!(" --mcp-config {arg}"));
+    }
+    flags
 }
 
 /// Templum's program as an agent should run it: the AppImage when it runs from one (its mount

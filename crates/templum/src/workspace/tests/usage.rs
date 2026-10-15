@@ -48,7 +48,10 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
         ws.config.shell.program = Some("powershell".into());
         assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex");
         ws.config.shell.program = Some("pwsh".into());
-        assert!(ws.typed(codex.as_ref(), "codex").contains("mcp_servers.templum"));
+        assert!(
+            ws.typed(codex.as_ref(), "codex")
+                .contains("mcp_servers.templum")
+        );
         ws.config.shell.program = shell;
         // Connections off: the status line only, and nothing for Codex.
         ws.config.connections.enabled = false;
@@ -73,6 +76,35 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
         ws.data_dir = None;
         assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
     });
+}
+
+/// A program path a shell would expand (`$`) can't be typed into the hooks: the server isn't
+/// given either, or the agent would be connected with a dot that never moves.
+#[test]
+fn claude_code_gets_the_server_only_with_the_hooks() {
+    use crate::workspace::usage::claude_flags;
+    let data = tempfile::tempdir().unwrap();
+    let flags = claude_flags(
+        data.path(),
+        std::path::Path::new("/opt/templum"),
+        cfg!(windows),
+        false,
+        true,
+    );
+    assert!(
+        flags.contains(" --settings ") && flags.contains(" --mcp-config "),
+        "{flags}"
+    );
+    assert_eq!(
+        claude_flags(
+            data.path(),
+            std::path::Path::new("/opt/$x/templum"),
+            cfg!(windows),
+            false,
+            true
+        ),
+        ""
+    );
 }
 
 /// A data folder a shell would expand (`$`): the agent starts as typed, without a broken line.
