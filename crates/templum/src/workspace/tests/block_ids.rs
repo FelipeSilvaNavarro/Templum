@@ -92,7 +92,8 @@ fn a_block_moved_to_another_workspace_keeps_its_id(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn an_id_already_taken_or_malformed_is_replaced(cx: &mut TestAppContext) {
     let data = tempfile::tempdir().unwrap();
-    // Two blocks claim one id (a file edited by hand), a third has one that isn't an id.
+    // Two blocks claim one id (a file edited by hand); the others have ones that aren't five
+    // lowercase letters and digits.
     let kanban = |x: f32, uid: &str| {
         format!(r#"{{"kind":"kanban","uid":"{uid}","rect":{{"x":{x},"y":0,"w":300,"h":200}}}}"#)
     };
@@ -100,10 +101,13 @@ fn an_id_already_taken_or_malformed_is_replaced(cx: &mut TestAppContext) {
     std::fs::write(
         data.path().join("workspaces").join("default.json"),
         format!(
-            r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[{},{},{}]}}"#,
+            r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[{},{},{},{},{},{}]}}"#,
             kanban(0.0, "aaaaa"),
             kanban(400.0, "aaaaa"),
-            kanban(800.0, "../x")
+            kanban(800.0, "../x"),
+            kanban(1200.0, "abc"),
+            kanban(1600.0, "abcdefghij"),
+            kanban(2000.0, "ABCDE")
         ),
     )
     .unwrap();
@@ -111,6 +115,8 @@ fn an_id_already_taken_or_malformed_is_replaced(cx: &mut TestAppContext) {
     let ids = all_uids(&ws, cx);
     assert_eq!(ids[0], "aaaaa");
     assert_ne!(ids[1], "aaaaa");
-    assert_ne!(ids[2], "../x");
-    assert_eq!(ids[2].len(), 5);
+    for (id, saved) in ids[2..].iter().zip(["../x", "abc", "abcdefghij", "ABCDE"]) {
+        assert_ne!(id, saved);
+        assert_eq!(id.len(), 5, "{id}");
+    }
 }

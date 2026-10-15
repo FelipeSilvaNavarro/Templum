@@ -78,10 +78,10 @@ impl Workspace {
         self.spaces().any(|s| s.uids.values().any(|u| u == uid))
     }
 
-    /// Block `id`, just restored, takes back its saved id `uid`; one that is malformed or taken
-    /// (a file edited by hand) leaves it the new one it got.
+    /// Block `id`, just restored, takes back its saved id `uid`; one that isn't five lowercase
+    /// letters and digits, or is taken (a file edited by hand), leaves it the new one it got.
     pub(super) fn adopt_uid(&mut self, id: BlockId, uid: &str) {
-        let valid = (1..=12).contains(&uid.len())
+        let valid = uid.len() == 5
             && uid
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());

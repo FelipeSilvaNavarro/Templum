@@ -171,15 +171,15 @@ https://modelcontextprotocol.io/specification/2025-06-18)); tools only, no resou
 - **`initialize`** answers protocol version `2025-06-18` (or the client's, when older and known), server
   `templum`, Templum's version, and `instructions` written for the caller:
 
-  > You are block b7k2m, 'Claude Code · api', in workspace 'Main'. Connected to you: t4q (terminal 'dev server'),
-  > k9x1 (kanban 'Sprint'). In this workspace, not connected (ask with connect): 4qm2 (note 'Ideas'). Name blocks
-  > by these ids. You may only read or write blocks connected to you. When a connected kanban has your task, move
+  > You are block b7k2m, 'Claude Code · api', in workspace 'Main'. Connected to you: t4q8p (terminal
+  > 'dev server'), k9x1d (kanban 'Sprint'). In this workspace, not connected (ask with connect): 4qm2a (note
+  > 'Ideas'). Name blocks by these ids. You may only read or write blocks connected to you. When a connected kanban has your task, move
   > its card to Doing when you start and to Review when you are done; write what the next agent needs to know in
   > the connected note.
 
 - **`tools/list`** is the same for every caller; which blocks a tool may touch is checked at each call.
 - **Results** are text (`content: [{type: "text"}]`). A refusal or a failure is a result with `isError: true` and a
-  sentence that says what to do next: `k9x1 isn't connected to you. Ask the person with connect("k9x1").`
+  sentence that says what to do next: `k9x1d isn't connected to you. Ask the person with connect("k9x1d").`
 - **Outside Templum** (no `TEMPLUM_BUS` or `TEMPLUM_TERMINAL`): `templum: not inside a Templum terminal` on stderr,
   exit code 2, nothing on stdout. **Templum not running:** `templum: Templum isn't running`, exit code 2. **Templum
   quits** during a session: the bridge closes its stdout and exits 0; the agent reports the server as disconnected.
@@ -329,8 +329,9 @@ the switch, the server's command for other agents, and Gemini CLI's setup.
   wires, by block id. A wire whose block didn't come back is dropped. An older Templum ignores both.
 
   ```json
-  { "version": 1, "items": [{ "kind": "terminal", "uid": "b7k2m", "rect": {…}, … }, { "kind": "note", "uid": "4qm2", … }],
-    "wires": [{ "a": "b7k2m", "b": "4qm2" }, { "a": "b7k2m", "b": "t4q", "label": "dev server" }] }
+  { "version": 1,
+    "items": [{ "kind": "terminal", "uid": "b7k2m", "rect": {…}, … }, { "kind": "note", "uid": "4qm2a", … }],
+    "wires": [{ "a": "b7k2m", "b": "4qm2a" }, { "a": "b7k2m", "b": "t4q8p", "label": "dev server" }] }
   ```
 
 - **`boards.json`** (batch 4, [kanban.md](kanban.md#files)): a card gains `assignee` (a block id) and `comments`, each
