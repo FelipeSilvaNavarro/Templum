@@ -805,11 +805,14 @@ fn a_wait_for_times_out_goes_with_its_block_and_shows_no_balloon(cx: &mut TestAp
         "wait_for",
         json!({ "block": them, "event": "command_finished" }),
     );
-    cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.remove_block(theirs, window, cx))
-    })
-    .unwrap();
-    frame(handle, cx);
+    // Its block goes, and no frame is drawn (a hidden window draws none): `take_block` asks for
+    // none, where `remove_block` would, and a test draws each window that asked.
+    let _gone = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.take_block(theirs, window, cx))
+        })
+        .unwrap();
+    after(cx, 250);
     assert_eq!(
         answered(&closed),
         (true, format!("{them} was closed while you waited."))

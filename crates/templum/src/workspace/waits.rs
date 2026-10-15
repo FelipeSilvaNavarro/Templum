@@ -474,8 +474,8 @@ impl Workspace {
         .detach();
     }
 
-    /// The wait `key` is answered when its command or alert came since the call. False once the
-    /// wait is gone.
+    /// The wait `key` is answered when its command or alert came since the call, or its block
+    /// closed. False once the wait is gone.
     fn look(&mut self, key: u64, cx: &mut Context<Self>) -> bool {
         let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
             return false;
@@ -489,9 +489,11 @@ impl Workspace {
         else {
             return false;
         };
-        // Its block closed: `drop_orphans` answers it.
+        // Its block closed: answered here, as no frame may come to `drop_orphans`.
         let Some(pane) = self.pane(of) else {
-            return true;
+            let reply = Reply::err(format!("{uid} was closed while you waited."));
+            self.answer(key, reply, cx);
+            return false;
         };
         let status = pane.term.status();
         let reply = match event {
