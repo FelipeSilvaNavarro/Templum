@@ -670,3 +670,14 @@ Left by batch 4 (content); line numbers are those of `development` at 9e33f19.
   process's folder and command line, "slow enough to keep off the UI thread", on the UI thread at every call. A
   person on Windows sees Templum stop for a moment each time an agent opens a file. Fix: read the folder on the
   background executor (`Outcome::Later`, as `git_status`), or use `seen.folder` (the last snapshot's) on Windows.
+- [ ] **A file named in another case opens a second tab on Windows and macOS.** `open_file_for`
+  (`crates/templum/src/workspace/content.rs:436`, at 6ab2c25) keeps the file name as the agent spelled it, and `open_tab`
+  (`crates/templum/src/editor.rs:431`) finds a tab by an exact path. An agent opening `readme.md` while
+  `README.md` is open gets a second tab of the same file, and so does the person clicking the tree's name after an
+  agent's tab. Fix: keep the given name only when the path is itself a link
+  (`symlink_metadata(..).file_type().is_symlink()`); otherwise take the name `canonicalize` returns.
+- [ ] **A file in the folder above opens in an editor titled with a raw `..` path.** The fallback of
+  `open_file_for` (`crates/templum/src/workspace/content.rs:457`, at 6ab2c25) opens a new editor on `given.parent()`;
+  for `open_file ../a.rs` from `proj/web` that is `proj/web/..`, which has no file name, so the editor's title shows
+  the whole path (`a.rs — /…/web/..`) instead of `proj`. Fix: use the canonical folder when `given.parent()` has no
+  file name.
