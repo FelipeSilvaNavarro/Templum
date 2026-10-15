@@ -4,7 +4,9 @@
 //! shows, with "1 of 3".
 
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, ClickEvent, Context, ElementId, MouseButton, TestSupportExt, div, px};
+use gpui_kit::{
+    AnyElement, ClickEvent, Context, ElementId, MouseButton, TestSupportExt, Window, div, px,
+};
 use templum_canvas::{BlockId, chrome};
 
 use crate::git_block::{self, widgets::small};
@@ -86,42 +88,46 @@ fn choices(
         Waiting::Question {
             field: Some((input, _)),
             ..
-        } => {
-            row.child(git_block::field(input, z).flex_1()).child(
-                small(part(n, "send"), "Send", ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.send_field(key, window, cx)
-                    }))
-                    .test_support(),
-            )
-        }
+        } => row.child(git_block::field(input, z).flex_1()).child(
+            small(part(n, "send"), "Send", ui, z)
+                .on_click(cx.listener(once(move |ws, window, cx| ws.send_field(key, window, cx))))
+                .test_support(),
+        ),
         Waiting::Question { options, .. } => {
             row.children(options.iter().enumerate().map(|(i, option)| {
                 let answer = option.clone();
                 small(part(n, &format!("option-{i}")), option.clone(), ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    .on_click(cx.listener(once(move |ws, window, cx| {
                         ws.answer_question(key, answer.clone(), window, cx)
-                    }))
+                    })))
                     .test_support()
             }))
         }
         Waiting::Connect { .. } => row
             .child(
                 small(part(n, "allow"), "Allow", ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
-                        ws.answer_connect(key, true, cx)
-                    }))
+                    .on_click(cx.listener(once(move |ws, _, cx| ws.answer_connect(key, true, cx))))
                     .test_support(),
             )
             .child(
                 small(part(n, "deny"), "Deny", ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
-                        ws.answer_connect(key, false, cx)
-                    }))
+                    .on_click(cx.listener(once(move |ws, _, cx| ws.answer_connect(key, false, cx))))
                     .test_support(),
             ),
         // `balloon` never hands one over.
         Waiting::Turn { .. } => row,
     }
     .into_any_element()
+}
+
+/// A button's click, but not a double click's second: once a request is answered, the next one's
+/// buttons are drawn under the pointer, and that click would choose for the person.
+fn once(
+    answer: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+) -> impl Fn(&mut Workspace, &ClickEvent, &mut Window, &mut Context<Workspace>) + 'static {
+    move |ws, event, window, cx| {
+        if event.click_count() <= 1 {
+            answer(ws, window, cx);
+        }
+    }
 }

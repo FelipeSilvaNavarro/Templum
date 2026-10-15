@@ -398,6 +398,50 @@ fn the_balloons_buttons_answer_a_question_then_a_request(cx: &mut TestAppContext
     .unwrap();
 }
 
+/// A double click answers one request: once the question is answered, the next request's buttons
+/// are drawn under the pointer, and the second click mustn't choose for the person.
+#[gpui_kit::test]
+fn a_double_click_answers_one_request(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let k = ws.read_with(cx, |ws, _| ws.space.uids[&kanban].clone());
+    let n = mine.0 as usize;
+    let asked = json!({ "question": "Ship it?", "options": ["Yes", "Not yet"] });
+    let question = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    let request = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        2,
+        "connect",
+        json!({ "block": k }),
+    );
+    let at = |window: &Window, what: &str| {
+        let c = window.find(crate::balloon::part(n, what)).bounds().center();
+        (f32::from(c.x), f32::from(c.y))
+    };
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let yes = at(window, "option-0");
+        click(window, cx, yes, 1);
+        window.render_frame(cx);
+        let allow = at(window, "allow");
+        click(window, cx, allow, 2);
+    })
+    .unwrap();
+    assert_eq!(answered(&question), (false, "Yes".to_string()));
+    assert_eq!(request.try_recv(), Err(TryRecvError::Empty), "it waits");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let allow = at(window, "allow");
+        click(window, cx, allow, 1);
+    })
+    .unwrap();
+    assert_eq!(answered(&request), (false, format!("Connected to {k}.")));
+}
+
 /// Ctrl+L and Enter typed in the balloon's field while the asking terminal is focused: the field
 /// takes them, the shell never sees them.
 #[cfg(target_os = "linux")]
