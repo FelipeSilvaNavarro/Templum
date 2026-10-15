@@ -505,3 +505,20 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   running the AppImage may see Claude Code pause after each tool. Fix: measure (the plan's manual check 13); if slow,
   give the short-lived hook and status-line commands the running executable (they only run while Templum and its
   mount do).
+- [ ] **Windows terminals lose `templum` when its copy can't be replaced.** `templum_folder`
+  (`crates/templum/src/workspace/bus.rs:89`, at 9aef302) gives up when `same_or_copy` fails to remove and remake
+  `<data>\bin\templum.exe` (an older Templum still running it just after an update's restart, or a read-only file),
+  and the terminals then get no `<data>\bin` on PATH, although a working older `templum.exe` is still there. A person
+  sees `templum` not found. Fix: return the folder when `templum.exe` exists even if replacing it failed.
+- [ ] **Some invisible characters still reach an agent in a title.** `clean_title`
+  (`crates/templum/src/workspace/bus.rs:374`, at 9aef302) drops LRM and RLM but keeps ALM (U+061C), U+180E,
+  U+206A–U+206F, U+FFF9–U+FFFB and the variation selectors (U+FE00–U+FE0F, U+E0100–U+E01EF), which can hide text as
+  tag characters do. A person sees nothing; an agent reads the hidden text in `whoami` or `list_blocks` (the
+  instructions escape it). Fix: add those ranges to the characters it drops.
+- [ ] **No test accepts a hello split across reads.** `first_line` (`crates/templum-mcp/src/bus.rs:143`, at 9aef302)
+  joins a hello that arrives in pieces, but only its refusals are tested; a change that broke the joining would
+  pass. Fix: a test that writes the hello in two parts 300 ms apart and gets its ping answered.
+- [ ] **Copying `templum.exe` to another drive delays Windows' start.** `same_or_copy`
+  (`crates/templum/src/workspace/bus.rs:96`, at 9aef302) copies the whole program (tens of MB) on the UI thread when
+  a hard link can't be made, once per version. A person sees the window come up later after an update. Fix: make the
+  entry on a background thread; terminals opened meanwhile get PATH as soon as it is there.
