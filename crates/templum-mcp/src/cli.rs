@@ -11,13 +11,17 @@ use crate::{hooks, rpc};
 /// The first arguments that make `templum` a command instead of the app.
 const VERBS: &[&str] = &[
     "mcp", "hook", "whoami", "blocks", "read", "send", "notify", "ask", "connect", "delegate",
-    "reply", "wait", "spawn",
+    "reply", "wait", "spawn", "kanban", "note", "open", "git",
 ];
 const READ: &str = "read <block> [-n <lines>] [--last] [--json]";
 const ASK: &str = "ask <question> [--option <answer>]… [--json]";
 const WAIT: &str = "wait <block> [--timeout <seconds>] [--json]";
 const SPAWN: &str =
     "spawn <agent> [--folder <folder>] [--worktree <name>] [--prompt <text>] [--json]";
+const KANBAN: &str = "kanban list [<board>] [--card <card>] | add <title> [--column <column>] \
+                      [--description <text>] [--board <board>] | move <card> <column> | comment <card> <text> \
+                      | claim <card> [--json]";
+const NOTE: &str = "note read <block> | note append <block> <text> [--json]";
 
 pub fn is_verb(arg: &str) -> bool {
     VERBS.contains(&arg)
@@ -178,6 +182,68 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
             }
             ("spawn_agent", arguments)
         }
+        ("kanban", ["list", more @ ..]) => {
+            let mut arguments = json!({});
+            let mut more = more.iter();
+            while let Some(arg) = more.next() {
+                match *arg {
+                    "--card" => arguments["card"] = json!(more.next().ok_or(KANBAN)?),
+                    board if !board.starts_with("--") && arguments.get("board").is_none() => {
+                        arguments["board"] = json!(board)
+                    }
+                    _ => return Err(KANBAN),
+                }
+            }
+            ("list_cards", arguments)
+        }
+        ("kanban", ["add", more @ ..]) => {
+            let (mut title, mut arguments) = (Vec::new(), json!({}));
+            let mut more = more.iter();
+            while let Some(word) = more.next() {
+                let key = match *word {
+                    "--column" => "column",
+                    "--description" => "description",
+                    "--board" => "board",
+                    word => {
+                        title.push(word);
+                        continue;
+                    }
+                };
+                arguments[key] = json!(more.next().ok_or(KANBAN)?);
+            }
+            if title.is_empty() {
+                return Err(KANBAN);
+            }
+            arguments["title"] = json!(title.join(" "));
+            ("create_card", arguments)
+        }
+        ("kanban", ["move", card, column @ ..]) if !column.is_empty() => (
+            "move_card",
+            json!({ "card": card, "column": column.join(" ") }),
+        ),
+        ("kanban", ["comment", card, text @ ..]) if !text.is_empty() => (
+            "comment_card",
+            json!({ "card": card, "text": text.join(" ") }),
+        ),
+        ("kanban", ["claim", card]) => ("claim_card", json!({ "card": card })),
+        ("note", ["read", block]) => ("read_note", json!({ "block": block })),
+        ("note", ["append", block, text @ ..]) if !text.is_empty() => (
+            "append_note",
+            json!({ "block": block, "text": text.join(" ") }),
+        ),
+        ("open", [target]) => {
+            let mut arguments = json!({});
+            match target.rsplit_once(':') {
+                Some((path, line)) if !path.is_empty() && line.parse::<u64>().is_ok() => {
+                    arguments["path"] = json!(path);
+                    arguments["line"] = json!(line.parse::<u64>().unwrap_or(1));
+                }
+                _ => arguments["path"] = json!(target),
+            }
+            ("open_file", arguments)
+        }
+        ("git", ["status"]) => ("git_status", json!({})),
+        ("git", ["status", block]) => ("git_status", json!({ "block": block })),
         ("whoami", _) => return Err("whoami [--json]"),
         ("blocks", _) => return Err("blocks [--json]"),
         ("read", _) => return Err(READ),
@@ -187,6 +253,10 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("delegate", _) => return Err("delegate <block> <task> [--wait] [--json]"),
         ("reply", _) => return Err("reply <block> <text> [--json]"),
         ("wait", _) => return Err(WAIT),
+        ("kanban", _) => return Err(KANBAN),
+        ("note", _) => return Err(NOTE),
+        ("open", _) => return Err("open <path>[:<line>] [--json]"),
+        ("git", _) => return Err("git status [<block>] [--json]"),
         _ => return Err("notify <text> [--json]"),
     };
     Ok(CallArgs {
@@ -596,6 +666,100 @@ mod tests {
     fn only_the_verbs_are_commands() {
         assert!(is_verb("mcp") && is_verb("hook") && is_verb("read"));
         assert!(is_verb("ask"));
+        assert!(is_verb("kanban") && is_verb("note") && is_verb("open") && is_verb("git"));
         assert!(!is_verb("--bench") && !is_verb("--claude-statusline") && !is_verb(""));
+    }
+
+    #[test]
+    fn the_content_verbs_send_their_calls() {
+        let (seen, calls) = std::sync::mpsc::channel();
+        let (_dir, bus) = test_bus(move |m| {
+            if let Incoming::Request { id, params, .. } = &m.incoming {
+                let _ = seen.send(params.clone());
+                let _ = m.reply.send(tool_result(id, &Reply::ok("ok")));
+            }
+        });
+        for (args, sent) in [
+            (
+                &["kanban", "list"][..],
+                json!({ "name": "list_cards", "arguments": {} }),
+            ),
+            (
+                &["kanban", "list", "Sprint", "--card", "12"][..],
+                json!({ "name": "list_cards", "arguments": { "board": "Sprint", "card": "12" } }),
+            ),
+            (
+                &[
+                    "kanban",
+                    "add",
+                    "Fix",
+                    "login",
+                    "--column",
+                    "Doing",
+                    "--description",
+                    "It 500s.",
+                ][..],
+                json!({ "name": "create_card", "arguments": { "title": "Fix login", "column": "Doing", "description": "It 500s." } }),
+            ),
+            (
+                &["kanban", "move", "12", "In", "review"][..],
+                json!({ "name": "move_card", "arguments": { "card": "12", "column": "In review" } }),
+            ),
+            (
+                &["kanban", "comment", "12", "On", "it."][..],
+                json!({ "name": "comment_card", "arguments": { "card": "12", "text": "On it." } }),
+            ),
+            (
+                &["kanban", "claim", "12"][..],
+                json!({ "name": "claim_card", "arguments": { "card": "12" } }),
+            ),
+            (
+                &["note", "read", "4qm2a"][..],
+                json!({ "name": "read_note", "arguments": { "block": "4qm2a" } }),
+            ),
+            (
+                &["note", "append", "4qm2a", "Next:", "tests"][..],
+                json!({ "name": "append_note", "arguments": { "block": "4qm2a", "text": "Next: tests" } }),
+            ),
+            (
+                &["open", "src/main.rs:12"][..],
+                json!({ "name": "open_file", "arguments": { "path": "src/main.rs", "line": 12 } }),
+            ),
+            (
+                &["open", "README.md"][..],
+                json!({ "name": "open_file", "arguments": { "path": "README.md" } }),
+            ),
+            (
+                &["open", r"C:\src\a.rs"][..],
+                json!({ "name": "open_file", "arguments": { "path": r"C:\src\a.rs" } }),
+            ),
+            (
+                &["git", "status"][..],
+                json!({ "name": "git_status", "arguments": {} }),
+            ),
+            (
+                &["git", "status", "g1t2k"][..],
+                json!({ "name": "git_status", "arguments": { "block": "g1t2k" } }),
+            ),
+        ] {
+            assert_eq!(run_with(args, &env(&bus), "").0, 0, "{args:?}");
+            assert_eq!(calls.recv_timeout(LIMIT).unwrap(), sent, "{args:?}");
+        }
+        for (args, usage) in [
+            (&["kanban"][..], "usage: templum kanban"),
+            (
+                &["kanban", "add", "--column", "Doing"][..],
+                "usage: templum kanban",
+            ),
+            (&["kanban", "move", "12"][..], "usage: templum kanban"),
+            (&["kanban", "list", "--card"][..], "usage: templum kanban"),
+            (&["note", "append", "4qm2a"][..], "usage: templum note"),
+            (&["open"][..], "usage: templum open"),
+            (&["git", "log"][..], "usage: templum git"),
+        ] {
+            let (code, _, err) = run_with(args, &env(&bus), "");
+            assert_eq!(code, 2, "{args:?}");
+            assert!(err.starts_with(usage), "{args:?}: {err}");
+        }
     }
 }
