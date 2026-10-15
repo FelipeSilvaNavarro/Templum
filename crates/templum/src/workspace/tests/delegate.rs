@@ -981,3 +981,53 @@ fn a_dialog_stays_yellow_until_its_person_answers(cx: &mut TestAppContext) {
     ticks(&ws, cx, theirs, 10, 4);
     assert_eq!(state_of(&ws, cx, theirs), Some(AgentState::Working));
 }
+
+/// The person scrolls an agent's screen, or its program hears their mouse: the screen changes,
+/// and tells nothing. Nor does the mouse answer a dialog: it may only pass over a TUI that hears
+/// every move.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn the_wheel_and_the_mouse_tell_nothing(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let (handle, ws, _, theirs) = two_agents(cx);
+    let (worker, _) = me(&ws, cx, theirs);
+    let scroll = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            // Its left: its middle is past the window's right edge.
+            let body = window.find(("body", theirs.0 as usize)).bounds().origin;
+            let at = (f32::from(body.x) + 20., f32::from(body.y) + 20.);
+            wheel(window, cx, at, ScrollDelta::Lines(point(0., -1.)), false);
+        })
+        .unwrap();
+    };
+    for i in 0..4 {
+        scroll(cx);
+        shows(&ws, cx, theirs, &format!("scrolled {i}"));
+        after(cx, 1000);
+    }
+    assert_eq!(state_of(&ws, cx, theirs), None, "its history scrolls");
+    prints(&ws, cx, theirs, b"\x1b[?1002h\x1b[?1006h\r");
+    super::terminals::until("the mouse", handle, &ws, cx, |ws| {
+        ws.space
+            .terminal(theirs)
+            .unwrap()
+            .term
+            .shared()
+            .modes()
+            .mouse
+    });
+    for i in 0..4 {
+        scroll(cx);
+        shows(&ws, cx, theirs, &format!("heard {i}"));
+        after(cx, 1000);
+    }
+    assert_eq!(state_of(&ws, cx, theirs), None, "its program hears it");
+    let asks = json!({ "event": "needs_you", "message": "Allow Bash?" });
+    event(handle, &ws, cx, &worker, asks);
+    scroll(cx);
+    ticks(&ws, cx, theirs, 0, 4);
+    assert!(
+        matches!(state_of(&ws, cx, theirs), Some(AgentState::NeedsYou(_))),
+        "the mouse answers no dialog"
+    );
+}

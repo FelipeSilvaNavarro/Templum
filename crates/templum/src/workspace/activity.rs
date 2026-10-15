@@ -76,8 +76,9 @@ impl Looks {
 
 impl Workspace {
     /// A look at every agent's screen, in every workspace: the state it gives, where that is new.
-    /// A look after the person typed into it tells nothing (their keys change it). An agent at
-    /// work whose screen went still ends the task it was on, with its last lines: no event will.
+    /// A look after the person typed, clicked or scrolled in it tells nothing (they change it).
+    /// An agent at work whose screen went still ends the task it was on, with its last lines: no
+    /// event will.
     pub(super) fn look_at_agents(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
         let mut still = Vec::new();
@@ -93,8 +94,9 @@ impl Workspace {
             let mut hasher = DefaultHasher::new();
             pane.screen().hash(&mut hasher);
             let hash = hasher.finish();
-            if pane.typed.replace(false) {
-                pane.looks.skip(hash, true);
+            let typed = pane.typed.replace(false);
+            if pane.scrolled.replace(false) || typed {
+                pane.looks.skip(hash, typed);
                 continue;
             }
             pane.looks.see(hash);

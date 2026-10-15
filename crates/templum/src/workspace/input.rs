@@ -269,7 +269,7 @@ impl Workspace {
     }
 
     /// Tells the program in terminal `id` about the mouse at `cell` (row, column): false when it
-    /// didn't ask for such events.
+    /// didn't ask for such events. One that did may change its screen (`activity.rs`).
     fn report(
         &self,
         id: BlockId,
@@ -287,9 +287,13 @@ impl Workspace {
             alt: m.alt,
             shift: m.shift,
         };
-        self.space
-            .terminal(id)
-            .is_some_and(|pane| pane.term.mouse(&input))
+        self.space.terminal(id).is_some_and(|pane| {
+            let told = pane.term.mouse(&input);
+            if told {
+                pane.scrolled.set(true);
+            }
+            told
+        })
     }
 
     /// A press in terminal `id`'s body goes to its program when it asked for the mouse (a TUI,
@@ -912,6 +916,7 @@ impl Workspace {
                     .all(|_| self.report(id, cell, Some(button), MouseKind::Press, &e.modifiers))
             });
             if !told && let Some(pane) = self.space.terminal(id) {
+                pane.scrolled.set(true);
                 pane.term.scroll(lines as i32);
             }
             cx.notify();
