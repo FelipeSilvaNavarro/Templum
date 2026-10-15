@@ -545,6 +545,16 @@ impl Space {
             grid: self.grid.as_ref().and_then(|g| {
                 session::SavedTile::of(&g.tiles, &|id| blocks.iter().position(|b| b.id == id))
             }),
+            wires: self
+                .wires
+                .iter()
+                .filter_map(|w| {
+                    Some(session::SavedWire {
+                        a: self.uids.get(&w.a)?.clone(),
+                        b: self.uids.get(&w.b)?.clone(),
+                    })
+                })
+                .collect(),
         }
     }
 

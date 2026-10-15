@@ -30,6 +30,7 @@ fn a_workspace_shows_an_agent_from_its_last_snapshot() {
             recent: Vec::new(),
             ink: Vec::new(),
             grid: None,
+            wires: Vec::new(),
         }),
         ..crate::workspace::Space::default()
     };

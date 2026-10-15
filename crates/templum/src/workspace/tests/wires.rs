@@ -445,3 +445,61 @@ fn right_clicking_a_wire_offers_disconnect(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn wires_come_back_after_a_restart(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let [k, n, t] = uids(&ws, cx, [kanban, note, terminal]);
+    ws.update(cx, |ws, cx| {
+        ws.connect(kanban, note, cx);
+        ws.connect(note, terminal, cx);
+        ws.save_canvas_now(cx);
+    });
+    let saved =
+        std::fs::read_to_string(data.path().join("workspaces").join("default.json")).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(
+        saved["wires"],
+        serde_json::json!([{ "a": k, "b": n }, { "a": n, "b": t }]),
+        "by block id"
+    );
+    let (_, again) = open_in(cx, None, Some(data.path().to_path_buf()));
+    again.read_with(cx, |ws, _| {
+        let id = |uid: &str| ws.space.block_by_uid(uid).unwrap();
+        assert_eq!(ws.space.wires.len(), 2);
+        assert!(ws.space.wired(id(&k), id(&n)));
+        assert!(ws.space.wired(id(&n), id(&t)));
+    });
+}
+
+/// A file edited by hand, or one whose block didn't come back: a wire to a missing block, to the
+/// block itself and a second one between the same two are dropped. "aaaaa" names two items: the
+/// first keeps it (the second gets an id of its own), so its wires are the first one's.
+#[gpui_kit::test]
+fn a_saved_wire_to_a_missing_or_doubled_block_is_dropped(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let kanban = |x: f32, uid: &str| {
+        format!(r#"{{"kind":"kanban","uid":"{uid}","rect":{{"x":{x},"y":0,"w":300,"h":200}}}}"#)
+    };
+    let wire = |a: &str, b: &str| format!(r#"{{"a":"{a}","b":"{b}"}}"#);
+    write_canvas(
+        data.path(),
+        &format!(
+            r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[{},{},{}],"wires":[{},{},{},{}]}}"#,
+            kanban(0.0, "aaaaa"),
+            kanban(400.0, "aaaaa"),
+            kanban(800.0, "ccccc"),
+            wire("aaaaa", "ccccc"),
+            wire("aaaaa", "zzzzz"),
+            wire("aaaaa", "aaaaa"),
+            wire("ccccc", "aaaaa"),
+        ),
+    );
+    let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    ws.read_with(cx, |ws, _| {
+        let blocks: Vec<BlockId> = ws.space.canvas.blocks().iter().map(|b| b.id).collect();
+        assert_eq!(ws.space.wires, [Wire::new(blocks[0], blocks[2]).unwrap()]);
+    });
+}

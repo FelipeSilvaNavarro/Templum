@@ -323,6 +323,9 @@ pub(crate) struct Saved {
     /// the canvas's still.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grid: Option<SavedTile>,
+    /// The wires between the items, by their `uid`s; an older Templum ignores them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wires: Vec<SavedWire>,
 }
 
 /// Grid mode's tree of tiles: an item, by its index in `items`, or a pair. `split` is "beside"
@@ -337,6 +340,13 @@ pub(crate) enum SavedTile {
         a: Box<SavedTile>,
         b: Box<SavedTile>,
     },
+}
+
+/// A wire between two blocks, by their block ids (docs/specs/connections.md, Files).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SavedWire {
+    pub a: String,
+    pub b: String,
 }
 
 impl SavedTile {
@@ -684,6 +694,7 @@ pub(crate) struct Layout {
     pub agents: std::sync::Arc<Vec<templum_terminal::Detect>>,
     pub ink: Vec<InkItem>,
     pub grid: Option<SavedTile>,
+    pub wires: Vec<SavedWire>,
 }
 
 pub(crate) enum LayoutBlock {
@@ -740,6 +751,7 @@ impl Layout {
             recent: self.recent.into_iter().filter_map(utf8).collect(),
             ink: self.ink,
             grid: self.grid,
+            wires: self.wires,
         };
         (saved, inspections)
     }
@@ -944,7 +956,27 @@ mod tests {
             recent: vec!["/home/u/proj".into(), "/srv/site".into()],
             ink: Vec::new(),
             grid: None,
+            wires: Vec::new(),
         }
+    }
+
+    #[test]
+    fn wires_are_written_by_block_id_and_left_out_when_there_are_none() {
+        let mut saved = sample();
+        assert!(
+            !serde_json::to_string(&saved).unwrap().contains("wires"),
+            "a file without wires keeps an older Templum's shape"
+        );
+        saved.wires = vec![SavedWire {
+            a: "b7k2m".into(),
+            b: "4qm2a".into(),
+        }];
+        let text = serde_json::to_string(&saved).unwrap();
+        assert!(
+            text.contains(r#""wires":[{"a":"b7k2m","b":"4qm2a"}]"#),
+            "{text}"
+        );
+        assert_eq!(serde_json::from_str::<Saved>(&text).unwrap(), saved);
     }
 
     #[test]
@@ -1519,6 +1551,7 @@ mod tests {
             agents: Default::default(),
             ink: Vec::new(),
             grid: None,
+            wires: Vec::new(),
         };
         let (saved, _) = layout.snapshot(None);
         assert_eq!(saved.recent, ["/a", "/b"], "recent folders, newest first");

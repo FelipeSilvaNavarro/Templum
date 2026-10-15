@@ -71,6 +71,16 @@ impl Workspace {
                 self.adopt_uid(*id, item.uid());
             }
         }
+        // The wires, by block id, once the blocks have theirs back: one whose block didn't come
+        // back, of a block to itself, or a second between two, is dropped.
+        for wire in &saved.wires {
+            if let (Some(a), Some(b)) = (
+                self.space.block_by_uid(&wire.a),
+                self.space.block_by_uid(&wire.b),
+            ) {
+                self.space.add_wire(a, b);
+            }
+        }
         self.space.focused = saved.focused.and_then(|i| ids.get(i).copied().flatten());
         // Grid mode as it was left, over the canvas as it was.
         if let Some(tiles) = saved
