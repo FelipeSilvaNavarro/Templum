@@ -478,6 +478,53 @@ fn nothing_is_typed_into_the_shell_an_agent_left(cx: &mut TestAppContext) {
         assert!(seen.agent.is_some(), "no snapshot missed it yet");
     });
     let task = json!({ "block": them, "task": "go" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task.clone());
+    assert!(failed && text.contains("runs no agent"), "{text}");
+    // An agent run in its shell's place (`exec claude`) is in front as the shell, where a
+    // snapshot found it.
+    ws.update(cx, |ws, _| {
+        let pane = ws.space.terminal_mut(theirs).unwrap();
+        pane.seen.pid = pane.term.processes().shell;
+    });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    assert!(!failed, "{text}");
+}
+
+/// macOS starts a terminal's shell under `login`, and the shell takes a process group of its own:
+/// once its agent quit, what is in front isn't the terminal's process. That the agent a snapshot
+/// found is no longer in front tells.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn nothing_is_typed_into_a_shell_under_login_an_agent_left(cx: &mut TestAppContext) {
+    // The first `sh` stands in for `login`, the second for the shell, its job for the agent.
+    let shell = jobs(r#"sh -c 'set -m; sh -c "echo agent; exec cat"; exec cat'; true"#);
+    let (handle, ws, mine, theirs) = agents_running(cx, Some(shell));
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    screen_with(&ws, cx, theirs, "agent");
+    let front = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space.terminal(theirs).unwrap().term.processes()
+        })
+    };
+    let agent = front(cx).foreground;
+    ws.update(cx, |ws, _| {
+        let pane = ws.space.terminal_mut(theirs).unwrap();
+        pane.seen.pid = agent;
+        assert!(!pane.shell_in_front(), "the agent is in front");
+        pane.term.write(&b"\x04"[..]);
+    });
+    let deadline = Instant::now() + std::time::Duration::from_secs(5);
+    while front(cx).foreground == agent {
+        assert!(Instant::now() < deadline, "the agent never quit");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let p = front(cx);
+    assert_ne!(
+        p.foreground, p.shell,
+        "the shell isn't the terminal's process"
+    );
+    let task = json!({ "block": them, "task": "go" });
     let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
     assert!(failed && text.contains("runs no agent"), "{text}");
 }

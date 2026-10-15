@@ -226,8 +226,10 @@ fn another_agents_prompt_waits_for_its_process_and_a_still_screen(cx: &mut TestA
         after(cx, look);
     }
     assert!(waiting(cx));
+    // A snapshot found it in front.
     ws.update(cx, |ws, _| {
-        ws.space.terminal_mut(new).unwrap().seen.pid = Some(1)
+        let pane = ws.space.terminal_mut(new).unwrap();
+        pane.seen.pid = pane.term.processes().foreground;
     });
     let mut looks = 0;
     while waiting(cx) {

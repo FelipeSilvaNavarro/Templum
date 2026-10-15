@@ -41,11 +41,17 @@ impl Pane {
             )
     }
 
-    /// Its shell, not a program it runs, is in front: an agent seen there quit, though the last
-    /// snapshot (up to 5 s old) still has it. False when the OS can't tell (Windows).
+    /// Its shell, not the agent, is in front: an agent seen there quit, though the last snapshot
+    /// (up to 5 s old) still has it. Its process group, found in front by a snapshot, tells (on
+    /// macOS the shell isn't the terminal's process, `login` is); before one found it, its shell
+    /// being in front does. False when the OS can't tell (Windows).
     pub(super) fn shell_in_front(&self) -> bool {
         let p = self.term.processes();
-        p.foreground.is_some() && p.foreground == p.shell
+        match (p.foreground, self.seen.pid) {
+            (None, _) => false,
+            (front, Some(agent)) => front != Some(agent),
+            (front, None) => front == p.shell,
+        }
     }
 
     /// Templum may type into it (its block id `uid`): an agent runs there, not waiting for its
