@@ -392,7 +392,7 @@ impl Workspace {
                 let id = self.space.canvas.add(rect);
                 self.space.blocks.insert(
                     id,
-                    Body::Terminal(Pane {
+                    Body::Terminal(Box::new(Pane {
                         term,
                         snapshot: Rc::default(),
                         heard: (0, 0),
@@ -406,7 +406,7 @@ impl Workspace {
                         state: None,
                         handed: None,
                         answer: None,
-                    }),
+                    })),
                 );
                 self.added(id);
                 Some(id)

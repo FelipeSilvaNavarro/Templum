@@ -186,7 +186,8 @@ pub(crate) struct Ghost {
 
 /// What a block holds. Every block on a canvas is one of these.
 pub(crate) enum Body {
-    Terminal(Pane),
+    /// Boxed, as Git is: what a terminal keeps for its agent outweighs the other kinds.
+    Terminal(Box<Pane>),
     Kanban(Kanban),
     Note(Note),
     Editor(Editor),
