@@ -164,8 +164,9 @@ its screen has been still for a second. The result names the new block and its f
   ```
 
   `client` is `mcp` (the bridge), `cli` (a verb) or `hook`. A first line that isn't a hello, a wrong token, a
-  first line over 4096 bytes, or none within 5 seconds closes the connection; nothing is written to a connection
-  before its hello is accepted. Hooks send `templum/event` notifications; the command line's verbs send `tools/call`.
+  first line over 4096 bytes, or one not whole 5 seconds after connecting (however its bytes trickle in) closes the
+  connection; nothing is written to a connection before its hello is accepted, and once it is, the connection has
+  no time limit. Hooks send `templum/event` notifications; the command line's verbs send `tools/call`.
 - Requests are answered on Templum's main thread, in the order they arrive per connection; a request that waits (a
   question, a delegation) never holds back the others.
 
@@ -413,7 +414,8 @@ written ends in one newline; every tool parses its own example arguments and nam
 `initialize`'s result; each Claude Code hook payload and Codex's `notify` become their event (`PermissionRequest` waits
 for the person, `PostToolUseFailure` works on unless it is an interrupt, which is done, `StopFailure` and `idle_prompt`
 are done, a `compact` start is nothing), unknown ones none; the bus: bind, hello, a request answered; a wrong first line
-or token closes the connection, as does a hello too long or too slow; two requests on one connection both answered; the
+or token closes the connection, as does a hello too long or too slow, a byte at a time included; a client quiet
+for longer than the hello's time after it is still answered; two requests on one connection both answered; the
 socket file goes away with the bus and a stale one is replaced; a data folder too long for a socket puts it in a private
 (0700) temporary folder that goes with the bus; the bridge sends its hello first and copies both ways; `hook claude`
 sends one event and prints nothing; `read <block> -n 10` sends its call and prints the text; no bus is exit code 2 with

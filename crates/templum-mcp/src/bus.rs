@@ -8,7 +8,7 @@ use std::net::Shutdown;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::channel::mpsc::UnboundedSender;
 use serde_json::json;
@@ -18,8 +18,8 @@ use crate::rpc::{self, Incoming};
 /// The first line every client sends.
 pub const HELLO: &str = "templum/hello";
 /// The longest hello read, in bytes: a longer first line closes the connection.
-const HELLO_MAX: u64 = 4096;
-/// How long a new connection may take to send its hello.
+const HELLO_MAX: usize = 4096;
+/// How long a new connection may take to send its whole hello.
 const HELLO_WAIT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 5 });
 
 /// Who a connection is for: the terminal it runs in (its `TEMPLUM_TERMINAL`), and what it is
@@ -92,20 +92,13 @@ impl Drop for Bus {
 
 /// Reads a connection's lines: its hello first, then each request or notification, handed to
 /// `tx` with a replier; a line that isn't JSON-RPC is answered at once. Until its hello is
-/// accepted, a connection gets no writer and only `HELLO_MAX` bytes and `HELLO_WAIT` to send it
-/// (on Windows, other local users can reach the port).
+/// accepted, a connection gets no writer and only `HELLO_MAX` bytes and `HELLO_WAIT` in all to
+/// send it (on Windows, other local users can reach the port).
 fn serve(stream: Stream, tx: &UnboundedSender<Message>, token: Option<&str>) {
-    if stream.set_read_timeout(Some(HELLO_WAIT)).is_err() {
-        return;
-    }
     let mut reader = BufReader::new(stream);
-    let mut first = String::new();
-    // Through the reader: what the client sent after its hello stays in its buffer.
-    let read = (&mut reader).take(HELLO_MAX).read_line(&mut first);
-    let Some(hello) = read
-        .ok()
-        .filter(|_| first.ends_with('\n'))
-        .and_then(|_| hello_of(&first, token))
+    let Some(hello) = first_line(&mut reader)
+        .and_then(|line| String::from_utf8(line).ok())
+        .and_then(|line| hello_of(&line, token))
     else {
         return;
     };
@@ -139,6 +132,37 @@ fn serve(stream: Stream, tx: &UnboundedSender<Message>, token: Option<&str>) {
             Err(answer) => {
                 let _ = reply.send(answer);
             }
+        }
+    }
+}
+
+/// A connection's first line, `\n` included, when it comes whole within `HELLO_WAIT` of now and
+/// `HELLO_MAX` bytes. A read's time limit is for each read, so each gets what is left: a client
+/// sending a byte now and then would hold its reader thread for hours. What the client sent
+/// after it stays in `reader`'s buffer; its time limit is left set.
+fn first_line(reader: &mut BufReader<Stream>) -> Option<Vec<u8>> {
+    let deadline = Instant::now() + HELLO_WAIT;
+    let mut line = Vec::new();
+    loop {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())?;
+        reader.get_ref().set_read_timeout(Some(left)).ok()?;
+        let read = match reader.fill_buf() {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            read => read.ok().filter(|read| !read.is_empty())?,
+        };
+        let (used, done) = match read.iter().position(|&b| b == b'\n') {
+            Some(end) => (end + 1, true),
+            None => (read.len(), false),
+        };
+        line.extend_from_slice(&read[..used]);
+        reader.consume(used);
+        if line.len() > HELLO_MAX {
+            return None;
+        }
+        if done {
+            return Some(line);
         }
     }
 }
@@ -509,7 +533,7 @@ mod tests {
         // A right hello, but longer than any Templum sends.
         let (mut stream, token) = connect(&bus.env).unwrap();
         time_limit(&stream);
-        let terminal = "1".repeat(HELLO_MAX as usize);
+        let terminal = "1".repeat(HELLO_MAX);
         let _ = stream.write_all(hello_line(&terminal, "cli", token.as_deref()).as_bytes());
         let _ = stream.write_all(rpc::request(2, "ping", Value::Null).as_bytes());
         assert_closed(stream);
@@ -519,6 +543,36 @@ mod tests {
         let started = std::time::Instant::now();
         assert_closed(stream);
         assert!(started.elapsed() >= HELLO_WAIT / 2);
+    }
+
+    #[test]
+    fn a_hello_sent_a_byte_at_a_time_is_closed_when_its_time_is_up() {
+        let (_dir, bus) = test_bus(pong);
+        let started = Instant::now();
+        let (stream, _) = connect(&bus.env).unwrap();
+        time_limit(&stream);
+        let mut writer = stream.try_clone().unwrap();
+        // Never a whole line, a byte well within each read's limit, until it is closed.
+        std::thread::spawn(move || {
+            while started.elapsed() < HELLO_WAIT * 5 && writer.write_all(b"{").is_ok() {
+                std::thread::sleep(HELLO_WAIT / 3);
+            }
+        });
+        assert_closed(stream);
+        let took = started.elapsed();
+        assert!(took >= HELLO_WAIT / 2 && took < HELLO_WAIT * 2, "{took:?}");
+    }
+
+    /// The hello's time limit goes once it is accepted: a client may be quiet for long.
+    #[test]
+    fn a_quiet_client_is_answered_after_the_hellos_time() {
+        let (_dir, bus) = test_bus(pong);
+        let (mut stream, mut reader) = client(&bus);
+        std::thread::sleep(HELLO_WAIT + Duration::from_millis(200));
+        let _ = stream.write_all(rpc::request(1, "ping", Value::Null).as_bytes());
+        let mut line = String::new();
+        let _ = reader.read_line(&mut line);
+        assert!(line.contains(r#""id":1"#), "no answer: {line:?}");
     }
 
     #[test]
