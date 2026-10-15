@@ -248,16 +248,30 @@ mod tests {
         }
     }
 
+    /// A wait longer than this fails the test instead of hanging it.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(5);
+
     fn run_with(args: &[&str], env: &Env, stdin: &str) -> (i32, String, String) {
         let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-        let (mut out, mut err) = (Vec::new(), Vec::new());
-        let stdin = Box::new(io::Cursor::new(stdin.as_bytes().to_vec()));
-        let code = run(&args, env, stdin, &mut out, &mut err);
-        (
-            code,
-            String::from_utf8(out).unwrap(),
-            String::from_utf8(err).unwrap(),
-        )
+        let (env, stdin) = (env.clone(), stdin.as_bytes().to_vec());
+        let (done, ran) = std::sync::mpsc::channel();
+        // On a thread of its own: a command that never ends can't hang the test.
+        std::thread::spawn(move || {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = run(
+                &args,
+                &env,
+                Box::new(io::Cursor::new(stdin)),
+                &mut out,
+                &mut err,
+            );
+            let _ = done.send((
+                code,
+                String::from_utf8(out).unwrap(),
+                String::from_utf8(err).unwrap(),
+            ));
+        });
+        ran.recv_timeout(LIMIT).expect("the command ended")
     }
 
     #[test]
@@ -295,7 +309,7 @@ mod tests {
         let (code, out, _) = run_with(&["read", "b7k2m", "-n", "10"], &env(&bus), "");
         assert_eq!((code, out.as_str()), (0, "line 1\nline 2\n"));
         assert_eq!(
-            calls.recv().unwrap(),
+            calls.recv_timeout(LIMIT).unwrap(),
             json!({ "name": "read_terminal", "arguments": { "block": "b7k2m", "lines": 10 } })
         );
         let (code, out, err) = run_with(&["read", "nope"], &env(&bus), "");
@@ -304,7 +318,7 @@ mod tests {
             (1, "", "nope isn't connected to you\n")
         );
         assert_eq!(
-            calls.recv().unwrap()["arguments"],
+            calls.recv_timeout(LIMIT).unwrap()["arguments"],
             json!({ "block": "nope" })
         );
         run_with(
@@ -313,7 +327,7 @@ mod tests {
             "",
         );
         assert_eq!(
-            calls.recv().unwrap()["arguments"],
+            calls.recv_timeout(LIMIT).unwrap()["arguments"],
             json!({ "block": "b7k2m", "text": "make test", "enter": true })
         );
         let (code, out, _) = run_with(&["blocks", "--json"], &env(&bus), "");
@@ -336,7 +350,7 @@ mod tests {
             (0, String::new(), String::new())
         );
         assert_eq!(
-            events.recv().unwrap(),
+            events.recv_timeout(LIMIT).unwrap(),
             (
                 "hook".to_string(),
                 Incoming::Notification {
@@ -352,7 +366,7 @@ mod tests {
             (0, String::new(), String::new())
         );
         assert_eq!(
-            events.recv().unwrap().1,
+            events.recv_timeout(LIMIT).unwrap().1,
             Incoming::Notification {
                 method: "templum/event".into(),
                 params: json!({ "event": "needs_you", "message": "Allow Bash?" }),
@@ -361,7 +375,7 @@ mod tests {
         let codex = r#"{"type":"agent-turn-complete","last-assistant-message":"Fixed."}"#;
         assert_eq!(run_with(&["hook", "codex", codex], &env(&bus), "").0, 0);
         assert_eq!(
-            events.recv().unwrap().1,
+            events.recv_timeout(LIMIT).unwrap().1,
             Incoming::Notification {
                 method: "templum/event".into(),
                 params: json!({ "event": "stopped", "message": "Fixed." }),

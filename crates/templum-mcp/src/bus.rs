@@ -356,6 +356,16 @@ mod tests {
     use super::*;
     use serde_json::Value;
 
+    /// A read that waits longer fails the test instead of hanging it.
+    fn time_limit(stream: &Stream) {
+        let limit = Some(std::time::Duration::from_secs(5));
+        match stream {
+            #[cfg(unix)]
+            Stream::Unix(s) => s.set_read_timeout(limit).unwrap(),
+            Stream::Tcp(s) => s.set_read_timeout(limit).unwrap(),
+        }
+    }
+
     fn pong(message: Message) {
         if let Incoming::Request { id, .. } = &message.incoming {
             let answer =
@@ -366,6 +376,7 @@ mod tests {
 
     fn client(bus: &Bus) -> (Stream, BufReader<Stream>) {
         let (mut stream, token) = connect(&bus.env).unwrap();
+        time_limit(&stream);
         stream
             .write_all(hello_line("123-4", "cli", token.as_deref()).as_bytes())
             .unwrap();
@@ -444,15 +455,24 @@ mod tests {
             hello_line("1-1", "cli", Some("wrong")),
         ] {
             let (mut stream, _) = connect(&bus.env).unwrap();
+            time_limit(&stream);
             stream.write_all(first.as_bytes()).unwrap();
             // It may already be closed.
             let _ = stream.write_all(rpc::request(2, "ping", Value::Null).as_bytes());
             let mut rest = String::new();
-            assert_eq!(
-                BufReader::new(stream).read_line(&mut rest).unwrap_or(0),
-                0,
-                "{rest}"
-            );
+            // Closed: the end, or a reset. Not the time limit: that is still open.
+            let read = match BufReader::new(stream).read_line(&mut rest) {
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    panic!("still open")
+                }
+                read => read.unwrap_or(0),
+            };
+            assert_eq!(read, 0, "{rest}");
         }
     }
 
