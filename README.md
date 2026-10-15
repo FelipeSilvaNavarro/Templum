@@ -241,6 +241,16 @@ you when a limit nears its end and when one you reached resets (**Settings ▸ U
 to its status line, so the Claude Code Templum opens gets `--settings` naming Templum's: your own status line still
 shows. Templum reads only what the agents write, never their login. See [docs/specs/usage.md](docs/specs/usage.md).
 
+## Agents that talk to the canvas
+
+The Claude Code and Codex you open from **AI agent ▸** get Templum's MCP server, for that session only: your own
+settings files stay as they are. They can ask which block they are, list the workspace's blocks, read and type into
+their own terminal, and send you a notification. The dot before a Claude Code terminal's title shows it working
+(accent) or waiting for you (yellow, "Waiting for you: …"). In any Templum terminal, `templum blocks`,
+`templum whoami`, `templum read <block> -n 50` and `templum notify <text>` do the same from the command line. Every
+block has a short id (`b7k2m`) that lasts through restarts. Turn it off with `[connections] enabled = false`. See
+[docs/specs/connections.md](docs/specs/connections.md).
+
 ## Shell integration
 
 Templum loads a small script into bash, zsh, fish and PowerShell (Git Bash and Windows PowerShell included), as

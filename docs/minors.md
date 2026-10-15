@@ -425,3 +425,33 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   (`crates/templum/src/git_block/diff_view/mod.rs:327`) reads the list's scroll offset while `Workspace` renders, and
   gpui-fast repaints every scrolled frame of a list whose offset `render` read. A person sees nothing; scrolling a long
   diff costs what it did before. Fix: pick the sticky header's file in a `canvas` prepaint instead of in `render`.
+
+## Connections
+
+Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those of `development` at 2c3c809.
+
+- [ ] **An agent that can't be given connections says nothing.** `typed` (`crates/templum/src/workspace/usage.rs:33`)
+  leaves the flags out when the data folder or Templum's path can't be typed safely (a `$`, a `"`), and the Claude
+  Code or Codex then starts without Templum's server: `/mcp` doesn't list it, and nothing says why. Fix: a
+  notification once per session, from `launch_agent` and `resume_agent`, which have the window.
+- [ ] **Windows terminals have no `templum` on their PATH.** `templum_first` (`crates/templum/src/workspace/bus.rs:78`)
+  returns nothing on Windows, so `templum blocks` works there only when the installer put Templum on PATH. Fix: a
+  `templum.exe` hard link in `<data>/bin`, or the installer's PATH.
+- [ ] **Two Templums sharing a data folder share one `templum` link.** `templum_first`
+  (`crates/templum/src/workspace/bus.rs:63`) points `<data>/bin/templum` at the last Templum started (an installed
+  one and `cargo run`), so a terminal of the first runs the second's program; its `TEMPLUM_BUS` still names its own
+  Templum. Fix: one link per bus (`<data>/bin/<pid>/templum`), removed with the bus.
+- [ ] **The Claude Code settings file has its old name.** `claude-statusline.json`
+  (`crates/templum-usage/src/claude.rs:23`) now holds the hooks too. A person reading `ps` sees a status-line file
+  carry hooks. Fix: rename it `claude-settings.json` and delete the old one at start.
+- [ ] **A stopped workspace's block ids aren't checked for a clash.** `new_uid`
+  (`crates/templum/src/workspace/blocks.rs:68`) checks the running workspaces only; a new block may take an id a
+  stopped workspace's saved canvas holds (1 in 60 million per pair), and that block gets a new id when the workspace
+  starts again. Fix: check `Space::saved`'s items too.
+- [ ] **Codex's dot never says "Working".** Codex only reports its turns' end (`codex`,
+  `crates/templum-mcp/src/hooks.rs:49`), so its terminal shows no accent dot while it works and no yellow one at a
+  permission prompt. Fix: a Codex hook for those, when Codex has one; meanwhile the screen going still (batch 5).
+- [ ] **The verbs print nothing in a Windows console.** The release program has no console
+  (`crates/templum/src/main.rs:3`), so `templum blocks` (`main.rs:56`) prints only into a pipe:
+  `templum blocks | more`. Fix: `AttachConsole(ATTACH_PARENT_PROCESS)` before running a verb (needs `unsafe` or a
+  crate), or a small console `templum-cli.exe` beside it.

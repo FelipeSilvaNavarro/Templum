@@ -1,7 +1,7 @@
 # Connections: blocks that talk to each other
 
 - **Date:** 2026-10-15
-- **Status:** Planned; batch 1 next
+- **Status:** Batch 1 implemented; batches 2 to 5 planned
 - **Builds on:** [agents.md](agents.md) (opening agents), [usage.md](usage.md) (the `--settings` Templum types for
   Claude Code), [shell-integration.md](shell-integration.md) (command marks, notifications),
   [persistence.md](persistence.md), [kanban.md](kanban.md) and [cockpit.md](cockpit.md) (notes, the editor, drawing)
@@ -46,7 +46,7 @@ agents without MCP, scripts and hooks.
 ## Words
 
 - **Block id:** a short code that names a block for its whole life, through restarts, undo and moves between
-  workspaces: 4 to 7 lowercase letters and digits (`b7k2m`). Agents and the command line name blocks by it.
+  workspaces: five lowercase letters and digits (`b7k2m`). Agents and the command line name blocks by it.
 - **Wire:** a connection between two blocks of one workspace. It has no direction: both ends may use each other.
 - **The bus:** the local socket Templum listens on while it runs; every MCP server, hook and `templum` command
   started in one of its terminals talks to it.
@@ -84,9 +84,10 @@ A terminal running an agent Templum hears from ([Hooks](#hooks-and-agent-state))
 |---|---|---|
 | Working on a prompt | accent | "Working" |
 | Waiting for the person (a permission prompt, a question) | yellow | "Waiting for you: *the agent's message*" |
-| Done with its turn | none (the terminal's usual dot) | — |
+| Done with its turn | none (its running command would otherwise read "Running") | — |
 
-An alert the terminal already shows (attention, a finished command) comes first.
+An alert the terminal already shows (attention, a finished command) comes first. An agent the last snapshot didn't
+see (it crashed) shows no state.
 
 ### Requests from agents
 
@@ -134,13 +135,13 @@ its screen has been still for a second. The result names the new block and its f
 - Every terminal already gets `TEMPLUM_TERMINAL` ([usage.md](usage.md)); every program in it inherits it, the MCP
   server and hooks an agent starts included. The bus finds the caller by it, at each call, so a block moved to
   another workspace stays the same caller.
-- Every terminal also gets `TEMPLUM_BUS`, the bus's address, when there is a bus. When the program `templum` isn't
-  found in the `PATH` Templum was started with (an AppImage, a bare executable), the terminal's `PATH` gets
-  Templum's folder in front, so `templum` works in it.
+- Every terminal also gets `TEMPLUM_BUS`, the bus's address, when there is a bus. On Unix, every terminal's `PATH`
+  starts with `<data>/bin`, where Templum keeps a link named `templum` to itself, so `templum` in a Templum terminal
+  is the Templum that opened it.
 
 ## The bus
 
-- **Unix:** a socket at `<data folder>/bus/<Templum's pid>.sock`, in a folder only the user can open (0700).
+- **Unix:** a socket at `<data folder>/bus/<Templum's pid>-<n>.sock`, in a folder only the user can open (0700).
   `TEMPLUM_BUS=unix:<path>`. When the path would pass 100 bytes (macOS's limit is 104), the socket goes to the
   temporary folder instead. A socket file left by a Templum that is gone is removed when the bus starts.
 - **Windows:** a TCP socket on `127.0.0.1` at a port the system picks, and a random token.
@@ -228,7 +229,7 @@ Templum is gone.
 
 | Agent | How Templum hears it | Events |
 |---|---|---|
-| Claude Code | hooks in the `--settings` Templum types: `SessionStart`, `UserPromptSubmit`, `Stop`, `Notification`, `SessionEnd` (JSON on stdin) | started, working, done with its last answer (`last_assistant_message`), waiting for the person (`permission_prompt`, `idle_prompt`, `agent_needs_input`), ended |
+| Claude Code | hooks in the `--settings` Templum types: `SessionStart`, `UserPromptSubmit`, `PostToolUse` (working again after a permission), `Stop`, `Notification`, `SessionEnd` (JSON on stdin) | started, working, done with its last answer (`last_assistant_message`), waiting for the person (`permission_prompt`, `elicitation_dialog`, `agent_needs_input`; not `idle_prompt`: that is the reminder after a finished turn), ended |
 | Codex | `notify` in the `-c` flags Templum types (JSON as the last argument) | done with its last answer (`agent-turn-complete`, `last-assistant-message`) |
 | Gemini CLI (batch 5) | `BeforeAgent`, `AfterAgent`, `Notification`, `SessionStart`, `SessionEnd` hooks | as Claude Code's |
 | Others | — | none: [Delegating](#delegating) point 6 |
@@ -239,7 +240,7 @@ Claude Code merges hooks from every settings source, so the person's own hooks s
 
 Only for an agent Templum opens (the canvas menu, `spawn_agent`, and resuming on restore), when `[connections]` is
 on, there is a bus, the shell isn't WSL, and every path is typeable (`typed_path` of [usage.md](usage.md); when
-one isn't, a notification says so once per session and the agent starts without connections). A `claude` typed by
+one isn't, the agent starts without connections). A `claude` typed by
 hand gets nothing.
 
 **Claude Code:** `claude --settings <data>/claude-statusline.json --mcp-config <data>/mcp.json`. The settings file
@@ -251,6 +252,7 @@ keeps the status line of [usage.md](usage.md) when `usage.claude_limits` is on, 
   "hooks": {
     "SessionStart":     [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
+    "PostToolUse":      [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
     "Stop":             [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
     "Notification":     [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
     "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }]
@@ -262,10 +264,11 @@ keeps the status line of [usage.md](usage.md) when `usage.claude_limits` is on, 
 { "mcpServers": { "templum": { "type": "stdio", "command": "/opt/templum", "args": ["mcp"] } } }
 ```
 
-**Codex:** four flags, in single quotes (so not under `cmd.exe`, and not when a path has a `'`):
+**Codex:** five flags, in single quotes (so not under `cmd.exe`, and not when a path has a `'`); `env_vars` because
+Codex hands a server only the variables it is told to:
 
 ```
-codex -c 'mcp_servers.templum.command="/opt/templum"' -c 'mcp_servers.templum.args=["mcp"]' -c 'mcp_servers.templum.tool_timeout_sec=3600' -c 'notify=["/opt/templum","hook","codex"]'
+codex -c 'mcp_servers.templum.command="/opt/templum"' -c 'mcp_servers.templum.args=["mcp"]' -c 'mcp_servers.templum.env_vars=["TEMPLUM_BUS","TEMPLUM_TERMINAL"]' -c 'mcp_servers.templum.tool_timeout_sec=3600' -c 'notify=["/opt/templum","hook","codex"]'
 ```
 
 **Gemini CLI** (batch 5): it has no flag for MCP servers or hooks. Templum checks whether a system settings file named
@@ -422,7 +425,7 @@ Batches 2 and 3 paint, so their pull requests carry `--bench` and `--bench-mixed
 | An agent without events never says it is done | `reply`, or the wait's timeout with the last screen lines; batch 5 may add "the screen has been still for N seconds" |
 | Gemini CLI can't be given an MCP server for one session | The system settings file if it adds to the person's; else a one-time `gemini mcp add` the person agrees to |
 | Codex's `-c` under `cmd.exe` | Not typed there (Git Bash is the default shell on Windows) |
-| A path Templum can't type safely (`"`, `$`, `'`, a backtick…) | No connections for that agent, and a notification once per session |
+| A path Templum can't type safely (`"`, `$`, `'`, a backtick…) | No connections for that agent |
 | macOS's 104-byte socket path | The temporary folder past 100 bytes |
 | The AppImage's executable goes away when it quits | `$APPIMAGE` is the program typed |
 | Reading history while the terminal's thread parses | The unfair lock waits only for the parse under way, as painting does; at most 2000 lines and 256 KB |

@@ -56,8 +56,10 @@ subscribers after the first answer, `rate_limits.five_hour` and `rate_limits.sev
 - **Only the Claude Code Templum types** (the canvas menu's **AI agent ▸**, and resuming on restore) gets
   `--settings <data>/claude-statusline.json`. That file sets `statusLine` to Templum's own program,
   `templum --claude-statusline <data>`, the **relay** (the data folder is named: Claude Code's environment may say
-  another one; a program replaced by an upgrade while Templum runs is named by its path). `--settings` lasts one session and writes nothing. A `claude`
-  typed by hand gets nothing added.
+  another one; a program replaced by an upgrade while Templum runs is named by its path). `--settings` lasts one
+  session and writes nothing. When `[connections]` is on, the same file also holds Templum's hooks
+  ([connections.md](connections.md#hooks-and-agent-state)), and `claude_limits = false` drops only the status line.
+  A `claude` typed by hand gets nothing added.
 - **The relay** reads the document and writes it as is to `<data>/usage/claude/<terminal>.json`, where
   `<terminal>` is the terminal's `TEMPLUM_TERMINAL` environment variable (every terminal gets a unique one). Then it
   runs the user's own status line, if any, with the same input, and prints what it prints: `--settings` replaces

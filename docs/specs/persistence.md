@@ -115,6 +115,7 @@ What doesn't come back: the text that was on screen, and programs other than the
     "items": [
       {
         "kind": "terminal",
+        "uid": "b7k2m",
         "rect": { "x": 0.0, "y": 0.0, "w": 720.0, "h": 460.0 },
         "folder": "/home/winx/proj",
         "agent": "claude",
@@ -131,6 +132,9 @@ What doesn't come back: the text that was on screen, and programs other than the
     ([polish.md](polish.md#camera-flights)) it is where the camera is going.
   - **`items`:** back to front, so the last is drawn on top. `kind` names the item's type. Only `"terminal"` exists
     now, and later kinds add their own fields.
+  - **`uid`** (every kind): the block's id, five lowercase letters and digits, which agents and the `templum` command
+    name it by ([connections.md](connections.md#identity)). A missing, taken or malformed one is replaced with a new
+    one; an older Templum ignores it.
   - **A terminal's fields:**
     - `folder` is missing when the OS wouldn't say (another user's process, already gone), and the shell then starts
       in the home folder;
