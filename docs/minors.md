@@ -460,9 +460,10 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   back to `accept` after an error; one that repeats (out of file descriptors) keeps a core busy until it clears.
   A person sees Templum use a whole core. Fix: sleep 100 ms after a failed `accept`.
 - [ ] **A socket in the temporary folder outlives a crash.** When the data folder's path is too long for a socket,
-  the bus's socket goes to the temporary folder (`crates/templum-mcp/src/bus.rs:274`), and `remove_stale` (:295) only
-  clears `<data>/bus`: a crash leaves a `templum-<pid>-<n>.sock` file there. Fix: run `remove_stale` on the
-  temporary folder's `templum-*.sock` files too.
+  the bus's socket goes to a private `templum-<random>/bus.sock` in the temporary folder
+  (`crates/templum-mcp/src/bus.rs`, `listen`), and `remove_stale` only clears `<data>/bus`: a crash leaves that
+  folder and its socket file there. Fix: at start, run `remove_stale` on the user's own `templum-*` folders in the
+  temporary folder, and remove each one left empty.
 - [ ] **No test says a pasted block gets a new id.** `copy_blocks` (`crates/templum/src/workspace/selection.rs:144`)
   copies items without their `uid`, so `paste_blocks` gives each a new one, but the spec's test list
   (docs/specs/connections.md, Testing) names a test for it that doesn't exist. Fix: copy a block, paste it, and

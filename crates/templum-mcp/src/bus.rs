@@ -43,14 +43,16 @@ pub struct Bus {
     pub env: String,
     /// Unix: its socket file.
     path: Option<PathBuf>,
+    /// Unix: the folder of its own the socket is in, in the temporary folder, when the data
+    /// folder's path is too long for a socket.
+    dir: Option<PathBuf>,
     closed: Arc<AtomicBool>,
 }
 
 /// Starts the bus in Templum's data folder `data`: every client's lines go to `tx`.
 pub fn start(data: &Path, tx: UnboundedSender<Message>) -> io::Result<Bus> {
-    let (listener, env, path, token) = listen(data)?;
-    let closed = Arc::new(AtomicBool::new(false));
-    let stop = closed.clone();
+    let (listener, bus, token) = listen(data)?;
+    let stop = bus.closed.clone();
     std::thread::Builder::new()
         .name("templum-bus".into())
         .spawn(move || {
@@ -67,7 +69,7 @@ pub fn start(data: &Path, tx: UnboundedSender<Message>) -> io::Result<Bus> {
                     .spawn(move || serve(stream, &tx, token.as_deref()));
             }
         })?;
-    Ok(Bus { env, path, closed })
+    Ok(bus)
 }
 
 impl Drop for Bus {
@@ -76,6 +78,9 @@ impl Drop for Bus {
         let _ = connect(&self.env);
         if let Some(path) = &self.path {
             let _ = std::fs::remove_file(path);
+        }
+        if let Some(dir) = &self.dir {
+            let _ = std::fs::remove_dir(dir);
         }
     }
 }
@@ -255,8 +260,8 @@ impl Listener {
 /// Unix: a socket at `<data>/bus/<pid>-<n>.sock` in a folder only the user can open. The
 /// counter keeps two buses of one process apart (tests open several workspaces).
 #[cfg(unix)]
-fn listen(data: &Path) -> io::Result<(Listener, String, Option<PathBuf>, Option<String>)> {
-    use std::os::unix::fs::PermissionsExt as _;
+fn listen(data: &Path) -> io::Result<(Listener, Bus, Option<String>)> {
+    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
     use std::sync::atomic::AtomicU64;
     let folder = data.join("bus");
     std::fs::create_dir_all(&folder)?;
@@ -269,25 +274,50 @@ fn listen(data: &Path) -> io::Result<(Listener, String, Option<PathBuf>, Option<
         NEXT.fetch_add(1, Ordering::Relaxed)
     );
     let mut path = folder.join(&name);
-    // macOS takes socket paths of 104 bytes at most.
+    let mut dir = None;
+    // macOS takes socket paths of 104 bytes at most. The temporary folder may be shared (/tmp):
+    // the socket goes in a folder of its own there, with a name no one can guess and take
+    // first, that only the user can open. Short, for macOS's long temporary folder.
     if path.as_os_str().len() > 100 {
-        path = std::env::temp_dir().join(format!("templum-{name}"));
+        let random = uuid::Uuid::new_v4().simple().to_string();
+        let private = std::env::temp_dir().join(format!("templum-{}", &random[..12]));
+        // Not create_all: a folder already there fails.
+        std::fs::DirBuilder::new().mode(0o700).create(&private)?;
+        path = private.join("bus.sock");
+        dir = Some(private);
+    }
+    // Made before the socket: dropping it on an error below removes what was made.
+    let bus = Bus {
+        env: format!("unix:{}", path.display()),
+        path: Some(path.clone()),
+        dir,
+        closed: Arc::default(),
+    };
+    if path.as_os_str().len() > 100 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("no socket path short enough: {}", path.display()),
+        ));
     }
     let _ = std::fs::remove_file(&path);
     let listener = std::os::unix::net::UnixListener::bind(&path)?;
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    let env = format!("unix:{}", path.display());
-    Ok((Listener::Unix(listener), env, Some(path), None))
+    Ok((Listener::Unix(listener), bus, None))
 }
 
 /// Windows: TCP on the loopback at a port the system picks, and a token every hello carries.
 #[cfg(windows)]
-fn listen(_: &Path) -> io::Result<(Listener, String, Option<PathBuf>, Option<String>)> {
+fn listen(_: &Path) -> io::Result<(Listener, Bus, Option<String>)> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
     let token = uuid::Uuid::new_v4().simple().to_string();
-    let env = format!("tcp:127.0.0.1:{port}:{token}");
-    Ok((Listener::Tcp(listener), env, None, Some(token)))
+    let bus = Bus {
+        env: format!("tcp:127.0.0.1:{port}:{token}"),
+        path: None,
+        dir: None,
+        closed: Arc::default(),
+    };
+    Ok((Listener::Tcp(listener), bus, Some(token)))
 }
 
 /// Removes the socket files no Templum listens on any more (one that crashed).
@@ -466,5 +496,25 @@ mod tests {
         assert!(path.exists());
         drop(bus);
         assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_data_folder_too_long_for_a_socket_puts_it_in_a_private_temporary_folder() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path().join("d".repeat(100));
+        std::fs::create_dir(&data).unwrap();
+        let (tx, _rx) = futures::channel::mpsc::unbounded();
+        let bus = start(&data, tx).unwrap();
+        let path = PathBuf::from(bus.env.strip_prefix("unix:").unwrap());
+        let private = path.parent().unwrap().to_path_buf();
+        assert_eq!(private.parent().unwrap(), std::env::temp_dir());
+        let mode = std::fs::metadata(&private).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "only the user opens it");
+        // It answers there.
+        connect(&bus.env).unwrap();
+        drop(bus);
+        assert!(!private.exists(), "the folder goes with the bus");
     }
 }

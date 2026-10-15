@@ -142,8 +142,10 @@ its screen has been still for a second. The result names the new block and its f
 ## The bus
 
 - **Unix:** a socket at `<data folder>/bus/<Templum's pid>-<n>.sock`, in a folder only the user can open (0700).
-  `TEMPLUM_BUS=unix:<path>`. When the path would pass 100 bytes (macOS's limit is 104), the socket goes to the
-  temporary folder instead. A socket file left by a Templum that is gone is removed when the bus starts.
+  `TEMPLUM_BUS=unix:<path>`. When the path would pass 100 bytes (macOS's limit is 104), the socket goes to
+  `bus.sock` in a folder of its own in the temporary folder instead, `templum-<12 random hex digits>`, made 0700 and
+  only if it isn't there yet (`/tmp` is shared: no one can guess its name or make it first); it goes with the bus.
+  A socket file left by a Templum that is gone is removed from `<data>/bus` when the bus starts.
 - **Windows:** a TCP socket on `127.0.0.1` at a port the system picks, and a random token.
   `TEMPLUM_BUS=tcp:127.0.0.1:<port>:<token>`.
 - **No data folder** (`--bench`), no bus: terminals get no `TEMPLUM_BUS`, agents get no MCP server or hooks.
