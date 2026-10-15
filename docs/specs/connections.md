@@ -184,8 +184,9 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
   > note.
 
   Titles come from what runs in a block (a terminal's is whatever its programs set), so the instructions, `whoami`
-  and `list_blocks` give them cleaned: no control characters, line breaks and runs of blanks as one space, at most
-  60 characters (cut with "…"), and the instructions put them in double quotes, a `"` inside escaped.
+  and `list_blocks` give them cleaned: no control characters, no invisible ones (zero widths `U+200B`–`U+200F`,
+  direction overrides `U+202A`–`U+202E` and `U+2066`–`U+2069`, `U+FEFF`), line breaks and runs of blanks as one
+  space, at most 60 characters (cut with "…"), and the instructions put them in double quotes, a `"` inside escaped.
 - **`tools/list`** is the same for every caller; which blocks a tool may touch is checked at each call.
 - **Results** are text (`content: [{type: "text"}]`). A refusal or a failure is a result with `isError: true` and a
   sentence that says what to do next: `k9x1d isn't connected to you. Ask the person with connect("k9x1d").`

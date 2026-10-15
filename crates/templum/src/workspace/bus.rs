@@ -345,12 +345,19 @@ impl Workspace {
 const TITLE_CHARS: usize = 60;
 
 /// A title as agents are told it. A terminal's is whatever its programs set (OSC 0), and goes
-/// into an agent's instructions: no control characters, its line breaks and runs of blanks as
-/// one space, and at most 60 characters.
+/// into an agent's instructions: no control characters, no invisible ones (zero widths,
+/// direction overrides), its line breaks and runs of blanks as one space, and at most 60
+/// characters.
 pub(super) fn clean_title(title: &str) -> String {
+    let invisible = |c: char| {
+        matches!(
+            c,
+            '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+        )
+    };
     let kept: String = title
         .chars()
-        .filter(|c| c.is_whitespace() || !c.is_control())
+        .filter(|&c| (c.is_whitespace() || !c.is_control()) && !invisible(c))
         .collect();
     let flat = kept.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= TITLE_CHARS {
