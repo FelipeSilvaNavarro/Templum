@@ -23,7 +23,7 @@ pub enum AgentEvent {
 }
 
 /// A Claude Code hook's input (https://code.claude.com/docs/en/hooks). None for what Templum
-/// doesn't follow: the idle reminder after a finished turn is not a wait for the person.
+/// doesn't follow.
 pub fn claude(input: &Value) -> Option<AgentEvent> {
     let text = |key: &str| input[key].as_str().map(str::to_string);
     Some(match input["hook_event_name"].as_str()? {
@@ -32,12 +32,18 @@ pub fn claude(input: &Value) -> Option<AgentEvent> {
         "Stop" => AgentEvent::Stopped {
             message: text("last_assistant_message"),
         },
+        // A turn an API error ended: no `Stop`, and no answer.
+        "StopFailure" => AgentEvent::Stopped { message: None },
         "Notification" => match input["notification_type"].as_str()? {
             "permission_prompt" | "elicitation_dialog" | "agent_needs_input" => {
                 AgentEvent::NeedsYou {
                     message: text("message"),
                 }
             }
+            // The prompt has sat idle: whatever the turn was, it isn't working. An interrupted
+            // turn (Esc) fires no hook of its own, so this is what ends its "Working". Not a
+            // wait for the person: the agent asks nothing.
+            "idle_prompt" => AgentEvent::Stopped { message: None },
             _ => return None,
         },
         "SessionEnd" => AgentEvent::Ended,
@@ -102,8 +108,18 @@ mod tests {
                 "notification_type": "idle_prompt",
                 "message": "Claude is waiting for your input",
             })),
-            None,
-            "the reminder after a finished turn isn't a wait for the person"
+            // Not None: after an Esc, nothing else says the turn is over.
+            Some(AgentEvent::Stopped { message: None }),
+            "an idle prompt means not working, never a wait for the person"
+        );
+        assert_eq!(
+            event(json!({
+                "hook_event_name": "StopFailure",
+                "error_type": "rate_limit",
+                "error_message": "Rate limited",
+            })),
+            Some(AgentEvent::Stopped { message: None }),
+            "a turn an API error ended"
         );
         assert_eq!(
             event(json!({ "hook_event_name": "SessionEnd" })),
