@@ -5,7 +5,7 @@ use std::sync::mpsc::TryRecvError;
 
 use serde_json::{Value, json};
 
-use super::bus::{after, answered, bus_note, call, call_later, me};
+use super::bus::{after, answered, bus_note, call, call_later, event, me};
 use super::*;
 
 /// The newest wait's key.
@@ -228,6 +228,33 @@ fn a_question_off_screen_is_a_notification(cx: &mut TestAppContext) {
     let asked = json!({ "question": "There?", "options": ["Yes"] });
     let _there = call_later(handle, &ws, cx, &terminal, 2, "ask_user", asked);
     assert_eq!(notification_count(handle, cx), before + 1);
+}
+
+/// Claude Code asks its person to allow a Templum tool, then calls it: the person allowed it, and
+/// the agent works again, though the tool may wait for minutes before its end says so.
+#[gpui_kit::test]
+fn a_templum_tool_the_person_allowed_works_again(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let (terminal, _) = me(&ws, cx, first);
+    let hook =
+        json!({ "hook_event_name": "PermissionRequest", "tool_name": "mcp__templum__ask_user" });
+    let asks = serde_json::to_value(templum_mcp::hooks::claude(&hook).unwrap()).unwrap();
+    event(handle, &ws, cx, &terminal, asks);
+    let state = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(first).unwrap().state.clone())
+    };
+    let asking = state(cx);
+    assert!(
+        matches!(asking, Some(crate::workspace::AgentState::NeedsYou(_))),
+        "{asking:?}"
+    );
+    // Another tool's call: the dialog may be another one's of its subagents.
+    call_later(handle, &ws, cx, &terminal, 1, "whoami", json!({}));
+    assert_eq!(state(cx), asking);
+    let asked = json!({ "question": "Ship it?", "options": ["Yes"] });
+    let _answer = call_later(handle, &ws, cx, &terminal, 2, "ask_user", asked);
+    assert_eq!(state(cx), Some(crate::workspace::AgentState::Working));
 }
 
 #[gpui_kit::test]

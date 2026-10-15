@@ -145,6 +145,9 @@ impl Workspace {
                     "tools/list" => rpc::result(&id, tools::list()),
                     "tools/call" => {
                         let name = params["name"].as_str().unwrap_or_default();
+                        if hello.client == "mcp" {
+                            self.allowed(&hello.terminal, name, cx);
+                        }
                         if !tools::known(name) {
                             rpc::error(&id, rpc::PARAMS, &format!("Unknown tool: {name}"))
                         } else {
@@ -237,6 +240,20 @@ impl Workspace {
             }
         }
         cx.notify();
+    }
+
+    /// The agent in `terminal` calls the Templum tool `name`: when it was asking its person to
+    /// allow that tool (`hooks::claude`), they did, and it works again. Its next hook may come
+    /// only at the tool's end, minutes later. Another tool's dialog may be a subagent's.
+    fn allowed(&mut self, terminal: &str, name: &str, cx: &mut Context<Self>) {
+        let Some(pane) = self.pane_mut(terminal) else {
+            return;
+        };
+        let asked = format!("Allow mcp__templum__{name}?");
+        if pane.state == Some(AgentState::NeedsYou(Some(asked))) {
+            pane.state = Some(AgentState::Working);
+            cx.notify();
+        }
     }
 
     /// The block whose terminal is `terminal` (its `TEMPLUM_TERMINAL`): its workspace's id and

@@ -305,6 +305,8 @@ Claude Code's hooks:
 Esc while a tool runs ends Working at once (`PostToolUseFailure` with `is_interrupt`). Esc while the model writes
 fires no hook of its own: the dot stays on Working until the next prompt, or until `idle_prompt` comes after the
 prompt has sat idle for Claude Code's own delay (about a minute). Deferred: [minors](../minors.md#connections).
+A Templum tool's call works again at once after its own "Allow mcp__templum__*tool*?": the call arriving says the
+person allowed it, and `delegate` or `wait_for_idle` may take minutes before their `PostToolUse`.
 
 Claude Code merges hooks from every settings source, so the person's own hooks still run. Codex keeps one `notify`:
 see [Codex](#what-templum-types-into-each-agent) below.
