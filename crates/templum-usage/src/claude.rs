@@ -678,6 +678,8 @@ mod tests {
         assert_eq!(typed_path(r"C:\100%\c.json", true), None);
     }
 
+    // Typed as for Unix shells: a Windows temp folder's `\` is never typed that way.
+    #[cfg(unix)]
     #[test]
     fn the_settings_file_names_templum_as_the_status_line() {
         let dir = tempfile::tempdir().unwrap();

@@ -442,7 +442,7 @@ mod tests {
         assert_eq!(fs::read(&setup).unwrap(), b"setup");
 
         let release = one("templum_0.2.0_x64_en-US.msi", b"msi");
-        let msi = updates.join("0.2.0/templum_0.2.0_x64_en-US.msi");
+        let msi = updates.join("0.2.0").join("templum_0.2.0_x64_en-US.msi");
         assert_eq!(
             prepared(&Install::Msi(exe), &release, "windows", &updates),
             Ready::Installer(Launch {
