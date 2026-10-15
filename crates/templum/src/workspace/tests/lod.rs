@@ -65,8 +65,7 @@ fn the_rest_zoom_holds_through_a_glide_and_changes_when_it_ends(cx: &mut TestApp
         })
     })
     .unwrap();
-    ws.update(cx, restart_glide);
-    std::thread::sleep(Duration::from_millis(40));
+    ws.update(cx, glide_40ms_in);
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, _| ws.pan_by(Point::new(30.0, 0.0)));
         window.render_frame(cx);
@@ -166,8 +165,7 @@ fn a_git_blocks_level_changes_when_a_glide_ends(cx: &mut TestAppContext) {
             })
         })
         .unwrap();
-        ws.update(cx, restart_glide);
-        std::thread::sleep(Duration::from_millis(40));
+        ws.update(cx, glide_40ms_in);
         frame(handle, cx);
         assert!(
             ws.read_with(cx, |ws, _| ws.space.flight.is_some()),
@@ -1117,8 +1115,7 @@ fn a_far_editor_draws_bars_where_its_code_was(cx: &mut TestAppContext) {
             })
         })
         .unwrap();
-        ws.update(cx, restart_glide);
-        std::thread::sleep(Duration::from_millis(40));
+        ws.update(cx, glide_40ms_in);
         frame(handle, cx);
         assert!(
             shown(handle, cx, (during, n)),

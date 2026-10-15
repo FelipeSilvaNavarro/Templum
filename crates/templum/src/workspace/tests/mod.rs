@@ -229,6 +229,14 @@ fn restart_glide(ws: &mut Workspace, _: &mut Context<Workspace>) {
     }
 }
 
+/// The running glide as if it began 40 ms ago, so the next frame draws it mid-flight. Not a
+/// sleep: a slow machine (macOS CI) can oversleep past the whole 150 ms glide.
+fn glide_40ms_in(ws: &mut Workspace, _: &mut Context<Workspace>) {
+    if let Some((_, since)) = &mut ws.space.flight {
+        *since = std::time::Instant::now() - std::time::Duration::from_millis(40);
+    }
+}
+
 fn first_id(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> templum_canvas::BlockId {
     ws.read_with(cx, |ws, _| ws.space.canvas.top().unwrap())
 }
