@@ -806,22 +806,20 @@ impl Workspace {
             cx.notify();
             return;
         }
-        // A wire, under the drawings: a click selects it for Delete, and no block keeps the
-        // keyboard.
-        if e.click_count == 1
-            && self.tool == Tool::Select
-            && let Some(wire) = self.wire_at(world)
-        {
-            self.space.selected_wire = Some(wire);
-            self.space.selected_ink = None;
+        // A wire, under the drawings: a press selects it for Delete, and no block keeps the
+        // keyboard. Wires run where people grab the canvas: a drag from one still moves it.
+        let wire = if e.click_count == 1 && self.tool == Tool::Select {
+            self.wire_at(world)
+        } else {
+            None
+        };
+        if wire.is_some() {
             self.space.selected.clear();
             self.space.focused = None;
-            self.press = None;
-            cx.notify();
-            return;
         }
         let had_ink = self.space.selected_ink.take().is_some();
-        if self.space.selected_wire.take().is_some() || had_ink {
+        let had_wire = std::mem::replace(&mut self.space.selected_wire, wire).is_some();
+        if had_ink || had_wire || wire.is_some() {
             cx.notify();
         }
         if e.click_count == 2 {

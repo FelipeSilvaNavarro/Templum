@@ -350,6 +350,36 @@ fn a_click_selects_a_wire_and_delete_removes_it(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// Wires run through the gaps people grab to move the canvas: a drag that starts on one still
+/// moves it, and the wire is selected.
+#[gpui_kit::test]
+fn a_drag_from_a_wire_moves_the_canvas(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = apart(handle, &ws, cx);
+    ws.update(cx, |ws, cx| {
+        ws.connect(kanban, note, cx);
+    });
+    let on = on_the_wire(&ws, cx);
+    let before = ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let to = (on.0 - 100.0, on.1);
+        press_with(window, cx, MouseButton::Left, Modifiers::default(), on, to);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.space.canvas.camera.origin.x,
+            before.x + 100.0,
+            "it panned"
+        );
+        assert_eq!(
+            ws.space.selected_wire,
+            Some(Wire::new(kanban, note).unwrap())
+        );
+    });
+}
+
 /// A selected wire never takes a terminal's Backspace: a block that took the keyboard since
 /// (clicked, or just added) drops the wire's selection, and with a block focused the key is
 /// never the wire's.
