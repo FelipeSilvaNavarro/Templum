@@ -136,10 +136,10 @@ its screen has been still for a second. The result names the new block and its f
 - Every terminal already gets `TEMPLUM_TERMINAL` ([usage.md](usage.md)); every program in it inherits it, the MCP
   server and hooks an agent starts included. The bus finds the caller by it, at each call, so a block moved to
   another workspace stays the same caller.
-- Every terminal also gets `TEMPLUM_BUS`, the bus's address, when there is a bus. On Unix, every terminal's `PATH`
-  starts with `<data>/bin`, where Templum keeps a link named `templum` to itself, so `templum` in a Templum terminal
-  is the Templum that opened it. On Windows, `templum` is on a terminal's `PATH` only if the installer put Templum
-  there (a link of its own is deferred: [minors](../minors.md#connections)).
+- Every terminal also gets `TEMPLUM_BUS`, the bus's address, when there is a bus, and a `PATH` that starts with
+  Templum's folder, so `templum` in a Templum terminal is the Templum that opened it: on Unix `<data>/bin`, where
+  Templum keeps a link named `templum` to itself; on Windows the folder of Templum's program, where `templum` is
+  `templum.exe`. Empty entries of Templum's own `PATH` (the current folder) are left out.
 
 ## The bus
 

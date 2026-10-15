@@ -48,8 +48,8 @@ pub(super) fn start(
     (Some(bus), env, task)
 }
 
-/// What every terminal gets while the bus runs: its address and, on Unix, Templum's `bin`
-/// folder first in PATH, where `templum` is this Templum.
+/// What every terminal gets while the bus runs: its address and Templum's folder first in
+/// PATH, where `templum` is this Templum.
 fn terminal_env(bus: &Bus, data: &Path) -> Vec<(String, String)> {
     let mut env = vec![("TEMPLUM_BUS".to_string(), bus.env.clone())];
     let path = std::env::var_os("PATH").unwrap_or_default();
@@ -84,9 +84,10 @@ fn templum_folder(data: &Path) -> Option<PathBuf> {
     Some(bin)
 }
 
+/// The folder of Templum's program, where `templum` is `templum.exe`: no link needed.
 #[cfg(not(unix))]
 fn templum_folder(_: &Path) -> Option<PathBuf> {
-    None
+    Some(super::usage::program()?.parent()?.to_path_buf())
 }
 
 impl Workspace {

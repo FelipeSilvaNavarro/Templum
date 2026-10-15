@@ -434,11 +434,8 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   leaves the flags out when the data folder or Templum's path can't be typed safely (a `$`, a `"`), and the Claude
   Code or Codex then starts without Templum's server: `/mcp` doesn't list it, and nothing says why. Fix: a
   notification once per session, from `launch_agent` and `resume_agent`, which have the window.
-- [ ] **Windows terminals have no `templum` on their PATH.** `templum_first` (`crates/templum/src/workspace/bus.rs:78`)
-  returns nothing on Windows, so `templum blocks` works there only when the installer put Templum on PATH. Fix: a
-  `templum.exe` hard link in `<data>/bin`, or the installer's PATH.
-- [ ] **Two Templums sharing a data folder share one `templum` link.** `templum_first`
-  (`crates/templum/src/workspace/bus.rs:63`) points `<data>/bin/templum` at the last Templum started (an installed
+- [ ] **Two Templums sharing a data folder share one `templum` link.** `templum_folder`
+  (`crates/templum/src/workspace/bus.rs:75`, at 2cbb1d9) points `<data>/bin/templum` at the last Templum started (an installed
   one and `cargo run`), so a terminal of the first runs the second's program; its `TEMPLUM_BUS` still names its own
   Templum. Fix: one link per bus (`<data>/bin/<pid>/templum`), removed with the bus.
 - [ ] **The Claude Code settings file has its old name.** `claude-statusline.json`
