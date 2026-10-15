@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use gpui_kit::{Context, Hsla, MouseDownEvent, MouseUpEvent};
 use templum_canvas::{BlockId, Curve, HIT_PX, Point, Rect, Wire};
+use templum_mcp::Reply;
 
 use super::history::{Change, Then};
 use super::{Drag, Space, Workspace};
@@ -68,6 +69,41 @@ impl Workspace {
     /// block, already wired, or one isn't on the canvas.
     pub(crate) fn connect(&mut self, a: BlockId, b: BlockId, cx: &mut Context<Self>) -> bool {
         self.set_wire(Wire { a, b }, true, Then::New, cx)
+    }
+
+    /// `templum wire <a> <b>` from the terminal `from`: wires two blocks of its workspace, a step
+    /// Ctrl+Z takes back. A person's command, or a script's (an agent's shell's too): it asks no
+    /// one.
+    pub(super) fn wire_blocks(
+        &mut self,
+        from: &str,
+        a: &str,
+        b: &str,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let (space_id, _) = self.caller(from).expect("call found the caller");
+        let space = self.space_named(&space_id).expect("the caller's workspace");
+        let find = |uid: &str| {
+            space.block_by_uid(uid).ok_or_else(|| {
+                Reply::err(format!(
+                    "There's no block {uid} in your workspace: templum blocks lists them."
+                ))
+            })
+        };
+        let (x, y) = match (find(a), find(b)) {
+            (Ok(x), Ok(y)) => (x, y),
+            (Err(refused), _) | (_, Err(refused)) => return refused,
+        };
+        if x == y {
+            return Reply::err(format!("{a} can't be wired to itself."));
+        }
+        if space.wired(x, y) {
+            return Reply::ok(format!("{a} and {b} are already connected."));
+        }
+        match self.in_space(&space_id, |ws| ws.connect(x, y, cx)) {
+            Some(true) => Reply::ok(format!("Connected {a} and {b}.")),
+            _ => Reply::err(format!("{a} and {b} can't be wired.")),
+        }
     }
 
     /// Unwires them, a step Ctrl+Z takes back. False when they weren't wired.

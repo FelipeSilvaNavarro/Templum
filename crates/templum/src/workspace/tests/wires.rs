@@ -1,7 +1,9 @@
 //! Wires between blocks (docs/specs/connections.md, Wires).
 
+use serde_json::json;
 use templum_canvas::{Color, Drawing, ShapeKind, Wire};
 
+use super::bus::{call, call_later, me};
 use super::*;
 use crate::workspace::Tool;
 use crate::workspace::history::Then;
@@ -788,4 +790,51 @@ fn a_saved_wire_to_a_missing_or_doubled_block_is_dropped(cx: &mut TestAppContext
         let blocks: Vec<BlockId> = ws.space.canvas.blocks().iter().map(|b| b.id).collect();
         assert_eq!(ws.space.wires, [Wire::new(blocks[0], blocks[2]).unwrap()]);
     });
+}
+
+#[gpui_kit::test]
+fn templum_wire_wires_two_blocks_of_its_workspace_as_a_step(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let (from, _) = me(&ws, cx, terminal);
+    let [k, n] = uids(&ws, cx, [kanban, note]);
+    let (failed, text) = call(handle, &ws, cx, &from, "wire", json!({ "a": k, "b": n }));
+    assert_eq!((failed, text), (false, format!("Connected {k} and {n}.")));
+    assert!(ws.read_with(cx, |ws, _| ws.space.wired(kanban, note)));
+    let (failed, text) = call(handle, &ws, cx, &from, "wire", json!({ "a": n, "b": k }));
+    assert_eq!(
+        (failed, text),
+        (false, format!("{n} and {k} are already connected."))
+    );
+    let (failed, text) = call(handle, &ws, cx, &from, "wire", json!({ "a": k, "b": k }));
+    assert_eq!(
+        (failed, text),
+        (true, format!("{k} can't be wired to itself."))
+    );
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &from,
+        "wire",
+        json!({ "a": k, "b": "zzzzz" }),
+    );
+    assert_eq!(
+        (failed, text),
+        (
+            true,
+            "There's no block zzzzz in your workspace: templum blocks lists them.".to_string()
+        )
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            assert!(ws.undo_canvas(false, window, cx), "a step of Ctrl+Z");
+            assert!(!ws.space.wired(kanban, note));
+        })
+    })
+    .unwrap();
+    // An agent's MCP server never gets it: the command line's alone.
+    let answers = call_later(handle, &ws, cx, &from, 1, "wire", json!({ "a": k, "b": n }));
+    let line = answers.try_recv().unwrap();
+    assert!(line.contains("Unknown tool: wire"), "{line}");
 }

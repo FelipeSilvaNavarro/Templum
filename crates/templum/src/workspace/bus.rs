@@ -148,7 +148,8 @@ impl Workspace {
                         if hello.client == "mcp" {
                             self.allowed(&hello.terminal, name, cx);
                         }
-                        if !tools::known(name) {
+                        let cli_only = hello.client == "cli" && tools::cli_only(name);
+                        if !tools::known(name) && !cli_only {
                             rpc::error(&id, rpc::PARAMS, &format!("Unknown tool: {name}"))
                         } else {
                             let outcome = match tools::parse(name, &params["arguments"]) {
@@ -385,7 +386,7 @@ impl Workspace {
                 event,
                 timeout,
             } => return self.wait_for(terminal, &block, event, timeout),
-            Call::Wire { .. } => Reply::err("Not in this Templum yet."),
+            Call::Wire { a, b } => self.wire_blocks(terminal, &a, &b, cx),
             Call::ListCards { board, card } => {
                 self.list_cards(terminal, board.as_deref(), card, cx)
             }
