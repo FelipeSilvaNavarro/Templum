@@ -1,10 +1,11 @@
 //! The content tools (docs/specs/connections.md, Tools, batch 4): the cards of a kanban wired to the
 //! caller, a wired note, a file opened in an editor, a wired Git block's status.
 
-use gpui_kit::{App, Context, Window};
+use gpui_kit::component::input::EditorState;
+use gpui_kit::{App, Context, Entity, Window};
 use templum_mcp::{Reply, tools};
 
-use super::bus::{Outcome, flat};
+use super::bus::{Outcome, flat, target};
 use super::{BlockId, Space, Workspace};
 use crate::board::{Card, Comment};
 use crate::notes;
@@ -331,19 +332,57 @@ impl Workspace {
         Reply::ok(format!("Card {card} is yours."))
     }
 
-    pub(super) fn read_note(&self, _from: &str, _block: &str, _cx: &App) -> Reply {
-        Reply::err("Not yet.")
+    /// The note block `block` wired to the caller, and the editor of the note it shows.
+    fn wired_note(&self, from: &str, block: &str) -> Result<Entity<EditorState>, Reply> {
+        let (space, me) = self.caller_space(from);
+        let id = target(space, me, block)?;
+        let Some(note) = space.blocks.get(&id).and_then(|b| b.note()) else {
+            return Err(Reply::err(format!("{block} isn't a note.")));
+        };
+        note.tab()
+            .map(|t| t.editor.clone())
+            .ok_or_else(|| Reply::err(format!("{block} shows no note.")))
     }
 
+    pub(super) fn read_note(&self, from: &str, block: &str, cx: &App) -> Reply {
+        match self.wired_note(from, block) {
+            Ok(editor) => Reply::ok(tools::tail(&editor.read(cx).value(), tools::MAX_TEXT)),
+            Err(refused) => refused,
+        }
+    }
+
+    /// Adds `text` at the note's end after a blank line, as one step of the note's own Ctrl+Z; the
+    /// person's caret and selection stay where they were.
     pub(super) fn append_note(
         &mut self,
-        _from: &str,
-        _block: &str,
-        _text: &str,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
+        from: &str,
+        block: &str,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> Reply {
-        Reply::err("Not yet.")
+        let editor = match self.wired_note(from, block) {
+            Ok(editor) => editor,
+            Err(refused) => return refused,
+        };
+        if text.trim().is_empty() {
+            return Reply::err("There's nothing to add.");
+        }
+        editor.update(cx, |e, cx| {
+            let value = e.value();
+            let sep = if value.is_empty() || value.ends_with("\n\n") {
+                ""
+            } else if value.ends_with('\n') {
+                "\n"
+            } else {
+                "\n\n"
+            };
+            let (kept, end) = (e.selected_range(), value.len());
+            e.set_selected_range(end..end, cx);
+            e.insert(format!("{sep}{}", text.trim_end()), window, cx);
+            e.set_selected_range(kept, cx);
+        });
+        Reply::ok(format!("Added to the note in {block}."))
     }
 
     pub(super) fn open_file_for(

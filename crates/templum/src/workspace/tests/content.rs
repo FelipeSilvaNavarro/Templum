@@ -1,6 +1,7 @@
 //! The content tools: a wired kanban's cards, a wired note, a file opened in an editor, a wired
 //! Git block's status (docs/specs/connections.md, batch 4).
 
+use gpui_kit::component::input::EditorState;
 use serde_json::json;
 
 use super::bus::{call, me};
@@ -310,5 +311,116 @@ fn the_instructions_say_what_to_do_with_a_kanban_and_a_note(cx: &mut TestAppCont
              Review when you are done; write what the next agent needs to know in the connected note."
         ),
         "{text}"
+    );
+}
+
+/// The startup terminal wired to the note "hello" of `three_blocks`: (TEMPLUM_TERMINAL, note
+/// block, note's uid).
+fn wired_note(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> (String, BlockId, String) {
+    let (_, note, terminal) = three_blocks(handle, ws, cx);
+    ws.update(cx, |ws, cx| assert!(ws.connect(terminal, note, cx)));
+    let (me, _) = me(ws, cx, terminal);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&note].clone());
+    (me, note, uid)
+}
+
+fn note_editor(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    note: BlockId,
+) -> Entity<EditorState> {
+    ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&note]
+            .note()
+            .unwrap()
+            .tab()
+            .unwrap()
+            .editor
+            .clone()
+    })
+}
+
+#[gpui_kit::test]
+fn read_note_reads_what_the_note_shows(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, _, uid) = wired_note(handle, &ws, cx);
+    assert_eq!(
+        call(handle, &ws, cx, &me, "read_note", json!({ "block": uid })),
+        (false, "hello".to_string())
+    );
+    let terminal = ws.read_with(cx, |ws, _| ws.space.terminals().next().unwrap().0);
+    let (_, mine) = super::bus::me(&ws, cx, terminal);
+    let (failed, text) = call(handle, &ws, cx, &me, "read_note", json!({ "block": mine }));
+    assert!(failed && text.contains("isn't a note"), "{text}");
+}
+
+#[gpui_kit::test]
+fn append_note_shows_at_once_keeps_the_caret_and_one_ctrl_z_takes_it_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, note, uid) = wired_note(handle, &ws, cx);
+    let editor = note_editor(&ws, cx, note);
+    // The person is in the note, the caret after "he".
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(note, window, cx));
+        editor.update(cx, |e, cx| e.set_selected_range(2..2, cx));
+    })
+    .unwrap();
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "append_note",
+        json!({ "block": uid, "text": "Next: tests" }),
+    );
+    assert!(!failed, "{text}");
+    cx.run_until_parked();
+    let id = ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&note].note().unwrap().tab().unwrap().id
+    });
+    editor.read_with(cx, |e, _| {
+        assert_eq!(e.value().as_ref(), "hello\n\nNext: tests");
+        assert_eq!(e.selected_range(), 2..2, "the caret stays");
+    });
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.notes.get(id).unwrap().text.clone()),
+        "hello\n\nNext: tests"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.press(UNDO, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    editor.read_with(cx, |e, _| assert_eq!(e.value().as_ref(), "hello"));
+    // A note ending in a newline gets one more; an empty one none.
+    editor.update(cx, |e, cx| e.set_selected_range(5..5, cx));
+    cx.update_window(handle, |_, window, cx| {
+        editor.update(cx, |e, cx| e.insert("\n", window, cx));
+    })
+    .unwrap();
+    call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "append_note",
+        json!({ "block": uid, "text": "x" }),
+    );
+    editor.read_with(cx, |e, _| assert_eq!(e.value().as_ref(), "hello\n\nx"));
+    assert!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "append_note",
+            json!({ "block": uid, "text": " \n" })
+        )
+        .0,
+        "blank"
     );
 }
