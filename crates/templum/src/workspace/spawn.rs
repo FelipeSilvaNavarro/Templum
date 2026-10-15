@@ -15,6 +15,10 @@ use crate::agents::AgentEntry;
 
 /// How often a spawned agent's readiness for its prompt is looked at.
 pub(super) const READY_LOOK: Duration = Duration::from_secs(1);
+/// How long after the spawn a shell may take to start its agent (its startup files): a snapshot
+/// that still finds none there lets it go, prompt and task (its folder's trust was declined, a
+/// question of its shell took the command).
+pub(super) const STARTS_WITHIN: Duration = Duration::from_secs(60);
 
 impl Workspace {
     /// `spawn_agent` from the terminal `from`. With a worktree, git makes it on the background
@@ -169,10 +173,8 @@ impl Workspace {
     }
 
     /// Looks, every READY_LOOK, whether the agent in `terminal` is ready for its prompt, until it
-    /// is typed or its block is gone.
+    /// is typed, its block is gone, or a snapshot dropped it (STARTS_WITHIN).
     fn watch_ready(&self, terminal: String, cx: &mut Context<Self>) {
-        // ponytail: an agent the snapshots never recognize keeps this looking once a second until
-        // its block closes; give up after a while if that ever matters.
         cx.spawn(async move |ws, cx| {
             loop {
                 cx.background_executor().timer(READY_LOOK).await;

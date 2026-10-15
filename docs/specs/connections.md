@@ -157,7 +157,9 @@ worktree comes from the repository of the folder the agent starts in, always und
 `.worktrees/`, on a new branch from that folder's HEAD; a name other than letters, digits, `-`, `_`, `.` and `/`, or
 one already a branch, is refused. Claude Code's prompt waits for its `SessionStart`, which comes after its question
 about trusting the folder. The prompt is a task the caller handed over: the dot travels, `wait_for_idle` waits for
-its answer, and a prompt the agent doesn't take ends at once, as a delegated task does.
+its answer, and a prompt the agent doesn't take ends at once, as a delegated task does. An agent no snapshot has found
+a minute after the spawn never started (its folder's trust declined, a question of its shell took the command): its
+prompt is dropped and its task ends, as when an agent leaves.
 
 ## Identity
 

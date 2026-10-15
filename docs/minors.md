@@ -607,9 +607,6 @@ Left by batch 3 (agents together) and its review; line numbers are those of `dev
   `crates/templum/src/workspace/bus.rs:167`), not a wait: a cancel or the agent quitting doesn't stop it, and a
   `git worktree add` that hangs (a post-checkout hook) holds the call for good. A person sees the agent's call never
   end. Fix: keep the job in `waits` with a deadline, or run git with a time limit.
-- [ ] **An agent the snapshots never recognize keeps a look running.** `watch_ready`
-  (`crates/templum/src/workspace/spawn.rs:166`) looks once a second until the prompt is typed or the block closes. A
-  person sees nothing (a small cost). Fix: give up after a few minutes.
 - [ ] **Each wait keeps a timer until its deadline.** `wait` (`crates/templum/src/workspace/waits.rs:96`) starts a
   detached timer per call and leaves it to run out after the call is answered: up to an hour each. A person sees
   nothing (a small cost). Fix: keep the timer's task in the `Wait`, so answering drops it.
@@ -617,12 +614,3 @@ Left by batch 3 (agents together) and its review; line numbers are those of `dev
   (`crates/templum/src/workspace/bus.rs:326`) writes `\r` right after the paste; an agent may take it for a new line,
   where `delegate` waits 150 ms. A person sees the text sit unsent in Claude Code's or Codex's prompt. Fix: send its
   Enter with `send_task`'s delay (confirm with the manual check first).
-
-Left by the second review of batch 3; line numbers are those of `development` at bb6c344.
-
-- [ ] **A spawned agent that quits before a snapshot saw it stays known.** `see`
-  (`crates/templum/src/workspace/mod.rs:653`) keeps the agent `start_agent` typed while its prompt waits, since a
-  snapshot taken while the new shell still starts finds none; a Claude Code whose folder trust is declined at once,
-  or that fails to start, never says it started, so its prompt and its agent stay until an agent runs there again. A
-  person sees the block still named after the agent, and saved as one. Fix: drop the prompt when its handed task's time
-  runs out (10 minutes), so the next snapshot lets the agent go.

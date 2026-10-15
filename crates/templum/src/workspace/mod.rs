@@ -650,6 +650,7 @@ impl Space {
     /// Tells each terminal what a snapshot found in it. The terminals whose agent, found running
     /// before, is gone: what was handed to it has no one to answer.
     fn see(&mut self, found: Vec<(BlockId, templum_terminal::Inspection)>) -> Vec<String> {
+        let now = Instant::now();
         let mut gone = Vec::new();
         for (id, mut seen) in found {
             if let Some(pane) = self.terminal_mut(id) {
@@ -660,12 +661,18 @@ impl Space {
                 if seen.agent.is_none() {
                     pane.state = None;
                     // Found before, so it left; one not found yet may still be starting, and one
-                    // Templum started there stays known while its prompt waits.
+                    // Templum started there stays known while its prompt waits, until its shell
+                    // took too long to start it: it never did.
+                    let starting = pane
+                        .task(now)
+                        .is_some_and(|h| now < h.since + spawn::STARTS_WITHIN);
                     if pane.seen.pid.is_some() {
                         pane.prompt = None;
                         gone.push(pane.term.id().to_string());
-                    } else if pane.prompt.is_some() {
+                    } else if pane.prompt.is_some() && starting {
                         seen.agent = pane.seen.agent.take();
+                    } else if pane.prompt.take().is_some() {
+                        gone.push(pane.term.id().to_string());
                     }
                 }
                 pane.seen = seen;

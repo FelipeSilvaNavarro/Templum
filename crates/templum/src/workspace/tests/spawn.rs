@@ -252,6 +252,58 @@ fn nothing_is_handed_to_an_agent_no_snapshot_found_yet(cx: &mut TestAppContext) 
     assert!(failed && text.contains("still starting"), "{text}");
 }
 
+/// A spawned agent no snapshot found a while after its spawn never started: its prompt and its
+/// task go, whoever waits on it hears so, and an agent started there later by hand gets no prompt.
+#[gpui_kit::test]
+fn a_spawned_agent_that_never_started_is_let_go(cx: &mut TestAppContext) {
+    use templum_terminal::Inspection;
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path(), "prompt": "say hi" });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    let (_, uid) = me(&ws, cx, new);
+    let idle = json!({ "block": uid });
+    let waiting = call_later(handle, &ws, cx, &terminal, 1, "wait_for_idle", idle);
+    // Spawned a while ago.
+    ws.update(cx, |ws, _| {
+        let handed = ws.space.terminal_mut(new).unwrap().handed.as_mut().unwrap();
+        handed.since -= crate::workspace::spawn::STARTS_WITHIN;
+    });
+    snapshot(handle, &ws, cx, new, Inspection::default());
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(new).unwrap();
+        assert!(pane.prompt.is_none() && pane.handed.is_none());
+        assert_eq!(pane.seen.agent, None);
+    });
+    let (failed, text) = answered(&waiting);
+    assert!(
+        failed && text.contains("ended before it answered"),
+        "{text}"
+    );
+    // Codex, started there by hand, is found in front.
+    #[cfg(unix)]
+    in_front(&ws, cx, new, true);
+    let p = ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().term.processes());
+    let running = Inspection {
+        agent: Some("codex".into()),
+        pid: p.foreground.or(p.shell),
+        ..Default::default()
+    };
+    snapshot(handle, &ws, cx, new, running);
+    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+    for _ in 0..4 {
+        std::thread::sleep(Duration::from_millis(50));
+        after(cx, look);
+    }
+    enter(cx);
+    std::thread::sleep(Duration::from_millis(300));
+    let shown = ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().screen());
+    assert!(!shown.contains("say hi"), "typed: {shown:?}");
+    assert!(waiting.try_recv().is_err(), "answered once");
+}
+
 #[gpui_kit::test]
 fn another_agents_prompt_waits_for_its_process_and_a_still_screen(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
