@@ -309,7 +309,8 @@ fn the_instructions_say_what_to_do_with_a_kanban_and_a_note(cx: &mut TestAppCont
     assert!(
         text.ends_with(
             "When a connected kanban has your task, move its card to Doing when you start and to \
-             Review when you are done; write what the next agent needs to know in the connected note."
+             Review when you are done (Done when the board has no Review); write what the next agent \
+             needs to know in the connected note."
         ),
         "{text}"
     );
