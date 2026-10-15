@@ -449,9 +449,21 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   stopped workspace's saved canvas holds (1 in 60 million per pair), and that block gets a new id when the workspace
   starts again. Fix: check `Space::saved`'s items too.
 - [ ] **Codex's dot never says "Working".** Codex only reports its turns' end (`codex`,
-  `crates/templum-mcp/src/hooks.rs:49`), so its terminal shows no accent dot while it works and no yellow one at a
-  permission prompt. Fix: a Codex hook for those, when Codex has one; meanwhile the screen going still (batch 5).
+  `crates/templum-mcp/src/hooks.rs:49`): until its first turn ends its terminal shows the shell's "Running for …",
+  and after it nothing, also while it works on the next prompt, and no yellow dot at a permission prompt. Fix: a
+  Codex hook for those, when Codex has one; meanwhile the screen going still (batch 5).
 - [ ] **The verbs print nothing in a Windows console.** The release program has no console
   (`crates/templum/src/main.rs:3`), so `templum blocks` (`main.rs:56`) prints only into a pipe:
   `templum blocks | more`. Fix: `AttachConsole(ATTACH_PARENT_PROCESS)` before running a verb (needs `unsafe` or a
   crate), or a small console `templum-cli.exe` beside it.
+- [ ] **The bus spins when it can't accept.** The accept loop (`crates/templum-mcp/src/bus.rs:63`) goes straight
+  back to `accept` after an error; one that repeats (out of file descriptors) keeps a core busy until it clears.
+  A person sees Templum use a whole core. Fix: sleep 100 ms after a failed `accept`.
+- [ ] **A socket in the temporary folder outlives a crash.** When the data folder's path is too long for a socket,
+  the bus's socket goes to the temporary folder (`crates/templum-mcp/src/bus.rs:274`), and `remove_stale` (:295) only
+  clears `<data>/bus`: a crash leaves a `templum-<pid>-<n>.sock` file there. Fix: run `remove_stale` on the
+  temporary folder's `templum-*.sock` files too.
+- [ ] **No test says a pasted block gets a new id.** `copy_blocks` (`crates/templum/src/workspace/selection.rs:144`)
+  copies items without their `uid`, so `paste_blocks` gives each a new one, but the spec's test list
+  (docs/specs/connections.md, Testing) names a test for it that doesn't exist. Fix: copy a block, paste it, and
+  assert the two ids differ.

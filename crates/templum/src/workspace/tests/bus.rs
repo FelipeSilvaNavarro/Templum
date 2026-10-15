@@ -71,6 +71,7 @@ fn me(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> (String, 
 }
 
 /// The terminal's screen once it shows `needle`.
+#[cfg(unix)]
 fn screen_with(
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
