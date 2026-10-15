@@ -434,6 +434,8 @@ impl Render for Workspace {
         let dot = self.ui.dot;
         let guides = self.space.guides.clone();
         let accent = self.ui.accent;
+        // The wires, under the blocks (none in grid mode).
+        let wires = self.wire_curves();
         // A full-size layer under the blocks: the IME handler, the workspace origin, and
         // window-wide drag listeners (drags keep working outside the window).
         let layer = canvas(
@@ -442,6 +444,7 @@ impl Render for Workspace {
                 // Grid mode shows no canvas.
                 if !tiled {
                     paint_dots(&camera, dot, bounds, window);
+                    crate::wires::paint(&wires, &camera, bounds, window);
                     paint_guides(&camera, accent, bounds, &guides, window);
                 }
                 window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);

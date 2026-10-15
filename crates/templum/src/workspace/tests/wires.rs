@@ -24,6 +24,21 @@ fn uids<const N: usize>(
     ws.read_with(cx, |ws, _| ids.map(|id| ws.space.uids[&id].clone()))
 }
 
+/// `three_blocks`, the note moved right of the kanban block (40, 40, 420 × 280, its smallest) to
+/// (500, 80, 220 × 200): the wire between them runs straight across the gap, at y 180, from x
+/// 460 to 500.
+fn apart(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> (BlockId, BlockId, BlockId) {
+    let (kanban, note, terminal) = three_blocks(handle, ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(note).unwrap().rect = Rect::new(500.0, 80.0, 220.0, 200.0);
+    });
+    (kanban, note, terminal)
+}
+
 fn wires(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<Wire> {
     ws.read_with(cx, |ws, _| ws.space.wires.clone())
 }
@@ -198,4 +213,37 @@ fn a_blocks_menu_connects_and_disconnects_it(cx: &mut TestAppContext) {
     })
     .unwrap();
     assert_eq!(wires(&ws, cx), [Wire::new(kanban, note).unwrap()]);
+}
+
+#[gpui_kit::test]
+fn wires_follow_their_blocks_in_the_titles_dim_color_and_grid_mode_hides_them(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = apart(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.connect(kanban, note, cx);
+            // From the middle of the kanban block's right edge to the middle of the note's left
+            // edge.
+            let curves = ws.wire_curves();
+            assert_eq!(curves.len(), 1);
+            assert_eq!(
+                (curves[0].0.from, curves[0].0.to),
+                (Point::new(460.0, 180.0), Point::new(500.0, 180.0))
+            );
+            assert_eq!(curves[0].1, ws.ui.title_dim);
+            // The note moves down: the wire follows.
+            ws.space.canvas.get_mut(note).unwrap().rect.y = 100.0;
+            assert_eq!(ws.wire_curves()[0].0.to, Point::new(500.0, 200.0));
+            ws.enter_grid(vec![kanban, note], window, cx);
+            assert!(ws.wire_curves().is_empty(), "grid mode hides wires");
+            assert_eq!(ws.space.wires.len(), 1, "and keeps them");
+            ws.leave_grid(window, cx);
+            assert_eq!(ws.wire_curves().len(), 1);
+        });
+        // A frame paints them.
+        window.render_frame(cx);
+    })
+    .unwrap();
 }

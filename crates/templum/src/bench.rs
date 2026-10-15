@@ -1,7 +1,7 @@
 //! `templum --bench`: 20 terminals, 5 running `yes`, 200 strokes over them, 10 s of animated pan
 //! and zoom. `templum --bench-mixed`: a canvas like an agent cockpit instead — 5 terminals
 //! redrawing a colored screen 10× a second (an agent's TUI), 3 editors, 3 Git blocks, a note and
-//! 2 kanban blocks, no strokes.
+//! 2 kanban blocks, each wired to the next, no strokes.
 //! `templum --bench-zoom=<kind>`: 10 blocks of one kind (`terminal`, `editor`, `note`, `kanban`,
 //! `git`) or none (`empty`), on the folder Templum runs from; the zoom glides step by step from
 //! 25% to 200% and back, 4 steps a second, around the view's center. No pan, no output.
@@ -11,7 +11,7 @@
 //! `templum --bench-far`: an agent cockpit seen from afar, on the folder Templum runs from: 24
 //! blocks, 6 a row (8 terminals, 5 redrawing the mixed scenario's colored screen and 3 showing
 //! its largest file; 6 editors on its 6 largest files; 4 notes holding its README; 3 Git blocks;
-//! 3 kanban blocks), none focused. The camera rests at 33% for 5 s, then glides to 25% and rests
+//! 3 kanban blocks), each wired to the next, none focused. The camera rests at 33% for 5 s, then glides to 25% and rests
 //! there, while it circles 1,500 world units around the canvas's center.
 //! Prints one JSON line (frame-interval percentiles, memory), then quits. Bar: p95 <= 16.7 ms.
 
@@ -53,6 +53,7 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, mixed: bool, c
                 for _ in 0..2 {
                     ws.add_kanban_at(next(), window, cx);
                 }
+                wire_in_a_chain(ws);
                 return;
             }
             for i in 1..20 {
@@ -292,6 +293,7 @@ pub(crate) fn run_far(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut A
                         k.board = Some(board);
                     }
                 }
+                wire_in_a_chain(ws);
                 // No block focused: the workspace keeps the keyboard, so every block is drawn
                 // at its own level.
                 ws.space.focused = None;
@@ -564,4 +566,12 @@ fn rss_mb() -> Option<f64> {
         .parse()
         .ok()?;
     Some(kb / 1024.0)
+}
+
+/// Wires each block to the next, back to front, as a cockpit's are: the benches paint wires.
+fn wire_in_a_chain(ws: &mut Workspace) {
+    let ids: Vec<_> = ws.space.canvas.blocks().iter().map(|b| b.id).collect();
+    for pair in ids.windows(2) {
+        ws.space.add_wire(pair[0], pair[1]);
+    }
 }

@@ -35,6 +35,7 @@ mod toolbar;
 mod update;
 mod usage;
 mod welcome;
+mod wires;
 mod workspace;
 
 use gpui_kit::component::TitleBar;

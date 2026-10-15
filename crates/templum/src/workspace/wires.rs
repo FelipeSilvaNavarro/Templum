@@ -1,8 +1,8 @@
 //! Wires between blocks (docs/specs/connections.md, Wires): wiring and unwiring them, each a
 //! step of Ctrl+Z.
 
-use gpui_kit::Context;
-use templum_canvas::{BlockId, Wire};
+use gpui_kit::{Context, Hsla};
+use templum_canvas::{BlockId, Curve, Wire};
 
 use super::history::{Change, Then};
 use super::{Space, Workspace};
@@ -35,6 +35,14 @@ impl Space {
     pub(super) fn unwire(&mut self, id: BlockId) {
         self.wires.retain(|w| !w.touches(id));
     }
+
+    /// `wire`'s curve between its blocks' rects; None when one isn't on the canvas.
+    pub(super) fn curve(&self, wire: Wire) -> Option<Curve> {
+        Some(Curve::between(
+            self.canvas.get(wire.a)?.rect,
+            self.canvas.get(wire.b)?.rect,
+        ))
+    }
 }
 
 impl Workspace {
@@ -47,6 +55,19 @@ impl Workspace {
     /// Unwires them, a step Ctrl+Z takes back. False when they weren't wired.
     pub(crate) fn disconnect(&mut self, wire: Wire, cx: &mut Context<Self>) -> bool {
         self.set_wire(wire, false, Then::New, cx)
+    }
+
+    /// The wires to paint under the blocks, with their colors: the title's dim one. Grid mode
+    /// hides them.
+    pub(super) fn wire_curves(&self) -> Vec<(Curve, Hsla)> {
+        if self.space.grid.is_some() {
+            return Vec::new();
+        }
+        self.space
+            .wires
+            .iter()
+            .filter_map(|w| Some((self.space.curve(*w)?, self.ui.title_dim)))
+            .collect()
     }
 
     /// Wires (`on`) or unwires `wire`; the change that takes it back is kept as `then` says.
