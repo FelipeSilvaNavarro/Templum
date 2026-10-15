@@ -3237,3 +3237,6 @@ git commit -m "docs(connections): describe the bus, block ids and what agents ar
 13. **A hook's time on an AppImage build:** in a terminal of the AppImage, run
     `time (echo '{"hook_event_name":"PostToolUse"}' | "$APPIMAGE" hook claude)`, and write the time in the minor
     "Each hook runs the AppImage again".
+14. **Ctrl+B on a running Bash command:** in a Claude Code from AI agent ▸, have it run `sleep 60` through Bash and
+    press Ctrl+B while it runs: note whether the dot leaves Working although Claude goes on (the minor "A Bash command
+    sent to the background…").

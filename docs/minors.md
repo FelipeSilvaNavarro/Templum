@@ -486,6 +486,13 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   (`crates/templum-mcp/src/hooks.rs`, the `idle_prompt` arm), so the dot says Working until the next prompt or the
   `idle_prompt` notification, which Claude Code sends only after the prompt has sat idle (about a minute). Fix: a hook
   for interrupts when Claude Code has one; meanwhile the screen going still (batch 5).
+- [ ] **A Bash command sent to the background may show a working Claude Code as idle.** `claude`
+  (`crates/templum-mcp/src/hooks.rs:36`, at 0415ff5) takes a `PostToolUseFailure` with `is_interrupt` for Esc and
+  sets the dot to idle, but Claude Code (2.1.286) likely sends `is_interrupt` for any tool cut short, Ctrl+B moving a
+  running Bash command to the background included, and the turn goes on. A person sees the idle dot while Claude
+  works, until its next `PostToolUse` or `Stop`. Fix: confirm it with the plan's manual check 14, saving both hook
+  inputs; if a field tells Esc from Ctrl+B, set idle on Esc's only; if none does, keep Working on an interrupt and
+  let the screen going still (batch 5) end it.
 - [ ] **Parallel subagents can turn a waiting Claude Code's dot back to Working.** With subagents running side by side,
   one subagent's `PostToolUse` or `PostToolUseFailure` (`crates/templum-mcp/src/hooks.rs:34`, at 11a2fb0) arrives
   while another waits at a permission dialog, and the yellow "Waiting for you" turns back to Working although the
