@@ -871,3 +871,75 @@ fn a_screen_at_work_says_working_and_one_gone_still_ends_its_task(cx: &mut TestA
         "{text}"
     );
 }
+
+/// Their agent's screen shows a tick a second apart, `n` times: at work.
+#[cfg(unix)]
+fn ticks(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId, from: usize, n: usize) {
+    for i in from..from + n {
+        shows(ws, cx, id, &format!("tick {i}"));
+        after(cx, 1000);
+    }
+}
+
+/// The state of terminal block `id`'s agent.
+fn state_of(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+) -> Option<crate::workspace::AgentState> {
+    ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().state.clone())
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_turns_end_right_after_its_spinner_stays_idle(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    ticks(&ws, cx, theirs, 0, 4);
+    assert_eq!(state_of(&ws, cx, theirs), Some(AgentState::Working));
+    event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "stopped", "message": "All done." }),
+    );
+    for _ in 0..2 {
+        after(cx, 1000);
+        assert_eq!(state_of(&ws, cx, theirs), Some(AgentState::Idle));
+    }
+    let answer = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "wait_for_idle",
+        json!({ "block": them }),
+    );
+    assert_eq!(answer, (false, "All done.".to_string()), "at once");
+}
+
+/// A dialog sat still for longer than a screen takes to say "at rest"; the person allowed the
+/// Templum tool it asked for, which now runs: its agent works, and the stillness before says
+/// nothing of it.
+#[gpui_kit::test]
+fn a_tool_allowed_after_a_still_dialog_works(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let (handle, ws, _, theirs) = two_agents(cx);
+    let (worker, _) = me(&ws, cx, theirs);
+    let asks = json!({ "event": "needs_you", "message": "Allow mcp__templum__whoami?" });
+    event(handle, &ws, cx, &worker, asks);
+    for _ in 0..6 {
+        after(cx, 1000);
+    }
+    assert!(matches!(
+        state_of(&ws, cx, theirs),
+        Some(AgentState::NeedsYou(_))
+    ));
+    call_later(handle, &ws, cx, &worker, 1, "whoami", json!({}));
+    assert_eq!(state_of(&ws, cx, theirs), Some(AgentState::Working));
+    after(cx, 1000);
+    assert_eq!(state_of(&ws, cx, theirs), Some(AgentState::Working));
+}

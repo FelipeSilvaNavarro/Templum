@@ -37,6 +37,13 @@ impl Looks {
         self.count = self.count.saturating_add(1);
     }
 
+    /// Its agent's hook spoke: the looks before it count no more (the spinner that ran until a
+    /// turn ended or a dialog opened says nothing after).
+    pub(super) fn heard(&mut self) {
+        self.changes = 0;
+        self.count = 0;
+    }
+
     /// The state these looks give an agent in `state`; None when they say nothing new. A
     /// changing screen is at work, also after a dialog the person answered; a still one ends
     /// only work, never a wait for the person.
@@ -111,13 +118,16 @@ mod tests {
     /// The looks after a first one, each seeing the screen change or not.
     fn saw(changes: &[bool]) -> Looks {
         let mut looks = Looks::default();
-        let mut hash = 1;
-        looks.see(hash);
-        for &changed in changes {
-            hash += u64::from(changed);
-            looks.see(hash);
-        }
+        looks.see(1);
+        more(&mut looks, changes);
         looks
+    }
+
+    /// More looks, each seeing the screen change or not.
+    fn more(looks: &mut Looks, changes: &[bool]) {
+        for &changed in changes {
+            looks.see(looks.hash + u64::from(changed));
+        }
     }
 
     #[test]
@@ -161,5 +171,18 @@ mod tests {
         );
         assert_eq!(saw(&[false; 6]).state(&None), None);
         assert_eq!(saw(&[false; 6]).state(&Some(AgentState::Idle)), None);
+    }
+
+    #[test]
+    fn a_hooks_event_starts_the_looks_over() {
+        // The spinner ran until the turn ended or a dialog opened: it says nothing after.
+        let mut looks = saw(&[true; 4]);
+        looks.heard();
+        more(&mut looks, &[false]);
+        assert_eq!(
+            looks.state(&Some(AgentState::NeedsYou(Some("Allow Bash?".into())))),
+            None
+        );
+        assert_eq!(looks.state(&Some(AgentState::Idle)), None);
     }
 }

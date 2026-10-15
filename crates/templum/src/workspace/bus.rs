@@ -210,7 +210,8 @@ impl Workspace {
         }
     }
 
-    /// An agent's hook says where its turn is. Its turn's end answers what waited on it.
+    /// An agent's hook says where its turn is, and its screen's looks start over. Its turn's end
+    /// answers what waited on it.
     fn agent_event(
         &mut self,
         terminal: &str,
@@ -221,6 +222,7 @@ impl Workspace {
         let Some(pane) = self.pane_mut(terminal) else {
             return;
         };
+        pane.looks.heard();
         match event {
             AgentEvent::Working => pane.state = Some(AgentState::Working),
             AgentEvent::Started => {
@@ -270,6 +272,7 @@ impl Workspace {
         let asked = format!("Allow mcp__templum__{name}?");
         if pane.state == Some(AgentState::NeedsYou(Some(asked))) {
             pane.state = Some(AgentState::Working);
+            pane.looks.heard();
             cx.notify();
         }
     }
