@@ -377,6 +377,37 @@ fn no_enter_goes_to_a_screen_the_task_didnt_change(cx: &mut TestAppContext) {
     assert!(!shown.contains("go on"), "an Enter went: {shown:?}");
 }
 
+/// A dialog that opens between the paste and its Enter (Claude Code asks to run a tool while it
+/// works on a prompt of its own, its screen changing all along) gets no Enter: it would pick the
+/// dialog's first answer for the person.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn no_enter_goes_to_an_agent_that_started_asking_its_person(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    event(handle, &ws, cx, &worker, json!({ "event": "working" }));
+    let task = json!({ "block": them, "task": "go on" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    assert!(!failed, "{text}");
+    screen_with(&ws, cx, theirs, "go on");
+    event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "needs_you", "message": "Allow Bash?" }),
+    );
+    after(cx, 5000);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let shown = screen_with(&ws, cx, theirs, "go on");
+    assert_eq!(
+        shown.matches("go on").count(),
+        1,
+        "an Enter went: {shown:?}"
+    );
+}
+
 /// An agent that goes without a word (Codex says nothing when it quits; one that crashed): the
 /// first snapshot that misses its process ends its task. One not found yet (still starting) has
 /// nothing to end.

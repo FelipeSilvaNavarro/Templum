@@ -61,9 +61,11 @@ impl Pane {
 
 impl Workspace {
     /// Types `text` into the agent in terminal `terminal` as one paste, then Enter a moment later,
-    /// once its screen shows the paste. A screen that doesn't (a dialog that ignores pastes, as
-    /// Codex's approval does, which Templum hears nothing of) gets no Enter: it would pick the
-    /// dialog's answer for the person. The task then waits for its timeout.
+    /// once its screen shows the paste, if Templum still may type into it. A screen that doesn't
+    /// (a dialog that ignores pastes, as Codex's approval does, which Templum hears nothing of),
+    /// or an agent that started asking its person meanwhile (a working agent's screen changes all
+    /// along), gets no Enter: it would pick the dialog's answer for the person. The task then
+    /// waits for its timeout.
     pub(super) fn send_task(&self, terminal: &str, text: &str, cx: &mut Context<Self>) {
         let Some(pane) = self.pane(terminal) else {
             return;
@@ -78,6 +80,9 @@ impl Workspace {
                     let Some(pane) = ws.pane(&terminal) else {
                         return true;
                     };
+                    if pane.takes_typing("").is_err() {
+                        return true;
+                    }
                     if pane.screen() == before {
                         return false;
                     }
