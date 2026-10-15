@@ -489,6 +489,14 @@ fn nothing_is_typed_into_the_shell_an_agent_left(cx: &mut TestAppContext) {
         let seen = &ws.space.terminal(theirs).unwrap().seen;
         assert!(seen.agent.is_some(), "no snapshot missed it yet");
     });
+    // Before a snapshot found it (a Claude Code's prompt typed at its start), its shell's own
+    // process in front tells.
+    ws.update(cx, |ws, _| {
+        let pane = ws.space.terminal_mut(theirs).unwrap();
+        let pid = pane.seen.pid.take();
+        assert!(pane.shell_in_front(), "its shell is in front");
+        pane.seen.pid = pid;
+    });
     let task = json!({ "block": them, "task": "go" });
     let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task.clone());
     assert!(failed && text.contains("runs no agent"), "{text}");
