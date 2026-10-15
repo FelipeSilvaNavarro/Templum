@@ -1,13 +1,16 @@
 //! The content tools (docs/specs/connections.md, Tools, batch 4): the cards of a kanban wired to the
 //! caller, a wired note, a file opened in an editor, a wired Git block's status.
 
-use gpui_kit::component::input::EditorState;
+use std::path::Path;
+
+use gpui_kit::component::input::{EditorState, Position, RopeExt as _};
 use gpui_kit::{App, Context, Entity, Window};
 use templum_mcp::{Reply, tools};
 
 use super::bus::{Outcome, flat, target};
-use super::{BlockId, Space, Workspace};
+use super::{BlockId, Body, Space, Workspace};
 use crate::board::{Card, Comment};
+use crate::editor::{Content, Editor};
 use crate::notes;
 
 impl Workspace {
@@ -385,15 +388,109 @@ impl Workspace {
         Reply::ok(format!("Added to the note in {block}."))
     }
 
+    /// `open_file` from `from`: the front-most wired editor whose folder holds the file, else a
+    /// new editor beside the caller, wired to it. Neither the keyboard nor the camera moves; an
+    /// editor that has the keyboard gives it to the tab opened.
     pub(super) fn open_file_for(
         &mut self,
-        _from: &str,
-        _path: &str,
-        _line: Option<u32>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
+        from: &str,
+        path: &str,
+        line: Option<u32>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
     ) -> Reply {
-        Reply::err("Not yet.")
+        let (space, me) = self.caller_space(from);
+        let here = space.blocks[&me]
+            .folder()
+            .or_else(|| space.terminal(me)?.seen.folder.clone());
+        let named = crate::launcher::expand(path);
+        let path = match &here {
+            Some(here) if named.is_relative() => here.join(named),
+            _ => named,
+        };
+        if path.is_relative() {
+            return Reply::err("Templum doesn't know your folder yet: give the file's whole path.");
+        }
+        let Ok(path) = std::fs::canonicalize(&path) else {
+            return Reply::err(format!("There's no file {}.", path.display()));
+        };
+        if !path.is_file() {
+            return Reply::err(format!("{} isn't a file.", path.display()));
+        }
+        match crate::editor::read_file(&path) {
+            Err(why) => return Reply::err(why),
+            Ok((Content::Binary { .. }, _)) => {
+                return Reply::err(format!(
+                    "{} is binary: an editor shows no text for it.",
+                    path.display()
+                ));
+            }
+            Ok(_) => {}
+        }
+        let holds =
+            |folder: &Path| std::fs::canonicalize(folder).is_ok_and(|f| path.starts_with(f));
+        let wired = space
+            .canvas
+            .blocks()
+            .iter()
+            .rev()
+            .map(|b| b.id)
+            .filter(|id| *id != me && space.wired(me, *id))
+            .find(|id| space.editor(*id).is_some_and(|e| holds(&e.folder)));
+        let folder = here
+            .filter(|h| holds(h))
+            .unwrap_or_else(|| path.parent().unwrap_or(&path).to_path_buf());
+        let space_id = space.id.clone();
+        let opened = self.in_space(&space_id, |ws| {
+            let (id, new) = match wired {
+                Some(id) => (id, false),
+                None => {
+                    let anchor = ws.space.home(ws.space.canvas.get(me)?);
+                    let rect = ws.space.canvas.place_beside(anchor, crate::editor::SIZE);
+                    let kept = (
+                        ws.space.focused,
+                        ws.space.selected.clone(),
+                        ws.space.selected_wire,
+                    );
+                    // In grid mode a new block takes half of the focused tile: the caller's.
+                    ws.space.focused = Some(me);
+                    ws.space.pristine = false;
+                    let editor = Editor::new(folder.clone(), true, cx);
+                    let id = ws.add_block(rect, Body::Editor(Box::new(editor)));
+                    (ws.space.focused, ws.space.selected, ws.space.selected_wire) = kept;
+                    ws.space.add_wire(me, id);
+                    (id, true)
+                }
+            };
+            let had_keys = ws.space.blocks.get(&id)?.has_focus(window, cx);
+            let editor = ws.space.editor_mut(id)?;
+            let i = editor.open_tab(&path, window, cx).ok()?;
+            if let Some(line) = line {
+                let at = Position {
+                    line: line - 1,
+                    character: 0,
+                };
+                editor.tabs[i].editor.update(cx, |e, cx| {
+                    // Not set_cursor_position: that would take the keyboard.
+                    let offset = e.text().position_to_offset(&at);
+                    e.set_selected_range(offset..offset, cx);
+                });
+            }
+            if had_keys {
+                editor.focus(window, cx);
+            }
+            Some((ws.space.uids.get(&id)?.clone(), new))
+        });
+        cx.notify();
+        let at = line.map(|n| format!(" at line {n}")).unwrap_or_default();
+        match opened.flatten() {
+            Some((uid, false)) => Reply::ok(format!("Opened {}{at} in {uid}.", path.display())),
+            Some((uid, true)) => Reply::ok(format!(
+                "Opened {}{at} in a new editor {uid} beside you, connected to you.",
+                path.display()
+            )),
+            None => Reply::err(format!("Couldn't open {}.", path.display())),
+        }
     }
 
     pub(super) fn git_status(

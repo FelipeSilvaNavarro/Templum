@@ -1,6 +1,7 @@
 //! The content tools: a wired kanban's cards, a wired note, a file opened in an editor, a wired
 //! Git block's status (docs/specs/connections.md, batch 4).
 
+use gpui_kit::Focusable as _;
 use gpui_kit::component::input::EditorState;
 use serde_json::json;
 
@@ -423,4 +424,153 @@ fn append_note_shows_at_once_keeps_the_caret_and_one_ctrl_z_takes_it_back(cx: &m
         .0,
         "blank"
     );
+}
+
+/// A folder with a.rs (five lines) and b.bin (binary), canonicalized.
+fn a_project() -> (tempfile::TempDir, std::path::PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.rs"), "one\ntwo\nthree\nfour\nfive\n").unwrap();
+    std::fs::write(dir.path().join("b.bin"), [0u8, 159, 146, 150, 0, 1]).unwrap();
+    let path = std::fs::canonicalize(dir.path()).unwrap();
+    (dir, path)
+}
+
+#[gpui_kit::test]
+fn open_file_lands_at_the_line_in_the_wired_editor(cx: &mut TestAppContext) {
+    let (_dir, folder) = a_project();
+    let (handle, ws) = open(cx);
+    let terminal = first_id(&ws, cx);
+    let editor = open_editor(handle, &ws, cx, &folder);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            assert!(ws.connect(terminal, editor, cx));
+            ws.focus_block(terminal, window, cx);
+            ws.space.flight = None;
+        })
+    })
+    .unwrap();
+    let camera = ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    let (me, _) = me(&ws, cx, terminal);
+    let path = folder.join("a.rs");
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "open_file",
+        json!({ "path": path, "line": 3 }),
+    );
+    assert!(!failed, "{text}");
+    ws.read_with(cx, |ws, cx| {
+        let e = ws.space.editor(editor).unwrap();
+        let tab = e.active_tab().unwrap();
+        assert_eq!(tab.path, path);
+        assert_eq!(tab.editor.read(cx).cursor_position().line, 2, "line 3");
+        assert_eq!(ws.space.focused, Some(terminal), "the keyboard stays");
+        assert!(ws.space.flight.is_none(), "the camera stays");
+        assert_eq!(ws.space.canvas.camera, camera);
+    });
+}
+
+#[gpui_kit::test]
+fn open_file_with_no_wired_editor_opens_one_beside_the_caller(cx: &mut TestAppContext) {
+    let (_dir, folder) = a_project();
+    let (handle, ws) = open(cx);
+    let terminal = first_id(&ws, cx);
+    // An editor holding the file, but not wired: not the one used.
+    let unwired = open_editor(handle, &ws, cx, &folder);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(terminal, window, cx))
+    })
+    .unwrap();
+    let (me, _) = me(&ws, cx, terminal);
+    let blocks = ws.read_with(cx, |ws, _| ws.space.blocks.len());
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "open_file",
+        json!({ "path": folder.join("a.rs") }),
+    );
+    assert!(!failed && text.contains("new editor"), "{text}");
+    let new = ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.blocks.len(), blocks + 1);
+        let wire = ws
+            .space
+            .wires
+            .iter()
+            .rfind(|w| w.touches(terminal))
+            .expect("wired to the caller");
+        let new = if wire.a == terminal { wire.b } else { wire.a };
+        assert_ne!(new, unwired);
+        assert_eq!(
+            ws.space.editor(new).unwrap().folder,
+            folder,
+            "the file's folder"
+        );
+        assert_eq!(ws.space.focused, Some(terminal), "the keyboard stays");
+        new
+    });
+    // One Ctrl+Z closes it with its wire.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.undo_canvas(false, window, cx))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.space.blocks.contains_key(&new));
+        assert!(!ws.space.wires.iter().any(|w| w.touches(new)));
+    });
+}
+
+#[gpui_kit::test]
+fn open_file_refuses_what_it_cant_open_and_opens_no_block(cx: &mut TestAppContext) {
+    let (_dir, folder) = a_project();
+    let (handle, ws) = open(cx);
+    let terminal = first_id(&ws, cx);
+    let (me, _) = me(&ws, cx, terminal);
+    let blocks = ws.read_with(cx, |ws, _| ws.space.blocks.len());
+    for path in [folder.join("nope.rs"), folder.clone(), folder.join("b.bin")] {
+        let (failed, text) = call(handle, &ws, cx, &me, "open_file", json!({ "path": path }));
+        assert!(failed, "{}: {text}", path.display());
+    }
+    assert_eq!(ws.read_with(cx, |ws, _| ws.space.blocks.len()), blocks);
+}
+
+#[gpui_kit::test]
+fn an_editor_with_the_keyboard_gives_it_to_the_tab_opened(cx: &mut TestAppContext) {
+    let (_dir, folder) = a_project();
+    std::fs::write(folder.join("c.rs"), "c\n").unwrap();
+    let (handle, ws) = open(cx);
+    let terminal = first_id(&ws, cx);
+    let editor = open_editor(handle, &ws, cx, &folder);
+    let (me, _) = me(&ws, cx, terminal);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            assert!(ws.connect(terminal, editor, cx));
+            let e = ws.space.editor_mut(editor).unwrap();
+            e.open_tab(&folder.join("c.rs"), window, cx).unwrap();
+            assert!(ws.space.editor(editor).unwrap().focus(window, cx));
+        })
+    })
+    .unwrap();
+    call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "open_file",
+        json!({ "path": folder.join("a.rs") }),
+    );
+    cx.update_window(handle, |_, window, cx| {
+        let ws = ws.read(cx);
+        let tab = ws.space.editor(editor).unwrap().active_tab().unwrap();
+        assert!(tab.path.ends_with("a.rs"));
+        // The active tab's own editor has the keys (not the hidden c.rs tab's).
+        assert!(
+            tab.editor.read(cx).focus_handle(cx).is_focused(window),
+            "the new tab has the keys"
+        );
+    })
+    .unwrap();
 }
