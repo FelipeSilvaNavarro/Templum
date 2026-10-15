@@ -75,7 +75,7 @@ impl Workspace {
         }
     }
 
-    fn uid_taken(&self, uid: &str) -> bool {
+    pub(super) fn uid_taken(&self, uid: &str) -> bool {
         self.spaces().any(|s| s.uids.values().any(|u| u == uid))
     }
 

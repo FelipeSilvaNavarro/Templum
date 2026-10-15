@@ -299,6 +299,9 @@ impl Workspace {
                 self.notify_from(space_id, me, title, text, window, cx);
                 Reply::ok("Shown.")
             }
+            Call::Connect { block, timeout } => {
+                return self.ask_to_connect(terminal, &block, timeout);
+            }
             Call::AskUser {
                 question,
                 options,
@@ -425,9 +428,9 @@ impl Workspace {
         };
         format!(
             "You are block {uid}, {title:?}, in Templum workspace {:?}. Connected to you: {}. In this \
-             workspace, not connected: {}. Name blocks by these ids. You may only read or write your \
-             own block and those connected to you; the person connects others by wiring them to your \
-             block on the canvas. list_blocks gives the current list.",
+             workspace, not connected (ask with connect): {}. Name blocks by these ids. You may only read \
+             or write your own block and those connected to you; connect asks the person for another. \
+             list_blocks gives the current list.",
             space.name,
             list(connected),
             list(others),
@@ -475,10 +478,9 @@ pub(super) fn target(space: &Space, me: BlockId, uid: &str) -> Result<BlockId, R
             "There's no block {uid} in your workspace: list_blocks lists them."
         )));
     };
-    // ponytail: no `connect` tool yet (batch 3): the refusal sends the agent to the person.
     if id != me && !space.wired(me, id) {
         return Err(Reply::err(format!(
-            "{uid} isn't connected to you. Ask the person to wire it to your block on the canvas."
+            "{uid} isn't connected to you. Ask the person with connect(\"{uid}\")."
         )));
     }
     Ok(id)

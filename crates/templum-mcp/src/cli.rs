@@ -10,7 +10,7 @@ use crate::{hooks, rpc};
 
 /// The first arguments that make `templum` a command instead of the app.
 const VERBS: &[&str] = &[
-    "mcp", "hook", "whoami", "blocks", "read", "send", "notify", "ask",
+    "mcp", "hook", "whoami", "blocks", "read", "send", "notify", "ask", "connect",
 ];
 const READ: &str = "read <block> [-n <lines>] [--last] [--json]";
 const ASK: &str = "ask <question> [--option <answer>]… [--json]";
@@ -140,10 +140,12 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
             }
             ("ask_user", arguments)
         }
+        ("connect", [block]) => ("connect", json!({ "block": block })),
         ("whoami", _) => return Err("whoami [--json]"),
         ("blocks", _) => return Err("blocks [--json]"),
         ("read", _) => return Err(READ),
         ("send", _) => return Err("send <block> <text> [--enter] [--json]"),
+        ("connect", _) => return Err("connect <block> [--json]"),
         _ => return Err("notify <text> [--json]"),
     };
     Ok(CallArgs {
@@ -405,6 +407,11 @@ mod tests {
         assert_eq!(
             calls.recv_timeout(LIMIT).unwrap()["arguments"],
             json!({ "question": "When?" })
+        );
+        run_with(&["connect", "k9x1d"], &env(&bus), "");
+        assert_eq!(
+            calls.recv_timeout(LIMIT).unwrap(),
+            json!({ "name": "connect", "arguments": { "block": "k9x1d" } })
         );
         let (code, _, err) = run_with(&["ask", "--option", "Yes"], &env(&bus), "");
         assert_eq!(code, 2);

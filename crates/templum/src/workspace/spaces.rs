@@ -367,6 +367,16 @@ impl Workspace {
         Some(result)
     }
 
+    /// Runs `f` with the workspace `id` as the one shown: at once when it is, else as `with_space`
+    /// does. None when there is no such workspace.
+    pub(super) fn in_space<R>(&mut self, id: &str, f: impl FnOnce(&mut Self) -> R) -> Option<R> {
+        if self.space.id == id {
+            Some(f(self))
+        } else {
+            self.with_space(id, f)
+        }
+    }
+
     /// A new workspace, shown, with its Edit… dialog open to name it.
     pub(crate) fn add_space(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.new_space(window, cx);

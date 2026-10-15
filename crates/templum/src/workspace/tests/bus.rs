@@ -275,6 +275,10 @@ fn another_block_is_refused_until_it_is_connected(cx: &mut TestAppContext) {
         json!({ "block": kanban }),
     );
     assert!(failed && text.contains("isn't connected to you"), "{text}");
+    assert!(
+        text.contains(&format!("Ask the person with connect(\"{kanban}\").")),
+        "{text}"
+    );
     let (failed, text) = call(
         handle,
         &ws,
@@ -359,7 +363,7 @@ fn a_wired_terminal_is_read_and_typed_into_until_it_is_unwired(cx: &mut TestAppC
         "{told}"
     );
     assert!(
-        told.contains(&format!("not connected: {k} (kanban \""))
+        told.contains(&format!("not connected (ask with connect): {k} (kanban \""))
             && told.contains(&format!("{n} (note \"")),
         "{told}"
     );

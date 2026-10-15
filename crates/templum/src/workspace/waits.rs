@@ -11,6 +11,7 @@ use serde_json::Value;
 use templum_mcp::{Replier, Reply, tools};
 
 use super::Workspace;
+use super::bus::Outcome;
 
 /// A tool call waiting for its answer.
 pub(crate) struct Wait {
@@ -34,6 +35,9 @@ pub(crate) enum Waiting {
         options: Vec<String>,
         field: Option<(Entity<InputState>, Subscription)>,
     },
+    /// `connect`: the person's Allow or Deny to wiring the asking block to block `to` (its block
+    /// id).
+    Connect { to: String },
 }
 
 /// A tool call that waits, as `serve` hands it over: where its answer goes.
@@ -49,6 +53,7 @@ impl Wait {
     pub fn summary(&self) -> String {
         match &self.what {
             Waiting::Question { text, .. } => text.lines().next().unwrap_or_default().to_string(),
+            Waiting::Connect { to } => format!("connect to {to}"),
         }
     }
 }
@@ -120,7 +125,7 @@ impl Workspace {
             return;
         };
         let reply = match &wait.what {
-            Waiting::Question { .. } => Reply::err(format!(
+            Waiting::Question { .. } | Waiting::Connect { .. } => Reply::err(format!(
                 "No one answered within {seconds} seconds; the request was withdrawn."
             )),
         };
@@ -162,7 +167,10 @@ impl Workspace {
             ));
         }
         match &wait.what {
-            Waiting::Question { .. } => None,
+            Waiting::Connect { to } if !self.uid_taken(to) => Some(Reply::err(format!(
+                "{to} was closed; the request was withdrawn."
+            ))),
+            Waiting::Question { .. } | Waiting::Connect { .. } => None,
         }
     }
 
@@ -202,6 +210,86 @@ impl Workspace {
         }
     }
 
+    /// `connect` from the terminal `from`: the person's answer to wait for, unless there is
+    /// nothing to ask.
+    pub(super) fn ask_to_connect(&self, from: &str, block: &str, timeout: u64) -> Outcome {
+        let (space_id, me) = self.caller(from).expect("call found the caller");
+        let space = self.space_named(&space_id).expect("the caller's workspace");
+        let Some(to) = space.block_by_uid(block) else {
+            return Outcome::Now(Reply::err(format!(
+                "There's no block {block} in your workspace: list_blocks lists them."
+            )));
+        };
+        if to == me {
+            return Outcome::Now(Reply::err(format!(
+                "{block} is your own block: you may use it already."
+            )));
+        }
+        if space.wired(me, to) {
+            return Outcome::Now(Reply::ok(format!("{block} is already connected to you.")));
+        }
+        let asked = self
+            .waits
+            .iter()
+            .any(|w| w.from == from && matches!(&w.what, Waiting::Connect { to } if to == block));
+        if asked {
+            return Outcome::Now(Reply::err(format!(
+                "You already asked to connect to {block}; the person hasn't answered yet."
+            )));
+        }
+        Outcome::Wait(
+            Waiting::Connect {
+                to: block.to_string(),
+            },
+            timeout,
+        )
+    }
+
+    /// The person's Allow (`allow`) or Deny to the request to connect `key`. Allow wires the two
+    /// blocks, a step Ctrl+Z takes back, as wiring by hand is.
+    pub(crate) fn answer_connect(&mut self, key: u64, allow: bool, cx: &mut Context<Self>) {
+        let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
+            return;
+        };
+        let Waiting::Connect { to } = &wait.what else {
+            return;
+        };
+        let to = to.clone();
+        let reply = match self.caller(&wait.from) {
+            _ if !allow => Reply::err(format!("The person didn't connect you to {to}.")),
+            None => Reply::err("Your block was closed; the request was withdrawn."),
+            Some((space_id, me)) => {
+                let other = self
+                    .space_named(&space_id)
+                    .and_then(|space| space.block_by_uid(&to));
+                match other {
+                    Some(other) => {
+                        self.in_space(&space_id, |ws| ws.connect(me, other, cx));
+                        Reply::ok(format!("Connected to {to}."))
+                    }
+                    None => Reply::err(format!("{to} isn't in your workspace any more.")),
+                }
+            }
+        };
+        self.answer(key, reply, cx);
+    }
+
+    /// "*Claude Code* wants to connect to *Dev server*": a request to connect as the person reads
+    /// it, the blocks by their titles.
+    pub(crate) fn connect_line(&self, wait: &Wait, cx: &App) -> String {
+        let Waiting::Connect { to } = &wait.what else {
+            return String::new();
+        };
+        let Some((space_id, me)) = self.caller(&wait.from) else {
+            return String::new();
+        };
+        let space = self.space_named(&space_id).expect("the caller's workspace");
+        let title = |id| self.about(&space.blocks[&id], cx).1;
+        let from = title(me);
+        let target = space.block_by_uid(to).map_or_else(|| to.clone(), title);
+        format!("{from} wants to connect to {target}")
+    }
+
     /// What the agent in terminal `terminal` asks the person, oldest first: the first, and how
     /// many.
     pub(crate) fn balloon(&self, terminal: &str) -> Option<(&Wait, usize)> {
@@ -231,6 +319,7 @@ impl Workspace {
         let (_, title, _) = self.about(&space.blocks[&me], cx);
         let text = match &wait.what {
             Waiting::Question { text, .. } => format!("Asks you: {text}"),
+            Waiting::Connect { .. } => self.connect_line(wait, cx),
         };
         self.notify_from(space_id, me, title, text, window, cx);
     }

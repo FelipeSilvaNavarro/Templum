@@ -5,7 +5,7 @@ use std::sync::mpsc::TryRecvError;
 
 use serde_json::{Value, json};
 
-use super::bus::{after, answered, bus_note, call_later, me};
+use super::bus::{after, answered, bus_note, call, call_later, me};
 use super::*;
 
 /// The newest wait's key.
@@ -228,4 +228,128 @@ fn a_question_off_screen_is_a_notification(cx: &mut TestAppContext) {
     let asked = json!({ "question": "There?", "options": ["Yes"] });
     let _there = call_later(handle, &ws, cx, &terminal, 2, "ask_user", asked);
     assert_eq!(notification_count(handle, cx), before + 1);
+}
+
+#[gpui_kit::test]
+fn allow_wires_the_blocks_and_deny_refuses(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (k, n) = ws.read_with(cx, |ws, _| {
+        (ws.space.uids[&kanban].clone(), ws.space.uids[&note].clone())
+    });
+    let answers = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        1,
+        "connect",
+        json!({ "block": k }),
+    );
+    assert!(answers.try_recv().is_err(), "it waits for the person");
+    assert_eq!(
+        dot_text(&ws, cx, mine),
+        Some(format!("Waiting for you: connect to {k}"))
+    );
+    let key = last_wait(&ws, cx);
+    ws.update(cx, |ws, cx| ws.answer_connect(key, true, cx));
+    assert_eq!(answered(&answers), (false, format!("Connected to {k}.")));
+    ws.read_with(cx, |ws, _| assert!(ws.space.wired(mine, kanban)));
+    // Wired as by hand: Ctrl+Z takes it back.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| assert!(ws.undo_canvas(false, window, cx)))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert!(!ws.space.wired(mine, kanban)));
+    let answers = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        2,
+        "connect",
+        json!({ "block": n }),
+    );
+    let key = last_wait(&ws, cx);
+    ws.update(cx, |ws, cx| ws.answer_connect(key, false, cx));
+    let (failed, text) = answered(&answers);
+    assert!(failed && text.contains("didn't connect you"), "{text}");
+    ws.read_with(cx, |ws, _| assert!(!ws.space.wired(mine, note)));
+}
+
+#[gpui_kit::test]
+fn connect_answers_at_once_when_there_is_nothing_to_ask(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let (k, n) = ws.read_with(cx, |ws, _| {
+        (ws.space.uids[&kanban].clone(), ws.space.uids[&note].clone())
+    });
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "connect",
+        json!({ "block": uid }),
+    );
+    assert!(failed && text.contains("your own block"), "{text}");
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "connect",
+        json!({ "block": "zzzzz" }),
+    );
+    assert!(failed && text.contains("no block zzzzz"), "{text}");
+    ws.update(cx, |ws, cx| assert!(ws.connect(mine, kanban, cx)));
+    let (failed, text) = call(handle, &ws, cx, &terminal, "connect", json!({ "block": k }));
+    assert!(!failed && text.contains("already connected"), "{text}");
+    // A second request for one block while the first waits.
+    let _first = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        1,
+        "connect",
+        json!({ "block": n }),
+    );
+    let second = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        2,
+        "connect",
+        json!({ "block": n }),
+    );
+    let (failed, text) = answered(&second);
+    assert!(failed && text.contains("already asked"), "{text}");
+}
+
+#[gpui_kit::test]
+fn closing_the_block_asked_for_withdraws_the_request(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let k = ws.read_with(cx, |ws, _| ws.space.uids[&kanban].clone());
+    let answers = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        1,
+        "connect",
+        json!({ "block": k }),
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.remove_block(kanban, window, cx))
+    })
+    .unwrap();
+    frame(handle, cx);
+    let (failed, text) = answered(&answers);
+    assert!(failed && text.contains("was closed"), "{text}");
 }

@@ -40,6 +40,10 @@ pub enum Call {
         options: Vec<String>,
         timeout: u64,
     },
+    Connect {
+        block: String,
+        timeout: u64,
+    },
 }
 
 /// What a tool answers: its text, and whether it is a refusal or a failure.
@@ -165,6 +169,17 @@ pub fn list() -> Value {
                 "required": ["question"],
             },
         },
+        {
+            "name": "connect",
+            "description": "Asks the person to connect your block to another block of your workspace (list_blocks \
+                            shows which aren't), in a balloon on your block. Waits for Allow or Deny; it may take \
+                            minutes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "block": block, "timeout": seconds(ASK_WAIT) },
+                "required": ["block"],
+            },
+        },
     ]})
 }
 
@@ -233,6 +248,10 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             },
             timeout: seconds(ASK_WAIT)?,
         },
+        "connect" => Call::Connect {
+            block: text("block")?,
+            timeout: seconds(ASK_WAIT)?,
+        },
         _ => return Err(format!("Unknown tool: {name}")),
     })
 }
@@ -280,6 +299,7 @@ mod tests {
                 "ask_user",
                 json!({ "question": "Ship it?", "options": ["Yes", "No"], "timeout": 60 }),
             ),
+            ("connect", json!({ "block": "k9x1d", "timeout": 60 })),
         ];
         let listed: Vec<String> = list()["tools"]
             .as_array()
@@ -343,6 +363,13 @@ mod tests {
                 question: "Why?".into(),
                 options: Vec::new(),
                 timeout: MAX_WAIT
+            })
+        );
+        assert_eq!(
+            parse("connect", &json!({ "block": "b" })),
+            Ok(Call::Connect {
+                block: "b".into(),
+                timeout: ASK_WAIT
             })
         );
         for bad in [
