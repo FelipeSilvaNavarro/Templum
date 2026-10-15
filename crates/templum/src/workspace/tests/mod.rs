@@ -611,6 +611,7 @@ mod block_ids;
 mod blocks;
 mod bus;
 mod config_reload;
+mod delegate;
 mod drawing;
 mod editor;
 mod editor_tabs;

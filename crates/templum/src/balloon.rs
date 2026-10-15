@@ -28,6 +28,7 @@ pub(crate) fn render(
     let text = match &wait.what {
         Waiting::Question { text, .. } => text.clone(),
         Waiting::Connect { .. } => ws.connect_line(wait, cx),
+        Waiting::Turn { .. } => return None,
     };
     let choices = choices(ws, wait, n, z, cx);
     Some(
@@ -119,6 +120,8 @@ fn choices(
                     }))
                     .test_support(),
             ),
+        // `balloon` never hands one over.
+        Waiting::Turn { .. } => row,
     }
     .into_any_element()
 }

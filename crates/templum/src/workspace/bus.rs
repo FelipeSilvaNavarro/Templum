@@ -12,7 +12,7 @@ use templum_canvas::BlockId;
 use templum_mcp::{Bus, Call, Incoming, Message, Reply, rpc, tools};
 
 use super::waits::{Asked, Waiting};
-use super::{AgentState, Body, Space, Workspace, show_notification};
+use super::{AgentState, Body, Pane, Space, Workspace, show_notification};
 
 /// Starts the bus in the data folder, and the task that hands its messages to the workspace.
 /// Without a data folder (the bench), or when the socket can't be made, there is none.
@@ -186,7 +186,7 @@ impl Workspace {
         }
     }
 
-    /// An agent's hook says where its turn is.
+    /// An agent's hook says where its turn is. Its turn's end answers what waited on it.
     fn agent_event(
         &mut self,
         terminal: &str,
@@ -194,20 +194,34 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         use templum_mcp::AgentEvent;
-        let pane = std::iter::once(&mut self.space)
-            .chain(&mut self.others)
-            .flat_map(|s| s.blocks.values_mut())
-            .filter_map(Body::terminal_mut)
-            .find(|pane| pane.term.id() == terminal);
-        let Some(pane) = pane else { return };
+        let Some(pane) = self.pane_mut(terminal) else {
+            return;
+        };
         match event {
             AgentEvent::Working => pane.state = Some(AgentState::Working),
-            // Its last answer waits for delegating (batch 3).
-            AgentEvent::Started | AgentEvent::Stopped { .. } => {
+            AgentEvent::Started => pane.state = Some(AgentState::Idle),
+            AgentEvent::Stopped { message } => {
                 pane.state = Some(AgentState::Idle);
+                if let Some(message) = &message {
+                    pane.answer = Some(message.clone());
+                }
+                let reply = match message {
+                    Some(message) => Reply::ok(message),
+                    None => Reply::err(
+                        "Its turn ended without an answer: an error, or it was interrupted.",
+                    ),
+                };
+                self.end_turn(terminal, reply, cx);
             }
             AgentEvent::NeedsYou { message } => pane.state = Some(AgentState::NeedsYou(message)),
-            AgentEvent::Ended => pane.state = None,
+            AgentEvent::Ended => {
+                pane.state = None;
+                self.end_turn(
+                    terminal,
+                    Reply::err("Its agent ended before it answered."),
+                    cx,
+                );
+            }
         }
         cx.notify();
     }
@@ -221,6 +235,22 @@ impl Workspace {
                 .find(|(_, pane)| pane.term.id() == terminal)
                 .map(|(id, _)| (space.id.clone(), id))
         })
+    }
+
+    /// The pane of the terminal `terminal` (its `TEMPLUM_TERMINAL`), in any workspace.
+    pub(super) fn pane(&self, terminal: &str) -> Option<&Pane> {
+        self.spaces()
+            .flat_map(|s| s.blocks.values())
+            .filter_map(Body::terminal)
+            .find(|pane| pane.term.id() == terminal)
+    }
+
+    pub(super) fn pane_mut(&mut self, terminal: &str) -> Option<&mut Pane> {
+        std::iter::once(&mut self.space)
+            .chain(&mut self.others)
+            .flat_map(|s| s.blocks.values_mut())
+            .filter_map(Body::terminal_mut)
+            .find(|pane| pane.term.id() == terminal)
     }
 
     pub(super) fn space_named(&self, id: &str) -> Option<&Space> {
@@ -301,6 +331,16 @@ impl Workspace {
             }
             Call::Connect { block, timeout } => {
                 return self.ask_to_connect(terminal, &block, timeout);
+            }
+            Call::Delegate {
+                block,
+                task,
+                wait,
+                timeout,
+            } => return self.delegate(terminal, &block, &task, wait, timeout, cx),
+            Call::ReplyTo { block, text } => self.reply_to(terminal, &block, &text, cx),
+            Call::WaitForIdle { block, timeout } => {
+                return self.wait_for_idle(terminal, &block, timeout);
             }
             Call::AskUser {
                 question,

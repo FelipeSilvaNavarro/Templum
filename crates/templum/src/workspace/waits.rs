@@ -13,6 +13,9 @@ use templum_mcp::{Replier, Reply, tools};
 use super::Workspace;
 use super::bus::Outcome;
 
+/// The lines of an agent's screen a turn's wait that times out gives.
+const LAST_LINES: usize = 40;
+
 /// A tool call waiting for its answer.
 pub(crate) struct Wait {
     /// Names it for its deadline and the balloon's buttons; counts up, so the oldest is first.
@@ -38,6 +41,9 @@ pub(crate) enum Waiting {
     /// `connect`: the person's Allow or Deny to wiring the asking block to block `to` (its block
     /// id).
     Connect { to: String },
+    /// `delegate` with `wait`, `wait_for_idle`: the end of the turn of the agent in the terminal
+    /// `of` (the block `uid`).
+    Turn { of: String, uid: String },
 }
 
 /// A tool call that waits, as `serve` hands it over: where its answer goes.
@@ -54,6 +60,7 @@ impl Wait {
         match &self.what {
             Waiting::Question { text, .. } => text.lines().next().unwrap_or_default().to_string(),
             Waiting::Connect { to } => format!("connect to {to}"),
+            Waiting::Turn { .. } => String::new(),
         }
     }
 }
@@ -103,7 +110,9 @@ impl Workspace {
             from: asked.from,
             what,
         };
-        self.tell_asking(&wait, window, cx);
+        if !matches!(wait.what, Waiting::Turn { .. }) {
+            self.tell_asking(&wait, window, cx);
+        }
         self.waits.push(wait);
         cx.notify();
     }
@@ -128,6 +137,17 @@ impl Workspace {
             Waiting::Question { .. } | Waiting::Connect { .. } => Reply::err(format!(
                 "No one answered within {seconds} seconds; the request was withdrawn."
             )),
+            Waiting::Turn { of, uid } => {
+                let lines = self
+                    .pane(of)
+                    .map(|pane| pane.term.shared().lines(LAST_LINES).join("\n"))
+                    .unwrap_or_default();
+                Reply::err(format!(
+                    "No answer from {uid} within {seconds} seconds; it may still be working \
+                     (wait_for_idle(\"{uid}\") waits again). The last lines of its screen:\n{}",
+                    tools::tail(&lines, tools::MAX_TEXT)
+                ))
+            }
         };
         self.answer(key, reply, cx);
     }
@@ -170,7 +190,10 @@ impl Workspace {
             Waiting::Connect { to } if !self.uid_taken(to) => Some(Reply::err(format!(
                 "{to} was closed; the request was withdrawn."
             ))),
-            Waiting::Question { .. } | Waiting::Connect { .. } => None,
+            Waiting::Turn { of, uid } if self.pane(of).is_none() => {
+                Some(Reply::err(format!("{uid} was closed before it answered.")))
+            }
+            Waiting::Question { .. } | Waiting::Connect { .. } | Waiting::Turn { .. } => None,
         }
     }
 
@@ -293,7 +316,10 @@ impl Workspace {
     /// What the agent in terminal `terminal` asks the person, oldest first: the first, and how
     /// many.
     pub(crate) fn balloon(&self, terminal: &str) -> Option<(&Wait, usize)> {
-        let mut asking = self.waits.iter().filter(|w| w.from == terminal);
+        let mut asking = self
+            .waits
+            .iter()
+            .filter(|w| w.from == terminal && !matches!(w.what, Waiting::Turn { .. }));
         let first = asking.next()?;
         Some((first, 1 + asking.count()))
     }
@@ -328,6 +354,7 @@ impl Workspace {
         let text = match &wait.what {
             Waiting::Question { text, .. } => format!("Asks you: {text}"),
             Waiting::Connect { .. } => self.connect_line(wait, cx),
+            Waiting::Turn { .. } => return,
         };
         self.notify_from(space_id, me, title, text, window, cx);
     }

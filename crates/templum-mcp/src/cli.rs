@@ -10,10 +10,12 @@ use crate::{hooks, rpc};
 
 /// The first arguments that make `templum` a command instead of the app.
 const VERBS: &[&str] = &[
-    "mcp", "hook", "whoami", "blocks", "read", "send", "notify", "ask", "connect",
+    "mcp", "hook", "whoami", "blocks", "read", "send", "notify", "ask", "connect", "delegate",
+    "reply", "wait",
 ];
 const READ: &str = "read <block> [-n <lines>] [--last] [--json]";
 const ASK: &str = "ask <question> [--option <answer>]… [--json]";
+const WAIT: &str = "wait <block> [--timeout <seconds>] [--json]";
 
 pub fn is_verb(arg: &str) -> bool {
     VERBS.contains(&arg)
@@ -141,11 +143,33 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
             ("ask_user", arguments)
         }
         ("connect", [block]) => ("connect", json!({ "block": block })),
+        ("delegate", [block, task @ ..]) if task.iter().any(|a| *a != "--wait") => {
+            let wait = task.contains(&"--wait");
+            let task: Vec<&str> = task.iter().copied().filter(|a| *a != "--wait").collect();
+            (
+                "delegate",
+                json!({ "block": block, "task": task.join(" "), "wait": wait }),
+            )
+        }
+        ("reply", [block, text @ ..]) if !text.is_empty() => {
+            ("reply", json!({ "block": block, "text": text.join(" ") }))
+        }
+        ("wait", [block]) => ("wait_for_idle", json!({ "block": block })),
+        ("wait", [block, "--timeout", seconds]) => {
+            let seconds: u64 = seconds.parse().map_err(|_| WAIT)?;
+            (
+                "wait_for_idle",
+                json!({ "block": block, "timeout": seconds }),
+            )
+        }
         ("whoami", _) => return Err("whoami [--json]"),
         ("blocks", _) => return Err("blocks [--json]"),
         ("read", _) => return Err(READ),
         ("send", _) => return Err("send <block> <text> [--enter] [--json]"),
         ("connect", _) => return Err("connect <block> [--json]"),
+        ("delegate", _) => return Err("delegate <block> <task> [--wait] [--json]"),
+        ("reply", _) => return Err("reply <block> <text> [--json]"),
+        ("wait", _) => return Err(WAIT),
         _ => return Err("notify <text> [--json]"),
     };
     Ok(CallArgs {
@@ -416,6 +440,44 @@ mod tests {
         let (code, _, err) = run_with(&["ask", "--option", "Yes"], &env(&bus), "");
         assert_eq!(code, 2);
         assert!(err.starts_with("usage: templum ask"), "{err}");
+    }
+
+    #[test]
+    fn delegate_reply_and_wait_send_their_calls() {
+        let (seen, calls) = std::sync::mpsc::channel();
+        let (_dir, bus) = test_bus(move |m| {
+            if let Incoming::Request { id, params, .. } = &m.incoming {
+                let _ = seen.send(params.clone());
+                let _ = m.reply.send(tool_result(id, &Reply::ok("ok")));
+            }
+        });
+        for (args, sent) in [
+            (
+                &["delegate", "k9x1d", "fix", "the", "tests", "--wait"][..],
+                json!({ "name": "delegate", "arguments": { "block": "k9x1d", "task": "fix the tests", "wait": true } }),
+            ),
+            (
+                &["reply", "b7k2m", "all", "green"][..],
+                json!({ "name": "reply", "arguments": { "block": "b7k2m", "text": "all green" } }),
+            ),
+            (
+                &["wait", "k9x1d", "--timeout", "60"][..],
+                json!({ "name": "wait_for_idle", "arguments": { "block": "k9x1d", "timeout": 60 } }),
+            ),
+        ] {
+            assert_eq!(run_with(args, &env(&bus), "").0, 0, "{args:?}");
+            assert_eq!(calls.recv_timeout(LIMIT).unwrap(), sent);
+        }
+        assert_eq!(
+            run_with(&["delegate", "k9x1d", "--wait"], &env(&bus), "").0,
+            2,
+            "no task"
+        );
+        assert_eq!(
+            run_with(&["wait", "k9x1d", "--for", "idle"], &env(&bus), "").0,
+            2,
+            "--for is batch 5's"
+        );
     }
 
     #[test]

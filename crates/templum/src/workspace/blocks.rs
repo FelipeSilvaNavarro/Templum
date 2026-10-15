@@ -404,6 +404,8 @@ impl Workspace {
                         usage: None,
                         find: None,
                         state: None,
+                        handed: None,
+                        answer: None,
                     }),
                 );
                 self.added(id);

@@ -2,6 +2,7 @@
 
 mod blocks;
 mod bus;
+mod delegate;
 mod drawing;
 mod file_tree;
 mod files;
@@ -122,6 +123,16 @@ pub(crate) enum AgentState {
     NeedsYou(Option<String>),
 }
 
+/// A task handed to a terminal's agent (`delegate`, or `spawn_agent`'s prompt), while its answer
+/// is awaited (docs/specs/connections.md, Delegating).
+pub(crate) struct Handed {
+    /// The terminal of the agent that handed it over.
+    pub by: String,
+    pub since: Instant,
+    /// After this it is no longer awaited: its dot stops, and another task may be handed over.
+    pub until: Instant,
+}
+
 pub(crate) struct Pane {
     pub term: Terminal,
     pub snapshot: Rc<RefCell<Snapshot>>,
@@ -139,6 +150,10 @@ pub(crate) struct Pane {
     /// Its agent's turn, as the agent's hooks last said; None until one speaks, and after its
     /// session ends.
     pub state: Option<AgentState>,
+    /// The task another agent handed its agent, while its answer is awaited.
+    pub handed: Option<Handed>,
+    /// Its agent's last answer: the message its last turn ended with, or its last `reply`.
+    pub answer: Option<String>,
 }
 
 impl Pane {

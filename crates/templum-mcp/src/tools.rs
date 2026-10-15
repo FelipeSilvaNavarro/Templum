@@ -16,6 +16,11 @@ pub const MAX_TEXT: usize = 256 * 1024;
 pub const MAX_WAIT: u64 = 3600;
 /// How long a question or a request to connect waits for the person, seconds, unless asked.
 pub const ASK_WAIT: u64 = 1800;
+/// How long `delegate` waits for the answer, and how long a task stays handed over, seconds,
+/// unless asked.
+pub const TASK_WAIT: u64 = 600;
+/// How long `wait_for_idle` waits, seconds, unless asked.
+pub const IDLE_WAIT: u64 = 300;
 
 /// A tool call, its arguments checked.
 #[derive(Clone, Debug, PartialEq)]
@@ -41,6 +46,20 @@ pub enum Call {
         timeout: u64,
     },
     Connect {
+        block: String,
+        timeout: u64,
+    },
+    Delegate {
+        block: String,
+        task: String,
+        wait: bool,
+        timeout: u64,
+    },
+    ReplyTo {
+        block: String,
+        text: String,
+    },
+    WaitForIdle {
         block: String,
         timeout: u64,
     },
@@ -180,6 +199,45 @@ pub fn list() -> Value {
                 "required": ["block"],
             },
         },
+        {
+            "name": "delegate",
+            "description": "Hands a task to an agent connected to you: Templum types it into its terminal, after \
+                            a line saying it is from you, and sends it. Its answer is its last message when it \
+                            finishes its turn, or what it sends you with reply. With wait, waits for that answer \
+                            (it may take minutes); without, wait_for_idle gets it later. Refused while the agent \
+                            waits for its person or is on another agent's task.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "block": block,
+                    "task": { "type": "string" },
+                    "wait": { "type": "boolean", "default": false },
+                    "timeout": seconds(TASK_WAIT),
+                },
+                "required": ["block", "task"],
+            },
+        },
+        {
+            "name": "reply",
+            "description": "Answers the task an agent connected to you handed you (it began with [from <title> \
+                            (<id>)]): the agent waiting for it gets your text now. When it isn't waiting, the \
+                            text is typed into its terminal after a line saying it is from you.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "block": block, "text": { "type": "string" } },
+                "required": ["block", "text"],
+            },
+        },
+        {
+            "name": "wait_for_idle",
+            "description": "Waits until an agent connected to you finishes its turn (or the task you handed it), \
+                            and returns its last answer; at once when it is idle. It may take minutes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "block": block, "timeout": seconds(IDLE_WAIT) },
+                "required": ["block"],
+            },
+        },
     ]})
 }
 
@@ -252,6 +310,20 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             block: text("block")?,
             timeout: seconds(ASK_WAIT)?,
         },
+        "delegate" => Call::Delegate {
+            block: text("block")?,
+            task: text("task")?,
+            wait: flag("wait")?,
+            timeout: seconds(TASK_WAIT)?,
+        },
+        "reply" => Call::ReplyTo {
+            block: text("block")?,
+            text: text("text")?,
+        },
+        "wait_for_idle" => Call::WaitForIdle {
+            block: text("block")?,
+            timeout: seconds(IDLE_WAIT)?,
+        },
         _ => return Err(format!("Unknown tool: {name}")),
     })
 }
@@ -300,6 +372,12 @@ mod tests {
                 json!({ "question": "Ship it?", "options": ["Yes", "No"], "timeout": 60 }),
             ),
             ("connect", json!({ "block": "k9x1d", "timeout": 60 })),
+            (
+                "delegate",
+                json!({ "block": "k9x1d", "task": "fix the tests", "wait": true, "timeout": 900 }),
+            ),
+            ("reply", json!({ "block": "b7k2m", "text": "Done." })),
+            ("wait_for_idle", json!({ "block": "k9x1d", "timeout": 60 })),
         ];
         let listed: Vec<String> = list()["tools"]
             .as_array()
@@ -372,6 +450,23 @@ mod tests {
                 timeout: ASK_WAIT
             })
         );
+        assert_eq!(
+            parse("delegate", &json!({ "block": "b", "task": "t" })),
+            Ok(Call::Delegate {
+                block: "b".into(),
+                task: "t".into(),
+                wait: false,
+                timeout: TASK_WAIT
+            })
+        );
+        assert_eq!(
+            parse("wait_for_idle", &json!({ "block": "b" })),
+            Ok(Call::WaitForIdle {
+                block: "b".into(),
+                timeout: IDLE_WAIT
+            })
+        );
+        assert!(parse("reply", &json!({ "block": "b" })).is_err(), "no text");
         for bad in [
             json!({}),
             json!({ "question": "Why?", "options": "yes" }),
