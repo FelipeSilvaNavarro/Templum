@@ -3,6 +3,7 @@
 use templum_canvas::Wire;
 
 use super::*;
+use crate::workspace::Tool;
 use crate::workspace::history::Then;
 
 /// A click on the empty canvas: no block keeps the keyboard.
@@ -244,6 +245,72 @@ fn wires_follow_their_blocks_in_the_titles_dim_color_and_grid_mode_hides_them(
         });
         // A frame paints them.
         window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_wire_tool_wires_the_block_pressed_to_the_one_let_go_on(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = apart(handle, &ws, cx);
+    let (from, over, empty) = (
+        at(&ws, cx, (150.0, 140.0)),
+        at(&ws, cx, (600.0, 180.0)),
+        at(&ws, cx, (700.0, 300.0)),
+    );
+    let event = |p: (f32, f32)| point(px(p.0), px(p.1));
+    let plain = Modifiers::default();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("tool-wire", cx);
+        window.render_frame(cx);
+        assert_eq!(window.find("tool-wire").selected(), Some(true));
+        // Let go on the empty canvas, or on the block it started on: nothing.
+        press_with(window, cx, MouseButton::Left, plain, from, empty);
+        press_with(window, cx, MouseButton::Left, plain, from, from);
+        assert!(ws.read(cx).space.wires.is_empty());
+        // Held over the note: the curve already runs to its facing edge.
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: event(from),
+                modifiers: plain,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: event(over),
+                pressed_button: Some(MouseButton::Left),
+                modifiers: plain,
+            }),
+            cx,
+        );
+        let drawn = ws.read(cx).wire_curves();
+        assert_eq!(drawn.len(), 1);
+        assert_eq!(drawn[0].0.to, Point::new(500.0, 180.0));
+        assert_eq!(drawn[0].1, ws.read(cx).ui.accent);
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: event(over),
+                modifiers: plain,
+                click_count: 1,
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+        let w = ws.read(cx);
+        assert_eq!(w.space.wires, [Wire::new(kanban, note).unwrap()]);
+        assert_eq!(w.tool, Tool::Wire, "it stays on");
+        assert_eq!(w.space.focused, None, "Ctrl+Z reaches the canvas");
+        // Ctrl+Z takes it back; Esc puts Select back.
+        window.press(UNDO, cx);
+        assert!(ws.read(cx).space.wires.is_empty());
+        window.press("escape", cx);
+        assert_eq!(ws.read(cx).tool, Tool::Select);
     })
     .unwrap();
 }

@@ -382,6 +382,11 @@ enum Drag {
         last: Point,
         moved: bool,
     },
+    /// The Wire tool pressed on block `from`; the pointer is at the world point `to`.
+    Wire {
+        from: BlockId,
+        to: Point,
+    },
 }
 
 /// A workspace in grid mode (docs/specs/grid.md): some of its blocks tiled over its area, at
@@ -680,6 +685,8 @@ pub(crate) enum Tool {
     Select,
     /// Pans with any drag or wheel, over blocks too, like holding Alt.
     Hand,
+    /// Wires two blocks: pressed on one, let go on another. Stays on.
+    Wire,
     Pen,
     Highlighter,
     Shape(ShapeKind),

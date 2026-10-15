@@ -1,11 +1,11 @@
 //! Wires between blocks (docs/specs/connections.md, Wires): wiring and unwiring them, each a
 //! step of Ctrl+Z.
 
-use gpui_kit::{Context, Hsla};
-use templum_canvas::{BlockId, Curve, Wire};
+use gpui_kit::{Context, Hsla, MouseDownEvent};
+use templum_canvas::{BlockId, Curve, Point, Rect, Wire};
 
 use super::history::{Change, Then};
-use super::{Space, Workspace};
+use super::{Drag, Space, Workspace};
 
 impl Space {
     /// `a` and `b` are wired.
@@ -36,6 +36,16 @@ impl Space {
         self.wires.retain(|w| !w.touches(id));
     }
 
+    /// The top block drawn at a world point.
+    pub(super) fn block_at(&self, p: Point) -> Option<BlockId> {
+        self.canvas
+            .blocks()
+            .iter()
+            .rev()
+            .find(|b| self.shown(b.id) && b.rect.contains(p))
+            .map(|b| b.id)
+    }
+
     /// `wire`'s curve between its blocks' rects; None when one isn't on the canvas.
     pub(super) fn curve(&self, wire: Wire) -> Option<Curve> {
         Some(Curve::between(
@@ -57,17 +67,52 @@ impl Workspace {
         self.set_wire(wire, false, Then::New, cx)
     }
 
-    /// The wires to paint under the blocks, with their colors: the title's dim one. Grid mode
-    /// hides them.
+    /// The wires to paint under the blocks, with their colors: the title's dim one; and the one
+    /// the Wire tool draws, in the accent, to the facing edge of the block under the pointer or
+    /// to the pointer. Grid mode hides them.
     pub(super) fn wire_curves(&self) -> Vec<(Curve, Hsla)> {
         if self.space.grid.is_some() {
             return Vec::new();
         }
-        self.space
+        let mut curves: Vec<(Curve, Hsla)> = self
+            .space
             .wires
             .iter()
             .filter_map(|w| Some((self.space.curve(*w)?, self.ui.title_dim)))
-            .collect()
+            .collect();
+        if let Some(Drag::Wire { from, to }) = &self.drag
+            && let Some(a) = self.space.canvas.get(*from)
+        {
+            let end = self
+                .space
+                .block_at(*to)
+                .filter(|b| b != from)
+                .and_then(|b| self.space.canvas.get(b))
+                .map_or(Rect::new(to.x, to.y, 0.0, 0.0), |b| b.rect);
+            curves.push((Curve::between(a.rect, end), self.ui.accent));
+        }
+        curves
+    }
+
+    /// A press with the Wire tool: on a block, a wire starts from it. No block keeps the
+    /// keyboard, so Ctrl+Z takes the wire back rather than reaching a terminal.
+    pub(super) fn begin_wire(&mut self, e: &MouseDownEvent) {
+        self.space.pristine = false;
+        self.press = None;
+        let at = self.space.canvas.camera.to_world(self.local(e.position));
+        self.drag = self
+            .space
+            .block_at(at)
+            .map(|from| Drag::Wire { from, to: at });
+        self.space.focused = None;
+    }
+
+    /// The Wire tool let go at the world point `at`: on another block, the two are wired.
+    pub(super) fn end_wire(&mut self, from: BlockId, at: Point, cx: &mut Context<Self>) {
+        if let Some(to) = self.space.block_at(at) {
+            self.connect(from, to, cx);
+        }
+        cx.notify();
     }
 
     /// Wires (`on`) or unwires `wire`; the change that takes it back is kept as `then` says.

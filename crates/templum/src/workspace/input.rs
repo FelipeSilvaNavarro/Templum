@@ -241,6 +241,7 @@ impl Workspace {
                     d.move_by(dx, dy);
                 }
             }
+            Some(Drag::Wire { to, .. }) => *to = self.space.canvas.camera.to_world(p),
             None => return,
         }
         cx.notify();
@@ -434,6 +435,11 @@ impl Workspace {
     /// Mouse up: a press on the empty canvas that didn't pan is a click, and leaves no terminal
     /// focused (typing then reaches none; panning keeps the focus) and no block selected.
     pub(super) fn release(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
+        // The Wire tool let go: on another block, they are wired.
+        if let Some(Drag::Wire { from, .. }) = self.drag {
+            let at = self.space.canvas.camera.to_world(self.local(pos));
+            self.end_wire(from, at, cx);
+        }
         // A tile let go over another trades places with it.
         if let Some(Drag::Swap { id, over, .. }) = self.drag {
             if let Some(other) = over {

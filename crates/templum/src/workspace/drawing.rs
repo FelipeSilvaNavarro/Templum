@@ -141,7 +141,7 @@ impl Workspace {
                 self.drag = Some(Drag::Erase { erased, last: p });
                 return;
             }
-            Tool::Select | Tool::Hand => return,
+            Tool::Select | Tool::Hand | Tool::Wire => return,
         };
         self.drag = Some(Drag::Ink(drawing));
     }

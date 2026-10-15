@@ -68,6 +68,16 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.set_tool(Tool::Hand, window, cx)))
         .test_support()
         .into_any_element(),
+        button(
+            "tool-wire",
+            IconName::Cable,
+            "Wire: connect two blocks",
+            tool == Tool::Wire,
+            ui,
+        )
+        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.set_tool(Tool::Wire, window, cx)))
+        .test_support()
+        .into_any_element(),
     ]);
     let blocks = group(vec![
         button(

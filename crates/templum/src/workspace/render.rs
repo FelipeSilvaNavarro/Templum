@@ -557,6 +557,29 @@ impl Render for Workspace {
                         .test_support(),
                 )
             })
+            // The Wire tool: a layer over the blocks takes the pointer, as a drawing tool's does.
+            .when(self.tool == Tool::Wire && !tiled, |el| {
+                el.child(
+                    div()
+                        .id("wire-layer")
+                        .absolute()
+                        .size_full()
+                        .cursor_crosshair()
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|ws, e: &MouseDownEvent, window, cx| {
+                                window.focus(&ws.focus_handle, cx);
+                                ws.begin_wire(e);
+                                cx.stop_propagation();
+                                cx.notify();
+                            }),
+                        )
+                        .on_scroll_wheel(cx.listener(Self::on_background_scroll))
+                        .on_pinch(cx.listener(Self::on_pinch))
+                        .test_support(),
+                )
+            })
             // The hand: while Alt is held, a layer over the blocks takes the pointer, and a drag
             // or the wheel moves the canvas wherever it is.
             .when(hand, |el| {
