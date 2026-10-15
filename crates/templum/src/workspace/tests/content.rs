@@ -483,6 +483,13 @@ fn open_file_lands_at_the_line_in_the_wired_editor(cx: &mut TestAppContext) {
         json!({ "path": path, "line": 3 }),
     );
     assert!(!failed, "{text}");
+    cx.update_window(handle, |_, window, cx| {
+        assert!(
+            ws.read(cx).focus_handle.is_focused(window),
+            "the keys stay with the canvas"
+        )
+    })
+    .unwrap();
     ws.read_with(cx, |ws, cx| {
         let e = ws.space.editor(editor).unwrap();
         let tab = e.active_tab().unwrap();
@@ -512,9 +519,16 @@ fn open_file_with_no_wired_editor_opens_one_beside_the_caller(cx: &mut TestAppCo
         cx,
         &me,
         "open_file",
-        json!({ "path": folder.join("a.rs") }),
+        json!({ "path": folder.join("a.rs"), "line": 2 }),
     );
     assert!(!failed && text.contains("new editor"), "{text}");
+    cx.update_window(handle, |_, window, cx| {
+        assert!(
+            ws.read(cx).focus_handle.is_focused(window),
+            "the keys stay with the canvas"
+        )
+    })
+    .unwrap();
     let new = ws.read_with(cx, |ws, _| {
         assert_eq!(ws.space.blocks.len(), blocks + 1);
         let wire = ws
