@@ -6806,6 +6806,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "templum-mcp"
+version = "0.1.1"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "templum-terminal"
 version = "0.1.1"
 dependencies = [
