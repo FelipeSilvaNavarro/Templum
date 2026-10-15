@@ -41,11 +41,18 @@ impl Pane {
             )
     }
 
+    /// Its shell, not a program it runs, is in front: an agent seen there quit, though the last
+    /// snapshot (up to 5 s old) still has it. False when the OS can't tell (Windows).
+    pub(super) fn shell_in_front(&self) -> bool {
+        let p = self.term.processes();
+        p.foreground.is_some() && p.foreground == p.shell
+    }
+
     /// Templum may type into it (its block id `uid`): an agent runs there, not waiting for its
     /// person (a permission dialog would take the text as its answer). Never a shell, where the
     /// text would run as a command.
     fn takes_typing(&self, uid: &str) -> Result<(), Reply> {
-        if self.seen.agent.is_none() {
+        if self.seen.agent.is_none() || self.shell_in_front() {
             return Err(Reply::err(format!(
                 "{uid} runs no agent: send_to_terminal types into a terminal."
             )));

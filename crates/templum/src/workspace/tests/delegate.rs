@@ -17,12 +17,13 @@ fn two_agents(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, B
     agents_running(cx, None)
 }
 
-/// `two_agents`, theirs running `command` (`cat` when None).
+/// `two_agents`, theirs running `command` (`agent_cat` when None), each once its program is in
+/// front.
 fn agents_running(
     cx: &mut TestAppContext,
     command: Option<(String, Vec<String>)>,
 ) -> (AnyWindowHandle, Entity<Workspace>, BlockId, BlockId) {
-    let (handle, ws) = open(cx);
+    let (handle, ws) = open_as(cx, Some(agent_cat()), None, None);
     let mine = first_id(&ws, cx);
     let theirs = cx
         .update_window(handle, |_, window, cx| {
@@ -43,6 +44,10 @@ fn agents_running(
         })
         .unwrap();
     frame(handle, cx);
+    #[cfg(unix)]
+    for id in [mine, theirs] {
+        in_front(&ws, cx, id, true);
+    }
     (handle, ws, mine, theirs)
 }
 
@@ -362,12 +367,13 @@ fn the_dot_goes_with_its_wire_and_the_answer_still_comes(cx: &mut TestAppContext
 #[gpui_kit::test]
 fn no_enter_goes_to_a_screen_the_task_didnt_change(cx: &mut TestAppContext) {
     // A program that shows nothing it is typed; `cat` prints a line only once Enter sends it.
-    let script = "stty -echo; echo ready; exec cat";
-    let command = ("sh".to_string(), vec!["-c".to_string(), script.to_string()]);
+    let command = jobs("stty -echo; echo ready; cat; true");
     let (handle, ws, mine, theirs) = agents_running(cx, Some(command));
     let (terminal, _) = me(&ws, cx, mine);
     let (_, them) = me(&ws, cx, theirs);
     screen_with(&ws, cx, theirs, "ready");
+    // `cat`, not `stty`.
+    in_front(&ws, cx, theirs, true);
     let task = json!({ "block": them, "task": "go on" });
     let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
     assert!(!failed, "{text}");
@@ -406,6 +412,28 @@ fn no_enter_goes_to_an_agent_that_started_asking_its_person(cx: &mut TestAppCont
         1,
         "an Enter went: {shown:?}"
     );
+}
+
+/// An agent that quit leaves its shell in front, where typed text would run as a command; until a
+/// snapshot misses it (up to 5 s), Templum still takes it to run there.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn nothing_is_typed_into_the_shell_an_agent_left(cx: &mut TestAppContext) {
+    // Its agent's job ends at an end of file; its shell (reading as `cat` does) is then in front.
+    let (handle, ws, mine, theirs) = agents_running(cx, Some(jobs("cat; exec cat")));
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(theirs).unwrap().term.write(&b"\x04"[..])
+    });
+    in_front(&ws, cx, theirs, false);
+    ws.read_with(cx, |ws, _| {
+        let seen = &ws.space.terminal(theirs).unwrap().seen;
+        assert!(seen.agent.is_some(), "no snapshot missed it yet");
+    });
+    let task = json!({ "block": them, "task": "go" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    assert!(failed && text.contains("runs no agent"), "{text}");
 }
 
 /// An agent that goes without a word (Codex says nothing when it quits; one that crashed): the

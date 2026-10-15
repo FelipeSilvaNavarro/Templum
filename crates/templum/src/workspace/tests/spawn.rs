@@ -10,11 +10,12 @@ use super::bus::{after, answered, call, call_later, event, me, result_of, screen
 use super::*;
 
 /// The startup terminal at (40, 100), 400 × 300, the camera at 100% on the origin, and Claude Code
-/// and Codex started as `cat`.
+/// and Codex started as `cat` in front of the new terminals' shells (`agent_cat`).
 fn spawner(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, BlockId) {
     let (handle, ws) = open(cx);
     let mine = first_id(&ws, cx);
     ws.update(cx, |ws, _| {
+        ws.command = Some(agent_cat());
         ws.space.pristine = false;
         ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 1.0);
         ws.space.canvas.get_mut(mine).unwrap().rect = Rect::new(40.0, 100.0, 400.0, 300.0);
@@ -118,6 +119,8 @@ fn a_claude_codes_prompt_is_typed_once_it_started(cx: &mut TestAppContext) {
         "{text}"
     );
     let new = spawned(&ws, cx, mine);
+    #[cfg(unix)]
+    in_front(&ws, cx, new, true);
     let (theirs, uid) = me(&ws, cx, new);
     // Handed over by the caller already: wait_for_idle waits for its answer.
     let waiting = call_later(
@@ -157,6 +160,8 @@ fn another_agents_prompt_waits_for_its_process_and_a_still_screen(cx: &mut TestA
     let spawn = json!({ "agent": "codex", "folder": folder.path(), "prompt": "say hi" });
     call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
     let new = spawned(&ws, cx, mine);
+    #[cfg(unix)]
+    in_front(&ws, cx, new, true);
     let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
     let waiting = |cx: &mut TestAppContext| {
         ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some())
@@ -181,6 +186,32 @@ fn another_agents_prompt_waits_for_its_process_and_a_still_screen(cx: &mut TestA
     screen_with(&ws, cx, new, "say hi");
     enter(cx);
     screen_with(&ws, cx, new, "say hisay hi");
+}
+
+/// An agent a snapshot saw that quit before its prompt was typed: its shell, in front, would run
+/// the prompt as a command.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn no_prompt_is_typed_into_the_shell_an_agent_left(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    // New terminals' shells with nothing in front.
+    ws.update(cx, |ws, _| ws.command = Some(quiet()));
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path(), "prompt": "say hi" });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    in_front(&ws, cx, new, false);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(new).unwrap().seen.pid = Some(1)
+    });
+    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+    for _ in 0..4 {
+        after(cx, look);
+    }
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.terminal(new).unwrap().prompt.is_some(), "typed")
+    });
 }
 
 #[gpui_kit::test]

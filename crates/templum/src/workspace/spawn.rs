@@ -180,13 +180,15 @@ impl Workspace {
         .detach();
     }
 
-    /// One look: once a snapshot saw the agent's process and its screen is as it was a look ago,
-    /// its prompt is typed. False once there is nothing more to look for.
+    /// One look: once a snapshot saw the agent's process, it is still in front of its shell, and
+    /// its screen is as it was a look ago, its prompt is typed. False once there is nothing more
+    /// to look for.
     fn look_ready(&mut self, terminal: &str, cx: &mut Context<Self>) -> bool {
         let Some(pane) = self.pane_mut(terminal) else {
             return false;
         };
-        let screen = pane.seen.pid.map(|_| pane.screen());
+        let seen = pane.seen.pid.is_some() && !pane.shell_in_front();
+        let screen = seen.then(|| pane.screen());
         let Some(prompt) = pane.prompt.as_mut() else {
             return false;
         };
