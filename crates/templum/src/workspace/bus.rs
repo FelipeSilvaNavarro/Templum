@@ -11,6 +11,7 @@ use serde_json::json;
 use templum_canvas::BlockId;
 use templum_mcp::{Bus, Call, Incoming, Message, Reply, rpc, tools};
 
+use super::waits::{Asked, Waiting};
 use super::{AgentState, Body, Space, Workspace, show_notification};
 
 /// Starts the bus in the data folder, and the task that hands its messages to the workspace.
@@ -46,6 +47,14 @@ pub(super) fn start(
         }
     });
     (Some(bus), env, task)
+}
+
+/// What a tool call comes to.
+pub(super) enum Outcome {
+    /// Its answer, now.
+    Now(Reply),
+    /// It waits for this, at most these many seconds (`waits.rs`).
+    Wait(Waiting, u64),
 }
 
 /// What every terminal gets while the bus runs: its address and Templum's folder first in
@@ -114,13 +123,14 @@ pub(super) fn same_or_copy(exe: &Path, to: &Path) -> std::io::Result<()> {
 }
 
 impl Workspace {
-    /// Answers one message from the bus.
+    /// Answers one message from the bus. A tool call that waits is kept (`waits.rs`) and answered
+    /// later; meanwhile the connection's next lines are served.
     pub(super) fn serve(&mut self, message: Message, window: &mut Window, cx: &mut Context<Self>) {
         let Message {
             hello,
+            conn,
             incoming,
             reply,
-            ..
         } = message;
         match incoming {
             Incoming::Request { id, method, params } => {
@@ -133,14 +143,26 @@ impl Workspace {
                     "tools/list" => rpc::result(&id, tools::list()),
                     "tools/call" => {
                         let name = params["name"].as_str().unwrap_or_default();
-                        if tools::known(name) {
-                            let reply = match tools::parse(name, &params["arguments"]) {
-                                Ok(call) => self.call(&hello.terminal, call, window, cx),
-                                Err(why) => Reply::err(why),
-                            };
-                            tools::tool_result(&id, &reply)
-                        } else {
+                        if !tools::known(name) {
                             rpc::error(&id, rpc::PARAMS, &format!("Unknown tool: {name}"))
+                        } else {
+                            let outcome = match tools::parse(name, &params["arguments"]) {
+                                Ok(call) => self.call(&hello.terminal, call, window, cx),
+                                Err(why) => Outcome::Now(Reply::err(why)),
+                            };
+                            match outcome {
+                                Outcome::Now(done) => tools::tool_result(&id, &done),
+                                Outcome::Wait(what, seconds) => {
+                                    let asked = Asked {
+                                        conn,
+                                        id,
+                                        reply,
+                                        from: hello.terminal,
+                                    };
+                                    self.wait(asked, what, seconds, window, cx);
+                                    return;
+                                }
+                            }
                         }
                     }
                     _ => rpc::error(&id, rpc::METHOD, &format!("Method not found: {method}")),
@@ -151,6 +173,13 @@ impl Workspace {
                 if let Ok(event) = serde_json::from_value(params) {
                     self.agent_event(&hello.terminal, event, cx);
                 }
+            }
+            // The client gave up on a call (MCP): no answer goes to it.
+            Incoming::Notification { method, params } if method == "notifications/cancelled" => {
+                self.cancel(conn, &params["requestId"], cx);
+            }
+            Incoming::Notification { method, .. } if method == templum_mcp::bus::CLOSED => {
+                self.closed(conn, cx);
             }
             // `notifications/initialized` and the rest need nothing.
             Incoming::Notification { .. } | Incoming::Response => {}
@@ -194,22 +223,23 @@ impl Workspace {
         })
     }
 
-    fn space_named(&self, id: &str) -> Option<&Space> {
+    pub(super) fn space_named(&self, id: &str) -> Option<&Space> {
         self.spaces().find(|s| s.id == id)
     }
 
+    /// A tool call from the terminal `terminal`: its answer now, or what it waits for.
     fn call(
-        &self,
+        &mut self,
         terminal: &str,
         call: Call,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Reply {
+    ) -> Outcome {
         let Some((space_id, me)) = self.caller(terminal) else {
-            return Reply::err("This terminal isn't a block of this Templum.");
+            return Outcome::Now(Reply::err("This terminal isn't a block of this Templum."));
         };
         let space = self.space_named(&space_id).expect("the caller's workspace");
-        match call {
+        Outcome::Now(match call {
             Call::Whoami => {
                 let (kind, title, folder) = self.about(&space.blocks[&me], cx);
                 let mut text = format!(
@@ -230,10 +260,10 @@ impl Workspace {
             } => {
                 let id = match target(space, me, &block) {
                     Ok(id) => id,
-                    Err(reply) => return reply,
+                    Err(reply) => return Outcome::Now(reply),
                 };
                 let Some(pane) = space.terminal(id) else {
-                    return Reply::err(format!("{block} isn't a terminal."));
+                    return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
                 };
                 let shared = pane.term.shared();
                 if last_command {
@@ -253,10 +283,10 @@ impl Workspace {
             Call::SendToTerminal { block, text, enter } => {
                 let id = match target(space, me, &block) {
                     Ok(id) => id,
-                    Err(reply) => return reply,
+                    Err(reply) => return Outcome::Now(reply),
                 };
                 let Some(pane) = space.terminal(id) else {
-                    return Reply::err(format!("{block} isn't a terminal."));
+                    return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
                 };
                 pane.term.type_in(&text);
                 if enter {
@@ -266,24 +296,50 @@ impl Workspace {
             }
             Call::Notify { text } => {
                 let (_, title, _) = self.about(&space.blocks[&me], cx);
-                let ws = cx.entity().downgrade();
-                let notification = Notification::new()
-                    .title(title)
-                    .message(text)
-                    .delivery(self.delivery(window))
-                    .on_click(move |_, window, cx| {
-                        ws.update(cx, |ws, cx| ws.reveal(&space_id, me, window, cx))
-                            .ok();
-                    });
-                show_notification(window, cx, notification);
+                self.notify_from(space_id, me, title, text, window, cx);
                 Reply::ok("Shown.")
             }
-        }
+            Call::AskUser {
+                question,
+                options,
+                timeout,
+            } => {
+                let what = Waiting::Question {
+                    text: question,
+                    options,
+                    field: None,
+                };
+                return Outcome::Wait(what, timeout);
+            }
+        })
+    }
+
+    /// A notification from block `me` of workspace `space`, titled `title`; clicking it shows the
+    /// block. In the background it is a system notification too.
+    pub(super) fn notify_from(
+        &self,
+        space: String,
+        me: BlockId,
+        title: String,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ws = cx.entity().downgrade();
+        let notification = Notification::new()
+            .title(title)
+            .message(text)
+            .delivery(self.delivery(window))
+            .on_click(move |_, window, cx| {
+                ws.update(cx, |ws, cx| ws.reveal(&space, me, window, cx))
+                    .ok();
+            });
+        show_notification(window, cx, notification);
     }
 
     /// A block's kind, title (made safe to hand an agent) and folder, as `whoami` and
     /// `list_blocks` say them.
-    fn about(&self, body: &Body, cx: &App) -> (&'static str, String, Option<PathBuf>) {
+    pub(super) fn about(&self, body: &Body, cx: &App) -> (&'static str, String, Option<PathBuf>) {
         let title = || crate::block::title(self, body, cx).to_string();
         let (kind, title, folder) = match body {
             Body::Terminal(pane) => (
@@ -413,7 +469,7 @@ pub(super) fn clean_title(title: &str) -> String {
 
 /// The block `uid` names in `space`, when the caller `me` may use it: its own, or one wired to
 /// it, looked at on each call.
-fn target(space: &Space, me: BlockId, uid: &str) -> Result<BlockId, Reply> {
+pub(super) fn target(space: &Space, me: BlockId, uid: &str) -> Result<BlockId, Reply> {
     let Some(id) = space.block_by_uid(uid) else {
         return Err(Reply::err(format!(
             "There's no block {uid} in your workspace: list_blocks lists them."

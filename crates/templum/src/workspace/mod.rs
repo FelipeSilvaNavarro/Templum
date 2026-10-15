@@ -29,6 +29,7 @@ mod tiling;
 mod update;
 mod usage;
 mod view;
+mod waits;
 mod wires;
 
 pub(crate) use find::FindBar;
@@ -920,6 +921,10 @@ pub struct Workspace {
     /// What every new terminal's environment gets while the bus runs.
     bus_env: Vec<(String, String)>,
     _bus: Task<()>,
+    /// The tool calls waiting for an answer, oldest first (`waits.rs`).
+    waits: Vec<waits::Wait>,
+    /// The last wait's key.
+    next_wait: u64,
     _wake: Task<()>,
 }
 
@@ -1212,6 +1217,8 @@ impl Workspace {
             bus,
             bus_env,
             _bus: bus_task,
+            waits: Vec::new(),
+            next_wait: 0,
             _wake: wake,
         };
         // Relay files of Claude Code sessions long gone, at startup.

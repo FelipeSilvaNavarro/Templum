@@ -11,6 +11,11 @@ const VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-
 pub const MAX_LINES: usize = 2000;
 /// The most bytes of text a tool returns: its end is kept.
 pub const MAX_TEXT: usize = 256 * 1024;
+/// The longest a tool waits, seconds: Codex gives up on a call after an hour (the
+/// `tool_timeout_sec` of `codex_flags`).
+pub const MAX_WAIT: u64 = 3600;
+/// How long a question or a request to connect waits for the person, seconds, unless asked.
+pub const ASK_WAIT: u64 = 1800;
 
 /// A tool call, its arguments checked.
 #[derive(Clone, Debug, PartialEq)]
@@ -29,6 +34,11 @@ pub enum Call {
     },
     Notify {
         text: String,
+    },
+    AskUser {
+        question: String,
+        options: Vec<String>,
+        timeout: u64,
     },
 }
 
@@ -75,6 +85,15 @@ pub fn list() -> Value {
     let block =
         json!({ "type": "string", "description": "A block's id, as list_blocks shows it." });
     let none = json!({ "type": "object", "properties": {} });
+    let seconds = |default: u64| {
+        json!({
+            "type": "integer",
+            "minimum": 1,
+            "maximum": MAX_WAIT,
+            "default": default,
+            "description": "Seconds to wait before giving up.",
+        })
+    };
     json!({ "tools": [
         {
             "name": "whoami",
@@ -127,6 +146,25 @@ pub fn list() -> Value {
                 "required": ["text"],
             },
         },
+        {
+            "name": "ask_user",
+            "description": "Asks the person a question in a balloon on your block: a button per option, or a \
+                            text field when there are none. Waits for the answer and returns it; it may take \
+                            minutes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "question": { "type": "string" },
+                    "options": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "The answers to offer; none for a text field.",
+                    },
+                    "timeout": seconds(ASK_WAIT),
+                },
+                "required": ["question"],
+            },
+        },
     ]})
 }
 
@@ -151,6 +189,14 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             .as_bool()
             .ok_or_else(|| format!("\"{key}\" is true or false")),
     };
+    let seconds = |default: u64| match &args["timeout"] {
+        Value::Null => Ok(default),
+        value => value
+            .as_u64()
+            .filter(|n| *n >= 1)
+            .map(|n| n.min(MAX_WAIT))
+            .ok_or_else(|| format!("\"timeout\" is a number of seconds from 1 to {MAX_WAIT}")),
+    };
     Ok(match name {
         "whoami" => Call::Whoami,
         "list_blocks" => Call::ListBlocks,
@@ -173,6 +219,19 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
         },
         "notify" => Call::Notify {
             text: text("text")?,
+        },
+        "ask_user" => Call::AskUser {
+            question: text("question")?,
+            options: match &args["options"] {
+                Value::Null => Vec::new(),
+                Value::Array(items) => items
+                    .iter()
+                    .map(|o| o.as_str().map(str::to_string))
+                    .collect::<Option<_>>()
+                    .ok_or_else(|| "\"options\" is a list of strings".to_string())?,
+                _ => return Err("\"options\" is a list of strings".into()),
+            },
+            timeout: seconds(ASK_WAIT)?,
         },
         _ => return Err(format!("Unknown tool: {name}")),
     })
@@ -217,6 +276,10 @@ mod tests {
                 json!({ "block": "b7k2m", "text": "ls", "enter": true }),
             ),
             ("notify", json!({ "text": "done" })),
+            (
+                "ask_user",
+                json!({ "question": "Ship it?", "options": ["Yes", "No"], "timeout": 60 }),
+            ),
         ];
         let listed: Vec<String> = list()["tools"]
             .as_array()
@@ -259,6 +322,37 @@ mod tests {
                 enter: false
             })
         );
+    }
+
+    #[test]
+    fn the_tools_that_wait_have_their_defaults_and_limits() {
+        assert_eq!(
+            parse("ask_user", &json!({ "question": "Why?" })),
+            Ok(Call::AskUser {
+                question: "Why?".into(),
+                options: Vec::new(),
+                timeout: ASK_WAIT
+            })
+        );
+        assert_eq!(
+            parse(
+                "ask_user",
+                &json!({ "question": "Why?", "timeout": 99_999 })
+            ),
+            Ok(Call::AskUser {
+                question: "Why?".into(),
+                options: Vec::new(),
+                timeout: MAX_WAIT
+            })
+        );
+        for bad in [
+            json!({}),
+            json!({ "question": "Why?", "options": "yes" }),
+            json!({ "question": "Why?", "options": [1] }),
+            json!({ "question": "Why?", "timeout": 0 }),
+        ] {
+            assert!(parse("ask_user", &bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

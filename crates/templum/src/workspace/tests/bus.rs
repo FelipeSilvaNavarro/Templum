@@ -38,7 +38,7 @@ fn ask(
 }
 
 /// A tool's answer: whether it is an error, and its text.
-fn call(
+pub(super) fn call(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
@@ -61,8 +61,89 @@ fn call(
     )
 }
 
+/// Calls `tool` from `terminal` on connection `conn` (its request's id is `conn` too): the channel
+/// its answer comes on, now or later.
+pub(super) fn call_later(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    terminal: &str,
+    conn: u64,
+    tool: &str,
+    arguments: Value,
+) -> std::sync::mpsc::Receiver<String> {
+    let (reply, answers) = std::sync::mpsc::channel();
+    let message = Message {
+        hello: Hello {
+            terminal: terminal.into(),
+            client: "mcp".into(),
+        },
+        conn,
+        incoming: Incoming::Request {
+            id: json!(conn),
+            method: "tools/call".into(),
+            params: json!({ "name": tool, "arguments": arguments }),
+        },
+        reply,
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.serve(message, window, cx))
+    })
+    .unwrap();
+    answers
+}
+
+/// A tool's answer line: whether it is an error, and its text.
+pub(super) fn result_of(line: &str) -> (bool, String) {
+    let answer: Value = serde_json::from_str(line).unwrap();
+    let result = &answer["result"];
+    (
+        result["isError"] == true,
+        result["content"][0]["text"].as_str().unwrap().to_string(),
+    )
+}
+
+/// A notification `method` on connection `conn`, as an MCP client or the bus sends it.
+pub(super) fn bus_note(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    conn: u64,
+    method: &str,
+    params: Value,
+) {
+    let (reply, _) = std::sync::mpsc::channel();
+    let message = Message {
+        hello: Hello {
+            terminal: String::new(),
+            client: "mcp".into(),
+        },
+        conn,
+        incoming: Incoming::Notification {
+            method: method.into(),
+            params,
+        },
+        reply,
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.serve(message, window, cx))
+    })
+    .unwrap();
+}
+
+/// The answer that came on `answers`: whether it is an error, and its text.
+pub(super) fn answered(answers: &std::sync::mpsc::Receiver<String>) -> (bool, String) {
+    result_of(&answers.try_recv().expect("answered"))
+}
+
+/// Lets `millis` pass on the test's clock, and what waited on them run.
+pub(super) fn after(cx: &mut TestAppContext, millis: u64) {
+    cx.executor().advance_clock(Duration::from_millis(millis));
+    cx.run_until_parked();
+}
+
 /// The terminal `id`'s `TEMPLUM_TERMINAL` and block id.
-fn me(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> (String, String) {
+pub(super) fn me(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> (String, String) {
     ws.read_with(cx, |ws, _| {
         (
             ws.space.terminal(id).unwrap().term.id().to_string(),
@@ -74,7 +155,7 @@ fn me(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> (String, 
 /// The terminal's screen once it shows `needle`, its rows joined: a long line wraps at the
 /// terminal's width (macOS's temporary folder is long), and `Snapshot::text` breaks it there.
 #[cfg(unix)]
-fn screen_with(
+pub(super) fn screen_with(
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
     id: BlockId,
@@ -135,7 +216,7 @@ fn initialize_lists_the_tools_and_says_who_the_agent_is(cx: &mut TestAppContext)
         "{instructions}"
     );
     let tools = ask(handle, &ws, cx, &terminal, "tools/list", Value::Null);
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 5);
+    assert_eq!(tools["result"], templum_mcp::tools::list());
     assert_eq!(
         ask(handle, &ws, cx, &terminal, "ping", Value::Null)["result"],
         json!({})
@@ -436,7 +517,7 @@ fn without_a_data_folder_there_is_no_bus(cx: &mut TestAppContext) {
 }
 
 /// Hands the workspace an agent's event, as `templum hook` does.
-fn event(
+pub(super) fn event(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,

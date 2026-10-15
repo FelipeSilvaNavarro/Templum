@@ -638,6 +638,7 @@ mod moving;
 mod navigation;
 mod notes;
 mod persistence;
+mod requests;
 mod screen;
 mod selection;
 mod settings_edits;

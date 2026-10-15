@@ -9,8 +9,11 @@ use crate::bus::{self, Stream};
 use crate::{hooks, rpc};
 
 /// The first arguments that make `templum` a command instead of the app.
-const VERBS: [&str; 7] = ["mcp", "hook", "whoami", "blocks", "read", "send", "notify"];
+const VERBS: &[&str] = &[
+    "mcp", "hook", "whoami", "blocks", "read", "send", "notify", "ask",
+];
 const READ: &str = "read <block> [-n <lines>] [--last] [--json]";
+const ASK: &str = "ask <question> [--option <answer>]… [--json]";
 
 pub fn is_verb(arg: &str) -> bool {
     VERBS.contains(&arg)
@@ -118,6 +121,25 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
             )
         }
         ("notify", text) if !text.is_empty() => ("notify", json!({ "text": text.join(" ") })),
+        ("ask", words) => {
+            let (mut question, mut options) = (Vec::new(), Vec::new());
+            let mut words = words.iter();
+            while let Some(word) = words.next() {
+                if *word == "--option" {
+                    options.push(*words.next().ok_or(ASK)?);
+                } else {
+                    question.push(*word);
+                }
+            }
+            if question.is_empty() {
+                return Err(ASK);
+            }
+            let mut arguments = json!({ "question": question.join(" ") });
+            if !options.is_empty() {
+                arguments["options"] = json!(options);
+            }
+            ("ask_user", arguments)
+        }
         ("whoami", _) => return Err("whoami [--json]"),
         ("blocks", _) => return Err("blocks [--json]"),
         ("read", _) => return Err(READ),
@@ -362,6 +384,34 @@ mod tests {
     }
 
     #[test]
+    fn ask_sends_the_question_and_its_options() {
+        let (seen, calls) = std::sync::mpsc::channel();
+        let (_dir, bus) = test_bus(move |m| {
+            if let Incoming::Request { id, params, .. } = &m.incoming {
+                let _ = seen.send(params.clone());
+                let _ = m.reply.send(tool_result(id, &Reply::ok("Yes")));
+            }
+        });
+        let args = [
+            "ask", "Ship", "it?", "--option", "Yes", "--option", "Not yet",
+        ];
+        let (code, out, _) = run_with(&args, &env(&bus), "");
+        assert_eq!((code, out.as_str()), (0, "Yes\n"));
+        assert_eq!(
+            calls.recv_timeout(LIMIT).unwrap(),
+            json!({ "name": "ask_user", "arguments": { "question": "Ship it?", "options": ["Yes", "Not yet"] } })
+        );
+        run_with(&["ask", "When?"], &env(&bus), "");
+        assert_eq!(
+            calls.recv_timeout(LIMIT).unwrap()["arguments"],
+            json!({ "question": "When?" })
+        );
+        let (code, _, err) = run_with(&["ask", "--option", "Yes"], &env(&bus), "");
+        assert_eq!(code, 2);
+        assert!(err.starts_with("usage: templum ask"), "{err}");
+    }
+
+    #[test]
     fn a_hook_sends_its_event_prints_nothing_and_never_fails() {
         let (seen, events) = std::sync::mpsc::channel();
         let (_dir, bus) = test_bus(move |m| {
@@ -443,6 +493,7 @@ mod tests {
     #[test]
     fn only_the_verbs_are_commands() {
         assert!(is_verb("mcp") && is_verb("hook") && is_verb("read"));
+        assert!(is_verb("ask"));
         assert!(!is_verb("--bench") && !is_verb("--claude-statusline") && !is_verb(""));
     }
 }

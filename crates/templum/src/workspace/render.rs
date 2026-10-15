@@ -308,6 +308,8 @@ impl Render for Workspace {
             self.remove_block(id, window, cx);
         }
         self.hear(window, cx);
+        // A tool call whose block is gone is withdrawn (docs/specs/connections.md).
+        self.drop_orphans(cx);
 
         let vp = self.viewport(window);
         // Grid mode's tiles fill the area as it is now: the window or the sidebar may have changed.
