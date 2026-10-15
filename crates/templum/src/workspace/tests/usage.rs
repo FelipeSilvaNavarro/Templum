@@ -43,6 +43,13 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
             ws.typed(codex.as_ref(), "codex resume 0d5e")
         );
         assert_eq!(ws.typed(None, "claude"), "claude");
+        // Windows PowerShell 5.1 passes `args=["mcp"]` on as `args=[mcp]`; pwsh 7 doesn't.
+        let shell = ws.config.shell.program.clone();
+        ws.config.shell.program = Some("powershell".into());
+        assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex");
+        ws.config.shell.program = Some("pwsh".into());
+        assert!(ws.typed(codex.as_ref(), "codex").contains("mcp_servers.templum"));
+        ws.config.shell.program = shell;
         // Connections off: the status line only, and nothing for Codex.
         ws.config.connections.enabled = false;
         assert_eq!(

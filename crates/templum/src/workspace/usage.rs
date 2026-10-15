@@ -28,8 +28,9 @@ impl Workspace {
     /// `command` as typed to start `agent` in a terminal (docs/specs/connections.md, What Templum
     /// types into each agent): the Claude Code Templum opens gets its settings file (the status
     /// line of the plan's limits, and the hooks) and its MCP server; Codex gets the server and
-    /// its `notify`, unless the shell is cmd (they go in single quotes). Nothing under WSL, where
-    /// Templum's paths aren't the shell's, nor without a data folder.
+    /// its `notify`, unless the shell is cmd (they go in single quotes) or Windows PowerShell 5.1
+    /// (it strips the `"` inside them; pwsh 7 doesn't). Nothing under WSL, where Templum's paths
+    /// aren't the shell's, nor without a data folder.
     pub(super) fn typed(&self, agent: Option<&AgentEntry>, command: &str) -> String {
         let builtin = agent.and_then(|a| a.builtin);
         let (Some(data), Some(exe), false) = (&self.data_dir, program(), self.shell_is("wsl"))
@@ -53,6 +54,7 @@ impl Workspace {
         } else if builtin == Some(Agent::CODEX)
             && connected
             && !self.shell_is("cmd")
+            && !self.shell_is("powershell")
             && let Some(flags) = templum_mcp::codex_flags(&exe.to_string_lossy(), windows)
         {
             line.push_str(&flags);
