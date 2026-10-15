@@ -222,6 +222,36 @@ fn wait_for_idle_waits_on_an_agent_a_snapshot_found_no_trace_of_yet(cx: &mut Tes
     }
 }
 
+/// An agent no snapshot found yet may never have started (its folder's trust declined, its
+/// shell's startup asking something): typed text could run in its shell, which macOS can't tell
+/// is in front until a snapshot found the agent. What another agent hands it is refused until then.
+#[gpui_kit::test]
+fn nothing_is_handed_to_an_agent_no_snapshot_found_yet(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "claude", "folder": folder.path(), "prompt": "say hi" });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    let (_, uid) = me(&ws, cx, new);
+    snapshot(
+        handle,
+        &ws,
+        cx,
+        new,
+        templum_terminal::Inspection::default(),
+    );
+    // Not the terminal's process in front, as macOS's shell under `login` isn't.
+    #[cfg(unix)]
+    in_front(&ws, cx, new, true);
+    let reply = json!({ "block": uid, "text": "Done." });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "reply", reply);
+    assert!(failed && text.contains("still starting"), "{text}");
+    let task = json!({ "block": uid, "task": "go" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    assert!(failed && text.contains("still starting"), "{text}");
+}
+
 #[gpui_kit::test]
 fn another_agents_prompt_waits_for_its_process_and_a_still_screen(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);

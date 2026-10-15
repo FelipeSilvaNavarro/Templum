@@ -130,15 +130,16 @@ later starts with none.
 4. When Codex finishes its turn, its last answer becomes the result of Claude Code's `delegate` (when it asked to
    wait), or of a later `wait_for_idle`. If Codex calls `reply` first, that text is the answer instead.
 5. Templum refuses to type into an agent that is waiting for its person (a permission prompt would take the text
-   as its answer), into a terminal running no agent (`send_to_terminal` is for those), and into an agent already on
-   another agent's task (`wait_for_idle` waits for its end).
+   as its answer), into a terminal running no agent (`send_to_terminal` is for those), into an agent no snapshot has
+   found yet (one Templum just typed may not have started at all; the caller is told to try again in a few
+   seconds), and into an agent already on another agent's task (`wait_for_idle` waits for its end).
 6. An agent Templum gets no events from (see the table under [Hooks](#hooks-and-agent-state)) answers only through
    `reply`, or the wait ends at its timeout with the agent's last screen lines.
 7. A task stays handed over until its answer comes, the agent's session ends (or a snapshot no longer finds the agent
    it found before: Codex says nothing when it quits), its block closes, or its timeout passes (`delegate`'s, 600 s
    unless asked, also without `wait`).
 8. `reply` with no call waiting types `[reply from <title> (<id>)]` and the text, then Enter, into the agent named;
-   never into a terminal running no agent.
+   never into a terminal running no agent, or an agent no snapshot has found yet.
 9. A task typed into an agent working on a prompt of its own is answered by the end of the next turn: Codex runs
    typed input as its next turn, so that answer may be the turn it was on.
 

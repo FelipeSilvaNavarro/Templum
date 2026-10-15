@@ -70,6 +70,18 @@ impl Pane {
         }
         Ok(())
     }
+
+    /// `takes_typing`, for what another agent hands it (`delegate`, `reply`): only once a snapshot
+    /// found its agent. One Templum typed there may never have started (its folder's trust
+    /// declined), and before a snapshot found it, macOS can't tell its shell is in front.
+    fn takes_handing(&self, uid: &str) -> Result<(), Reply> {
+        if self.seen.agent.is_some() && self.seen.pid.is_none() {
+            return Err(Reply::err(format!(
+                "{uid} is still starting: try again in a few seconds."
+            )));
+        }
+        self.takes_typing(uid)
+    }
 }
 
 impl Workspace {
@@ -157,7 +169,7 @@ impl Workspace {
         let Some(pane) = space.terminal(to) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
-        if let Err(refused) = pane.takes_typing(block) {
+        if let Err(refused) = pane.takes_handing(block) {
             return Outcome::Now(refused);
         }
         if pane.task(now).is_some() {
@@ -229,7 +241,7 @@ impl Workspace {
             .map(|w| w.key)
             .collect();
         if waiting.is_empty() {
-            if let Err(refused) = pane.takes_typing(block) {
+            if let Err(refused) = pane.takes_handing(block) {
                 return refused;
             }
             let (_, title, _) = self.about(&space.blocks[&me], cx);

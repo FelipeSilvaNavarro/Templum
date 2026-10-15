@@ -624,6 +624,5 @@ Left by the second review of batch 3; line numbers are those of `development` at
   (`crates/templum/src/workspace/mod.rs:653`) keeps the agent `start_agent` typed while its prompt waits, since a
   snapshot taken while the new shell still starts finds none; a Claude Code whose folder trust is declined at once,
   or that fails to start, never says it started, so its prompt and its agent stay until an agent runs there again. A
-  person sees the block still named after the agent, and saved as one; on macOS, where Templum can't tell the shell is
-  in front before a snapshot found the agent, another agent's `reply` to it is typed into the shell. Fix: drop the
-  prompt when its handed task's time runs out (10 minutes), so the next snapshot lets the agent go.
+  person sees the block still named after the agent, and saved as one. Fix: drop the prompt when its handed task's time
+  runs out (10 minutes), so the next snapshot lets the agent go.

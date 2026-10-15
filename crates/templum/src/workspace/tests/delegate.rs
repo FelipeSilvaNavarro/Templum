@@ -18,7 +18,7 @@ fn two_agents(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, B
 }
 
 /// `two_agents`, theirs running `command` (`agent_cat` when None), each once its program is in
-/// front.
+/// front, where a snapshot found theirs.
 fn agents_running(
     cx: &mut TestAppContext,
     command: Option<(String, Vec<String>)>,
@@ -48,7 +48,18 @@ fn agents_running(
     for id in [mine, theirs] {
         in_front(&ws, cx, id, true);
     }
+    found(&ws, cx, theirs);
     (handle, ws, mine, theirs)
+}
+
+/// A snapshot found the agent of terminal block `id`: in front of its shell (Unix), or below it
+/// (Windows, which has no process in front).
+fn found(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) {
+    ws.update(cx, |ws, _| {
+        let pane = ws.space.terminal_mut(id).unwrap();
+        let p = pane.term.processes();
+        pane.seen.pid = p.foreground.or(p.shell);
+    });
 }
 
 /// A snapshot that found `found` in the terminal block `id`, as one taken every few seconds.
@@ -209,6 +220,7 @@ fn reply_with_no_one_waiting_types_into_the_agent(cx: &mut TestAppContext) {
     ws.update(cx, |ws, _| {
         ws.space.terminal_mut(mine).unwrap().seen.agent = Some("claude".into())
     });
+    found(&ws, cx, mine);
     let (failed, text) = call(handle, &ws, cx, &worker, "reply", reply);
     assert_eq!((failed, text), (false, format!("Typed into {uid}.")));
     screen_with(&ws, cx, mine, "Done.");
@@ -530,8 +542,7 @@ fn nothing_is_typed_into_a_shell_under_login_an_agent_left(cx: &mut TestAppConte
 }
 
 /// An agent that goes without a word (Codex says nothing when it quits; one that crashed): the
-/// first snapshot that misses its process ends its task. One not found yet (still starting) has
-/// nothing to end.
+/// first snapshot that misses its process ends its task.
 #[gpui_kit::test]
 fn an_agent_that_leaves_without_a_word_ends_its_task(cx: &mut TestAppContext) {
     use templum_terminal::Inspection;
@@ -541,11 +552,6 @@ fn an_agent_that_leaves_without_a_word_ends_its_task(cx: &mut TestAppContext) {
     let task = json!({ "block": them, "task": "go", "wait": true });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     let snapshot = |cx: &mut TestAppContext, found| snapshot(handle, &ws, cx, theirs, found);
-    snapshot(cx, Inspection::default());
-    assert!(
-        answers.try_recv().is_err(),
-        "not found yet: it may be starting"
-    );
     let running = Inspection {
         agent: Some("codex".into()),
         pid: Some(42),
