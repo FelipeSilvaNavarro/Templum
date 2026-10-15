@@ -648,4 +648,5 @@ mod themes;
 mod update;
 mod usage;
 mod welcome;
+mod wires;
 mod workspaces;

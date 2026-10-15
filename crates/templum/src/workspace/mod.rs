@@ -29,6 +29,7 @@ mod tiling;
 mod update;
 mod usage;
 mod view;
+mod wires;
 
 pub(crate) use find::FindBar;
 pub(crate) use git_message::TryIt;
@@ -50,7 +51,7 @@ use gpui_kit::{
 };
 use templum_canvas::{
     Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, Point, Rect,
-    ShapeKind, Size, Tile, chrome,
+    ShapeKind, Size, Tile, Wire, chrome,
 };
 use templum_git::GitError;
 use templum_terminal::{Notify, Snapshot, Terminal};
@@ -454,6 +455,8 @@ pub(crate) struct Space {
     pub ink: Vec<Drawing>,
     /// The selected drawing, by its index in `ink`.
     pub selected_ink: Option<usize>,
+    /// The wires between its blocks (docs/specs/connections.md), oldest first.
+    pub wires: Vec<Wire>,
     /// The changes that take back each change of the blocks (added, closed, moved, resized), by
     /// their step numbers, newest last, at most CANVAS_UNDO; and those of the undone ones.
     pub undo: Vec<(u64, history::Change)>,
@@ -578,6 +581,7 @@ impl Space {
         self.framed = None;
         self.ink.clear();
         self.selected_ink = None;
+        self.wires.clear();
         self.undo.clear();
         self.redo.clear();
         self.ink_undo.clear();

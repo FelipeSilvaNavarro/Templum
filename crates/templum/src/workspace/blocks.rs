@@ -522,6 +522,14 @@ impl Workspace {
             .filter(|b| ids.contains(&b.id))
             .map(|b| (b.id, self.space.item_of(b, cx)))
             .collect();
+        // Their wires go with them; undoing the close brings them back.
+        let wires: Vec<_> = self
+            .space
+            .wires
+            .iter()
+            .filter(|w| ids.iter().any(|id| w.touches(*id)))
+            .copied()
+            .collect();
         let was_focused = self.space.focused.is_some_and(|id| ids.contains(&id));
         for id in ids {
             self.remove_block(*id, window, cx);
@@ -530,7 +538,7 @@ impl Workspace {
             self.space.focused = None;
         }
         if !items.is_empty() {
-            self.keep(Change::Open(items), then);
+            self.keep(Change::Open(items, wires), then);
         }
     }
 
@@ -571,6 +579,7 @@ impl Workspace {
         self.space.appearing.remove(&id);
         let body = self.space.blocks.remove(&id);
         self.space.uids.remove(&id);
+        self.space.unwire(id);
         if self.space.hovered == Some(id) {
             self.space.hovered = None;
         }
