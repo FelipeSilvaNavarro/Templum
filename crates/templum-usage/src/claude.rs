@@ -251,7 +251,7 @@ pub fn mcp_arg(data: &Path, exe: &Path, windows: bool) -> Option<String> {
 }
 
 /// Writes `value` to `path` unless the file already holds it.
-fn write_changed(path: &Path, value: &serde_json::Value) -> Option<()> {
+pub(crate) fn write_changed(path: &Path, value: &serde_json::Value) -> Option<()> {
     let text = serde_json::to_vec_pretty(value).expect("JSON");
     if std::fs::read(path).ok().as_deref() != Some(&text[..]) {
         write_atomic(path, &text).ok()?;

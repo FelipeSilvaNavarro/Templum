@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 pub mod claude;
 pub mod codex;
+pub mod gemini;
 mod watch;
 
 pub use watch::{Event, REACHED, Watch};
