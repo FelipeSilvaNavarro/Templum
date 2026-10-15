@@ -96,10 +96,13 @@ A terminal running an agent Templum hears from ([Hooks](#hooks-and-agent-state))
 | Done with its turn | none (its running command would otherwise read "Running") | — |
 
 **From its screen.** Where its hooks say nothing, its screen tells: once a second Templum looks at the last 100 lines
-of every agent's terminal. One that changed at 3 of the last 4 looks (a spinner, Codex's "Working (5s)") is an agent
-at work, also after a dialog the person answered; one that stayed still for 5 looks while it worked is not, and the
-task it was on ends with its last 40 screen lines. A look right after the person typed into it tells nothing. A wait
-for the person is never ended by a still screen.
+of every agent's terminal, and each event of its hooks starts the looks over (the spinner that ran until its turn
+ended or a dialog opened says nothing after). One that changed at 3 of the last 4 looks (a spinner, Codex's "Working
+(5s)") is an agent at work; one that stayed still for 5 looks while it worked is not, and the task it was on ends with
+its last 40 screen lines. A wait for the person ends from the screen only once the person typed into the terminal
+since it began (they answered the dialog): a subagent drawing under an open dialog doesn't end it, nor does a still
+screen. A look right after the person typed, pasted, clicked or scrolled in it tells nothing, and the looks before it
+count no more.
 
 An alert the terminal already shows (attention, a finished command) comes first. An agent the last snapshot doesn't
 see (it crashed: no `SessionEnd`) shows no state, and its state is forgotten, so a `claude` typed there by hand
