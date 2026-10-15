@@ -666,3 +666,29 @@ Left by batch 4 (content); line numbers are those of `development` at 9e33f19.
   for `open_file ../a.rs` from `proj/web` that is `proj/web/..`, which has no file name, so the editor's title shows
   the whole path (`a.rs — /…/web/..`) instead of `proj`. Fix: use the canonical folder when `given.parent()` has no
   file name.
+
+Left by batch 5; line numbers are those of `development` at f48c75c.
+
+- [ ] **A Gemini CLI that hangs keeps Install spinning.** `gemini_run` (`crates/templum/src/workspace/usage.rs:335`)
+  waits for `gemini extensions link` (or `uninstall`) with no deadline. A person sees the Install or Remove button of
+  Settings ▸ Connections spin until Templum quits. Fix: kill it after 60 s, as `claude::poll`
+  (`crates/templum-usage/src/claude.rs:404`) kills a `/usage` that takes over 30 s, and say so in red.
+- [ ] **The Gemini row looks at the disk every frame.** `gemini_row` (`crates/templum/src/settings/connections.rs:95`)
+  stats `~/.gemini/extensions/templum` at each frame while Settings ▸ Connections shows. A person sees nothing, but
+  every frame there touches the disk (a slow or network home folder stalls it). Fix: check when the tab opens and
+  after Install or Remove ends, and keep the answer on the workspace.
+- [ ] **After Rename wire… Delete and Esc do nothing to the selected wire.** The dialog of Rename wire…
+  (`crates/templum/src/menu/build.rs:1008-1020`), as the one of Rename board, leaves no element with the keyboard once
+  it closes. A person who renamed a wire presses Delete or Esc and nothing happens until they click the canvas. Fix:
+  focus the workspace (`window.focus(&ws.focus_handle, cx)`) in the dialog's apply and on cancel.
+- [ ] **A wire's name comes back with a block that left and returned.** `move_blocks`
+  (`crates/templum/src/workspace/spaces.rs:274`) leaves the labels of a moved block's wires in the workspace it left
+  (`Space::labels`, keyed by block ids, `crates/templum/src/workspace/mod.rs:511`). A person who moves a block to
+  another workspace, back again, and wires it to the same block sees the old wire's name come back. Fix: drop the
+  labels whose blocks left in `move_blocks`.
+- [ ] **An agent with hooks that works with a still screen ends its delegated task.** `Looks::state`
+  (`crates/templum/src/workspace/activity.rs:69`) turns Working to Idle after `STILL` (5) still looks
+  (`activity.rs:21`), also for an agent whose hooks spoke during the turn, and `look_at_agents` (`activity.rs:122`)
+  then ends the task it was on. A Claude Code or Gemini CLI running a long, silent tool with no spinner shows idle,
+  and the agent that handed it the task gets "Its screen has been still for 5 seconds" before the answer. Fix: watch
+  it in the plan's manual check 4; raise `STILL`, or leave alone agents whose hooks spoke during the turn.
