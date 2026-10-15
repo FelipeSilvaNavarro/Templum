@@ -404,31 +404,38 @@ impl Workspace {
             .folder()
             .or_else(|| space.terminal(me)?.seen.folder.clone());
         let named = crate::launcher::expand(path);
-        let path = match &here {
+        let given = match &here {
             Some(here) if named.is_relative() => here.join(named),
             _ => named,
         };
-        if path.is_relative() {
+        if given.is_relative() {
             return Reply::err("Templum doesn't know your folder yet: give the file's whole path.");
         }
-        let Ok(path) = std::fs::canonicalize(&path) else {
-            return Reply::err(format!("There's no file {}.", path.display()));
+        let Ok(real) = std::fs::canonicalize(&given) else {
+            return Reply::err(format!("There's no file {}.", given.display()));
         };
-        if !path.is_file() {
-            return Reply::err(format!("{} isn't a file.", path.display()));
+        if !real.is_file() {
+            return Reply::err(format!("{} isn't a file.", given.display()));
         }
-        match crate::editor::read_file(&path) {
+        match crate::editor::read_file(&real) {
             Err(why) => return Reply::err(why),
             Ok((Content::Binary { .. }, _)) => {
                 return Reply::err(format!(
                     "{} is binary: an editor shows no text for it.",
-                    path.display()
+                    given.display()
                 ));
             }
             Ok(_) => {}
         }
-        let holds =
-            |folder: &Path| std::fs::canonicalize(folder).is_ok_and(|f| path.starts_with(f));
+        // The file as `folder` names it, when `folder` holds it. Canonical paths only to compare:
+        // an editor's tabs are named under its folder as it was given (a link, Windows' `C:\`),
+        // and a tab is found again, and saved with the block, by that name.
+        let under = |folder: &Path| {
+            let inside = real
+                .strip_prefix(std::fs::canonicalize(folder).ok()?)
+                .ok()?;
+            Some(folder.join(inside))
+        };
         let wired = space
             .canvas
             .blocks()
@@ -436,14 +443,19 @@ impl Workspace {
             .rev()
             .map(|b| b.id)
             .filter(|id| *id != me && space.wired(me, *id))
-            .find(|id| space.editor(*id).is_some_and(|e| holds(&e.folder)));
-        let folder = here
-            .filter(|h| holds(h))
-            .unwrap_or_else(|| path.parent().unwrap_or(&path).to_path_buf());
+            .find_map(|id| Some((id, under(&space.editor(id)?.folder)?)));
+        let (folder, path) = here
+            .and_then(|here| under(&here).map(|path| (here, path)))
+            .unwrap_or_else(|| {
+                (
+                    given.parent().unwrap_or(&given).to_path_buf(),
+                    given.clone(),
+                )
+            });
         let space_id = space.id.clone();
         let opened = self.in_space(&space_id, |ws| {
-            let (id, new) = match wired {
-                Some(id) => (id, false),
+            let (id, path, new) = match wired {
+                Some((id, path)) => (id, path, false),
                 None => {
                     let anchor = ws.space.home(ws.space.canvas.get(me)?);
                     let rect = ws.space.canvas.place_beside(anchor, crate::editor::SIZE);
@@ -459,7 +471,7 @@ impl Workspace {
                     let id = ws.add_block(rect, Body::Editor(Box::new(editor)));
                     (ws.space.focused, ws.space.selected, ws.space.selected_wire) = kept;
                     ws.space.add_wire(me, id);
-                    (id, true)
+                    (id, path, true)
                 }
             };
             let had_keys = ws.space.blocks.get(&id)?.has_focus(window, cx);
@@ -479,17 +491,19 @@ impl Workspace {
             if had_keys {
                 editor.focus(window, cx);
             }
-            Some((ws.space.uids.get(&id)?.clone(), new))
+            Some((ws.space.uids.get(&id)?.clone(), path, new))
         });
         cx.notify();
         let at = line.map(|n| format!(" at line {n}")).unwrap_or_default();
         match opened.flatten() {
-            Some((uid, false)) => Reply::ok(format!("Opened {}{at} in {uid}.", path.display())),
-            Some((uid, true)) => Reply::ok(format!(
+            Some((uid, path, false)) => {
+                Reply::ok(format!("Opened {}{at} in {uid}.", path.display()))
+            }
+            Some((uid, path, true)) => Reply::ok(format!(
                 "Opened {}{at} in a new editor {uid} beside you, connected to you.",
                 path.display()
             )),
-            None => Reply::err(format!("Couldn't open {}.", path.display())),
+            None => Reply::err(format!("Couldn't open {}.", given.display())),
         }
     }
 

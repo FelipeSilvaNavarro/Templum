@@ -544,6 +544,47 @@ fn open_file_with_no_wired_editor_opens_one_beside_the_caller(cx: &mut TestAppCo
     });
 }
 
+/// A file named by its real path shows in the tab an editor on a linked folder already has.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn open_file_shows_the_tab_already_open_under_a_linked_folder(cx: &mut TestAppContext) {
+    let (_dir, folder) = a_project();
+    let links = tempfile::tempdir().unwrap();
+    let link = links.path().join("project");
+    std::os::unix::fs::symlink(&folder, &link).unwrap();
+    let (handle, ws) = open(cx);
+    let terminal = first_id(&ws, cx);
+    let editor = open_editor(handle, &ws, cx, &link);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            assert!(ws.connect(terminal, editor, cx));
+            let e = ws.space.editor_mut(editor).unwrap();
+            e.open_tab(&link.join("a.rs"), window, cx).unwrap();
+        })
+    })
+    .unwrap();
+    let (me, _) = me(&ws, cx, terminal);
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "open_file",
+        json!({ "path": folder.join("a.rs"), "line": 2 }),
+    );
+    assert!(!failed, "{text}");
+    ws.read_with(cx, |ws, cx| {
+        let e = ws.space.editor(editor).unwrap();
+        assert_eq!(e.tabs.len(), 1, "the tab already open, no second one");
+        assert_eq!(e.active, Some(0));
+        assert_eq!(e.tabs[0].editor.read(cx).cursor_position().line, 1);
+    });
+    assert!(
+        text.contains(&link.join("a.rs").display().to_string()),
+        "as the editor names it: {text}"
+    );
+}
+
 #[gpui_kit::test]
 fn open_file_refuses_what_it_cant_open_and_opens_no_block(cx: &mut TestAppContext) {
     let (_dir, folder) = a_project();
