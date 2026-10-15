@@ -83,11 +83,12 @@ A terminal running an agent Templum hears from ([Hooks](#hooks-and-agent-state))
 | State | Dot | Tooltip |
 |---|---|---|
 | Working on a prompt | accent | "Working" |
-| Waiting for the person (a permission prompt, a question) | yellow | "Waiting for you: *the agent's message*" |
+| Waiting for the person (a permission dialog, a question) | yellow | "Waiting for you: *the agent's message*" ("Allow Bash?" as a permission dialog opens) |
 | Done with its turn | none (its running command would otherwise read "Running") | — |
 
-An alert the terminal already shows (attention, a finished command) comes first. An agent the last snapshot didn't
-see (it crashed) shows no state.
+An alert the terminal already shows (attention, a finished command) comes first. An agent the last snapshot doesn't
+see (it crashed: no `SessionEnd`) shows no state, and its state is forgotten, so a `claude` typed there by hand
+later starts with none.
 
 ### Requests from agents
 
@@ -137,7 +138,8 @@ its screen has been still for a second. The result names the new block and its f
   another workspace stays the same caller.
 - Every terminal also gets `TEMPLUM_BUS`, the bus's address, when there is a bus. On Unix, every terminal's `PATH`
   starts with `<data>/bin`, where Templum keeps a link named `templum` to itself, so `templum` in a Templum terminal
-  is the Templum that opened it.
+  is the Templum that opened it. On Windows, `templum` is on a terminal's `PATH` only if the installer put Templum
+  there (a link of its own is deferred: [minors](../minors.md#connections)).
 
 ## The bus
 
@@ -167,21 +169,22 @@ its screen has been still for a second. The result names the new block and its f
 ## The MCP server
 
 `templum mcp` is a bridge: it connects to the bus, sends its hello, then copies lines from its stdin to the bus and
-back to its stdout. Templum answers MCP's `initialize`, `ping`, `tools/list` and `tools/call` ([MCP 2025-06-18](
-https://modelcontextprotocol.io/specification/2025-06-18)); tools only, no resources or prompts.
+back to its stdout. Templum answers MCP's `initialize`, `ping`, `tools/list` and `tools/call` ([MCP 2025-11-25](
+https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resources or prompts.
 
-- **`initialize`** answers protocol version `2025-06-18` (or the client's, when older and known), server
-  `templum`, Templum's version, and `instructions` written for the caller:
+- **`initialize`** answers the client's protocol version when Templum knows it (`2025-11-25`, `2025-06-18`,
+  `2025-03-26`, `2024-11-05`: none of them changed what tools exchange), else `2025-11-25`; server `templum`,
+  Templum's version, and `instructions` written for the caller:
 
-  > You are block b7k2m, "Claude Code · api", in workspace "Main". Connected to you: t4q8p (terminal
-  > "dev server"), k9x1d (kanban "Sprint"). In this workspace, not connected (ask with connect): 4qm2a (note
-  > "Ideas"). Name blocks by these ids. You may only read or write blocks connected to you. When a connected kanban has your task, move
-  > its card to Doing when you start and to Review when you are done; write what the next agent needs to know in
-  > the connected note.
+  > You are block b7k2m, "Claude Code · api", in workspace "Main". Connected to you: t4q8p (terminal "dev server"),
+  > k9x1d (kanban "Sprint"). In this workspace, not connected (ask with connect): 4qm2a (note "Ideas"). Name blocks by
+  > these ids. You may only read or write blocks connected to you. When a connected kanban has your task, move its card
+  > to Doing when you start and to Review when you are done; write what the next agent needs to know in the connected
+  > note.
 
   Titles come from what runs in a block (a terminal's is whatever its programs set), so the instructions, `whoami`
   and `list_blocks` give them cleaned: no control characters, line breaks and runs of blanks as one space, at most
-  60 characters (cut with "…"), and the instructions quote them as JSON strings are.
+  60 characters (cut with "…"), and the instructions put them in double quotes, a `"` inside escaped.
 - **`tools/list`** is the same for every caller; which blocks a tool may touch is checked at each call.
 - **Results** are text (`content: [{type: "text"}]`). A refusal or a failure is a result with `isError: true` and a
   sentence that says what to do next: `k9x1d isn't connected to you. Ask the person with connect("k9x1d").`
@@ -234,22 +237,42 @@ Templum is gone.
 
 | Agent | How Templum hears it | Events |
 |---|---|---|
-| Claude Code | hooks in the `--settings` Templum types: `SessionStart`, `UserPromptSubmit`, `PostToolUse` (working again after a permission), `Stop`, `Notification`, `SessionEnd` (JSON on stdin) | started, working, done with its last answer (`last_assistant_message`), waiting for the person (`permission_prompt`, `elicitation_dialog`, `agent_needs_input`; not `idle_prompt`: that is the reminder after a finished turn), ended |
+| Claude Code | hooks in the `--settings` Templum types (JSON on stdin) | started, working, done, waiting for the person, ended: the table below |
 | Codex | `notify` in the `-c` flags Templum types (JSON as the last argument) | done with its last answer (`agent-turn-complete`, `last-assistant-message`) |
 | Gemini CLI (batch 5) | `BeforeAgent`, `AfterAgent`, `Notification`, `SessionStart`, `SessionEnd` hooks | as Claude Code's |
 | Others | — | none: [Delegating](#delegating) point 6 |
 
-Claude Code merges hooks from every settings source, so the person's own hooks still run.
+Claude Code's hooks:
+
+| Hook | Event |
+|---|---|
+| `SessionStart` | started; nothing when its `source` is `compact`: compacting, automatically in the middle of a turn, leaves the agent working |
+| `UserPromptSubmit` | working |
+| `PermissionRequest` | waiting for the person, "Allow *tool*?", as soon as the permission dialog opens. The hook prints nothing and exits 0, so the dialog still decides |
+| `PostToolUse` | working (again, after a permission) |
+| `Stop` | done, with its last answer (`last_assistant_message`) |
+| `StopFailure` | done, without an answer: an API error ended the turn, and `Stop` doesn't come |
+| `Notification` | waiting for the person on `permission_prompt`, `elicitation_dialog` and `agent_needs_input` (they come only after about six seconds without typing, hence `PermissionRequest`); not working on `idle_prompt` (the prompt has sat idle): never a wait for the person, since the agent asks nothing; the others nothing |
+| `SessionEnd` | ended |
+
+An interrupted turn (Esc) fires no hook of its own: the dot stays on Working until the next prompt, or until
+`idle_prompt` comes after the prompt has sat idle for Claude Code's own delay (about a minute). Deferred:
+[minors](../minors.md#connections).
+
+Claude Code merges hooks from every settings source, so the person's own hooks still run. Codex keeps one `notify`:
+see [Codex](#what-templum-types-into-each-agent) below.
 
 ## What Templum types into each agent
 
 Only for an agent Templum opens (the canvas menu, `spawn_agent`, and resuming on restore), when `[connections]` is
 on, there is a bus, the shell isn't WSL, and every path is typeable (`typed_path` of [usage.md](usage.md); when
-one isn't, the agent starts without connections). A `claude` typed by
-hand gets nothing.
+one isn't, the agent starts without connections, and a notification says so once per session; the notification is
+deferred: [minors](../minors.md#connections)). A `claude` typed by hand gets nothing.
 
 **Claude Code:** `claude --settings <data>/claude-statusline.json --mcp-config <data>/mcp.json`. The settings file
-keeps the status line of [usage.md](usage.md) when `usage.claude_limits` is on, and gains the hooks:
+keeps the status line of [usage.md](usage.md) when `usage.claude_limits` is on, and gains the hooks. The server
+comes only with the hooks: when the settings file can't be given (Templum's program path can't be typed), neither is
+`--mcp-config`, so no agent is connected with a dot that never moves.
 
 ```json
 {
@@ -257,8 +280,10 @@ keeps the status line of [usage.md](usage.md) when `usage.claude_limits` is on, 
   "hooks": {
     "SessionStart":     [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
+    "PermissionRequest":[{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
     "PostToolUse":      [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
     "Stop":             [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
+    "StopFailure":      [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
     "Notification":     [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
     "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }]
   }
@@ -269,12 +294,17 @@ keeps the status line of [usage.md](usage.md) when `usage.claude_limits` is on, 
 { "mcpServers": { "templum": { "type": "stdio", "command": "/opt/templum", "args": ["mcp"] } } }
 ```
 
-**Codex:** five flags, in single quotes (so not under `cmd.exe`, and not when a path has a `'`); `env_vars` because
-Codex hands a server only the variables it is told to:
+**Codex:** five flags, in single quotes (so not under `cmd.exe`; not under Windows PowerShell 5.1 either, whose
+legacy argument passing strips the `"` inside them, `args=["mcp"]` reaching Codex as `args=[mcp]`, while pwsh 7 is
+fine; and not when a path has a `'`); `env_vars` because Codex hands a server only the variables it is told to:
 
 ```
 codex -c 'mcp_servers.templum.command="/opt/templum"' -c 'mcp_servers.templum.args=["mcp"]' -c 'mcp_servers.templum.env_vars=["TEMPLUM_BUS","TEMPLUM_TERMINAL"]' -c 'mcp_servers.templum.tool_timeout_sec=3600' -c 'notify=["/opt/templum","hook","codex"]'
 ```
+
+Codex keeps one `notify`, and a `-c` flag replaces the config's: the person's own `notify` from
+`~/.codex/config.toml` doesn't run for a Codex Templum opens (Claude Code merges hooks; Codex doesn't). Deferred:
+[minors](../minors.md#connections).
 
 **Gemini CLI** (batch 5): it has no flag for MCP servers or hooks. Templum checks whether a system settings file named
 by `GEMINI_CLI_SYSTEM_SETTINGS_PATH` adds to the person's settings or replaces them; if it adds, Templum types it;
@@ -350,9 +380,9 @@ the switch, the server's command for other agents, and Gemini CLI's setup.
 
 | File | Change | Batch |
 |---|---|---|
-| `templum-mcp` (new crate, no UI) | `rpc.rs` (the line protocol), `tools.rs` (the tools' schemas, the typed calls, replies), `hooks.rs` (each agent's events), `bus.rs` (the socket: listener, a reader and a writer thread per connection, the client), `cli.rs` (the verbs, the MCP bridge), `claude.rs` (the hooks and MCP config Claude Code is given) | 1 |
+| `templum-mcp` (new crate, no UI) | `rpc.rs` (the line protocol), `tools.rs` (the tools' schemas, the typed calls, replies), `hooks.rs` (each agent's events), `bus.rs` (the socket: listener, a reader and a writer thread per connection, the client), `cli.rs` (the verbs, the MCP bridge), `lib.rs` (the `-c` flags Codex is given) | 1 |
 | `templum-terminal/src/terminal.rs` | `SpawnOptions.env`; `Terminal::lines` and `last_command`, read from the grid | 1 |
-| `templum-usage/src/claude.rs` | the settings file holds the status line, the hooks, or both | 1 |
+| `templum-usage/src/claude.rs` | the settings file Claude Code is given holds the status line, the hooks, or both; `mcp.json`, the MCP config it is given | 1 |
 | `templum/src/main.rs` | the verbs run before any window | 1 |
 | `templum/src/workspace/bus.rs` (new) | the bus's messages answered on the main thread: the caller, the tools, the events, the requests that wait | 1, 3–5 |
 | `templum/src/workspace/usage.rs` | what `typed()` adds for Claude Code and Codex | 1 |
@@ -374,11 +404,13 @@ No new dependency: `futures`, `serde`, `serde_json` and `uuid` are in the tree.
 
 **Unit (`templum-mcp`):** a request and a notification parse; bad JSON answers `-32700` with a null id; every line
 written ends in one newline; every tool parses its own example arguments and names a missing one; an unknown tool
-fails; `initialize`'s result; each Claude Code hook payload and Codex's `notify` become their event, unknown ones
-none; the bus: bind, hello, `ping` answered; a wrong first line or token closes the connection; two requests on one
-connection both answered; the socket file goes away with the bus and a stale one is replaced; the bridge sends its
-hello first and copies both ways; `hook claude` sends one event; `read <block> -n 10` sends its call and prints the
-text; no bus is exit code 2 with nothing on stdout.
+fails; `initialize`'s result; each Claude Code hook payload and Codex's `notify` become their event (`PermissionRequest`
+waits for the person, `StopFailure` and `idle_prompt` are done, a `compact` start is nothing), unknown ones none; the
+bus: bind, hello, a request answered; a wrong first line or token closes the connection; two requests on one
+connection both answered; the socket file goes away with the bus and a stale one is replaced; a data folder too long
+for a socket puts it in a private (0700) temporary folder that goes with the bus; the bridge sends its hello first and
+copies both ways; `hook claude` sends one event and prints nothing; `read <block> -n 10` sends its call and prints the
+text; no bus is exit code 2 with nothing on stdout. Every read and wait in these tests has a 5-second limit.
 
 **Unit (`templum-terminal`):** `lines` reads history past the screen; `last_command` is the last finished command and
 its output; `SpawnOptions.env` reaches the shell.
@@ -386,20 +418,21 @@ its output; `SpawnOptions.env` reaches the shell.
 **Unit (`templum-canvas`, batch 2):** a wire's ends sit on the facing edges; a point on it hits, one 50 units off
 doesn't; wires are symmetric.
 
-**Headless UI:** a terminal's `TEMPLUM_BUS`; `whoami` names the caller's id and workspace; over the real socket,
-`read_terminal` of the caller sees what it printed; `send_to_terminal` with Enter runs; another block is refused
-until wired; `list_blocks` says connected or not; a `Stopped` event leaves the agent idle with its message and a
-`NeedsYou` one shows the yellow dot; `typed()` adds the flags for Claude Code and Codex, and none when
-`[connections]` is off or there is no data folder; a block id survives saving, restoring, closing and undoing, and
-moving to another workspace, and a pasted block gets a new one; (batch 2) the Wire tool and the menu wire two
-blocks, undo takes it back, a selected wire is deleted with Delete, closing a block and undoing brings its wires
-back, wires come back after a restart and a wire to a missing block is dropped; (batch 3) `delegate` types the
-header and the task and Enter, `wait` ends with the `Stopped` message or its timeout, `reply` answers it, the
-balloon answers `ask_user`, Allow wires and Deny refuses, `spawn_agent` opens a wired block beside the caller and
-types its prompt once it started, closing a block answers what waited on it, the dot travels only while a task is
-handed over; (batch 4) comments and assignee survive a round trip and an older file loads, `claim_card` refuses a
-card another block holds, `append_note` shows in the open note, `open_file` lands at the line in the wired editor
-without taking the keyboard, `git_status` matches the repository, and every tool is refused without a wire.
+**Headless UI:** a terminal's `TEMPLUM_BUS`; `whoami` names the caller's id and workspace, also over the real socket;
+`read_terminal` of the caller sees what it printed; `send_to_terminal` with Enter runs; another block is refused until
+wired; `list_blocks` says connected or not; titles reach agents cleaned and quoted; a `Stopped` event leaves the agent
+idle and a `NeedsYou` one shows the yellow dot; a crashed agent's state is forgotten; `typed()` adds the flags for
+Claude Code and Codex, none for Codex under Windows PowerShell 5.1, none when `[connections]` is off or there is no data
+folder, and Claude Code's server only with its hooks; a block id survives saving, restoring, closing and undoing, and
+moving to another workspace, and a pasted block gets a new one; (batch 2) the Wire tool and the menu wire two blocks,
+undo takes it back, a selected wire is deleted with Delete, closing a block and undoing brings its wires back, wires
+come back after a restart and a wire to a missing block is dropped; (batch 3) `delegate` types the header and the task
+and Enter, `wait` ends with the `Stopped` message or its timeout, `reply` answers it, the balloon answers `ask_user`,
+Allow wires and Deny refuses, `spawn_agent` opens a wired block beside the caller and types its prompt once it started,
+closing a block answers what waited on it, the dot travels only while a task is handed over; (batch 4) comments and
+assignee survive a round trip and an older file loads, `claim_card` refuses a card another block holds, `append_note`
+shows in the open note, `open_file` lands at the line in the wired editor without taking the keyboard, `git_status`
+matches the repository, and every tool is refused without a wire.
 
 **Manual (Hyprland):** Claude Code from the menu: `/mcp` lists `templum` connected, "list the blocks" and "read the
 last 30 lines of the dev server" work, the dot follows its turns and a permission prompt; Codex: `/mcp` lists it;
@@ -430,9 +463,9 @@ Batches 2 and 3 paint, so their pull requests carry `--bench` and `--bench-mixed
 | Typing into an agent that is busy | Refused while it waits for its person; while it works, Claude Code and Codex queue typed input (checked by hand in batch 3); the `[from …]` line keeps it readable |
 | An agent without events never says it is done | `reply`, or the wait's timeout with the last screen lines; batch 5 may add "the screen has been still for N seconds" |
 | Gemini CLI can't be given an MCP server for one session | The system settings file if it adds to the person's; else a one-time `gemini mcp add` the person agrees to |
-| Codex's `-c` under `cmd.exe` | Not typed there (Git Bash is the default shell on Windows) |
-| A path Templum can't type safely (`"`, `$`, `'`, a backtick…) | No connections for that agent |
-| macOS's 104-byte socket path | The temporary folder past 100 bytes |
+| Codex's `-c` under `cmd.exe` and Windows PowerShell 5.1 | Not typed there (Git Bash is the default shell on Windows; pwsh 7 takes them) |
+| A path Templum can't type safely (`"`, `$`, `'`, a backtick…) | No connections for that agent, and a notification once per session (deferred) |
+| macOS's 104-byte socket path | A private folder in the temporary folder past 100 bytes |
 | The AppImage's executable goes away when it quits | `$APPIMAGE` is the program typed |
 | Reading history while the terminal's thread parses | The unfair lock waits only for the parse under way, as painting does; at most 2000 lines and 256 KB |
 | A hook slows the agent when Templum is gone | One-second connect limit, exit 0; each hook has a 5-second timeout |

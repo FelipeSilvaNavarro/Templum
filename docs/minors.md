@@ -464,3 +464,22 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   (`crates/templum-mcp/src/bus.rs`, `listen`), and `remove_stale` only clears `<data>/bus`: a crash leaves that
   folder and its socket file there. Fix: at start, run `remove_stale` on the user's own `templum-*` folders in the
   temporary folder, and remove each one left empty.
+- [ ] **The person's own Codex `notify` doesn't run in a Codex Templum opens.** The `-c notify=[…]` flag
+  `codex_flags` types (`crates/templum-mcp/src/lib.rs:32`, at c0597d1) replaces the `notify` of
+  `~/.codex/config.toml` for that session: Codex keeps one, where Claude Code merges hooks. A person whose `notify`
+  sends a desktop notification or a sound gets nothing from a Codex opened from the canvas. Fix: `templum hook codex`
+  runs the person's own `notify` after sending the event, read from their config.
+- [ ] **Reading a terminal's last command holds the terminal for its whole output.** `SharedTerm::last_command`
+  (`crates/templum-terminal/src/terminal.rs:301`, at c0597d1) turns the whole command's output into text under the
+  terminal's lock before `read_terminal` keeps its last 256 KB; a command that printed the whole history makes the
+  terminal (and its painting) wait while it is read. Fix: read at most `MAX_LINES` plus a screen of rows above the
+  end of the command.
+- [ ] **`read_terminal` with `lines` may give fewer lines, the first a piece of one.** `SharedTerm::lines`
+  (`crates/templum-terminal/src/terminal.rs:285`, at c0597d1) reads `n` plus a screen of grid rows and joins wrapped
+  rows into one line, so with long wrapped lines it returns fewer than `n`, and the first may start in the middle of
+  a line. Fix: read rows upward until `n` lines start in the range (a row that isn't the wrapped end of the one
+  above).
+- [ ] **An interrupted Claude Code stays on Working for a while.** Esc in the middle of a turn fires no hook
+  (`crates/templum-mcp/src/hooks.rs:57`, at c0597d1), so the dot says Working until the next prompt or the
+  `idle_prompt` notification, which Claude Code sends only after the prompt has sat idle (about a minute). Fix: a hook
+  for interrupts when Claude Code has one; meanwhile the screen going still (batch 5).
