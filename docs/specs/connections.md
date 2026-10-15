@@ -456,7 +456,7 @@ the switch, the server's command for other agents, and Gemini CLI's setup.
 | `templum/src/balloon.rs` (new) | the balloon | 3 |
 | `templum-git/src/repo.rs` | `Repo::add_worktree` | 3 |
 | `templum/src/toolbar.rs`, `menu/`, `workspace/history.rs`, `workspace/input.rs`, `workspace/render.rs` | the Wire tool, the menus, the undo steps, the pointer | 2 |
-| `templum/src/board.rs`, `kanban.rs`, `notes.rs`, `workspace/note_tabs.rs`, `workspace/files.rs` | comments, assignee and claiming; appending to a note; opening a file without focus | 4 |
+| `templum/src/board.rs`, `kanban.rs` | a card's assignee and comments, saved in `boards.json`; the card's face and the open card show them | 4 |
 | `templum/src/settings/` | Settings ▸ Connections | 5 |
 
 Every request reaches the main thread through a channel the bus's threads write to, drained by a task as the

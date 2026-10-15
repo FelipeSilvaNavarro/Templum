@@ -20,7 +20,7 @@ same board stay in sync.
 
 ## Out of scope
 
-- Checklists, due dates, members, attachments, comments, search, and archiving.
+- Checklists, due dates, members, attachments, search, and archiving.
 - Label names: a label is one of six colors.
 
 ## A kanban block
@@ -34,7 +34,8 @@ same board stay in sync.
 - **Everything inside scales with the zoom**, like a terminal's text.
 - **Undo:** with a kanban block focused, Ctrl+Z (Cmd+Z on macOS) undoes the last change to the boards (a card or a
   column added, moved, renamed or deleted, a label, a board added or deleted), up to 50. Typing in a card's dialog
-  is undone in its fields. Delete card in a card's menu asks first.
+  is undone in its fields. Delete card in a card's menu asks first. A comment added, an assignee freed, and an agent's
+  change ([connections.md](connections.md#tools)) are steps of this Ctrl+Z too.
 
 ### The board list
 
@@ -53,7 +54,8 @@ Shown by a new block, by the ⇅ button, and when its board was deleted.
     Every menu is listed in [context-menus.md](context-menus.md).
   - **Dragging a column's title** onto another column moves it to that column's place.
 - **Cards** stack in their column, which scrolls when they don't fit.
-  - A card shows its labels as small colored bars, its title, and a line icon when it has a description.
+  - A card shows its labels as small colored bars, its title, a line icon when it has a description, how many
+    comments it has ("2 comments"), and its assignee's block title at the right.
   - **+ Add a card** at the bottom of a column adds "New card" there and opens it.
   - **Dragging a card** onto another card puts it in that card's place; onto a column's empty space, at the end
     of that column. While dragged, the card follows the pointer and the drop target is highlighted.
@@ -66,6 +68,10 @@ A dialog in the middle of the window, at the window's scale:
 - the title, in a text field;
 - the description, in a multi-line text field;
 - the six label colors (red, yellow, green, cyan, blue, magenta, from the theme), each a toggle;
+- **Assignee**, when an agent claimed the card (`claim_card`, [connections.md](connections.md#tools)): its block's
+  title, and a ✕ that frees the card;
+- **Comments**, oldest first, each with its author (an agent's block title, or "You") and how long ago it was written;
+  a text field under them and **Add comment**, which adds the person's;
 - **Delete card**, and **Done** (or Esc) to close.
 
 Every change applies as it is typed or clicked, so every block showing the board updates at once.
@@ -84,7 +90,9 @@ Every change applies as it is typed or clicked, so every block showing the board
         "name": "Templum",
         "columns": [
           { "id": 2, "title": "To do", "cards": [
-            { "id": 5, "title": "Kanban", "description": "Trello-like", "labels": ["green"] }
+            { "id": 5, "title": "Kanban", "description": "Trello-like", "labels": ["green"],
+              "assignee": "b7k2m",
+              "comments": [{ "by": "b7k2m", "text": "On it.", "at": 1760000000 }] }
           ] }
         ]
       }
@@ -93,7 +101,10 @@ Every change applies as it is typed or clicked, so every block showing the board
   ```
 
   - Ids are unique across boards, columns and cards, and never reused (`next_id`).
-  - Missing `description` and `labels` mean empty. An unknown label color is dropped.
+  - Missing `description`, `labels` and `comments` mean empty, a missing `assignee` none; a card with no assignee
+    or comments writes neither key. An unknown label color is dropped.
+  - `assignee` is the block id of the agent that claimed the card. A comment's `by` is an agent's block id, or
+    `"you"` for the person; `at` is in Unix seconds.
 - **A canvas file** gets a second kind of item: `{ "kind": "kanban", "rect": {…}, "board": 1 }`. `board` is
   missing for a block showing the board list. A Templum from before this spec sets such a file aside
   ([persistence.md](persistence.md#the-file)), as designed.
