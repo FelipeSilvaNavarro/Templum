@@ -8,6 +8,7 @@ use std::net::Shutdown;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use futures::channel::mpsc::UnboundedSender;
 use serde_json::json;
@@ -16,6 +17,10 @@ use crate::rpc::{self, Incoming};
 
 /// The first line every client sends.
 pub const HELLO: &str = "templum/hello";
+/// The longest hello read, in bytes: a longer first line closes the connection.
+const HELLO_MAX: u64 = 4096;
+/// How long a new connection may take to send its hello.
+const HELLO_WAIT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 5 });
 
 /// Who a connection is for: the terminal it runs in (its `TEMPLUM_TERMINAL`), and what it is
 /// ("mcp", "cli" or "hook").
@@ -86,24 +91,36 @@ impl Drop for Bus {
 }
 
 /// Reads a connection's lines: its hello first, then each request or notification, handed to
-/// `tx` with a replier; a line that isn't JSON-RPC is answered at once.
+/// `tx` with a replier; a line that isn't JSON-RPC is answered at once. Until its hello is
+/// accepted, a connection gets no writer and only `HELLO_MAX` bytes and `HELLO_WAIT` to send it
+/// (on Windows, other local users can reach the port).
 fn serve(stream: Stream, tx: &UnboundedSender<Message>, token: Option<&str>) {
-    let Ok(writer) = stream.try_clone() else {
+    if stream.set_read_timeout(Some(HELLO_WAIT)).is_err() {
+        return;
+    }
+    let mut reader = BufReader::new(stream);
+    let mut first = String::new();
+    // Through the reader: what the client sent after its hello stays in its buffer.
+    let read = (&mut reader).take(HELLO_MAX).read_line(&mut first);
+    let Some(hello) = read
+        .ok()
+        .filter(|_| first.ends_with('\n'))
+        .and_then(|_| hello_of(&first, token))
+    else {
+        return;
+    };
+    let Ok(writer) = reader
+        .get_ref()
+        .set_read_timeout(None)
+        .and_then(|()| reader.get_ref().try_clone())
+    else {
         return;
     };
     let (reply, replies) = std::sync::mpsc::channel::<String>();
     let _ = std::thread::Builder::new()
         .name("templum-bus-writer".into())
         .spawn(move || write_lines(writer, &replies));
-    let mut lines = BufReader::new(stream).lines();
-    let Some(hello) = lines
-        .next()
-        .and_then(Result::ok)
-        .and_then(|line| hello_of(&line, token))
-    else {
-        return;
-    };
-    for line in lines {
+    for line in reader.lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
             continue;
@@ -195,6 +212,14 @@ impl Stream {
             Stream::Unix(s) => Stream::Unix(s.try_clone()?),
             Stream::Tcp(s) => Stream::Tcp(s.try_clone()?),
         })
+    }
+
+    pub fn set_read_timeout(&self, limit: Option<Duration>) -> io::Result<()> {
+        match self {
+            #[cfg(unix)]
+            Stream::Unix(s) => s.set_read_timeout(limit),
+            Stream::Tcp(s) => s.set_read_timeout(limit),
+        }
     }
 
     /// Writes no more: the other side reads the end, and may still answer.
@@ -358,12 +383,27 @@ mod tests {
 
     /// A read that waits longer fails the test instead of hanging it.
     fn time_limit(stream: &Stream) {
-        let limit = Some(std::time::Duration::from_secs(5));
-        match stream {
-            #[cfg(unix)]
-            Stream::Unix(s) => s.set_read_timeout(limit).unwrap(),
-            Stream::Tcp(s) => s.set_read_timeout(limit).unwrap(),
-        }
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+    }
+
+    /// Reads after what `stream` sent: the connection was closed (the end, or a reset). Not the
+    /// time limit: that is still open.
+    fn assert_closed(stream: Stream) {
+        let mut rest = String::new();
+        let read = match BufReader::new(stream).read_line(&mut rest) {
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                panic!("still open")
+            }
+            read => read.unwrap_or(0),
+        };
+        assert_eq!(read, 0, "{rest}");
     }
 
     fn pong(message: Message) {
@@ -459,21 +499,26 @@ mod tests {
             stream.write_all(first.as_bytes()).unwrap();
             // It may already be closed.
             let _ = stream.write_all(rpc::request(2, "ping", Value::Null).as_bytes());
-            let mut rest = String::new();
-            // Closed: the end, or a reset. Not the time limit: that is still open.
-            let read = match BufReader::new(stream).read_line(&mut rest) {
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                    ) =>
-                {
-                    panic!("still open")
-                }
-                read => read.unwrap_or(0),
-            };
-            assert_eq!(read, 0, "{rest}");
+            assert_closed(stream);
         }
+    }
+
+    #[test]
+    fn a_hello_too_long_or_too_slow_closes_the_connection() {
+        let (_dir, bus) = test_bus(pong);
+        // A right hello, but longer than any Templum sends.
+        let (mut stream, token) = connect(&bus.env).unwrap();
+        time_limit(&stream);
+        let terminal = "1".repeat(HELLO_MAX as usize);
+        let _ = stream.write_all(hello_line(&terminal, "cli", token.as_deref()).as_bytes());
+        let _ = stream.write_all(rpc::request(2, "ping", Value::Null).as_bytes());
+        assert_closed(stream);
+        // Nothing sent: closed once the hello's time is up, before the test's own limit.
+        let (stream, _) = connect(&bus.env).unwrap();
+        time_limit(&stream);
+        let started = std::time::Instant::now();
+        assert_closed(stream);
+        assert!(started.elapsed() >= HELLO_WAIT / 2);
     }
 
     #[test]

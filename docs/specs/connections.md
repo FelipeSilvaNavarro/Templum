@@ -161,8 +161,9 @@ its screen has been still for a second. The result names the new block and its f
   {"jsonrpc":"2.0","method":"templum/hello","params":{"terminal":"12345-3","client":"mcp","token":null}}
   ```
 
-  `client` is `mcp` (the bridge), `cli` (a verb) or `hook`. A first line that isn't a hello, or a wrong token,
-  closes the connection. Hooks send `templum/event` notifications; the command line's verbs send `tools/call`.
+  `client` is `mcp` (the bridge), `cli` (a verb) or `hook`. A first line that isn't a hello, a wrong token, a
+  first line over 4096 bytes, or none within 5 seconds closes the connection; nothing is written to a connection
+  before its hello is accepted. Hooks send `templum/event` notifications; the command line's verbs send `tools/call`.
 - Requests are answered on Templum's main thread, in the order they arrive per connection; a request that waits (a
   question, a delegation) never holds back the others.
 
@@ -405,15 +406,15 @@ No new dependency: `futures`, `serde`, `serde_json` and `uuid` are in the tree.
 ## Testing
 
 **Unit (`templum-mcp`):** a request and a notification parse; bad JSON answers `-32700` with a null id; every line
-written ends in one newline; every tool parses its own example arguments and names a missing one; an unknown tool
-fails; `initialize`'s result; each Claude Code hook payload and Codex's `notify` become their event (`PermissionRequest`
-waits for the person, `PostToolUseFailure` works on unless it is an interrupt, which is done, `StopFailure` and
-`idle_prompt` are done, a `compact` start is nothing), unknown ones none; the
-bus: bind, hello, a request answered; a wrong first line or token closes the connection; two requests on one
-connection both answered; the socket file goes away with the bus and a stale one is replaced; a data folder too long
-for a socket puts it in a private (0700) temporary folder that goes with the bus; the bridge sends its hello first and
-copies both ways; `hook claude` sends one event and prints nothing; `read <block> -n 10` sends its call and prints the
-text; no bus is exit code 2 with nothing on stdout. Every read and wait in these tests has a 5-second limit.
+written ends in one newline; every tool parses its own example arguments and names a missing one; an unknown tool fails;
+`initialize`'s result; each Claude Code hook payload and Codex's `notify` become their event (`PermissionRequest` waits
+for the person, `PostToolUseFailure` works on unless it is an interrupt, which is done, `StopFailure` and `idle_prompt`
+are done, a `compact` start is nothing), unknown ones none; the bus: bind, hello, a request answered; a wrong first line
+or token closes the connection, as does a hello too long or too slow; two requests on one connection both answered; the
+socket file goes away with the bus and a stale one is replaced; a data folder too long for a socket puts it in a private
+(0700) temporary folder that goes with the bus; the bridge sends its hello first and copies both ways; `hook claude`
+sends one event and prints nothing; `read <block> -n 10` sends its call and prints the text; no bus is exit code 2 with
+nothing on stdout. Every read and wait in these tests has a 5-second limit.
 
 **Unit (`templum-terminal`):** `lines` reads history past the screen; `last_command` is the last finished command and
 its output; `SpawnOptions.env` reaches the shell.
