@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Point as GridPoint, Side};
+use alacritty_terminal::index::{Column, Line, Point as GridPoint, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::test::TermSize;
@@ -279,6 +279,45 @@ impl SharedTerm {
     pub fn armed(&self) -> bool {
         !self.1.pending.load(Ordering::Acquire)
     }
+
+    /// The last `count` lines of the history and the screen, as text, without the blank rows
+    /// under the last one written. A wrapped line is one line.
+    pub fn lines(&self, count: usize) -> Vec<String> {
+        let term = self.0.lock_unfair();
+        let (top, bottom) = (term.topmost_line().0, term.bottommost_line().0);
+        // The blank rows under the cursor are at most a screen: read that much more.
+        let from = (bottom + 1 - (count + term.screen_lines()) as i32).max(top);
+        let mut lines = text_between(&term, from, bottom);
+        while lines.last().is_some_and(String::is_empty) {
+            lines.pop();
+        }
+        let skip = lines.len().saturating_sub(count);
+        lines.drain(..skip);
+        lines
+    }
+
+    /// The last command that finished (shell integration marks it), with its output, up to the
+    /// next prompt. None without one.
+    pub fn last_command(&self) -> Option<String> {
+        let term = self.0.lock_unfair();
+        let grid = term.grid();
+        let starts = crate::tap::prompt_lines(grid);
+        let marks = self.1.marks.lock().unwrap();
+        let ended = |line: i32| {
+            crate::tap::line_mark(grid, Line(line))
+                .and_then(|prompt| marks.get(&prompt))
+                .is_some_and(|mark| matches!(mark, Mark::Ended(_)))
+        };
+        let i = starts.iter().rposition(|&line| ended(line))?;
+        let end = starts
+            .get(i + 1)
+            .map_or(term.bottommost_line().0, |next| next - 1);
+        let mut lines = text_between(&term, starts[i], end);
+        while lines.last().is_some_and(String::is_empty) {
+            lines.pop();
+        }
+        Some(lines.join("\n"))
+    }
 }
 
 /// A viewport cell, clamped to the grid, as a grid point (accounting for scrollback).
@@ -289,6 +328,21 @@ pub(crate) fn grid_point(term: &Term<Listener>, row: usize, col: usize) -> GridP
         term.grid().display_offset(),
         GridPoint::new(row, Column(col)),
     )
+}
+
+/// The text of the grid's lines `top` to `bottom` (history lines are negative), one string per
+/// line, trailing spaces trimmed.
+fn text_between<T>(term: &Term<T>, top: i32, bottom: i32) -> Vec<String> {
+    if top > bottom {
+        return Vec::new();
+    }
+    let text = term.bounds_to_string(
+        GridPoint::new(Line(top), Column(0)),
+        GridPoint::new(Line(bottom), term.last_column()),
+    );
+    text.lines()
+        .map(|line| line.trim_end().to_string())
+        .collect()
 }
 
 /// A terminal's processes, to read from any thread with [`inspect`].
@@ -518,6 +572,9 @@ pub struct SpawnOptions {
     pub working_directory: Option<PathBuf>,
     /// The folder [`crate::install`] wrote the shell integration to; None: no integration.
     pub integration: Option<PathBuf>,
+    /// More variables for the shell and its programs (`TEMPLUM_BUS`, `PATH`), set after
+    /// Templum's own.
+    pub env: Vec<(String, String)>,
 }
 
 pub struct Terminal {
@@ -564,6 +621,7 @@ impl Terminal {
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
         env.insert("TEMPLUM_TERMINAL".into(), id.clone());
+        env.extend(opts.env.iter().cloned());
         if let Some(dir) = &opts.integration {
             // Without a command, alacritty runs $SHELL: as a login shell on macOS.
             let (program, args) = command.clone().unwrap_or_else(|| {
@@ -1239,6 +1297,37 @@ mod tests {
             term.selection_text(),
             None,
             "an empty selection is no selection"
+        );
+    }
+
+    #[test]
+    fn lines_reach_into_the_history_without_the_blank_screen_below() {
+        let (term, _) = headless(20, 4);
+        for n in 1..=10 {
+            feed(&term, format!("{n}\r\n").as_bytes());
+        }
+        // 10 lines on a 4-row screen: 7 in the history, the cursor on a blank last row.
+        assert_eq!(term.lines(3), ["8", "9", "10"]);
+        let all = term.lines(100);
+        assert_eq!((all.len(), all[0].as_str()), (10, "1"));
+        assert!(term.lines(0).is_empty());
+    }
+
+    #[test]
+    fn the_last_command_is_its_prompt_and_output_up_to_the_next_prompt() {
+        let (term, _) = headless(30, 8);
+        feed_heard(
+            &term,
+            b"\x1b]133;A\x07$ ls\r\n\x1b]133;C\x07a b\r\n\x1b]133;D;0\x07\
+              \x1b]133;A\x07$ make\r\n\x1b]133;C\x07error\r\n\x1b]133;D;2\x07\
+              \x1b]133;A\x07$ ",
+        );
+        assert_eq!(term.last_command().as_deref(), Some("$ make\nerror"));
+        let (fresh, _) = headless(30, 8);
+        assert_eq!(
+            fresh.last_command(),
+            None,
+            "no shell integration, no command"
         );
     }
 }
