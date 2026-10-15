@@ -13,8 +13,18 @@ use super::{AgentState, Handed, Pane, Workspace};
 /// How long after a task is typed its Enter goes: an agent may take keys that come in one burst
 /// for a paste, where Enter is a new line.
 pub(super) const ENTER_AFTER: Duration = Duration::from_millis(150);
+/// How many times, ENTER_AFTER apart, Templum looks for the typed task on the agent's screen
+/// before it gives up on its Enter: about 2 s, for an agent slow to draw.
+const ENTER_LOOKS: u32 = 13;
+/// The lines at the end of a terminal compared to tell whether its screen changed.
+const SCREEN_LINES: usize = 100;
 
 impl Pane {
+    /// The end of what its terminal shows, to tell whether it changed.
+    pub fn screen(&self) -> String {
+        self.term.shared().lines(SCREEN_LINES).join("\n")
+    }
+
     /// The task its agent works on, while its answer is awaited.
     pub fn task(&self, now: Instant) -> Option<&Handed> {
         self.handed.as_ref().filter(|h| now < h.until)
@@ -50,21 +60,34 @@ impl Pane {
 }
 
 impl Workspace {
-    /// Types `text` into the agent in terminal `terminal` as one paste, then Enter a moment later.
+    /// Types `text` into the agent in terminal `terminal` as one paste, then Enter a moment later,
+    /// once its screen shows the paste. A screen that doesn't (a dialog that ignores pastes, as
+    /// Codex's approval does, which Templum hears nothing of) gets no Enter: it would pick the
+    /// dialog's answer for the person. The task then waits for its timeout.
     pub(super) fn send_task(&self, terminal: &str, text: &str, cx: &mut Context<Self>) {
         let Some(pane) = self.pane(terminal) else {
             return;
         };
+        let before = pane.screen();
         pane.term.type_in(text);
         let terminal = terminal.to_string();
         cx.spawn(async move |ws, cx| {
-            cx.background_executor().timer(ENTER_AFTER).await;
-            ws.update(cx, |ws, _| {
-                if let Some(pane) = ws.pane(&terminal) {
+            for _ in 0..ENTER_LOOKS {
+                cx.background_executor().timer(ENTER_AFTER).await;
+                let done = ws.update(cx, |ws, _| {
+                    let Some(pane) = ws.pane(&terminal) else {
+                        return true;
+                    };
+                    if pane.screen() == before {
+                        return false;
+                    }
                     pane.term.write(&b"\r"[..]);
+                    true
+                });
+                if done.unwrap_or(true) {
+                    break;
                 }
-            })
-            .ok();
+            }
         })
         .detach();
     }

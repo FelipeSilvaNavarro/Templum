@@ -15,8 +15,6 @@ use crate::agents::AgentEntry;
 
 /// How often a spawned agent's readiness for its prompt is looked at.
 pub(super) const READY_LOOK: Duration = Duration::from_secs(1);
-/// The lines of an agent's screen compared to tell that it is still.
-const STILL_LINES: usize = 100;
 
 impl Workspace {
     /// `spawn_agent` from the terminal `from`. With a worktree, git makes it on the background
@@ -188,10 +186,7 @@ impl Workspace {
         let Some(pane) = self.pane_mut(terminal) else {
             return false;
         };
-        let screen = pane
-            .seen
-            .pid
-            .map(|_| pane.term.shared().lines(STILL_LINES).join("\n"));
+        let screen = pane.seen.pid.map(|_| pane.screen());
         let Some(prompt) = pane.prompt.as_mut() else {
             return false;
         };

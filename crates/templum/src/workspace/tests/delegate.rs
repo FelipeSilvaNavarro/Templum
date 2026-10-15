@@ -14,11 +14,22 @@ use super::*;
 /// Two terminals side by side and wired: mine at (40, 100) and theirs at (900, 100), 700 × 300
 /// each, theirs running Codex as far as Templum knows; the camera at 100% on the origin.
 fn two_agents(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, BlockId, BlockId) {
+    agents_running(cx, None)
+}
+
+/// `two_agents`, theirs running `command` (`cat` when None).
+fn agents_running(
+    cx: &mut TestAppContext,
+    command: Option<(String, Vec<String>)>,
+) -> (AnyWindowHandle, Entity<Workspace>, BlockId, BlockId) {
     let (handle, ws) = open(cx);
     let mine = first_id(&ws, cx);
     let theirs = cx
         .update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
+                if command.is_some() {
+                    ws.command = command;
+                }
                 ws.space.pristine = false;
                 ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 1.0);
                 ws.space.canvas.get_mut(mine).unwrap().rect = Rect::new(40.0, 100.0, 700.0, 300.0);
@@ -66,9 +77,10 @@ fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
             .expect("handed over");
         assert_eq!(handed.by, terminal);
     });
-    enter(cx);
     // `cat` asks for no bracketed paste: the task comes as one line, echoed as it is typed, then
     // printed again once Enter sent it.
+    screen_with(&ws, cx, theirs, "then push");
+    enter(cx);
     screen_with(
         &ws,
         cx,
@@ -174,6 +186,7 @@ fn reply_with_no_one_waiting_types_into_the_agent(cx: &mut TestAppContext) {
     });
     let (failed, text) = call(handle, &ws, cx, &worker, "reply", reply);
     assert_eq!((failed, text), (false, format!("Typed into {uid}.")));
+    screen_with(&ws, cx, mine, "Done.");
     enter(cx);
     screen_with(&ws, cx, mine, &format!("({them})] Done.[reply from"));
 }
@@ -341,6 +354,27 @@ fn the_dot_goes_with_its_wire_and_the_answer_still_comes(cx: &mut TestAppContext
         json!({ "event": "stopped", "message": "Done." }),
     );
     assert_eq!(answered(&answers), (false, "Done.".to_string()));
+}
+
+/// A screen the task doesn't show on (a dialog that ignores the paste, as Codex's approval does)
+/// gets no Enter: it would pick the dialog's answer for the person.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn no_enter_goes_to_a_screen_the_task_didnt_change(cx: &mut TestAppContext) {
+    // A program that shows nothing it is typed; `cat` prints a line only once Enter sends it.
+    let script = "stty -echo; echo ready; exec cat";
+    let command = ("sh".to_string(), vec!["-c".to_string(), script.to_string()]);
+    let (handle, ws, mine, theirs) = agents_running(cx, Some(command));
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    screen_with(&ws, cx, theirs, "ready");
+    let task = json!({ "block": them, "task": "go on" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    assert!(!failed, "{text}");
+    after(cx, 5000);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let shown = ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().screen());
+    assert!(!shown.contains("go on"), "an Enter went: {shown:?}");
 }
 
 /// An agent that goes without a word (Codex says nothing when it quits; one that crashed): the

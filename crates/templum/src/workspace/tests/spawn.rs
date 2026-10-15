@@ -135,6 +135,7 @@ fn a_claude_codes_prompt_is_typed_once_it_started(cx: &mut TestAppContext) {
         assert!(ws.space.terminal(new).unwrap().prompt.is_some())
     });
     event(handle, &ws, cx, &theirs, json!({ "event": "started" }));
+    screen_with(&ws, cx, new, "say hi");
     enter(cx);
     screen_with(&ws, cx, new, "say hisay hi");
     assert!(waiting.try_recv().is_err(), "it works on it");
@@ -177,6 +178,7 @@ fn another_agents_prompt_waits_for_its_process_and_a_still_screen(cx: &mut TestA
         looks += 1;
     }
     assert!(looks >= 2, "typed once two looks saw the same screen");
+    screen_with(&ws, cx, new, "say hi");
     enter(cx);
     screen_with(&ws, cx, new, "say hisay hi");
 }
