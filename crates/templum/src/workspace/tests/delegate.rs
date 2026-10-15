@@ -943,3 +943,41 @@ fn a_tool_allowed_after_a_still_dialog_works(cx: &mut TestAppContext) {
     after(cx, 1000);
     assert_eq!(state_of(&ws, cx, theirs), Some(AgentState::Working));
 }
+
+/// A dialog opens while the agent works: its dot stays yellow, and a task waiting on its turn
+/// waits on, while the dialog sits still and while a subagent draws under it; once the person
+/// typed into it (they answered), the screen at work says Working again.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_dialog_stays_yellow_until_its_person_answers(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    ticks(&ws, cx, theirs, 0, 4);
+    assert_eq!(state_of(&ws, cx, theirs), Some(AgentState::Working));
+    let idle = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        1,
+        "wait_for_idle",
+        json!({ "block": them }),
+    );
+    let asks = json!({ "event": "needs_you", "message": "Allow Bash?" });
+    event(handle, &ws, cx, &worker, asks);
+    let asking = Some(AgentState::NeedsYou(Some("Allow Bash?".into())));
+    for _ in 0..6 {
+        after(cx, 1000);
+    }
+    assert_eq!(state_of(&ws, cx, theirs), asking, "still");
+    ticks(&ws, cx, theirs, 4, 6);
+    assert_eq!(state_of(&ws, cx, theirs), asking, "a subagent draws");
+    assert!(idle.try_recv().is_err(), "it still waits");
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(theirs).unwrap().typed.set(true)
+    });
+    ticks(&ws, cx, theirs, 10, 4);
+    assert_eq!(state_of(&ws, cx, theirs), Some(AgentState::Working));
+}

@@ -20,13 +20,15 @@ const CHANGING: u32 = 3;
 /// How many looks in a row saw the screen still for its agent to be at rest.
 const STILL: u32 = 5;
 
-/// The looks at an agent's screen: its content's hash, whether each of the last 8 saw it change
-/// (the newest in the lowest bit), and how many there were.
+/// The looks at an agent's screen since its last hook: its content's hash, whether each of the
+/// last 8 saw it change (the newest in the lowest bit), how many there were, and whether the
+/// person typed into it (they answered the dialog it showed).
 #[derive(Default)]
 pub(crate) struct Looks {
     hash: u64,
     changes: u8,
     count: u8,
+    answered: bool,
 }
 
 impl Looks {
@@ -38,10 +40,12 @@ impl Looks {
     }
 
     /// A look right after the person's input, finding `hash`: it tells nothing, and the looks
-    /// before it count no more (the echoes of keys typed in pauses don't add up).
-    fn skip(&mut self, hash: u64) {
+    /// before it count no more (the echoes of keys typed in pauses don't add up). Keys they
+    /// `typed` answer a dialog.
+    fn skip(&mut self, hash: u64, typed: bool) {
         *self = Looks {
             hash,
+            answered: self.answered || typed,
             ..Looks::default()
         };
     }
@@ -49,21 +53,22 @@ impl Looks {
     /// Its agent's hook spoke: the looks before it count no more (the spinner that ran until a
     /// turn ended or a dialog opened says nothing after).
     pub(super) fn heard(&mut self) {
-        self.changes = 0;
-        self.count = 0;
+        *self = Looks {
+            hash: self.hash,
+            ..Looks::default()
+        };
     }
 
     /// The state these looks give an agent in `state`; None when they say nothing new. A
-    /// changing screen is at work, also after a dialog the person answered; a still one ends
-    /// only work, never a wait for the person.
+    /// changing screen is at work, also after a dialog once the person typed into it (a subagent
+    /// may draw under one still open); a still one ends only work, never a wait for the person.
     fn state(&self, state: &Option<AgentState>) -> Option<AgentState> {
         let changing = (self.changes & 0b1111).count_ones() >= CHANGING;
         let still = u32::from(self.count) >= STILL && self.changes & ((1u8 << STILL) - 1) == 0;
         match state {
             Some(AgentState::Working) if still => Some(AgentState::Idle),
-            None | Some(AgentState::Idle | AgentState::NeedsYou(_)) if changing => {
-                Some(AgentState::Working)
-            }
+            None | Some(AgentState::Idle) if changing => Some(AgentState::Working),
+            Some(AgentState::NeedsYou(_)) if changing && self.answered => Some(AgentState::Working),
             _ => None,
         }
     }
@@ -89,7 +94,7 @@ impl Workspace {
             pane.screen().hash(&mut hasher);
             let hash = hasher.finish();
             if pane.typed.replace(false) {
-                pane.looks.skip(hash);
+                pane.looks.skip(hash, true);
                 continue;
             }
             pane.looks.see(hash);
@@ -148,11 +153,6 @@ mod tests {
             looks.state(&Some(AgentState::Idle)),
             Some(AgentState::Working)
         );
-        assert_eq!(
-            looks.state(&Some(AgentState::NeedsYou(Some("Allow Bash?".into())))),
-            Some(AgentState::Working),
-            "the tool the person allowed runs"
-        );
         assert_eq!(looks.state(&Some(AgentState::Working)), None, "nothing new");
         assert_eq!(
             saw(&[true, false, false, true]).state(&None),
@@ -199,8 +199,27 @@ mod tests {
     fn a_look_after_typing_starts_the_looks_over() {
         // The echoes of keys typed in pauses don't add up to a screen at work.
         let mut looks = saw(&[true, true]);
-        looks.skip(looks.hash + 1);
+        looks.skip(looks.hash + 1, true);
         more(&mut looks, &[true]);
         assert_eq!(looks.state(&None), None);
+    }
+
+    #[test]
+    fn a_dialog_ends_only_once_its_person_typed() {
+        let asking = Some(AgentState::NeedsYou(Some("Allow Bash?".into())));
+        assert_eq!(
+            saw(&[true; 4]).state(&asking),
+            None,
+            "a subagent draws under the dialog"
+        );
+        // The person answers it, and the tool they allowed runs.
+        let mut looks = saw(&[]);
+        looks.skip(looks.hash + 1, true);
+        more(&mut looks, &[true; 3]);
+        assert_eq!(looks.state(&asking), Some(AgentState::Working));
+        // Its next dialog waits for its person again.
+        looks.heard();
+        more(&mut looks, &[true; 3]);
+        assert_eq!(looks.state(&asking), None);
     }
 }
