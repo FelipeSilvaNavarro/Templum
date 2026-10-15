@@ -493,12 +493,65 @@ impl Workspace {
         }
     }
 
+    /// `git_status`: the wired Git block named, or the only one; git runs on the background
+    /// executor.
     pub(super) fn git_status(
         &self,
-        _from: &str,
-        _block: Option<&str>,
-        _cx: &mut Context<Self>,
+        from: &str,
+        block: Option<&str>,
+        cx: &mut Context<Self>,
     ) -> Outcome {
-        Outcome::Now(Reply::err("Not yet."))
+        let (space, me) = self.caller_space(from);
+        let id = match block {
+            Some(uid) => match target(space, me, uid) {
+                Ok(id) => id,
+                Err(refused) => return Outcome::Now(refused),
+            },
+            None => {
+                let wired: Vec<BlockId> = space
+                    .canvas
+                    .blocks()
+                    .iter()
+                    .map(|b| b.id)
+                    .filter(|id| *id != me && space.wired(me, *id) && space.git(*id).is_some())
+                    .collect();
+                match wired.as_slice() {
+                    [one] => *one,
+                    [] => {
+                        return Outcome::Now(Reply::err(
+                            "No Git block is connected to you. Ask the person with connect.",
+                        ));
+                    }
+                    _ => {
+                        let ids: Vec<&str> = wired
+                            .iter()
+                            .filter_map(|id| space.uids.get(id).map(String::as_str))
+                            .collect();
+                        return Outcome::Now(Reply::err(format!(
+                            "Several Git blocks are connected to you: {}. Name one with block.",
+                            ids.join(", ")
+                        )));
+                    }
+                }
+            }
+        };
+        let uid = space.uids.get(&id).cloned().unwrap_or_default();
+        let Some(git) = space.git(id) else {
+            return Outcome::Now(Reply::err(format!("{uid} isn't a Git block.")));
+        };
+        let Some(repo) = git.repo().cloned() else {
+            return Outcome::Now(Reply::err(format!(
+                "{uid} shows no Git repository (yet: try again in a moment if it is still looking)."
+            )));
+        };
+        Outcome::Later(cx.background_executor().spawn(async move {
+            match repo.run(&["-c", "color.status=false", "status", "--short", "--branch"]) {
+                Ok(out) => Reply::ok(tools::tail(
+                    String::from_utf8_lossy(&out).trim_end(),
+                    tools::MAX_TEXT,
+                )),
+                Err(e) => Reply::err(format!("git status failed: {}", e.first_line())),
+            }
+        }))
     }
 }

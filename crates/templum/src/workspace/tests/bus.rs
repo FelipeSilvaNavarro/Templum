@@ -131,6 +131,22 @@ pub(super) fn bus_note(
     .unwrap();
 }
 
+/// The answer that comes on `answers` within ten seconds, background jobs running meanwhile.
+pub(super) fn answer_soon(
+    cx: &mut TestAppContext,
+    answers: &std::sync::mpsc::Receiver<String>,
+) -> (bool, String) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        cx.run_until_parked();
+        if let Ok(line) = answers.try_recv() {
+            return result_of(&line);
+        }
+        assert!(Instant::now() < deadline, "no answer");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// The answer that came on `answers`: whether it is an error, and its text.
 pub(super) fn answered(answers: &std::sync::mpsc::Receiver<String>) -> (bool, String) {
     result_of(&answers.try_recv().expect("answered"))

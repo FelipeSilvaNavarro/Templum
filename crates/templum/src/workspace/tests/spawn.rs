@@ -1,13 +1,14 @@
 //! `spawn_agent`: an agent opened beside the caller (docs/specs/connections.md, Spawning). `cat`
 //! stands in for the agents: every Unix has it, and it echoes what it is typed. Unix only (`mod.rs`).
 
-use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::json;
 use templum_canvas::Wire;
 
-use super::bus::{after, answered, call, call_later, event, me, result_of, screen_with};
+use super::bus::{
+    after, answer_soon, answered, call, call_later, event, me, result_of, screen_with,
+};
 use super::delegate::snapshot;
 use super::*;
 
@@ -42,19 +43,6 @@ fn spawned(ws: &Entity<Workspace>, cx: &mut TestAppContext, mine: BlockId) -> Bl
             .expect("wired to the caller");
         if wire.a == mine { wire.b } else { wire.a }
     })
-}
-
-/// The answer that comes on `answers` within ten seconds, background jobs running meanwhile.
-fn answer_soon(cx: &mut TestAppContext, answers: &Receiver<String>) -> (bool, String) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        cx.run_until_parked();
-        if let Ok(line) = answers.try_recv() {
-            return result_of(&line);
-        }
-        assert!(Instant::now() < deadline, "no answer");
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 /// The Enter a typed prompt waits for.
