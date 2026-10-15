@@ -144,6 +144,9 @@ What doesn't come back: the text that was on screen, and programs other than the
   - **`grid`:** grid mode's tiles, when the workspace was left in it ([grid.md](grid.md)): items by index, pairs as
     `{"split": "beside" | "above", "a": …, "b": …}`. `camera` and the items' rects stay the canvas's. Missing on the
     canvas; an item that doesn't come back is left out of it.
+  - **`wires`:** the wires between blocks ([connections.md](connections.md#wires)), each `{"a": "<uid>", "b":
+    "<uid>"}`; missing when there are none. A wire whose block didn't come back is dropped; an older Templum ignores
+    them.
 - **Unknown content:** unknown fields are ignored. An unknown `kind` or a newer `version` makes the whole file
   unreadable ([Errors](#errors)), so an older Templum never drops what a newer one wrote.
 

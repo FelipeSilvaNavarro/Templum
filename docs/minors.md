@@ -522,3 +522,11 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   (`crates/templum/src/workspace/bus.rs:96`, at 9aef302) copies the whole program (tens of MB) on the UI thread when
   a hard link can't be made, once per version. A person sees the window come up later after an update. Fix: make the
   entry on a background thread; terminals opened meanwhile get PATH as soon as it is there.
+
+Left by batch 2 (wires); line numbers are those of `development` at 825507d.
+
+- [ ] **Ctrl+Z after Connect to ▸ in a terminal's menu reaches the terminal.** The right-click focuses the block
+  (`crates/templum/src/block.rs:624-637`), and the menu's wiring (`wiring`, `crates/templum/src/menu/build.rs:170`)
+  leaves it focused, so the Ctrl+Z that should take the wire back goes to the terminal; the Wire tool leaves no block
+  focused and doesn't have this. A person presses Ctrl+Z and sees `^Z` in the shell. Fix: Connect to ▸ and
+  Disconnect from ▸ leave no block focused, as `begin_wire` does.

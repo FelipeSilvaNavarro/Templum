@@ -9,7 +9,7 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 | Crate | Kind | Responsibility | May depend on the UI framework? |
 |---|---|---|---|
 | `templum` | bin | Window, event loop, rendering, input, wiring | **Yes, the only one** (`gpui-kit`) |
-| `templum-canvas` | lib | Pure model: camera (pan, zoom), blocks, hit-testing, snapping, level of detail, layout (de)serialization | No |
+| `templum-canvas` | lib | Pure model: camera (pan, zoom), blocks, hit-testing, snapping, level of detail, wires' curves (`wire.rs`), layout (de)serialization | No |
 | `templum-terminal` | lib | Wraps `alacritty_terminal`: shell in a PTY, input, resize, key encoding, events | No |
 | `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values, finds conflict regions by their markers (`conflict.rs`), lays History's commits out in lanes from their parents (`graph.rs`), turns a blame into the diff panel's rows (`blame.rs`), keeps the trash of discarded changes, and asks an AI agent for a commit message (`message.rs`) | No |
 | `templum-usage` | lib | Reads what CLI agents write about their sessions and plan limits: Claude Code's status line through Templum's relay, and its transcripts (`claude.rs`, which also writes the settings file Claude Code is given, with Templum's hooks, and its `mcp.json`); Codex's rollout files (`codex.rs`); when to warn about a limit or tell its reset (`watch.rs`). Never an agent's credentials ([specs/usage.md](specs/usage.md)) | No |
@@ -104,7 +104,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   Shift+click on a title; moving them together, Delete, Copy and Paste), `history.rs` (Ctrl+Z and Ctrl+Shift+Z on the
   blocks: added, closed, moved, resized; each step keeps the change that takes it back), `tiling.rs` (grid mode:
   blocks tiled full screen like Hyprland, [specs/grid.md](specs/grid.md)), `render.rs` (drawing a frame),
-  `drawing.rs` (the drawing tools), `note_tabs.rs` (note blocks' tabs and the notes they open), `persist.rs`
+  `drawing.rs` (the drawing tools), `wires.rs` (wires between blocks: wiring and unwiring, their undo steps, the Wire
+  tool, selecting a wire, the curves to paint), `note_tabs.rs` (note blocks' tabs and the notes they open), `persist.rs`
   (restoring and saving the canvas), `preferences.rs` (config,
   themes, settings panel), `files.rs` and `file_tree.rs` (editor blocks), `git_ops.rs`, `git_changes.rs`,
   `git_branches.rs`, `git_history.rs`, `git_discard.rs` (discards through the trash), `git_keys.rs` (the
@@ -131,6 +132,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   no backdrop blur), five pages whose settings are the panel's rows (`settings/welcome.rs`); the first terminal
   opens when it closes ([specs/welcome.md](specs/welcome.md)).
 - `usage.rs`: the title bar's usage meter, its popover and a terminal's usage chip.
+- `wires.rs`: painting the wires in the layer under the blocks, with the dot grid
+  ([specs/connections.md](specs/connections.md#wires)).
 - `update.rs`: where an update stands (`Update`), its title-bar pill and its lines in Settings ▸ Updates;
   `workspace/update.rs` checks GitHub at start and every day, downloads through `templum-update`, tells the news,
   restarts (GPUI's `cx.restart()`) or types the package manager's command in a terminal, and swaps the files when
@@ -187,7 +190,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   replaces a newer one. At startup a saved canvas is restored (camera, blocks back to front, focus, folders, and an
   agent's resume command typed into its block); a file it can't read is set aside as `.bak`. Each item carries its
   block's `uid` (`Space::uids`: five letters and digits, what agents name blocks by), kept by a restart, an undo and
-  a move to another workspace; a missing, taken or malformed one is replaced.
+  a move to another workspace; a missing, taken or malformed one is replaced; the canvas's `wires` name their blocks
+  by it.
 
 ## Distribution
 

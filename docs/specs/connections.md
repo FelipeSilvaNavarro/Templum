@@ -1,7 +1,7 @@
 # Connections: blocks that talk to each other
 
 - **Date:** 2026-10-15
-- **Status:** Batch 1 implemented; batches 2 to 5 planned
+- **Status:** Batches 1 and 2 implemented; batches 3 to 5 planned
 - **Builds on:** [agents.md](agents.md) (opening agents), [usage.md](usage.md) (the `--settings` Templum types for
   Claude Code), [shell-integration.md](shell-integration.md) (command marks, notifications),
   [persistence.md](persistence.md), [kanban.md](kanban.md) and [cockpit.md](cockpit.md) (notes, the editor, drawing)
@@ -58,21 +58,25 @@ agents without MCP, scripts and hooks.
 
 - **The Wire tool** (a cable icon, in the toolbar's Pointer group, after Hand): press on a block, drag, and a curve
   follows the pointer; release on another block of the workspace to wire them. Released anywhere else, nothing
-  happens. The tool stays on until another tool is picked.
+  happens. The tool stays on until another tool is picked. A press on the empty canvas does nothing. While the pointer
+  is over another block the curve already runs to its edge, in the accent color. Wiring leaves no block with the
+  keyboard, so Ctrl+Z takes the wire back.
 - **A block's menu:** **Connect to ▸** lists the workspace's blocks not wired to it, by title; **Disconnect from ▸**
-  the ones that are.
+  the ones that are. They follow Fullscreen. A tile's menu has neither: grid mode hides wires.
 - **A wire** is a curve from the edge of one block that faces the other to the edge of the other, drawn on the
-  canvas below the blocks in the title's dim color. It follows its blocks as they move or are resized.
-- **Selecting:** a click on a wire selects it (accent color); Delete or Backspace removes it; Esc unselects;
+  canvas below the blocks in the title's dim color, 2 units wide and never under a pixel. It follows its blocks as
+  they move or are resized.
+- **Selecting:** a click on a wire where no block or drawing covers it selects it (accent color); Delete or
+  Backspace removes it while no block has the keyboard (focusing or adding one unselects it); Esc unselects;
   right-click on it offers **Disconnect**.
 - **Undo:** connecting and disconnecting are steps of Ctrl+Z and Ctrl+Shift+Z. Closing a block removes its wires,
   and undoing the close brings them back.
 - **A block wired twice** to the same block, or to itself, is refused silently.
 - **While a task is handed over** along a wire ([Delegating](#delegating)), a dot travels along it from the agent
   that handed it to the one working, until the answer comes back.
-- **Far away** (the Card level of [level-of-detail.md](level-of-detail.md)) a wire is 1 pixel wide. **Grid mode**
-  hides wires, as it hides drawings.
-- **Moving a block to another workspace** drops its wires.
+- **Far away** a wire is 1 pixel wide: from 50% down, where the Card level of
+  [level-of-detail.md](level-of-detail.md) comes. **Grid mode** hides wires, as it hides drawings.
+- **Moving a block to another workspace** drops its wires, those between blocks moved together too.
 - **Labels** (batch 5): **Rename wire…** in a wire's menu; the label sits in a pill at the curve's middle, down to
   the Silhouette level.
 
@@ -186,6 +190,10 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
   > to Doing when you start and to Review when you are done; write what the next agent needs to know in the connected
   > note.
 
+  Until `connect` (batch 3) they say "In this workspace, not connected:" without "(ask with connect)", and end "the
+  person connects others by wiring them to your block on the canvas"; the kanban and note sentence comes with their
+  tools (batch 4).
+
   Titles come from what runs in a block (a terminal's is whatever its programs set), so the instructions, `whoami`
   and `list_blocks` give them cleaned: no control characters, no invisible ones (the soft hyphen `U+00AD`, zero
   widths `U+200B`–`U+200F`, direction overrides `U+202A`–`U+202E` and `U+2066`–`U+2069`, the word joiner and
@@ -194,7 +202,8 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
   double quotes, a `"` inside escaped.
 - **`tools/list`** is the same for every caller; which blocks a tool may touch is checked at each call.
 - **Results** are text (`content: [{type: "text"}]`). A refusal or a failure is a result with `isError: true` and a
-  sentence that says what to do next: `k9x1d isn't connected to you. Ask the person with connect("k9x1d").`
+  sentence that says what to do next: `k9x1d isn't connected to you. Ask the person with connect("k9x1d").` (until
+  batch 3: `k9x1d isn't connected to you. Ask the person to wire it to your block on the canvas.`)
 - **Outside Templum** (no `TEMPLUM_BUS` or `TEMPLUM_TERMINAL`): `templum: not inside a Templum terminal` on stderr,
   exit code 2, nothing on stdout. **Templum not running:** `templum: Templum isn't running`, exit code 2. **Templum
   quits** during a session: the bridge closes its stdout and exits 0; the agent reports the server as disconnected.
@@ -370,7 +379,8 @@ the switch, the server's command for other agents, and Gemini CLI's setup.
 ## Files
 
 - **Workspace files** ([persistence.md](persistence.md#the-file)): every item gains its block id, and the canvas its
-  wires, by block id. A wire whose block didn't come back is dropped. An older Templum ignores both.
+  wires, by block id. A wire whose block didn't come back, one of a block to itself, and a second one between the
+  same two blocks are dropped. An older Templum ignores both.
 
   ```json
   { "version": 1,
