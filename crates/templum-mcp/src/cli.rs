@@ -192,7 +192,12 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
                     "--prompt" => "prompt",
                     _ => return Err(SPAWN),
                 };
-                arguments[key] = json!(more.next().ok_or(SPAWN)?);
+                let value = *more.next().ok_or(SPAWN)?;
+                arguments[key] = match key {
+                    // From the folder the command runs in, as `open`'s path.
+                    "folder" => json!(absolute(value, std::env::current_dir().ok())),
+                    _ => json!(value),
+                };
             }
             ("spawn_agent", arguments)
         }
@@ -583,6 +588,11 @@ mod tests {
                     "fix the tests",
                 ][..],
                 json!({ "name": "spawn_agent", "arguments": { "agent": "codex", "worktree": "fix-tests", "prompt": "fix the tests" } }),
+            ),
+            (
+                // A relative folder goes from the folder the command runs in, as `open`'s path.
+                &["spawn", "codex", "--folder", "web"][..],
+                json!({ "name": "spawn_agent", "arguments": { "agent": "codex", "folder": std::env::current_dir().unwrap().join("web") } }),
             ),
         ] {
             assert_eq!(run_with(args, &env(&bus), "").0, 0, "{args:?}");
