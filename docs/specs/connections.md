@@ -1,7 +1,7 @@
 # Connections: blocks that talk to each other
 
 - **Date:** 2026-10-15
-- **Status:** Batches 1 to 4 implemented; batch 5 planned ([plan](../plans/2026-10-15-connections-batch-5.md))
+- **Status:** Batches 1 to 5 implemented
 - **Builds on:** [agents.md](agents.md) (opening agents), [usage.md](usage.md) (the `--settings` Templum types for
   Claude Code), [shell-integration.md](shell-integration.md) (command marks, notifications),
   [persistence.md](persistence.md), [kanban.md](kanban.md) and [cockpit.md](cockpit.md) (notes, the editor, drawing)
@@ -35,8 +35,8 @@ agents without MCP, scripts and hooks.
 ## Out of scope
 
 - Editing an agent's own settings files (`~/.claude/settings.json`, `~/.codex/config.toml`, Gemini's): Templum
-  passes everything on the command line it types, for that session only. The one exception is Gemini CLI, below,
-  and only after the person agrees.
+  passes everything on the command line it types, for that session only. Gemini CLI gets an extension instead, below,
+  only after the person agrees, and never through its settings file.
 - Wires between workspaces, and wires to drawings.
 - A general message bus between programs: the bus serves Templum's own clients (the MCP bridge, hooks, the command
   line).
@@ -80,8 +80,10 @@ agents without MCP, scripts and hooks.
 - **Far away** a wire is 1 pixel wide: from 50% down, where the Card level of
   [level-of-detail.md](level-of-detail.md) comes. **Grid mode** hides wires, as it hides drawings.
 - **Moving a block to another workspace** drops its wires, those between blocks moved together too.
-- **Labels** (batch 5): **Rename wire…** in a wire's menu; the label sits in a pill at the curve's middle, down to
-  the Silhouette level.
+- **Labels:** **Rename wire…** in a wire's menu names it (blank removes the name; it is put on one line and cut at
+  60 characters), a step of Ctrl+Z. The label sits in a pill at the curve's middle, in the wire's color, scaled with
+  the canvas at the Full level and at its own size at the Silhouette level, as a block's title is; grid mode hides it.
+  It comes back with its wire: Ctrl+Z, a closed block brought back, a restart.
 
 ### An agent's state
 
@@ -92,6 +94,12 @@ A terminal running an agent Templum hears from ([Hooks](#hooks-and-agent-state))
 | Working on a prompt | accent | "Working" |
 | Waiting for the person (a permission dialog, a question) | yellow | "Waiting for you: *the agent's message*" ("Allow Bash?" as a permission dialog opens) |
 | Done with its turn | none (its running command would otherwise read "Running") | — |
+
+**From its screen.** Where its hooks say nothing, its screen tells: once a second Templum looks at the last 100 lines
+of every agent's terminal. One that changed at 3 of the last 4 looks (a spinner, Codex's "Working (5s)") is an agent
+at work, also after a dialog the person answered; one that stayed still for 5 looks while it worked is not, and the
+task it was on ends with its last 40 screen lines. A look right after the person typed into it tells nothing. A wait
+for the person is never ended by a still screen.
 
 An alert the terminal already shows (attention, a finished command) comes first. An agent the last snapshot doesn't
 see (it crashed: no `SessionEnd`) shows no state, and its state is forgotten, so a `claude` typed there by hand
@@ -133,8 +141,9 @@ later starts with none.
    as its answer), into a terminal running no agent (`send_to_terminal` is for those), into an agent no snapshot has
    found yet (one Templum just typed may not have started at all; the caller is told to try again in a few
    seconds), and into an agent already on another agent's task (`wait_for_idle` waits for its end).
-6. An agent Templum gets no events from (see the table under [Hooks](#hooks-and-agent-state)) answers only through
-   `reply`, or the wait ends at its timeout with the agent's last screen lines.
+6. An agent Templum gets no events from (see the table under [Hooks](#hooks-and-agent-state)) answers through
+   `reply`, or its task ends once its screen has been still for 5 seconds after working, with its last screen lines,
+   or at its timeout.
 7. A task stays handed over until its answer comes, the agent's session ends (or a snapshot no longer finds the agent
    it found before: Codex says nothing when it quits), its block closes, or its timeout passes (`delegate`'s, 600 s
    unless asked, also without `wait`). Past its timeout the agent that handed it over still waits for its answer
@@ -266,7 +275,7 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `append_note` | `block`, `text` | Adds the text at the note's end, after a blank line; the note shows it at once and Ctrl+Z takes it back | wired note | 4 |
 | `open_file` | `path`, `line` | Opens the file at the line in the wired editor block whose folder holds it; with none, in a new editor block beside the caller, wired to it. Neither the keyboard nor the camera moves | — | 4 |
 | `git_status` | `block` (may be left out when one Git block is wired) | The wired Git block's branch, ahead and behind, and changed files as `git status --short --branch` prints them | wired Git | 4 |
-| `wait_for` | `block`, `event` (`idle`, `needs_you`, `command_finished`, `attention`), `timeout` | Waits for the event in the block | wired | 5 |
+| `wait_for` | `block`, `event` (`idle`, `needs_you`, `command_finished`, `attention`), `timeout` | Waits for the event in the block: `idle` as `wait_for_idle`; `needs_you`, its agent or its balloon asking the person (at once when it already does); `command_finished`, the next command to finish there, with its output (needs [shell integration](shell-integration.md)); `attention`, its next bell or notification | wired | 5 |
 
 - A block is named by its id. A **board** is named by its name or id, and may be left out when one wired kanban
   block shows one; a **column** by its title (either case) or id; a **card** by its id, as `list_cards` shows it.
@@ -288,8 +297,8 @@ Templum is gone.
 |---|---|---|
 | Claude Code | hooks in the `--settings` Templum types (JSON on stdin) | started, working, done, waiting for the person, ended: the table below |
 | Codex | `notify` in the `-c` flags Templum types (JSON as the last argument) | done with its last answer (`agent-turn-complete`, `last-assistant-message`) |
-| Gemini CLI (batch 5) | `BeforeAgent`, `AfterAgent`, `Notification`, `SessionStart`, `SessionEnd` hooks | as Claude Code's |
-| Others | — | none: [Delegating](#delegating) point 6 |
+| Gemini CLI | the hooks of Templum's extension (below), JSON on stdin | `SessionStart` started, `BeforeAgent` working, `AfterTool` working again after a permission, `AfterAgent` done with `prompt_response`, `Notification` (`ToolPermission`) waiting for the person, `SessionEnd` ended |
+| Others | — | none: their screen ([An agent's state](#an-agents-state)), and [Delegating](#delegating) point 6 |
 
 Claude Code's hooks:
 
@@ -306,8 +315,8 @@ Claude Code's hooks:
 | `SessionEnd` | ended |
 
 Esc while a tool runs ends Working at once (`PostToolUseFailure` with `is_interrupt`). Esc while the model writes
-fires no hook of its own: the dot stays on Working until the next prompt, or until `idle_prompt` comes after the
-prompt has sat idle for Claude Code's own delay (about a minute). Deferred: [minors](../minors.md#connections).
+fires no hook of its own: the dot stays on Working until its screen has been still for 5 seconds
+([An agent's state](#an-agents-state)).
 A Templum tool's call works again at once after its own "Allow mcp__templum__*tool*?": the call arriving says the
 person allowed it, and `delegate` or `wait_for_idle` may take minutes before their `PostToolUse`.
 
@@ -359,13 +368,17 @@ Codex keeps one `notify`, and a `-c` flag replaces the config's: the person's ow
 `~/.codex/config.toml` doesn't run for a Codex Templum opens (Claude Code merges hooks; Codex doesn't). Deferred:
 [minors](../minors.md#connections).
 
-**Gemini CLI** (batch 5): it has no flag for MCP servers or hooks. Templum checks whether a system settings file named
-by `GEMINI_CLI_SYSTEM_SETTINGS_PATH` adds to the person's settings or replaces them; if it adds, Templum types it;
-otherwise **Settings ▸ Connections** offers to run `gemini mcp add -s user templum <templum> mcp` once, with the
-person's consent.
+**Gemini CLI:** it has no flag for MCP servers or hooks, and ignores a system settings file root doesn't own.
+**Settings ▸ Connections ▸ Gemini CLI ▸ Install**, after a question, writes `<data>/gemini/gemini-extension.json` (the
+server, `<data>/bin/templum mcp`, with an hour's timeout) and `<data>/gemini/hooks/hooks.json` (the hooks,
+`'<data>/bin/templum' hook gemini`; `& '…'` on Windows, where Gemini CLI runs hooks through PowerShell), and runs
+`gemini extensions link <data>/gemini --consent`; **Remove** runs `gemini extensions uninstall templum`.
+`~/.gemini/settings.json` is never touched. Every Gemini CLI the person opens then has the server and the hooks, typed
+by hand or not, whatever `[connections]` says; outside Templum the server shows as disconnected and the hooks do
+nothing. Gemini CLI starts no stdio server in a folder it doesn't trust; it asks when it first opens one.
 
-**Others** (Grok Build, Pi, OpenCode, the person's own): **Settings ▸ Connections** shows the server's command to
-copy into their configuration. They know their block anyway: the server inherits `TEMPLUM_TERMINAL`.
+**Others** (Grok Build, Pi, OpenCode, the person's own): **Settings ▸ Connections** shows `<data>/bin/templum mcp`
+with a Copy button. They know their block anyway: the server inherits `TEMPLUM_TERMINAL`.
 
 **Templum's program** is the AppImage when `$APPIMAGE` is set (its mounted executable goes away when it quits),
 otherwise the running executable, without the ` (deleted)` an upgrade leaves on Linux. The status line uses it too.
@@ -385,6 +398,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum notify <text>` | `notify` | 1 |
 | `templum mcp` | the MCP bridge | 1 |
 | `templum hook claude` / `templum hook codex <json>` | an agent's hook | 1 |
+| `templum hook gemini` | Gemini CLI's hooks (JSON on stdin) | 5 |
 | `templum connect <block>` | `connect` | 3 |
 | `templum spawn <agent> [--folder <f>] [--worktree <name>] [--prompt <text>]` | `spawn_agent` | 3 |
 | `templum delegate <block> <task> [--wait]` | `delegate` | 3 |
@@ -395,7 +409,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum note read\|append <block> [text]` | `read_note`, `append_note` | 4 |
 | `templum open <path>[:<line>]` | `open_file` | 4 |
 | `templum git status [<block>]` | `git_status` | 4 |
-| `templum wire <a> <b>` | wires two blocks (only from a terminal of the same workspace) | 5 |
+| `templum wire <a> <b>` | wires two blocks of the workspace of the terminal it runs in, a step of Ctrl+Z; not a tool (an agent's MCP server never lists it); it asks no one, so an agent's shell tool can wire its own block (the person's choice) | 5 |
 
 A verb stays connected until its answer: stopped with Ctrl+C, what it waited for (a balloon) is withdrawn.
 `templum open` and `templum spawn --folder` read a relative path from the folder they run in (an agent's shell tool may
@@ -414,13 +428,14 @@ output reaches a pipe (`templum blocks | more`) but not a console directly.
 ```
 
 Off, nothing is typed into agents; the bus still serves the command line. **Settings ▸ Connections** (batch 5) has
-the switch, the server's command for other agents, and Gemini CLI's setup.
+the switch, the server's command for other agents with a Copy button, and Gemini CLI's Install and Remove.
 
 ## Files
 
 - **Workspace files** ([persistence.md](persistence.md#the-file)): every item gains its block id, and the canvas its
   wires, by block id. A wire whose block didn't come back, one of a block to itself, and a second one between the
-  same two blocks are dropped. An older Templum ignores both.
+  same two blocks are dropped. An older Templum ignores both. A label is trimmed and cut at 60 characters; a blank
+  one is none.
 
   ```json
   { "version": 1,
@@ -450,14 +465,16 @@ the switch, the server's command for other agents, and Gemini CLI's setup.
 | `templum/src/block.rs` | the agent's state in the status dot; the balloon | 1, 3 |
 | `templum/src/config.rs` | `[connections]` | 1 |
 | `templum-canvas/src/wire.rs` (new) | `Wire`; the curve between two rects, a point on it, hitting it | 2 |
-| `templum/src/workspace/wires.rs` (new), `templum/src/wires.rs` (new) | wiring, unwiring, selecting, undo; painting wires and the dot | 2 |
+| `templum/src/workspace/wires.rs` (new), `templum/src/wires.rs` (new) | wiring, unwiring, selecting, undo, labels (`Change::Label`); painting wires, the dot and the labels | 2, 5 |
 | `templum/src/workspace/waits.rs`, `delegate.rs`, `spawn.rs` (new) | the requests that wait and the balloon's answers; tasks handed over, `reply`, `wait_for_idle`; `spawn_agent` | 3 |
 | `templum/src/workspace/content.rs` (new) | the kanban, note, file and Git tools | 4 |
 | `templum/src/balloon.rs` (new) | the balloon | 3 |
 | `templum-git/src/repo.rs` | `Repo::add_worktree` | 3 |
 | `templum/src/toolbar.rs`, `menu/`, `workspace/history.rs`, `workspace/input.rs`, `workspace/render.rs` | the Wire tool, the menus, the undo steps, the pointer | 2 |
 | `templum/src/board.rs`, `kanban.rs` | a card's assignee and comments, saved in `boards.json`; the card's face and the open card show them | 4 |
-| `templum/src/settings/` | Settings ▸ Connections | 5 |
+| `templum-usage/src/gemini.rs` (new) | the Gemini CLI extension | 5 |
+| `templum/src/workspace/activity.rs` (new) | an agent's state from its screen | 5 |
+| `templum/src/settings/connections.rs` (new), `workspace/usage.rs` | Settings ▸ Connections; running Gemini CLI | 5 |
 
 Every request reaches the main thread through a channel the bus's threads write to, drained by a task as the
 terminals' wake-ups are; the main thread never touches a socket. A request that waits keeps its reply channel in
@@ -478,7 +495,15 @@ for longer than the hello's time after it is still answered; two requests on one
 socket file goes away with the bus and a stale one is replaced; a data folder too long for a socket puts it in a private
 (0700) temporary folder that goes with the bus; the bridge sends its hello first and copies both ways; `hook claude`
 sends one event and prints nothing; `read <block> -n 10` sends its call and prints the text; no bus is exit code 2 with
-nothing on stdout. Every read and wait in these tests has a 5-second limit.
+nothing on stdout. Every read and wait in these tests has a 5-second limit. (batch 5) `wait_for` takes its four events
+and refuses another; `wire` is parsed but never listed; Gemini CLI's hooks become their events; `wait --for` and `wire`
+send their calls, and every verb's usage offers `--json`.
+
+**Unit (`templum-usage`, batch 5):** the extension's two files exactly, not rewritten unchanged, Windows' hook
+command, a `'` in the path gives none.
+
+**Unit (`templum`, batch 5):** the screen's looks (3 of 4 changed: at work; 5 still: at rest; a wait for the person
+stays); a label's scale per level.
 
 **Unit (`templum-terminal`):** `lines` reads history past the screen; `last_command` is the last finished command and
 its output; `SpawnOptions.env` reaches the shell.
@@ -500,13 +525,25 @@ Allow wires and Deny refuses, `spawn_agent` opens a wired block beside the calle
 closing a block answers what waited on it, the dot travels only while a task is handed over; (batch 4) comments and
 assignee survive a round trip and an older file loads, `claim_card` refuses a card another block holds, `append_note`
 shows in the open note, `open_file` lands at the line in the wired editor without taking the keyboard, `git_status`
-matches the repository, and every tool is refused without a wire.
+matches the repository, and every tool is refused without a wire; (batch 5) `wait_for` answers `needs_you` at once or
+when the agent or its balloon asks, a command's end and code, a bell and a notification, its timeout with the last
+lines, a closed block, and shows no balloon; `templum wire` wires a step Ctrl+Z takes back and an MCP client can't
+call it; a changing screen says Working and a still one ends the task, the person's typing not counting; Rename
+wire… labels, Ctrl+Z, a disconnect, a close and a restart keep it, a hand-edited file's label is trimmed or dropped;
+the pill shows at 100%, 50% and 25% and not in grid mode; Settings ▸ Connections' switch, its Copy button and
+Gemini's question; Gemini CLI's run, its failure and its absence.
 
 **Manual (Hyprland):** Claude Code from the menu: `/mcp` lists `templum` connected, "list the blocks" and "read the
 last 30 lines of the dev server" work, the dot follows its turns and a permission prompt; Codex: `/mcp` lists it;
 `templum blocks` in a plain terminal; `templum mcp` in another terminal emulator exits 2; wiring by tool and menu,
 restart; Claude Code delegating to Codex and getting its answer; a question and a connect request in the balloon;
-`spawn_agent` with a worktree.
+`spawn_agent` with a worktree; (batch 5) Gemini CLI's Install, `/mcp`, dot and Remove; Claude Code delegating to
+Gemini CLI; Codex's dot turning accent within about 3 s of a prompt; a permission dialog left 15 s still yellow, an
+allowed `sleep 20` turning accent within about 3 s, Esc while Claude Code writes ending Working within about 5 s, a
+long prompt typed into an idle agent showing no accent; `templum wait --for command_finished` and `--for attention`;
+`templum wire` and Ctrl+Z; a label at 50% and 25%, hidden in grid mode, kept by a restart, and Ctrl+Z after a rename
+taking the name, not the wire; Settings ▸ Connections' switch (no `--mcp-config` once off) and Copy; on Windows,
+Gemini CLI's dot following its turns.
 
 ## Delivery
 
@@ -531,8 +568,10 @@ Batches 2 and 3 paint, so their pull requests carry `--bench` and `--bench-mixed
 | Typing into an agent that is busy | Refused while it waits for its person; while it works, Claude Code and Codex queue typed input (checked by hand in batch 3); the `[from …]` line keeps it readable |
 | A spawned agent's prompt typed while it asks a first-run question (Codex trusting a new folder) | Claude Code's waits for its `SessionStart`, after that question; the others follow the rule above (process seen, screen still): checked by hand |
 | A task typed into a Codex at work is answered by the turn it was on | One task at a time per agent; the rest is the person's to see in the agent's terminal |
-| An agent without events never says it is done | `reply`, or the wait's timeout with the last screen lines; batch 5 may add "the screen has been still for N seconds" |
-| Gemini CLI can't be given an MCP server for one session | The system settings file if it adds to the person's; else a one-time `gemini mcp add` the person agrees to |
+| An agent without events never says it is done | `reply`; its screen going still ends its task (`activity.rs`); else the wait's timeout with the last screen lines |
+| Gemini CLI ignores a system settings file root doesn't own | An extension the person installs once from Settings ▸ Connections |
+| A spinner drawn under a permission dialog would turn its yellow dot to Working | Checked by hand with Claude Code and Gemini CLI (manual check 4) |
+| Windows: PowerShell may not wait for, or hand stdin to, `templum.exe` (a windowed program) in a Gemini hook | Checked by hand on Windows; else `$input \| & '<bin>' hook gemini` |
 | Codex's `-c` under `cmd.exe` and Windows PowerShell 5.1 | Not typed there (Git Bash is the default shell on Windows; pwsh 7 takes them) |
 | A path Templum can't type safely (`"`, `$`, `'`, a backtick…) | No connections for that agent, and a notification once per session (deferred) |
 | macOS's 104-byte socket path | A private folder in the temporary folder past 100 bytes |

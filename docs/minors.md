@@ -447,10 +447,10 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   (`crates/templum/src/workspace/blocks.rs:68`) checks the running workspaces only; a new block may take an id a
   stopped workspace's saved canvas holds (1 in 60 million per pair), and that block gets a new id when the workspace
   starts again. Fix: check `Space::saved`'s items too.
-- [ ] **Codex's dot never says "Working".** Codex only reports its turns' end (`codex`,
-  `crates/templum-mcp/src/hooks.rs:49`): until its first turn ends its terminal shows the shell's "Running for …",
-  and after it nothing, also while it works on the next prompt, and no yellow dot at a permission prompt. Fix: a
-  Codex hook for those, when Codex has one; meanwhile the screen going still (batch 5).
+- [ ] **Codex's dot never turns yellow.** Codex says nothing when its approval dialog opens (`codex`,
+  `crates/templum-mcp/src/hooks.rs`): its dot says Working while its screen moves
+  (`crates/templum/src/workspace/activity.rs`) and nothing once the dialog sits still; a person doesn't see it waits
+  for them, and `delegate` may type into the dialog. Fix: a Codex hook for approvals, when Codex has one.
 - [ ] **The verbs print nothing in a Windows console.** The release program has no console
   (`crates/templum/src/main.rs:3`), so `templum blocks` (`main.rs:56`) prints only into a pipe:
   `templum blocks | more`. Fix: `AttachConsole(ATTACH_PARENT_PROCESS)` before running a verb (needs `unsafe` or a
@@ -481,18 +481,14 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   rows into one line, so with long wrapped lines it returns fewer than `n`, and the first may start in the middle of
   a line. Fix: read rows upward until `n` lines start in the range (a row that isn't the wrapped end of the one
   above).
-- [ ] **A Claude Code interrupted while it writes stays on Working for a while.** Esc while a tool runs ends Working at
-  once (`PostToolUseFailure` with `is_interrupt`), but Esc while the model writes fires no hook
-  (`crates/templum-mcp/src/hooks.rs`, the `idle_prompt` arm), so the dot says Working until the next prompt or the
-  `idle_prompt` notification, which Claude Code sends only after the prompt has sat idle (about a minute). Fix: a hook
-  for interrupts when Claude Code has one; meanwhile the screen going still (batch 5).
-- [ ] **A Bash command sent to the background may show a working Claude Code as idle.** `claude`
+- [ ] **A Bash command sent to the background ends a task handed to a working Claude Code.** `claude`
   (`crates/templum-mcp/src/hooks.rs:36`, at 0415ff5) takes a `PostToolUseFailure` with `is_interrupt` for Esc and
-  sets the dot to idle, but Claude Code (2.1.286) likely sends `is_interrupt` for any tool cut short, Ctrl+B moving a
-  running Bash command to the background included, and the turn goes on. A person sees the idle dot while Claude
-  works, until its next `PostToolUse` or `Stop`. Fix: confirm it with the plan's manual check 14, saving both hook
-  inputs; if a field tells Esc from Ctrl+B, set idle on Esc's only; if none does, keep Working on an interrupt and
-  let the screen going still (batch 5) end it.
+  ends the turn, but Claude Code (2.1.286) likely sends `is_interrupt` for any tool cut short, Ctrl+B moving a
+  running Bash command to the background included, and the turn goes on. The dot comes back to Working within 3
+  seconds (its screen moves, `crates/templum/src/workspace/activity.rs`), but a task another agent handed it ends at
+  once with "Its turn ended without an answer". Fix: confirm it with the plan's manual check 14, saving both hook
+  inputs; if a field tells Esc from Ctrl+B, end the turn on Esc's only; if none does, keep Working on an interrupt and
+  let the screen going still end it.
 - [ ] **Parallel subagents can turn a waiting Claude Code's dot back to Working.** With subagents running side by side,
   one subagent's `PostToolUse` or `PostToolUseFailure` (`crates/templum-mcp/src/hooks.rs:34`, at 11a2fb0) arrives
   while another waits at a permission dialog, and the yellow "Waiting for you" turns back to Working although the
@@ -630,17 +626,6 @@ Left by the fourth review of batch 3; line numbers are those of `development` at
   send_to_terminal types into a terminal", whose Enter could answer Claude Code's trust question. It heals at the
   next snapshot (5 s). Fix: keep `seen.agent` while `pid` is None for `STARTS_WITHIN` after Templum typed any
   agent (a "typed at" time on `Pane`).
-
-Left by the seventh review of batch 3; line numbers are those of `development` at 8616ef8.
-
-- [ ] **A Claude Code stays "waiting for you" while a tool the person allowed runs.** `PermissionRequest`
-  (`crates/templum-mcp/src/hooks.rs:46`) sets "Allow Bash?", and no Claude Code hook fires between the person
-  allowing it and the tool's `PostToolUse` (`PreToolUse` comes before the permission check); `allowed`
-  (`crates/templum/src/workspace/bus.rs`) clears it at once only for Templum's own tools. A person who allows a
-  4-minute `cargo test` sees the yellow dot the whole time, `list_blocks` says it waits for its person, and another
-  agent's `delegate` or `reply` into it is refused (`takes_typing`, `crates/templum/src/workspace/delegate.rs:66`).
-  Fix: the screen going still or changing (batch 5) ends the wait; or Enter or a digit typed into a block showing
-  "Allow …?" turns it to Working (a denied dialog would then read Working too).
 
 Left by batch 4 (content); line numbers are those of `development` at 9e33f19.
 
