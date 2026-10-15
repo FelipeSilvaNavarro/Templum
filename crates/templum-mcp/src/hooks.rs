@@ -149,15 +149,27 @@ mod tests {
             Some(AgentEvent::NeedsYou { message: None }),
             "the dialog PermissionRequest already said: what it asks stays"
         );
+        for kind in ["elicitation_dialog", "agent_needs_input"] {
+            assert_eq!(
+                event(json!({
+                    "hook_event_name": "Notification",
+                    "notification_type": kind,
+                    "message": "A server asks for your input",
+                })),
+                Some(AgentEvent::NeedsYou {
+                    message: Some("A server asks for your input".into())
+                }),
+                "{kind} says what it asks"
+            );
+        }
         assert_eq!(
             event(json!({
                 "hook_event_name": "Notification",
-                "notification_type": "elicitation_dialog",
-                "message": "A server asks for your input",
+                "notification_type": "auth_success",
+                "message": "Signed in",
             })),
-            Some(AgentEvent::NeedsYou {
-                message: Some("A server asks for your input".into())
-            })
+            None,
+            "other notifications say nothing of the agent's state"
         );
         assert_eq!(
             event(json!({
