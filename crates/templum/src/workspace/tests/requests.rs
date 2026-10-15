@@ -257,6 +257,39 @@ fn a_templum_tool_the_person_allowed_works_again(cx: &mut TestAppContext) {
     assert_eq!(state(cx), Some(crate::workspace::AgentState::Working));
 }
 
+/// Claude Code's own notification about the same dialog comes about six seconds after it opens:
+/// the dot keeps its "Allow …?", and allowing the tool afterwards still makes it work again.
+#[gpui_kit::test]
+fn a_templum_tool_allowed_after_its_notification_works_again(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let (terminal, _) = me(&ws, cx, first);
+    let hook = |input: Value| serde_json::to_value(templum_mcp::hooks::claude(&input)).unwrap();
+    let tool = "mcp__templum__wait_for_idle";
+    let asks = json!({ "hook_event_name": "PermissionRequest", "tool_name": tool });
+    event(handle, &ws, cx, &terminal, hook(asks));
+    let state = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(first).unwrap().state.clone())
+    };
+    let asking = state(cx);
+    let notified = json!({
+        "hook_event_name": "Notification",
+        "notification_type": "permission_prompt",
+        "message": format!("Claude needs your permission to use {tool}"),
+    });
+    event(handle, &ws, cx, &terminal, hook(notified.clone()));
+    assert_eq!(state(cx), asking);
+    let waits = json!({ "block": "k9x1d" });
+    call_later(handle, &ws, cx, &terminal, 1, "wait_for_idle", waits);
+    assert_eq!(state(cx), Some(crate::workspace::AgentState::Working));
+    // The notification alone (its `PermissionRequest` hook didn't run) still says it waits.
+    event(handle, &ws, cx, &terminal, hook(notified));
+    assert_eq!(
+        state(cx),
+        Some(crate::workspace::AgentState::NeedsYou(None))
+    );
+}
+
 /// A block in another workspace asks: the person can't see it, though its id there is the one of a
 /// block in view here (ids count from 0 in each workspace).
 #[gpui_kit::test]

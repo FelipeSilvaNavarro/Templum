@@ -55,11 +55,11 @@ pub fn claude(input: &Value) -> Option<AgentEvent> {
         // A turn an API error ended: no `Stop`, and no answer.
         "StopFailure" => AgentEvent::Stopped { message: None },
         "Notification" => match input["notification_type"].as_str()? {
-            "permission_prompt" | "elicitation_dialog" | "agent_needs_input" => {
-                AgentEvent::NeedsYou {
-                    message: text("message"),
-                }
-            }
+            // The dialog `PermissionRequest` already said, seconds ago: its "Allow …?" stays.
+            "permission_prompt" => AgentEvent::NeedsYou { message: None },
+            "elicitation_dialog" | "agent_needs_input" => AgentEvent::NeedsYou {
+                message: text("message"),
+            },
             // The prompt has sat idle: whatever the turn was, it isn't working. Esc while the
             // model writes fires no hook of its own, so this is what ends its "Working". Not a
             // wait for the person: the agent asks nothing.
@@ -146,8 +146,17 @@ mod tests {
                 "notification_type": "permission_prompt",
                 "message": "Claude needs your permission to use Bash",
             })),
+            Some(AgentEvent::NeedsYou { message: None }),
+            "the dialog PermissionRequest already said: what it asks stays"
+        );
+        assert_eq!(
+            event(json!({
+                "hook_event_name": "Notification",
+                "notification_type": "elicitation_dialog",
+                "message": "A server asks for your input",
+            })),
             Some(AgentEvent::NeedsYou {
-                message: Some("Claude needs your permission to use Bash".into())
+                message: Some("A server asks for your input".into())
             })
         );
         assert_eq!(

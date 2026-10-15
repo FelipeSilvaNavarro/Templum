@@ -299,7 +299,7 @@ Claude Code's hooks:
 | `PostToolUseFailure` | working (again, after a permission: an allowed tool may fail), or done without an answer when `is_interrupt` is true (Esc while the tool ran) |
 | `Stop` | done, with its last answer (`last_assistant_message`) |
 | `StopFailure` | done, without an answer: an API error ended the turn, and `Stop` doesn't come |
-| `Notification` | waiting for the person on `permission_prompt`, `elicitation_dialog` and `agent_needs_input` (they come only after about six seconds without typing, hence `PermissionRequest`); not working on `idle_prompt` (the prompt has sat idle): never a wait for the person, since the agent asks nothing; the others nothing |
+| `Notification` | waiting for the person on `permission_prompt`, `elicitation_dialog` and `agent_needs_input` (they come only after about six seconds without typing, hence `PermissionRequest`); `permission_prompt` says the dialog `PermissionRequest` already did, so its "Allow *tool*?" stays; not working on `idle_prompt` (the prompt has sat idle): never a wait for the person, since the agent asks nothing; the others nothing |
 | `SessionEnd` | ended |
 
 Esc while a tool runs ends Working at once (`PostToolUseFailure` with `is_interrupt`). Esc while the model writes

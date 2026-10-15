@@ -233,6 +233,10 @@ impl Workspace {
                 };
                 self.end_turn(terminal, reply, cx);
             }
+            // A wait that says nothing new (Claude Code's notification about the dialog its
+            // `PermissionRequest` opened) keeps what it asks: `allowed` looks for it.
+            AgentEvent::NeedsYou { message: None }
+                if matches!(pane.state, Some(AgentState::NeedsYou(Some(_)))) => {}
             AgentEvent::NeedsYou { message } => pane.state = Some(AgentState::NeedsYou(message)),
             AgentEvent::Ended => {
                 pane.state = None;
