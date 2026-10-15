@@ -614,3 +614,19 @@ Left by batch 3 (agents together) and its review; line numbers are those of `dev
   (`crates/templum/src/workspace/bus.rs:326`) writes `\r` right after the paste; an agent may take it for a new line,
   where `delegate` waits 150 ms. A person sees the text sit unsent in Claude Code's or Codex's prompt. Fix: send its
   Enter with `send_task`'s delay (confirm with the manual check first).
+
+Left by the fourth review of batch 3; line numbers are those of `development` at 242654d.
+
+- [ ] **A spawned agent that never started is said to have ended.** `agent_left`
+  (`crates/templum/src/workspace/delegate.rs:307`) answers every wait with "Its agent ended before it answered.",
+  also for an agent spawned with a prompt that no snapshot found within a minute (its folder's trust declined at
+  once, or a question of its shell swallowed the command). The spawner may tell the person the helper crashed, or
+  spawn another. Fix: `see` reports that case apart, and its waits get "{uid}'s agent never started: look at its
+  block."
+- [ ] **A spawn without a prompt can be told "runs no agent" while its shell starts.** `see`
+  (`crates/templum/src/workspace/mod.rs:668`) keeps the agent Templum typed only while a prompt waits; a snapshot
+  taken while a slow shell (ble.sh) starts clears `seen.agent` for a spawn without one (or a menu launch). A
+  `delegate` right after the spawn gets "still starting", and a retry before the next snapshot "runs no agent:
+  send_to_terminal types into a terminal", whose Enter could answer Claude Code's trust question. It heals at the
+  next snapshot (5 s). Fix: keep `seen.agent` while `pid` is None for `STARTS_WITHIN` after Templum typed any
+  agent (a "typed at" time on `Pane`).

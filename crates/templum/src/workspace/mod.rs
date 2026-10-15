@@ -648,7 +648,8 @@ impl Space {
     }
 
     /// Tells each terminal what a snapshot found in it. The terminals whose agent, found running
-    /// before, is gone: what was handed to it has no one to answer.
+    /// before, is gone, or whose agent spawned with a prompt no snapshot found within
+    /// `STARTS_WITHIN` never started: what was handed to it has no one to answer.
     fn see(&mut self, found: Vec<(BlockId, templum_terminal::Inspection)>) -> Vec<String> {
         let now = Instant::now();
         let mut gone = Vec::new();

@@ -299,8 +299,9 @@ impl Workspace {
         })))
     }
 
-    /// The agent in the terminal `terminal` is gone: its session ended, or a snapshot no longer
-    /// finds its process (it crashed, or Codex quit, which says nothing).
+    /// The agent in the terminal `terminal` is gone: its session ended, a snapshot no longer
+    /// finds its process (it crashed, or Codex quit, which says nothing), or one spawned with a
+    /// prompt no snapshot found within `STARTS_WITHIN` never started.
     pub(super) fn agent_left(&mut self, terminal: &str, cx: &mut Context<Self>) {
         self.end_turn(
             terminal,
