@@ -558,6 +558,42 @@ fn open_file_with_no_wired_editor_opens_one_beside_the_caller(cx: &mut TestAppCo
     });
 }
 
+/// A relative path is read from the caller's folder, `..` and all.
+#[gpui_kit::test]
+fn open_file_reads_a_relative_path_from_the_callers_folder(cx: &mut TestAppContext) {
+    let (_dir, folder) = a_project();
+    std::fs::create_dir(folder.join("sub")).unwrap();
+    let (handle, ws) = open(cx);
+    let terminal = terminal_in(handle, &ws, cx, &folder);
+    let (me, _) = me(&ws, cx, terminal);
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "open_file",
+        json!({ "path": "sub/../a.rs", "line": 2 }),
+    );
+    assert!(!failed, "{text}");
+    ws.read_with(cx, |ws, cx| {
+        let wire = ws
+            .space
+            .wires
+            .iter()
+            .rfind(|w| w.touches(terminal))
+            .expect("a new editor, wired to the caller");
+        let new = if wire.a == terminal { wire.b } else { wire.a };
+        let e = ws.space.editor(new).unwrap();
+        let tab = e.active_tab().unwrap();
+        assert!(tab.path.starts_with(&e.folder), "{:?}", tab.path);
+        assert_eq!(
+            std::fs::canonicalize(&tab.path).unwrap(),
+            folder.join("a.rs")
+        );
+        assert_eq!(tab.editor.read(cx).cursor_position().line, 1, "line 2");
+    });
+}
+
 /// A file named by its real path shows in the tab an editor on a linked folder already has.
 #[cfg(unix)]
 #[gpui_kit::test]
