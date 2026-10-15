@@ -307,11 +307,12 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             .map(|n| n.min(MAX_WAIT))
             .ok_or_else(|| format!("\"timeout\" is a number of seconds from 1 to {MAX_WAIT}")),
     };
+    // An empty string is no value: `"worktree": ""` isn't a worktree's name.
     let optional = |key: &str| match &args[key] {
         Value::Null => Ok(None),
         value => value
             .as_str()
-            .map(|s| Some(s.to_string()))
+            .map(|s| Some(s.to_string()).filter(|s| !s.is_empty()))
             .ok_or_else(|| format!("\"{key}\" is a string")),
     };
     Ok(match name {
@@ -529,6 +530,14 @@ mod tests {
                 folder: None,
                 worktree: None
             }))
+        );
+        assert_eq!(
+            parse(
+                "spawn_agent",
+                &json!({ "agent": "claude", "prompt": "", "folder": "", "worktree": "" })
+            ),
+            parse("spawn_agent", &json!({ "agent": "claude" })),
+            "an empty string is no value"
         );
         assert!(parse("spawn_agent", &json!({ "agent": "claude", "prompt": 3 })).is_err());
         for bad in [
