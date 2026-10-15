@@ -727,7 +727,7 @@ fn right_clicking_a_wire_offers_disconnect(cx: &mut TestAppContext) {
         right_click(window, cx, on);
         window.render_frame(cx);
         assert!(ws.read(cx).menu.is_some(), "the wire's menu");
-        window.within("popup-menu").click(0usize, cx);
+        window.within("popup-menu").click(1usize, cx);
         window.render_frame(cx);
         assert!(ws.read(cx).space.wires.is_empty());
     })
@@ -837,4 +837,171 @@ fn templum_wire_wires_two_blocks_of_its_workspace_as_a_step(cx: &mut TestAppCont
     let answers = call_later(handle, &ws, cx, &from, 1, "wire", json!({ "a": k, "b": n }));
     let line = answers.try_recv().unwrap();
     assert!(line.contains("Unknown tool: wire"), "{line}");
+}
+
+#[gpui_kit::test]
+fn rename_wire_labels_it_and_ctrl_z_takes_the_label_back(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = apart(handle, &ws, cx);
+    ws.update(cx, |ws, cx| {
+        ws.connect(kanban, note, cx);
+    });
+    let wire = Wire::new(kanban, note).unwrap();
+    let on = on_the_wire(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        right_click(window, cx, on);
+        window.render_frame(cx);
+        window.within("popup-menu").click(0usize, cx);
+        window.render_frame(cx);
+        assert!(
+            window.has_active_dialog(cx),
+            "Rename wire… asks for the label"
+        );
+        window.input("dev server", cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            assert_eq!(ws.space.label(wire), Some("dev server"));
+            assert!(ws.undo_canvas(false, window, cx));
+            assert!(
+                ws.space.wired(kanban, note),
+                "Ctrl+Z takes the label, not the wire"
+            );
+            assert_eq!(ws.space.label(wire), None);
+            assert!(ws.undo_canvas(true, window, cx));
+            assert_eq!(ws.space.label(wire), Some("dev server"));
+        })
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_label_is_one_line_of_60_at_most(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let wire = Wire::new(kanban, note).unwrap();
+    ws.update(cx, |ws, cx| {
+        assert!(
+            !ws.rename_wire(wire, "api", cx),
+            "not wired: nothing to name"
+        );
+        ws.connect(kanban, note, cx);
+        assert!(ws.rename_wire(wire, "  dev \t server\n", cx));
+        assert_eq!(ws.space.label(wire), Some("dev server"));
+        assert_eq!(
+            ws.space.label(Wire::new(note, kanban).unwrap()),
+            Some("dev server"),
+            "either way round"
+        );
+        assert!(
+            !ws.rename_wire(wire, "dev server", cx),
+            "the same label is no step"
+        );
+        assert!(ws.rename_wire(wire, &"x".repeat(200), cx));
+        assert_eq!(ws.space.label(wire).map(|l| l.chars().count()), Some(60));
+        assert!(ws.rename_wire(wire, "   ", cx), "blank: no label");
+        assert_eq!(ws.space.label(wire), None);
+        assert_eq!(ws.space.label(Wire::new(kanban, terminal).unwrap()), None);
+    });
+}
+
+#[gpui_kit::test]
+fn a_label_comes_back_with_its_wire(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = three_blocks(handle, &ws, cx);
+    let [kanban_uid] = uids(&ws, cx, [kanban]);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.connect(kanban, note, cx);
+            let wire = Wire::new(kanban, note).unwrap();
+            ws.rename_wire(wire, "board", cx);
+            ws.disconnect(wire, cx);
+            assert!(ws.undo_canvas(false, window, cx));
+            assert_eq!(
+                ws.space.label(wire),
+                Some("board"),
+                "Ctrl+Z of the disconnect"
+            );
+            ws.close_now(&[kanban], Then::New, window, cx);
+            assert!(ws.undo_canvas(false, window, cx));
+            let back = ws.space.block_by_uid(&kanban_uid).unwrap();
+            assert_eq!(
+                ws.space.label(Wire::new(back, note).unwrap()),
+                Some("board"),
+                "by its blocks' ids, through a close"
+            );
+        })
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_label_comes_back_after_a_restart(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let [k, n, t] = uids(&ws, cx, [kanban, note, terminal]);
+    ws.update(cx, |ws, cx| {
+        ws.connect(kanban, note, cx);
+        ws.connect(note, terminal, cx);
+        ws.rename_wire(Wire::new(note, terminal).unwrap(), "dev server", cx);
+        ws.save_canvas_now(cx);
+    });
+    let saved =
+        std::fs::read_to_string(data.path().join("workspaces").join("default.json")).unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(
+        saved["wires"],
+        json!([{ "a": k, "b": n }, { "a": n, "b": t, "label": "dev server" }])
+    );
+    let (_, again) = open_in(cx, None, Some(data.path().to_path_buf()));
+    again.read_with(cx, |ws, _| {
+        let id = |uid: &str| ws.space.block_by_uid(uid).unwrap();
+        assert_eq!(
+            ws.space.label(Wire::new(id(&n), id(&t)).unwrap()),
+            Some("dev server")
+        );
+        assert_eq!(ws.space.label(Wire::new(id(&k), id(&n)).unwrap()), None);
+    });
+}
+
+/// A file edited by hand: a label is trimmed, a blank one is none, and one on a wire that is
+/// dropped (its block is missing) stays out.
+#[gpui_kit::test]
+fn a_saved_label_needs_its_wire_and_some_text(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let kanban = |x: f32, uid: &str| {
+        format!(r#"{{"kind":"kanban","uid":"{uid}","rect":{{"x":{x},"y":0,"w":300,"h":200}}}}"#)
+    };
+    write_canvas(
+        data.path(),
+        &format!(
+            r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[{},{},{}],"wires":[{{"a":"aaaaa","b":"bbbbb","label":"  api  "}},{{"a":"bbbbb","b":"ccccc","label":"   "}},{{"a":"aaaaa","b":"zzzzz","label":"gone"}}]}}"#,
+            kanban(0.0, "aaaaa"),
+            kanban(400.0, "bbbbb"),
+            kanban(800.0, "ccccc"),
+        ),
+    );
+    let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    ws.read_with(cx, |ws, _| {
+        let id = |uid: &str| ws.space.block_by_uid(uid).unwrap();
+        assert_eq!(
+            ws.space.label(Wire::new(id("aaaaa"), id("bbbbb")).unwrap()),
+            Some("api")
+        );
+        assert_eq!(
+            ws.space.label(Wire::new(id("bbbbb"), id("ccccc")).unwrap()),
+            None
+        );
+        assert_eq!(
+            ws.space.labels.len(),
+            1,
+            "a label on a dropped wire stays out"
+        );
+    });
 }

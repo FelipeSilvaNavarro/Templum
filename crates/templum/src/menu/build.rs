@@ -1004,14 +1004,30 @@ impl Items {
                 Some(IconName::Delete),
                 move |ws, _, cx| ws.delete_ink(index, cx),
             )),
-            Items::Wire { wire } => menu.item(item(
-                ws,
-                "Disconnect",
-                Some(IconName::Unplug),
-                move |ws, _, cx| {
-                    ws.disconnect(wire, cx);
-                },
-            )),
+            Items::Wire { wire } => menu
+                .item(item(ws, "Rename wire…", None, move |ws, window, cx| {
+                    let label = ws.space.label(wire).unwrap_or_default().to_string();
+                    let entity = cx.entity();
+                    prompt::ask_text(
+                        "Rename wire",
+                        "Rename",
+                        label,
+                        move |text, _, cx| {
+                            entity.update(cx, |ws, cx| ws.rename_wire(wire, &text, cx));
+                            true
+                        },
+                        window,
+                        cx,
+                    )
+                }))
+                .item(item(
+                    ws,
+                    "Disconnect",
+                    Some(IconName::Unplug),
+                    move |ws, _, cx| {
+                        ws.disconnect(wire, cx);
+                    },
+                )),
             Items::Note { block, color, send } => menu
                 .item(item(
                     ws,

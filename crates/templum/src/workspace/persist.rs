@@ -74,11 +74,23 @@ impl Workspace {
         // The wires, by block id, once the blocks have theirs back: one whose block didn't come
         // back, of a block to itself, or a second between two, is dropped.
         for wire in &saved.wires {
-            if let (Some(a), Some(b)) = (
+            let (Some(a), Some(b)) = (
                 self.space.block_by_uid(&wire.a),
                 self.space.block_by_uid(&wire.b),
-            ) {
-                self.space.add_wire(a, b);
+            ) else {
+                continue;
+            };
+            let label = wire
+                .label
+                .as_deref()
+                .map(str::trim)
+                .filter(|l| !l.is_empty());
+            if self.space.add_wire(a, b).is_some()
+                && let Some(label) = label
+            {
+                let key = super::wires::label_key(&wire.a, &wire.b);
+                let label = label.chars().take(super::wires::LABEL_MAX).collect();
+                self.space.labels.insert(key, label);
             }
         }
         self.space.focused = saved.focused.and_then(|i| ids.get(i).copied().flatten());

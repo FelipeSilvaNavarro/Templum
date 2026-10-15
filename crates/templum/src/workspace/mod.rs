@@ -501,6 +501,10 @@ pub(crate) struct Space {
     pub wires: Vec<Wire>,
     /// The selected wire: Delete removes it. Never with a block focused or selected.
     pub selected_wire: Option<Wire>,
+    /// The wires' labels, by the block ids (`uids`) of their ends, the smaller first. A label
+    /// stays when its wire goes: Ctrl+Z bringing the wire back, or its closed block, brings it
+    /// back too. Only the wires there are save theirs.
+    pub labels: HashMap<(String, String), String>,
     /// The changes that take back each change of the blocks (added, closed, moved, resized), by
     /// their step numbers, newest last, at most CANVAS_UNDO; and those of the undone ones.
     pub undo: Vec<(u64, history::Change)>,
@@ -589,6 +593,7 @@ impl Space {
                     Some(session::SavedWire {
                         a: self.uids.get(&w.a)?.clone(),
                         b: self.uids.get(&w.b)?.clone(),
+                        label: self.label(*w).map(str::to_string),
                     })
                 })
                 .collect(),
@@ -637,6 +642,7 @@ impl Space {
         self.selected_ink = None;
         self.wires.clear();
         self.selected_wire = None;
+        self.labels.clear();
         self.undo.clear();
         self.redo.clear();
         self.ink_undo.clear();

@@ -10,7 +10,26 @@ use templum_mcp::Reply;
 use super::history::{Change, Then};
 use super::{Drag, Space, Workspace};
 
+/// The longest a label is, in characters.
+pub(crate) const LABEL_MAX: usize = 60;
+
+/// A label's key from its wire's ends' block ids, in either order.
+pub(crate) fn label_key(a: &str, b: &str) -> (String, String) {
+    let (a, b) = if a <= b { (a, b) } else { (b, a) };
+    (a.to_string(), b.to_string())
+}
+
 impl Space {
+    /// The key of `wire`'s label; None while one of its blocks has no id.
+    pub(crate) fn label_key(&self, wire: Wire) -> Option<(String, String)> {
+        Some(label_key(self.uids.get(&wire.a)?, self.uids.get(&wire.b)?))
+    }
+
+    /// `wire`'s label, if it has one.
+    pub(crate) fn label(&self, wire: Wire) -> Option<&str> {
+        self.labels.get(&self.label_key(wire)?).map(String::as_str)
+    }
+
     /// `a` and `b` are wired.
     pub(crate) fn wired(&self, a: BlockId, b: BlockId) -> bool {
         Wire::new(a, b).is_some_and(|w| self.wires.contains(&w))
@@ -69,6 +88,42 @@ impl Workspace {
     /// block, already wired, or one isn't on the canvas.
     pub(crate) fn connect(&mut self, a: BlockId, b: BlockId, cx: &mut Context<Self>) -> bool {
         self.set_wire(Wire { a, b }, true, Then::New, cx)
+    }
+
+    /// Rename wire…: `text` on one line, at most LABEL_MAX characters, becomes `wire`'s label;
+    /// blank, it has none. A step Ctrl+Z takes back. False when the wire is gone or nothing
+    /// changes.
+    pub(crate) fn rename_wire(&mut self, wire: Wire, text: &str, cx: &mut Context<Self>) -> bool {
+        if !self.space.wires.contains(&wire) {
+            return false;
+        }
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let label = (!text.is_empty()).then(|| text.chars().take(LABEL_MAX).collect());
+        self.set_label(wire, label, Then::New, cx)
+    }
+
+    /// Gives `wire` `label` (None: none); the change that takes it back is kept as `then` says.
+    /// False when nothing changes.
+    pub(super) fn set_label(
+        &mut self,
+        wire: Wire,
+        label: Option<String>,
+        then: Then,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(key) = self.space.label_key(wire) else {
+            return false;
+        };
+        let before = match label.clone() {
+            Some(label) => self.space.labels.insert(key, label),
+            None => self.space.labels.remove(&key),
+        };
+        if before == label {
+            return false;
+        }
+        self.keep(Change::Label(wire, before), then);
+        cx.notify();
+        true
     }
 
     /// `templum wire <a> <b>` from the terminal `from`: wires two blocks of its workspace, a step

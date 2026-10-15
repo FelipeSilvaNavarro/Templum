@@ -661,7 +661,7 @@ enum Items {
     Ink {
         index: usize,
     },
-    /// A wire: Disconnect.
+    /// A wire: Rename wire…, Disconnect.
     Wire {
         wire: Wire,
     },

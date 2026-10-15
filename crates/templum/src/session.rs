@@ -347,6 +347,9 @@ pub(crate) enum SavedTile {
 pub(crate) struct SavedWire {
     pub a: String,
     pub b: String,
+    /// Its name (Rename wire…), when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 impl SavedTile {
@@ -961,19 +964,29 @@ mod tests {
     }
 
     #[test]
-    fn wires_are_written_by_block_id_and_left_out_when_there_are_none() {
+    fn wires_are_written_by_block_id_with_their_labels_and_left_out_when_there_are_none() {
         let mut saved = sample();
         assert!(
             !serde_json::to_string(&saved).unwrap().contains("wires"),
             "a file without wires keeps an older Templum's shape"
         );
-        saved.wires = vec![SavedWire {
-            a: "b7k2m".into(),
-            b: "4qm2a".into(),
-        }];
+        saved.wires = vec![
+            SavedWire {
+                a: "b7k2m".into(),
+                b: "4qm2a".into(),
+                label: None,
+            },
+            SavedWire {
+                a: "b7k2m".into(),
+                b: "t4q8p".into(),
+                label: Some("dev server".into()),
+            },
+        ];
         let text = serde_json::to_string(&saved).unwrap();
         assert!(
-            text.contains(r#""wires":[{"a":"b7k2m","b":"4qm2a"}]"#),
+            text.contains(
+                r#""wires":[{"a":"b7k2m","b":"4qm2a"},{"a":"b7k2m","b":"t4q8p","label":"dev server"}]"#
+            ),
             "{text}"
         );
         assert_eq!(serde_json::from_str::<Saved>(&text).unwrap(), saved);

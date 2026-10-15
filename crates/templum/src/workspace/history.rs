@@ -23,6 +23,8 @@ pub(crate) enum Change {
     Connect(Wire),
     /// Unwire them (they were wired).
     Disconnect(Wire),
+    /// Give this wire this label, or none (it had another).
+    Label(Wire, Option<String>),
 }
 
 impl Change {
@@ -35,7 +37,9 @@ impl Change {
                 .chain(wires.iter_mut().flat_map(|Wire { a, b }| [a, b]))
                 .collect(),
             Change::Place(rects) => rects.iter_mut().map(|(id, _)| id).collect(),
-            Change::Connect(Wire { a, b }) | Change::Disconnect(Wire { a, b }) => vec![a, b],
+            Change::Connect(Wire { a, b })
+            | Change::Disconnect(Wire { a, b })
+            | Change::Label(Wire { a, b }, _) => vec![a, b],
         }
     }
 }
@@ -105,7 +109,10 @@ impl Workspace {
             let then = if redo { Then::Redo(n) } else { Then::Undo(n) };
             // A step whose blocks are all gone (a shell that exited) has nothing to take back; nor
             // has a wire's when one of its blocks is.
-            let wire = matches!(change, Change::Connect(_) | Change::Disconnect(_));
+            let wire = matches!(
+                change,
+                Change::Connect(_) | Change::Disconnect(_) | Change::Label(..)
+            );
             let missing = |id: &&mut BlockId| self.space.canvas.get(**id).is_none();
             let gone = !matches!(change, Change::Open(..))
                 && if wire {
@@ -135,6 +142,10 @@ impl Workspace {
                 Change::Disconnect(wire) => {
                     self.take_step(then);
                     self.set_wire(wire, false, then, cx);
+                }
+                Change::Label(wire, label) => {
+                    self.take_step(then);
+                    self.set_label(wire, label, then, cx);
                 }
             }
             return true;
