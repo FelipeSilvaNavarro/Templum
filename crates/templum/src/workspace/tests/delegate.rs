@@ -6,9 +6,9 @@ use std::time::Instant;
 use serde_json::json;
 use templum_canvas::Wire;
 
+use super::bus::{after, answered, call, call_later, event, me};
 #[cfg(unix)]
-use super::bus::screen_with;
-use super::bus::{after, answered, call, call_later, event, me, result_of};
+use super::bus::{result_of, screen_with};
 use super::*;
 
 /// Two terminals side by side and wired: mine at (40, 100) and theirs at (900, 100), 700 × 300
