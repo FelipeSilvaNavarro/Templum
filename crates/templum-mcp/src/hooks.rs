@@ -27,6 +27,9 @@ pub enum AgentEvent {
 pub fn claude(input: &Value) -> Option<AgentEvent> {
     let text = |key: &str| input[key].as_str().map(str::to_string);
     Some(match input["hook_event_name"].as_str()? {
+        // Compaction (auto or /compact) starts the session again in the middle of a turn: it
+        // is still working.
+        "SessionStart" if input["source"] == "compact" => return None,
         "SessionStart" => AgentEvent::Started,
         "UserPromptSubmit" | "PostToolUse" => AgentEvent::Working,
         "Stop" => AgentEvent::Stopped {
@@ -79,6 +82,11 @@ mod tests {
                 json!({ "hook_event_name": "SessionStart", "source": "startup", "session_id": "s" })
             ),
             Some(AgentEvent::Started)
+        );
+        assert_eq!(
+            event(json!({ "hook_event_name": "SessionStart", "source": "compact" })),
+            None,
+            "an auto-compaction mid-turn leaves the turn working"
         );
         assert_eq!(
             event(json!({ "hook_event_name": "UserPromptSubmit", "prompt": "hi" })),
