@@ -22,6 +22,7 @@ fn ask(
             terminal: terminal.into(),
             client: "cli".into(),
         },
+        conn: 0,
         incoming: Incoming::Request {
             id: json!(1),
             method: method.into(),
@@ -448,6 +449,7 @@ fn event(
             terminal: terminal.into(),
             client: "hook".into(),
         },
+        conn: 0,
         incoming: Incoming::Notification {
             method: "templum/event".into(),
             params: event,

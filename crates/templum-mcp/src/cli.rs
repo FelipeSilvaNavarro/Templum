@@ -160,7 +160,9 @@ fn bridge(mut stdin: Box<dyn Read + Send>, stdout: &mut dyn Write, stream: Strea
     0
 }
 
-/// Sends one tool call and prints its answer: its text, or with `--json` the whole result.
+/// Sends one tool call and prints its answer: its text, or with `--json` the whole result. It
+/// stays connected until the answer: its end tells Templum it is gone (Ctrl+C), and what it
+/// waited for is withdrawn.
 fn one_call(
     mut stream: Stream,
     call: &CallArgs,
@@ -172,11 +174,7 @@ fn one_call(
         "tools/call",
         json!({ "name": call.name, "arguments": call.arguments }),
     );
-    if stream
-        .write_all(request.as_bytes())
-        .and_then(|()| stream.finish())
-        .is_err()
-    {
+    if stream.write_all(request.as_bytes()).is_err() {
         let _ = writeln!(stderr, "templum: Templum isn't running");
         return 2;
     }
@@ -338,11 +336,40 @@ mod tests {
         );
     }
 
+    /// A command stays connected until its answer comes: Templum hears it end only then. One
+    /// stopped with Ctrl+C ends it early, and what it waited for is withdrawn.
+    #[test]
+    fn a_command_stays_connected_until_its_answer() {
+        let (seen, order) = std::sync::mpsc::channel();
+        let (_dir, bus) = test_bus(move |m| match &m.incoming {
+            Incoming::Request { id, .. } => {
+                let (id, reply, seen) = (id.clone(), m.reply.clone(), seen.clone());
+                let _ = seen.send("asked");
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    let _ = seen.send("answered");
+                    let _ = reply.send(tool_result(&id, &Reply::ok("Yes")));
+                });
+            }
+            Incoming::Notification { method, .. } if method == crate::bus::CLOSED => {
+                let _ = seen.send("closed");
+            }
+            _ => {}
+        });
+        assert_eq!(run_with(&["whoami"], &env(&bus), "").1, "Yes\n");
+        let order: Vec<&str> = (0..3).map(|_| order.recv_timeout(LIMIT).unwrap()).collect();
+        assert_eq!(order, ["asked", "answered", "closed"]);
+    }
+
     #[test]
     fn a_hook_sends_its_event_prints_nothing_and_never_fails() {
         let (seen, events) = std::sync::mpsc::channel();
         let (_dir, bus) = test_bus(move |m| {
-            let _ = seen.send((m.hello.client, m.incoming));
+            // Each hook's connection ends after its event: that isn't an event.
+            if !matches!(&m.incoming, Incoming::Notification { method, .. } if method == crate::bus::CLOSED)
+            {
+                let _ = seen.send((m.hello.client, m.incoming));
+            }
         });
         let stop = r#"{"hook_event_name":"Stop","last_assistant_message":"Done."}"#;
         assert_eq!(

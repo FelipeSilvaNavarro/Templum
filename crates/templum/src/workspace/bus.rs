@@ -120,6 +120,7 @@ impl Workspace {
             hello,
             incoming,
             reply,
+            ..
         } = message;
         match incoming {
             Incoming::Request { id, method, params } => {

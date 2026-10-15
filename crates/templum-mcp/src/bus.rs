@@ -7,7 +7,7 @@ use std::io::{self, BufRead as _, BufReader, Read, Write};
 use std::net::Shutdown;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::channel::mpsc::UnboundedSender;
@@ -17,6 +17,9 @@ use crate::rpc::{self, Incoming};
 
 /// The first line every client sends.
 pub const HELLO: &str = "templum/hello";
+/// What the bus tells the UI when a connection ends (its client is gone: an agent closed its
+/// bridge, a command exited): nothing it waits for has anyone to answer.
+pub const CLOSED: &str = "templum/closed";
 /// The longest hello read, in bytes: a longer first line closes the connection.
 const HELLO_MAX: usize = 4096;
 /// How long a new connection may take to send its whole hello.
@@ -36,6 +39,9 @@ pub type Replier = std::sync::mpsc::Sender<String>;
 /// A line from a client, for the UI thread.
 pub struct Message {
     pub hello: Hello,
+    /// Its connection's number: one per connection, never reused while Templum runs. A cancel
+    /// names a request by it and the request's id.
+    pub conn: u64,
     pub incoming: Incoming,
     /// Answers it. A connection closes once its client is done writing and every replier of
     /// it is dropped.
@@ -95,6 +101,7 @@ impl Drop for Bus {
 /// accepted, a connection gets no writer and only `HELLO_MAX` bytes and `HELLO_WAIT` in all to
 /// send it (on Windows, other local users can reach the port).
 fn serve(stream: Stream, tx: &UnboundedSender<Message>, token: Option<&str>) {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let mut reader = BufReader::new(stream);
     let Some(hello) = first_line(&mut reader)
         .and_then(|line| String::from_utf8(line).ok())
@@ -113,6 +120,7 @@ fn serve(stream: Stream, tx: &UnboundedSender<Message>, token: Option<&str>) {
     let _ = std::thread::Builder::new()
         .name("templum-bus-writer".into())
         .spawn(move || write_lines(writer, &replies));
+    let conn = NEXT.fetch_add(1, Ordering::Relaxed);
     for line in reader.lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
@@ -122,6 +130,7 @@ fn serve(stream: Stream, tx: &UnboundedSender<Message>, token: Option<&str>) {
             Ok(incoming) => {
                 let message = Message {
                     hello: hello.clone(),
+                    conn,
                     incoming,
                     reply: reply.clone(),
                 };
@@ -134,6 +143,16 @@ fn serve(stream: Stream, tx: &UnboundedSender<Message>, token: Option<&str>) {
             }
         }
     }
+    // Its client is gone: an agent closed its bridge, a command exited, a hook said its event.
+    let _ = tx.unbounded_send(Message {
+        hello,
+        conn,
+        incoming: Incoming::Notification {
+            method: CLOSED.into(),
+            params: serde_json::Value::Null,
+        },
+        reply,
+    });
 }
 
 /// A connection's first line, `\n` included, when it comes whole within `HELLO_WAIT` of now and
@@ -311,7 +330,6 @@ impl Listener {
 #[cfg(unix)]
 fn listen(data: &Path) -> io::Result<(Listener, Bus, Option<String>)> {
     use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
-    use std::sync::atomic::AtomicU64;
     let folder = data.join("bus");
     std::fs::create_dir_all(&folder)?;
     std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700))?;
@@ -589,6 +607,53 @@ mod tests {
             reader.read_line(&mut rest).unwrap(),
             0,
             "closed after its answers"
+        );
+    }
+
+    /// A connection that ends tells the UI, with its number, whoever the client was: an agent's
+    /// bridge closed by its agent, a command that exited.
+    #[test]
+    fn a_connection_that_ends_says_so_with_its_number() {
+        let (seen, messages) = std::sync::mpsc::channel();
+        let (_dir, bus) = test_bus(move |m| {
+            let _ = seen.send((m.conn, m.hello.client, m.incoming));
+        });
+        let limit = Duration::from_secs(5);
+        let (mut bridge, token) = connect(&bus.env).unwrap();
+        let lines =
+            hello_line("123-4", "mcp", token.as_deref()) + &rpc::request(1, "ping", Value::Null);
+        bridge.write_all(lines.as_bytes()).unwrap();
+        // The agent closes the bridge's input: done.
+        bridge.finish().unwrap();
+        let (conn, client, first) = messages.recv_timeout(limit).unwrap();
+        assert_eq!(client, "mcp");
+        assert!(matches!(first, Incoming::Request { .. }), "{first:?}");
+        let (ended, _, closed) = messages.recv_timeout(limit).unwrap();
+        assert_eq!(ended, conn);
+        assert_eq!(
+            closed,
+            Incoming::Notification {
+                method: CLOSED.into(),
+                params: Value::Null
+            }
+        );
+        // A command that exits: its socket goes.
+        let (mut command, token) = connect(&bus.env).unwrap();
+        command
+            .write_all(hello_line("123-4", "cli", token.as_deref()).as_bytes())
+            .unwrap();
+        command
+            .write_all(rpc::request(1, "ping", Value::Null).as_bytes())
+            .unwrap();
+        let (other, client, _) = messages.recv_timeout(limit).unwrap();
+        assert_eq!(client, "cli");
+        assert_ne!(other, conn, "each connection has its own number");
+        drop(command);
+        let (ended, _, closed) = messages.recv_timeout(limit).unwrap();
+        assert_eq!(ended, other);
+        assert!(
+            matches!(&closed, Incoming::Notification { method, .. } if method == CLOSED),
+            "{closed:?}"
         );
     }
 
