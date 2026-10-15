@@ -70,7 +70,8 @@ fn me(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> (String, 
     })
 }
 
-/// The terminal's screen once it shows `needle`.
+/// The terminal's screen once it shows `needle`, its rows joined: a long line wraps at the
+/// terminal's width (macOS's temporary folder is long), and `Snapshot::text` breaks it there.
 #[cfg(unix)]
 fn screen_with(
     ws: &Entity<Workspace>,
@@ -86,7 +87,7 @@ fn screen_with(
                 ws.space.terminal(id).unwrap().term.shared(),
                 &ws.theme.palette,
             );
-            snap.text()
+            snap.text().replace('\n', "")
         });
         if shown.contains(needle) {
             return shown;
