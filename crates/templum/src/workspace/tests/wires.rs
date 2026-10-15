@@ -315,6 +315,57 @@ fn the_wire_tool_wires_the_block_pressed_to_the_one_let_go_on(cx: &mut TestAppCo
     .unwrap();
 }
 
+/// Esc while the Wire tool is held over a block gives the wire up: the curve goes, and letting
+/// go there wires nothing.
+#[gpui_kit::test]
+fn esc_during_a_wire_tool_drag_gives_it_up(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = apart(handle, &ws, cx);
+    let (from, over) = (at(&ws, cx, (150.0, 140.0)), at(&ws, cx, (600.0, 180.0)));
+    let event = |p: (f32, f32)| point(px(p.0), px(p.1));
+    let plain = Modifiers::default();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("tool-wire", cx);
+        window.render_frame(cx);
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: event(from),
+                modifiers: plain,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: event(over),
+                pressed_button: Some(MouseButton::Left),
+                modifiers: plain,
+            }),
+            cx,
+        );
+        window.press("escape", cx);
+        assert_eq!(ws.read(cx).tool, Tool::Select);
+        assert!(ws.read(cx).wire_curves().is_empty(), "the curve went");
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: event(over),
+                modifiers: plain,
+                click_count: 1,
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    assert!(
+        wires(&ws, cx).is_empty(),
+        "{kanban:?} and {note:?} aren't wired"
+    );
+}
+
 /// Where the straight wire between the kanban block and the note runs (y 180, x 460 to 500), as
 /// a window position.
 fn on_the_wire(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> (f32, f32) {

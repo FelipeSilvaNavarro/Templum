@@ -533,10 +533,6 @@ Left by batch 2 (wires); line numbers are those of `development` at 825507d.
 
 Left by the review of batch 2; line numbers are those of `development` at 25f662e.
 
-- [ ] **Esc during a Wire tool drag doesn't cancel it.** `set_tool` (`crates/templum/src/workspace/drawing.rs:13`)
-  puts Select back but leaves `Drag::Wire`, so the accent curve keeps following the pointer and letting go on a block
-  still wires it. A person who pressed Esc to give up gets a wire anyway (Ctrl+Z takes it back). Fix: `set_tool` drops
-  a `Drag::Wire`.
 - [ ] **Letting go off the canvas can wire a block no one sees.** `end_wire`
   (`crates/templum/src/workspace/wires.rs:135`) takes the block at the world point under the pointer wherever it was
   let go: over the toolbar, the sidebar or outside the window (Wayland keeps the grab), so a block hidden under the
