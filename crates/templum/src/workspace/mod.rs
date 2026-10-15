@@ -36,6 +36,7 @@ mod view;
 mod waits;
 mod wires;
 
+pub(crate) use bus::templum_in;
 pub(crate) use find::FindBar;
 pub(crate) use git_message::TryIt;
 pub(crate) use waits::{Wait, Waiting};
@@ -977,6 +978,8 @@ pub struct Workspace {
     pub(crate) git_version: Option<Result<String, String>>,
     /// Settings ▸ Git ▸ Try it, running or done.
     pub(crate) message_try: Option<TryIt>,
+    /// Settings ▸ Connections ▸ Gemini CLI: Install or Remove running, or what went wrong.
+    pub(crate) gemini_job: Option<TryIt>,
     /// The bus the programs in Templum's terminals talk to (docs/specs/connections.md); None
     /// without a data folder.
     pub(crate) bus: Option<templum_mcp::Bus>,
@@ -1283,6 +1286,7 @@ impl Workspace {
             _git: git,
             git_version: None,
             message_try: None,
+            gemini_job: None,
             config,
             keymap,
             agents: effective_agents,

@@ -90,15 +90,25 @@ fn templum_folder(data: &Path) -> Option<PathBuf> {
     std::fs::create_dir_all(&bin).ok()?;
     #[cfg(unix)]
     {
-        let link = bin.join("templum");
+        let link = templum_in(data);
         if std::fs::read_link(&link).ok().as_deref() != Some(exe.as_path()) {
             let _ = std::fs::remove_file(&link);
             std::os::unix::fs::symlink(&exe, &link).ok()?;
         }
     }
     #[cfg(not(unix))]
-    same_or_copy(&exe, &bin.join("templum.exe")).ok()?;
+    same_or_copy(&exe, &templum_in(data)).ok()?;
     Some(bin)
+}
+
+/// `<data>/bin/templum` (`templum.exe` on Windows): this Templum, for what outlives it (another
+/// agent's configuration, the Gemini CLI extension).
+pub(crate) fn templum_in(data: &Path) -> PathBuf {
+    data.join("bin").join(if cfg!(windows) {
+        "templum.exe"
+    } else {
+        "templum"
+    })
 }
 
 /// Makes `to` a hard link to `exe`, or a copy of it where a link can't be made (another drive),

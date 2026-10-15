@@ -337,3 +337,23 @@ fn claude_code_is_asked_for_its_limits_when_wanted(cx: &mut TestAppContext) {
         assert_eq!(ws.claude_poll_job(), None);
     });
 }
+
+#[cfg(unix)]
+#[test]
+fn gemini_cli_links_the_extension_or_says_why_not() {
+    use crate::workspace::usage::gemini_run;
+    let data = tempfile::tempdir().unwrap();
+    // `true` and `false` stand in for gemini: whatever they are given, they succeed or fail.
+    assert_eq!(gemini_run(Some("true".into()), data.path(), true), Ok(()));
+    assert!(
+        data.path()
+            .join("gemini")
+            .join("gemini-extension.json")
+            .exists(),
+        "the extension is written first"
+    );
+    let why = gemini_run(Some("false".into()), data.path(), false).unwrap_err();
+    assert!(why.starts_with("Gemini CLI failed"), "{why}");
+    let why = gemini_run(None, data.path(), true).unwrap_err();
+    assert!(why.contains("didn't find Gemini CLI"), "{why}");
+}

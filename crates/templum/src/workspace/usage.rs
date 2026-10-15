@@ -2,7 +2,9 @@
 //! reading what the agents write after each snapshot, and the notifications
 //! (docs/specs/usage.md).
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::notification::{Notification, NotificationDelivery, NotificationType};
@@ -11,7 +13,7 @@ use templum_canvas::BlockId;
 use templum_terminal::Agent;
 use templum_usage::{Event, Limits, Proc, Session, Watch};
 
-use super::{Workspace, show_notification};
+use super::{TryIt, Workspace, show_notification};
 use crate::agents::AgentEntry;
 use crate::config::Edit;
 use crate::notes;
@@ -298,6 +300,77 @@ impl Workspace {
             NotificationDelivery::InApp
         }
     }
+
+    /// Settings ▸ Connections ▸ Gemini CLI: installs Templum's extension (`install`) or removes
+    /// it, in the background; Settings shows what went wrong, if anything did.
+    pub(crate) fn setup_gemini(&mut self, install: bool, cx: &mut Context<Self>) {
+        let Some(data) = self.data_dir.clone() else {
+            return;
+        };
+        if matches!(self.gemini_job, Some(TryIt::Running(_))) {
+            return;
+        }
+        self.gemini_job = Some(TryIt::Running(Arc::default()));
+        cx.notify();
+        cx.spawn(async move |ws, cx| {
+            let done = cx
+                .background_executor()
+                .spawn(
+                    async move { gemini_run(templum_terminal::locate("gemini"), &data, install) },
+                )
+                .await;
+            ws.update(cx, |ws, cx| {
+                ws.gemini_job = done.err().map(TryIt::Failed);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+/// Runs Gemini CLI (`gemini`, where Templum found it, if it did) to link Templum's extension,
+/// written first (`install`), or to uninstall it; what went wrong, whole, if anything did.
+// ponytail: no deadline; a Gemini CLI that hangs keeps the button spinning until Templum quits.
+pub(super) fn gemini_run(
+    gemini: Option<PathBuf>,
+    data: &Path,
+    install: bool,
+) -> Result<(), String> {
+    use templum_usage::gemini;
+    let program = gemini.ok_or("Templum didn't find Gemini CLI (gemini) on this computer.")?;
+    let args: Vec<OsString> = if install {
+        let folder = gemini::extension(data, cfg!(windows)).ok_or(
+            "Templum couldn't write its extension: its folder's path holds a ' or a line break, \
+             or can't be written.",
+        )?;
+        gemini::link_args(&folder)
+    } else {
+        gemini::UNLINK.iter().map(OsString::from).collect()
+    };
+    let mut command = std::process::Command::new(program);
+    command.args(args).stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = command
+        .output()
+        .map_err(|e| format!("Couldn't run Gemini CLI: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Err(format!(
+        "Gemini CLI failed ({}):\n{}",
+        out.status,
+        said.trim()
+    ))
 }
 
 /// What the Claude Code Templum opens gets after its command, given Templum's data folder and
