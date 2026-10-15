@@ -214,7 +214,7 @@ impl Workspace {
                 // A Claude Code spawn_agent opened is ready for its prompt: SessionStart comes after
                 // its question about trusting the folder, which a typed Enter would answer.
                 if let Some(prompt) = pane.prompt.take() {
-                    self.send_task(terminal, &prompt.text, cx);
+                    self.send_task(terminal, &prompt.text, true, cx);
                 }
             }
             AgentEvent::Stopped { message } => {

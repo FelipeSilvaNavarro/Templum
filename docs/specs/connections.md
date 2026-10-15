@@ -122,8 +122,10 @@ later starts with none.
 2. Templum types into Codex's terminal, as one pasted message, a first line `[from Claude Code · api (b7k2m)]` and
    the task, then Enter, a moment (150 ms) after the paste: an agent may take keys that come in one burst for a
    paste, where Enter is a new line. The Enter goes only once the agent's screen shows the paste (Templum looks for
-   about 2 seconds): a dialog that ignores pastes, such as Codex's approval, which Templum hears nothing of, gets no
-   Enter that would answer it, and the task waits for its timeout. The person sees it arrive.
+   about 2 seconds), and only if Templum still may type into it (5): a dialog that ignores pastes, such as Codex's
+   approval, which Templum hears nothing of, or a permission prompt that opened meanwhile, gets no Enter that would
+   answer it. The task then ends at once: the delegating agent is told the agent didn't take it, and to look at its
+   block. The person sees it arrive.
 3. The wire's dot travels from Claude Code to Codex while Codex works.
 4. When Codex finishes its turn, its last answer becomes the result of Claude Code's `delegate` (when it asked to
    wait), or of a later `wait_for_idle`. If Codex calls `reply` first, that text is the answer instead.
@@ -153,8 +155,8 @@ The keyboard, the selection and the camera stay where they were; one Ctrl+Z clos
 worktree comes from the repository of the folder the agent starts in, always under its main working tree's
 `.worktrees/`, on a new branch from that folder's HEAD; a name other than letters, digits, `-`, `_`, `.` and `/`, or
 one already a branch, is refused. Claude Code's prompt waits for its `SessionStart`, which comes after its question
-about trusting the folder. The prompt is a task the caller handed over: the dot travels and `wait_for_idle` waits for
-its answer.
+about trusting the folder. The prompt is a task the caller handed over: the dot travels, `wait_for_idle` waits for
+its answer, and a prompt the agent doesn't take ends at once, as a delegated task does.
 
 ## Identity
 

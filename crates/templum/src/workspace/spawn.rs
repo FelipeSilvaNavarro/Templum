@@ -197,7 +197,7 @@ impl Workspace {
             return true;
         }
         let text = pane.prompt.take().map(|p| p.text).unwrap_or_default();
-        self.send_task(terminal, &text, cx);
+        self.send_task(terminal, &text, true, cx);
         false
     }
 }

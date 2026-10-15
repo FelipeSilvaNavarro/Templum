@@ -71,9 +71,9 @@ impl Workspace {
     /// once its screen shows the paste, if Templum still may type into it. A screen that doesn't
     /// (a dialog that ignores pastes, as Codex's approval does, which Templum hears nothing of),
     /// or an agent that started asking its person meanwhile (a working agent's screen changes all
-    /// along), gets no Enter: it would pick the dialog's answer for the person. The task then
-    /// waits for its timeout.
-    pub(super) fn send_task(&self, terminal: &str, text: &str, cx: &mut Context<Self>) {
+    /// along), gets no Enter: it would pick the dialog's answer for the person. A `task` (not a
+    /// reply) then ends at once, untaken.
+    pub(super) fn send_task(&self, terminal: &str, text: &str, task: bool, cx: &mut Context<Self>) {
         let Some(pane) = self.pane(terminal) else {
             return;
         };
@@ -81,19 +81,23 @@ impl Workspace {
         pane.term.type_in(text);
         let terminal = terminal.to_string();
         cx.spawn(async move |ws, cx| {
-            for _ in 0..ENTER_LOOKS {
+            for look in 1..=ENTER_LOOKS {
                 cx.background_executor().timer(ENTER_AFTER).await;
-                let done = ws.update(cx, |ws, _| {
+                let done = ws.update(cx, |ws, cx| {
                     let Some(pane) = ws.pane(&terminal) else {
                         return true;
                     };
-                    if pane.takes_typing("").is_err() {
+                    let takes = pane.takes_typing("").is_ok();
+                    if takes && pane.screen() != before {
+                        pane.term.write(&b"\r"[..]);
                         return true;
                     }
-                    if pane.screen() == before {
+                    if takes && look < ENTER_LOOKS {
                         return false;
                     }
-                    pane.term.write(&b"\r"[..]);
+                    if task {
+                        ws.not_taken(&terminal, cx);
+                    }
                     true
                 });
                 if done.unwrap_or(true) {
@@ -102,6 +106,23 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    /// The agent in the terminal `terminal` got no Enter for the task typed into it: the task, if
+    /// it is still handed over, ends, and the calls waiting on it hear so.
+    fn not_taken(&mut self, terminal: &str, cx: &mut Context<Self>) {
+        if !self.pane(terminal).is_some_and(|p| p.handed.is_some()) {
+            return;
+        }
+        let uid = self
+            .caller(terminal)
+            .and_then(|(space, id)| self.space_named(&space)?.uids.get(&id).cloned())
+            .unwrap_or_default();
+        let why = format!(
+            "{uid} didn't take the task: it may be showing a dialog. Look at its block, then try \
+             again."
+        );
+        self.end_turn(terminal, Reply::err(why), cx);
     }
 
     /// `delegate` from the terminal `from`: `task` typed into the agent `block` under a line
@@ -142,7 +163,12 @@ impl Workspace {
         let worker = pane.term.id().to_string();
         let (_, title, _) = self.about(&space.blocks[&me], cx);
         let uid = space.uids.get(&me).cloned().unwrap_or_default();
-        self.send_task(&worker, &format!("[from {title} ({uid})]\n{task}"), cx);
+        self.send_task(
+            &worker,
+            &format!("[from {title} ({uid})]\n{task}"),
+            true,
+            cx,
+        );
         if let Some(pane) = self.pane_mut(&worker) {
             pane.handed = Some(Handed {
                 by: from.to_string(),
@@ -202,7 +228,8 @@ impl Workspace {
             }
             let (_, title, _) = self.about(&space.blocks[&me], cx);
             let uid = space.uids.get(&me).cloned().unwrap_or_default();
-            self.send_task(&asker, &format!("[reply from {title} ({uid})]\n{text}"), cx);
+            let reply = format!("[reply from {title} ({uid})]\n{text}");
+            self.send_task(&asker, &reply, false, cx);
         }
         if let Some(mine) = self.pane_mut(from) {
             if mine.handed.as_ref().is_some_and(|h| h.by == asker) {

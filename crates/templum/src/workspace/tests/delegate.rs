@@ -362,7 +362,8 @@ fn the_dot_goes_with_its_wire_and_the_answer_still_comes(cx: &mut TestAppContext
 }
 
 /// A screen the task doesn't show on (a dialog that ignores the paste, as Codex's approval does)
-/// gets no Enter: it would pick the dialog's answer for the person.
+/// gets no Enter: it would pick the dialog's answer for the person. The task ends at once, and
+/// the agent that handed it over hears so. A reply that isn't taken ends no task.
 #[cfg(unix)]
 #[gpui_kit::test]
 fn no_enter_goes_to_a_screen_the_task_didnt_change(cx: &mut TestAppContext) {
@@ -374,13 +375,37 @@ fn no_enter_goes_to_a_screen_the_task_didnt_change(cx: &mut TestAppContext) {
     screen_with(&ws, cx, theirs, "ready");
     // `cat`, not `stty`.
     in_front(&ws, cx, theirs, true);
-    let task = json!({ "block": them, "task": "go on" });
-    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
-    assert!(!failed, "{text}");
+    let task = json!({ "block": them, "task": "go on", "wait": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     after(cx, 5000);
     std::thread::sleep(std::time::Duration::from_millis(300));
     let shown = ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().screen());
     assert!(!shown.contains("go on"), "an Enter went: {shown:?}");
+    let (failed, text) = answered(&answers);
+    assert!(
+        failed && text.starts_with(&format!("{them} didn't take the task")),
+        "{text}"
+    );
+    let handed = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space.terminal(theirs).unwrap().handed.is_some()
+        })
+    };
+    assert!(!handed(cx), "the task ended");
+    // A task another agent handed it stays, whatever happens to a reply typed into it.
+    ws.update(cx, |ws, _| {
+        let now = Instant::now();
+        ws.space.terminal_mut(theirs).unwrap().handed = Some(crate::workspace::Handed {
+            by: "another".into(),
+            since: now,
+            until: now + std::time::Duration::from_secs(600),
+        });
+    });
+    let reply = json!({ "block": them, "text": "Done." });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "reply", reply);
+    assert!(!failed, "{text}");
+    after(cx, 5000);
+    assert!(handed(cx), "a reply ends no task");
 }
 
 /// A dialog that opens between the paste and its Enter (Claude Code asks to run a tool while it
@@ -393,9 +418,8 @@ fn no_enter_goes_to_an_agent_that_started_asking_its_person(cx: &mut TestAppCont
     let (terminal, _) = me(&ws, cx, mine);
     let (worker, them) = me(&ws, cx, theirs);
     event(handle, &ws, cx, &worker, json!({ "event": "working" }));
-    let task = json!({ "block": them, "task": "go on" });
-    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
-    assert!(!failed, "{text}");
+    let task = json!({ "block": them, "task": "go on", "wait": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     screen_with(&ws, cx, theirs, "go on");
     event(
         handle,
@@ -412,6 +436,8 @@ fn no_enter_goes_to_an_agent_that_started_asking_its_person(cx: &mut TestAppCont
         1,
         "an Enter went: {shown:?}"
     );
+    let (failed, text) = answered(&answers);
+    assert!(failed && text.contains("didn't take the task"), "{text}");
 }
 
 /// An agent that quit leaves its shell in front, where typed text would run as a command; until a

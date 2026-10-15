@@ -577,12 +577,6 @@ Left by batch 3 (agents together) and its review; line numbers are those of `dev
   person sees the delegating agent get the answer to another prompt. Fix: once Codex says when it starts working,
   skip the turn that was under way when the task was typed (Claude Code may take queued input into the current
   turn: check by hand first).
-- [ ] **A task whose paste the agent's screen never shows waits for its timeout.** `send_task`
-  (`crates/templum/src/workspace/delegate.rs:67`) holds its Enter back when the screen doesn't change within about
-  2 seconds (a dialog that ignores pastes), and nothing tells the delegating agent: it waits up to 10 minutes, then
-  gets the last screen lines. A person sees that agent stuck while the other shows its dialog. Fix: when the Enter is
-  held back, end the task at once with an error saying the agent didn't take it (only for `delegate` and a spawn's
-  prompt, not `reply`).
 - [ ] **The balloon covers the find field.** Both sit at the terminal's top right (`render`,
   `crates/templum/src/balloon.rs:18`; `find_bar`, `crates/templum/src/block.rs:682`). A person who opens find while an
   agent asks sees the balloon over the field. Fix: put the balloon under the find field while it is open.

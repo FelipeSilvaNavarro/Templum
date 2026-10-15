@@ -188,6 +188,42 @@ fn another_agents_prompt_waits_for_its_process_and_a_still_screen(cx: &mut TestA
     screen_with(&ws, cx, new, "say hisay hi");
 }
 
+/// A prompt the agent's screen doesn't show (a dialog that ignores pastes) gets no Enter, and
+/// whoever waits on it hears at once that the agent didn't take it.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_prompt_the_agent_didnt_take_ends_at_once(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    // Claude Code shows nothing it is typed.
+    ws.update(cx, |ws, _| {
+        ws.command = Some(jobs("stty -echo; echo ready; cat; true"))
+    });
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "claude", "folder": folder.path(), "prompt": "say hi" });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    let (theirs, uid) = me(&ws, cx, new);
+    screen_with(&ws, cx, new, "ready");
+    in_front(&ws, cx, new, true);
+    let waiting = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        1,
+        "wait_for_idle",
+        json!({ "block": uid }),
+    );
+    event(handle, &ws, cx, &theirs, json!({ "event": "started" }));
+    after(cx, 5000);
+    let (failed, text) = answered(&waiting);
+    assert!(
+        failed && text.starts_with(&format!("{uid} didn't take the task")),
+        "{text}"
+    );
+}
+
 /// An agent a snapshot saw that quit before its prompt was typed: its shell, in front, would run
 /// the prompt as a command.
 #[cfg(unix)]
