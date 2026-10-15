@@ -1,6 +1,7 @@
 //! The bus's messages, answered on the UI thread (docs/specs/connections.md): who calls, the
 //! tools, and the agents' turns.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use futures::StreamExt as _;
@@ -51,16 +52,27 @@ pub(super) fn start(
 /// folder first in PATH, where `templum` is this Templum.
 fn terminal_env(bus: &Bus, data: &Path) -> Vec<(String, String)> {
     let mut env = vec![("TEMPLUM_BUS".to_string(), bus.env.clone())];
-    if let Some(path) = templum_first(data) {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    if let Some(path) = templum_folder(data).and_then(|folder| first_on_path(folder, &path)) {
         env.push(("PATH".to_string(), path));
     }
     env
 }
 
-/// PATH with `<data>/bin` in front, where a link named `templum` points at this Templum.
+/// `path` (a PATH's value) with `folder` in front, without its empty entries: an empty one is
+/// the current folder, where any `templum` or `git` a repository holds would run.
+pub(super) fn first_on_path(folder: PathBuf, path: &OsStr) -> Option<String> {
+    let rest = std::env::split_paths(path).filter(|p| !p.as_os_str().is_empty());
+    std::env::join_paths(std::iter::once(folder).chain(rest))
+        .ok()?
+        .into_string()
+        .ok()
+}
+
+/// `<data>/bin`, where a link named `templum` points at this Templum.
 // ponytail: one link for every Templum sharing the data folder: the last one started wins.
 #[cfg(unix)]
-fn templum_first(data: &Path) -> Option<String> {
+fn templum_folder(data: &Path) -> Option<PathBuf> {
     let exe = super::usage::program()?;
     let bin = data.join("bin");
     std::fs::create_dir_all(&bin).ok()?;
@@ -69,13 +81,11 @@ fn templum_first(data: &Path) -> Option<String> {
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(&exe, &link).ok()?;
     }
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    let paths = std::iter::once(bin).chain(std::env::split_paths(&path));
-    std::env::join_paths(paths).ok()?.into_string().ok()
+    Some(bin)
 }
 
 #[cfg(not(unix))]
-fn templum_first(_: &Path) -> Option<String> {
+fn templum_folder(_: &Path) -> Option<PathBuf> {
     None
 }
 

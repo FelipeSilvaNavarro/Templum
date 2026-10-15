@@ -280,6 +280,21 @@ fn terminals_get_the_bus_and_this_templum_first_on_their_path(cx: &mut TestAppCo
     );
 }
 
+/// An empty PATH entry is the current folder: Templum's folder goes first and adds none.
+#[test]
+fn templums_folder_goes_first_on_path_without_empty_entries() {
+    use crate::workspace::bus::first_on_path;
+    let joined = |paths: &[&str]| std::env::join_paths(paths).unwrap().into_string().unwrap();
+    let first = std::path::PathBuf::from("first");
+    // PATH unset or empty.
+    assert_eq!(
+        first_on_path(first.clone(), std::ffi::OsStr::new("")),
+        Some("first".to_string())
+    );
+    let path = std::env::join_paths(["a", "", "b"]).unwrap();
+    assert_eq!(first_on_path(first, &path), Some(joined(&["first", "a", "b"])));
+}
+
 #[gpui_kit::test]
 fn without_a_data_folder_there_is_no_bus(cx: &mut TestAppContext) {
     let (_, ws) = open(cx);
