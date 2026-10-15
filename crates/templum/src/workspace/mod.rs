@@ -109,6 +109,16 @@ pub fn bind_keys(cx: &mut App) {
     // them.
 }
 
+/// What an agent's hooks last said of its turn (docs/specs/connections.md, Hooks).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum AgentState {
+    Working,
+    /// Done with its turn, or not started on one.
+    Idle,
+    /// Waiting for the person, with what it asks.
+    NeedsYou(Option<String>),
+}
+
 pub(crate) struct Pane {
     pub term: Terminal,
     pub snapshot: Rc<RefCell<Snapshot>>,
@@ -123,6 +133,11 @@ pub(crate) struct Pane {
     pub usage: Option<templum_usage::Session>,
     /// Its find field, while open.
     pub find: Option<Box<find::FindBar>>,
+    /// Its agent's turn, as the agent's hooks last said; None until one speaks, and after its
+    /// session ends.
+    pub state: Option<AgentState>,
+    /// Its agent's last answer, as its hooks gave it.
+    pub answer: Option<String>,
 }
 
 impl Pane {

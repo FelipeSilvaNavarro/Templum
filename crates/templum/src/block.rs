@@ -24,7 +24,7 @@ use crate::kanban;
 use crate::menu::Target;
 use crate::motion::{self, Look};
 use crate::note;
-use crate::workspace::{Body, FindBar, Pane, Workspace};
+use crate::workspace::{AgentState, Body, FindBar, Pane, Workspace};
 
 /// World units, like everything in a block.
 const TITLE_FONT: f32 = 12.0;
@@ -806,27 +806,41 @@ fn shadow(color: Hsla, focused: bool, lift: f32, z: f32) -> BoxShadow {
 }
 
 /// The dot before a terminal's title, and what it says. News first: yellow when it asked for
-/// attention, red or green when a long command ended. Then a command running, then a last command
-/// that failed. Nothing when the shell doesn't say (no shell integration).
-fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedString)> {
+/// attention, red or green when a long command ended. Then an agent's turn (its hooks) before the
+/// shell's: yellow while it waits for the person, the accent while it works. Then a command
+/// running, then a last command that failed. Nothing when the shell doesn't say (no shell
+/// integration).
+pub(crate) fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedString)> {
     let ansi = |i: usize| hsla(ws.theme.palette.ansi[i], 1.0);
     let (color, text) = match &pane.alert {
         Some(a @ Alert::Attention(_)) => (ansi(3), a.text()),
         Some(a) if a.failed() => (ansi(1), a.text()),
         Some(a) => (ansi(2), a.text()),
-        None => {
-            let status = pane.term.status();
-            match (status.running, status.last) {
-                (Some(since), _) => (
-                    ws.ui.accent,
-                    format!("Running for {}", alert::took(since.elapsed())),
+        // An agent the last snapshot no longer sees (it crashed) says nothing of its turn.
+        None => match pane.state.as_ref().filter(|_| pane.seen.agent.is_some()) {
+            Some(AgentState::NeedsYou(asks)) => (
+                ansi(3),
+                asks.as_ref().map_or_else(
+                    || "Waiting for you".to_string(),
+                    |a| format!("Waiting for you: {a}"),
                 ),
-                (None, Some(last)) if last.code.is_some_and(|c| c != 0) => {
-                    (ansi(1), alert::finished(&last))
+            ),
+            Some(AgentState::Working) => (ws.ui.accent, "Working".to_string()),
+            Some(AgentState::Idle) => return None,
+            None => {
+                let status = pane.term.status();
+                match (status.running, status.last) {
+                    (Some(since), _) => (
+                        ws.ui.accent,
+                        format!("Running for {}", alert::took(since.elapsed())),
+                    ),
+                    (None, Some(last)) if last.code.is_some_and(|c| c != 0) => {
+                        (ansi(1), alert::finished(&last))
+                    }
+                    _ => return None,
                 }
-                _ => return None,
             }
-        }
+        },
     };
     Some((color, text.into()))
 }

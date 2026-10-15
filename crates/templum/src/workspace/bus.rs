@@ -10,7 +10,7 @@ use serde_json::json;
 use templum_canvas::BlockId;
 use templum_mcp::{Bus, Call, Incoming, Message, Reply, rpc, tools};
 
-use super::{Body, Space, Workspace, show_notification};
+use super::{AgentState, Body, Space, Workspace, show_notification};
 
 /// Starts the bus in the data folder, and the task that hands its messages to the workspace.
 /// Without a data folder (the bench), or when the socket can't be made, there is none.
@@ -112,9 +112,44 @@ impl Workspace {
                 };
                 let _ = reply.send(answer);
             }
-            // Task 9 adds `templum/event`. `notifications/initialized` and the rest need nothing.
+            Incoming::Notification { method, params } if method == templum_mcp::hooks::METHOD => {
+                if let Ok(event) = serde_json::from_value(params) {
+                    self.agent_event(&hello.terminal, event, cx);
+                }
+            }
+            // `notifications/initialized` and the rest need nothing.
             Incoming::Notification { .. } | Incoming::Response => {}
         }
+    }
+
+    /// An agent's hook says where its turn is.
+    fn agent_event(
+        &mut self,
+        terminal: &str,
+        event: templum_mcp::AgentEvent,
+        cx: &mut Context<Self>,
+    ) {
+        use templum_mcp::AgentEvent;
+        let pane = std::iter::once(&mut self.space)
+            .chain(&mut self.others)
+            .flat_map(|s| s.blocks.values_mut())
+            .filter_map(Body::terminal_mut)
+            .find(|pane| pane.term.id() == terminal);
+        let Some(pane) = pane else { return };
+        match event {
+            AgentEvent::Started => {
+                pane.state = Some(AgentState::Idle);
+                pane.answer = None;
+            }
+            AgentEvent::Working => pane.state = Some(AgentState::Working),
+            AgentEvent::Stopped { message } => {
+                pane.state = Some(AgentState::Idle);
+                pane.answer = message;
+            }
+            AgentEvent::NeedsYou { message } => pane.state = Some(AgentState::NeedsYou(message)),
+            AgentEvent::Ended => pane.state = None,
+        }
+        cx.notify();
     }
 
     /// The block whose terminal is `terminal` (its `TEMPLUM_TERMINAL`): its workspace's id and
@@ -246,7 +281,17 @@ impl Workspace {
                     .map(|f| format!("  {}", f.display()))
                     .unwrap_or_default();
                 let tie = if b.id == me { "you" } else { "not connected" };
-                format!("{uid}  {kind}  {title}{folder}  {tie}")
+                let state = space
+                    .terminal(b.id)
+                    .filter(|pane| pane.seen.agent.is_some())
+                    .and_then(|pane| pane.state.as_ref())
+                    .map(|state| match state {
+                        AgentState::Working => ", working",
+                        AgentState::Idle => ", idle",
+                        AgentState::NeedsYou(_) => ", waiting for its person",
+                    })
+                    .unwrap_or_default();
+                format!("{uid}  {kind}  {title}{folder}  {tie}{state}")
             })
             .collect()
     }

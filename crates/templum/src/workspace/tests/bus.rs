@@ -279,3 +279,95 @@ fn without_a_data_folder_there_is_no_bus(cx: &mut TestAppContext) {
     let (_, ws) = open(cx);
     ws.read_with(cx, |ws, _| assert!(ws.bus.is_none()));
 }
+
+/// Hands the workspace an agent's event, as `templum hook` does.
+fn event(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    terminal: &str,
+    event: Value,
+) {
+    let (reply, _) = std::sync::mpsc::channel();
+    let message = Message {
+        hello: Hello {
+            terminal: terminal.into(),
+            client: "hook".into(),
+        },
+        incoming: Incoming::Notification {
+            method: "templum/event".into(),
+            params: event,
+        },
+        reply,
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.serve(message, window, cx))
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn an_agents_hooks_set_its_state_and_its_dot(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let (terminal, uid) = me(&ws, cx, id);
+    // As `launch_agent` sets it.
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into())
+    });
+    let dot = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            crate::block::status_dot(ws, ws.space.terminal(id).unwrap())
+                .map(|(_, text)| text.to_string())
+        })
+    };
+    event(handle, &ws, cx, &terminal, json!({ "event": "working" }));
+    assert_eq!(dot(&ws, cx).as_deref(), Some("Working"));
+    event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({ "event": "needs_you", "message": "Allow Bash?" }),
+    );
+    assert_eq!(
+        dot(&ws, cx).as_deref(),
+        Some("Waiting for you: Allow Bash?")
+    );
+    let (_, list) = call(handle, &ws, cx, &terminal, "list_blocks", json!({}));
+    assert!(
+        list.lines()
+            .any(|l| l.starts_with(&uid) && l.contains("waiting for its person")),
+        "{list}"
+    );
+    event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({ "event": "stopped", "message": "Done." }),
+    );
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(id).unwrap();
+        assert_eq!(
+            (pane.state.clone(), pane.answer.as_deref()),
+            (Some(AgentState::Idle), Some("Done."))
+        );
+    });
+    assert_eq!(
+        dot(&ws, cx),
+        None,
+        "done with its turn: the terminal's usual dot"
+    );
+    // An agent the snapshot no longer sees (it crashed): its state is not shown.
+    event(handle, &ws, cx, &terminal, json!({ "event": "working" }));
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().seen.agent = None
+    });
+    assert_eq!(dot(&ws, cx), None);
+    event(handle, &ws, cx, &terminal, json!({ "event": "ended" }));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.terminal(id).unwrap().state, None)
+    });
+}
