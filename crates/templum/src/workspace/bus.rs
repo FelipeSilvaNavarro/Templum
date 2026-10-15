@@ -233,11 +233,7 @@ impl Workspace {
             AgentEvent::NeedsYou { message } => pane.state = Some(AgentState::NeedsYou(message)),
             AgentEvent::Ended => {
                 pane.state = None;
-                self.end_turn(
-                    terminal,
-                    Reply::err("Its agent ended before it answered."),
-                    cx,
-                );
+                self.agent_left(terminal, cx);
             }
         }
         cx.notify();

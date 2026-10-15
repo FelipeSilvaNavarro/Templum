@@ -219,6 +219,16 @@ impl Workspace {
         })))
     }
 
+    /// The agent in the terminal `terminal` is gone: its session ended, or a snapshot no longer
+    /// finds its process (it crashed, or Codex quit, which says nothing).
+    pub(super) fn agent_left(&mut self, terminal: &str, cx: &mut Context<Self>) {
+        self.end_turn(
+            terminal,
+            Reply::err("Its agent ended before it answered."),
+            cx,
+        );
+    }
+
     /// The agent in the terminal `terminal` ended its turn, or its session: the task it was on is
     /// no longer handed over, and the calls waiting on it get `reply`.
     pub(super) fn end_turn(&mut self, terminal: &str, reply: Reply, cx: &mut Context<Self>) {

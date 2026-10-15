@@ -336,8 +336,12 @@ impl Workspace {
             None => {}
         }
         for (id, terminals, saved, written) in done {
-            if let Some(space) = self.space_by_id_mut(&id) {
-                space.see(terminals);
+            let gone = self
+                .space_by_id_mut(&id)
+                .map(|space| space.see(terminals))
+                .unwrap_or_default();
+            for terminal in gone {
+                self.agent_left(&terminal, cx);
             }
             match written {
                 None => {}

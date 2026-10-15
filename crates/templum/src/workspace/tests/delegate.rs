@@ -342,3 +342,53 @@ fn the_dot_goes_with_its_wire_and_the_answer_still_comes(cx: &mut TestAppContext
     );
     assert_eq!(answered(&answers), (false, "Done.".to_string()));
 }
+
+/// An agent that goes without a word (Codex says nothing when it quits; one that crashed): the
+/// first snapshot that misses its process ends its task. One not found yet (still starting) has
+/// nothing to end.
+#[gpui_kit::test]
+fn an_agent_that_leaves_without_a_word_ends_its_task(cx: &mut TestAppContext) {
+    use templum_terminal::Inspection;
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    let task = json!({ "block": them, "task": "go", "wait": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    let space = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let saved: crate::session::Saved = serde_json::from_value(
+        json!({ "version": 1, "camera": { "x": 0, "y": 0, "zoom": 1 }, "items": [] }),
+    )
+    .unwrap();
+    let snapshot = |cx: &mut TestAppContext, found: Inspection| {
+        let done = vec![(space.clone(), vec![(theirs, found)], saved.clone(), None)];
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.snapshot_done(done, None, None, window, cx))
+        })
+        .unwrap();
+    };
+    snapshot(cx, Inspection::default());
+    assert!(
+        answers.try_recv().is_err(),
+        "not found yet: it may be starting"
+    );
+    let running = Inspection {
+        agent: Some("codex".into()),
+        pid: Some(42),
+        ..Default::default()
+    };
+    snapshot(cx, running);
+    assert!(answers.try_recv().is_err(), "at work");
+    snapshot(cx, Inspection::default());
+    let (failed, text) = answered(&answers);
+    assert!(
+        failed && text.contains("ended before it answered"),
+        "{text}"
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.terminal(theirs).unwrap().handed.is_none());
+        assert!(
+            ws.wire_dots(Instant::now(), false).is_empty(),
+            "the dot stops"
+        );
+    });
+}

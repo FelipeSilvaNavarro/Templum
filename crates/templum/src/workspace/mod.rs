@@ -647,8 +647,10 @@ impl Space {
             .collect()
     }
 
-    /// Tells each terminal what a snapshot found in it.
-    fn see(&mut self, found: Vec<(BlockId, templum_terminal::Inspection)>) {
+    /// Tells each terminal what a snapshot found in it. The terminals whose agent, found running
+    /// before, is gone: what was handed to it has no one to answer.
+    fn see(&mut self, found: Vec<(BlockId, templum_terminal::Inspection)>) -> Vec<String> {
+        let mut gone = Vec::new();
         for (id, mut seen) in found {
             if let Some(pane) = self.terminal_mut(id) {
                 // A folder the snapshot couldn't read keeps the one known.
@@ -657,10 +659,16 @@ impl Space {
                 // mustn't come back with the next agent started there by hand.
                 if seen.agent.is_none() {
                     pane.state = None;
+                    // Found before, so it left; one not found yet may still be starting.
+                    if pane.seen.pid.is_some() {
+                        pane.prompt = None;
+                        gone.push(pane.term.id().to_string());
+                    }
                 }
                 pane.seen = seen;
             }
         }
+        gone
     }
 
     /// Every terminal block, in no order.
