@@ -1,5 +1,5 @@
 //! `spawn_agent`: an agent opened beside the caller (docs/specs/connections.md, Spawning). `cat`
-//! stands in for the agents: every Unix has it, and it echoes what it is typed.
+//! stands in for the agents: every Unix has it, and it echoes what it is typed. Unix only (`mod.rs`).
 
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
@@ -135,7 +135,6 @@ fn a_claude_codes_prompt_is_typed_once_it_started(cx: &mut TestAppContext) {
         "{text}"
     );
     let new = spawned(&ws, cx, mine);
-    #[cfg(unix)]
     in_front(&ws, cx, new, true);
     let (theirs, uid) = me(&ws, cx, new);
     // Handed over by the caller already: wait_for_idle waits for its answer.
@@ -242,7 +241,6 @@ fn nothing_is_handed_to_an_agent_no_snapshot_found_yet(cx: &mut TestAppContext) 
         templum_terminal::Inspection::default(),
     );
     // Not the terminal's process in front, as macOS's shell under `login` isn't.
-    #[cfg(unix)]
     in_front(&ws, cx, new, true);
     let reply = json!({ "block": uid, "text": "Done." });
     let (failed, text) = call(handle, &ws, cx, &terminal, "reply", reply);
@@ -283,7 +281,6 @@ fn a_spawned_agent_that_never_started_is_let_go(cx: &mut TestAppContext) {
         "{text}"
     );
     // Codex, started there by hand, is found in front.
-    #[cfg(unix)]
     in_front(&ws, cx, new, true);
     let p = ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().term.processes());
     let running = Inspection {
@@ -312,7 +309,6 @@ fn another_agents_prompt_waits_for_its_process_and_a_still_screen(cx: &mut TestA
     let spawn = json!({ "agent": "codex", "folder": folder.path(), "prompt": "say hi" });
     call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
     let new = spawned(&ws, cx, mine);
-    #[cfg(unix)]
     in_front(&ws, cx, new, true);
     let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
     let waiting = |cx: &mut TestAppContext| {
@@ -379,7 +375,6 @@ fn in_grid_mode_a_spawned_agent_takes_half_of_the_callers_tile(cx: &mut TestAppC
 
 /// A prompt the agent's screen doesn't show (a dialog that ignores pastes) gets no Enter, and
 /// whoever waits on it hears at once that the agent didn't take it.
-#[cfg(unix)]
 #[gpui_kit::test]
 fn a_prompt_the_agent_didnt_take_ends_at_once(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
@@ -415,7 +410,6 @@ fn a_prompt_the_agent_didnt_take_ends_at_once(cx: &mut TestAppContext) {
 
 /// An agent a snapshot saw that quit before its prompt was typed: its shell, in front, would run
 /// the prompt as a command.
-#[cfg(unix)]
 #[gpui_kit::test]
 fn no_prompt_is_typed_into_the_shell_an_agent_left(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
