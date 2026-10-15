@@ -373,3 +373,30 @@ fn an_agents_hooks_set_its_state_and_its_dot(cx: &mut TestAppContext) {
         assert_eq!(ws.space.terminal(id).unwrap().state, None)
     });
 }
+
+/// Claude Code crashes (no SessionEnd) and the person types `claude` again by hand: no hooks
+/// speak for that one, so the crashed one's state is gone.
+#[gpui_kit::test]
+fn a_crashed_agents_state_never_comes_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let (terminal, _) = me(&ws, cx, id);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into())
+    });
+    event(handle, &ws, cx, &terminal, json!({ "event": "working" }));
+    // The snapshot sees no agent any more, then the one typed by hand.
+    ws.update(cx, |ws, _| {
+        ws.space
+            .see(vec![(id, templum_terminal::Inspection::default())]);
+        ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into());
+    });
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(id).unwrap();
+        assert_eq!(pane.state, None);
+        assert_ne!(
+            crate::block::status_dot(ws, pane).map(|(_, text)| text.to_string()),
+            Some("Working".to_string())
+        );
+    });
+}

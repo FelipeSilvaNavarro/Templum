@@ -603,6 +603,11 @@ impl Space {
             if let Some(pane) = self.terminal_mut(id) {
                 // A folder the snapshot couldn't read keeps the one known.
                 seen.folder = seen.folder.or(pane.seen.folder.take());
+                // Its agent is gone (one that crashed says no SessionEnd): what its hooks said
+                // mustn't come back with the next agent started there by hand.
+                if seen.agent.is_none() {
+                    pane.state = None;
+                }
                 pane.seen = seen;
             }
         }
