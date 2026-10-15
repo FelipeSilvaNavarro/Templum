@@ -26,6 +26,8 @@ allow = [
     "CC0-1.0",
     "MPL-2.0",
     "bzip2-1.0.6",
+    # webpki-roots: Mozilla's list of certificate authorities, which ureq trusts for HTTPS.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 unused-allowed-license = "allow"

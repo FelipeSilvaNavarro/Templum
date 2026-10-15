@@ -11,7 +11,7 @@
 Templum is a whiteboard that developers work in, and a cockpit for their CLI agents. Today it has terminals and
 kanban boards. This spec adds what keeps a developer from leaving it:
 
-1. **Notes:** a block to write in Markdown.
+1. **Notes:** plain-text notes, kept app-wide, shown as tabs in note blocks.
 2. **Drawing:** pens, a highlighter, shapes and an eraser, on the canvas itself.
 3. **Snapping:** blocks line up with their neighbours while they are moved or resized, as in Figma, with no key held.
 4. **A toolbar:** a floating bar at the bottom of the canvas holds every tool; the title bar loses its add buttons.
@@ -123,8 +123,10 @@ when it is that close, and lets go as soon as the pointer moves away.
 - **What snaps, moving:** the block's left, right and horizontal center to the others' left, right and horizontal
   center; its top, bottom and vertical center to their top, bottom and vertical center. Each axis takes the
   candidate with the smallest distance within the threshold, independently.
-- **What snaps, resizing:** the right and bottom edges to the others' left, right (and top, bottom) edges, and
-  the width or height to another block's width or height, so two blocks can be made the same size.
+- **What snaps, resizing:** the dragged edges (any edge or corner of a block resizes it, like a window's: thin
+  strips along its edges, squares at its corners) to the others' left, right (and top, bottom) edges, and the
+  width or height to another block's width or height, so two blocks can be made the same size. The opposite
+  edges stay put.
 - **Guides:** while a snap is in effect, a 1 px line in the `accent` color is drawn along the aligned edge (or
   center), from the nearest end of the two blocks to the farthest. It disappears when the drag ends or the snap
   lets go.
@@ -139,7 +141,7 @@ pub const SNAP_PX: f32 = 8.0;
 pub enum Guide { Vertical { x: f32, y0: f32, y1: f32 }, Horizontal { y: f32, x0: f32, x1: f32 } }
 pub struct Snapped { pub rect: Rect, pub guides: Vec<Guide> }
 pub fn snap_move(rect: Rect, others: &[Rect], threshold: f32) -> Snapped;
-pub fn snap_resize(rect: Rect, others: &[Rect], threshold: f32) -> Snapped;
+pub fn snap_resize(rect: Rect, edges: Edges, others: &[Rect], threshold: f32) -> Snapped;
 ```
 
 `Gesture::update` computes the unsnapped rect from the grab offset as today, then snaps it (never accumulating:
@@ -251,27 +253,44 @@ paint, the tool's pointer handling, the undo stack, serde in `session.rs`).
 
 ## 5. Notes
 
-A **note block** holds Markdown text. It is a block like the others: title bar, close, resize, move, focus, hover
-lift, pop-in and fade-out, menus, zoom.
+Notes are plain text, kept app-wide like the kanban boards: closing a tab or a block never loses one. A **note block**
+shows some of them as **tabs**; only the **Notes** dialog deletes a note. It is a block like the others: title bar,
+close, resize, move, focus, hover lift, pop-in and fade-out, menus, zoom.
 
-- **Opening one:** the toolbar's Note, **Add ▸ Note** in the canvas menu, or `new_note`. It opens at the viewport's
-  center, 360 × 280, at least 200 × 140, empty and focused, in edit mode.
-- **Edit mode:** gpui-kit's `Editor` with `language("markdown")`, soft wrap on, no line numbers, no border, the
-  block's `surface` behind it, in the terminal font at 13 world units × zoom. Tree-sitter highlights headings,
-  lists, code and emphasis; Tab and Shift+Tab indent and outdent list items (gpui-kit's indentation).
-- **Preview mode:** `TextView::markdown` of the text, selectable and scrollable, in the UI font, with code blocks
-  highlighted and links opening in the browser. The toggle is an eye button at the left of the header (like the
-  kanban's ⇅) and in the block's menu.
-- **Title:** the first line that starts with `#`, without the hashes, trimmed; "Note" when there is none.
-- **Keyboard:** focusing the block focuses its editor, so typing goes there. Templum's shortcuts (Ctrl+Shift+…)
+- **Opening one:** the toolbar's Note, **Add ▸ Note** in the canvas menu, or `new_note` open a block with a new, empty
+  note at the viewport's center, 360 × 280, at least 200 × 140, its editor with the keyboard.
+- **Text:** gpui-kit's `Editor` with no language: plain text, no highlighting, nothing rendered. Soft wrap on, no line
+  numbers, no border, in the terminal font at 13 world units × zoom. Markdown is just text: no list goes on by itself,
+  Ctrl+B types nothing.
+- **Title:** the note's first line with text, trimmed, cut at 60 characters with "…"; "Untitled" when it has none. The
+  block's title is the note on screen's; "Notes" with no tab open.
+- **Tabs:** a strip of 28 world units under the header: each open note's title, the one on screen underlined in the
+  accent color. A click shows a tab; its × closes the tab (the note stays); **+** opens a new note in a new tab.
+  A note is open in **one tab at most**: opening it again shows that tab, in its block, in its workspace.
+- **No tab open:** the block says "No note open here" with **New note** and **Open a note…** (the dialog, for it).
+- **Notes dialog** (the header's notebook button, **All notes…** in the block's menu, **Notes…** in the canvas
+  menu): every note, the most recently changed first; each row its title, when it last changed ("5 min ago"), where
+  it is open ("Open", "Open in Workspace 2") and its next line with text. The field on top finds notes by their text,
+  in any case. A click opens a note: as a tab of the block the dialog was opened from, where it is open already, or
+  in a new block. **New note** adds one. The trash deletes a note on its **second** click ("Delete for good" shows
+  after the first), from every block that shows it.
+- **Saved as it is typed:** each change to a note's text goes into the notes at once, and they are written to
+  `notes.json` in the data folder with the canvas's snapshot (every 5 s, and when Templum quits). A canvas is written
+  only once its notes are. If `notes.json` can't be read, neither it nor the canvases are written that session.
+- **Blank notes go:** a note with no text whose tab or block closes is removed; nothing is lost.
+- **Keyboard:** focusing the block focuses the note on screen, so typing goes there. Templum's shortcuts (Ctrl+Shift+…)
   keep working from inside it. Copy, paste, undo and search are the editor's own.
-- **Right-click a note:** Preview (or Edit), Copy all, Close.
-- **File:** `{ "kind": "note", "rect": {…}, "text": "# Plan\n- …", "preview": false }`. The text is read from the
-  editor at each snapshot. Any size of text is accepted; a text that isn't valid UTF-8 can't be in JSON, so none is.
+- **Color:** Color ▸ in the menu tints the note on screen (the background mixed with the label's ANSI color, readable
+  in every built-in theme); a note keeps its color in every block.
+- **Right-click a note block:** All notes…, Copy all, Send to ▸, Color ▸, Close.
+- **Copy and paste** a note block (canvas selection): the pasted block shows copies of its notes.
+- **Files:** `notes.json`: `{ "version": 1, "next_id": 7, "notes": [{ "id": 3, "text": "…", "color": "yellow",
+  "changed": 1760000000 }] }` (`changed` in seconds since 1970). A block in a canvas: `{ "kind": "note", "rect": {…},
+  "notes": [3, 5], "active": 1 }`. A canvas from before `notes.json` held the note's `text` (and `color`) in the
+  block: read once, it becomes a note in `notes.json`.
 
-Architecture: `note.rs` (new): `Note { editor: Entity<EditorState>, preview: bool }`, the body, the title. The
-gpui-kit feature `tree-sitter-markdown` comes on with this sub-project (the rest of `tree-sitter-languages` with
-the editor).
+Architecture: `notes.rs` (the notes, `notes.json`), `note.rs` (`Note { tabs, active }`, the body, the tabs, the Notes
+dialog), `workspace/note_tabs.rs` (opening, closing and deleting). An editor's Markdown preview lives in `markdown.rs`.
 
 ## 6. The workspaces screen
 
@@ -293,10 +312,14 @@ slides it up over 200 ms like the settings panel; closing slides it down.
   "3 terminals · 1 note · 1 Claude Code running" (counts of blocks by kind, and the agents found by the last
   snapshot); the active card has the `accent` border and ring, the others a hairline that goes `hover_border`
   on hover.
-- **Click a card:** switches to it and closes the screen. **Right-click:** Open, Edit…, Delete… (disabled for the
-  last one, with the same confirmation as the sidebar).
+- **Click a card:** switches to it and closes the screen. **Right-click:** Open, Edit…, Stop (see
+  [Stopping a workspace](#stopping-a-workspace)), Delete… (disabled for the last one, with the same confirmation as
+  the sidebar). A sidebar tile's right-click menu is the same.
+- **The keyboard:** the search field has it. Typing filters; Up and Down move the highlight a row (Left and Right
+  stay with the field); Enter opens the highlighted card, the first one shown until an arrow is pressed; Ctrl+1 to
+  Ctrl+9 still jump; Esc closes. A card's tooltip names its Ctrl+digit.
 - **Drag a card onto another:** the dragged one takes that card's place (the kanban columns' drag and drop). The
-  sidebar follows at once, and `index.json` is written.
+  sidebar follows at once, and `index.json` is written. Sidebar tiles drag and drop the same way.
 - **New workspace** creates "Workspace *n*" as the sidebar's **+** does, switches to it, and opens its edit dialog
   with the name selected. The **+** does the same from now on.
 
@@ -310,8 +333,8 @@ Replaces the sidebar's **Rename…**, which becomes **Edit…** everywhere. A di
 - **Icon:** a grid of Lucide icons, 36 px each, with a search field above it that filters by name
   (`IconName::ALL`, 1,818 icons; "git" shows `git-branch`, `git-commit`…). The chosen icon is ringed. A first row
   of 24 suggested icons shows before any search: rocket, folder, code, terminal, server, database, globe, bug,
-  flask, book, briefcase, home, heart, star, zap, cloud, cpu, package, wrench, test-tube, gamepad-2, music,
-  camera, coffee.
+  flask-conical, book, briefcase, house, heart, star, zap, cloud, cpu, package, wrench, test-tube, gamepad-2,
+  music, camera, coffee.
 - **Image:** **Choose an image…** opens the system's file picker (PNG, JPG, JPEG, WebP, SVG); the file is copied
   to `<data folder>/workspaces/icons/<id>.<ext>` (replacing an older one) and shown instead of the icon, cropped to
   the tile's rounded square. **Remove image** goes back to the icon. A file over 4 MB is refused with a message.
@@ -323,24 +346,69 @@ Replaces the sidebar's **Rename…**, which becomes **Edit…** everywhere. A di
   as today. A color also tints the tile's fill at 18% (hover and active add their fills over it), and the active
   bar takes the color instead of the accent.
 - **Title bar:** the icon or image, 14 px, before the name.
-- **Notifications** about a terminal in another workspace show the workspace's icon when it has one.
+- **Notifications** about a terminal in another workspace show the workspace's icon when it has one (an image
+  can't show there: a notification's icon is an SVG).
+
+### The edit dialog's folder
+
+Below the image, **Folder**: the folder's path, or "None"; **Choose…** opens the system's folder picker, **Clear**
+removes it. A new terminal starts in the workspace's folder when the focused block gives none
+(`working_directory = "inherit"`), and in place of `"home"` or a configured path: the workspace's choice is the
+nearer one. One workspace per project then opens its terminals in the project.
+
+### Stopping a workspace
+
+**Stop** ends every program of a workspace (its shells, agents, servers) and keeps its canvas, as quitting Templum
+does for all of them:
+
+- It asks first when a terminal there is at work or an editor has unsaved files, naming them, as closing blocks
+  does. Nothing at work: it stops at once.
+- The canvas is written as on quit (the agents found in it are kept, to resume), then its blocks are dropped. Each
+  shell gets SIGHUP as when a block closes; 2 s later, every process that was below a shell and still runs is
+  killed (SIGKILL; TerminateProcess on Windows), so programs that ignore the hangup end too.
+- **Stopping the active workspace** first shows the one before it, as deleting does. Stop is disabled while it is
+  the only workspace, and for one stopped already. A workspace whose file couldn't be read still stops: its file is
+  kept as it is, and starting it in the same session brings back what was stopped.
+- A stopped workspace's tile is dimmed and has no dots; its card says "Stopped" and counts what its saved canvas
+  holds.
+- **Opening it starts it** (a click, the screen, Ctrl+Tab, Ctrl+digit): its canvas comes back as on a start of
+  Templum, terminals in their folders and agents resumed.
+- It stays stopped across restarts, and its terminals don't start with Templum.
+- **Delete** ends a workspace's processes the same way.
+
+### Moving blocks to another workspace
+
+A block's right-click menu has **Move to workspace ▸**, listing the other workspaces and **New workspace**. It
+moves the block, or the selection it is part of:
+
+- The blocks keep running: a terminal's shell and its agent go on, an editor keeps its tabs and unsaved edits.
+- They land at the other workspace's view center, clear of its blocks, in the same arrangement; in grid mode they
+  join its grid as new blocks do.
+- A notification, "Moved to *name*", shows them there when clicked. Ctrl+Z doesn't take a move back.
+- A stopped workspace is listed but disabled. **New workspace** creates "Workspace *n*" and moves the blocks there,
+  without switching.
 
 ### Files
 
-`index.json` entries get three optional keys; missing means none, so a file from today loads unchanged:
+`index.json` entries get five optional keys; missing means none, so a file from today loads unchanged:
 
 ```json
-{ "id": "w2", "name": "Side project", "icon": "rocket", "color": "blue", "image": "w2.png" }
+{ "id": "w2", "name": "Side project", "icon": "rocket", "color": "blue", "image": "w2.png",
+  "folder": "/home/me/side", "stopped": true }
 ```
 
 - `icon` is a Lucide name; an unknown one is treated as none. `color` is one of the eight names; unknown is none.
   `image` is a file name inside `workspaces/icons/` (letters, digits, `-`, `_`, `.`, no path separators, no
   `..`); a file that doesn't exist or can't be decoded shows the icon instead and says nothing.
+- `folder` is an absolute path; one that isn't a folder anymore is ignored when a terminal starts. `stopped` is
+  true for a stopped workspace; the active one is never stopped (an index that says so starts it).
+- An unknown value never makes the whole index unreadable: only that key is dropped.
 - Deleting a workspace removes its image file along with setting its canvas aside.
 
 Architecture: `spaces_screen.rs` (new): the sheet, the cards, the drag and drop, the search; `space_dialog.rs`
-(new): the edit dialog; `session.rs`: the three fields, `icons_dir`, `copy_icon`, `remove_icon`; `sidebar.rs`
-and `title_bar.rs`: the look; `main.rs`: `AllAssets`.
+(new): the edit dialog; `session.rs`: the five fields, `icons_dir`, `copy_icon`, `remove_icon`; `sidebar.rs`
+and `title_bar.rs`: the look; `workspace/spaces.rs`: stopping, moving blocks; `templum-terminal`: `tree` and
+`kill_left`, a terminal's processes read and ended. `main.rs` already uses `AllAssets`.
 
 ## 7. The editor
 
@@ -416,6 +484,9 @@ Architecture: `editor.rs` (new): the block state (`folder`, `tree: Entity<TreeSt
 `keys.rs`: `save`, `find`, `go_to_line` with their shortcuts, effective only with an editor focused.
 
 ## 8. Git
+
+> **Superseded by [git.md](git.md)** (2026-10-13): the second version of the Git block. What follows is the
+> first version, the one that version starts from.
 
 A **Git block** shows one repository and does what the Git panels of VS Code, Zed and GitHub Desktop do, with the
 same words. It never runs a command the user didn't ask for, except reads.

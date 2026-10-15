@@ -294,3 +294,89 @@ fn shells_that_cant_start_leave_the_saved_canvas_alone(cx: &mut TestAppContext) 
         "kept for the start after the setting is fixed"
     );
 }
+
+/// A snapshot's read of the processes tells each terminal its folder and its agent, with the
+/// agent's process: what the menus, the Git block and the usage read.
+#[gpui_kit::test]
+fn a_snapshot_tells_each_terminal_its_folder_and_agent(cx: &mut TestAppContext) {
+    use crate::session::{Saved, SavedCamera};
+    use templum_terminal::Inspection;
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let saved = Saved {
+                version: 1,
+                camera: SavedCamera {
+                    x: 0.0,
+                    y: 0.0,
+                    zoom: 1.0,
+                },
+                items: Vec::new(),
+                focused: None,
+                recent: Vec::new(),
+                ink: Vec::new(),
+                grid: None,
+            };
+            let space = ws.space.id.clone();
+            let found = Inspection {
+                folder: Some("/srv/app".into()),
+                agent: Some("claude".into()),
+                pid: Some(42),
+                started: Some(1_700_000_000),
+                session: None,
+            };
+            ws.snapshot_done(
+                vec![(
+                    space.clone(),
+                    vec![(id, found.clone())],
+                    saved.clone(),
+                    None,
+                )],
+                None,
+                None,
+                window,
+                cx,
+            );
+            assert_eq!(ws.space.terminal(id).unwrap().seen, found);
+            // A folder the next one couldn't read keeps the one known; the agent left.
+            ws.snapshot_done(
+                vec![(space, vec![(id, Inspection::default())], saved, None)],
+                None,
+                None,
+                window,
+                cx,
+            );
+            let seen = &ws.space.terminal(id).unwrap().seen;
+            assert_eq!(
+                seen.folder.as_deref(),
+                Some(std::path::Path::new("/srv/app"))
+            );
+            assert_eq!((&seen.agent, seen.pid, seen.started), (&None, None, None));
+        })
+    })
+    .unwrap();
+}
+
+/// A workspace frozen (its file couldn't be read) is never written, but its terminals are still
+/// read: their folder and agent stay current.
+#[gpui_kit::test]
+fn a_frozen_workspaces_terminals_are_still_read(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (_handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let id = first_id(&ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.frozen = true;
+        ws.space.terminal_mut(id).unwrap().seen.agent = Some("gone".into());
+    });
+    tick(cx);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.space.terminal(id).unwrap().seen.agent,
+            None,
+            "read again"
+        );
+    });
+    let file = crate::session::path(data.path(), crate::session::DEFAULT_ID);
+    assert!(!file.exists(), "not written");
+}

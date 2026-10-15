@@ -1,24 +1,28 @@
 //! A shell in a PTY, its input encoding and a non-blocking view of its grid. No UI.
 
 mod agent;
+mod find;
 mod input;
 mod integration;
+mod link;
 pub mod palette;
 mod shells;
 mod snapshot;
 mod tap;
 mod terminal;
 
-pub use agent::{Agent, Detect, agent_of, installed, program_name};
+pub use agent::{Agent, Detect, agent_of, installed, locate, program_name};
 pub use alacritty_terminal::index::Side;
 pub use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Rgb};
-pub use input::{KeyInput, encode_key, paste_bytes};
+pub use find::{Find, Toward};
+pub use input::{Button, KeyInput, MouseInput, MouseKind, paste_bytes, typed_bytes};
 pub use integration::install;
+pub use link::{Target, resolve};
 pub use palette::Palette;
 pub use shells::{ShellOption, available_shells, default_shell, default_shell_label};
-pub use snapshot::{Cursor, Row, Run, Snapshot, Span};
+pub use snapshot::{Bar, Cursor, Row, Run, Snapshot, Span};
 pub use tap::{Mark, Outcome, Status};
 pub use terminal::{
-    Inspection, Notify, Processes, SelectionKind, SharedTerm, SpawnOptions, TermOptions, Terminal,
-    inspect,
+    Inspection, Modes, Notify, Processes, Running, SelectionKind, SharedTerm, SpawnOptions,
+    TermOptions, Terminal, inspect, kill_left, tree,
 };

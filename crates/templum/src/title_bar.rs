@@ -10,6 +10,7 @@ use gpui_kit::{
     transparent_black,
 };
 
+use crate::sidebar;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
 
@@ -45,12 +46,26 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
             ),
         )
         .child(
-            div()
-                .id("workspace-name")
-                .text_size(px(12.0))
+            button("workspace-name", ui)
+                .gap(px(6.0))
                 .font_weight(FontWeight::MEDIUM)
-                .text_color(ui.title)
+                .when(
+                    ws.space.look.icon.is_some() || ws.space.look.image.is_some(),
+                    |el| {
+                        el.child(sidebar::face(
+                            &ws.space.look,
+                            &ws.space.name,
+                            14.0,
+                            14.0,
+                            &ws.theme,
+                            ui.title,
+                        ))
+                    },
+                )
                 .child(ws.space.name.clone())
+                .on_click(
+                    cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_screen(window, cx)),
+                )
                 .test_support(),
         )
         .child(
@@ -61,6 +76,8 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
                 .items_center()
                 .gap(px(2.0))
                 .pr(px(8.0))
+                .children(crate::update::pill(ws, cx))
+                .children(crate::usage::meter(ws, cx))
                 .child(
                     button("zoom-level", ui)
                         .child(zoom)
@@ -96,7 +113,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         )
 }
 
-fn button(id: &'static str, ui: Ui) -> Stateful<Div> {
+pub(crate) fn button(id: &'static str, ui: Ui) -> Stateful<Div> {
     div()
         .id(id)
         .flex()

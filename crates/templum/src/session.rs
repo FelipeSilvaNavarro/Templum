@@ -10,8 +10,10 @@ use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use templum_canvas::{Camera, Color, Drawing, MAX_WIDTH, MIN_WIDTH, Point, Rect, ShapeKind};
+use serde::{Deserialize, Deserializer, Serialize};
+use templum_canvas::{
+    BlockId, Camera, Color, Drawing, MAX_WIDTH, MIN_WIDTH, Point, Rect, ShapeKind, Split, Tile,
+};
 use templum_terminal::Processes;
 
 use crate::config;
@@ -81,11 +83,87 @@ fn shown() -> bool {
     true
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct IndexEntry {
     /// Names its file; chosen once, never changed.
     pub id: String,
     pub name: String,
+    /// A Lucide icon's name; one Templum doesn't know is none.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "known_icon"
+    )]
+    pub icon: Option<String>,
+    /// One of `space_dialog::COLORS`; another is none.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "known_color"
+    )]
+    pub color: Option<String>,
+    /// A file in `workspaces/icons/`, shown instead of the icon; a name that could leave the
+    /// folder is none.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "safe_image"
+    )]
+    pub image: Option<String>,
+    /// Where its new terminals start.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "any_folder"
+    )]
+    pub folder: Option<PathBuf>,
+    /// Its programs were ended; opening it starts them again.
+    #[serde(
+        default,
+        skip_serializing_if = "std::ops::Not::not",
+        deserialize_with = "any_true"
+    )]
+    pub stopped: bool,
+}
+
+// The keys a workspace's look added: a value Templum can't use (a typo, a newer version's) is
+// none, never a reason to set the whole list aside.
+
+/// A string, or none for anything else.
+fn any_string<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(s) => Some(s),
+        _ => None,
+    })
+}
+
+fn known_icon<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(any_string(d)?.filter(|n| crate::space_dialog::icon(n).is_some()))
+}
+
+fn known_color<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(any_string(d)?.filter(|n| crate::space_dialog::COLORS.contains(&n.as_str())))
+}
+
+fn safe_image<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(any_string(d)?.filter(|n| safe_file_name(n)))
+}
+
+fn any_folder<'de, D: Deserializer<'de>>(d: D) -> Result<Option<PathBuf>, D::Error> {
+    Ok(any_string(d)?.map(PathBuf::from))
+}
+
+fn any_true<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(serde_json::Value::deserialize(d)? == serde_json::Value::Bool(true))
+}
+
+/// Letters, digits, `-`, `_` and `.`, and no `..`: a name that stays in its folder.
+fn safe_file_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains("..")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 impl Index {
@@ -97,6 +175,7 @@ impl Index {
             workspaces: vec![IndexEntry {
                 id: DEFAULT_ID.into(),
                 name: "Main".into(),
+                ..IndexEntry::default()
             }],
             active: 0,
             sidebar: true,
@@ -140,6 +219,8 @@ pub(crate) fn load_index(dir: &Path) -> Loaded<Index> {
                 return Loaded::Saved(Index::first_run());
             }
             index.active = index.active.min(index.workspaces.len() - 1);
+            // The one shown is never stopped.
+            index.workspaces[index.active].stopped = false;
             Loaded::Saved(index)
         }
         other => other,
@@ -151,6 +232,67 @@ pub(crate) fn save_index(dir: &Path, index: &Index) -> io::Result<()> {
     let text = serde_json::to_string_pretty(index).map_err(io::Error::other)?;
     std::fs::create_dir_all(path.parent().expect("a workspaces folder"))?;
     config::write_whole(&path, &text)
+}
+
+/// The images workspaces show instead of their icons.
+pub(crate) fn icons_dir(dir: &Path) -> PathBuf {
+    dir.join("workspaces").join("icons")
+}
+
+/// The image kinds a workspace can show.
+pub(crate) const IMAGE_KINDS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "svg"];
+
+/// The largest image a workspace takes.
+pub(crate) const IMAGE_MAX: u64 = 4 * 1024 * 1024;
+
+/// Why `file` can't be a workspace's image: not one of IMAGE_KINDS, too big, or unreadable.
+pub(crate) fn image_refused(file: &Path) -> Option<String> {
+    let kind = file
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    if !IMAGE_KINDS.contains(&kind.as_str()) {
+        return Some("Choose a PNG, JPG, WebP or SVG image".into());
+    }
+    match std::fs::metadata(file) {
+        Ok(m) if m.len() > IMAGE_MAX => Some("That image is over 4 MB".into()),
+        Ok(_) => None,
+        Err(err) => Some(format!("Couldn't read the image: {err}")),
+    }
+}
+
+/// Copies `file` as workspace `id`'s image, `<id>.<kind>` in `icons_dir`, in place of an older
+/// one; gives its name.
+pub(crate) fn copy_icon(dir: &Path, id: &str, file: &Path) -> io::Result<String> {
+    if let Some(why) = image_refused(file) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, why));
+    }
+    let kind = file
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let icons = icons_dir(dir);
+    std::fs::create_dir_all(&icons)?;
+    let name = format!("{id}.{kind}");
+    // Copied aside first: the file chosen may be the older image itself.
+    let part = icons.join(format!("{name}.part"));
+    std::fs::copy(file, &part)?;
+    for older in IMAGE_KINDS {
+        remove_icon(dir, &format!("{id}.{older}"))?;
+    }
+    std::fs::rename(&part, icons.join(&name))?;
+    Ok(name)
+}
+
+/// Removes a workspace's image (`name` in `icons_dir`); one already gone is fine.
+pub(crate) fn remove_icon(dir: &Path, name: &str) -> io::Result<()> {
+    if !safe_file_name(name) {
+        return Ok(());
+    }
+    match std::fs::remove_file(icons_dir(dir).join(name)) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
 }
 
 /// A deleted workspace's canvas is kept as `<id>.json.bak`, replacing an older one.
@@ -177,6 +319,85 @@ pub(crate) struct Saved {
     /// The drawings, above the blocks.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ink: Vec<InkItem>,
+    /// Grid mode's tiles, by item index (docs/specs/grid.md); the camera and the items' rects are
+    /// the canvas's still.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grid: Option<SavedTile>,
+}
+
+/// Grid mode's tree of tiles: an item, by its index in `items`, or a pair. `split` is "beside"
+/// (side by side), anything else one above the other: a word no Templum knows never loses the
+/// file.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum SavedTile {
+    Item(usize),
+    Pair {
+        split: String,
+        a: Box<SavedTile>,
+        b: Box<SavedTile>,
+    },
+}
+
+impl SavedTile {
+    /// `tile` with each block as its item's index (`index`); None when a block isn't an item.
+    pub fn of(tile: &Tile, index: &impl Fn(BlockId) -> Option<usize>) -> Option<SavedTile> {
+        Some(match tile {
+            Tile::Leaf(id) => SavedTile::Item(index(*id)?),
+            Tile::Pair(split, a, b) => SavedTile::Pair {
+                split: match split {
+                    Split::Beside => "beside",
+                    Split::Above => "above",
+                }
+                .to_string(),
+                a: Box::new(SavedTile::of(a, index)?),
+                b: Box::new(SavedTile::of(b, index)?),
+            },
+        })
+    }
+
+    /// The tiles, `block` giving each item's block: items that didn't come back are left out (a
+    /// pair left with one half is that half). None without any, or when an item is in it twice.
+    pub fn tile(&self, block: impl Fn(usize) -> Option<BlockId> + Copy) -> Option<Tile> {
+        let mut items = Vec::new();
+        self.items(&mut items);
+        let count = items.len();
+        items.sort_unstable();
+        items.dedup();
+        if items.len() != count {
+            return None;
+        }
+        self.build(block)
+    }
+
+    fn items(&self, into: &mut Vec<usize>) {
+        match self {
+            SavedTile::Item(i) => into.push(*i),
+            SavedTile::Pair { a, b, .. } => {
+                a.items(into);
+                b.items(into);
+            }
+        }
+    }
+
+    fn build(&self, block: impl Fn(usize) -> Option<BlockId> + Copy) -> Option<Tile> {
+        match self {
+            SavedTile::Item(i) => block(*i).map(Tile::Leaf),
+            SavedTile::Pair { split, a, b } => match (a.build(block), b.build(block)) {
+                (Some(a), Some(b)) => Some(Tile::Pair(
+                    if split == "beside" {
+                        Split::Beside
+                    } else {
+                        Split::Above
+                    },
+                    Box::new(a),
+                    Box::new(b),
+                )),
+                (Some(only), None) | (None, Some(only)) => Some(only),
+                (None, None) => None,
+            },
+        }
+    }
 }
 
 /// The world point at the canvas's top left, and the zoom factor.
@@ -197,15 +418,38 @@ pub(crate) enum Item {
     Git(GitItem),
 }
 
+impl Item {
+    pub fn rect_mut(&mut self) -> &mut SavedRect {
+        match self {
+            Item::Terminal(t) => &mut t.rect,
+            Item::Kanban(k) => &mut k.rect,
+            Item::Note(n) => &mut n.rect,
+            Item::Editor(e) => &mut e.rect,
+            Item::Git(g) => &mut g.rect,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct NoteItem {
     pub rect: SavedRect,
-    /// The Markdown text.
+    /// The notes it shows as tabs, by their ids in `notes.json`, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<u64>,
+    /// The tab on screen, by its index in `notes`.
     #[serde(default)]
+    pub active: usize,
+    /// A file from before `notes.json`: its one note's text, moved there when it is read.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub text: String,
-    /// Shown rendered instead of the editor.
-    #[serde(default)]
-    pub preview: bool,
+    /// Before `notes.json` too: that note's color, by name ("yellow"); none when missing or
+    /// unknown.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::board::known_label"
+    )]
+    pub color: Option<crate::board::Label>,
 }
 
 /// An editor block (docs/specs/cockpit.md, section 7).
@@ -232,6 +476,17 @@ pub(crate) struct GitItem {
     /// The tab shown: "changes", "history", "branches" or "stashes".
     #[serde(default = "changes")]
     pub tab: String,
+    /// The commit message being written, left out when empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// "folded": the left column is folded. Left out when it isn't.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub lists: String,
+    /// "split": the diff panels are side by side. Left out when they aren't.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub diff: String,
 }
 
 fn changes() -> String {
@@ -345,6 +600,10 @@ pub(crate) struct TerminalItem {
     /// (one of its own, or one in `[agents]`); any other value is ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
+    /// The agent's session, by its id: the one resumed, so blocks in the same folder each get
+    /// their own back. Missing when the agent's files don't tell it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -383,6 +642,7 @@ pub(crate) struct Layout {
     /// The agents to look for in the terminals.
     pub agents: std::sync::Arc<Vec<templum_terminal::Detect>>,
     pub ink: Vec<InkItem>,
+    pub grid: Option<SavedTile>,
 }
 
 pub(crate) enum LayoutBlock {
@@ -393,8 +653,10 @@ pub(crate) enum LayoutBlock {
 }
 
 impl Layout {
-    /// Reads the processes (folders) and builds the file's content. Slow: off the UI thread.
-    pub fn snapshot(self) -> Saved {
+    /// Reads the processes (folders, agents, and the agents' sessions in their files, under
+    /// Templum's data folder `data`) and builds the file's content, with what was found in each
+    /// terminal, in order. Slow: off the UI thread.
+    pub fn snapshot(self, data: Option<&Path>) -> (Saved, Vec<templum_terminal::Inspection>) {
         let processes: Vec<Processes> = self
             .blocks
             .iter()
@@ -403,8 +665,11 @@ impl Layout {
                 LayoutBlock::Saved(_) => None,
             })
             .collect();
-        let mut found = templum_terminal::inspect(&processes, &self.agents).into_iter();
-        Saved {
+        let inspections = templum_terminal::inspect(&processes, &self.agents);
+        let sessions = data.map_or_else(Vec::new, |data| session_ids(&inspections, data));
+        let mut sessions = sessions.into_iter();
+        let mut found = inspections.iter().cloned();
+        let saved = Saved {
             version: VERSION,
             camera: SavedCamera {
                 x: self.camera.origin.x,
@@ -422,6 +687,8 @@ impl Layout {
                             rect: (*rect).into(),
                             folder: found.folder.and_then(utf8),
                             agent: found.agent,
+                            // The agent's files first: they follow a switch inside it.
+                            session: sessions.next().flatten().or(found.session),
                         })
                     }
                     LayoutBlock::Saved(item) => item.clone(),
@@ -430,12 +697,31 @@ impl Layout {
             focused: self.focused,
             recent: self.recent.into_iter().filter_map(utf8).collect(),
             ink: self.ink,
-        }
+            grid: self.grid,
+        };
+        (saved, inspections)
     }
 }
 
+/// The session each terminal's agent has open, in order, from the agents' files.
+fn session_ids(found: &[templum_terminal::Inspection], data: &Path) -> Vec<Option<String>> {
+    let procs: Vec<templum_usage::Proc> = found
+        .iter()
+        .map(|f| templum_usage::Proc {
+            agent: f.agent.clone().unwrap_or_default(),
+            pid: f.pid.unwrap_or(0),
+            started: f.started.unwrap_or(0),
+            cwd: f.folder.clone(),
+            // The relay's file isn't read for a session's id.
+            terminal: String::new(),
+        })
+        .collect();
+    let dirs = templum_usage::Dirs::of(data);
+    templum_usage::session_ids(&procs, &dirs, crate::notes::now())
+}
+
 /// A path as JSON can hold it.
-fn utf8(path: PathBuf) -> Option<String> {
+pub(crate) fn utf8(path: PathBuf) -> Option<String> {
     path.into_os_string().into_string().ok()
 }
 
@@ -516,6 +802,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_note_color_reads_back_and_unknown_or_missing_is_none() {
+        let read = |json: &str| match serde_json::from_str::<Item>(json).unwrap() {
+            Item::Note(n) => n,
+            other => panic!("{other:?}"),
+        };
+        let base = r#"{"kind":"note","rect":{"x":0,"y":0,"w":1,"h":1},"text":"x""#;
+        assert_eq!(read(&format!("{base}}}")).color, None);
+        assert_eq!(read(&format!(r#"{base},"color":"teal"}}"#)).color, None);
+        let note = read(&format!(r#"{base},"color":"yellow"}}"#));
+        assert_eq!(note.color, Some(crate::board::Label::Yellow));
+        let back = serde_json::to_string(&Item::Note(note)).unwrap();
+        assert!(back.contains(r#""color":"yellow""#), "{back}");
+        let plain = serde_json::to_string(&Item::Note(read(&format!("{base}}}")))).unwrap();
+        assert!(!plain.contains("color"), "{plain}");
+    }
+
+    #[test]
     fn a_git_item_round_trips_and_its_tab_defaults_to_changes() {
         let text = r#"{"kind":"git","rect":{"x":1,"y":2,"w":800,"h":560},"folder":"/p"}"#;
         let item: Item = serde_json::from_str(text).unwrap();
@@ -527,11 +830,28 @@ mod tests {
         let back = serde_json::to_string(&item).unwrap();
         assert!(back.contains(r#""kind":"git""#), "{back}");
         assert!(back.contains(r#""tab":"changes""#), "{back}");
+        assert!(!back.contains("summary"), "no message, no key: {back}");
+        assert!(!back.contains("lists"), "not folded, no key: {back}");
+        assert!(!back.contains(r#""diff""#), "unified, no key: {back}");
+        let mut split = g.clone();
+        split.diff = "split".into();
+        let back = serde_json::to_string(&Item::Git(split)).unwrap();
+        assert!(back.contains(r#""diff":"split""#), "{back}");
         let item: Item =
             serde_json::from_str(&text.replace(r#""folder""#, r#""tab":"history","folder""#))
                 .unwrap();
         let Item::Git(g) = item else { unreachable!() };
         assert_eq!(g.tab, "history");
+        assert_eq!((g.summary.as_str(), g.description.as_str()), ("", ""));
+        // A commit message being written comes back.
+        let mut draft = g.clone();
+        draft.summary = "Fix the build".into();
+        draft.description = "It broke.".into();
+        let back = serde_json::to_string(&Item::Git(draft.clone())).unwrap();
+        let Item::Git(g) = serde_json::from_str(&back).unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(g, draft);
     }
 
     fn sample() -> Saved {
@@ -552,6 +872,7 @@ mod tests {
                     },
                     folder: Some("/home/u/proj".into()),
                     agent: Some("claude".into()),
+                    session: Some("0d5e5f4b-1c2d-4e3f-8a9b-0c1d2e3f4a5b".into()),
                 }),
                 Item::Terminal(TerminalItem {
                     rect: SavedRect {
@@ -562,6 +883,7 @@ mod tests {
                     },
                     folder: None,
                     agent: None,
+                    session: None,
                 }),
                 Item::Kanban(KanbanItem {
                     rect: SavedRect {
@@ -576,6 +898,7 @@ mod tests {
             focused: Some(1),
             recent: vec!["/home/u/proj".into(), "/srv/site".into()],
             ink: Vec::new(),
+            grid: None,
         }
     }
 
@@ -648,6 +971,7 @@ mod tests {
             "\"rect\":{\"x\":0.0,\"y\":0.0,\"w\":720.0,\"h\":460.0}",
             "\"folder\":\"/home/u/proj\"",
             "\"agent\":\"claude\"",
+            "\"session\":\"0d5e5f4b-1c2d-4e3f-8a9b-0c1d2e3f4a5b\"",
             "\"kind\":\"kanban\"",
             "\"board\":7",
             "\"focused\":1",
@@ -661,6 +985,7 @@ mod tests {
             "a missing folder isn't written"
         );
         assert_eq!(text.matches("agent").count(), 1, "nor a missing agent");
+        assert_eq!(text.matches("session").count(), 1, "nor a missing session");
     }
 
     #[test]
@@ -690,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn a_note_item_reads_back_and_preview_defaults_to_false() {
+    fn a_note_item_reads_back_and_an_old_one_keeps_its_text() {
         let d = tempfile::tempdir().unwrap();
         let mut saved = sample();
         saved.items.push(Item::Note(NoteItem {
@@ -700,18 +1025,69 @@ mod tests {
                 w: 360.0,
                 h: 280.0,
             },
-            text: "# Hi\n- one".into(),
-            preview: true,
+            notes: vec![3, 5],
+            active: 1,
+            text: String::new(),
+            color: None,
         }));
         save(d.path(), "n", &saved, 1).unwrap();
         assert_eq!(load(d.path(), "n"), Loaded::Saved(saved));
         let text = r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[
-            {"kind":"note","rect":{"x":0,"y":0,"w":300,"h":200},"text":"t"}]}"#;
+            {"kind":"note","rect":{"x":0,"y":0,"w":300,"h":200},"text":"t","preview":true}]}"#;
         std::fs::write(path(d.path(), "m"), text).unwrap();
         let Loaded::Saved(read) = load(d.path(), "m") else {
             panic!("not read");
         };
-        assert!(matches!(&read.items[0], Item::Note(n) if n.text == "t" && !n.preview));
+        assert!(matches!(&read.items[0], Item::Note(n) if n.text == "t" && n.notes.is_empty()));
+    }
+
+    #[test]
+    fn a_grid_reads_back_by_item_index() {
+        let d = tempfile::tempdir().unwrap();
+        let mut saved = sample();
+        let tile = Tile::Pair(
+            Split::Beside,
+            Box::new(Tile::Leaf(BlockId(7))),
+            Box::new(Tile::Leaf(BlockId(3))),
+        );
+        let index = |id: BlockId| [BlockId(3), BlockId(7)].iter().position(|b| *b == id);
+        saved.grid = SavedTile::of(&tile, &index);
+        save(d.path(), "g", &saved, 1).unwrap();
+        let text = std::fs::read_to_string(path(d.path(), "g")).unwrap();
+        assert!(text.contains(r#""split": "beside""#), "{text}");
+        let Loaded::Saved(read) = load(d.path(), "g") else {
+            panic!("not read");
+        };
+        assert_eq!(read, saved);
+        let back = read
+            .grid
+            .unwrap()
+            .tile(|i| [BlockId(3), BlockId(7)].get(i).copied());
+        assert_eq!(back, Some(tile));
+    }
+
+    #[test]
+    fn a_grid_leaves_out_items_that_didnt_come_back() {
+        let grid: SavedTile =
+            serde_json::from_str(r#"{"split":"plaid","a":0,"b":{"split":"beside","a":1,"b":2}}"#)
+                .unwrap();
+        // Item 1 couldn't start: its pair is item 2 alone. An unknown split is one above the other.
+        let tile = grid.tile(|i| (i != 1).then_some(BlockId(i as u64)));
+        assert_eq!(
+            tile,
+            Some(Tile::Pair(
+                Split::Above,
+                Box::new(Tile::Leaf(BlockId(0))),
+                Box::new(Tile::Leaf(BlockId(2)))
+            ))
+        );
+        assert_eq!(grid.tile(|_| None), None, "nothing came back");
+        let twice: SavedTile = serde_json::from_str(r#"{"split":"beside","a":0,"b":0}"#).unwrap();
+        assert_eq!(
+            twice.tile(|i| Some(BlockId(i as u64))),
+            None,
+            "an item twice"
+        );
     }
 
     #[test]
@@ -871,10 +1247,12 @@ mod tests {
                 IndexEntry {
                     id: DEFAULT_ID.into(),
                     name: "Main".into(),
+                    ..IndexEntry::default()
                 },
                 IndexEntry {
                     id: "w2".into(),
                     name: "Side project".into(),
+                    ..IndexEntry::default()
                 },
             ],
             active: 1,
@@ -889,6 +1267,107 @@ mod tests {
         assert_eq!(load_index(d.path()), Loaded::Saved(two()));
         let text = std::fs::read_to_string(index_path(d.path())).unwrap();
         assert!(text.contains("\"name\": \"Side project\""), "{text}");
+    }
+
+    #[test]
+    fn an_index_entry_keeps_its_look_folder_and_state() {
+        let d = tempfile::tempdir().unwrap();
+        let mut index = two();
+        index.active = 0;
+        index.workspaces[1] = IndexEntry {
+            icon: Some("rocket".into()),
+            color: Some("blue".into()),
+            image: Some("w2.png".into()),
+            folder: Some(PathBuf::from("/home/me/side")),
+            stopped: true,
+            ..index.workspaces[1].clone()
+        };
+        save_index(d.path(), &index).unwrap();
+        assert_eq!(load_index(d.path()), Loaded::Saved(index));
+    }
+
+    #[test]
+    fn an_index_from_before_loads_and_saves_unchanged() {
+        let d = tempfile::tempdir().unwrap();
+        let text = r#"{"version":1,"workspaces":[{"id":"default","name":"Main"}],"active":0}"#;
+        std::fs::create_dir_all(d.path().join("workspaces")).unwrap();
+        std::fs::write(index_path(d.path()), text).unwrap();
+        let Loaded::Saved(index) = load_index(d.path()) else {
+            panic!("unread")
+        };
+        assert_eq!(index.workspaces[0], Index::first_run().workspaces[0]);
+        let written = serde_json::to_string(&index).unwrap();
+        for key in ["icon", "color", "image", "folder", "stopped"] {
+            assert!(!written.contains(key), "{key} in {written}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_color_or_icon_keeps_the_rest_of_the_index() {
+        let d = tempfile::tempdir().unwrap();
+        let text = r#"{"version":1,"workspaces":[
+            {"id":"default","name":"Main","icon":"no-such-icon","color":"orange",
+             "image":7,"folder":["x"],"stopped":"yes"},
+            {"id":"w2","name":"Side","icon":"rocket","color":"accent","stopped":true}
+        ],"active":1}"#;
+        std::fs::create_dir_all(d.path().join("workspaces")).unwrap();
+        std::fs::write(index_path(d.path()), text).unwrap();
+        let Loaded::Saved(index) = load_index(d.path()) else {
+            panic!("unread")
+        };
+        let (main, side) = (&index.workspaces[0], &index.workspaces[1]);
+        assert_eq!(main.name, "Main");
+        assert!(main.image.is_none() && main.folder.is_none() && !main.stopped);
+        assert_eq!((main.icon.as_deref(), main.color.as_deref()), (None, None));
+        assert_eq!(side.icon.as_deref(), Some("rocket"));
+        assert_eq!(side.color.as_deref(), Some("accent"));
+        assert!(!side.stopped, "the active one is never stopped");
+    }
+
+    #[test]
+    fn unsafe_image_names_are_dropped() {
+        let entry = |image: &str| {
+            let text = format!(r#"{{"id":"w2","name":"x","image":{image:?}}}"#);
+            serde_json::from_str::<IndexEntry>(&text).unwrap().image
+        };
+        assert_eq!(entry("w2.png").as_deref(), Some("w2.png"));
+        for bad in ["../x.png", "a/b.png", "a\\b.png", "..", ""] {
+            assert_eq!(entry(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn copying_an_icon_replaces_the_older_one_and_refuses_big_files() {
+        let d = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let png = src.path().join("a.PNG");
+        std::fs::write(&png, b"png").unwrap();
+        assert_eq!(copy_icon(d.path(), "w2", &png).unwrap(), "w2.png");
+        let webp = src.path().join("b.webp");
+        std::fs::write(&webp, b"webp").unwrap();
+        assert_eq!(copy_icon(d.path(), "w2", &webp).unwrap(), "w2.webp");
+        let mut left: Vec<_> = std::fs::read_dir(icons_dir(d.path()))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["w2.webp"]);
+        // The older image chosen again is copied before it is removed.
+        let again = icons_dir(d.path()).join("w2.webp");
+        assert_eq!(copy_icon(d.path(), "w2", &again).unwrap(), "w2.webp");
+        assert_eq!(std::fs::read(&again).unwrap(), b"webp");
+        let big = src.path().join("big.jpg");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(IMAGE_MAX + 1)
+            .unwrap();
+        assert!(copy_icon(d.path(), "w2", &big).is_err());
+        let text = src.path().join("a.txt");
+        std::fs::write(&text, b"x").unwrap();
+        assert!(copy_icon(d.path(), "w2", &text).is_err());
+        remove_icon(d.path(), "w2.webp").unwrap();
+        remove_icon(d.path(), "w2.webp").unwrap();
+        assert!(!again.exists());
     }
 
     #[test]
@@ -984,8 +1463,9 @@ mod tests {
             recent: vec![PathBuf::from("/a"), PathBuf::from("/b")],
             agents: Default::default(),
             ink: Vec::new(),
+            grid: None,
         };
-        let saved = layout.snapshot();
+        let (saved, _) = layout.snapshot(None);
         assert_eq!(saved.recent, ["/a", "/b"], "recent folders, newest first");
         assert_eq!(saved.version, VERSION);
         assert_eq!(

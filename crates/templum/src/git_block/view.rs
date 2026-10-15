@@ -2,20 +2,24 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, ElementId, ScrollWheelEvent, TestSupportExt, div, px,
+    AnyElement, ClickEvent, Context, ElementId, KeyDownEvent, ScrollWheelEvent, SharedString,
+    TestSupportExt, div, px,
 };
 use templum_canvas::BlockId;
+use templum_git::Operation;
 
 use super::branches::branches;
 use super::changes::changes;
 use super::history::history;
 use super::stashes::stashes;
 use super::widgets::{bar, centered, icon_button};
-use super::{FONT, Found, Git, Sync, Tab};
+use super::{FONT, Found, Git, Sync, Tab, words};
 use crate::editor::button;
+use crate::menu::Target;
 use crate::workspace::Workspace;
 
 /// How to get `git` on this OS.
@@ -39,7 +43,7 @@ pub(crate) fn body(
 ) -> AnyElement {
     let ui = ws.ui;
     let n = id.0 as usize;
-    let content: AnyElement = if !git.folder.is_dir() {
+    let content: AnyElement = if git.gone {
         centered(ui, z)
             .child(format!("{} is gone", git.folder.display()))
             .child(
@@ -83,6 +87,28 @@ pub(crate) fn body(
                                 }))
                                 .test_support(),
                         )
+                        .child({
+                            // Spins while a clone runs; a click on it then cancels it.
+                            let cloning = git.sync == Some(Sync::Cloning);
+                            let label = if cloning {
+                                "Cancel"
+                            } else {
+                                "Clone a repository…"
+                            };
+                            let el = button(("git-clone", n), label, ui, z).when(cloning, |el| {
+                                el.child(Spinner::new().with_size(UiSize::Size(px(12.0 * z))))
+                            });
+                            if cloning {
+                                el.on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
+                                    ws.cancel_git(id, cx)
+                                }))
+                            } else {
+                                el.on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                                    ws.ask_clone(id, window, cx)
+                                }))
+                            }
+                            .test_support()
+                        })
                         .child(
                             button(("choose-folder", n), "Choose another folder…", ui, z)
                                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
@@ -100,6 +126,10 @@ pub(crate) fn body(
         .size_full()
         .flex()
         .flex_col()
+        .track_focus(&git.focus)
+        .on_key_down(
+            cx.listener(move |ws, e: &KeyDownEvent, window, cx| ws.git_key(id, e, window, cx)),
+        )
         .on_scroll_wheel(|e: &ScrollWheelEvent, _, cx| {
             if !e.modifiers.control {
                 cx.stop_propagation();
@@ -125,11 +155,56 @@ fn repo_body(
         (None, Some(oid)) => format!("detached at {}", &oid[..oid.len().min(7)]),
         (None, None) => "no commits".to_string(),
     };
-    let sync = match (&s.upstream, &s.oid) {
-        (Some(_), _) => format!("↑{} ↓{}", s.ahead, s.behind),
-        (None, Some(_)) => "no upstream".to_string(),
-        (None, None) => String::new(),
-    };
+    let (state, tip) = words::server_state(s);
+    // Compare with main: while there is a default branch and this branch isn't it.
+    let compare_with = git
+        .default_branch
+        .as_deref()
+        .map(words::local_name)
+        .filter(|b| s.branch.as_deref().is_some_and(|c| c != *b))
+        .map(str::to_string);
+    let on_branch = s.branch.clone().filter(|_| s.oid.is_some());
+    let publish = s.upstream.is_none() || s.gone;
+    let running = git.sync.is_some();
+    // The running command's button spins, and a click on it cancels it (Fetch and Pull from ⋯
+    // spin here too).
+    let sync_button = (on_branch.is_some() || running).then(|| {
+        let (label, word) = match (running, publish) {
+            (true, _) => ("Cancel", "Sync"),
+            (false, true) => ("Publish branch", "Push"),
+            (false, false) => ("Sync", "Sync"),
+        };
+        let el = button(("git-sync", n), label, ui, z)
+            .when(running, |el| {
+                el.child(Spinner::new().with_size(UiSize::Size(px(12.0 * z))))
+            })
+            .tooltip(move |window, cx| Tooltip::new(words::tip(word)).build(window, cx));
+        if running {
+            el.on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.cancel_git(id, cx)))
+                .test_support()
+                .into_any_element()
+        } else if git.acting > 0 {
+            el.opacity(0.5).test_support().into_any_element()
+        } else {
+            let branch = on_branch.clone().unwrap_or_default();
+            el.on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                if publish {
+                    ws.publish(id, branch.clone(), window, cx)
+                } else {
+                    ws.sync_git(id, window, cx)
+                }
+            }))
+            .test_support()
+            .into_any_element()
+        }
+    });
+    // The terminals working in the repository, as their last snapshot saw them: cheap.
+    let terminals = git.repo().map_or(0, |repo| {
+        ws.space
+            .terminals()
+            .filter(|(_, pane)| pane.works_in(&repo.root))
+            .count()
+    });
     let top =
         div()
             .id(("git-top", n))
@@ -162,49 +237,76 @@ fn repo_body(
                     )
                     .child(div().truncate().child(branch))
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.set_git_tab(id, Tab::Branches, window, cx)
+                        ws.open_branch_switcher(id, window, cx)
                     }))
                     .test_support(),
             )
-            .child(
-                div()
-                    .text_size(px(FONT * z))
-                    .text_color(ui.title_dim)
-                    .child(sync),
-            )
+            .when(terminals > 0, |el| {
+                el.child(
+                    div()
+                        .id(("git-terminals", n))
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0 * z))
+                        .px(px(8.0 * z))
+                        .py(px(2.0 * z))
+                        .rounded_full()
+                        .bg(ui.card)
+                        .text_size(px(FONT * z))
+                        .text_color(ui.title)
+                        .cursor_pointer()
+                        .hover(move |st| st.bg(ui.hover))
+                        .child(
+                            Icon::new(IconName::SquareTerminal)
+                                .size(px(12.0 * z))
+                                .text_color(ui.title_dim),
+                        )
+                        .child(terminals.to_string())
+                        .tooltip(|window, cx| {
+                            Tooltip::new("Terminals in this repository").build(window, cx)
+                        })
+                        .on_click(cx.listener(move |ws, e: &ClickEvent, window, cx| {
+                            ws.open_menu(Target::GitTerminals(id), e.position(), window, cx)
+                        }))
+                        .test_support(),
+                )
+            })
             .child(div().flex_1())
-            .children([Sync::Fetch, Sync::Pull, Sync::Push].map(|which| {
-                let (name, label) = match which {
-                    Sync::Fetch => ("git-fetch", "Fetch"),
-                    Sync::Pull => ("git-pull", "Pull"),
-                    Sync::Push => ("git-push", "Push"),
-                };
-                let running = git.sync == Some(which);
-                let disabled = git.acting > 0 && !running;
-                // The running one spins, and a click on it cancels it.
-                let el = button((name, n), if running { "Cancel" } else { label }, ui, z)
-                    .when(running, |el| {
-                        el.child(Spinner::new().with_size(UiSize::Size(px(12.0 * z))))
-                    })
-                    .when(disabled, |el| el.opacity(0.5));
-                if disabled {
-                    el.test_support().into_any_element()
-                } else if running {
-                    el.on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.cancel_git(id, cx)))
-                        .test_support()
-                        .into_any_element()
-                } else {
-                    el.on_click(
-                        cx.listener(move |ws, _: &ClickEvent, window, cx| match which {
-                            Sync::Fetch => ws.fetch(id, window, cx),
-                            Sync::Pull => ws.pull(id, templum_git::Pull::FastForward, window, cx),
-                            Sync::Push => ws.push(id, window, cx),
-                        }),
+            .when(!state.is_empty(), |el| {
+                let tip = SharedString::from(tip.clone());
+                el.child(
+                    div()
+                        .id(("git-state", n))
+                        .text_size(px(FONT * z))
+                        .text_color(ui.title_dim)
+                        .child(state.clone())
+                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)),
+                )
+            })
+            .when_some(compare_with, |el, base| {
+                let current = s.branch.clone().unwrap_or_default();
+                el.child(
+                    button(
+                        ("git-compare-main", n),
+                        format!("Compare with {base}"),
+                        ui,
+                        z,
                     )
-                    .test_support()
-                    .into_any_element()
-                }
-            }))
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                        ws.compare_branch(id, current.clone(), window, cx)
+                    }))
+                    .test_support(),
+                )
+            })
+            .children(sync_button)
+            .child(
+                icon_button(("git-more", n), IconName::Ellipsis, ui, z)
+                    .tooltip(|window, cx| Tooltip::new("More").build(window, cx))
+                    .on_click(cx.listener(move |ws, e: &ClickEvent, window, cx| {
+                        ws.open_menu(Target::GitMore(id), e.position(), window, cx)
+                    }))
+                    .test_support(),
+            )
             .child(
                 icon_button(("refresh", n), IconName::RefreshCw, ui, z)
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
@@ -213,30 +315,77 @@ fn repo_body(
                     .test_support(),
             )
             .test_support();
-    let banner = git.operation.map(|op| {
-        let can_continue = git.status.conflicts().is_empty();
-        bar(ui, z)
-            .id(("git-banner", n))
-            .child(format!("{} in progress", capitalized(op.name())))
-            .child(div().flex_1())
-            .child(
-                button(("git-abort", n), "Abort", ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.abort_operation(id, window, cx)
-                    }))
-                    .test_support(),
-            )
-            .when(can_continue, |el| {
-                el.child(
-                    button(("git-continue", n), "Continue", ui, z)
+    let detached = s.branch.is_none() && s.oid.is_some();
+    let banner = if let Some(op) = git.operation {
+        let conflicts = s.conflicts().len();
+        // The Git word behind the sentence, explained on hover.
+        let word = match op {
+            Operation::Rebase => words::tip("Rebase"),
+            Operation::Merge => words::tip("Merge"),
+            _ => "",
+        };
+        Some(
+            bar(ui, z)
+                .id(("git-banner", n))
+                .child(
+                    div()
+                        .id(("git-banner-text", n))
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .child(words::operation_sentence(op, conflicts))
+                        .when(!word.is_empty(), |el| {
+                            el.tooltip(move |window, cx| Tooltip::new(word).build(window, cx))
+                        }),
+                )
+                .child(
+                    button(("git-abort", n), "Abort", ui, z)
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.continue_operation(id, window, cx)
+                            ws.abort_operation(id, window, cx)
                         }))
                         .test_support(),
                 )
-            })
-            .test_support()
-    });
+                .when(conflicts == 0, |el| {
+                    el.child(
+                        button(("git-continue", n), "Continue", ui, z)
+                            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                                ws.continue_operation(id, window, cx)
+                            }))
+                            .test_support(),
+                    )
+                })
+                .test_support(),
+        )
+    } else if detached {
+        let back = git.default_branch.clone();
+        Some(
+            bar(ui, z)
+                .id(("git-banner", n))
+                .child(div().flex_1().min_w(px(0.0)).child(
+                    "You're looking at an old version. Commits made here won't belong to any branch.",
+                ))
+                .child(
+                    button(("git-branch-here", n), "Create a branch here", ui, z)
+                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                            ws.branch_from(id, None, window, cx)
+                        }))
+                        .test_support(),
+                )
+                .when_some(back, |el, back| {
+                    let label = format!("Back to {}", words::local_name(&back));
+                    let remote = back.contains('/');
+                    el.child(
+                        button(("git-back", n), label, ui, z)
+                            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                                ws.switch_branch(id, back.clone(), remote, window, cx)
+                            }))
+                            .test_support(),
+                    )
+                })
+                .test_support(),
+        )
+    } else {
+        None
+    };
     let tabs = div()
         .id(("git-tabs", n))
         .flex()
@@ -261,6 +410,9 @@ fn repo_body(
                 .cursor_pointer()
                 .hover(move |st| st.bg(ui.hover))
                 .child(tab.title())
+                .when(tab == Tab::Stashes, |el| {
+                    el.tooltip(|window, cx| Tooltip::new(words::tip("Stash")).build(window, cx))
+                })
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                     ws.set_git_tab(id, tab, window, cx)
                 }))
@@ -282,13 +434,4 @@ fn repo_body(
         .child(tabs)
         .child(area)
         .into_any_element()
-}
-
-/// "merge" → "Merge".
-fn capitalized(word: &str) -> String {
-    let mut c = word.chars();
-    match c.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + c.as_str(),
-        None => String::new(),
-    }
 }

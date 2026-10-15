@@ -87,6 +87,7 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
         (
             ws.config.shell.integration,
             ws.config.terminal.notifications,
+            ws.config.usage.claude_limits,
         )
     };
     for (tab, field, reset, line) in [
@@ -101,6 +102,12 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
             "field-terminal.notifications",
             "reset-terminal.notifications",
             "notifications = false",
+        ),
+        (
+            "settings-tab-usage",
+            "field-usage.claude_limits",
+            "reset-usage.claude_limits",
+            "claude_limits = false",
         ),
     ] {
         cx.update_window(handle, |_, window, cx| {
@@ -122,11 +129,17 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
         })
         .unwrap();
     }
-    assert_eq!(ws.read_with(cx, |ws, _| on(ws)), (true, true), "back on");
+    assert_eq!(
+        ws.read_with(cx, |ws, _| on(ws)),
+        (true, true, true),
+        "back on"
+    );
     ws.update(cx, |ws, _| ws.save());
     let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap();
     assert!(
-        !text.contains("integration") && !text.contains("notifications"),
+        !text.contains("integration")
+            && !text.contains("notifications")
+            && !text.contains("claude_limits"),
         "{text}"
     );
 }

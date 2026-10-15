@@ -20,7 +20,8 @@ project folder you pick, and each workspace remembers the folders you opened age
 
 ## Out of scope
 
-- Installing agents for the user, logging in, or passing them settings.
+- Installing agents for the user, logging in, or passing them settings (except the status line Claude Code gets for
+  its plan limits, [usage.md](usage.md)).
 - A per-agent setting for extra arguments.
 - Agents that need a terminal of their own outside Templum (Warp), or that are dead (Roo Code, Plandex, Mentat).
 
@@ -29,6 +30,19 @@ project folder you pick, and each workspace remembers the folders you opened age
 Researched on 2026-10-10 from each agent's docs, repository and package files. **Resume** is used only when the
 agent documents it as limited to the current folder; any other resume would bring back another project's
 conversation, so those agents start a new session on restore.
+
+**One session per block.** Several blocks of one agent in a folder each get their own conversation back, by its id:
+
+- Claude Code, Codex and Qwen Code: the id is read from their files while saving
+  ([persistence.md](persistence.md#agents); Qwen keeps `~/.qwen/sessions/<pid>.json` as Claude Code does), and
+  restored with `claude --resume <id>`, `codex resume <id>`, `qwen --resume <id>`.
+- Gemini CLI, Grok Build and Pi: opened from the menu, they get `--session-id <a new UUID>`, and the id is read back
+  from the process's arguments (`--session-id` or the resume flag). Restored with `gemini --resume <id>`, `grok
+  --resume <id>`, `pi --session-id <id>` (Pi's opens it, or starts it when it has no message yet). Gemini deletes a
+  session with no message when it exits, and can't resume it: Templum then types `gemini --session-id <id>` again.
+
+The command in the table is for a block whose session isn't known (an agent started by hand, a canvas from before),
+or when the user changed the resume command.
 
 | Agent | Command | Resume on restore | Install (the menu shows it) | Recognized by |
 |---|---|---|---|---|
@@ -80,6 +94,21 @@ Interpreter, Qodo Command. Each is one more row in `templum-terminal/src/agent.r
 - **Opening** puts a terminal of 110 × 32 cells with its top-left corner where you right-clicked, starts its shell
   in the folder, and types the agent's command and Enter. When the agent exits, the shell is still there.
 - The folder becomes the workspace's newest recent folder.
+
+## While one runs
+
+Each terminal knows its folder and its agent as the 5-second snapshot read them (`Pane::seen`; the folder also
+follows each finished command, with shell integration).
+
+- **Shift+Enter** is a new line in the prompt, not a send. An agent that turned on the kitty keyboard (Claude Code,
+  Codex) hears Shift+Enter itself; elsewhere a terminal running an agent sends Esc then Enter (what Claude Code's
+  `/terminal-setup` binds, and Alt+Enter sends). A shell still gets Enter.
+- **Closing** a terminal running an agent, or a command (shell integration), asks first and says why. A shell
+  that exited closes at once.
+- **Find** (`find`, Ctrl+Shift+F, Cmd+F on macOS) opens a field over the terminal: the text typed, read literally
+  (lowercase matches either case), is found in the whole history, selected and scrolled into view; Enter goes to
+  the older match, Shift+Enter to the newer, wrapping; Esc closes it and keeps the match selected. Nothing typed in
+  the field reaches the shell.
 
 ## Changing ours, adding yours
 

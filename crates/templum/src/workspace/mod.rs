@@ -4,16 +4,33 @@ mod blocks;
 mod drawing;
 mod file_tree;
 mod files;
+mod find;
 mod git_branches;
 mod git_changes;
+mod git_compare;
+mod git_conflicts;
+mod git_discard;
 mod git_history;
+mod git_keys;
+mod git_message;
 mod git_ops;
+mod git_switch;
+mod git_sync;
+mod history;
 mod input;
+mod note_tabs;
 mod persist;
 mod preferences;
 mod render;
+mod selection;
 mod spaces;
+mod tiling;
+mod update;
+mod usage;
 mod view;
+
+pub(crate) use find::FindBar;
+pub(crate) use git_message::TryIt;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -31,8 +48,8 @@ use gpui_kit::{
     Point as PixelPoint, SharedString, Subscription, Task, Window, WindowAppearance, px,
 };
 use templum_canvas::{
-    Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, Point, ShapeKind,
-    Size, chrome,
+    Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, Point, Rect,
+    ShapeKind, Size, Tile, chrome,
 };
 use templum_git::GitError;
 use templum_terminal::{Notify, Snapshot, Terminal};
@@ -54,7 +71,7 @@ use crate::settings::Panel;
 use crate::theme::{self, Entry, Theme, Ui};
 use crate::theme_picker::Picker;
 
-pub(crate) use git_ops::{Extra, notify_git_error};
+pub(crate) use git_ops::{Extra, notify_git_error, notify_git_failure, notify_with};
 
 pub(crate) const DEFAULT_COLS: u16 = 80;
 pub(crate) const DEFAULT_ROWS: u16 = 24;
@@ -70,6 +87,10 @@ const MAX_ROWS: u16 = 1000;
 const CLICK_SLOP: f32 = 4.0;
 /// Drawing changes kept for undo, per workspace.
 pub(crate) const INK_UNDO: usize = 50;
+/// Block changes kept for Ctrl+Z, per workspace; and as many undone ones.
+const CANVAS_UNDO: usize = 100;
+/// Board changes kept for undo, for the whole app (the boards are).
+pub(crate) const BOARD_UNDO: usize = 50;
 /// Cursor blink half-period.
 const BLINK: Duration = Duration::from_millis(500);
 /// Quitting takes a second press of its shortcut within this long.
@@ -94,14 +115,34 @@ pub(crate) struct Pane {
     pub heard: (u64, u64),
     /// News nobody has looked at yet; gone once the block is focused in the active window.
     pub alert: Option<Alert>,
+    /// Its folder and its agent as last read: at most a snapshot old (5 s), cheap to ask every
+    /// frame. The folder is the start folder until then, and follows each finished command.
+    pub seen: templum_terminal::Inspection,
+    /// Its agent's session, as last read after a snapshot (docs/specs/usage.md).
+    pub usage: Option<templum_usage::Session>,
+    /// Its find field, while open.
+    pub find: Option<Box<find::FindBar>>,
+}
+
+impl Pane {
+    /// Its folder, as last seen, is `root` or inside it.
+    pub fn works_in(&self, root: &std::path::Path) -> bool {
+        self.seen
+            .folder
+            .as_ref()
+            .is_some_and(|f| f.starts_with(root))
+    }
 }
 
 /// A Git block of any workspace: block ids count from 0 in every one, so a result that comes
 /// back after a switch still finds its block.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GitAt {
     pub space: String,
     pub block: BlockId,
+    /// The block's `Git::generation` when the command started: the result of one started
+    /// before the block changed folder is dropped.
+    pub generation: u64,
 }
 
 /// A closed block, still drawn while it fades out. A terminal's shell lives until then.
@@ -136,7 +177,6 @@ impl Body {
         }
     }
 
-    #[cfg(test)]
     pub fn kanban(&self) -> Option<&Kanban> {
         match self {
             Body::Kanban(kanban) => Some(kanban),
@@ -163,6 +203,13 @@ impl Body {
     }
 
     pub fn note(&self) -> Option<&Note> {
+        match self {
+            Body::Note(note) => Some(note),
+            _ => None,
+        }
+    }
+
+    pub fn note_mut(&mut self) -> Option<&mut Note> {
         match self {
             Body::Note(note) => Some(note),
             _ => None,
@@ -201,11 +248,16 @@ impl Body {
     /// file. False when nothing does.
     pub fn focus_inner(&self, window: &mut Window, cx: &mut App) -> bool {
         match self {
-            Body::Note(note) if !note.preview => {
-                note.focus(window, cx);
+            Body::Note(note) => note.focus(window, cx),
+            Body::Editor(e) => e.focus(window, cx),
+            // A field (the summary, a filter) keeps the keyboard it just took on the click;
+            // otherwise the block takes it.
+            Body::Git(g) => {
+                if !g.focus.contains_focused(window, cx) {
+                    g.focus.focus(window, cx);
+                }
                 true
             }
-            Body::Editor(e) => e.focus(window, cx),
             _ => false,
         }
     }
@@ -224,17 +276,46 @@ impl Body {
         }
     }
 
+    /// The block as a saved item at `rect`. A terminal's folder and agent are those last seen (a
+    /// snapshot reads them in the background).
+    pub fn item(&self, rect: templum_canvas::Rect, cx: &App) -> session::Item {
+        match self {
+            Body::Terminal(pane) => session::Item::Terminal(session::TerminalItem {
+                rect: rect.into(),
+                folder: pane.seen.folder.clone().and_then(session::utf8),
+                agent: pane.seen.agent.clone(),
+                // Pasted, it resumes no agent.
+                session: None,
+            }),
+            Body::Kanban(k) => session::Item::Kanban(session::KanbanItem {
+                rect: rect.into(),
+                board: k.board,
+            }),
+            Body::Note(n) => session::Item::Note(session::NoteItem {
+                rect: rect.into(),
+                notes: n.ids(),
+                active: n.active,
+                text: String::new(),
+                color: None,
+            }),
+            Body::Editor(e) => session::Item::Editor(e.item(rect)),
+            Body::Git(g) => session::Item::Git(g.item(rect, cx)),
+        }
+    }
+
     /// The keyboard is inside the block.
     pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
         match self {
-            Body::Note(note) => note
-                .editor
-                .read(cx)
-                .focus_handle(cx)
-                .contains_focused(window, cx),
+            Body::Note(note) => note.tabs.iter().any(|t| {
+                t.editor
+                    .read(cx)
+                    .focus_handle(cx)
+                    .contains_focused(window, cx)
+            }),
             Body::Editor(e) => e.has_focus(window, cx),
-            Body::Git(g) => g.has_focus(window, cx),
-            _ => false,
+            Body::Git(g) => g.focus.contains_focused(window, cx),
+            Body::Terminal(pane) => pane.find.as_ref().is_some_and(|b| b.has_focus(window, cx)),
+            Body::Kanban(_) => false,
         }
     }
 }
@@ -243,12 +324,38 @@ enum Drag {
     Canvas(Gesture),
     /// Selecting text in a block's terminal.
     Select(BlockId),
+    /// A press the program in a terminal heard (it asked for the mouse): its moves, at another
+    /// `cell` (row, column), and its release go to the program too.
+    Program {
+        id: BlockId,
+        button: templum_terminal::Button,
+        cell: (usize, usize),
+    },
     /// Drawing with a pen, a highlighter or a shape tool.
     Ink(Drawing),
     /// Erasing: whether anything was erased yet (for undo), and the pointer's last world point.
     Erase {
         erased: bool,
         last: Point,
+    },
+    /// Selecting blocks with a rectangle from `from` to `to` (world points): the blocks it touches
+    /// join those selected before (`base`). `pointer` is where the pointer is on the canvas; near
+    /// its edge the camera moves, since when the last frame moved it (`scrolled`).
+    Marquee {
+        base: Vec<BlockId>,
+        from: Point,
+        to: Point,
+        pointer: Point,
+        scrolled: Option<Instant>,
+    },
+    /// Grid mode: a tile held by its title, from the canvas point `from` (screen units, as grid
+    /// mode's camera is), the pointer now `at`; and the tile under it it would trade places with
+    /// on release, once it moved past a click.
+    Swap {
+        id: BlockId,
+        over: Option<BlockId>,
+        from: Point,
+        at: Point,
     },
     /// Moving a selected drawing: `last` is the pointer's previous world point; `moved` once it
     /// has moved (and the undo step is taken).
@@ -259,6 +366,21 @@ enum Drag {
     },
 }
 
+/// A workspace in grid mode (docs/specs/grid.md): some of its blocks tiled over its area, at
+/// zoom one. Meanwhile their canvas rects are their tiles'; their rects on the canvas, and the
+/// canvas's camera, wait here.
+pub(crate) struct Grid {
+    pub tiles: Tile,
+    /// Each tiled block's rect on the canvas.
+    pub homes: HashMap<BlockId, Rect>,
+    /// The canvas's camera.
+    pub camera: Camera,
+    /// What the tiles fill, as last drawn: the workspace's area inside the gap.
+    pub area: Rect,
+    /// Tiles sliding to the places they traded: where each was, since when.
+    pub slides: HashMap<BlockId, (Rect, Instant)>,
+}
+
 /// One canvas and everything on it: its blocks, their terminals, the focus, and what is
 /// animating.
 #[derive(Default)]
@@ -266,10 +388,20 @@ pub(crate) struct Space {
     /// Names its file; chosen once, never changed.
     pub id: String,
     pub name: String,
+    /// Its icon, color and image.
+    pub look: crate::space_dialog::Look,
+    /// Where its new terminals start.
+    pub folder: Option<PathBuf>,
+    /// Its programs were ended and its blocks dropped; `saved` holds its canvas, which opening
+    /// it brings back.
+    pub stopped: bool,
     pub canvas: Canvas,
     /// What each block of the canvas holds. Inserted and removed together with `canvas`'s blocks.
     pub blocks: HashMap<BlockId, Body>,
     pub focused: Option<BlockId>,
+    /// The selected blocks (Shift+drag, Shift+click on a title): Delete closes them, Copy and
+    /// Paste copy them. Never the focused one: selecting takes the focus away.
+    pub selected: Vec<BlockId>,
     /// True until the user first moves the camera or touches a block: meanwhile the startup
     /// terminal stays centered, since tiling compositors resize the window after it opens.
     pub pristine: bool,
@@ -286,6 +418,9 @@ pub(crate) struct Space {
     pub view: Camera,
     /// The view gliding to `canvas.camera`, since when.
     pub flight: Option<(CameraFlight, Instant)>,
+    /// The zoom the view last came to rest at. Blocks are drawn at its level of detail, so a
+    /// glide keeps the level it started at, and the level changes on the frame the glide ends.
+    pub rest: f32,
     /// Blocks still popping in, since when.
     pub appearing: HashMap<BlockId, Instant>,
     /// Closed blocks still fading out.
@@ -299,40 +434,62 @@ pub(crate) struct Space {
     pub ink: Vec<Drawing>,
     /// The selected drawing, by its index in `ink`.
     pub selected_ink: Option<usize>,
+    /// The changes that take back each change of the blocks (added, closed, moved, resized), by
+    /// their step numbers, newest last, at most CANVAS_UNDO; and those of the undone ones.
+    pub undo: Vec<(u64, history::Change)>,
+    pub redo: Vec<(u64, history::Change)>,
+    /// The last step's number.
+    pub steps: u64,
     /// `ink` before each change, newest last, at most INK_UNDO; and the undone ones.
     pub ink_undo: Vec<Vec<Drawing>>,
     pub ink_redo: Vec<Vec<Drawing>>,
+    /// Grid mode, while it is on.
+    pub grid: Option<Grid>,
 }
 
 impl Space {
+    /// Block `id` is drawn: on the canvas every block is; in grid mode, the tiled ones.
+    pub fn shown(&self, id: BlockId) -> bool {
+        self.grid.as_ref().is_none_or(|g| g.homes.contains_key(&id))
+    }
+
+    /// The canvas's camera, also while grid mode puts its own in its place.
+    pub fn camera(&self) -> Camera {
+        self.grid.as_ref().map_or(self.canvas.camera, |g| g.camera)
+    }
+
+    /// A block's rect on the canvas, also while it is a tile.
+    pub fn home(&self, block: &Block) -> Rect {
+        self.grid
+            .as_ref()
+            .and_then(|g| g.homes.get(&block.id))
+            .copied()
+            .unwrap_or(block.rect)
+    }
+
+    /// The block on top among those drawn.
+    pub fn top(&self) -> Option<BlockId> {
+        self.canvas
+            .blocks()
+            .iter()
+            .rev()
+            .map(|b| b.id)
+            .find(|id| self.shown(*id))
+    }
+
     /// The canvas as a snapshot needs it: rects and process ids, cheap on the UI thread.
     fn layout(&self, agents: Arc<Vec<templum_terminal::Detect>>, cx: &App) -> session::Layout {
         let blocks = self.canvas.blocks();
+        // The canvas as it is, also in grid mode.
         session::Layout {
-            camera: self.canvas.camera,
+            camera: self.camera(),
             blocks: blocks
                 .iter()
                 .map(|b| match &self.blocks[&b.id] {
                     Body::Terminal(pane) => {
-                        session::LayoutBlock::Terminal(b.rect, pane.term.processes())
+                        session::LayoutBlock::Terminal(self.home(b), pane.term.processes())
                     }
-                    Body::Kanban(k) => {
-                        session::LayoutBlock::Saved(session::Item::Kanban(session::KanbanItem {
-                            rect: b.rect.into(),
-                            board: k.board,
-                        }))
-                    }
-                    Body::Note(n) => {
-                        session::LayoutBlock::Saved(session::Item::Note(session::NoteItem {
-                            rect: b.rect.into(),
-                            text: n.text(cx),
-                            preview: n.preview,
-                        }))
-                    }
-                    Body::Editor(e) => {
-                        session::LayoutBlock::Saved(session::Item::Editor(e.item(b.rect)))
-                    }
-                    Body::Git(g) => session::LayoutBlock::Saved(session::Item::Git(g.item(b.rect))),
+                    body => session::LayoutBlock::Saved(body.item(self.home(b), cx)),
                 })
                 .collect(),
             focused: self
@@ -341,20 +498,77 @@ impl Space {
             recent: self.recent.clone(),
             agents,
             ink: self.ink.iter().map(session::InkItem::of).collect(),
+            grid: self.grid.as_ref().and_then(|g| {
+                session::SavedTile::of(&g.tiles, &|id| blocks.iter().position(|b| b.id == id))
+            }),
         }
     }
 
-    /// The last snapshot found one of `agents` running in one of its terminals.
+    /// The last snapshot found one of `agents` running in one of its terminals (a stopped
+    /// workspace runs none).
     pub fn has_agent(&self, agents: &[AgentEntry]) -> bool {
-        self.saved.as_ref().is_some_and(|saved| {
-            saved.items.iter().any(|item| match item {
-                session::Item::Terminal(t) => t
-                    .agent
-                    .as_ref()
-                    .is_some_and(|id| agents.iter().any(|a| a.id == *id)),
-                _ => false,
+        !self.stopped
+            && self.saved.as_ref().is_some_and(|saved| {
+                saved.items.iter().any(|item| match item {
+                    session::Item::Terminal(t) => t
+                        .agent
+                        .as_ref()
+                        .is_some_and(|id| agents.iter().any(|a| a.id == *id)),
+                    _ => false,
+                })
             })
-        })
+    }
+
+    /// Blocks moved here are kept: it isn't stopped, and its file is written.
+    pub fn takes_blocks(&self) -> bool {
+        !self.stopped && !self.frozen
+    }
+
+    /// Drops every block (their shells hang up) and what only made sense with them. The canvas
+    /// keeps counting ids: a block started again is never taken for one of these (a Git job
+    /// still running finds its block by id).
+    fn empty(&mut self) {
+        let ids: Vec<BlockId> = self.canvas.blocks().iter().map(|b| b.id).collect();
+        for id in ids {
+            self.canvas.remove(id);
+        }
+        self.blocks.clear();
+        self.focused = None;
+        self.selected.clear();
+        self.hovered = None;
+        self.guides.clear();
+        self.flight = None;
+        self.appearing.clear();
+        self.ghosts.clear();
+        self.framed = None;
+        self.ink.clear();
+        self.selected_ink = None;
+        self.undo.clear();
+        self.redo.clear();
+        self.ink_undo.clear();
+        self.ink_redo.clear();
+        self.grid = None;
+    }
+
+    /// The terminal blocks back to front: the order of a snapshot's terminal items.
+    fn terminal_order(&self) -> Vec<BlockId> {
+        self.canvas
+            .blocks()
+            .iter()
+            .filter(|b| self.terminal(b.id).is_some())
+            .map(|b| b.id)
+            .collect()
+    }
+
+    /// Tells each terminal what a snapshot found in it.
+    fn see(&mut self, found: Vec<(BlockId, templum_terminal::Inspection)>) {
+        for (id, mut seen) in found {
+            if let Some(pane) = self.terminal_mut(id) {
+                // A folder the snapshot couldn't read keeps the one known.
+                seen.folder = seen.folder.or(pane.seen.folder.take());
+                pane.seen = seen;
+            }
+        }
     }
 
     /// Every terminal block, in no order.
@@ -451,6 +665,15 @@ pub struct Workspace {
     pub(crate) active: usize,
     /// Every kanban board, shown by kanban blocks in any workspace.
     pub(crate) boards: Boards,
+    /// Every note, shown by note blocks in any workspace (`notes.rs`).
+    pub(crate) notes: crate::notes::Notes,
+    /// The notes as last read or written, to write only what changed.
+    notes_saved: Option<crate::notes::Notes>,
+    /// `notes.json` couldn't be read: neither it nor the canvases are written this session (a
+    /// canvas from before it holds notes' text that only it would keep).
+    notes_frozen: bool,
+    /// `boards` before each change, newest last, at most BOARD_UNDO (see `edit_boards`).
+    boards_undo: Vec<Boards>,
     /// The boards as last read or written, to write only what changed.
     boards_saved: Option<Boards>,
     /// `boards.json`, or the workspace list, couldn't be read: kept as it is this session.
@@ -464,6 +687,14 @@ pub struct Workspace {
     pub(crate) ime_cursor: Option<Bounds<Pixels>>,
     pub(crate) on_frame: Option<FrameHook>,
     drag: Option<Drag>,
+    /// The rects of the blocks a drag moves or resizes, as they were when it started.
+    placed: Vec<(BlockId, templum_canvas::Rect)>,
+    /// The pointer moved since grid mode's tiles last changed: the tile under it takes the
+    /// keyboard (`follow_pointer`); a tile coming under a still pointer doesn't.
+    pub(crate) pointer_moved: bool,
+    /// Blocks added now aren't kept for Ctrl+Z: a canvas being restored, closed blocks coming
+    /// back.
+    quiet: bool,
     /// Where a press on the empty canvas started: released in place, it's a click.
     press: Option<Point>,
     /// The block the last click on the empty canvas unfocused: a double-click's terminal starts
@@ -476,12 +707,17 @@ pub struct Workspace {
     /// Sub-step accumulators: wheel zoom, terminal scrolling (in lines).
     zoom_acc: f32,
     scroll_acc: f32,
+    /// The terminal cell the pointer was last reported over, with no button down, to a program
+    /// that asked for every move.
+    hover_cell: Option<(BlockId, usize, usize)>,
     /// Program for new terminals instead of the login shell (tests).
     command: Option<(String, Vec<String>)>,
     /// Where config.toml and the themes folder live (None: defaults only, nothing saved).
     pub(crate) config_dir: Option<PathBuf>,
     /// Where the canvas is saved (None: it isn't kept).
     pub(crate) data_dir: Option<PathBuf>,
+    /// What discards keep (`trash/` in the data folder); None without one, as in `--bench`.
+    pub(crate) trash: Option<templum_git::trash::Trash>,
     /// Where the shell integration's scripts were written (None: not written, no integration).
     integration: Option<PathBuf>,
     /// Counts snapshots: a write older than the last one done is dropped (session::save).
@@ -491,9 +727,36 @@ pub struct Workspace {
     /// The last canvas write failed (and said so); the next good one says it works again.
     canvas_save_failed: bool,
     _snapshots: Task<()>,
+    /// Each agent's plan limits, as last read after a snapshot (docs/specs/usage.md).
+    pub(crate) limits: Vec<(String, templum_usage::Limits)>,
+    /// When to tell the user about them.
+    watch: templum_usage::Watch,
+    /// The title bar's usage popover is open.
+    pub(crate) usage_open: bool,
+    /// The plan's limits as Claude Code's `/usage` last told them.
+    pub(crate) claude_polled: Option<templum_usage::Limits>,
+    /// Asks Claude Code for them every few minutes.
+    _claude_poll: Task<()>,
+    /// The title bar's meter shows the agents in turn: this one (an index among those shown),
+    /// since `meter_turned` (seconds since the epoch); not while the pointer is over it.
+    pub(crate) meter_turn: usize,
+    pub(crate) meter_turned: u64,
+    pub(crate) meter_hovered: bool,
+    /// Reading the agents' usage; the next read replaces it.
+    _usage: Task<()>,
+    /// Where an update stands (docs/specs/updates.md).
+    pub(crate) update: crate::update::Update,
+    /// How this Templum was installed, read at start: after a swap, Linux names the running
+    /// executable "(deleted)".
+    install: templum_update::Install,
+    /// The news last told about an update ("ready-0.2.0"): each is told once.
+    update_told: Option<String>,
+    /// Checking or downloading; the check at start and every day.
+    _update: Task<()>,
+    _update_loop: Task<()>,
     pub(crate) themes: Vec<Entry>,
     /// The system's appearance.
-    dark: bool,
+    pub(crate) dark: bool,
     /// What everything is drawn with.
     pub(crate) theme: Rc<Theme>,
     /// The chrome's colors this frame: the theme's, or on their way to them after a change.
@@ -505,8 +768,18 @@ pub struct Workspace {
     pub(crate) keymap: Keymap,
     /// The AI agents in effect: Templum's, with the config's changes, and the user's.
     pub(crate) agents: Vec<AgentEntry>,
+    /// The agent Generate ✨ runs, and whether it is ready; read when the config changes, not
+    /// each frame (finding a program looks in many folders).
+    // ponytail: an agent installed while Templum runs shows its ✨ after the next config change
+    // or a restart; look again when the settings panel opens if someone waits for it.
+    pub(crate) commit_agent: Option<agents::CommitAgent>,
     /// What config.toml looked like at the last read, for polling.
     config_stamp: config::Stamp,
+    /// The file of the theme in use, as it was when last read, for polling.
+    theme_file: Option<(PathBuf, config::Stamp)>,
+    /// The color editor's changes not yet written to that theme file, one per key; written with
+    /// `unsaved`.
+    theme_edits: Option<(PathBuf, Vec<Edit>)>,
     /// The last read failed: the next good one says so.
     config_failed: bool,
     /// The system's appearance. `dark` is what's in effect, since config.toml may pin a mode.
@@ -534,6 +807,10 @@ pub struct Workspace {
     quit_armed: Option<Instant>,
     /// The settings panel, open or sliding out.
     pub(crate) settings: Option<Panel>,
+    /// The workspaces screen, open or sliding out.
+    pub(crate) screen: Option<crate::spaces_screen::Screen>,
+    /// The welcome, open or fading out.
+    pub(crate) welcome: Option<crate::welcome::Welcome>,
     /// The panel's keyboard focus: Esc and the settings shortcut close it from there.
     pub(crate) settings_focus: FocusHandle,
     /// The command whose shortcut the panel is recording: keys go there before anything else.
@@ -570,6 +847,8 @@ pub struct Workspace {
     /// `git --version` with the configured program, read when the settings panel opens: Ok is
     /// the version, Err why it can't run. None while it is being read.
     pub(crate) git_version: Option<Result<String, String>>,
+    /// Settings ▸ Git ▸ Try it, running or done.
+    pub(crate) message_try: Option<TryIt>,
     _wake: Task<()>,
 }
 
@@ -625,7 +904,12 @@ impl Workspace {
             eprintln!("templum: {warning}");
             show_notification(window, cx, Notification::warning(warning));
         }
-        let effective_agents = agents::effective(&config.agents);
+        let effective_agents = agents::effective(&config.agents, &agents::codex_models());
+        let commit_agent = agents::commit_agent(
+            &effective_agents,
+            &config.git.commit_message,
+            templum_terminal::installed,
+        );
         let integration = data_dir.as_deref().and_then(|dir| {
             templum_terminal::install(dir)
                 .inspect_err(|err| {
@@ -670,6 +954,33 @@ impl Workspace {
             ws.set_dark(is_dark(window.appearance()), cx)
         })
         .detach();
+        // Tests never run the user's Claude Code.
+        let claude_poll = if cfg!(test) {
+            Task::ready(())
+        } else {
+            cx.spawn_in(window, async move |ws, cx| {
+                loop {
+                    let Ok(job) = ws.update(cx, |ws, _| ws.claude_poll_job()) else {
+                        break;
+                    };
+                    if let Some((program, dir)) = job {
+                        let found = cx
+                            .background_executor()
+                            .spawn(async move {
+                                templum_usage::claude::poll(&program, &dir, crate::notes::now())
+                            })
+                            .await;
+                        // A failed ask keeps what the last one found.
+                        if found.is_some()
+                            && ws.update(cx, |ws, _| ws.claude_polled = found).is_err()
+                        {
+                            break;
+                        }
+                    }
+                    cx.background_executor().timer(usage::CLAUDE_EVERY).await;
+                }
+            })
+        };
         let blink = cx.spawn_in(window, async move |ws, cx| {
             loop {
                 cx.background_executor().timer(BLINK).await;
@@ -707,14 +1018,21 @@ impl Workspace {
                 .update(cx, |ws, cx| ws.may_close(window, cx))
                 .unwrap_or(true)
         });
+        let install = templum_update::Install::detect();
+        let update_loop = Self::update_loop(&install, data_dir.as_ref(), window, cx);
+        let update_told = data_dir
+            .as_ref()
+            .and_then(|dir| std::fs::read_to_string(dir.join("updates").join(update::TOLD)).ok());
         let flush = vec![
             cx.on_release(|ws, cx| {
                 ws.save();
                 ws.save_canvas_now(cx);
+                ws.finish_update();
             }),
             cx.on_app_quit(|ws, cx| {
                 ws.save();
                 ws.save_canvas_now(cx);
+                ws.finish_update();
                 async {}
             }),
         ];
@@ -723,8 +1041,12 @@ impl Workspace {
             others: Vec::new(),
             active: 0,
             boards: Boards::default(),
+            boards_undo: Vec::new(),
             boards_saved: None,
             boards_frozen: false,
+            notes: Default::default(),
+            notes_saved: None,
+            notes_frozen: false,
             index_frozen: false,
             sidebar: true,
             cell,
@@ -732,6 +1054,9 @@ impl Workspace {
             ime_cursor: None,
             on_frame: None,
             drag: None,
+            placed: Vec::new(),
+            pointer_moved: false,
+            quiet: false,
             press: None,
             unfocused: None,
             focus_handle,
@@ -739,20 +1064,40 @@ impl Workspace {
             notify,
             zoom_acc: 0.0,
             scroll_acc: 0.0,
+            hover_cell: None,
             command,
             config_dir,
+            trash: data_dir
+                .as_ref()
+                .map(|dir| templum_git::trash::Trash::new(dir.join("trash"))),
             data_dir,
             integration,
             generation: 0,
             snapshotting: false,
             canvas_save_failed: false,
             _snapshots: snapshots,
+            limits: Vec::new(),
+            watch: templum_usage::Watch::new(crate::notes::now()),
+            usage_open: false,
+            claude_polled: None,
+            _claude_poll: claude_poll,
+            meter_turn: 0,
+            meter_turned: 0,
+            meter_hovered: false,
+            _usage: Task::ready(()),
+            update: Default::default(),
+            install,
+            update_told,
+            _update: Task::ready(()),
+            _update_loop: update_loop,
             themes,
             dark,
             ui: theme.ui,
             theme,
             config_failed: config_error.is_some(),
             config_stamp,
+            theme_file: None,
+            theme_edits: None,
             system_dark,
             _poll: poll,
             pending: None,
@@ -766,6 +1111,8 @@ impl Workspace {
             drafts: HashMap::new(),
             quit_armed: None,
             settings: None,
+            screen: None,
+            welcome: None,
             settings_focus: cx.focus_handle(),
             recording: None,
             key_note: None,
@@ -785,11 +1132,27 @@ impl Workspace {
             _files: files,
             _git: git,
             git_version: None,
+            message_try: None,
             config,
             keymap,
             agents: effective_agents,
+            commit_agent,
             _wake: wake,
         };
+        // Relay files of Claude Code sessions long gone, at startup.
+        if let Some(relay) = ws.data_dir.as_deref().map(templum_usage::relay_dir) {
+            cx.background_executor()
+                .spawn(async move { templum_usage::claude::prune(&relay, crate::notes::now()) })
+                .detach();
+        }
+        // The trash's old discards go at startup (and after each discard).
+        if let Some(trash) = ws.trash.clone() {
+            cx.background_executor()
+                .spawn(async move {
+                    let _ = trash.prune(std::time::SystemTime::now());
+                })
+                .detach();
+        }
         ws.load_spaces(window, cx);
         ws
     }
@@ -846,8 +1209,19 @@ pub(crate) fn remember(recent: &mut Vec<PathBuf>, folder: PathBuf) {
 /// Ctrl+Z / Ctrl+Shift+Z (Cmd on macOS): Some(false) undoes, Some(true) redoes.
 /// The command a key press runs: one that only works in an editor is nothing without one, so
 /// the key goes on to the terminal (Ctrl+S is XOFF, Ctrl+W erases a word).
-fn effective(command: Option<Command>, in_editor: bool) -> Option<Command> {
-    command.filter(|c| in_editor || !c.editor_only())
+/// One that only works in grid mode is nothing outside it.
+/// `program`: a program took over the focused terminal (see `Command::yields_to_programs`).
+fn effective(
+    command: Option<Command>,
+    in_editor: bool,
+    tiled: bool,
+    program: bool,
+) -> Option<Command> {
+    command.filter(|c| {
+        (in_editor || !c.editor_only())
+            && (tiled || !c.grid_only())
+            && !(program && c.yields_to_programs())
+    })
 }
 
 fn undo_key(k: &Keystroke, macos: bool) -> Option<bool> {
@@ -863,8 +1237,19 @@ fn undo_key(k: &Keystroke, macos: bool) -> Option<bool> {
     Some(m.shift)
 }
 
+/// Ctrl+`key` (Cmd on macOS), with no other modifier.
+fn secondary(k: &Keystroke, key: &str, macos: bool) -> bool {
+    let m = &k.modifiers;
+    let held = if macos {
+        m.platform && !m.control
+    } else {
+        m.control && !m.platform
+    };
+    held && !m.alt && !m.shift && !m.function && k.key == key
+}
+
 /// Ctrl+1 to Ctrl+9 (Cmd on macOS), with no other modifier: the position of a workspace.
-fn workspace_digit(k: &Keystroke, macos: bool) -> Option<usize> {
+pub(crate) fn workspace_digit(k: &Keystroke, macos: bool) -> Option<usize> {
     let m = &k.modifiers;
     let held = if macos {
         m.platform && !m.control

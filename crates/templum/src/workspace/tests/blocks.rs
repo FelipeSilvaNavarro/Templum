@@ -249,6 +249,60 @@ fn dragging_the_handle_resizes_block_and_terminal(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn dragging_an_edge_or_a_corner_resizes_keeping_the_opposite_sides(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0;
+    let rect =
+        |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    let drag = |cx: &mut TestAppContext, zone: &str, by: (f32, f32)| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.hover(("block", n as usize), cx);
+            window.render_frame(cx);
+            let el = gpui_kit::ElementId::Name(format!("resize-{zone}-{n}").into());
+            let from = window.find(el).bounds().center();
+            let to = point(from.x + px(by.0), from.y + px(by.1));
+            window.drag(from, to, cx);
+        })
+        .unwrap();
+    };
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let left = gpui_kit::ElementId::Name(format!("resize-left-{n}").into());
+        assert!(
+            window.try_find(left).is_none(),
+            "only on the block under the pointer"
+        );
+    })
+    .unwrap();
+    let before = rect(cx);
+    // The left edge, 80 px to the left: wider, the right edge stays.
+    drag(cx, "left", (-80.0, 30.0));
+    let after = rect(cx);
+    assert_eq!(after.x, before.x - 80.0);
+    assert_eq!(after.right(), before.right());
+    assert_eq!(
+        (after.y, after.h),
+        (before.y, before.h),
+        "a side edge keeps the height"
+    );
+    let cell = ws.read_with(cx, |ws, _| ws.cell.size);
+    let expected =
+        templum_canvas::chrome::grid_size(templum_canvas::chrome::content_rect(after).size(), cell);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.terminal(id).unwrap().term.grid_size(), expected)
+    });
+    // The top-right corner, up and right: the bottom-left corner stays.
+    let before = after;
+    drag(cx, "top-right", (40.0, -50.0));
+    let after = rect(cx);
+    assert_eq!((after.x, after.bottom()), (before.x, before.bottom()));
+    assert_eq!(after.right(), before.right() + 40.0);
+    assert_eq!(after.y, before.y - 50.0);
+}
+
+#[gpui_kit::test]
 fn close_button_appears_on_hover(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let id = first_id(&ws, cx);
@@ -343,4 +397,38 @@ fn clicking_the_empty_canvas_unfocuses_terminals(cx: &mut TestAppContext) {
     })
     .unwrap();
     ws.read_with(cx, |ws, _| assert_eq!(ws.space.focused, None));
+}
+
+/// Closing a terminal an agent works in asks first; Cancel keeps it. An idle one closes at once.
+#[gpui_kit::test]
+fn closing_a_busy_terminal_asks_first(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into())
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.press(CLOSE, cx);
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "it asks");
+        window.within("dialog").click("cancel", cx);
+        window.render_frame(cx);
+        assert!(ws.read(cx).space.terminal(id).is_some(), "kept");
+        window.press(CLOSE, cx);
+        window.render_frame(cx);
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+        assert!(ws.read(cx).space.terminal(id).is_none(), "closed");
+        // An idle one: no question.
+        ws.update(cx, |ws, cx| {
+            ws.add_terminal_at(Point::new(0.0, 0.0), window, cx);
+            let idle = ws.space.canvas.top().unwrap();
+            ws.close(idle, window, cx);
+            assert!(ws.space.terminal(idle).is_none());
+        });
+        assert!(!window.has_active_dialog(cx));
+    })
+    .unwrap();
 }

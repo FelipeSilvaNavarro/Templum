@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 use templum_terminal::{CursorShape, CursorStyle, TermOptions};
+pub(crate) use templum_usage::Reset;
 
 use toml_edit::{DocumentMut, TomlError};
 
@@ -36,6 +37,8 @@ pub(crate) struct Config {
     pub terminal: TerminalConfig,
     pub keys: KeysConfig,
     pub git: GitConfig,
+    pub usage: UsageConfig,
+    pub updates: UpdatesConfig,
     /// `[agents.<id>]`: changes to one of Templum's AI agents (only what differs), or an agent of
     /// the user's own.
     pub agents: BTreeMap<String, AgentConfig>,
@@ -53,6 +56,12 @@ pub(crate) struct AgentConfig {
     pub resume: Option<String>,
     /// Listed in the canvas's menu.
     pub show: Option<bool>,
+    /// Runs it without a terminal to write a commit message: `{model}`, `{prompt_file}` (else
+    /// the request is its standard input), `{output_file}` (else its standard output is the
+    /// answer). See docs/specs/git.md, section 7.
+    pub generate: Option<String>,
+    /// Its models for commit messages, the recommended one first.
+    pub models: Option<Vec<String>>,
 }
 
 /// Letters, digits, `-` and `_`: an agent's id is a key in the saved canvas and in this file.
@@ -223,12 +232,60 @@ impl Default for TerminalConfig {
     }
 }
 
+/// `[usage]`: what Templum tells about the agents' plan limits.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct UsageConfig {
+    /// When a limit's reset is notified.
+    pub reset: Reset,
+    /// A limit's use, in percent, that is notified once per window: 0 (never), 80, 90 or 95.
+    pub warn: u8,
+    /// Templum asks Claude Code for the plan's limits, and the Claude Code it opens gets
+    /// Templum's status line.
+    pub claude_limits: bool,
+    /// The agents (ids) whose limits the title bar doesn't show.
+    pub hide: Vec<String>,
+}
+
+impl Default for UsageConfig {
+    fn default() -> Self {
+        Self {
+            reset: Reset::default(),
+            warn: 90,
+            claude_limits: true,
+            hide: Vec::new(),
+        }
+    }
+}
+
+/// `[updates]`: new versions from GitHub Releases (docs/specs/updates.md).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct UpdatesConfig {
+    /// Look for a new version at start and once a day, and download it.
+    pub check: bool,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self { check: true }
+    }
+}
+
+/// The values `[usage] warn` takes: what Settings offers.
+pub(crate) const WARN_AT: [u8; 4] = [0, 80, 90, 95];
+
 /// `[git]`.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct GitConfig {
     /// The program the Git block runs: a name on PATH, or a path.
     pub program: String,
+    /// `[git.commit_message]`: Generate ✨.
+    pub commit_message: CommitMessage,
+    /// `[git.repositories."<root>"]`: one repository's own settings, by its root as
+    /// `git rev-parse --show-toplevel` prints it (`/` on every OS).
+    pub repositories: BTreeMap<String, RepoConfig>,
 }
 
 impl GitConfig {
@@ -245,8 +302,61 @@ impl Default for GitConfig {
     fn default() -> Self {
         Self {
             program: "git".to_string(),
+            commit_message: CommitMessage::default(),
+            repositories: BTreeMap::new(),
         }
     }
+}
+
+/// `[git.commit_message]`: how Generate ✨ asks an agent for a commit message.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct CommitMessage {
+    /// An agent's id; None: the first agent with a generate command, an installed one first.
+    pub agent: Option<String>,
+    /// None: the agent's recommended model, the first of its list.
+    pub model: Option<String>,
+    /// Seconds the agent has to answer.
+    pub timeout: u64,
+    /// The diff sent is cut past this many KB.
+    pub max_diff_kb: u64,
+    /// The user's commit rules, sent with each request.
+    pub instructions: String,
+    /// The first-use question was answered: the diff may be sent.
+    pub confirmed: bool,
+    /// The request's template; None: `templum_git::message::PROMPT`.
+    pub prompt: Option<String>,
+}
+
+impl Default for CommitMessage {
+    fn default() -> Self {
+        Self {
+            agent: None,
+            model: None,
+            timeout: 60,
+            max_diff_kb: 60,
+            instructions: String::new(),
+            confirmed: false,
+            prompt: None,
+        }
+    }
+}
+
+/// `[git.repositories."<root>"]`.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct RepoConfig {
+    /// Wins over `[git.commit_message].instructions` in this repository.
+    pub commit_instructions: Option<String>,
+}
+
+/// The table holding one repository's settings, `git.repositories."<key>"`, as an `Edit` names
+/// it: the key quoted as TOML needs (a root has slashes, dots, spaces).
+pub(crate) fn repository_table(key: &str) -> String {
+    format!(
+        "git.repositories.{}",
+        toml_edit::Key::new(key).display_repr()
+    )
 }
 
 impl Config {
@@ -287,6 +397,25 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
         "0 and 100000",
         scrollback.to_string(),
     )?;
+    let message = &config.git.commit_message;
+    range(
+        "git.commit_message.timeout",
+        (5..=600).contains(&message.timeout),
+        "5 and 600",
+        message.timeout.to_string(),
+    )?;
+    range(
+        "git.commit_message.max_diff_kb",
+        (4..=1024).contains(&message.max_diff_kb),
+        "4 and 1024",
+        message.max_diff_kb.to_string(),
+    )?;
+    let warn = config.usage.warn;
+    if !WARN_AT.contains(&warn) {
+        return Err(format!(
+            "{FILE}: usage.warn must be 0, 80, 90 or 95 (it is {warn})"
+        ));
+    }
     // Shortcuts are part of the file's validity: an invalid one keeps the last valid config.
     Keymap::new(&config.keys, cfg!(target_os = "macos"))?;
     for (id, agent) in &config.agents {
@@ -305,6 +434,15 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
         if !ours && blank(&agent.name) {
             return Err(format!(
                 "{FILE}: agents.{id}.name is needed (what menus show)"
+            ));
+        }
+        if agent
+            .generate
+            .as_deref()
+            .is_some_and(|g| g.trim().is_empty())
+        {
+            return Err(format!(
+                "{FILE}: agents.{id}.generate can't be empty (remove it for none)"
             ));
         }
     }
@@ -330,8 +468,14 @@ pub(crate) struct Stamp(Option<(SystemTime, u64)>);
 
 impl Stamp {
     pub fn of(dir: Option<&Path>) -> Stamp {
+        dir.map_or(Stamp(None), |d| Stamp::file(&d.join(FILE)))
+    }
+
+    /// The same for any file: a theme's.
+    pub fn file(path: &Path) -> Stamp {
         Stamp(
-            dir.and_then(|d| std::fs::metadata(d.join(FILE)).ok())
+            std::fs::metadata(path)
+                .ok()
                 .map(|m| (m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len())),
         )
     }
@@ -385,26 +529,36 @@ pub(crate) enum SaveError {
     Broken {
         line: usize,
     },
-    /// `table` exists in the file but isn't a table (`theme = "Dracula"`).
-    NotATable(&'static str),
+    /// `table` exists in the file but isn't a table (`theme = "Dracula"`), or a key on its path
+    /// isn't.
+    NotATable(String),
     Io(io::Error),
+}
+
+impl SaveError {
+    /// The message, naming the file written (`file`: config.toml, a theme's file).
+    pub fn describe(&self, file: &str) -> String {
+        match self {
+            Self::NoDir => "no config folder".to_string(),
+            Self::Broken { line } => format!("{file} has an error on line {line}"),
+            Self::NotATable(table) => format!("`{table}` in {file} is not a table"),
+            Self::Io(e) => e.to_string(),
+        }
+    }
 }
 
 impl fmt::Display for SaveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoDir => write!(f, "no config folder"),
-            Self::Broken { line } => write!(f, "{FILE} has an error on line {line}"),
-            Self::NotATable(table) => write!(f, "`{table}` in {FILE} is not a table"),
-            Self::Io(e) => write!(f, "{e}"),
-        }
+        f.write_str(&self.describe(FILE))
     }
 }
 
 /// One change to config.toml: `table.key` set to a value, or removed (back to its default).
 #[derive(Clone, Debug)]
 pub(crate) struct Edit {
-    pub table: &'static str,
+    /// A TOML key: `font`, or a table inside another, `git.commit_message`,
+    /// `git.repositories."/home/u/proj"` (see `repository_table`).
+    pub table: Cow<'static, str>,
     /// Fixed for a setting; an agent's id under `[agents]`.
     pub key: Cow<'static, str>,
     pub value: Option<toml_edit::Value>,
@@ -412,49 +566,88 @@ pub(crate) struct Edit {
 
 impl Edit {
     pub fn set(
-        table: &'static str,
+        table: impl Into<Cow<'static, str>>,
         key: impl Into<Cow<'static, str>>,
         value: impl Into<toml_edit::Value>,
     ) -> Self {
         Self {
-            table,
+            table: table.into(),
             key: key.into(),
             value: Some(value.into()),
         }
     }
 
-    pub fn remove(table: &'static str, key: impl Into<Cow<'static, str>>) -> Self {
+    pub fn remove(table: impl Into<Cow<'static, str>>, key: impl Into<Cow<'static, str>>) -> Self {
         Self {
-            table,
+            table: table.into(),
             key: key.into(),
             value: None,
         }
     }
 }
 
+/// The table `path` names (a TOML key, see `Edit::table`), made when missing with `make` (a
+/// parent made on the way is implicit: `[git.commit_message]` gets no empty `[git]` line before
+/// it), else None.
+fn table_at<'d>(
+    doc: &'d mut DocumentMut,
+    path: &str,
+    make: bool,
+) -> Result<Option<&'d mut dyn toml_edit::TableLike>, SaveError> {
+    let not_a_table = || SaveError::NotATable(path.to_string());
+    let keys = toml_edit::Key::parse(path).map_err(|_| not_a_table())?;
+    let mut table: &'d mut dyn toml_edit::TableLike = doc.as_table_mut();
+    for (i, key) in keys.iter().enumerate() {
+        let name = key.get();
+        if !table.contains_key(name) {
+            if !make {
+                return Ok(None);
+            }
+            let mut made = toml_edit::Table::new();
+            made.set_implicit(i + 1 < keys.len());
+            table.insert(name, toml_edit::Item::Table(made));
+        }
+        table = table
+            .get_mut(name)
+            .and_then(|item| item.as_table_like_mut())
+            .ok_or_else(not_a_table)?;
+    }
+    Ok(Some(table))
+}
+
 /// Applies `edits` to `<dir>/config.toml`, keeping everything else (comments, other keys, line
 /// endings, a byte-order mark). Creates the folder and the file; never writes over a file that
 /// doesn't parse.
 pub(crate) fn save_edits(dir: &Path, edits: &[Edit]) -> Result<(), SaveError> {
-    let path = dir.join(FILE);
-    let text = match std::fs::read_to_string(&path) {
+    save_edits_to(&dir.join(FILE), edits)
+}
+
+/// `save_edits` for any TOML file: a theme's.
+pub(crate) fn save_edits_to(path: &Path, edits: &[Edit]) -> Result<(), SaveError> {
+    let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(SaveError::Io(e)),
     };
+    let out = apply_edits(&text, edits)?;
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder).map_err(SaveError::Io)?;
+    }
+    write_whole(path, &out).map_err(SaveError::Io)
+}
+
+/// `text` with `edits` made, everything else kept; an error when `text` doesn't parse.
+pub(crate) fn apply_edits(text: &str, edits: &[Edit]) -> Result<String, SaveError> {
     let crlf = text.contains("\r\n");
     let bom = text.starts_with('\u{feff}');
     let mut doc: DocumentMut = text.parse().map_err(|e| SaveError::Broken {
-        line: line_of(&text, &e),
+        line: line_of(text, &e),
     })?;
     for edit in edits {
         match &edit.value {
             Some(value) => {
-                let table = doc
-                    .entry(edit.table)
-                    .or_insert(toml_edit::table())
-                    .as_table_like_mut()
-                    .ok_or(SaveError::NotATable(edit.table))?;
+                let table = table_at(&mut doc, &edit.table, true)?
+                    .ok_or_else(|| SaveError::NotATable(edit.table.to_string()))?;
                 // A new value in place keeps the key's comment lines and its `# …` on the line.
                 match table
                     .get_mut(&edit.key)
@@ -470,7 +663,7 @@ pub(crate) fn save_edits(dir: &Path, edits: &[Edit]) -> Result<(), SaveError> {
                     }
                 }
             }
-            None => remove_key(&mut doc, edit.table, &edit.key)?,
+            None => remove_key(&mut doc, &edit.table, &edit.key)?,
         }
     }
     // toml_edit writes LF and drops a byte-order mark: put the file's own back.
@@ -481,8 +674,7 @@ pub(crate) fn save_edits(dir: &Path, edits: &[Edit]) -> Result<(), SaveError> {
     if bom && !out.starts_with('\u{feff}') {
         out.insert(0, '\u{feff}');
     }
-    std::fs::create_dir_all(dir).map_err(SaveError::Io)?;
-    write_whole(&path, &out).map_err(SaveError::Io)
+    Ok(out)
 }
 
 /// Writes `text` to `path` whole: a temporary file beside it, renamed over it, so a crash
@@ -525,13 +717,10 @@ pub(crate) fn write_whole(path: &Path, text: &str) -> io::Result<()> {
 
 /// Removes `table.key`. The comment lines above a key belong to it in toml_edit: they move to
 /// whatever follows (the next key, the next table's header, or the end of the file).
-fn remove_key(doc: &mut DocumentMut, table: &'static str, key: &str) -> Result<(), SaveError> {
-    let Some(item) = doc.get_mut(table) else {
+fn remove_key(doc: &mut DocumentMut, table: &str, key: &str) -> Result<(), SaveError> {
+    let Some(t) = table_at(doc, table, false)? else {
         return Ok(());
     };
-    let t = item
-        .as_table_like_mut()
-        .ok_or(SaveError::NotATable(table))?;
     let comments = t
         .key(key)
         .and_then(|k| k.leaf_decor().prefix())
@@ -554,9 +743,16 @@ fn remove_key(doc: &mut DocumentMut, table: &'static str, key: &str) -> Result<(
         return Ok(());
     }
     // The last key of its table: before the next table's header, or at the end.
-    let at = doc
-        .get(table)
-        .and_then(|i| i.as_table())
+    // ponytail: the next header is looked for among the top-level tables only: the comments
+    // above a nested table's last key may move before a later top-level table rather than a
+    // nested one in between. Walk every table if someone's comments end up there.
+    let at = toml_edit::Key::parse(table)
+        .ok()
+        .and_then(|keys| {
+            keys.iter()
+                .try_fold(doc.as_item(), |item, k| item.get(k.get()))
+        })
+        .and_then(|item| item.as_table())
         .and_then(|t| t.position());
     let next_table = doc
         .iter_mut()
@@ -621,6 +817,19 @@ pub(crate) fn template(macos: bool) -> String {
         "## A system notification when Templum is in the background and a long command ends or\n",
         "## a terminal asks for attention.\n",
         "# notifications = true\n\n",
+        "[usage]\n",
+        "## When a plan limit's reset is notified: \"off\", \"reached\" (95% or more of it was used),\n",
+        "## \"half\" or \"always\".\n",
+        "# reset = \"reached\"\n",
+        "# warn = 90   # notify once at this much of a limit: 0 (never), 80, 90 or 95\n",
+        "## Templum asks Claude Code for its limits (`claude /usage`) every 5 minutes.\n",
+        "# claude_limits = true\n",
+        "## Agents whose limits the title bar doesn't show, as [\"codex\"].\n",
+        "# hide = []\n\n",
+        "[updates]\n",
+        "## Look for a new version on GitHub at start and once a day, and download it: Templum\n",
+        "## asks before restarting into it.\n",
+        "# check = true\n\n",
         "[git]\n",
         "# program = \"git\"   # a name on PATH, or a path\n\n",
         "[keys]\n",
@@ -730,6 +939,51 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(d.path().join(FILE)).unwrap(),
             broken
+        );
+    }
+
+    #[test]
+    fn save_edits_to_keeps_a_theme_files_comments() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("themes").join("Mine.toml");
+        std::fs::create_dir(d.path().join("themes")).unwrap();
+        let text = "# Mine\r\n[colors.normal]\n# Errors.\nred = \"#aa0000\" # on the line\ngreen = \"#00aa00\"\n\n[templum]\n# accent = \"#000000\"\n";
+        std::fs::write(&path, text).unwrap();
+        save_edits_to(
+            &path,
+            &[
+                Edit::set("colors.normal", "red", "#ff0000"),
+                Edit::set("templum", "canvas", "#101010"),
+            ],
+        )
+        .unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            saved.contains("# Errors.\r\nred = \"#ff0000\" # on the line"),
+            "{saved}"
+        );
+        assert!(saved.contains("green = \"#00aa00\""));
+        assert!(saved.contains("canvas = \"#101010\""));
+        assert!(saved.contains("# accent = \"#000000\""), "{saved}");
+        save_edits_to(&path, &[Edit::remove("templum", "canvas")]).unwrap();
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("canvas"));
+    }
+
+    #[test]
+    fn describe_names_the_file() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("Mine.toml");
+        std::fs::write(&path, "[colors\n").unwrap();
+        let err =
+            save_edits_to(&path, &[Edit::set("colors.normal", "red", "#ff0000")]).unwrap_err();
+        assert_eq!(
+            err.describe("Mine.toml"),
+            "Mine.toml has an error on line 1"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[colors\n",
+            "left alone"
         );
     }
 
@@ -1051,6 +1305,38 @@ scrollback = 500
     }
 
     #[test]
+    fn usage_notifications_have_defaults_and_bad_values_fail() {
+        let c = parse("").unwrap();
+        assert_eq!(c.usage.reset, Reset::Reached);
+        assert_eq!(c.usage.warn, 90);
+        assert!(c.usage.claude_limits);
+        let c = parse(
+            "[usage]\nreset = \"always\"\nwarn = 0\nclaude_limits = false\nhide = [\"codex\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            c.usage,
+            UsageConfig {
+                reset: Reset::Always,
+                warn: 0,
+                claude_limits: false,
+                hide: vec!["codex".into()],
+            }
+        );
+        let err = parse("[usage]\nwarn = 85\n").unwrap_err();
+        assert!(err.contains("usage.warn"), "{err}");
+        assert!(parse("[usage]\nreset = \"sometimes\"\n").is_err());
+    }
+
+    #[test]
+    fn updates_are_checked_unless_turned_off() {
+        assert!(parse("").unwrap().updates.check);
+        assert!(!parse("[updates]\ncheck = false\n").unwrap().updates.check);
+        let err = parse("[updates]\nchannel = \"beta\"\n").unwrap_err();
+        assert!(err.contains("channel"), "{err}");
+    }
+
+    #[test]
     fn shell_integration_and_notifications_are_on_unless_turned_off() {
         let c = parse("").unwrap();
         assert!(c.shell.integration && c.terminal.notifications);
@@ -1221,5 +1507,184 @@ scrollback = 500
         assert!(text.contains("# mode = \"system\""), "{text}");
         assert!(!text.contains("size") && !text.contains("light"), "{text}");
         assert_eq!(load(Some(d.path())).unwrap(), Config::default());
+    }
+
+    #[test]
+    fn commit_message_settings_are_read_and_checked() {
+        let c = parse(concat!(
+            "[git.commit_message]\n",
+            "agent = \"claude\"\n",
+            "model = \"sonnet\"\n",
+            "timeout = 90\n",
+            "max_diff_kb = 120\n",
+            "instructions = \"Conventional Commits.\"\n",
+            "confirmed = true\n",
+            "prompt = \"{diff}\"\n",
+            "[git.repositories.\"C:/Users/u/my.proj\"]\n",
+            "commit_instructions = \"Ticket id first.\"\n",
+            "[agents.mine]\n",
+            "name = \"Mine\"\n",
+            "command = \"mine\"\n",
+            "generate = \"mine ask -m {model}\"\n",
+            "models = [\"fast\", \"smart\"]\n",
+        ))
+        .unwrap();
+        let m = &c.git.commit_message;
+        assert_eq!(
+            (m.agent.as_deref(), m.model.as_deref()),
+            (Some("claude"), Some("sonnet"))
+        );
+        assert_eq!((m.timeout, m.max_diff_kb, m.confirmed), (90, 120, true));
+        assert_eq!(
+            (m.instructions.as_str(), m.prompt.as_deref()),
+            ("Conventional Commits.", Some("{diff}"))
+        );
+        assert_eq!(
+            c.git.repositories["C:/Users/u/my.proj"]
+                .commit_instructions
+                .as_deref(),
+            Some("Ticket id first.")
+        );
+        let mine = &c.agents["mine"];
+        assert_eq!(mine.generate.as_deref(), Some("mine ask -m {model}"));
+        assert_eq!(
+            mine.models.as_deref(),
+            Some(["fast".to_string(), "smart".to_string()].as_slice())
+        );
+        let defaults = Config::default().git.commit_message;
+        assert_eq!(
+            (defaults.timeout, defaults.max_diff_kb, defaults.confirmed),
+            (60, 60, false)
+        );
+        assert_eq!(
+            (defaults.agent, defaults.model, defaults.prompt),
+            (None, None, None)
+        );
+        assert_eq!(defaults.instructions, "");
+        for (text, key) in [
+            (
+                "[git.commit_message]\ntimeout = 4\n",
+                "git.commit_message.timeout",
+            ),
+            (
+                "[git.commit_message]\ntimeout = 601\n",
+                "git.commit_message.timeout",
+            ),
+            (
+                "[git.commit_message]\nmax_diff_kb = 3\n",
+                "git.commit_message.max_diff_kb",
+            ),
+            (
+                "[git.commit_message]\nmax_diff_kb = 1025\n",
+                "git.commit_message.max_diff_kb",
+            ),
+            (
+                "[agents.claude]\ngenerate = \" \"\n",
+                "agents.claude.generate",
+            ),
+        ] {
+            let err = parse(text).unwrap_err();
+            assert!(err.contains(key), "{text}: {err}");
+        }
+        assert!(
+            parse("[git.commit_message]\nmodle = \"x\"\n").is_err(),
+            "unknown keys still fail"
+        );
+    }
+
+    #[test]
+    fn an_edit_writes_into_a_nested_table() {
+        let d = tempfile::tempdir().unwrap();
+        save_edits(
+            d.path(),
+            &[Edit::set("git.commit_message", "model", "smart")],
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
+        assert!(
+            text.contains("[git.commit_message]") && text.contains("model = \"smart\""),
+            "{text}"
+        );
+        assert!(
+            !text.contains("[git]"),
+            "a parent made on the way has no line: {text}"
+        );
+        // An existing [git] keeps its keys and their comments.
+        write(d.path(), "[git]\nprogram = \"/opt/git\" # mine\n");
+        save_edits(
+            d.path(),
+            &[Edit::set("git.commit_message", "timeout", 90_i64)],
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
+        assert!(text.contains("program = \"/opt/git\" # mine"), "{text}");
+        let c = load(Some(d.path())).unwrap();
+        assert_eq!(
+            (c.git.program.as_str(), c.git.commit_message.timeout),
+            ("/opt/git", 90)
+        );
+        save_edits(d.path(), &[Edit::remove("git.commit_message", "timeout")]).unwrap();
+        assert_eq!(load(Some(d.path())).unwrap().git.commit_message.timeout, 60);
+        // Removing from a table that isn't there adds nothing.
+        save_edits(d.path(), &[Edit::remove("git.nothing", "x")]).unwrap();
+        let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
+        assert!(!text.contains("nothing"), "{text}");
+        // A path through a value that isn't a table is named whole.
+        write(d.path(), "git = 3\n");
+        let err =
+            save_edits(d.path(), &[Edit::set("git.commit_message", "model", "x")]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "`git.commit_message` in config.toml is not a table"
+        );
+    }
+
+    #[test]
+    fn a_repositorys_table_is_one_quoted_key() {
+        let d = tempfile::tempdir().unwrap();
+        let roots = ["/home/u/my.proj", "C:/Users/u/my proj"];
+        let edits: Vec<Edit> = roots
+            .iter()
+            .map(|r| {
+                Edit::set(
+                    repository_table(r),
+                    "commit_instructions",
+                    format!("for {r}"),
+                )
+            })
+            .collect();
+        save_edits(d.path(), &edits).unwrap();
+        let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
+        assert!(
+            text.contains("[git.repositories.\"/home/u/my.proj\"]"),
+            "{text}"
+        );
+        let c = load(Some(d.path())).unwrap();
+        for r in roots {
+            assert_eq!(
+                c.git.repositories[r].commit_instructions.as_deref(),
+                Some(format!("for {r}").as_str())
+            );
+        }
+        save_edits(
+            d.path(),
+            &[Edit::remove(
+                repository_table(roots[0]),
+                "commit_instructions",
+            )],
+        )
+        .unwrap();
+        let c = load(Some(d.path())).unwrap();
+        assert_eq!(
+            c.git
+                .repositories
+                .get(roots[0])
+                .and_then(|r| r.commit_instructions.clone()),
+            None
+        );
+        assert!(
+            c.git.repositories[roots[1]].commit_instructions.is_some(),
+            "the other stays"
+        );
     }
 }

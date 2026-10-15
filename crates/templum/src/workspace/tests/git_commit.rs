@@ -45,8 +45,8 @@ fn commit_needs_something_staged_and_a_summary_then_commits(cx: &mut TestAppCont
     click_row_button(
         handle,
         cx,
-        row_id(id, "unstaged", 0),
-        git_button(id, "stage", "unstaged", 0),
+        row_id(id, "files", 0),
+        git_button(id, "check", "files", 0),
     );
     assert!(disabled(cx), "no summary");
     let summary = git_of(&ws, cx, id, |g| g.summary.clone());
@@ -224,12 +224,13 @@ fn fetch_shows_the_counts_and_pull_fast_forwards(cx: &mut TestAppContext) {
     git_run(other.path(), &["push", "-q"]);
     let (handle, ws) = open(cx);
     let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
     git_of(&ws, cx, id, |g| {
         assert_eq!((g.status.ahead, g.status.behind), (0, 0))
     });
-    cx.update_window(handle, |_, window, cx| window.click(("git-fetch", n), cx))
-        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.fetch(id, window, cx))
+    })
+    .unwrap();
     git_of(&ws, cx, id, |g| {
         assert_eq!(g.sync, Some(crate::git_block::Sync::Fetch), "a spinner");
     });
@@ -238,15 +239,19 @@ fn fetch_shows_the_counts_and_pull_fast_forwards(cx: &mut TestAppContext) {
         assert_eq!(g.sync, None);
         assert_eq!(g.status.behind, 1);
     });
-    cx.update_window(handle, |_, window, cx| window.click(("git-pull", n), cx))
-        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.pull(id, templum_git::Pull::FastForward, window, cx)
+        })
+    })
+    .unwrap();
     settle(handle, cx);
     git_of(&ws, cx, id, |g| assert_eq!(g.status.behind, 0));
     assert!(repo.path().join("b.txt").is_file());
 }
 
 #[gpui_kit::test]
-fn push_with_no_upstream_asks_then_publishes(cx: &mut TestAppContext) {
+fn push_with_no_upstream_publishes_to_the_only_remote(cx: &mut TestAppContext) {
     use gpui_kit::component::WindowExt as _;
     no_motion(cx);
     let repo = committed_repo();
@@ -254,14 +259,14 @@ fn push_with_no_upstream_asks_then_publishes(cx: &mut TestAppContext) {
     git_run(repo.path(), &["checkout", "-q", "-b", "topic"]);
     let (handle, ws) = open(cx);
     let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
     git_of(&ws, cx, id, |g| assert_eq!(g.status.upstream, None));
     cx.update_window(handle, |_, window, cx| {
-        window.click(("git-push", n), cx);
+        ws.update(cx, |ws, cx| ws.push(id, window, cx));
         window.render_frame(cx);
-        assert!(window.has_active_dialog(cx), "asks to publish");
-        window.within("dialog").click("ok", cx);
-        window.render_frame(cx);
+        assert!(
+            !window.has_active_dialog(cx),
+            "no question: the button says Publish"
+        );
     })
     .unwrap();
     settle(handle, cx);
@@ -292,9 +297,12 @@ fn a_pull_that_cant_fast_forward_offers_merge_and_rebase(cx: &mut TestAppContext
     git_run(repo.path(), &["commit", "-q", "-m", "c"]);
     let (handle, ws) = open(cx);
     let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    cx.update_window(handle, |_, window, cx| window.click(("git-pull", n), cx))
-        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.pull(id, templum_git::Pull::FastForward, window, cx)
+        })
+    })
+    .unwrap();
     settle(handle, cx);
     assert_eq!(notification_count(handle, cx), 1);
     cx.update_window(handle, |_, window, cx| {
@@ -321,9 +329,10 @@ fn a_failed_command_offers_details_and_a_terminal(cx: &mut TestAppContext) {
     git_run(repo.path(), &["remote", "add", "origin", "/no/such/remote"]);
     let (handle, ws) = open(cx);
     let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    cx.update_window(handle, |_, window, cx| window.click(("git-fetch", n), cx))
-        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.fetch(id, window, cx))
+    })
+    .unwrap();
     settle(handle, cx);
     assert_eq!(notification_count(handle, cx), 1);
     cx.update_window(handle, |_, window, cx| {
@@ -411,9 +420,10 @@ fn the_running_fetch_button_cancels_it(cx: &mut TestAppContext) {
     let id = open_git(handle, &ws, cx, repo.path());
     let n = id.0 as usize;
     cx.update_window(handle, |_, window, cx| {
-        window.click(("git-fetch", n), cx);
+        ws.update(cx, |ws, cx| ws.fetch(id, window, cx));
         window.render_frame(cx);
-        window.click(("git-fetch", n), cx);
+        // The running command's spinning button.
+        window.click(("git-sync", n), cx);
     })
     .unwrap();
     git_of(&ws, cx, id, |g| {
@@ -430,4 +440,240 @@ fn the_running_fetch_button_cancels_it(cx: &mut TestAppContext) {
         0,
         "cancelling isn't a failure"
     );
+}
+
+#[gpui_kit::test]
+fn the_commit_message_being_written_comes_back_after_a_restart(cx: &mut TestAppContext) {
+    let repo = git_repo();
+    let data = tempfile::tempdir().unwrap();
+    let json = repo.path().display().to_string().replace('\\', "\\\\");
+    write_canvas(
+        data.path(),
+        &format!(
+            r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+                  {{"kind":"git","rect":{{"x":0,"y":0,"w":800,"h":560}},"folder":"{json}",
+                    "summary":"Fix the build","description":"It broke."}}]}}"#
+        ),
+    );
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    settle(handle, cx);
+    let id = first_id(&ws, cx);
+    let item = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, cx| {
+            ws.space
+                .git(id)
+                .unwrap()
+                .item(Rect::new(0.0, 0.0, 1.0, 1.0), cx)
+        })
+    };
+    let saved = item(cx);
+    assert_eq!(
+        (saved.summary.as_str(), saved.description.as_str()),
+        ("Fix the build", "It broke.")
+    );
+    // With Amend on, the fields hold the last commit's message: not a draft to keep.
+    ws.update(cx, |ws, _| ws.space.git_mut(id).unwrap().amend = true);
+    assert_eq!(item(cx).summary, "");
+}
+
+#[gpui_kit::test]
+fn commit_all_changes_takes_every_change_new_files_included(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    std::fs::write(repo.path().join("new.txt"), "n\n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.commit_label(), "Commit all changes (2 files)")
+    });
+    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    cx.update_window(handle, |_, window, cx| {
+        summary.update(cx, |s, cx| s.set_value("Everything", window, cx));
+        window.render_frame(cx);
+        window.click(("git-commit", n), cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, id, |g| {
+        assert!(g.status.entries.is_empty(), "committed")
+    });
+    assert_eq!(
+        git_run(repo.path(), &["show", "--name-only", "--format=%s", "HEAD"]),
+        "Everything\n\na.txt\nnew.txt\n"
+    );
+}
+
+#[gpui_kit::test]
+fn commit_and_push_from_the_commit_menu(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    let remote = add_remote(repo.path());
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    git_run(repo.path(), &["add", "a.txt"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    cx.update_window(handle, |_, window, cx| {
+        summary.update(cx, |s, cx| s.set_value("Sent at once", window, cx));
+        window.render_frame(cx);
+        window.click(("git-commit-menu", n), cx);
+        window.render_frame(cx);
+        // Commit, Commit & Push.
+        window.within("popup-menu").click(1usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(remote.path(), &["log", "-1", "--format=%s", "main"]),
+        "Sent at once\n"
+    );
+}
+
+#[gpui_kit::test]
+fn undo_commit_takes_it_back_and_puts_its_message_in_the_fields(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    git_run(repo.path(), &["add", "a.txt"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    let (summary, description) =
+        git_of(&ws, cx, id, |g| (g.summary.clone(), g.description.clone()));
+    cx.update_window(handle, |_, window, cx| {
+        summary.update(cx, |s, cx| s.set_value("Fix it", window, cx));
+        description.update(cx, |d, cx| d.set_value("Why.", window, cx));
+        window.render_frame(cx);
+        window.click(("git-commit", n), cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["log", "-1", "--format=%s"]),
+        "Fix it\n"
+    );
+    cx.update_window(handle, |_, window, cx| window.click("git-undo-commit", cx))
+        .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["log", "-1", "--format=%s"]),
+        "First\n",
+        "taken back"
+    );
+    git_of(&ws, cx, id, |g| {
+        assert_eq!(g.status.staged().len(), 1, "its change still staged")
+    });
+    ws.read_with(cx, |_, cx| {
+        assert_eq!(summary.read(cx).value(), "Fix it");
+        assert_eq!(description.read(cx).value(), "Why.");
+    });
+}
+
+#[gpui_kit::test]
+fn the_summary_counter_warns_past_72_characters(cx: &mut TestAppContext) {
+    let repo = git_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    let long = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, cx| ws.space.git(id).unwrap().summary_too_long(cx))
+    };
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("git-summary-count", n)).is_none(),
+            "nothing typed"
+        );
+        summary.update(cx, |s, cx| s.set_value("x".repeat(72), window, cx));
+        window.render_frame(cx);
+        assert!(window.try_find(("git-summary-count", n)).is_some());
+    })
+    .unwrap();
+    assert!(!long(cx), "72 fits");
+    cx.update_window(handle, |_, window, cx| {
+        summary.update(cx, |s, cx| s.set_value("x".repeat(73), window, cx))
+    })
+    .unwrap();
+    assert!(long(cx));
+}
+
+#[gpui_kit::test]
+fn undo_commit_once_pushed_offers_a_revert_instead(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    let repo = committed_repo();
+    let _remote = add_remote(repo.path());
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    git_run(repo.path(), &["add", "a.txt"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    cx.update_window(handle, |_, window, cx| {
+        summary.update(cx, |s, cx| s.set_value("Shared", window, cx));
+        window.render_frame(cx);
+        window.click(("git-commit", n), cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    // A terminal pushes it before Undo commit is clicked.
+    git_run(repo.path(), &["push", "-q"]);
+    cx.update_window(handle, |_, window, cx| window.click("git-undo-commit", cx))
+        .unwrap();
+    settle(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.has_active_dialog(cx), "says why it reverts");
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["log", "-2", "--format=%s"]),
+        "Revert \"Shared\"\nShared\n",
+        "a new commit undoes it; the pushed one stays"
+    );
+}
+
+#[gpui_kit::test]
+fn undo_commit_after_another_commit_refuses_without_a_command_to_run(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    git_run(repo.path(), &["add", "a.txt"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    cx.update_window(handle, |_, window, cx| {
+        summary.update(cx, |s, cx| s.set_value("Mine", window, cx));
+        window.render_frame(cx);
+        window.click(("git-commit", n), cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    // A terminal commits again before Undo commit is clicked.
+    git_run(
+        repo.path(),
+        &["commit", "-q", "--allow-empty", "-m", "Theirs"],
+    );
+    let before = git_run(repo.path(), &["rev-parse", "HEAD"]);
+    cx.update_window(handle, |_, window, cx| window.click("git-undo-commit", cx))
+        .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["rev-parse", "HEAD"]),
+        before,
+        "nothing taken back"
+    );
+    cx.update_window(handle, |_, window, _| {
+        assert!(
+            window.try_find("git-run").is_none(),
+            "no git command to run: the refusal is Templum's, not git's"
+        )
+    })
+    .unwrap();
 }

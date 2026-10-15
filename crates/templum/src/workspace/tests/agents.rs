@@ -19,6 +19,7 @@ fn the_agents_tab_resets_ours_and_deletes_yours(cx: &mut TestAppContext) {
             command: "mine".into(),
             resume: String::new(),
             show: true,
+            ..Draft::default()
         };
         ws.save_agent(None, &mine, cx).unwrap();
     });
@@ -81,23 +82,37 @@ fn a_saved_agent_is_resumed_in_its_block(cx: &mut TestAppContext) {
         data.path(),
         &format!(
             r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
-                  {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{folder}","agent":"claude"}}]}}"#
+                  {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{folder}","agent":"claude"}},
+                  {{"kind":"terminal","rect":{{"x":800,"y":0,"w":700,"h":450}},"folder":"{folder}","agent":"claude","session":"aaa-1"}},
+                  {{"kind":"terminal","rect":{{"x":1600,"y":0,"w":700,"h":450}},"folder":"{folder}","agent":"claude","session":"bbb-2"}}]}}"#
         ),
     );
     let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
-    let id = first_id(&ws, cx);
+    let ids: Vec<_> = ws.read_with(cx, |ws, _| ws.space.terminals().map(|(id, _)| id).collect());
+    // Without a session, the folder's latest; with one, each block its own.
+    let wanted = [
+        "claude --continue",
+        "claude --resume aaa-1",
+        "claude --resume bbb-2",
+    ];
     // The test shell echoes what it is typed.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let shown = ws.read_with(cx, |ws, _| {
-            let mut snap = Snapshot::default();
-            snap.refresh(
-                ws.space.terminal(id).unwrap().term.shared(),
-                &ws.theme.palette,
-            );
-            snap.text()
-        });
-        if shown.contains("claude --continue") {
+        let shown: Vec<String> = ids
+            .iter()
+            .map(|&id| {
+                ws.read_with(cx, |ws, _| {
+                    let mut snap = Snapshot::default();
+                    snap.refresh(
+                        ws.space.terminal(id).unwrap().term.shared(),
+                        &ws.theme.palette,
+                    );
+                    snap.text()
+                })
+            })
+            .collect();
+        let once = |want: &str| shown.iter().filter(|s| s.contains(want)).count() == 1;
+        if wanted.iter().all(|w| once(w)) {
             break;
         }
         assert!(Instant::now() < deadline, "not typed: {shown:?}");
@@ -131,15 +146,18 @@ fn an_agent_opens_in_its_folder_and_the_folder_becomes_recent(cx: &mut TestAppCo
     use templum_terminal::Snapshot;
     let (handle, ws) = open(cx);
     let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let id = cx
+    let (gemini, id) = cx
         .update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
+                let at = Point::new(0.0, 1800.0);
+                let gemini = ws.launch_agent("gemini", b.path(), at, window, cx);
                 ws.launch_agent("codex", b.path(), Point::new(0.0, 900.0), window, cx);
-                ws.launch_agent("claude", a.path(), Point::new(40.0, 0.0), window, cx)
+                let claude = ws.launch_agent("claude", a.path(), Point::new(40.0, 0.0), window, cx);
+                (gemini.expect("a block"), claude)
             })
         })
-        .unwrap()
-        .expect("a block");
+        .unwrap();
+    let id = id.expect("a block");
     ws.read_with(cx, |ws, _| {
         assert_eq!(ws.space.recent, [a.path(), b.path()]);
         assert_eq!(
@@ -147,6 +165,11 @@ fn an_agent_opens_in_its_folder_and_the_folder_becomes_recent(cx: &mut TestAppCo
             Point::new(40.0, 0.0)
         );
         assert_eq!(ws.space.focused, Some(id));
+        assert_eq!(
+            ws.space.terminal(id).unwrap().seen.agent.as_deref(),
+            Some("claude"),
+            "known at once, not at the next snapshot"
+        );
     });
     assert_eq!(folder_of(&ws, id, cx), a.path().canonicalize().unwrap());
     // The test shell echoes what it is typed.
@@ -161,6 +184,22 @@ fn an_agent_opens_in_its_folder_and_the_folder_becomes_recent(cx: &mut TestAppCo
             snap.text()
         });
         if shown.contains("claude") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "not typed: {shown:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // An agent that takes a session's id is started on one, to resume that one.
+    loop {
+        let shown = ws.read_with(cx, |ws, _| {
+            let mut snap = Snapshot::default();
+            snap.refresh(
+                ws.space.terminal(gemini).unwrap().term.shared(),
+                &ws.theme.palette,
+            );
+            snap.text()
+        });
+        if shown.contains("gemini --session-id ") {
             break;
         }
         assert!(Instant::now() < deadline, "not typed: {shown:?}");
@@ -187,6 +226,7 @@ fn agents_are_changed_reset_added_and_deleted_from_the_settings(cx: &mut TestApp
             command: "my-agent --tui".into(),
             resume: String::new(),
             show: true,
+            ..Draft::default()
         };
         assert_eq!(
             ws.save_agent(

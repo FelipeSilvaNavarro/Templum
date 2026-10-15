@@ -26,14 +26,13 @@ The next plans pick these up:
 
 - **Next phase:** saving and restoring the workspace, and configuration (font, theme, keybindings).
 - **Later:**
-  - mouse reporting to apps (clicks in htop, vim mouse);
   - hyperlinks and search;
   - built-in box-drawing glyphs;
   - inheriting the focused terminal's working directory;
   - OSC 52 clipboard, which needs a security review;
-  - bell;
-  - level-of-detail drawing at low zoom;
-  - the kitty keyboard protocol.
+  - bell.
+
+Level-of-detail drawing at low zoom, once listed under Later, is specified in [level-of-detail.md](level-of-detail.md).
 
 ## Architecture
 

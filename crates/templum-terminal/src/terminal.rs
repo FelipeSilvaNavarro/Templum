@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
@@ -19,7 +19,7 @@ use alacritty_terminal::tty;
 use alacritty_terminal::vte::ansi::CursorStyle;
 
 use crate::agent::{Detect, agent_of};
-use crate::input::{KeyInput, encode_key, paste_bytes};
+use crate::input::{KeyInput, MouseInput, encode_key, encode_mouse, paste_bytes, typed_bytes};
 use crate::palette::{self, Palette};
 use crate::tap::{Mark, Status, Tap};
 
@@ -174,9 +174,22 @@ impl TermOptions {
         Config {
             scrolling_history: self.scrollback,
             default_cursor_style: self.cursor,
+            // Programs that ask for it (Claude Code, Codex) hear Shift+Enter, Ctrl+Shift+letters.
+            kitty_keyboard: true,
             ..Config::default()
         }
     }
+}
+
+/// What the program in a terminal asked of it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Modes {
+    /// Mouse events (clicks, the wheel; maybe moves).
+    pub mouse: bool,
+    /// Keys in the kitty keyboard protocol.
+    pub kitty_keys: bool,
+    /// The alternate screen: it runs full screen.
+    pub full_screen: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -196,6 +209,15 @@ impl SharedTerm {
     pub fn set_options(&self, options: TermOptions) {
         self.0.lock_unfair().set_options(options.config());
         self.touched();
+    }
+
+    pub fn modes(&self) -> Modes {
+        let mode = *self.0.lock_unfair().mode();
+        Modes {
+            mouse: mode.intersects(TermMode::MOUSE_MODE),
+            kitty_keys: mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL),
+            full_screen: mode.contains(TermMode::ALT_SCREEN),
+        }
     }
 
     /// Starts a selection at a viewport cell (row 0 = top visible line).
@@ -260,7 +282,7 @@ impl SharedTerm {
 }
 
 /// A viewport cell, clamped to the grid, as a grid point (accounting for scrollback).
-fn grid_point(term: &Term<Listener>, row: usize, col: usize) -> GridPoint {
+pub(crate) fn grid_point(term: &Term<Listener>, row: usize, col: usize) -> GridPoint {
     let row = row.min(term.screen_lines() - 1);
     let col = col.min(term.columns() - 1);
     viewport_to_point(
@@ -287,6 +309,14 @@ pub struct Inspection {
     pub folder: Option<PathBuf>,
     /// The id of the agent open in the terminal, among those [`inspect`] was given.
     pub agent: Option<String>,
+    /// The agent's process, to find its session's files.
+    pub pid: Option<u32>,
+    /// When the agent's process started, in seconds since the Unix epoch (about a second off
+    /// on Linux).
+    pub started: Option<u64>,
+    /// The id of the session the agent was started on, from its arguments
+    /// ([`Agent::session_in`](crate::Agent::session_in)); one of Templum's agents only.
+    pub session: Option<String>,
 }
 
 /// Reads several terminals' processes in one pass over the OS's process table: slow enough to
@@ -331,13 +361,20 @@ fn inspect_one(system: &sysinfo::System, p: &Processes, known: &[Detect]) -> Ins
         // Its folder: under PowerShell, the shell's own doesn't follow `cd`, but programs it starts do.
         Some((pid, agent)) => Inspection {
             folder: cwd(pid),
+            session: system.process(pid).and_then(|process| {
+                let args = args(process);
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                crate::Agent::from_name(&agent)?.session_in(&args)
+            }),
             agent: Some(agent),
+            pid: Some(pid.as_u32()),
+            started: system.process(pid).map(sysinfo::Process::start_time),
         },
         None => Inspection {
             folder: reported(p)
                 .or_else(|| p.foreground.map(Pid::from_u32).and_then(cwd))
                 .or_else(|| p.shell.map(Pid::from_u32).and_then(cwd)),
-            agent: None,
+            ..Inspection::default()
         },
     }
 }
@@ -352,12 +389,16 @@ fn reported(p: &Processes) -> Option<PathBuf> {
         .filter(|dir| in_front && dir.is_absolute() && dir.is_dir())
 }
 
-fn agent_in(process: &sysinfo::Process, known: &[Detect]) -> Option<String> {
-    let args: Vec<String> = process
+fn args(process: &sysinfo::Process) -> Vec<String> {
+    process
         .cmd()
         .iter()
         .map(|a| a.to_string_lossy().into_owned())
-        .collect();
+        .collect()
+}
+
+fn agent_in(process: &sysinfo::Process, known: &[Detect]) -> Option<String> {
+    let args = args(process);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     agent_of(&process.name().to_string_lossy(), &args, known)
 }
@@ -372,20 +413,93 @@ fn candidates(system: &sysinfo::System, p: &Processes) -> Vec<sysinfo::Pid> {
     let Some(shell) = p.shell else {
         return Vec::new();
     };
-    let mut found = vec![Pid::from_u32(shell)];
+    descendants(system, Pid::from_u32(shell))
+}
+
+/// `root` and every process below it, nearest first. A child started before its parent names
+/// a parent that died and whose pid was taken again (Windows keeps stale parent ids): it isn't
+/// followed.
+fn descendants(system: &sysinfo::System, root: sysinfo::Pid) -> Vec<sysinfo::Pid> {
+    let started = |pid| system.process(pid).map_or(0, sysinfo::Process::start_time);
+    let mut found = vec![root];
     let mut i = 0;
     while i < found.len() {
         let parent = found[i];
-        let children: Vec<Pid> = system
+        let children: Vec<_> = system
             .processes()
             .iter()
-            .filter(|(pid, process)| process.parent() == Some(parent) && !found.contains(pid))
+            .filter(|(pid, process)| {
+                process.parent() == Some(parent)
+                    && process.thread_kind().is_none()
+                    && process.start_time() >= started(parent)
+                    && !found.contains(pid)
+            })
             .map(|(pid, _)| *pid)
             .collect();
         found.extend(children);
         i += 1;
     }
     found
+}
+
+/// A process to end later: its pid, and when it started, since a pid can be taken again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Running {
+    pub pid: u32,
+    pub started: u64,
+}
+
+/// Every process of these shells: each shell and what runs below it, and on Unix what runs in
+/// its session (a daemon that forked twice still does). Read before the shells are hung up,
+/// while the children still name their parents.
+pub fn tree(shells: &[u32]) -> Vec<Running> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::All, ProcessRefreshKind::new());
+    let mut pids: Vec<Pid> = Vec::new();
+    for shell in shells.iter().map(|s| Pid::from_u32(*s)) {
+        for pid in descendants(&system, shell) {
+            if !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+        // The shell leads its session (`setsid`): what it started and detached stays in it.
+        if cfg!(unix) {
+            for (pid, process) in system.processes() {
+                if process.thread_kind().is_none()
+                    && process.session_id() == Some(shell)
+                    && !pids.contains(pid)
+                {
+                    pids.push(*pid);
+                }
+            }
+        }
+    }
+    pids.into_iter()
+        .filter_map(|pid| {
+            Some(Running {
+                pid: pid.as_u32(),
+                started: system.process(pid)?.start_time(),
+            })
+        })
+        .collect()
+}
+
+/// Kills those of `procs` that still run, and are still the same process (SIGKILL on Unix,
+/// TerminateProcess on Windows): what ignored the hangup a closing terminal sends.
+pub fn kill_left(procs: &[Running]) {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+    let pids: Vec<Pid> = procs.iter().map(|p| Pid::from_u32(p.pid)).collect();
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), ProcessRefreshKind::new());
+    for running in procs {
+        if let Some(process) = system.process(Pid::from_u32(running.pid))
+            && process.start_time() == running.started
+            && process.status() != ProcessStatus::Zombie
+        {
+            process.kill();
+        }
+    }
 }
 
 pub struct SpawnOptions {
@@ -418,6 +532,9 @@ pub struct Terminal {
     cols: u16,
     rows: u16,
     shell_name: String,
+    /// Unique among the terminals of every Templum running; its programs see it as
+    /// `TEMPLUM_TERMINAL`.
+    id: String,
 }
 
 impl Terminal {
@@ -440,6 +557,13 @@ impl Terminal {
             // Not the terminal Templum was started from.
             ("TERM_PROGRAM".into(), "templum".into()),
         ]);
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let id = format!(
+            "{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        );
+        env.insert("TEMPLUM_TERMINAL".into(), id.clone());
         if let Some(dir) = &opts.integration {
             // Without a command, alacritty runs $SHELL: as a login shell on macOS.
             let (program, args) = command.clone().unwrap_or_else(|| {
@@ -500,7 +624,13 @@ impl Terminal {
             cols: opts.cols,
             rows: opts.rows,
             shell_name,
+            id,
         })
+    }
+
+    /// The terminal's `TEMPLUM_TERMINAL`.
+    pub fn id(&self) -> &str {
+        &self.id
     }
 
     pub fn shared(&self) -> &SharedTerm {
@@ -580,13 +710,8 @@ impl Terminal {
     /// Sends a key press. Returns false for printable text, which must come through the
     /// text-input path instead (IME, dead keys).
     pub fn key(&self, input: &KeyInput) -> bool {
-        let app_cursor = self
-            .term
-            .0
-            .lock_unfair()
-            .mode()
-            .contains(TermMode::APP_CURSOR);
-        match encode_key(input, app_cursor) {
+        let mode = *self.term.0.lock_unfair().mode();
+        match encode_key(input, mode) {
             Some(bytes) => {
                 self.write(bytes);
                 true
@@ -595,14 +720,42 @@ impl Terminal {
         }
     }
 
+    /// Reports a mouse event to the program, at its cell clamped to the grid. False when the
+    /// program didn't ask for this event.
+    pub fn mouse(&self, input: &MouseInput) -> bool {
+        let term = self.term.0.lock_unfair();
+        let mode = *term.mode();
+        let input = MouseInput {
+            row: input.row.min(term.screen_lines() - 1),
+            col: input.col.min(term.columns() - 1),
+            ..*input
+        };
+        drop(term);
+        match encode_mouse(&input, mode) {
+            Some(bytes) => {
+                let _ = self.pty.send(Msg::Input(bytes.into()));
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn paste(&self, text: &str) {
-        let bracketed = self
-            .term
+        self.write(paste_bytes(text, self.bracketed()));
+    }
+
+    /// Types `text` in for the person to send: never presses Enter (see [`typed_bytes`]).
+    pub fn type_in(&self, text: &str) {
+        self.write(typed_bytes(text, self.bracketed()));
+    }
+
+    /// The program asked for pastes to be bracketed.
+    fn bracketed(&self) -> bool {
+        self.term
             .0
             .lock_unfair()
             .mode()
-            .contains(TermMode::BRACKETED_PASTE);
-        self.write(paste_bytes(text, bracketed));
+            .contains(TermMode::BRACKETED_PASTE)
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16, cell_px: (u16, u16)) {
@@ -663,8 +816,7 @@ impl Terminal {
                 key: if lines > 0 { "up" } else { "down" },
                 ..KeyInput::default()
             };
-            let arrow = encode_key(&key, mode.contains(TermMode::APP_CURSOR))
-                .expect("arrow keys always encode");
+            let arrow = encode_key(&key, mode).expect("arrow keys always encode");
             let _ = self.pty.send(Msg::Input(
                 arrow.repeat(lines.unsigned_abs() as usize).into(),
             ));
@@ -720,7 +872,7 @@ pub(crate) fn headless(cols: u16, rows: u16) -> (SharedTerm, Arc<Shared>) {
         Palette::default(),
     ));
     let term = Term::new(
-        Config::default(),
+        TermOptions::default().config(),
         &TermSize::new(cols as usize, rows as usize),
         Listener(shared.clone()),
     );
@@ -749,6 +901,26 @@ pub(crate) fn feed_heard(term: &SharedTerm, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modes_say_what_the_program_asked_for() {
+        let (term, _) = headless(10, 2);
+        assert_eq!(term.modes(), Modes::default());
+        feed(&term, b"\x1b[>1u");
+        assert!(term.modes().kitty_keys, "the kitty keyboard is on offer");
+        // Each screen has its own keyboard flags.
+        feed(&term, b"\x1b[?1000h\x1b[?1049h");
+        assert!(!term.modes().kitty_keys);
+        feed(&term, b"\x1b[>1u");
+        assert_eq!(
+            term.modes(),
+            Modes {
+                mouse: true,
+                kitty_keys: true,
+                full_screen: true
+            }
+        );
+    }
 
     #[test]
     fn notifications_are_coalesced_until_rearmed() {

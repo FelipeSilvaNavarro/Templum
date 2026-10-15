@@ -133,10 +133,35 @@ fn an_editor_comes_back_and_one_whose_folder_is_gone_says_so(cx: &mut TestAppCon
         window.find(("choose-folder", gone.0 as usize));
         // Pointing it at a folder that exists reads it.
         ws.update(cx, |ws, cx| {
-            ws.set_editor_folder(gone, folder.path(), cx);
+            ws.set_editor_folder(gone, folder.path(), window, cx);
         });
         window.render_frame(cx);
         window.find(("tree", gone.0 as usize));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_deleted_folder_shows_after_the_poll_not_on_the_next_frame(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let folder = dir.path().join("project");
+    std::fs::create_dir(&folder).unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_editor(handle, &ws, cx, &folder);
+    std::fs::remove_dir(&folder).unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("choose-folder", id.0 as usize)).is_none(),
+            "drawing doesn't read the disk"
+        );
+    })
+    .unwrap();
+    cx.executor().advance_clock(crate::editor::POLL);
+    cx.run_until_parked();
+    frame(handle, cx);
+    cx.update_window(handle, |_, window, _| {
+        window.find(("choose-folder", id.0 as usize));
     })
     .unwrap();
 }
@@ -235,8 +260,8 @@ fn a_files_menu_asks_before_deleting_it(cx: &mut TestAppContext) {
             ws.read(cx).menu.is_some(),
             "the row's menu, not the block's"
         );
-        // Open, Reveal in file manager, Rename…, Delete….
-        window.within("popup-menu").click(3usize, cx);
+        // Open, Reveal in file manager, File history, Blame, Rename…, Delete….
+        window.within("popup-menu").click(5usize, cx);
         window.render_frame(cx);
         assert!(window.has_active_dialog(cx), "Delete… asks");
     })
@@ -445,4 +470,100 @@ fn the_editors_gutter_and_current_line_follow_the_theme(cx: &mut TestAppContext)
             );
         });
     }
+}
+
+#[gpui_kit::test]
+fn the_editor_menu_points_it_at_another_folder(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let dir = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    std::fs::write(other.path().join("b.txt"), "b").unwrap();
+    let (handle, ws) = open(cx);
+    let id = open_editor(handle, &ws, cx, dir.path());
+    ws.update(cx, |ws, _| {
+        ws.space.recent = vec![other.path().to_path_buf()]
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.right_click(("title", id.0 as usize), cx);
+        window.render_frame(cx);
+        // Change folder…, the tree, soft wrap, —, Close.
+        window.within("popup-menu").click(0usize, cx);
+    })
+    .unwrap();
+    // The menu fades out for a moment: a click meanwhile would land on it.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("recent-0", cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("choose-folder").is_none(),
+            "the dialog closed"
+        );
+        // A path that isn't a folder changes nothing.
+        let missing = other.path().join("missing");
+        ws.update(cx, |ws, cx| {
+            assert!(ws.set_editor_folder(id, &missing, window, cx).is_none())
+        });
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.editor(id).unwrap().folder, other.path())
+    });
+}
+
+#[cfg(target_os = "macos")]
+const OPEN_FILE: &str = "cmd-p";
+#[cfg(not(target_os = "macos"))]
+const OPEN_FILE: &str = "ctrl-p";
+
+#[gpui_kit::test]
+fn ctrl_p_opens_a_file_by_name(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    no_motion(cx);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    for f in ["src/lib.rs", "src/main.rs", "README.md"] {
+        std::fs::write(dir.path().join(f), "").unwrap();
+    }
+    let (handle, ws) = open(cx);
+    let id = open_editor(handle, &ws, cx, dir.path());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx));
+        window.press(OPEN_FILE, cx);
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "the picker");
+    })
+    .unwrap();
+    cx.simulate_input(handle, "lib");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    // The palette confirms once its own update is over.
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx), "closed");
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let tab = ws.space.editor(id).unwrap().active_tab().unwrap();
+        assert_eq!(tab.path, dir.path().join("src/lib.rs"));
+    });
+}
+
+/// Ctrl+P is the editor's only while one has the focus: a terminal gets it otherwise.
+#[gpui_kit::test]
+fn ctrl_p_reaches_a_focused_terminal(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    let (handle, _ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(OPEN_FILE, cx);
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+    })
+    .unwrap();
 }

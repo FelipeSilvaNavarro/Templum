@@ -1,0 +1,29 @@
+[package]
+name = "templum-update"
+description = "Templum's updates: the newest release on GitHub, the file in it for this installation, downloaded, checked and put in place; and GitHub pages as text. No UI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Already in the tree: GitHub's answer about a release.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Already in the tree (GPUI's on macOS): which release is newer, prereleases included.
+semver = "1"
+# The HTTP client (blocking, rustls with ring): GitHub's API and the release's files.
+ureq = "3"
+# Already in the tree (GPUI's on Linux): checks a download against the SHA-256 GitHub lists.
+sha2 = "0.10"
+# The portable Linux build is a .tar.gz; flate2 is already in the tree (GPUI's images).
+tar = { version = "0.4", default-features = false }
+flate2 = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -13,7 +13,8 @@ publish.workspace = true
 # Pinned exactly: upgrade only in a dedicated PR (see docs/adr/0002-ui-framework.md).
 # The grammars the editor highlights with. Not `tree-sitter-languages`: its SQL grammar pins `cc ~1.2`
 # against the tree's `cc 1.7`, so the list is the spec's curated one (docs/specs/cockpit.md, Risks).
-gpui-kit = { version = "=0.7.1", features = [
+gpui-kit = { version = "=0.7.3", features = [
+    "gpui-fast",
     "tree-sitter-markdown", "tree-sitter-toml", "tree-sitter-yaml", "tree-sitter-diff", "tree-sitter-bash",
     "tree-sitter-rust", "tree-sitter-javascript", "tree-sitter-typescript", "tree-sitter-tsx",
     "tree-sitter-python", "tree-sitter-go", "tree-sitter-html", "tree-sitter-css", "tree-sitter-c",
@@ -22,6 +23,8 @@ gpui-kit = { version = "=0.7.1", features = [
 templum-canvas = { path = "../templum-canvas" }
 templum-git = { path = "../templum-git" }
 templum-terminal = { path = "../templum-terminal" }
+templum-usage = { path = "../templum-usage" }
+templum-update = { path = "../templum-update" }
 # Already in the tree through GPUI: its channel wakes the UI from PTY threads.
 futures = "0.3"
 # Already in the tree: reads theme files and edits config.toml without losing the user's comments.
@@ -34,9 +37,17 @@ serde_json = "1"
 # Already in the tree (GPUI's): round caps and joins for strokes. GPUI re-exports StrokeOptions
 # but not lyon's LineCap and LineJoin.
 lyon_tessellation = "1"
+# Already in the tree: an editor's files for Ctrl+P, as .gitignore leaves them.
+ignore = "0.4"
+# Already in the tree (GPUI's, with its clock): when an agent's plan limit resets, in local time.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Already in the tree (uuid's): a downloaded theme checked against the git hash GitHub lists.
+sha1_smol = { version = "1", features = ["std"] }
+# Already in the tree, with its random source: the id of a session an agent is started on.
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-gpui-kit = { version = "=0.7.1", features = ["test-support"] }
+gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile = "3"
 
 [lints]

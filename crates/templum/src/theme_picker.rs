@@ -11,6 +11,7 @@ use gpui_kit::{
     point, px,
 };
 
+use crate::gallery;
 use crate::grid::hsla;
 use crate::theme::Theme;
 use crate::workspace::Workspace;
@@ -96,6 +97,27 @@ pub(crate) fn render(ws: &Workspace, picker: &Picker, cx: &mut Context<Workspace
         // Presses inside the panel don't reach the backdrop.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(list)
+        .when(ws.data_dir.is_some() && ws.config_dir.is_some(), |el| {
+            el.child(
+                div()
+                    .id("picker-gallery")
+                    .flex()
+                    .items_center()
+                    .h(px(34.0))
+                    .px(px(12.0))
+                    .border_t_1()
+                    .border_color(ui.hairline)
+                    .text_size(px(13.0))
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(ui.hover))
+                    .child("Get more themes…")
+                    .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
+                        ws.cancel_theme(cx);
+                        gallery::open(ws, window, cx);
+                    }))
+                    .test_support(),
+            )
+        })
         .when_some(picker.error.clone(), |el, error| {
             el.child(
                 div()

@@ -104,6 +104,37 @@ impl Camera {
         );
     }
 
+    /// The camera showing `rect` whole, with [`FIT_MARGIN`] around it, moved as little as
+    /// possible: itself when it already does, a pan when the rect fits at this zoom, else
+    /// [`fit`](Self::fit), which zooms out.
+    pub fn reveal(&self, rect: Rect, viewport: Size) -> Camera {
+        let z = self.zoom();
+        let (margin, view) = (FIT_MARGIN / z, Size::new(viewport.w / z, viewport.h / z));
+        if rect.w + 2.0 * margin > view.w || rect.h + 2.0 * margin > view.h {
+            let mut fit = *self;
+            fit.fit(rect, viewport);
+            return fit;
+        }
+        // One axis: the world interval [lo, lo + len] inside [origin, origin + view], margins
+        // included.
+        let axis = |origin: f32, lo: f32, len: f32, view: f32| {
+            if lo - margin < origin {
+                lo - margin
+            } else if lo + len + margin > origin + view {
+                lo + len + margin - view
+            } else {
+                origin
+            }
+        };
+        Camera {
+            origin: Point::new(
+                axis(self.origin.x, rect.x, rect.w, view.w),
+                axis(self.origin.y, rect.y, rect.h, view.h),
+            ),
+            zoom: z,
+        }
+    }
+
     fn set_zoom(&mut self, idx: usize, anchor: Point) {
         let world = self.to_world(anchor);
         self.zoom = ZOOM_STEPS[idx];
@@ -214,6 +245,33 @@ mod tests {
             cam.to_screen(Point::new(500.0, 250.0)),
             Point::new(640.0, 400.0)
         ));
+    }
+
+    #[test]
+    fn reveal_moves_just_enough_to_show_a_rect_whole() {
+        let viewport = Size::new(1000.0, 800.0);
+        let mut cam = Camera::default();
+        cam.zoom_step(-2, Point::new(0.0, 0.0)); // zoom 0.75
+        // Already shown with its margins: nothing moves.
+        let inside = Rect::new(100.0, 100.0, 400.0, 300.0);
+        assert_eq!(cam.reveal(inside, viewport), cam);
+        // Hanging off the right and the bottom: a pan, the zoom stays.
+        let right = Rect::new(1100.0, 900.0, 400.0, 200.0);
+        let to = cam.reveal(right, viewport);
+        assert_eq!(to.zoom(), 0.75);
+        let shown = to.rect_to_screen(right);
+        assert!((shown.x + shown.w - (viewport.w - FIT_MARGIN)).abs() < 1e-3);
+        assert!((shown.y + shown.h - (viewport.h - FIT_MARGIN)).abs() < 1e-3);
+        // Off the left and the top.
+        let left = Rect::new(-500.0, -400.0, 200.0, 100.0);
+        let shown = cam.reveal(left, viewport).rect_to_screen(left);
+        assert!(close(shown.origin(), Point::new(FIT_MARGIN, FIT_MARGIN)));
+        // Too big at this zoom: framed, at a smaller step.
+        let big = Rect::new(0.0, 0.0, 2000.0, 400.0);
+        let to = cam.reveal(big, viewport);
+        assert!(to.zoom() < 0.75);
+        let shown = to.rect_to_screen(big);
+        assert!(shown.x >= 0.0 && shown.x + shown.w <= viewport.w);
     }
 
     #[test]

@@ -26,6 +26,9 @@ cargo run -p templum
 
 ## Using it
 
+The first time Templum opens, a welcome lets you pick a theme, a shell and your AI agents, and shows the keys worth
+knowing. **Welcome** in the settings panel's footer shows it again.
+
 | Mouse | Result |
 |---|---|
 | Double-click empty canvas | New terminal there |
@@ -35,10 +38,11 @@ cargo run -p templum
 | Hold Alt (Option on macOS), then drag or scroll anywhere | Pan, even over blocks: they don't react while Alt is held |
 | Drag with the middle button, anywhere | Pan |
 | Scroll over a terminal | Scroll its history |
+| Click, drag or scroll in a program that uses the mouse (htop, vim, Claude Code full screen) | The program gets it; hold Shift to select text instead |
 | Ctrl+scroll, or pinch | Zoom |
 | Drag in a terminal (double-click: word, triple-click: line) | Select text |
 | Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board, Note, Editor or Git, where you clicked |
-| Right-click a block, card, column, board or workspace tile | Its menu (copy, paste, rename, delete, close…) |
+| Right-click a block, card, column, board or workspace tile | Its menu (copy, paste, move to another workspace, edit, stop, delete, close…) |
 | With a drawing tool on, drag the canvas | Draw; Shift keeps lines at 45° and makes squares and circles |
 
 | Linux / Windows | macOS | Action |
@@ -60,14 +64,29 @@ cargo run -p templum
 | Ctrl+Tab / Ctrl+Shift+Tab | Ctrl+Tab / Ctrl+Shift+Tab | Next / previous workspace |
 | Ctrl+1 … Ctrl+9 | Cmd+1 … Cmd+9 | Workspace 1 to 9 |
 | Ctrl+Shift+N | Cmd+Shift+N | New workspace |
+| Ctrl+Shift+O | Cmd+Shift+O | The workspaces screen |
 | Ctrl+Shift+Q, twice | Cmd+Q, twice | Quit (the first press only asks for the second) |
+
+In a terminal taken over by a program (full screen, an AI agent, or one that asked for the mouse or the kitty
+keyboard), zoom, settings, the theme picker and the prompt jumps leave their keys to it: Ctrl+- undoes in Claude Code.
+Shift+Enter is a new line in Claude Code and Codex.
 
 ## Workspaces
 
 Each workspace is a whole canvas of its own, such as one per project. The sidebar on the left shows them all: click
-one to switch, **+** to add one, and right-click a tile to rename or delete it. The button at the left of the title
-bar hides or shows the sidebar. Terminals in the workspaces you aren't looking at keep running, so an agent keeps
-working while you look elsewhere; a green dot on a tile means Claude Code or Codex is running in it.
+one to switch, drag one to reorder, **+** to add one. The button at the left of the title bar hides or shows the
+sidebar. Terminals in the workspaces you aren't looking at keep running, so an agent keeps working while you look
+elsewhere; a green dot on a tile means Claude Code or Codex is running in it.
+
+- **The workspaces screen** (the grid button atop the sidebar, the workspace's name in the title bar, or
+  Ctrl+Shift+O) shows a card per workspace with what it holds ("3 terminals · 1 Claude Code running"). Type to find
+  one, Up/Down and Enter to open it, drag cards to reorder.
+- **Edit…** (right-click a tile or a card) names a workspace and gives it a color, a Lucide icon or an image, and a
+  folder: new terminals start there.
+- **Stop** ends every program of a workspace (shells, agents, servers) and keeps its layout; opening it starts its
+  terminals again, agents resumed. A stopped workspace stays stopped across restarts and costs nothing at launch.
+- **Move to workspace ▸** (right-click a block or a selection) sends blocks to another workspace while they run: an
+  agent keeps working there.
 
 ## Themes
 
@@ -75,13 +94,26 @@ Templum follows your system's light or dark mode. Click the **palette** button i
 arrow keys preview it, and a click or Enter keeps it for the current mode. The default is Catppuccin: Latte in
 light mode, Mocha in dark mode.
 
-Any theme in [Alacritty's format](https://github.com/alacritty/alacritty-theme) works. Put its `.toml` file in the
-`themes` folder, and it shows up under "My themes" the next time you open the picker:
+**Get more themes…**, at the bottom of the picker, opens a gallery of the themes of
+[alacritty-theme](https://github.com/alacritty/alacritty-theme): hover one to see it on the whole window, click it to
+install it. Any other theme in [Alacritty's format](https://alacritty.org/config-alacritty.html#colors) works too:
+put its `.toml` file in the `themes` folder, and it shows up under "My themes" the next time you open the picker:
 
 | OS | Folder |
 |---|---|
 | Linux, macOS | `~/.config/templum/themes/` (or `$XDG_CONFIG_HOME/templum/themes/`) |
 | Windows | `%APPDATA%\templum\themes\` |
+
+To make your own, open Settings ▸ Appearance: **Duplicate…** copies the theme in use into that folder, with
+comments that say what each color paints. **Open file** opens it in an editor block, and saving it there (or in any
+editor) shows the change at once. Besides Alacritty's colors, a theme can set three of Templum's:
+
+```toml
+[templum]
+accent = "#ff8800"  # the focused block's border
+canvas = "#101018"  # behind the blocks
+dots = "#303040"    # the dot grid
+```
 
 Your choice is saved in `config.toml`, one folder up:
 
@@ -96,7 +128,7 @@ dark = "Catppuccin Mocha"
 Press **Ctrl+,** (**Cmd+,** on macOS), or the ⚙ in the title bar, to open the settings panel on the right. It has
 Appearance (light/dark mode and themes), Font (with a preview), Terminal (cursor and
 scrollback, system notifications), Shell (for new terminals: pick one of the shells found on your computer, shell
-integration), Tools (the `git` program), Agents and Shortcuts. The terminals stay usable next to it, so you see each change
+integration), Tools (the `git` program), Agents, Usage (notifications about agents' plan limits) and Shortcuts. The terminals stay usable next to it, so you see each change
 as you make it.
 
 - Every change applies at once and is saved to `config.toml` a moment later, keeping your comments. Numbers apply
@@ -157,6 +189,14 @@ terminal. The block refreshes
 every 2 seconds while it is on screen, after each action, and when a terminal of the workspace finishes a command
 in the repository, so `git add` in a terminal shows at once. Settings ▸ Tools names the `git` program.
 
+**Generate ✨**, beside the summary, has an AI agent write the commit message: Claude Code (`claude -p`) and
+Codex (`codex exec`) work as they are, any other agent once its generate command is set in Settings ▸ Agents.
+It gets the diff of what you commit (cut past 60 KB, the list of files always whole), the last 10 commit
+summaries and your rules (Settings ▸ Git, or a repository's own from the ⚙ beside it), and only fills the
+summary and the description, for you to read and commit. A second click stops it, and a message you typed
+meanwhile is kept. The first time, it asks before sending your diff to the agent's provider. Settings ▸ Git
+chooses the agent and its model, and **Try it** runs it on a sample change.
+
 ## The toolbar
 
 The bar at the bottom of the canvas holds the tools: **Select** and **Hand** (move the canvas by dragging anywhere,
@@ -192,6 +232,14 @@ Code, Cline or Pi. Templum asks which folder it runs in: one of this workspace's
 or a path you type. It opens a terminal there and starts the agent; agents you haven't installed show their install
 command instead. **Settings ▸ Agents** changes any agent's command or resume command (↺ puts it back), hides
 the ones you don't use from the menu, and adds your own agents. The full list, with how each one resumes, is in [docs/specs/agents.md](docs/specs/agents.md).
+
+A terminal running Claude Code or Codex shows its session in its header: how much of the context is used, and the
+cost or the tokens. The title bar shows each agent's plan limits in turn (the 5-hour and weekly windows of a Claude
+or ChatGPT plan; **Settings ▸ Usage** picks which agents); click it for every agent's limits, when each resets, and
+the open sessions. Templum asks Claude Code for its limits every 5 minutes (its `/usage`, which costs nothing). Templum tells
+you when a limit nears its end and when one you reached resets (**Settings ▸ Usage**). Claude Code hands its limits
+to its status line, so the Claude Code Templum opens gets `--settings` naming Templum's: your own status line still
+shows. Templum reads only what the agents write, never their login. See [docs/specs/usage.md](docs/specs/usage.md).
 
 ## Shell integration
 
@@ -241,8 +289,22 @@ blink = false
 scrollback = 10000
 notifications = true   # system notifications while Templum is in the background
 
+[usage]
+reset = "reached"      # when a plan limit's reset is notified: "off" | "reached" | "half" | "always"
+warn = 90              # notify once at this much of a limit: 0 (never) | 80 | 90 | 95
+claude_limits = true   # Templum asks Claude Code for its limits
+hide = ["codex"]       # agents whose limits the title bar doesn't show
+
+[updates]
+check = true   # look for a new version at start and once a day, and download it
+
 [git]
 program = "git"   # the Git block's program: a name on PATH, or a path
+
+[git.commit_message]   # Generate ✨: an AI agent writes the commit message
+agent = "claude"       # an agent with a generate command (Settings ▸ Agents)
+model = "haiku"
+instructions = "Conventional Commits, English, imperative."
 
 [keys]
 new_terminal = "ctrl-shift-t"   # one shortcut, a list, or [] to disable
@@ -267,6 +329,15 @@ What changed in each one is in [CHANGELOG.md](CHANGELOG.md). The builds are **un
 
 - **macOS:** right-click the app → *Open* → *Open* (only needed the first time).
 - **Windows:** on the SmartScreen prompt, click *More info* → *Run anyway*.
+
+### Updates
+
+Templum looks for a new release at start and once a day, downloads the file made for your system and for the way
+you installed it (an AppImage replaces the AppImage, the installer runs again, and so on), checks it against the
+SHA-256 GitHub lists, and asks before restarting into it: **Restart to update** in the title bar. Templum installed
+with a `.deb` or the pacman package gets the install command typed in a terminal, for your password. Run from the
+disk image on macOS, it is only told a version is out; a build from source checks only on demand. **Settings ▸
+Updates** checks on demand and turns the automatic check off ([docs/specs/updates.md](docs/specs/updates.md)).
 
 ## Contributing
 

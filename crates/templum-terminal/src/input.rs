@@ -1,4 +1,7 @@
-//! Bytes sent to the shell for key presses and pastes (xterm conventions).
+//! Bytes sent to the shell for key presses, mouse events and pastes (xterm conventions, and the
+//! kitty keyboard protocol for programs that turn it on).
+
+use alacritty_terminal::term::TermMode;
 
 /// A key press, as the UI toolkit reports it (GPUI key names: "enter", "up", "f5", "a"...).
 #[derive(Clone, Copy, Debug, Default)]
@@ -11,9 +14,10 @@ pub struct KeyInput<'a> {
     pub shift: bool,
 }
 
-/// Bytes for a key press. `None` means "not a terminal key": printable text, IME and dead
-/// keys go through the UI's text-input path instead.
-pub fn encode_key(k: &KeyInput, app_cursor: bool) -> Option<Vec<u8>> {
+/// Bytes for a key press, in the terminal's `mode` (cursor keys, the kitty keyboard's flags).
+/// `None` means "not a terminal key": printable text, IME and dead keys go through the UI's
+/// text-input path instead.
+pub(crate) fn encode_key(k: &KeyInput, mode: TermMode) -> Option<Vec<u8>> {
     // Windows reports AltGr as Ctrl+Alt; when it types a printable char, that char is text.
     if k.ctrl
         && k.alt
@@ -22,8 +26,14 @@ pub fn encode_key(k: &KeyInput, app_cursor: bool) -> Option<Vec<u8>> {
     {
         return None;
     }
-    // xterm modifier parameter: 1 + shift + 2*alt + 4*ctrl.
+    // xterm modifier parameter (the kitty protocol's too): 1 + shift + 2*alt + 4*ctrl.
     let m = 1 + k.shift as u8 + 2 * k.alt as u8 + 4 * k.ctrl as u8;
+    if mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL)
+        && let Some(bytes) = kitty_key(k, m, mode)
+    {
+        return Some(bytes);
+    }
+    let app_cursor = mode.contains(TermMode::APP_CURSOR);
     let cursor = |f: char| match (m > 1, app_cursor) {
         (true, _) => format!("\x1b[1;{m}{f}").into_bytes(),
         (false, true) => format!("\x1bO{f}").into_bytes(),
@@ -80,7 +90,7 @@ pub fn encode_key(k: &KeyInput, app_cursor: bool) -> Option<Vec<u8>> {
                 b'4' => 0x1c,
                 b'5' => 0x1d,
                 b'6' => 0x1e,
-                b'7' | b'/' => 0x1f,
+                b'7' | b'/' | b'-' => 0x1f,
                 b'8' => 0x7f,
                 _ => return None,
             };
@@ -97,6 +107,148 @@ pub fn encode_key(k: &KeyInput, app_cursor: bool) -> Option<Vec<u8>> {
     })
 }
 
+/// A key in the kitty keyboard protocol (sw.kovidgoyal.net/kitty/keyboard-protocol), as
+/// `CSI code[:shifted];modifiers[;text] u`: what legacy bytes can't tell apart (Shift+Enter,
+/// Ctrl+Shift+letter, Esc) or, when the program asked for every key, any key. None: the legacy
+/// bytes say it (arrows, F-keys, Home... already carry their modifiers; plain text is text).
+// ponytail: presses only, no repeat or release events nor lone modifier keys; they need key-up
+// events from the UI.
+fn kitty_key(k: &KeyInput, m: u8, mode: TermMode) -> Option<Vec<u8>> {
+    let every = mode.contains(TermMode::REPORT_ALL_KEYS_AS_ESC);
+    let (code, text_key) = match k.key {
+        "escape" => (27, false),
+        "enter" => (13, false),
+        "tab" => (9, false),
+        "backspace" => (127, false),
+        "space" => (32, true),
+        key => {
+            let mut chars = key.chars();
+            let c = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            (u32::from(c), true)
+        }
+    };
+    // Enter, Tab and Backspace alone keep their bytes, so a shell left in this mode by a crashed
+    // program still runs commands; text is text unless Ctrl or Alt is held.
+    let plain = if text_key {
+        !k.ctrl && !k.alt
+    } else {
+        m == 1 && k.key != "escape"
+    };
+    if plain && !every {
+        return None;
+    }
+    let mut seq = format!("\x1b[{code}");
+    let typed = k
+        .key_char
+        .filter(|t| !t.is_empty() && !t.chars().any(char::is_control));
+    if mode.contains(TermMode::REPORT_ALTERNATE_KEYS)
+        && k.shift
+        && let Some(shifted) = typed.filter(|t| *t != k.key && t.chars().count() == 1)
+    {
+        seq += &format!(":{}", u32::from(shifted.chars().next()?));
+    }
+    let text = typed.filter(|_| {
+        text_key && every && !k.ctrl && !k.alt && mode.contains(TermMode::REPORT_ASSOCIATED_TEXT)
+    });
+    if m > 1 || text.is_some() {
+        seq += &format!(";{m}");
+    }
+    if let Some(text) = text {
+        let points: Vec<String> = text.chars().map(|c| u32::from(c).to_string()).collect();
+        seq += &format!(";{}", points.join(":"));
+    }
+    seq.push('u');
+    Some(seq.into_bytes())
+}
+
+/// A mouse button, or a step of the wheel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Button {
+    Left,
+    Middle,
+    Right,
+    WheelUp,
+    WheelDown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseKind {
+    Press,
+    Release,
+    /// The pointer moved to another cell.
+    Move,
+}
+
+/// A mouse event over a terminal, for the program in it that asked for the mouse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MouseInput {
+    /// None: a move with no button down.
+    pub button: Option<Button>,
+    pub kind: MouseKind,
+    /// The viewport cell (row 0 = top visible line).
+    pub row: usize,
+    pub col: usize,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+}
+
+/// Bytes for a mouse event, as the program asked for them (xterm's 1000/1002/1003 and their SGR
+/// and UTF-8 forms). None: it didn't ask for this event, or a cell too far for the old form.
+pub(crate) fn encode_mouse(e: &MouseInput, mode: TermMode) -> Option<Vec<u8>> {
+    let wanted = match (e.kind, e.button) {
+        (MouseKind::Move, None) => mode.contains(TermMode::MOUSE_MOTION),
+        (MouseKind::Move, Some(_)) => {
+            mode.intersects(TermMode::MOUSE_MOTION | TermMode::MOUSE_DRAG)
+        }
+        _ => mode.intersects(TermMode::MOUSE_MODE),
+    };
+    if !wanted {
+        return None;
+    }
+    let button = match e.button {
+        None => 3,
+        Some(Button::Left) => 0,
+        Some(Button::Middle) => 1,
+        Some(Button::Right) => 2,
+        Some(Button::WheelUp) => 64,
+        Some(Button::WheelDown) => 65,
+    };
+    let extra = 4 * e.shift as u32
+        + 8 * e.alt as u32
+        + 16 * e.ctrl as u32
+        + if e.kind == MouseKind::Move { 32 } else { 0 };
+    let (col, row) = (e.col as u32 + 1, e.row as u32 + 1);
+    if mode.contains(TermMode::SGR_MOUSE) {
+        let end = if e.kind == MouseKind::Release {
+            'm'
+        } else {
+            'M'
+        };
+        return Some(format!("\x1b[<{};{col};{row}{end}", button + extra).into_bytes());
+    }
+    // The old form doesn't say which button was let go.
+    let button = if e.kind == MouseKind::Release {
+        3
+    } else {
+        button
+    };
+    let mut bytes = b"\x1b[M".to_vec();
+    bytes.push(u8::try_from(32 + button + extra).ok()?);
+    for v in [col, row] {
+        if mode.contains(TermMode::UTF8_MOUSE) {
+            let c = char::from_u32(32 + v).filter(|_| 32 + v < 0x800)?;
+            bytes.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes());
+        } else {
+            bytes.push(u8::try_from(32 + v).ok()?);
+        }
+    }
+    Some(bytes)
+}
+
 /// Bytes for pasted text. Bracketed when the app asked for it (and then any ESC is dropped,
 /// so the payload can't close the bracket early and run commands); otherwise newlines
 /// become carriage returns, like typing Enter.
@@ -109,9 +261,32 @@ pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
     }
 }
 
+/// Bytes for text typed in for the person to send (a note, a card): never an Enter. Bracketed
+/// like a paste when the app asked for it; otherwise its lines are joined with spaces and every
+/// other control character becomes a space. Trailing newlines are dropped.
+pub fn typed_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    let text = text.trim_end_matches(['\r', '\n']);
+    if bracketed {
+        paste_bytes(text, true)
+    } else {
+        text.replace("\r\n", "\n")
+            .chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect::<String>()
+            .into_bytes()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_text_never_presses_enter() {
+        assert_eq!(typed_bytes("ls\r\nrm -rf x\n", false), b"ls rm -rf x");
+        assert_eq!(typed_bytes("a\tb\x1b[A", false), b"a b [A");
+        assert_eq!(typed_bytes("a\nb\n", true), b"\x1b[200~a\nb\x1b[201~");
+    }
 
     fn key(key: &str) -> KeyInput<'_> {
         KeyInput {
@@ -121,7 +296,7 @@ mod tests {
     }
 
     fn enc(k: KeyInput) -> Option<Vec<u8>> {
-        encode_key(&k, false)
+        encode_key(&k, TermMode::empty())
     }
 
     #[test]
@@ -139,7 +314,10 @@ mod tests {
         );
         assert_eq!(enc(key("escape")).unwrap(), b"\x1b");
         assert_eq!(enc(key("up")).unwrap(), b"\x1b[A");
-        assert_eq!(encode_key(&key("up"), true).unwrap(), b"\x1bOA");
+        assert_eq!(
+            encode_key(&key("up"), TermMode::APP_CURSOR).unwrap(),
+            b"\x1bOA"
+        );
         assert_eq!(enc(key("home")).unwrap(), b"\x1b[H");
         assert_eq!(enc(key("pageup")).unwrap(), b"\x1b[5~");
         assert_eq!(enc(key("delete")).unwrap(), b"\x1b[3~");
@@ -164,7 +342,7 @@ mod tests {
                     ctrl: true,
                     ..key("right")
                 },
-                true
+                TermMode::APP_CURSOR
             )
             .unwrap(),
             b"\x1b[1;5C"
@@ -293,6 +471,140 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn ctrl_minus_is_ctrl_underscore() {
+        let ctrl_minus = KeyInput {
+            ctrl: true,
+            ..key("-")
+        };
+        assert_eq!(enc(ctrl_minus).unwrap(), [0x1f]);
+    }
+
+    fn kitty(k: KeyInput, mode: TermMode) -> String {
+        String::from_utf8(encode_key(&k, mode).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn the_kitty_keyboard_tells_apart_what_legacy_bytes_cant() {
+        let mode = TermMode::DISAMBIGUATE_ESC_CODES;
+        let shift = |k| KeyInput { shift: true, ..k };
+        let ctrl = |k| KeyInput { ctrl: true, ..k };
+        assert_eq!(
+            kitty(shift(key("enter")), mode),
+            "\x1b[13;2u",
+            "Shift+Enter"
+        );
+        assert_eq!(kitty(ctrl(key("enter")), mode), "\x1b[13;5u");
+        assert_eq!(kitty(shift(key("tab")), mode), "\x1b[9;2u");
+        assert_eq!(kitty(key("escape"), mode), "\x1b[27u");
+        assert_eq!(kitty(ctrl(key("c")), mode), "\x1b[99;5u");
+        assert_eq!(kitty(shift(ctrl(key("a"))), mode), "\x1b[97;6u");
+        assert_eq!(
+            kitty(ctrl(key("-")), mode),
+            "\x1b[45;5u",
+            "Claude Code's undo"
+        );
+        let alt_x = KeyInput {
+            alt: true,
+            key_char: Some("x"),
+            ..key("x")
+        };
+        assert_eq!(kitty(alt_x, mode), "\x1b[120;3u");
+        // A shell left in this mode still runs commands; text and arrows keep their bytes.
+        assert_eq!(kitty(key("enter"), mode), "\r");
+        assert_eq!(kitty(key("backspace"), mode), "\x7f");
+        assert_eq!(kitty(ctrl(key("up")), mode), "\x1b[1;5A");
+        let a = KeyInput {
+            key_char: Some("a"),
+            ..key("a")
+        };
+        assert_eq!(encode_key(&a, mode), None);
+        let upper = KeyInput {
+            key_char: Some("A"),
+            ..shift(key("a"))
+        };
+        assert_eq!(encode_key(&upper, mode), None);
+    }
+
+    #[test]
+    fn the_kitty_keyboard_can_report_every_key() {
+        let every = TermMode::DISAMBIGUATE_ESC_CODES | TermMode::REPORT_ALL_KEYS_AS_ESC;
+        let a = KeyInput {
+            key_char: Some("a"),
+            ..key("a")
+        };
+        assert_eq!(kitty(a, every), "\x1b[97u");
+        assert_eq!(kitty(key("enter"), every), "\x1b[13u");
+        let upper = KeyInput {
+            shift: true,
+            key_char: Some("A"),
+            ..key("a")
+        };
+        let all = every | TermMode::REPORT_ALTERNATE_KEYS | TermMode::REPORT_ASSOCIATED_TEXT;
+        assert_eq!(kitty(upper, every), "\x1b[97;2u");
+        assert_eq!(kitty(upper, all), "\x1b[97:65;2;65u");
+    }
+
+    fn mouse(button: Option<Button>, kind: MouseKind) -> MouseInput {
+        MouseInput {
+            button,
+            kind,
+            row: 2,
+            col: 4,
+            ctrl: false,
+            alt: false,
+            shift: false,
+        }
+    }
+
+    fn report(e: MouseInput, mode: TermMode) -> Option<String> {
+        encode_mouse(&e, mode).map(|b| String::from_utf8(b).unwrap())
+    }
+
+    #[test]
+    fn mouse_events_reach_only_programs_that_asked() {
+        use MouseKind::*;
+        let left = Some(Button::Left);
+        assert_eq!(report(mouse(left, Press), TermMode::empty()), None);
+        let clicks = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
+        assert_eq!(report(mouse(left, Press), clicks).unwrap(), "\x1b[<0;5;3M");
+        assert_eq!(
+            report(mouse(left, Release), clicks).unwrap(),
+            "\x1b[<0;5;3m"
+        );
+        let wheel = mouse(Some(Button::WheelDown), Press);
+        assert_eq!(report(wheel, clicks).unwrap(), "\x1b[<65;5;3M");
+        let ctrl_right = MouseInput {
+            ctrl: true,
+            ..mouse(Some(Button::Right), Press)
+        };
+        assert_eq!(report(ctrl_right, clicks).unwrap(), "\x1b[<18;5;3M");
+        // Moves: while a button is held for 1002, any for 1003.
+        assert_eq!(report(mouse(left, Move), clicks), None);
+        let drags = TermMode::MOUSE_DRAG | TermMode::SGR_MOUSE;
+        assert_eq!(report(mouse(left, Move), drags).unwrap(), "\x1b[<32;5;3M");
+        assert_eq!(report(mouse(None, Move), drags), None);
+        let moves = TermMode::MOUSE_MOTION | TermMode::SGR_MOUSE;
+        assert_eq!(report(mouse(None, Move), moves).unwrap(), "\x1b[<35;5;3M");
+    }
+
+    #[test]
+    fn mouse_events_in_the_old_forms() {
+        let clicks = TermMode::MOUSE_REPORT_CLICK;
+        let press = mouse(Some(Button::Left), MouseKind::Press);
+        assert_eq!(report(press, clicks).unwrap(), "\x1b[M %#");
+        let release = mouse(Some(Button::Left), MouseKind::Release);
+        assert_eq!(
+            report(release, clicks).unwrap(),
+            "\x1b[M#%#",
+            "no button said"
+        );
+        let far = MouseInput { col: 300, ..press };
+        assert_eq!(report(far, clicks), None, "past what a byte holds");
+        let utf8 = clicks | TermMode::UTF8_MOUSE;
+        assert_eq!(report(far, utf8).unwrap(), "\x1b[M \u{14d}#");
     }
 
     #[test]

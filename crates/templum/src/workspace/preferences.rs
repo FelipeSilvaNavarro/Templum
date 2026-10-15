@@ -1,5 +1,6 @@
 //! config.toml, the themes and the settings panel: reading, applying and saving them.
 
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -7,9 +8,11 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, KeyDownEvent, Keystroke, Window};
 use templum_canvas::chrome;
 use templum_git::Repo;
+use templum_terminal::Rgb;
 
 use crate::agents;
 use crate::config::{self, Config, Edit};
+use crate::gallery;
 use crate::grid::CellMetrics;
 use crate::keys::{self, Command, Keymap, Keys};
 use crate::settings::{self, Panel};
@@ -37,7 +40,7 @@ impl Workspace {
             Some(id) => id.to_string(),
             None => agents::new_id(&draft.name, |x| pending.agents.contains_key(x)),
         };
-        match draft.to_config(builtin) {
+        match draft.to_config(builtin, &agents::codex_models()) {
             Some(set) => {
                 let value = agents::to_value(&set);
                 let key = id.clone();
@@ -89,7 +92,7 @@ impl Workspace {
     }
 
     /// Picks the theme for the mode in effect (the system's, unless config.toml pins one).
-    pub(super) fn refresh_theme(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn refresh_theme(&mut self, cx: &mut Context<Self>) {
         self.dark = self.config.theme.mode.dark(self.system_dark);
         let theme = theme::pick(
             &self.themes,
@@ -107,10 +110,67 @@ impl Workspace {
             // brings back both them and what changed by hand. If the file still doesn't parse,
             // the reload says so.
             if !self.unsaved.is_empty() {
-                self.save();
+                self.save_config();
             }
             self.config_stamp = config::Stamp::of(self.config_dir.as_deref());
             self.reload_config(window, cx);
+        }
+        self.poll_theme(window, cx);
+    }
+
+    /// Reads the theme in use again when its file changed (saved from an editor block, or any
+    /// editor), and applies it. A file that doesn't read keeps the last good colors and says so
+    /// once: the stamp is kept, so only the next save is read.
+    fn poll_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.theme_path() else {
+            self.theme_file = None;
+            return;
+        };
+        let mut stamp = config::Stamp::file(&path);
+        if self
+            .theme_file
+            .as_ref()
+            .is_some_and(|(p, s)| *p == path && *s == stamp)
+        {
+            return;
+        }
+        // The color editor's changes go in first: the write merges them with the file's, and the
+        // read below shows both.
+        if self.theme_edits.as_ref().is_some_and(|(p, _)| *p == path) {
+            if let Some(message) = self.save_theme_edits() {
+                show_notification(window, cx, Notification::error(message));
+            }
+            stamp = config::Stamp::file(&path);
+        }
+        self.theme_file = Some((path.clone(), stamp));
+        match theme::read(&path) {
+            Ok(read) => {
+                let read = Rc::new(read);
+                if let Some(entry) = self
+                    .themes
+                    .iter_mut()
+                    .find(|e| e.path.as_ref() == Some(&path))
+                {
+                    entry.theme = read.clone();
+                }
+                // Esc in the picker must put back this, not the copy from before the save.
+                if let Some(picker) = &mut self.picker
+                    && picker.before.name == read.name
+                {
+                    picker.before = read.clone();
+                }
+                if read != self.theme {
+                    self.apply(read, cx);
+                }
+            }
+            Err(err) => {
+                let message = format!(
+                    "Theme \"{}\": {err}. Keeping the last good one",
+                    self.theme.name
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+            }
         }
     }
 
@@ -169,7 +229,16 @@ impl Workspace {
             }
         }
         if self.config.agents != old.agents {
-            self.agents = agents::effective(&self.config.agents);
+            self.agents = agents::effective(&self.config.agents, &agents::codex_models());
+        }
+        if self.config.agents != old.agents
+            || self.config.git.commit_message != old.git.commit_message
+        {
+            self.commit_agent = agents::commit_agent(
+                &self.agents,
+                &self.config.git.commit_message,
+                templum_terminal::installed,
+            );
         }
         if self.config.keys != old.keys {
             let (keymap, warnings) = Keymap::new(&self.config.keys, cfg!(target_os = "macos"))
@@ -208,9 +277,19 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Writes the unsaved changes: the color editor's to the theme's file, the settings' to
+    /// config.toml. Returns why one failed.
+    pub(super) fn save(&mut self) -> Option<String> {
+        let theme = self.save_theme_edits();
+        match (self.save_config(), theme) {
+            (Some(config), Some(theme)) => Some(format!("{config}\n{theme}")),
+            (config, theme) => config.or(theme),
+        }
+    }
+
     /// Writes the unsaved settings changes to config.toml. If that fails they stay in effect and
     /// unsaved, for the next try, and the message is returned and kept for the panel's footer.
-    pub(super) fn save(&mut self) -> Option<String> {
+    fn save_config(&mut self) -> Option<String> {
         let edits = std::mem::take(&mut self.unsaved);
         // No config folder: changes last until Templum quits (the panel's footer says so).
         let dir = self.config_dir.clone()?;
@@ -236,6 +315,101 @@ impl Workspace {
                 Some(message)
             }
         }
+    }
+
+    /// Writes the color editor's changes to the theme's file. If that fails they are dropped, and
+    /// the message says why: what the file holds wins (it may be broken mid-edit by hand), and the
+    /// poll reads it again. After a good write the poll reads it once too, which applies nothing
+    /// new unless the list or the screen fell behind (a reload of the folder meanwhile).
+    fn save_theme_edits(&mut self) -> Option<String> {
+        let (path, edits) = self.theme_edits.take()?;
+        let saved = config::save_edits_to(&path, &edits);
+        // Read again at the next poll.
+        self.theme_file = None;
+        saved.err().map(|err| {
+            let file = path.file_name().unwrap_or_default().to_string_lossy();
+            let message = format!("Not saved: {}", err.describe(&file));
+            eprintln!("templum: {message}");
+            message
+        })
+    }
+
+    /// A color of the theme in use, from the color editor (`i` as in `theme::key`; None takes a
+    /// `[templum]` color out): shown at once, written to the theme's file SAVE_DELAY after the
+    /// last change. A file that doesn't parse is never written: the change isn't shown, and a
+    /// notification (one, however many changes) says where the error is.
+    pub(crate) fn set_theme_color(
+        &mut self,
+        i: usize,
+        color: Option<Rgb>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = self.theme_path() else {
+            return;
+        };
+        // Changes to another theme (the mode switched) are written first.
+        if self.theme_edits.as_ref().is_some_and(|(p, _)| *p != path) {
+            self.save_or_notify(window, cx);
+        }
+        let (table, key) = theme::key(i);
+        let edit = match color {
+            Some(c) => Edit::set(table, key, theme::hex(c)),
+            None => Edit::remove(table, key),
+        };
+        // A copy: the pending ones stay if this one can't be shown.
+        let mut edits = self
+            .theme_edits
+            .as_ref()
+            .map(|(_, edits)| edits.clone())
+            .unwrap_or_default();
+        edits.retain(|e| e.table != edit.table || e.key != edit.key);
+        edits.push(edit);
+        let file = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
+        let shown = std::fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| config::apply_edits(&text, &edits).map_err(|e| e.describe(&file)))
+            .and_then(|text| theme::parse(&self.theme.name, &text).map_err(|e| e.to_string()));
+        let theme = match shown {
+            Ok(theme) => Rc::new(theme),
+            Err(err) => {
+                let message = format!("Not saved: {err}");
+                eprintln!("templum: {message}");
+                show_notification(
+                    window,
+                    cx,
+                    Notification::error(message).id1::<ThemeColor>(file),
+                );
+                return;
+            }
+        };
+        self.theme_edits = Some((path.clone(), edits));
+        if let Some(entry) = self
+            .themes
+            .iter_mut()
+            .find(|e| e.path.as_ref() == Some(&path))
+        {
+            entry.theme = theme.clone();
+        }
+        self.apply(theme, cx);
+        self._save = cx.spawn_in(window, async move |ws, cx| {
+            cx.background_executor().timer(super::SAVE_DELAY).await;
+            ws.update_in(cx, |ws, window, cx| ws.save_or_notify(window, cx))
+                .ok();
+        });
+    }
+
+    /// Applies the settings changes now rather than on the next frame, and writes them: what
+    /// opens next (the welcome's first terminal) uses them.
+    pub(crate) fn apply_and_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(config) = self.pending.take() {
+            self.apply_config(config, window, cx);
+        }
+        self.save_or_notify(window, cx);
     }
 
     /// `save`, with a notification when it fails.
@@ -265,6 +439,102 @@ impl Workspace {
                 }
             }
         }
+    }
+
+    /// The file of the theme in use; None for a built-in (or a theme previewed from the gallery).
+    pub(crate) fn theme_path(&self) -> Option<PathBuf> {
+        self.themes
+            .iter()
+            .find(|e| e.theme.name == self.theme.name)
+            .and_then(|e| e.path.clone())
+    }
+
+    /// Makes `name` the theme of the mode in effect, as a click in the settings does, and shows it
+    /// now: a preview on screen must not stay when the config already names `name`.
+    pub(crate) fn set_mode_theme(&mut self, name: &str, cx: &mut Context<Self>) {
+        // It may be a file just written.
+        self.themes = theme::load(self.config_dir.as_deref());
+        let (dark, owned) = (self.dark, name.to_string());
+        self.edit(
+            Edit::set("theme", if dark { "dark" } else { "light" }, name),
+            |c| settings::set_theme(c, dark, owned),
+            cx,
+        );
+        if let Some(theme) = theme::find(&self.themes, name) {
+            self.apply(theme, cx);
+        }
+    }
+
+    /// A new theme file from the theme in use, made the mode's theme. False, with a notification,
+    /// when it can't be made (a name taken or not allowed): the name dialog stays open.
+    pub(crate) fn new_theme(
+        &mut self,
+        name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let made = match &self.config_dir {
+            Some(dir) => theme::create(dir, name, &theme::template(name, &self.theme)),
+            None => Err(NO_CONFIG_DIR.to_string()),
+        };
+        match made {
+            Ok(_) => {
+                self.set_mode_theme(name.trim(), cx);
+                true
+            }
+            Err(message) => {
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+                false
+            }
+        }
+    }
+
+    /// A theme from the gallery, written to the themes folder and made the mode's theme. One of
+    /// that name already there (any case, a built-in too) is chosen instead: nothing is overwritten.
+    pub(crate) fn install_theme(
+        &mut self,
+        card: &gallery::Card,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.themes = theme::load(self.config_dir.as_deref());
+        let name = &card.theme.name;
+        if let Some(there) = self
+            .themes
+            .iter()
+            .find(|e| e.theme.name.eq_ignore_ascii_case(name))
+            .map(|e| e.theme.name.clone())
+        {
+            self.set_mode_theme(&there, cx);
+            return;
+        }
+        let made = match &self.config_dir {
+            Some(dir) => theme::create(dir, name, &gallery::credited(card)),
+            None => Err(NO_CONFIG_DIR.to_string()),
+        };
+        match made {
+            Ok(_) => self.set_mode_theme(name, cx),
+            Err(message) => {
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+                // The card was previewed: back to the mode's theme.
+                self.refresh_theme(cx);
+            }
+        }
+    }
+
+    /// Opens the theme in use's file in an editor block, closing the settings panel (which writes
+    /// what's pending). Saving it there applies it: `poll_theme` reads it.
+    pub(crate) fn open_theme_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.theme_path() else {
+            return;
+        };
+        let Some(folder) = path.parent().map(Path::to_path_buf) else {
+            return;
+        };
+        self.close_settings(window, cx);
+        self.open_in_editor(&folder, &path, None, None, window, cx);
     }
 
     /// Opens the theme picker (re-reading the user's themes folder), or closes it like Esc.
@@ -354,16 +624,22 @@ impl Workspace {
         }
     }
 
+    /// What the settings' rows choose from: the themes (the folder read again), the installed
+    /// monospaced fonts and the shells found. Read when the panel or the welcome opens.
+    pub(crate) fn load_lists(&mut self, window: &mut Window) {
+        self.themes = theme::load(self.config_dir.as_deref());
+        self.fonts = settings::monospace_families(window);
+        self.shells = templum_terminal::available_shells();
+        self.default_shell = templum_terminal::default_shell_label();
+    }
+
     /// Opens the settings panel (re-reading the themes folder for its lists), or closes it.
     pub(crate) fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.settings.as_ref().is_some_and(|p| !p.closing) {
             self.close_settings(window, cx);
             return;
         }
-        self.themes = theme::load(self.config_dir.as_deref());
-        self.fonts = settings::monospace_families(window);
-        self.shells = templum_terminal::available_shells();
-        self.default_shell = templum_terminal::default_shell_label();
+        self.load_lists(window);
         self.git_version = None;
         let program = self.config.git.program().to_string();
         cx.spawn_in(window, async move |ws, cx| {
@@ -380,6 +656,9 @@ impl Workspace {
             .ok();
         })
         .detach();
+        // The panel would open under the screen; it has everything the welcome has.
+        self.close_screen(window, cx);
+        self.close_welcome(window, cx);
         let now = Instant::now();
         self.settings = Some(match &self.settings {
             // Still sliding out: it turns back from where it is.
@@ -475,6 +754,7 @@ impl Workspace {
                     | Command::CloseTerminal
                     | Command::PreviousPrompt
                     | Command::NextPrompt
+                    | Command::Find
             )
         });
         if self.picker.is_some() || command.is_some() {
@@ -563,7 +843,7 @@ impl Workspace {
     /// Opens config.toml in the system's editor, writing the commented template first if needed.
     pub(crate) fn open_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(dir) = self.config_dir.clone() else {
-            let message = "No config folder: neither HOME nor APPDATA is set".to_string();
+            let message = NO_CONFIG_DIR.to_string();
             eprintln!("templum: {message}");
             show_notification(window, cx, Notification::error(message));
             return;
@@ -581,6 +861,11 @@ impl Workspace {
         }
     }
 }
+
+/// Tells the color editor's notifications apart, so one stands for many changes.
+struct ThemeColor;
+
+const NO_CONFIG_DIR: &str = "No config folder: neither HOME nor APPDATA is set";
 
 /// A shortcut needs Ctrl, Alt or Super (Cmd), or is an F key: any other key is typing, which the
 /// terminals must keep getting.

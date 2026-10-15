@@ -8,10 +8,12 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use gpui_kit::Focusable as _;
-use gpui_kit::component::input::{EditorState, InputEvent, InputState, TextareaState};
+use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, ElementId, Entity, EntityId, SharedString, Subscription, Window};
+use gpui_kit::{
+    App, Context, ElementId, Entity, EntityId, FocusHandle, ScrollHandle, SharedString,
+    Subscription, UniformListScrollHandle, Window,
+};
 use templum_canvas::{BlockId, Rect, Size};
 use templum_git::{Branch, Commit, CommitFile, Entry, GitError, Operation, Repo, Stash, Status};
 
@@ -21,16 +23,26 @@ use crate::workspace::Workspace;
 mod branches;
 mod changes;
 mod commit_form;
+pub(crate) mod diff_view;
+pub(crate) mod discarded;
 mod history;
 mod stashes;
+pub(crate) mod switcher;
 mod view;
-mod widgets;
+pub(crate) mod widgets;
+pub(crate) mod words;
 
 pub(crate) use view::body;
+pub(crate) use widgets::field;
 
 /// A new Git block's size, and the smallest one (world units).
-pub(crate) const SIZE: Size = Size { w: 800.0, h: 560.0 };
-pub(crate) const MIN: Size = Size { w: 480.0, h: 320.0 };
+pub(crate) const SIZE: Size = Size {
+    w: 1200.0,
+    h: 760.0,
+};
+pub(crate) const MIN: Size = Size { w: 640.0, h: 420.0 };
+/// Past this many changed files, a Filter files field shows above the lists.
+pub(crate) const FILTER_PAST: usize = 15;
 /// The lists' column width and the rows' height, world units.
 pub(crate) const LISTS_W: f32 = 300.0;
 pub(crate) const ROW_H: f32 = 24.0;
@@ -41,12 +53,34 @@ pub(crate) const FONT: f32 = 12.0;
 pub(crate) const POLL: Duration = Duration::from_secs(2);
 /// How many commits History loads at a time.
 pub(crate) const PAGE: usize = 200;
+/// Past this many lanes the graph is cut (the commit's dot on the last one).
+// ponytail: a history with more than 6 branches open at once draws 6; a horizontal scroll of the
+// graph if people meet it.
+pub(crate) const MAX_LANES: usize = 6;
+/// A lane's width, world units.
+pub(crate) const LANE_W: f32 = 12.0;
+/// Past this many characters a summary is longer than `git log --oneline` shows well.
+pub(crate) const SUMMARY_MAX: usize = 72;
+
+/// A comparison in the Branches tab: what `branch` has that `base` hasn't, as a pull request
+/// shows it (docs/specs/git.md, section 5, Comparison).
+pub(crate) struct Compare {
+    pub branch: String,
+    /// The default branch at first; the column's base button changes it.
+    pub base: String,
+    /// `git log base..branch`, newest first (an Rc: the column's rows hold it).
+    pub commits: Rc<Vec<Commit>>,
+    /// The commit the panel is narrowed to; None: the whole comparison.
+    pub narrowed: Option<String>,
+    /// Its own panel: the 2-second read never touches it.
+    pub panel: diff_view::DiffPanel,
+}
 
 /// The commit shown on the right of the History tab.
 pub(crate) struct Shown {
     pub commit: Commit,
     pub files: Vec<CommitFile>,
-    /// The file whose diff is shown.
+    /// The file last clicked: the panel scrolled to it.
     pub file: Option<String>,
 }
 
@@ -100,28 +134,52 @@ pub(crate) enum Found {
     Repo(Repo),
 }
 
-/// Which of fetch, pull and push runs: its button shows a spinner, the others are disabled.
+/// Which of fetch, pull, push and sync runs: the bar's Sync button spins, and a click on it
+/// cancels it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Sync {
     Fetch,
     Pull,
     Push,
+    /// Sync: pull, then push.
+    Both,
+    /// A clone, from the not-a-repository view or ⋯.
+    Cloning,
 }
 
-/// The three lists of the Changes tab.
+/// The lists of the Changes tab: the conflicts, then every other changed file once, as a
+/// checklist (checked: it goes into the next commit).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum List {
     Conflicts,
-    Staged,
-    Unstaged,
+    Files,
 }
 
 impl List {
     pub fn name(self) -> &'static str {
         match self {
             List::Conflicts => "conflicts",
-            List::Staged => "staged",
-            List::Unstaged => "unstaged",
+            List::Files => "files",
+        }
+    }
+}
+
+/// A file's box in the Changes checklist: what of it is staged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Check {
+    /// All of it goes into the next commit.
+    Checked,
+    /// Some of it (hunks staged from the panel), not all.
+    Partial,
+    Unchecked,
+}
+
+impl Check {
+    pub fn of(e: &Entry) -> Check {
+        match (e.staged, e.unstaged) {
+            (Some(_), None) => Check::Checked,
+            (Some(_), Some(_)) => Check::Partial,
+            (None, _) => Check::Unchecked,
         }
     }
 }
@@ -150,6 +208,11 @@ impl Read {
 pub(crate) struct Git {
     /// What the user chose; the repository's root may be above it.
     pub folder: PathBuf,
+    /// The folder wasn't there at the last look, on opening and every POLL: the body says so.
+    /// Never looked up while drawing: a stat each frame stalls on a slow or network disk.
+    pub gone: bool,
+    /// How many times the block changed folder (see `GitAt`).
+    pub generation: u64,
     pub found: Found,
     pub tab: Tab,
     pub status: Status,
@@ -163,6 +226,8 @@ pub(crate) struct Git {
     pub acting: u32,
     /// Kills the running fetch, pull or push (its spinning button).
     pub cancel: Option<Arc<AtomicBool>>,
+    /// Generate ✨ runs: set, it stops the agent.
+    pub generating: Option<Arc<AtomicBool>>,
     /// A refresh was asked while busy: one runs when the command ends.
     pub pending: bool,
     /// Other commands asked while busy, run in turn as each one ends.
@@ -173,16 +238,19 @@ pub(crate) struct Git {
     pub sync: Option<Sync>,
     /// Why the last read failed, shown under the top bar.
     pub error: Option<String>,
-    /// The read-only diff on the right of the Changes tab, with the `diff` grammar.
-    pub diff: Entity<EditorState>,
-    /// History's file diff and Stashes' diff: each tab has its own, so a 2-second read of the
-    /// Changes diff never replaces what another tab shows.
-    pub commit_diff: Entity<EditorState>,
-    pub stash_diff: Entity<EditorState>,
+    /// The default branch ("main", or "origin/main" with no local one), as Back to and Compare
+    /// name it; None when the repository has none. Read after each action, not on every poll.
+    pub default_branch: Option<String>,
+    /// The diff panel of the Changes tab.
+    pub panel: diff_view::DiffPanel,
+    /// The Branches tab's comparison, while one shows.
+    pub compare: Option<Compare>,
+    /// History's diff panel: the commit shown, or a file's blame.
+    pub history_panel: diff_view::DiffPanel,
+    /// Stashes' diff panel: the stash shown.
+    pub stash_panel: diff_view::DiffPanel,
     /// The row whose diff is shown.
     pub selected: Option<(List, String)>,
-    /// The diff's first hunk's line in the new file, for Open in editor.
-    pub diff_line: Option<u32>,
     pub summary: Entity<InputState>,
     pub description: Entity<TextareaState>,
     /// Commit replaces the last commit; the fields were filled with its message.
@@ -193,8 +261,29 @@ pub(crate) struct Git {
     pub commits: Rc<Vec<Commit>>,
     /// The last page was full: Load more shows.
     pub more: bool,
+    /// The loaded commits' graph, one row per commit; empty while the list is filtered (a search,
+    /// a file's history: their parents aren't in it).
+    pub graph: Rc<Vec<templum_git::graph::GraphRow>>,
+    /// HEAD's commits not on its upstream: History's "not pushed" mark.
+    pub unpushed: Rc<std::collections::HashSet<String>>,
+    /// History lists every branch, tag and remote branch.
+    pub all_branches: bool,
+    /// History is narrowed to this file (from the repository's root, with '/').
+    pub file: Option<String>,
+    /// The file at each loaded commit (a rename's old path before it), in a file's history.
+    pub file_paths: Rc<Vec<CommitFile>>,
+    /// History's panel shows `file`'s blame while no commit is shown.
+    pub blame: bool,
+    /// The commit it is blamed at; None: the working file.
+    pub blame_at: Option<String>,
     pub search: Entity<InputState>,
+    /// Where History's search looks.
+    pub search_mode: templum_git::Search,
+    /// The text History's list was read with; empty: no search.
+    pub searched: String,
     pub shown: Option<Shown>,
+    /// The commit clicked, until another place is asked for: a read for any other is dropped.
+    pub showing: Option<String>,
     /// A list read was asked while a command ran.
     pub pending_lists: bool,
     pub branches: Vec<Branch>,
@@ -203,23 +292,31 @@ pub(crate) struct Git {
     pub stash_shown: Option<usize>,
     /// The Branches tab's filter.
     pub filter: Entity<InputState>,
+    /// The Branches tab's remote branches are folded.
+    pub remote_folded: bool,
     _filter: Subscription,
+    /// The block's own keyboard focus (not a field's): its keys act while it has it.
+    pub focus: FocusHandle,
+    /// The left column's list, scrolled by ↑ and ↓.
+    pub lists_scroll: UniformListScrollHandle,
+    /// The scroll of History's commit details, of a comparison's commits and of the stashes:
+    /// kept here, as `lists_scroll` is, since GPUI keeps an element's own scroll only while it
+    /// is drawn, and far away the block is its card.
+    pub details_scroll: ScrollHandle,
+    pub compare_scroll: ScrollHandle,
+    pub stash_scroll: ScrollHandle,
+    /// The left column is folded: the diff panel takes the whole width.
+    pub lists_folded: bool,
+    /// Every panel of the block side by side (Split) or not; the block remembers it.
+    pub split: bool,
+    /// Filter files, over the Changes tab's lists (shown past FILTER_PAST files).
+    pub files_filter: Entity<InputState>,
+    _files_filter: Subscription,
     _search: Subscription,
 }
 
 impl Git {
     pub fn new(folder: PathBuf, tab: Tab, window: &mut Window, cx: &mut Context<Workspace>) -> Git {
-        let mut diff_view = || {
-            cx.new(|cx| {
-                EditorState::new(window, cx)
-                    .language("diff")
-                    .line_number(false)
-                    .soft_wrap(false)
-                    // Its fold icons have a fixed size, which breaks the layout at a zoom.
-                    .folding(false)
-            })
-        };
-        let (diff, commit_diff, stash_diff) = (diff_view(), diff_view(), diff_view());
         let summary = cx.new(|cx| InputState::new(window, cx).placeholder("Summary"));
         let description = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -253,21 +350,36 @@ impl Git {
                 },
             ),
         ];
-        let search =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search subject or author"));
-        let _search = cx.subscribe(&search, |_, _, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                cx.notify()
-            }
-        });
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search, then Enter"));
+        let from_search = search.entity_id();
+        let _search = cx.subscribe_in(
+            &search,
+            window,
+            move |ws, field, event: &InputEvent, window, cx| match event {
+                InputEvent::PressEnter { .. } => ws.search_from(from_search, window, cx),
+                // Cleared: the whole history back, without waiting for Enter.
+                InputEvent::Change if field.read(cx).value().trim().is_empty() => {
+                    ws.search_from(from_search, window, cx)
+                }
+                _ => {}
+            },
+        );
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter branches"));
         let _filter = cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Change) {
                 cx.notify()
             }
         });
+        let files_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter files"));
+        let _files_filter = cx.subscribe(&files_filter, |_, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                cx.notify()
+            }
+        });
         Git {
+            gone: !folder.is_dir(),
             folder,
+            generation: 0,
             found: Found::Looking,
             tab,
             status: Status::default(),
@@ -276,60 +388,56 @@ impl Git {
             busy: false,
             acting: 0,
             cancel: None,
+            generating: None,
             pending: false,
             queued: Vec::new(),
             reads: 0,
             sync: None,
             error: None,
-            diff,
-            commit_diff,
-            stash_diff,
+            default_branch: None,
+            panel: diff_view::DiffPanel::new(),
+            compare: None,
+            history_panel: diff_view::DiffPanel::range(String::new())
+                .with_hint("Click a commit to see its changes"),
+            stash_panel: diff_view::DiffPanel::range(String::new())
+                .with_hint("Click a stash to see its changes"),
             selected: None,
-            diff_line: None,
             summary,
             description,
             amend: false,
             _enter,
             commits: Rc::new(Vec::new()),
             more: false,
+            graph: Rc::new(Vec::new()),
+            unpushed: Rc::new(std::collections::HashSet::new()),
+            all_branches: false,
+            file: None,
+            file_paths: Rc::new(Vec::new()),
+            blame: false,
+            blame_at: None,
             search,
+            search_mode: templum_git::Search::default(),
+            searched: String::new(),
             shown: None,
+            showing: None,
             pending_lists: false,
             branches: Vec::new(),
             stashes: Vec::new(),
             stash_shown: None,
             filter,
+            remote_folded: true,
             _filter,
+            focus: cx.focus_handle(),
+            lists_scroll: UniformListScrollHandle::new(),
+            details_scroll: ScrollHandle::new(),
+            compare_scroll: ScrollHandle::new(),
+            stash_scroll: ScrollHandle::new(),
+            lists_folded: false,
+            split: false,
+            files_filter,
+            _files_filter,
             _search,
         }
-    }
-
-    /// The commits matching the search (subject or author, without case): their indices.
-    pub fn filtered(&self, cx: &App) -> Vec<usize> {
-        let query = self.search.read(cx).value().trim().to_lowercase();
-        self.commits
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| {
-                query.is_empty()
-                    || c.subject.to_lowercase().contains(&query)
-                    || c.author.to_lowercase().contains(&query)
-            })
-            .map(|(i, _)| i)
-            .collect()
-    }
-
-    /// The keyboard is in the summary or the description.
-    pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
-        self.summary
-            .read(cx)
-            .focus_handle(cx)
-            .contains_focused(window, cx)
-            || self
-                .description
-                .read(cx)
-                .focus_handle(cx)
-                .contains_focused(window, cx)
     }
 
     /// The summary, then a blank line and the description when there is one.
@@ -343,10 +451,85 @@ impl Git {
         }
     }
 
-    /// Commit is possible: something staged, a summary, an author, nothing running. With
-    /// Amend, nothing staged is fine (the message alone changes).
+    /// The Filter files field shows.
+    pub fn filtering(&self) -> bool {
+        self.status.entries.len() > FILTER_PAST
+    }
+
+    /// The left column's rows: each list's header (Conflicts only when there are some), then its
+    /// entries matching Filter files without case, by their index in the whole list (what the
+    /// rows' ids, buttons and menus use). A filter left from before narrows nothing once the
+    /// field is gone.
+    pub fn listed(&self, cx: &App) -> Vec<(List, Option<usize>)> {
+        let query = if self.filtering() {
+            self.files_filter.read(cx).value().trim().to_lowercase()
+        } else {
+            String::new()
+        };
+        let s = &self.status;
+        let mut items = Vec::new();
+        for (which, entries) in [(List::Conflicts, s.conflicts()), (List::Files, s.files())] {
+            if which == List::Conflicts && entries.is_empty() {
+                continue;
+            }
+            items.push((which, None));
+            items.extend(
+                entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| query.is_empty() || e.path.to_lowercase().contains(&query))
+                    .map(|(i, _)| (which, Some(i))),
+            );
+        }
+        items
+    }
+
+    /// Commit takes every change (`git add --all` first): nothing staged, something changed, no
+    /// conflict (adding one would mark it resolved), no Amend.
+    pub fn commit_all(&self) -> bool {
+        !self.amend
+            && self.status.staged().is_empty()
+            && !self.status.unstaged().is_empty()
+            && self.status.conflicts().is_empty()
+    }
+
+    /// "Commit (3 files)", the files checked (wholly or in part); with none, "Commit all changes
+    /// (5 files)"; "Commit" with nothing to count (an Amend of the message alone).
+    pub fn commit_label(&self) -> String {
+        let (label, n) = if self.commit_all() {
+            ("Commit all changes", self.status.unstaged().len())
+        } else {
+            ("Commit", self.status.staged().len())
+        };
+        match n {
+            0 => label.to_string(),
+            1 => format!("{label} (1 file)"),
+            n => format!("{label} ({n} files)"),
+        }
+    }
+
+    /// The panel's section a file's click goes to: Staged when nothing of it is left unstaged,
+    /// else Changes.
+    pub fn in_staged(&self, path: &str) -> bool {
+        self.status
+            .entries
+            .iter()
+            .find(|e| e.path == path)
+            .is_some_and(|e| e.staged.is_some() && e.unstaged.is_none())
+    }
+
+    pub fn summary_len(&self, cx: &App) -> usize {
+        self.summary.read(cx).value().chars().count()
+    }
+
+    pub fn summary_too_long(&self, cx: &App) -> bool {
+        self.summary_len(cx) > SUMMARY_MAX
+    }
+
+    /// Commit is possible: something staged (or every change, see `commit_all`), a summary, an
+    /// author, nothing running. With Amend, nothing staged is fine (the message alone changes).
     pub fn can_commit(&self, cx: &App) -> bool {
-        (self.amend || !self.status.staged().is_empty())
+        (self.amend || !self.status.staged().is_empty() || self.commit_all())
             && !self.summary.read(cx).value().trim().is_empty()
             && self.author.is_some()
             && self.acting == 0
@@ -357,15 +540,74 @@ impl Git {
         self.summary.entity_id() == field || self.description.entity_id() == field
     }
 
-    /// The selected entry, as the last status lists it; None once it is gone.
-    pub fn selected_entry(&self) -> Option<&Entry> {
-        let (list, path) = self.selected.as_ref()?;
-        let entries = match list {
-            List::Conflicts => self.status.conflicts(),
-            List::Staged => self.status.staged(),
-            List::Unstaged => self.status.unstaged(),
-        };
-        entries.into_iter().find(|e| e.path == *path)
+    /// The diff panel on screen: each tab its own (the Branches tab's is the comparison's while
+    /// one shows), so a 2-second read of the working changes never touches another tab's.
+    pub fn diff(&self) -> &diff_view::DiffPanel {
+        match (self.tab, &self.compare) {
+            (Tab::History, _) => &self.history_panel,
+            (Tab::Stashes, _) => &self.stash_panel,
+            (Tab::Branches, Some(c)) => &c.panel,
+            _ => &self.panel,
+        }
+    }
+
+    pub fn diff_mut(&mut self) -> &mut diff_view::DiffPanel {
+        match (self.tab, &mut self.compare) {
+            (Tab::History, _) => &mut self.history_panel,
+            (Tab::Stashes, _) => &mut self.stash_panel,
+            (Tab::Branches, Some(c)) => &mut c.panel,
+            _ => &mut self.panel,
+        }
+    }
+
+    /// History leaves the commit shown (or being read): the list again, the panel empty unless
+    /// it shows the file's blame.
+    pub fn hide_shown(&mut self) {
+        self.shown = None;
+        self.showing = None;
+        if !self.blame {
+            self.history_panel.clear();
+        }
+    }
+
+    /// Split on or off, for every panel of the block.
+    pub fn set_split(&mut self, on: bool) {
+        self.split = on;
+        let panels = [
+            &mut self.panel,
+            &mut self.history_panel,
+            &mut self.stash_panel,
+        ]
+        .into_iter()
+        .chain(self.compare.as_mut().map(|c| &mut c.panel));
+        for p in panels {
+            p.split = on;
+            p.rebuild();
+        }
+    }
+
+    /// The working panel's conflicted file at `path`, as `conflict_diff` made it.
+    fn conflict_file(&self, path: &str) -> Option<&templum_git::FileDiff> {
+        self.panel
+            .files
+            .iter()
+            .map(|s| &s.diff)
+            .find(|d| d.status == templum_git::Change::Conflict && d.path() == path)
+    }
+
+    /// The labels of a conflicted file's parts (its first region's): what the whole-file
+    /// choices are named after. "HEAD" and "the other side" when it has no region to read.
+    pub fn conflict_labels(&self, path: &str) -> (String, String) {
+        match self.conflict_file(path).map(|d| &d.hunks[..]) {
+            Some([first, second, ..]) => (first.context.clone(), second.context.clone()),
+            _ => ("HEAD".to_string(), "the other side".to_string()),
+        }
+    }
+
+    /// The file still has conflict markers (as last read).
+    pub fn markers_left(&self, path: &str) -> bool {
+        self.conflict_file(path)
+            .is_some_and(|d| !d.hunks.is_empty())
     }
 
     pub fn repo(&self) -> Option<&Repo> {
@@ -388,15 +630,60 @@ impl Git {
         self.name().into()
     }
 
-    pub fn item(&self, rect: Rect) -> session::GitItem {
+    /// As the canvas file holds it. The commit message being written is kept, unless Amend
+    /// filled it with the last commit's.
+    pub fn item(&self, rect: Rect, cx: &App) -> session::GitItem {
+        let draft = |text: &str| {
+            if self.amend {
+                String::new()
+            } else {
+                text.to_string()
+            }
+        };
         session::GitItem {
             rect: rect.into(),
             folder: self.folder.to_string_lossy().into_owned(),
             tab: self.tab.name().to_string(),
+            summary: draft(&self.summary.read(cx).value()),
+            description: draft(&self.description.read(cx).value()),
+            lists: if self.lists_folded {
+                "folded".to_string()
+            } else {
+                String::new()
+            },
+            diff: if self.split {
+                "split".to_string()
+            } else {
+                String::new()
+            },
         }
     }
 }
 
 pub(crate) fn row_id(block: BlockId, list: &str, i: usize) -> ElementId {
     ElementId::Name(format!("git-row-{}-{list}-{i}", block.0).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use templum_git::Change;
+
+    #[test]
+    fn a_files_box_is_what_of_it_is_staged() {
+        let entry = |staged, unstaged| Entry {
+            path: "a.txt".to_string(),
+            from: None,
+            staged,
+            unstaged,
+        };
+        let m = Some(Change::Modified);
+        assert_eq!(Check::of(&entry(m, None)), Check::Checked);
+        assert_eq!(Check::of(&entry(m, m)), Check::Partial);
+        assert_eq!(Check::of(&entry(None, m)), Check::Unchecked);
+        assert_eq!(
+            Check::of(&entry(None, Some(Change::Untracked))),
+            Check::Unchecked
+        );
+    }
 }

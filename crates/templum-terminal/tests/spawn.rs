@@ -263,11 +263,78 @@ fn inspect_finds_an_agent_and_its_folder() {
         let found = inspect(&[term.processes()], &known()).pop().unwrap();
         let folder = found.folder.as_ref().and_then(|f| f.canonicalize().ok());
         if found.agent.as_deref() == Some("claude") && folder.as_ref() == Some(&want) {
+            // The agent's process, for reading its usage: its pid and when it started.
+            assert!(found.pid.is_some(), "found {found:?}");
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let started = found.started.expect("a start time");
+            assert!(now.abs_diff(started) < 60, "started {started}, now {now}");
             break;
         }
         assert!(Instant::now() < deadline, "found {found:?}");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// What the terminal's programs read in `TEMPLUM_TERMINAL`: Claude Code's status line, run by
+/// Templum's relay, names its file after it.
+#[test]
+fn each_terminal_gets_its_own_id_in_its_environment() {
+    let printed = |command: (String, Vec<String>)| {
+        let term = Terminal::spawn(
+            SpawnOptions {
+                cols: 60,
+                rows: 5,
+                cell_px: (8, 16),
+                command: Some(command),
+                palette: Palette::default(),
+                options: TermOptions::default(),
+                working_directory: None,
+                integration: None,
+            },
+            Arc::new(|| {}),
+        )
+        .expect("spawn");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !term.exited() {
+            assert!(Instant::now() < deadline, "the command never exited");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let mut snapshot = Snapshot::default();
+        snapshot.refresh(term.shared(), &Palette::default());
+        (term.id().to_string(), snapshot.text())
+    };
+    #[cfg(unix)]
+    let command = || {
+        (
+            "sh".to_string(),
+            vec![
+                "-c".to_string(),
+                "printf 'id=%s;' \"$TEMPLUM_TERMINAL\"".to_string(),
+            ],
+        )
+    };
+    #[cfg(windows)]
+    let command = || {
+        (
+            "cmd".to_string(),
+            vec!["/C".to_string(), "echo id=%TEMPLUM_TERMINAL%;".to_string()],
+        )
+    };
+    let (a, a_text) = printed(command());
+    let (b, b_text) = printed(command());
+    assert!(!a.is_empty());
+    assert_ne!(a, b);
+    assert!(
+        a_text.contains(&format!("id={a};")),
+        "screen was: {a_text:?}"
+    );
+    assert!(
+        b_text.contains(&format!("id={b};")),
+        "screen was: {b_text:?}"
+    );
 }
 
 /// A harmless long-running program, copied under an agent's name into `bin`.
@@ -284,6 +351,47 @@ fn fake_claude(bin: &std::path::Path) -> std::path::PathBuf {
     let (from, to) = (r"C:\Windows\System32\cmd.exe", bin.join("claude.exe"));
     std::fs::copy(from, &to).unwrap();
     to
+}
+
+/// The session an agent was started on, from its arguments: a shell named `pi` that waits.
+#[cfg(unix)]
+#[test]
+fn inspect_reads_the_session_an_agent_was_started_on() {
+    let bin = tempfile::tempdir().unwrap();
+    let pi = bin.path().join("pi");
+    std::fs::copy("/bin/sh", &pi).unwrap();
+    let id = "019a1f2e-7b3c-7d4e-8f5a-6b7c8d9e0f1a";
+    // `; :` keeps the shell from becoming `sleep`.
+    let args = ["-c", "sleep 30; :", "pi", "--session-id", id];
+    let options = || SpawnOptions {
+        cols: 40,
+        rows: 5,
+        cell_px: (8, 16),
+        command: Some((pi.display().to_string(), args.map(String::from).to_vec())),
+        palette: Palette::default(),
+        options: TermOptions::default(),
+        working_directory: None,
+        integration: None,
+    };
+    // As in `inspect_finds_an_agent_and_its_folder`: a fork may hold the copy open a moment.
+    let term = loop {
+        match Terminal::spawn(options(), Arc::new(|| {})) {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            spawned => break spawned.expect("spawn"),
+        }
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let found = inspect(&[term.processes()], &known()).pop().unwrap();
+        if found.agent.as_deref() == Some("pi") {
+            assert_eq!(found.session.as_deref(), Some(id));
+            break;
+        }
+        assert!(Instant::now() < deadline, "found {found:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// The usual case: the user starts the agent from the shell, in another folder than the shell's.
@@ -351,4 +459,68 @@ fn inspect_finds_an_agent_the_shell_started() {
 /// Templum's own agents, as the app gives them to `inspect`.
 fn known() -> Vec<templum_terminal::Detect> {
     Agent::all().map(Agent::detect).collect()
+}
+
+/// Processes that ignore the hangup a closing terminal sends still end: those read with `tree`
+/// before are killed by `kill_left`.
+#[cfg(unix)]
+#[test]
+fn a_tree_is_ended_even_when_it_ignores_hangup() {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+    let term = Terminal::spawn(
+        SpawnOptions {
+            cols: 40,
+            rows: 5,
+            cell_px: (8, 16),
+            command: Some((
+                "sh".to_string(),
+                vec![
+                    "-c".to_string(),
+                    "trap '' HUP; sleep 1000 & sleep 1000".to_string(),
+                ],
+            )),
+            palette: Palette::default(),
+            options: TermOptions::default(),
+            working_directory: None,
+            integration: None,
+        },
+        Arc::new(|| {}),
+    )
+    .expect("spawn");
+    let shell = term.processes().shell.expect("the shell's pid");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let tree = loop {
+        let tree = templum_terminal::tree(&[shell]);
+        if tree.len() >= 2 {
+            break tree;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the sleeps never started: {tree:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(tree.iter().any(|r| r.pid == shell), "the shell is in it");
+    let alive = || {
+        let pids: Vec<Pid> = tree.iter().map(|r| Pid::from_u32(r.pid)).collect();
+        let mut system = System::new();
+        system
+            .refresh_processes_specifics(ProcessesToUpdate::Some(&pids), ProcessRefreshKind::new());
+        tree.iter()
+            .filter(|r| {
+                system.process(Pid::from_u32(r.pid)).is_some_and(|p| {
+                    p.start_time() == r.started && p.status() != ProcessStatus::Zombie
+                })
+            })
+            .count()
+    };
+    drop(term);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(alive() > 0, "the hangup was ignored");
+    templum_terminal::kill_left(&tree);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while alive() > 0 {
+        assert!(Instant::now() < deadline, "{} still running", alive());
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

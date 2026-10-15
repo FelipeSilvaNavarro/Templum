@@ -81,6 +81,15 @@ impl Canvas {
             .filter(move |b| b.rect.intersects(&world))
     }
 
+    /// The blocks a selection rectangle `area` (world units) touches, back-to-front.
+    pub fn hits(&self, area: Rect) -> Vec<BlockId> {
+        self.blocks
+            .iter()
+            .filter(|b| b.rect.intersects(&area))
+            .map(|b| b.id)
+            .collect()
+    }
+
     pub fn bounds(&self) -> Option<Rect> {
         self.blocks
             .iter()
@@ -91,15 +100,8 @@ impl Canvas {
     /// Where a new block of `size` goes: at `near`, shifted by [`CASCADE`] while another
     /// block's top-left corner is within 8 units.
     pub fn place_new(&self, size: Size, near: Point) -> Rect {
-        let mut p = near;
-        while self
-            .blocks
-            .iter()
-            .any(|b| (b.rect.x - p.x).abs() < 8.0 && (b.rect.y - p.y).abs() < 8.0)
-        {
-            p = Point::new(p.x + CASCADE, p.y + CASCADE);
-        }
-        Rect::new(p.x, p.y, size.w, size.h)
+        let taken: Vec<Rect> = self.blocks.iter().map(|b| b.rect).collect();
+        cascade(Rect::new(near.x, near.y, size.w, size.h), &taken)
     }
 
     /// A spot to the right of `anchor`, top-aligned, a BESIDE gap away; cascading down by
@@ -129,6 +131,19 @@ impl Canvas {
     fn index(&self, id: BlockId) -> Option<usize> {
         self.blocks.iter().position(|b| b.id == id)
     }
+}
+
+/// `rect`, shifted by [`CASCADE`] while one of `taken`'s top-left corners is within 8 units of
+/// its own.
+pub fn cascade(rect: Rect, taken: &[Rect]) -> Rect {
+    let mut p = rect.origin();
+    while taken
+        .iter()
+        .any(|t| (t.x - p.x).abs() < 8.0 && (t.y - p.y).abs() < 8.0)
+    {
+        p = Point::new(p.x + CASCADE, p.y + CASCADE);
+    }
+    Rect::new(p.x, p.y, rect.w, rect.h)
 }
 
 #[cfg(test)]
@@ -180,6 +195,19 @@ mod tests {
             .map(|b| b.id)
             .collect();
         assert_eq!(ids, [far]);
+    }
+
+    #[test]
+    fn hits_are_the_blocks_a_rectangle_touches_in_any_direction() {
+        let mut c = Canvas::default();
+        let a = c.add(rect(0.0, 0.0));
+        let b = c.add(rect(200.0, 0.0));
+        c.add(rect(0.0, 300.0));
+        // Dragged from bottom right to top left, over a's corner and b's left half.
+        let area = Rect::corners(Point::new(250.0, 20.0), Point::new(90.0, -10.0));
+        assert_eq!(area, Rect::new(90.0, -10.0, 160.0, 30.0));
+        assert_eq!(c.hits(area), [a, b]);
+        assert!(c.hits(Rect::new(500.0, 500.0, 10.0, 10.0)).is_empty());
     }
 
     #[test]

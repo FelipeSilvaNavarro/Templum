@@ -57,6 +57,27 @@ fn open_as(
     config_dir: Option<std::path::PathBuf>,
     data_dir: Option<std::path::PathBuf>,
 ) -> (AnyWindowHandle, Entity<Workspace>) {
+    let (handle, ws) = open_welcomed(cx, command, config_dir, data_dir);
+    // An empty data folder is a first run: the welcome, then the first terminal. The tests
+    // of everything else start where the welcome leaves them.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.close_welcome(window, cx);
+            ws.welcome = None;
+        })
+    })
+    .unwrap();
+    ws.update(cx, |ws, _| ws.space.appearing.clear());
+    (handle, ws)
+}
+
+/// `open_as`, with the welcome of a first run still open.
+fn open_welcomed(
+    cx: &mut TestAppContext,
+    command: Option<(String, Vec<String>)>,
+    config_dir: Option<std::path::PathBuf>,
+    data_dir: Option<std::path::PathBuf>,
+) -> (AnyWindowHandle, Entity<Workspace>) {
     // PTY threads wake the UI from outside the test scheduler.
     cx.executor().allow_parking();
     let opened = cx.update(|cx| {
@@ -205,6 +226,14 @@ fn wheel(
 fn restart_glide(ws: &mut Workspace, _: &mut Context<Workspace>) {
     if let Some((_, since)) = &mut ws.space.flight {
         *since = std::time::Instant::now();
+    }
+}
+
+/// The running glide as if it began 40 ms ago, so the next frame draws it mid-flight. Not a
+/// sleep: a slow machine (macOS CI) can oversleep past the whole 150 ms glide.
+fn glide_40ms_in(ws: &mut Workspace, _: &mut Context<Workspace>) {
+    if let Some((_, since)) = &mut ws.space.flight {
+        *since = std::time::Instant::now() - std::time::Duration::from_millis(40);
     }
 }
 
@@ -393,6 +422,20 @@ fn settle(handle: AnyWindowHandle, cx: &mut TestAppContext) {
     frame(handle, cx);
 }
 
+/// Waits for the block's next status read (a change made behind its back).
+fn settle_read(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.refresh_git(id, window, cx))
+    })
+    .unwrap();
+    settle(handle, cx);
+}
+
 /// A Git block on `folder`, near the canvas's top-left, looked up and read.
 fn open_git(
     handle: AnyWindowHandle,
@@ -406,6 +449,9 @@ fn open_git(
                 let id = ws
                     .add_git_at(folder, Point::new(40.0, 40.0), window, cx)
                     .unwrap();
+                // The size the tests were written at (a new block is 1200 × 760 now): their rows
+                // and buttons stay inside the window.
+                ws.space.canvas.get_mut(id).unwrap().rect = Rect::new(40.0, 40.0, 800.0, 560.0);
                 ws.space.appearing.clear();
                 id
             })
@@ -430,6 +476,21 @@ fn committed_repo() -> tempfile::TempDir {
     std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
     git_run(repo.path(), &["add", "a.txt"]);
     git_run(repo.path(), &["commit", "-q", "-m", "First"]);
+    repo
+}
+
+/// a.txt of 30 lines committed, then lines 2, 15 and 28 changed: three hunks.
+fn three_hunk_repo() -> tempfile::TempDir {
+    let repo = git_repo();
+    let lines: Vec<String> = (1..=30).map(|i| format!("line {i}\n")).collect();
+    std::fs::write(repo.path().join("a.txt"), lines.concat()).unwrap();
+    git_run(repo.path(), &["add", "a.txt"]);
+    git_run(repo.path(), &["commit", "-q", "-m", "a"]);
+    let mut changed = lines;
+    for i in [1, 14, 27] {
+        changed[i] = format!("LINE {}\n", i + 1);
+    }
+    std::fs::write(repo.path().join("a.txt"), changed.concat()).unwrap();
     repo
 }
 
@@ -472,6 +533,77 @@ fn add_remote(repo: &std::path::Path) -> tempfile::TempDir {
     remote
 }
 
+#[cfg(target_os = "macos")]
+pub(super) const COPY: &str = "cmd-c";
+#[cfg(not(target_os = "macos"))]
+pub(super) const COPY: &str = "ctrl-c";
+#[cfg(target_os = "macos")]
+pub(super) const PASTE: &str = "cmd-v";
+#[cfg(not(target_os = "macos"))]
+pub(super) const PASTE: &str = "ctrl-v";
+#[cfg(target_os = "macos")]
+pub(super) const UNDO: &str = "cmd-z";
+#[cfg(not(target_os = "macos"))]
+pub(super) const UNDO: &str = "ctrl-z";
+#[cfg(target_os = "macos")]
+pub(super) const REDO: &str = "cmd-shift-z";
+#[cfg(not(target_os = "macos"))]
+pub(super) const REDO: &str = "ctrl-shift-z";
+
+pub(super) const SHIFT: Modifiers = Modifiers {
+    shift: true,
+    control: false,
+    alt: false,
+    platform: false,
+    function: false,
+};
+
+/// The startup terminal moved down, a kanban block and a note ("hello") beside each other above
+/// it, the camera at 100% on the world's origin: (kanban, note, terminal).
+pub(super) fn three_blocks(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> (BlockId, BlockId, BlockId) {
+    let terminal = first_id(ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        let ids = ws.update(cx, |ws, cx| {
+            // Touched: the startup terminal no longer pulls the camera to it.
+            ws.space.pristine = false;
+            ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 1.0);
+            ws.space.canvas.get_mut(terminal).unwrap().rect = Rect::new(40.0, 400.0, 400.0, 300.0);
+            let kanban = crate::session::Item::Kanban(crate::session::KanbanItem {
+                rect: Rect::new(40.0, 40.0, 220.0, 200.0).into(),
+                board: None,
+            });
+            let hello = ws.notes.add("hello".into(), None, 0);
+            let note = crate::session::Item::Note(crate::session::NoteItem {
+                rect: Rect::new(300.0, 40.0, 220.0, 200.0).into(),
+                notes: vec![hello],
+                active: 0,
+                text: String::new(),
+                color: None,
+            });
+            // Set up, not a change of the person's to take back.
+            ws.quiet = true;
+            let kanban = ws.add_saved(&kanban, window, cx).unwrap();
+            let note = ws.add_saved(&note, window, cx).unwrap();
+            ws.quiet = false;
+            ws.space.appearing.clear();
+            (kanban, note, terminal)
+        });
+        window.render_frame(cx);
+        ids
+    })
+    .unwrap()
+}
+
+/// A local canvas point as a window position.
+pub(super) fn at(ws: &Entity<Workspace>, cx: &mut TestAppContext, p: (f32, f32)) -> (f32, f32) {
+    let o = ws.read_with(cx, |ws, _| ws.origin);
+    (f32::from(o.x) + p.0, f32::from(o.y) + p.1)
+}
+
 mod agents;
 mod blocks;
 mod config_reload;
@@ -480,16 +612,36 @@ mod editor;
 mod editor_tabs;
 mod git_changes;
 mod git_commit;
+mod git_compare;
+mod git_conflicts;
 mod git_history;
+mod git_hunks;
+mod git_keys;
+mod git_layout;
+mod git_message;
+mod git_panel;
+mod git_split;
 mod git_status;
+mod git_switch;
+mod git_sync;
+mod git_trash;
+mod grid;
+mod history;
 mod kanban;
+mod lod;
 mod menus;
+mod moving;
 mod navigation;
 mod notes;
 mod persistence;
+mod screen;
+mod selection;
 mod settings_edits;
 mod settings_panel;
 mod shortcuts;
 mod terminals;
 mod themes;
+mod update;
+mod usage;
+mod welcome;
 mod workspaces;

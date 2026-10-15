@@ -7,7 +7,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{Div, ElementId, Entity, Stateful, div, px};
 use templum_git::Change;
 
-use super::FONT;
+use super::{Check, FONT};
 use crate::grid::hsla;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
@@ -80,7 +80,7 @@ pub(super) fn badge_color(ws: &Workspace, change: Change) -> gpui_kit::Hsla {
 
 /// A one-line text field at the zoom: gpui-kit's fields keep a fixed height and padding, so
 /// they are set here with the rest of the block's sizes.
-pub(super) fn field(state: &Entity<InputState>, z: f32) -> Input {
+pub(crate) fn field(state: &Entity<InputState>, z: f32) -> Input {
     let input = Input::new(state)
         .small()
         .text_size(px(FONT * z))
@@ -88,4 +88,67 @@ pub(super) fn field(state: &Entity<InputState>, z: f32) -> Input {
         .py(px(2.0 * z));
     // Styled's height: Input's own `h` is for multi-line fields only.
     Styled::h(input, px(FIELD_H * z))
+}
+
+/// A text button in a list's header, and the panel's.
+pub(crate) fn small(
+    id: impl Into<ElementId>,
+    label: &'static str,
+    ui: Ui,
+    z: f32,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .px(px(6.0 * z))
+        .py(px(2.0 * z))
+        .rounded(px(4.0 * z))
+        .text_size(px(11.0 * z))
+        .text_color(ui.title)
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .child(label)
+}
+
+/// A change's letter in its colored square.
+pub(crate) fn badge(ws: &Workspace, change: Change, z: f32) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .size(px(16.0 * z))
+        .rounded(px(4.0 * z))
+        .bg(badge_color(ws, change))
+        .text_size(px(10.0 * z))
+        .text_color(ws.ui.canvas)
+        .child(change.letter().to_string())
+}
+
+/// A box of the Changes checklist at the zoom (gpui-kit's checkbox keeps a fixed size): ✓ when
+/// checked, − when checked in part, empty when not.
+pub(crate) fn check_box(id: impl Into<ElementId>, check: Check, ui: Ui, z: f32) -> Stateful<Div> {
+    let on = check != Check::Unchecked;
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .flex_shrink_0()
+        .size(px(14.0 * z))
+        .rounded(px(3.0 * z))
+        .border_1()
+        .border_color(if on { ui.accent } else { ui.title_dim })
+        .when(on, |el| el.bg(ui.accent))
+        .cursor_pointer()
+        .when(on, |el| {
+            el.child(
+                Icon::new(if check == Check::Checked {
+                    IconName::Check
+                } else {
+                    IconName::Minus
+                })
+                .size(px(11.0 * z))
+                .text_color(ui.canvas),
+            )
+        })
 }

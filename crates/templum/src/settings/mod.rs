@@ -21,13 +21,17 @@ use crate::theme::Ui;
 use crate::workspace::Workspace;
 
 mod agents;
+mod colors;
 mod edits;
 mod fields;
 mod fonts;
+mod git;
 mod row;
 mod sections;
 #[cfg(test)]
 mod tests;
+mod updates;
+mod welcome;
 
 use agents::add_agent;
 pub(crate) use edits::{
@@ -36,8 +40,13 @@ pub(crate) use edits::{
 };
 pub(crate) use fields::{NumberState, SCROLLBACK};
 pub(crate) use fonts::monospace_families;
-use row::Reset;
+// What the Git section's text areas call on each change: the tests type through them.
+#[cfg(test)]
+pub(crate) use git::{set_commit_instructions, set_commit_prompt};
+use row::{Reset, Row};
 use sections::rows;
+pub(crate) use sections::set_theme;
+pub(crate) use welcome::{theme_card, welcome_groups};
 
 /// The panel's width, at most 60% of the canvas.
 const WIDTH: f32 = 480.0;
@@ -50,18 +59,24 @@ pub(crate) enum Section {
     Terminal,
     Shell,
     Tools,
+    Git,
     Agents,
+    Usage,
+    Updates,
     Shortcuts,
 }
 
 impl Section {
-    pub const ALL: [Section; 7] = [
+    pub const ALL: [Section; 10] = [
         Section::Appearance,
         Section::Font,
         Section::Terminal,
         Section::Shell,
         Section::Tools,
+        Section::Git,
         Section::Agents,
+        Section::Usage,
+        Section::Updates,
         Section::Shortcuts,
     ];
 
@@ -72,7 +87,10 @@ impl Section {
             Section::Terminal => "Terminal",
             Section::Shell => "Shell",
             Section::Tools => "Tools",
+            Section::Git => "Git",
             Section::Agents => "Agents",
+            Section::Usage => "Usage",
+            Section::Updates => "Updates",
             Section::Shortcuts => "Shortcuts",
         }
     }
@@ -85,7 +103,10 @@ impl Section {
             Section::Terminal => "settings-tab-terminal",
             Section::Shell => "settings-tab-shell",
             Section::Tools => "settings-tab-tools",
+            Section::Git => "settings-tab-git",
             Section::Agents => "settings-tab-agents",
+            Section::Usage => "settings-tab-usage",
+            Section::Updates => "settings-tab-updates",
             Section::Shortcuts => "settings-tab-shortcuts",
         }
     }
@@ -97,9 +118,21 @@ impl Section {
             Section::Tools => {
                 Some("The programs the Git block runs. Checked when the panel opens.")
             }
+            Section::Git => Some(
+                "Commit messages written by an AI agent: Generate ✨, beside a Git block's summary, \
+                 sends it the diff of what you commit and fills the message for you to read.",
+            ),
             Section::Agents => Some(
                 "The AI agents in the canvas menu. Change one of Templum's, or add your own; ↺ puts \
                  one of Templum's back as it was.",
+            ),
+            Section::Usage => Some(
+                "Claude Code's and Codex's plan limits, shown in the title bar, and each agent's \
+                 session on its terminal. Templum reads what the agents write, never their login.",
+            ),
+            Section::Updates => Some(
+                "New versions from GitHub Releases, for your system and the way Templum was \
+                 installed. Templum downloads them and asks before restarting.",
             ),
             Section::Shortcuts => Some("Click a shortcut to record a new one"),
             _ => None,
@@ -125,22 +158,14 @@ impl Panel {
 
     /// How much of the panel is in view at `now`: 0 hidden, 1 all.
     pub fn shown(&self, now: Instant) -> f32 {
-        let t = motion::slide(motion::progress(self.since, now, motion::SLIDE));
-        if self.closing { 1.0 - t } else { t }
+        motion::slid(self.since, self.closing, now)
     }
 
     /// The panel sliding the other way, from where it is (no jump when turned back mid-slide).
     pub fn reversed(&self, now: Instant) -> Panel {
-        let closing = !self.closing;
-        let shown = self.shown(now);
-        let eased = if closing { 1.0 - shown } else { shown };
-        // motion::slide inverted: the progress that eases to `eased`.
-        let progress = 1.0 - (1.0 - eased).cbrt();
         Panel {
-            since: now
-                .checked_sub(motion::SLIDE.mul_f32(progress))
-                .unwrap_or(now),
-            closing,
+            since: motion::turned(self.since, self.closing, now),
+            closing: !self.closing,
             section: self.section,
         }
     }
@@ -246,18 +271,7 @@ pub(crate) fn render(
                     .test_support(),
             )
         });
-    let card = div()
-        .flex()
-        .flex_col()
-        .rounded(px(10.0))
-        .border_1()
-        .border_color(ui.hairline)
-        .bg(ui.card)
-        .children(
-            rows.into_iter()
-                .enumerate()
-                .map(|(i, row)| row.render(ui, i == 0)),
-        );
+    let card = card(ui, rows);
     let content = div()
         .id("settings-scroll")
         .flex_1()
@@ -280,7 +294,10 @@ pub(crate) fn render(
                     )
                 })
                 .child(div().mt(px(4.0)).child(card))
-                .when(section == Section::Agents, |el| el.child(add_agent(ui, cx))),
+                .when(section == Section::Agents, |el| el.child(add_agent(ui, cx)))
+                .when(section == Section::Appearance, |el| {
+                    el.child(colors::theme_card(ws, window, cx))
+                }),
         );
 
     let path = ws.config_dir.as_ref().map(|d| d.join(config::FILE));
@@ -301,29 +318,39 @@ pub(crate) fn render(
         .border_t_1()
         .border_color(ui.hairline)
         .text_size(px(12.0))
-        .when_some(path, |el, path| {
-            el.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .truncate()
-                            .text_color(ui.title_dim)
-                            .child(path.display().to_string()),
-                    )
-                    .child(
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .text_color(ui.title_dim)
+                        .children(path.as_ref().map(|p| p.display().to_string())),
+                )
+                .child(
+                    Button::new("show-welcome")
+                        .label("Welcome")
+                        .small()
+                        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
+                            ws.close_settings(window, cx);
+                            ws.open_welcome(false, window, cx);
+                        })),
+                )
+                .when(path.is_some(), |el| {
+                    el.child(
                         Button::new("edit-config")
                             .label("Edit config.toml")
                             .small()
                             .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
                                 ws.open_config(window, cx)
                             })),
-                    ),
-            )
-        })
+                    )
+                }),
+        )
         .when_some(status, |el, (text, color)| {
             el.child(
                 div()
@@ -372,6 +399,22 @@ pub(crate) fn render(
         .child(footer)
         .test_support()
         .into_any_element()
+}
+
+/// Rows in one rounded card, hairlines between them.
+fn card(ui: Ui, rows: Vec<Row>) -> gpui_kit::Div {
+    div()
+        .flex()
+        .flex_col()
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(ui.hairline)
+        .bg(ui.card)
+        .children(
+            rows.into_iter()
+                .enumerate()
+                .map(|(i, row)| row.render(ui, i == 0)),
+        )
 }
 
 fn tab(ui: Ui, section: Section, selected: bool, cx: &mut Context<Workspace>) -> AnyElement {

@@ -1,0 +1,1647 @@
+//! Level of detail at far zoom: what each block draws at 33% and 25%, and what keeps working
+//! there. See docs/specs/level-of-detail.md.
+
+use std::rc::Rc;
+use std::time::Duration;
+
+use gpui_kit::component::input::EditorState;
+use gpui_kit::{ElementId, Focusable as _};
+
+use super::*;
+use crate::silhouette::WordMap;
+
+/// The camera at rest at `zoom`, its top-left corner at `at` (world units), and a frame drawn.
+fn rest_at(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    at: Point,
+    zoom: f32,
+) {
+    ws.update(cx, |ws, _| {
+        ws.space.pristine = false;
+        ws.space.canvas.camera = Camera::at(at, zoom);
+        ws.space.flight = None;
+    });
+    frame(handle, cx);
+}
+
+/// No block focused, the workspace with the keyboard: as after a click on the empty canvas.
+fn unfocus(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        let focus = ws.update(cx, |ws, _| {
+            ws.space.focused = None;
+            ws.focus_handle.clone()
+        });
+        window.focus(&focus, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+/// The element was drawn in the last frame.
+fn shown(handle: AnyWindowHandle, cx: &mut TestAppContext, id: impl Into<ElementId>) -> bool {
+    let id = id.into();
+    cx.update_window(handle, |_, window, _| window.try_find(id).is_some())
+        .unwrap()
+}
+
+/// A Git block's Changes tab: there while its body is built.
+fn git_tabs(id: BlockId) -> ElementId {
+    ElementId::Name(format!("git-tab-{}-changes", id.0).into())
+}
+
+/// The level follows the zoom the camera last came to rest at: a glide keeps it, through a pan
+/// mid-glide, and it changes on the frame the glide ends.
+#[gpui_kit::test]
+fn the_rest_zoom_holds_through_a_glide_and_changes_when_it_ends(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 0.5);
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.rest, 0.5));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let pivot = ws.center(window);
+            ws.zoom_to(-1, pivot, cx);
+        })
+    })
+    .unwrap();
+    ws.update(cx, glide_40ms_in);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, _| ws.pan_by(Point::new(30.0, 0.0)));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let z = ws.space.view.zoom();
+        assert!(ws.space.flight.is_some() && z < 0.5, "mid-glide at {z}");
+        assert_eq!(ws.space.rest, 0.5, "the zoom it rested at");
+    });
+    std::thread::sleep(crate::motion::FLIGHT + Duration::from_millis(50));
+    frame(handle, cx);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.flight.is_none(), "landed");
+        assert_eq!(ws.space.rest, 0.33);
+    });
+}
+
+/// A workspace shown by a glide before its first frame (Go to the terminal waiting for you, in
+/// another workspace) is drawn at the level of the zoom its camera rests at, not of no zoom.
+#[gpui_kit::test]
+fn a_canvas_first_drawn_mid_glide_keeps_the_zoom_it_rests_at(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    frame(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.new_space(window, cx);
+            assert_eq!(ws.space.rest, 0.0, "never drawn");
+            let pivot = ws.center(window);
+            ws.zoom_to(-1, pivot, cx);
+        })
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.flight.is_some());
+        assert_eq!(
+            ws.space.rest, 1.0,
+            "the camera rested at 100% before the glide"
+        );
+    });
+}
+
+/// Below Full a Git block is its card: no tabs, lists, diff or commit form. The block worked in is
+/// Full at any zoom: the focused one, and one whose field holds the keyboard.
+#[gpui_kit::test]
+fn a_far_git_block_is_its_card_unless_it_is_worked_in(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    unfocus(handle, &ws, cx);
+    rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 0.5);
+    assert!(shown(handle, cx, git_tabs(id)), "12 px at 50%: 6 px, Full");
+    rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 0.33);
+    assert!(!shown(handle, cx, git_tabs(id)), "3.96 px at 33%: its card");
+    assert!(
+        shown(handle, cx, ("block", id.0 as usize)),
+        "the card is drawn"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(shown(handle, cx, git_tabs(id)), "focused: Full at 33%");
+    // Its summary holds the keyboard, and no block is focused: still Full.
+    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    cx.update_window(handle, |_, window, cx| {
+        let field = summary.read(cx).focus_handle(cx);
+        window.focus(&field, cx);
+        ws.update(cx, |ws, _| ws.space.focused = None);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        shown(handle, cx, git_tabs(id)),
+        "a field with the keyboard keeps it Full"
+    );
+    unfocus(handle, &ws, cx);
+    assert!(!shown(handle, cx, git_tabs(id)), "left: its card again");
+}
+
+/// The level changes only when the camera rests: a glide's frames keep the level it started at,
+/// and the frame it ends draws the new one.
+#[gpui_kit::test]
+fn a_git_blocks_level_changes_when_a_glide_ends(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    unfocus(handle, &ws, cx);
+    rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 0.5);
+    // 50% to 33%: Full until the glide ends; then 33% to 50%: the card until it ends.
+    for (step, during, landed) in [(-1, true, false), (1, false, true)] {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let pivot = ws.center(window);
+                ws.zoom_to(step, pivot, cx);
+            })
+        })
+        .unwrap();
+        ws.update(cx, glide_40ms_in);
+        frame(handle, cx);
+        assert!(
+            ws.read_with(cx, |ws, _| ws.space.flight.is_some()),
+            "mid-glide"
+        );
+        assert_eq!(
+            shown(handle, cx, git_tabs(id)),
+            during,
+            "mid-glide, step {step}"
+        );
+        std::thread::sleep(crate::motion::FLIGHT + Duration::from_millis(50));
+        frame(handle, cx);
+        assert_eq!(
+            shown(handle, cx, git_tabs(id)),
+            landed,
+            "landed, step {step}"
+        );
+    }
+}
+
+/// Below Full a title is a label: 12 px text and an 8 px status dot at any zoom, 4 px in from the
+/// card's border. At 100% the header is as it was.
+#[gpui_kit::test]
+fn a_far_title_is_a_label_of_a_fixed_size(cx: &mut TestAppContext) {
+    use crate::alert::Alert;
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    unfocus(handle, &ws, cx);
+    // News nobody looked at: the dot shows.
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().alert = Some(Alert::Attention(None))
+    });
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    let corner = Point::new(rect.x - 10.0, rect.y - 10.0);
+    let bounds = |cx: &mut TestAppContext, el: (&'static str, usize)| {
+        cx.update_window(handle, |_, window, _| window.find(el).bounds())
+            .unwrap()
+    };
+    rest_at(handle, &ws, cx, corner, 1.0);
+    let block = bounds(cx, ("block", n));
+    assert_eq!(
+        bounds(cx, ("status", n)).size,
+        size(px(7.0), px(7.0)),
+        "the header's dot"
+    );
+    assert_eq!(
+        bounds(cx, ("title", n)).size.width,
+        block.size.width - px(2.0),
+        "the header's title spans the card"
+    );
+    let text_at_100 = bounds(cx, ("title-text", n)).size.height;
+    for zoom in [0.33, 0.25] {
+        rest_at(handle, &ws, cx, corner, zoom);
+        let (block, title) = (bounds(cx, ("block", n)), bounds(cx, ("title", n)));
+        let (text, dot) = (bounds(cx, ("title-text", n)), bounds(cx, ("status", n)));
+        assert_eq!(dot.size, size(px(8.0), px(8.0)), "an 8 px dot at {zoom}");
+        assert_eq!(
+            text.size.height, text_at_100,
+            "12 px text at {zoom}, as at 100%"
+        );
+        let inset =
+            |a: gpui_kit::Pixels, b: gpui_kit::Pixels| (f32::from(a - b) - 5.0).abs() < 0.01;
+        assert!(
+            inset(title.origin.x, block.origin.x) && inset(title.origin.y, block.origin.y),
+            "1 px border and 4 px in at {zoom}: {title:?} in {block:?}"
+        );
+        assert!(
+            title.size.width <= block.size.width - px(10.0),
+            "inside the card at {zoom}"
+        );
+        assert!(
+            dot.origin.x > title.origin.x && dot.right() < title.right(),
+            "the dot is in the label at {zoom}"
+        );
+    }
+}
+
+/// A press on a far label moves the block and focuses it, and starts no selection in the terminal
+/// under it; a right-click opens the block's menu; a double-click frames the block.
+#[gpui_kit::test]
+fn a_far_label_moves_opens_the_menu_and_frames(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    unfocus(handle, &ws, cx);
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 10.0, rect.y - 10.0),
+        0.25,
+    );
+    let c = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("title", n)).bounds().center()
+        })
+        .unwrap();
+    let at = (f32::from(c.x), f32::from(c.y));
+    cx.update_window(handle, |_, window, cx| {
+        press_with(
+            window,
+            cx,
+            MouseButton::Left,
+            Modifiers::default(),
+            at,
+            (at.0 + 40.0, at.1),
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let moved = ws.space.canvas.get(id).unwrap().rect;
+        assert!(
+            moved.x > rect.x + 100.0,
+            "40 px at 25%: {rect:?} -> {moved:?}"
+        );
+        assert_eq!(ws.space.focused, Some(id), "and focused");
+        let term = ws.space.terminal(id).unwrap().term.shared();
+        assert!(
+            term.selection_text().is_none(),
+            "no selection under the label"
+        );
+    });
+    cx.update_window(handle, |_, window, cx| window.right_click(("title", n), cx))
+        .unwrap();
+    ws.update(cx, |ws, _| {
+        assert!(ws.menu.is_some(), "its menu");
+        ws.menu = None;
+    });
+    frame(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.double_click(("title", n), cx)
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let z = ws.space.canvas.camera.zoom();
+        assert!(z > 0.25, "framed: the camera flies to {z}");
+    });
+}
+
+/// The header's small buttons (a note's preview eye here) hide behind a far label.
+#[gpui_kit::test]
+fn the_headers_buttons_hide_behind_a_far_label(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let note = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.add_note_at(Point::new(5000.0, 0.0), window, cx);
+                ws.space.appearing.clear();
+                ws.space.canvas.top().unwrap().0 as usize
+            })
+        })
+        .unwrap();
+    rest_at(handle, &ws, cx, Point::new(4990.0, -10.0), 1.0);
+    assert!(shown(handle, cx, ("notes", note)));
+    rest_at(handle, &ws, cx, Point::new(4990.0, -10.0), 0.25);
+    assert!(!shown(handle, cx, ("notes", note)), "the label sits there");
+}
+
+/// A focused terminal at 25% is Full: its letters, its cursor (the IME popup follows it) and the
+/// keys. When the focus moves to another block, it is bars on the next frame.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_focused_far_terminal_draws_its_letters_and_the_one_left_bars(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    ws.update(cx, |ws, _| ws.ime_cursor = None);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 10.0, rect.y - 10.0),
+        0.25,
+    );
+    assert!(
+        !shown(handle, cx, ("silhouette", n)),
+        "focused: its letters"
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.ime_cursor.is_some(), "its cursor is drawn")
+    });
+    cx.update_window(handle, |_, window, cx| window.input("z", cx))
+        .unwrap();
+    super::terminals::until("the key to show", handle, &ws, cx, |ws| {
+        ws.space
+            .terminal(id)
+            .unwrap()
+            .snapshot
+            .borrow()
+            .text()
+            .contains('z')
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.add_note_at(Point::new(rect.x + rect.w + 100.0, rect.y), window, cx)
+        })
+    })
+    .unwrap();
+    frame(handle, cx);
+    assert!(shown(handle, cx, ("silhouette", n)), "left: bars");
+}
+
+/// A far terminal's bars are its colored runs, painted on its grid's cells (the grid's area is
+/// where the letters start); a theme switch while far gives them the new palette at once.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_far_terminals_bars_are_its_colored_runs_on_its_cells(cx: &mut TestAppContext) {
+    use templum_terminal::{Bar, Span};
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    // `cat` prints the line back: "red" in red, then " ok". Waited for in the block's own
+    // snapshot: a snapshot of its own (`shown_in`) would take the rows' damage from it.
+    ws.read_with(cx, |ws, _| {
+        let term = &ws.space.terminal(id).unwrap().term;
+        term.write(b"\x1b[31mred\x1b[0m ok\r".to_vec())
+    });
+    super::terminals::until("red ok", handle, &ws, cx, |ws| {
+        let pane = ws.space.terminal(id).unwrap();
+        pane.snapshot.borrow().text().contains("\nred ok")
+    });
+    unfocus(handle, &ws, cx);
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 10.0, rect.y - 10.0),
+        0.25,
+    );
+    let bars = |ws: &Workspace| {
+        let snap = ws.space.terminal(id).unwrap().snapshot.borrow();
+        let row = snap
+            .rows
+            .iter()
+            .rposition(|r| r.text == "red ok")
+            .expect("the row");
+        snap.rows[row].bars()
+    };
+    ws.read_with(cx, |ws, _| {
+        let p = &ws.theme.palette;
+        assert_eq!(
+            bars(ws),
+            vec![
+                Bar {
+                    cols: Span { start: 0, len: 3 },
+                    fg: p.ansi[1],
+                    dim: false
+                },
+                Bar {
+                    cols: Span { start: 4, len: 2 },
+                    fg: p.foreground,
+                    dim: false
+                },
+            ]
+        );
+    });
+    cx.update_window(handle, |_, window, _| {
+        let grid = window.find(("silhouette", n)).bounds();
+        let body = window.find(("body", n)).bounds();
+        let pad = px(chrome::PAD * 0.25);
+        assert_eq!(grid.origin, point(body.origin.x + pad, body.origin.y + pad));
+    })
+    .unwrap();
+    let red = ws.read_with(cx, |ws, _| ws.theme.palette.ansi[1]);
+    ws.update(cx, |ws, cx| ws.set_dark(true, cx));
+    frame(handle, cx);
+    ws.read_with(cx, |ws, _| {
+        let now = ws.theme.palette.ansi[1];
+        assert_ne!(now, red, "another theme");
+        assert_eq!(bars(ws)[0].fg, now, "the bars take its red at once");
+    });
+}
+
+/// Under 2.5 px (8-point text at 25%) a terminal is its card: its grid isn't painted, so it isn't
+/// re-armed, and its output wakes the UI once and then waits, as off screen.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_terminal_drawn_as_its_card_isnt_rearmed(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    // 8 × 0.25 = 2 px: the Card level. The grid keeps its cells; only the level changes.
+    ws.update(cx, |ws, _| ws.cell.font_size = 8.0);
+    unfocus(handle, &ws, cx);
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 10.0, rect.y - 10.0),
+        0.25,
+    );
+    assert!(shown(handle, cx, ("block", n)), "on screen");
+    assert!(!shown(handle, cx, ("silhouette", n)), "no bars: its card");
+    let armed = |ws: &Workspace| ws.space.terminal(id).unwrap().term.shared().armed();
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(id).unwrap().term.write(b"x\r".to_vec())
+    });
+    super::terminals::until("its output to wake the UI once", handle, &ws, cx, |ws| {
+        !armed(ws)
+    });
+    for _ in 0..3 {
+        frame(handle, cx);
+    }
+    ws.read_with(cx, |ws, _| assert!(!armed(ws), "a card isn't re-armed"));
+}
+
+/// Over a far terminal the wheel moves the canvas and Ctrl+wheel zooms; once it is clicked
+/// (focused: Full), the wheel is the terminal's again.
+#[gpui_kit::test]
+fn the_wheel_over_a_far_terminal_moves_the_canvas(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    unfocus(handle, &ws, cx);
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    let corner = Point::new(rect.x - 10.0, rect.y - 10.0);
+    rest_at(handle, &ws, cx, corner, 0.25);
+    let c = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("silhouette", n)).bounds().center()
+        })
+        .unwrap();
+    let at = (f32::from(c.x), f32::from(c.y));
+    let camera = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    let down = ScrollDelta::Pixels(point(px(0.0), px(40.0)));
+    let before = camera(cx);
+    cx.update_window(handle, |_, window, cx| wheel(window, cx, at, down, false))
+        .unwrap();
+    assert_ne!(camera(cx).origin, before.origin, "the canvas moved");
+    rest_at(handle, &ws, cx, corner, 0.25);
+    cx.update_window(handle, |_, window, cx| {
+        wheel(window, cx, at, ScrollDelta::Lines(point(0.0, 1.0)), true)
+    })
+    .unwrap();
+    assert_eq!(camera(cx).zoom(), 0.33, "Ctrl+wheel zooms");
+    rest_at(handle, &ws, cx, corner, 0.25);
+    cx.update_window(handle, |_, window, cx| {
+        click(window, cx, at, 1);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(!shown(handle, cx, ("silhouette", n)), "clicked: Full");
+    let before = camera(cx);
+    cx.update_window(handle, |_, window, cx| wheel(window, cx, at, down, false))
+        .unwrap();
+    assert_eq!(camera(cx), before, "the wheel is the terminal's");
+}
+
+/// Ctrl+click on a URL in an unfocused far terminal opens it: its bars keep the press, which
+/// reads the grid. The URL is printed 10 rows down (the echo of the line is a single row),
+/// below the rows the label covers.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn ctrl_click_on_a_url_in_a_far_terminal_opens_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    ws.read_with(cx, |ws, _| {
+        let term = &ws.space.terminal(id).unwrap().term;
+        term.write(b"\x1b[10Bsee https://example.com/x\r".to_vec())
+    });
+    super::terminals::until("the URL", handle, &ws, cx, |ws| {
+        let pane = ws.space.terminal(id).unwrap();
+        pane.snapshot
+            .borrow()
+            .text()
+            .contains("\nsee https://example.com/x")
+    });
+    unfocus(handle, &ws, cx);
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 10.0, rect.y - 10.0),
+        0.25,
+    );
+    assert!(shown(handle, cx, ("silhouette", id.0 as usize)));
+    let row = ws.read_with(cx, |ws, _| {
+        let snap = ws.space.terminal(id).unwrap().snapshot.borrow();
+        snap.rows
+            .iter()
+            .rposition(|r| r.text.starts_with("see https"))
+            .unwrap()
+    });
+    super::terminals::ctrl_click_cell(handle, &ws, cx, id, (row, 8));
+    assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/x"));
+}
+
+/// A find field left open on a terminal that lost the focus at 33% is hidden, and comes back with
+/// its text when the terminal is focused again.
+#[gpui_kit::test]
+fn a_find_field_hides_far_away_and_comes_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 10.0, rect.y - 10.0),
+        0.33,
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.open_find(window, cx));
+        window.render_frame(cx);
+        window.input("needle", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(shown(handle, cx, ("find", n)), "focused: its field");
+    unfocus(handle, &ws, cx);
+    assert!(!shown(handle, cx, ("find", n)), "far and left: hidden");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(shown(handle, cx, ("find", n)), "back");
+    ws.read_with(cx, |ws, cx| {
+        let bar = ws.space.terminal(id).unwrap().find.as_ref().unwrap();
+        assert_eq!(bar.input.read(cx).value().as_ref(), "needle");
+    });
+}
+
+/// "Go to the terminal waiting for you" focuses a far waiting terminal: it is drawn Full.
+#[gpui_kit::test]
+fn going_to_a_far_waiting_terminal_draws_it_in_full(cx: &mut TestAppContext) {
+    use crate::alert::Alert;
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let n = id.0 as usize;
+    unfocus(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().alert = Some(Alert::Attention(None))
+    });
+    let rect = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
+    rest_at(
+        handle,
+        &ws,
+        cx,
+        Point::new(rect.x - 10.0, rect.y - 10.0),
+        0.25,
+    );
+    assert!(shown(handle, cx, ("silhouette", n)), "waiting, far: bars");
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.go_to_waiting(window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(!shown(handle, cx, ("silhouette", n)), "gone to: Full");
+}
+
+/// Below Full, rendered Markdown is an empty area: an editor's Markdown file keeps its tab row. A
+/// kanban block is drawn in full there.
+#[gpui_kit::test]
+fn far_rendered_markdown_is_left_out_and_kanban_drawn_in_full(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.md"), "# Hello\n\nSome *words*.\n").unwrap();
+    let (handle, ws) = open(cx);
+    let editor = open_editor(handle, &ws, cx, dir.path());
+    click_file(handle, 0, cx);
+    let kanban = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.toggle_file_preview(editor, window, cx);
+                ws.add_kanban_at(Point::new(1200.0, 40.0), window, cx);
+                let kanban = ws.space.canvas.top().unwrap();
+                ws.space.appearing.clear();
+                kanban.0 as usize
+            })
+        })
+        .unwrap();
+    let e = editor.0 as usize;
+    unfocus(handle, &ws, cx);
+    rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 0.5);
+    assert!(
+        shown(handle, cx, ("file-preview", e)),
+        "the file rendered at 50%"
+    );
+    rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 0.33);
+    assert!(
+        !shown(handle, cx, ("file-preview", e)),
+        "the file's area is empty"
+    );
+    assert!(
+        shown(handle, cx, ElementId::Name(format!("tab-{e}-0").into())),
+        "the tab row stays"
+    );
+    assert!(
+        shown(handle, cx, ("board-list", kanban)),
+        "the kanban block is drawn in full"
+    );
+}
+
+/// A note at `at` holding `text`, at rest (not popping in), focused; and its editor.
+fn note_with(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    at: Point,
+    text: &str,
+) -> (BlockId, Entity<EditorState>) {
+    cx.update_window(handle, |_, window, cx| {
+        let (id, editor) = ws.update(cx, |ws, cx| {
+            ws.add_note_at(at, window, cx);
+            ws.space.appearing.clear();
+            let id = ws.space.canvas.top().unwrap();
+            (
+                id,
+                ws.space.blocks[&id]
+                    .note()
+                    .unwrap()
+                    .tab()
+                    .unwrap()
+                    .editor
+                    .clone(),
+            )
+        });
+        editor.update(cx, |e, cx| e.set_value(text.to_string(), window, cx));
+        window.render_frame(cx);
+        (id, editor)
+    })
+    .unwrap()
+}
+
+fn note_map(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> Option<Rc<WordMap>> {
+    ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&id]
+            .note()
+            .unwrap()
+            .tab()
+            .unwrap()
+            .far
+            .borrow()
+            .map
+            .clone()
+    })
+}
+
+/// An unfocused note at 33% builds no gpui-kit editor: it paints its words as bars, in its text's
+/// own box. At 50% it is its editor again.
+#[gpui_kit::test]
+fn a_far_note_draws_bars_in_its_box_and_at_fifty_its_editor(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (id, _) = note_with(
+        handle,
+        &ws,
+        cx,
+        Point::new(40.0, 40.0),
+        "# Plan\nwrite the bars\n",
+    );
+    let n = id.0 as usize;
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    let full = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("note-editor", n)).bounds()
+        })
+        .unwrap();
+    unfocus(handle, &ws, cx);
+    frame(handle, cx);
+    assert!(!shown(handle, cx, ("note-text", n)), "no gpui-kit editor");
+    let bars = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("silhouette", n)).bounds()
+        })
+        .unwrap();
+    assert_eq!(bars, full, "the bars fill the editor's box");
+    let map = note_map(&ws, cx, id).expect("a word map");
+    assert_eq!(map.words.len(), 5, "#, Plan, write, the, bars");
+    rest_at(handle, &ws, cx, corner, 0.5);
+    assert!(shown(handle, cx, ("note-text", n)), "Full at 50%");
+}
+
+/// Bars line up with letters at every zoom step, within 1 px: a soft-wrapped note scrolled a row
+/// and a half, with a folded section on screen, its word map taken at 50% (as after a zoom out
+/// from there), against its letters laid out at each step.
+#[gpui_kit::test]
+fn a_notes_bars_line_up_with_its_letters_at_every_zoom(cx: &mut TestAppContext) {
+    use crate::silhouette::{Taken, note_origin};
+    use gpui_kit::component::input::FoldRange;
+    let mut text = String::from("# Title\nintro\n## Folded\n");
+    for i in 0..5 {
+        text.push_str(&format!("hidden words {i}\n"));
+    }
+    text.push_str("## After\n");
+    for i in 0..60 {
+        text.push_str(&format!(
+            "{i:02} the quick brown fox jumps over the lazy dog and keeps on running far\n"
+        ));
+    }
+    let (handle, ws) = open(cx);
+    let (id, note) = note_with(handle, &ws, cx, Point::new(40.0, 40.0), &text);
+    let n = id.0 as usize;
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 1.0);
+    // Folds "## Folded" (line 2; lines 3 to 7 hidden) from its gutter icon, drawn on the cursor's
+    // line: 14 px, 2 px into the gutter (gpui-base-0.7.3 src/input/base/element.rs:1334-1348).
+    let line2 = "# Title\nintro\n".len();
+    cx.update_window(handle, |_, window, cx| {
+        note.update(cx, |e, cx| {
+            e.apply_highlighter_fold_candidates(vec![FoldRange::new(2, 8)], cx);
+            e.set_selected_range(line2..line2, cx);
+        });
+        window.render_frame(cx);
+        let e = note.read(cx);
+        let (tb, lh) = (
+            e.text_bounds().unwrap(),
+            f32::from(e.line_height().unwrap()),
+        );
+        let icon = (
+            f32::from(tb.origin.x) + 9.0,
+            f32::from(tb.origin.y) + 2.5 * lh,
+        );
+        click(window, cx, icon, 1);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let (hidden, after) = (text.find("hidden").unwrap(), text.find("## After").unwrap());
+    cx.update_window(handle, |_, _, cx| {
+        let b = note
+            .read(cx)
+            .range_to_bounds(&(hidden..hidden + 6))
+            .unwrap();
+        assert_eq!(b.size.width, px(0.0), "line 3 is folded away");
+    })
+    .unwrap();
+    // A row and a half down: the fold stays on screen.
+    cx.update_window(handle, |_, window, cx| {
+        note.update(cx, |e, cx| {
+            let row = e.line_height().unwrap();
+            e.set_scroll_offset(point(px(0.0), -row * 1.5), cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    rest_at(handle, &ws, cx, corner, 0.5);
+    let map = cx
+        .update_window(handle, |_, _, cx| {
+            let taken = Taken {
+                len: text.len(),
+                size: (0.0, 0.0),
+                font: "".into(),
+                wrap: true,
+                tree: false,
+            };
+            WordMap::take(note.read(cx), 0.5, taken).expect("laid out")
+        })
+        .unwrap();
+    assert!(
+        (map.scroll.0 - 1.5).abs() < 0.01,
+        "taken scrolled: {:?}",
+        map.scroll
+    );
+    assert!(
+        map.words
+            .iter()
+            .all(|w| !(hidden..after).contains(&w.range.start)),
+        "no bars for the folded lines"
+    );
+    for zoom in templum_canvas::ZOOM_STEPS {
+        rest_at(handle, &ws, cx, corner, zoom);
+        cx.update_window(handle, |_, window, cx| {
+            let origin = window.find(("note-editor", n)).bounds().origin;
+            let e = note.read(cx);
+            let lh = f32::from(e.line_height().unwrap());
+            let cells = map.cells(note_origin(&map, zoom), crate::note::FONT, zoom);
+            let mut compared = 0;
+            for (word, (x, y, w, h)) in map.words.iter().zip(cells) {
+                let Some(b) = e.range_to_bounds(&word.range) else {
+                    continue;
+                };
+                if f32::from(b.size.height) > 1.5 * lh || b.size.width <= px(0.0) {
+                    continue;
+                }
+                let (x, y) = (f32::from(origin.x) + x, f32::from(origin.y) + y);
+                for (what, bar, letters) in [
+                    ("left", x, f32::from(b.origin.x)),
+                    ("right", x + w, f32::from(b.origin.x + b.size.width)),
+                    ("top", y, f32::from(b.origin.y)),
+                    ("height", h, f32::from(b.size.height)),
+                ] {
+                    assert!(
+                        (bar - letters).abs() <= 1.0,
+                        "{what} of {:?} at {zoom}: bar {bar}, letters {letters}",
+                        &text[word.range.clone()]
+                    );
+                }
+                compared += 1;
+            }
+            assert!(compared > 30, "{compared} words compared at {zoom}");
+        })
+        .unwrap();
+    }
+}
+
+/// A word longer than the note's line, which gpui-kit breaks across rows, is a bar on each row it
+/// is on, as wide as its letters there.
+#[gpui_kit::test]
+fn a_far_notes_word_broken_across_rows_is_a_bar_on_each(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let text = format!("a {}\n", "x".repeat(100));
+    let (id, _) = note_with(handle, &ws, cx, Point::new(40.0, 40.0), &text);
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.5);
+    unfocus(handle, &ws, cx);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    let map = note_map(&ws, cx, id).expect("taken");
+    let parts: Vec<_> = map.words.iter().filter(|w| w.range.start == 2).collect();
+    assert!(parts.len() >= 2, "{parts:?}");
+    assert!(
+        parts.windows(2).all(|p| p[1].row == p[0].row + 1),
+        "{parts:?}"
+    );
+    // 100 letters 0.6 em wide at 13 px, world units.
+    let w: f32 = parts.iter().map(|p| p.w).sum();
+    assert!((w - 100.0 * 0.6 * 13.0).abs() < 2.0, "{w}: {parts:?}");
+}
+
+/// A note with no word map yet (a canvas restored at 25%: never drawn Full) is laid out unseen on
+/// its first frame, and its next frame takes its word map.
+#[gpui_kit::test]
+fn a_far_note_with_no_word_map_yet_gets_one_after_its_first_frames(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.add_note_at(Point::new(40.0, 40.0), window, cx);
+                let id = ws.space.canvas.top().unwrap();
+                let editor = ws.space.blocks[&id]
+                    .note()
+                    .unwrap()
+                    .tab()
+                    .unwrap()
+                    .editor
+                    .clone();
+                editor.update(cx, |e, cx| {
+                    e.set_value(
+                        "# Plan\nwrite the bars\nthen the label\n".to_string(),
+                        window,
+                        cx,
+                    )
+                });
+                ws.space.appearing.clear();
+                ws.space.focused = None;
+                ws.space.pristine = false;
+                ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 0.25);
+                window.focus(&ws.focus_handle, cx);
+                id
+            })
+        })
+        .unwrap();
+    // The update above drew the first frame: a test context draws a window an update left dirty.
+    assert!(
+        note_map(&ws, cx, id).is_none(),
+        "the first frame lays its editor out, unseen"
+    );
+    assert!(shown(handle, cx, ("silhouette", id.0 as usize)));
+    frame(handle, cx);
+    let map = note_map(&ws, cx, id).expect("the next frame takes its word map");
+    assert_eq!(
+        map.words.len(),
+        8,
+        "#, Plan, write, the, bars, then, the, label"
+    );
+}
+
+/// A far note resized (a command, the keyboard elsewhere) gets its word map taken again: one
+/// unseen Full frame lays it out at its new width, the next takes it.
+#[gpui_kit::test]
+fn a_far_notes_word_map_is_taken_again_after_a_resize(cx: &mut TestAppContext) {
+    let text: String = (0..20)
+        .map(|i| format!("{i} the quick brown fox jumps over the lazy dog\n"))
+        .collect();
+    let (handle, ws) = open(cx);
+    let (id, _) = note_with(handle, &ws, cx, Point::new(40.0, 40.0), &text);
+    rest_at(handle, &ws, cx, Point::new(30.0, 30.0), 0.33);
+    unfocus(handle, &ws, cx);
+    let dog = text.find("dog").unwrap();
+    let row = |m: &WordMap| m.words.iter().find(|w| w.range.start == dog).unwrap().row;
+    let before = note_map(&ws, cx, id).expect("taken");
+    assert_eq!(row(&before), 1, "the first line wraps at 360 wide");
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(id).unwrap().rect.w += 200.0
+    });
+    frame(handle, cx);
+    frame(handle, cx);
+    let after = note_map(&ws, cx, id).expect("taken again");
+    assert_eq!(after.taken.size.0, before.taken.size.0 + 200.0);
+    assert_eq!(row(&after), 0, "one row at 560 wide");
+}
+
+/// Over a far note the wheel moves the canvas; once it is clicked (focused: Full), the wheel
+/// scrolls the note again.
+#[gpui_kit::test]
+fn the_wheel_over_a_far_note_moves_the_canvas(cx: &mut TestAppContext) {
+    let text: String = (0..100).map(|i| format!("line {i}\n")).collect();
+    let (handle, ws) = open(cx);
+    let (id, note) = note_with(handle, &ws, cx, Point::new(40.0, 40.0), &text);
+    let n = id.0 as usize;
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    unfocus(handle, &ws, cx);
+    let c = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("silhouette", n)).bounds().center()
+        })
+        .unwrap();
+    let at = (f32::from(c.x), f32::from(c.y));
+    let camera = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    let down = ScrollDelta::Pixels(point(px(0.0), px(-40.0)));
+    let before = camera(cx);
+    cx.update_window(handle, |_, window, cx| wheel(window, cx, at, down, false))
+        .unwrap();
+    assert_ne!(camera(cx).origin, before.origin, "the canvas moved");
+    rest_at(handle, &ws, cx, corner, 0.33);
+    cx.update_window(handle, |_, window, cx| {
+        click(window, cx, at, 1);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(shown(handle, cx, ("note-text", n)), "clicked: Full");
+    let (before, scroll) = (camera(cx), note.read_with(cx, |e, _| e.scroll_offset()));
+    cx.update_window(handle, |_, window, cx| {
+        wheel(window, cx, at, down, false);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(camera(cx), before, "the wheel is the note's");
+    assert_ne!(
+        note.read_with(cx, |e, _| e.scroll_offset()),
+        scroll,
+        "the note scrolled"
+    );
+}
+
+/// A note's rows survive Full → bars → Full: the same lines are on screen after.
+#[gpui_kit::test]
+fn a_notes_rows_survive_being_drawn_far_away(cx: &mut TestAppContext) {
+    let text: String = (0..200).map(|i| format!("line {i}\n")).collect();
+    let (handle, ws) = open(cx);
+    let (id, note) = note_with(handle, &ws, cx, Point::new(40.0, 40.0), &text);
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.5);
+    cx.update_window(handle, |_, window, cx| {
+        note.update(cx, |e, cx| {
+            let row = e.line_height().unwrap();
+            e.set_scroll_offset(point(px(0.0), -row * 60.0), cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let top =
+        |cx: &mut TestAppContext| note.read_with(cx, |e, _| e.visible_row_range().unwrap().start);
+    assert_eq!(top(cx), 60);
+    unfocus(handle, &ws, cx);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    assert!(shown(handle, cx, ("silhouette", id.0 as usize)));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx))
+    })
+    .unwrap();
+    rest_at(handle, &ws, cx, corner, 0.33);
+    assert_eq!(top(cx), 60, "focused again at 33%");
+    rest_at(handle, &ws, cx, corner, 0.5);
+    assert_eq!(top(cx), 60, "and at 50%");
+}
+
+/// An editor on a folder holding `files` (name, text), its first file open and focused, at rest.
+fn editor_with(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    files: &[(&str, &str)],
+) -> (tempfile::TempDir, BlockId, Entity<EditorState>) {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, text) in files {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let id = open_editor(handle, ws, cx, dir.path());
+    click_file(handle, 0, cx);
+    let state = ws.read_with(cx, |ws, _| {
+        ws.space
+            .editor(id)
+            .unwrap()
+            .active_tab()
+            .unwrap()
+            .editor
+            .clone()
+    });
+    (dir, id, state)
+}
+
+fn tab_map(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> Option<Rc<WordMap>> {
+    ws.read_with(cx, |ws, _| {
+        let tab = ws.space.editor(id).unwrap().active_tab().unwrap();
+        tab.far.borrow().map.clone()
+    })
+}
+
+/// An unfocused editor at 33% builds no gpui-kit editor and no tree rows: its file's words are
+/// bars where its code was, its tab row stays. The level changes when a glide ends: out from
+/// 50%, bars from the frame it ends (the map of its last frame); in from 33%, its code.
+#[gpui_kit::test]
+fn a_far_editor_draws_bars_where_its_code_was(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_dir, id, _) = editor_with(
+        handle,
+        &ws,
+        cx,
+        &[("a.rs", "fn main() {\n    println!(\"hi\");\n}\n")],
+    );
+    let n = id.0 as usize;
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    let code = cx
+        .update_window(handle, |_, window, _| window.find(("code", n)).bounds())
+        .unwrap();
+    unfocus(handle, &ws, cx);
+    assert!(!shown(handle, cx, ("code", n)), "no gpui-kit editor");
+    assert!(!shown(handle, cx, ("tree", n)), "the tree's panel is empty");
+    let bars = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("silhouette", n)).bounds()
+        })
+        .unwrap();
+    assert_eq!(bars, code, "bars where the code was");
+    assert!(
+        shown(handle, cx, ElementId::Name(format!("tab-{n}-0").into())),
+        "the tab row stays"
+    );
+    let words = tab_map(&ws, cx, id).expect("taken").words.len();
+    assert_eq!(words, 5, "fn, main(), {{, println!(\"hi\");, }}");
+    rest_at(handle, &ws, cx, corner, 0.5);
+    for (step, during, landed) in [(-1, "code", "silhouette"), (1, "silhouette", "code")] {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let pivot = ws.center(window);
+                ws.zoom_to(step, pivot, cx);
+            })
+        })
+        .unwrap();
+        ws.update(cx, glide_40ms_in);
+        frame(handle, cx);
+        assert!(
+            shown(handle, cx, (during, n)),
+            "mid-glide, step {step}: {during}"
+        );
+        std::thread::sleep(crate::motion::FLIGHT + Duration::from_millis(50));
+        frame(handle, cx);
+        assert!(
+            shown(handle, cx, (landed, n)) && !shown(handle, cx, (during, n)),
+            "landed, step {step}: {landed}"
+        );
+    }
+}
+
+/// Bars line up with letters at every zoom step, within 1 px: an editor tab of 1,000 lines (four
+/// digits of line numbers) scrolled 10 rows down and 6 rows' worth across, its word map taken at
+/// 50%, against its letters laid out at each step.
+#[gpui_kit::test]
+fn an_editor_tabs_bars_line_up_with_its_letters_at_every_zoom(cx: &mut TestAppContext) {
+    use crate::silhouette::{Taken, tab_origin};
+    let words: Vec<String> = (0..30).map(|j| format!("w{j}")).collect();
+    let text: String = (0..1000)
+        .map(|i| format!("line{i} {}\n", words.join(" ")))
+        .collect();
+    let (handle, ws) = open(cx);
+    let (_dir, id, state) = editor_with(handle, &ws, cx, &[("a.txt", text.as_str())]);
+    let n = id.0 as usize;
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.5);
+    cx.update_window(handle, |_, window, cx| {
+        state.update(cx, |e, cx| {
+            let row = e.line_height().unwrap();
+            e.set_scroll_offset(point(-row * 6.0, -row * 10.0), cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let map = cx
+        .update_window(handle, |_, _, cx| {
+            let taken = Taken {
+                len: text.len(),
+                size: (0.0, 0.0),
+                font: "".into(),
+                wrap: false,
+                tree: true,
+            };
+            WordMap::take(state.read(cx), 0.5, taken).expect("laid out")
+        })
+        .unwrap();
+    assert!(
+        (map.scroll.0 - 10.0).abs() < 0.01 && (map.scroll.1 - 6.0).abs() < 0.01,
+        "taken scrolled: {:?}",
+        map.scroll
+    );
+    for zoom in templum_canvas::ZOOM_STEPS {
+        rest_at(handle, &ws, cx, corner, zoom);
+        cx.update_window(handle, |_, window, cx| {
+            let origin = window.find(("code", n)).bounds().origin;
+            let e = state.read(cx);
+            let lh = f32::from(e.line_height().unwrap());
+            let cells = map.cells(tab_origin(&map, zoom), crate::editor::FONT, zoom);
+            let mut compared = 0;
+            for (word, (x, y, w, h)) in map.words.iter().zip(cells) {
+                let Some(b) = e.range_to_bounds(&word.range) else {
+                    continue;
+                };
+                if f32::from(b.size.height) > 1.5 * lh || b.size.width <= px(0.0) {
+                    continue;
+                }
+                let (x, y) = (f32::from(origin.x) + x, f32::from(origin.y) + y);
+                for (what, bar, letters) in [
+                    ("left", x, f32::from(b.origin.x)),
+                    ("right", x + w, f32::from(b.origin.x + b.size.width)),
+                    ("top", y, f32::from(b.origin.y)),
+                    ("height", h, f32::from(b.size.height)),
+                ] {
+                    assert!(
+                        (bar - letters).abs() <= 1.0,
+                        "{what} of {:?} at {zoom}: bar {bar}, letters {letters}",
+                        &text[word.range.clone()]
+                    );
+                }
+                compared += 1;
+            }
+            assert!(compared > 50, "{compared} words compared at {zoom}");
+        })
+        .unwrap();
+    }
+}
+
+/// A far editor whose file changes on disk shows the new text's bars a frame later, even when
+/// the new text is as long as the old: the reload drops its word map, one unseen Full frame lays
+/// the new text out, the next takes it.
+#[gpui_kit::test]
+fn a_far_editor_shows_its_files_new_text_after_a_frame(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (dir, id, _) = editor_with(handle, &ws, cx, &[("a.txt", "old words\n")]);
+    rest_at(handle, &ws, cx, Point::new(30.0, 30.0), 0.33);
+    unfocus(handle, &ws, cx);
+    assert_eq!(tab_map(&ws, cx, id).expect("taken").words.len(), 2);
+    // As long as before: only the reload can tell the map is stale. A later modification time.
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(dir.path().join("a.txt"), "a b c d e\n").unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.check_files(window, cx))
+    })
+    .unwrap();
+    assert!(tab_map(&ws, cx, id).is_none(), "the reload dropped the map");
+    frame(handle, cx);
+    frame(handle, cx);
+    let map = tab_map(&ws, cx, id).expect("taken again");
+    assert_eq!(map.words.len(), 5, "a, b, c, d, e");
+}
+
+/// A focused editor at 25% is Full and typing reaches it; when the focus moves to another block,
+/// it is bars on the next frame.
+#[gpui_kit::test]
+fn a_focused_far_editor_takes_typing_and_the_one_left_draws_bars(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_dir, id, state) = editor_with(handle, &ws, cx, &[("a.txt", "one\n")]);
+    let n = id.0 as usize;
+    rest_at(handle, &ws, cx, Point::new(30.0, 30.0), 0.25);
+    assert!(shown(handle, cx, ("code", n)), "focused: Full at 25%");
+    cx.update_window(handle, |_, window, cx| {
+        window.input("zz", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        state.read_with(cx, |e, _| e.value().contains("zz")),
+        "typing reaches it"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.add_note_at(Point::new(3000.0, 0.0), window, cx)
+        })
+    })
+    .unwrap();
+    frame(handle, cx);
+    assert!(shown(handle, cx, ("silhouette", n)), "left: bars");
+}
+
+/// Over a far editor the wheel moves the canvas; once it is clicked (focused: Full), the wheel
+/// scrolls its file again.
+#[gpui_kit::test]
+fn the_wheel_over_a_far_editor_moves_the_canvas(cx: &mut TestAppContext) {
+    let text: String = (0..200).map(|i| format!("line {i}\n")).collect();
+    let (handle, ws) = open(cx);
+    let (_dir, id, state) = editor_with(handle, &ws, cx, &[("a.txt", text.as_str())]);
+    let n = id.0 as usize;
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    unfocus(handle, &ws, cx);
+    let c = cx
+        .update_window(handle, |_, window, _| {
+            window.find(("silhouette", n)).bounds().center()
+        })
+        .unwrap();
+    let at = (f32::from(c.x), f32::from(c.y));
+    let camera = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    let down = ScrollDelta::Pixels(point(px(0.0), px(-40.0)));
+    let before = camera(cx);
+    cx.update_window(handle, |_, window, cx| wheel(window, cx, at, down, false))
+        .unwrap();
+    assert_ne!(camera(cx).origin, before.origin, "the canvas moved");
+    rest_at(handle, &ws, cx, corner, 0.33);
+    cx.update_window(handle, |_, window, cx| {
+        click(window, cx, at, 1);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(shown(handle, cx, ("code", n)), "clicked: Full");
+    let (before, scroll) = (camera(cx), state.read_with(cx, |e, _| e.scroll_offset()));
+    cx.update_window(handle, |_, window, cx| {
+        wheel(window, cx, at, down, false);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(camera(cx), before, "the wheel is the editor's");
+    assert_ne!(
+        state.read_with(cx, |e, _| e.scroll_offset()),
+        scroll,
+        "its file scrolled"
+    );
+}
+
+/// An editor's state survives Full → bars → Full: its tabs and the active one, its rows on screen,
+/// its selection, its text and its undo history.
+#[gpui_kit::test]
+fn an_editors_state_survives_being_drawn_far_away(cx: &mut TestAppContext) {
+    use gpui_kit::component::input::Undo;
+    let text: String = (0..200).map(|i| format!("line {i}\n")).collect();
+    let (handle, ws) = open(cx);
+    let (_dir, id, state) = editor_with(
+        handle,
+        &ws,
+        cx,
+        &[("a.txt", text.as_str()), ("b.txt", "b\n")],
+    );
+    // b.txt opened, then a.txt shown again: two tabs, the first active.
+    click_file(handle, 1, cx);
+    click_file(handle, 0, cx);
+    let corner = Point::new(30.0, 30.0);
+    rest_at(handle, &ws, cx, corner, 0.5);
+    cx.update_window(handle, |_, window, cx| {
+        window.input("typed ", cx);
+        state.update(cx, |e, cx| {
+            // A selection on line 45, on screen once scrolled 40 rows down.
+            let at = e.value().find("line 45").unwrap();
+            e.set_selected_range(at..at + 4, cx);
+            let row = e.line_height().unwrap();
+            e.set_scroll_offset(point(px(0.0), -row * 40.0), cx);
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let seen = |cx: &mut TestAppContext| {
+        state.read_with(cx, |e, _| {
+            (e.visible_row_range(), e.selected_range(), e.value())
+        })
+    };
+    let before = seen(cx);
+    unfocus(handle, &ws, cx);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    assert!(shown(handle, cx, ("silhouette", id.0 as usize)));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx))
+    })
+    .unwrap();
+    rest_at(handle, &ws, cx, corner, 0.5);
+    assert_eq!(
+        seen(cx),
+        before,
+        "its rows, selection and text as they were"
+    );
+    ws.read_with(cx, |ws, _| {
+        let e = ws.space.editor(id).unwrap();
+        assert_eq!((e.tabs.len(), e.active), (2, Some(0)));
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_action(Box::new(Undo), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_ne!(
+        state.read_with(cx, |e, _| e.value()),
+        before.2,
+        "its undo history is there"
+    );
+}
+
+/// Where `row` is on screen, pixels from the window's top.
+fn top_of(handle: AnyWindowHandle, cx: &mut TestAppContext, row: &ElementId) -> gpui_kit::Pixels {
+    cx.update_window(handle, |_, window, _| {
+        window.find(row.clone()).bounds().origin.y
+    })
+    .unwrap()
+}
+
+/// Scrolls `list` with the wheel at 100%, draws its Git block as its card at 33%, and back: its
+/// `row` is where it was on screen.
+fn a_lists_scroll_survives_a_card(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+    list: ElementId,
+    row: ElementId,
+) {
+    rest_at(handle, ws, cx, Point::new(0.0, 0.0), 1.0);
+    let start = top_of(handle, cx, &row);
+    cx.update_window(handle, |_, window, cx| {
+        window.scroll(
+            list.clone(),
+            ScrollDelta::Pixels(point(px(0.0), px(-120.0))),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let before = top_of(handle, cx, &row);
+    assert!(before < start, "the wheel scrolled {list:?}");
+    unfocus(handle, ws, cx);
+    rest_at(handle, ws, cx, Point::new(0.0, 0.0), 0.33);
+    assert!(
+        !shown(handle, cx, list.clone()),
+        "far away the block is its card"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx))
+    })
+    .unwrap();
+    rest_at(handle, ws, cx, Point::new(0.0, 0.0), 1.0);
+    assert_eq!(top_of(handle, cx, &row), before, "{list:?} kept its scroll");
+}
+
+/// A repository with `n` commits on top of `committed_repo`'s, each adding a file, with an
+/// 80-line message: their details are longer than the block.
+fn long_commits(n: usize) -> tempfile::TempDir {
+    let repo = committed_repo();
+    let body: String = (1..=80)
+        .map(|i| format!("Line {i} of a long message.\n"))
+        .collect();
+    for i in 0..n {
+        let name = format!("f{i}.txt");
+        std::fs::write(repo.path().join(&name), "x\n").unwrap();
+        git_run(repo.path(), &["add", &name]);
+        git_run(
+            repo.path(),
+            &["commit", "-q", "-m", &format!("c{i}"), "-m", &body],
+        );
+    }
+    repo
+}
+
+/// A Git block on `repo` showing History, at rest at 100%.
+fn history_of(
+    cx: &mut TestAppContext,
+    repo: &std::path::Path,
+) -> (AnyWindowHandle, Entity<Workspace>, BlockId) {
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.set_git_tab(id, crate::git_block::Tab::History, window, cx)
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 1.0);
+    (handle, ws, id)
+}
+
+#[gpui_kit::test]
+fn a_commits_details_keep_their_scroll_through_a_card(cx: &mut TestAppContext) {
+    let repo = long_commits(1);
+    let (handle, ws, id) = history_of(cx, repo.path());
+    cx.update_window(handle, |_, window, cx| {
+        window.click(("git-commit", 0usize), cx)
+    })
+    .unwrap();
+    settle(handle, cx);
+    let n = id.0 as usize;
+    let list = ElementId::from(("git-commit-details", n));
+    let row = ElementId::Name(format!("git-commit-file-{n}-0").into());
+    a_lists_scroll_survives_a_card(handle, &ws, cx, id, list, row);
+    git_of(&ws, cx, id, |g| {
+        assert!(g.shown.is_some(), "the commit is still shown")
+    });
+}
+
+/// Another commit opens at the top of its details, however far the last one was scrolled.
+#[gpui_kit::test]
+fn another_commit_opens_at_the_top_of_its_details(cx: &mut TestAppContext) {
+    let repo = long_commits(2);
+    let (handle, ws, id) = history_of(cx, repo.path());
+    let n = id.0 as usize;
+    let row = ElementId::Name(format!("git-commit-file-{n}-0").into());
+    let open = |cx: &mut TestAppContext, i: usize| {
+        cx.update_window(handle, |_, window, cx| window.click(("git-commit", i), cx))
+            .unwrap();
+        settle(handle, cx);
+    };
+    open(cx, 0);
+    let fresh = top_of(handle, cx, &row);
+    cx.update_window(handle, |_, window, cx| {
+        let down = ScrollDelta::Pixels(point(px(0.0), px(-120.0)));
+        window.scroll(("git-commit-details", n), down, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        top_of(handle, cx, &row) < fresh,
+        "the first commit scrolled"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.hide_commit(id, window, cx))
+    })
+    .unwrap();
+    settle(handle, cx);
+    open(cx, 1);
+    assert_eq!(
+        top_of(handle, cx, &row),
+        fresh,
+        "the second opens at the top"
+    );
+    // The same commit read again (Ignore whitespace) keeps its place.
+    cx.update_window(handle, |_, window, cx| {
+        let down = ScrollDelta::Pixels(point(px(0.0), px(-120.0)));
+        window.scroll(("git-commit-details", n), down, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let scrolled = top_of(handle, cx, &row);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.reload_shown_diff(id, window, cx))
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        top_of(handle, cx, &row),
+        scrolled,
+        "read again: where it was"
+    );
+}
+
+/// Another comparison opens at the top of its commits, however far the last one was scrolled.
+#[gpui_kit::test]
+fn another_comparison_opens_at_the_top_of_its_commits(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    for branch in ["one", "two"] {
+        git_run(repo.path(), &["checkout", "-q", "-b", branch, "main"]);
+        for i in 0..40 {
+            let subject = format!("{branch}{i}");
+            git_run(
+                repo.path(),
+                &["commit", "-q", "--allow-empty", "-m", &subject],
+            );
+        }
+    }
+    git_run(repo.path(), &["checkout", "-q", "main"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    let n = id.0 as usize;
+    let row = ElementId::Name(format!("git-compare-commit-{n}-0").into());
+    let compare = |cx: &mut TestAppContext, branch: &str| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.close_compare(id, cx);
+                ws.compare_branch(id, branch.to_string(), window, cx)
+            })
+        })
+        .unwrap();
+        settle(handle, cx);
+    };
+    compare(cx, "one");
+    rest_at(handle, &ws, cx, Point::new(0.0, 0.0), 1.0);
+    let fresh = top_of(handle, cx, &row);
+    cx.update_window(handle, |_, window, cx| {
+        let down = ScrollDelta::Pixels(point(px(0.0), px(-120.0)));
+        window.scroll(("git-compare-list", n), down, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        top_of(handle, cx, &row) < fresh,
+        "the first comparison scrolled"
+    );
+    compare(cx, "two");
+    assert_eq!(
+        top_of(handle, cx, &row),
+        fresh,
+        "the second opens at the top"
+    );
+}
+
+#[gpui_kit::test]
+fn a_comparisons_commits_keep_their_scroll_through_a_card(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    git_run(repo.path(), &["checkout", "-q", "-b", "feature"]);
+    for i in 0..40 {
+        git_run(
+            repo.path(),
+            &["commit", "-q", "--allow-empty", "-m", &format!("f{i}")],
+        );
+    }
+    git_run(repo.path(), &["checkout", "-q", "main"]);
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.compare_branch(id, "feature".to_string(), window, cx)
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    let n = id.0 as usize;
+    let row = ElementId::Name(format!("git-compare-commit-{n}-0").into());
+    let list = ElementId::from(("git-compare-list", n));
+    a_lists_scroll_survives_a_card(handle, &ws, cx, id, list, row);
+}
+
+#[gpui_kit::test]
+fn the_stashes_keep_their_scroll_through_a_card(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    // More than the list shows.
+    for i in 0..40 {
+        std::fs::write(repo.path().join("a.txt"), format!("{i}\n")).unwrap();
+        git_run(
+            repo.path(),
+            &["stash", "push", "-q", "-m", &format!("s{i}")],
+        );
+    }
+    let (handle, ws) = open(cx);
+    let id = open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.set_git_tab(id, crate::git_block::Tab::Stashes, window, cx)
+        })
+    })
+    .unwrap();
+    settle(handle, cx);
+    let n = id.0 as usize;
+    let row = ElementId::Name(format!("git-stash-{n}-0").into());
+    let list = ElementId::from(("git-stash-list", n));
+    a_lists_scroll_survives_a_card(handle, &ws, cx, id, list, row);
+}
+
+/// Taking a word map walks what is on screen, not the whole text: a minified file's long line,
+/// or a long paragraph soft-wrapped in a note, gets bars for its words near the view only (each
+/// word costs gpui-kit a walk from its line's start).
+#[gpui_kit::test]
+fn a_word_map_takes_only_the_words_near_the_view(cx: &mut TestAppContext) {
+    let words: String = (0..2000).map(|i| format!("w{i} ")).collect();
+    let text = format!("{words}\n");
+    let (handle, ws) = open(cx);
+    let (_dir, editor, _) = editor_with(handle, &ws, cx, &[("a.txt", text.as_str())]);
+    let (note, _) = note_with(handle, &ws, cx, Point::new(40.0, 1000.0), &text);
+    let corner = Point::new(30.0, 30.0);
+    // Both Full at 50% (the note was focused last, the editor is on screen), then far.
+    rest_at(handle, &ws, cx, corner, 0.5);
+    unfocus(handle, &ws, cx);
+    rest_at(handle, &ws, cx, corner, 0.5);
+    rest_at(handle, &ws, cx, corner, 0.33);
+    let mapped = tab_map(&ws, cx, editor).expect("the editor's").words.len();
+    assert!(mapped > 0 && mapped < 200, "the editor: {mapped} words");
+    let mapped = note_map(&ws, cx, note).expect("the note's").words.len();
+    assert!(mapped > 0 && mapped < 600, "the note: {mapped} words");
+}

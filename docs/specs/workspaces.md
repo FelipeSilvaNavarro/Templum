@@ -23,7 +23,9 @@ Terminals in the workspaces you aren't looking at keep running, so an agent keep
 
 ## Out of scope
 
-- Dragging tiles to reorder workspaces, icons or colors per workspace, and moving a block to another workspace.
+- Dragging tiles to reorder workspaces, icons or colors per workspace, and moving a block to another workspace: all
+  three came later with the workspaces screen ([cockpit.md](cockpit.md#6-the-workspaces-screen)), where **Rename…**
+  became **Edit…**.
 - More than one window.
 - Kanban boards: the next sub-project.
 

@@ -22,6 +22,15 @@ pub(crate) enum Command {
     ZoomOut,
     ZoomReset,
     FitAll,
+    ToggleGrid,
+    FocusLeft,
+    FocusRight,
+    FocusUp,
+    FocusDown,
+    SwapLeft,
+    SwapRight,
+    SwapUp,
+    SwapDown,
     ThemePicker,
     OpenConfig,
     Settings,
@@ -29,12 +38,16 @@ pub(crate) enum Command {
     PreviousWorkspace,
     NewWorkspace,
     ToggleSidebar,
+    Workspaces,
+    GoToWaiting,
+    Find,
+    OpenFile,
     Quit,
 }
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 25] = [
+    pub const ALL: [Command; 38] = [
         Command::NewTerminal,
         Command::NewKanban,
         Command::NewNote,
@@ -52,6 +65,15 @@ impl Command {
         Command::ZoomOut,
         Command::ZoomReset,
         Command::FitAll,
+        Command::ToggleGrid,
+        Command::FocusLeft,
+        Command::FocusRight,
+        Command::FocusUp,
+        Command::FocusDown,
+        Command::SwapLeft,
+        Command::SwapRight,
+        Command::SwapUp,
+        Command::SwapDown,
         Command::ThemePicker,
         Command::OpenConfig,
         Command::Settings,
@@ -59,6 +81,10 @@ impl Command {
         Command::PreviousWorkspace,
         Command::NewWorkspace,
         Command::ToggleSidebar,
+        Command::Workspaces,
+        Command::GoToWaiting,
+        Command::Find,
+        Command::OpenFile,
         Command::Quit,
     ];
 
@@ -82,6 +108,15 @@ impl Command {
             Command::ZoomOut => "zoom_out",
             Command::ZoomReset => "zoom_reset",
             Command::FitAll => "fit_all",
+            Command::ToggleGrid => "toggle_grid",
+            Command::FocusLeft => "focus_left",
+            Command::FocusRight => "focus_right",
+            Command::FocusUp => "focus_up",
+            Command::FocusDown => "focus_down",
+            Command::SwapLeft => "swap_left",
+            Command::SwapRight => "swap_right",
+            Command::SwapUp => "swap_up",
+            Command::SwapDown => "swap_down",
             Command::ThemePicker => "theme_picker",
             Command::OpenConfig => "open_config",
             Command::Settings => "settings",
@@ -89,6 +124,10 @@ impl Command {
             Command::PreviousWorkspace => "previous_workspace",
             Command::NewWorkspace => "new_workspace",
             Command::ToggleSidebar => "toggle_sidebar",
+            Command::Workspaces => "workspaces",
+            Command::GoToWaiting => "go_to_waiting",
+            Command::Find => "find",
+            Command::OpenFile => "open_file",
             Command::Quit => "quit",
         }
     }
@@ -113,6 +152,15 @@ impl Command {
             Command::ZoomOut => "Zoom out",
             Command::ZoomReset => "Zoom 100%",
             Command::FitAll => "Fit all blocks",
+            Command::ToggleGrid => "Fill the workspace with the block, or go back to the canvas",
+            Command::FocusLeft => "Focus the tile on the left (grid mode)",
+            Command::FocusRight => "Focus the tile on the right (grid mode)",
+            Command::FocusUp => "Focus the tile above (grid mode)",
+            Command::FocusDown => "Focus the tile below (grid mode)",
+            Command::SwapLeft => "Swap with the tile on the left (grid mode)",
+            Command::SwapRight => "Swap with the tile on the right (grid mode)",
+            Command::SwapUp => "Swap with the tile above (grid mode)",
+            Command::SwapDown => "Swap with the tile below (grid mode)",
             Command::ThemePicker => "Theme picker",
             Command::OpenConfig => "Edit config.toml",
             Command::Settings => "Settings",
@@ -120,13 +168,53 @@ impl Command {
             Command::PreviousWorkspace => "Previous workspace",
             Command::NewWorkspace => "New workspace",
             Command::ToggleSidebar => "Show or hide the sidebar",
+            Command::Workspaces => "The workspaces screen",
+            Command::GoToWaiting => "Go to the terminal waiting for you",
+            Command::Find => "Find in the terminal",
+            Command::OpenFile => "Open a file by name (in an editor)",
             Command::Quit => "Quit Templum",
         }
     }
 
     /// Runs only while an editor block has the focus; otherwise its key goes to the terminal.
     pub fn editor_only(self) -> bool {
-        matches!(self, Command::CloseTab | Command::Save | Command::GoToLine)
+        matches!(
+            self,
+            Command::CloseTab | Command::Save | Command::GoToLine | Command::OpenFile
+        )
+    }
+
+    /// Moving between tiles only means something in grid mode: elsewhere its key goes on to
+    /// the terminal.
+    pub fn grid_only(self) -> bool {
+        matches!(
+            self,
+            Command::FocusLeft
+                | Command::FocusRight
+                | Command::FocusUp
+                | Command::FocusDown
+                | Command::SwapLeft
+                | Command::SwapRight
+                | Command::SwapUp
+                | Command::SwapDown
+        )
+    }
+
+    /// Left to the program that took over a terminal (full screen, the mouse, the kitty keyboard,
+    /// an agent): its own hotkeys use these keys (Ctrl+- undoes in Claude Code), and they mean
+    /// little there. The window's shortcuts (blocks, workspaces, grid, copy, paste) stay.
+    pub fn yields_to_programs(self) -> bool {
+        matches!(
+            self,
+            Command::ZoomIn
+                | Command::ZoomOut
+                | Command::ZoomReset
+                | Command::Settings
+                | Command::ThemePicker
+                | Command::OpenConfig
+                | Command::PreviousPrompt
+                | Command::NextPrompt
+        )
     }
 
     /// Shift+1 is reported as "!" on some layouts: fit_all binds both.
@@ -165,6 +253,16 @@ impl Command {
             (Command::ZoomReset, true) => &["cmd-0"],
             (Command::FitAll, false) => &["ctrl-shift-1", "ctrl-!"],
             (Command::FitAll, true) => &["cmd-shift-1", "cmd-!"],
+            (Command::ToggleGrid, false) => &["ctrl-shift-enter"],
+            (Command::ToggleGrid, true) => &["cmd-shift-enter"],
+            (Command::FocusLeft, _) => &["ctrl-alt-left"],
+            (Command::FocusRight, _) => &["ctrl-alt-right"],
+            (Command::FocusUp, _) => &["ctrl-alt-up"],
+            (Command::FocusDown, _) => &["ctrl-alt-down"],
+            (Command::SwapLeft, _) => &["ctrl-alt-shift-left"],
+            (Command::SwapRight, _) => &["ctrl-alt-shift-right"],
+            (Command::SwapUp, _) => &["ctrl-alt-shift-up"],
+            (Command::SwapDown, _) => &["ctrl-alt-shift-down"],
             (Command::ThemePicker, false) => &["ctrl-shift-p"],
             (Command::ThemePicker, true) => &["cmd-shift-p"],
             (Command::OpenConfig, _) => &[],
@@ -175,6 +273,14 @@ impl Command {
             (Command::NewWorkspace, false) => &["ctrl-shift-n"],
             (Command::NewWorkspace, true) => &["cmd-shift-n"],
             (Command::ToggleSidebar, _) => &[],
+            (Command::Workspaces, false) => &["ctrl-shift-o"],
+            (Command::Workspaces, true) => &["cmd-shift-o"],
+            (Command::GoToWaiting, false) => &["ctrl-shift-a"],
+            (Command::GoToWaiting, true) => &["cmd-shift-a"],
+            (Command::Find, false) => &["ctrl-shift-f"],
+            (Command::Find, true) => &["cmd-f"],
+            (Command::OpenFile, false) => &["ctrl-p"],
+            (Command::OpenFile, true) => &["cmd-p"],
             (Command::Quit, false) => &["ctrl-shift-q"],
             (Command::Quit, true) => &["cmd-q"],
         }
@@ -210,6 +316,15 @@ pub(crate) struct KeysConfig {
     pub zoom_out: Option<Keys>,
     pub zoom_reset: Option<Keys>,
     pub fit_all: Option<Keys>,
+    pub toggle_grid: Option<Keys>,
+    pub focus_left: Option<Keys>,
+    pub focus_right: Option<Keys>,
+    pub focus_up: Option<Keys>,
+    pub focus_down: Option<Keys>,
+    pub swap_left: Option<Keys>,
+    pub swap_right: Option<Keys>,
+    pub swap_up: Option<Keys>,
+    pub swap_down: Option<Keys>,
     pub theme_picker: Option<Keys>,
     pub open_config: Option<Keys>,
     pub settings: Option<Keys>,
@@ -217,6 +332,10 @@ pub(crate) struct KeysConfig {
     pub previous_workspace: Option<Keys>,
     pub new_workspace: Option<Keys>,
     pub toggle_sidebar: Option<Keys>,
+    pub workspaces: Option<Keys>,
+    pub go_to_waiting: Option<Keys>,
+    pub find: Option<Keys>,
+    pub open_file: Option<Keys>,
     pub quit: Option<Keys>,
 }
 
@@ -240,6 +359,15 @@ impl KeysConfig {
             Command::ZoomOut => self.zoom_out.as_ref(),
             Command::ZoomReset => self.zoom_reset.as_ref(),
             Command::FitAll => self.fit_all.as_ref(),
+            Command::ToggleGrid => self.toggle_grid.as_ref(),
+            Command::FocusLeft => self.focus_left.as_ref(),
+            Command::FocusRight => self.focus_right.as_ref(),
+            Command::FocusUp => self.focus_up.as_ref(),
+            Command::FocusDown => self.focus_down.as_ref(),
+            Command::SwapLeft => self.swap_left.as_ref(),
+            Command::SwapRight => self.swap_right.as_ref(),
+            Command::SwapUp => self.swap_up.as_ref(),
+            Command::SwapDown => self.swap_down.as_ref(),
             Command::ThemePicker => self.theme_picker.as_ref(),
             Command::OpenConfig => self.open_config.as_ref(),
             Command::Settings => self.settings.as_ref(),
@@ -247,6 +375,10 @@ impl KeysConfig {
             Command::PreviousWorkspace => self.previous_workspace.as_ref(),
             Command::NewWorkspace => self.new_workspace.as_ref(),
             Command::ToggleSidebar => self.toggle_sidebar.as_ref(),
+            Command::Workspaces => self.workspaces.as_ref(),
+            Command::GoToWaiting => self.go_to_waiting.as_ref(),
+            Command::Find => self.find.as_ref(),
+            Command::OpenFile => self.open_file.as_ref(),
             Command::Quit => self.quit.as_ref(),
         }
     }
@@ -270,6 +402,15 @@ impl KeysConfig {
             Command::ZoomOut => &mut self.zoom_out,
             Command::ZoomReset => &mut self.zoom_reset,
             Command::FitAll => &mut self.fit_all,
+            Command::ToggleGrid => &mut self.toggle_grid,
+            Command::FocusLeft => &mut self.focus_left,
+            Command::FocusRight => &mut self.focus_right,
+            Command::FocusUp => &mut self.focus_up,
+            Command::FocusDown => &mut self.focus_down,
+            Command::SwapLeft => &mut self.swap_left,
+            Command::SwapRight => &mut self.swap_right,
+            Command::SwapUp => &mut self.swap_up,
+            Command::SwapDown => &mut self.swap_down,
             Command::ThemePicker => &mut self.theme_picker,
             Command::OpenConfig => &mut self.open_config,
             Command::Settings => &mut self.settings,
@@ -277,6 +418,10 @@ impl KeysConfig {
             Command::PreviousWorkspace => &mut self.previous_workspace,
             Command::NewWorkspace => &mut self.new_workspace,
             Command::ToggleSidebar => &mut self.toggle_sidebar,
+            Command::Workspaces => &mut self.workspaces,
+            Command::GoToWaiting => &mut self.go_to_waiting,
+            Command::Find => &mut self.find,
+            Command::OpenFile => &mut self.open_file,
             Command::Quit => &mut self.quit,
         };
         *slot = keys;

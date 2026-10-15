@@ -51,6 +51,17 @@ pub(crate) struct Card {
     pub labels: Vec<Label>,
 }
 
+impl Card {
+    /// What sending it to a terminal types: its title, then its description.
+    pub fn text(&self) -> String {
+        if self.description.trim().is_empty() {
+            self.title.clone()
+        } else {
+            format!("{}\n\n{}", self.title, self.description)
+        }
+    }
+}
+
 /// A card's label: one of six colors, drawn with the theme's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -98,6 +109,12 @@ impl Label {
 }
 
 /// Labels this Templum knows; others (from an edited file) are dropped.
+/// A label by its name; one Templum doesn't know is none (a typo mustn't lose the file).
+pub(crate) fn known_label<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Label>, D::Error> {
+    let name = Option::<String>::deserialize(d)?;
+    Ok(name.and_then(|n| Label::ALL.into_iter().find(|l| l.name() == n)))
+}
+
 fn known_labels<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Label>, D::Error> {
     let names = Vec::<String>::deserialize(d)?;
     Ok(names

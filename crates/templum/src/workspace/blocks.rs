@@ -4,20 +4,23 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Instant;
 
-use gpui_kit::component::notification::{Notification, NotificationDelivery};
+use gpui_kit::component::Icon;
+use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, SharedString, Window};
-use templum_canvas::{BlockId, Point, Rect, chrome};
+use templum_canvas::{Block, BlockId, Point, Rect, chrome};
 use templum_terminal::{SpawnOptions, Terminal};
 
 use crate::alert::{self, Alert};
+use crate::board::Boards;
 use crate::config::WorkingDirectory;
 use crate::kanban::{self, Kanban};
-use crate::note::{self, Note};
+use crate::note::Note;
 use crate::prompt;
 
+use super::history::{Change, Then};
 use super::{
-    AGENT_COLS, AGENT_ROWS, Body, DEFAULT_COLS, DEFAULT_ROWS, Ghost, Pane, Workspace, remember,
-    show_notification,
+    AGENT_COLS, AGENT_ROWS, BOARD_UNDO, Body, DEFAULT_COLS, DEFAULT_ROWS, Ghost, Pane, Workspace,
+    remember, show_notification,
 };
 
 impl Workspace {
@@ -25,52 +28,62 @@ impl Workspace {
     pub(super) fn add_block(&mut self, rect: Rect, body: Body) -> BlockId {
         let id = self.space.canvas.add(rect);
         self.space.blocks.insert(id, body);
-        self.space.focused = Some(id);
-        self.space.appearing.insert(id, Instant::now());
+        self.added(id);
         id
     }
 
-    /// A note at the viewport's center, focused, in edit mode.
-    pub(crate) fn new_note(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let center = self.space.canvas.camera.to_world(self.center(window));
-        let size = note::SIZE;
-        let at = self
-            .space
-            .canvas
-            .place_new(
-                size,
-                Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
-            )
-            .origin();
-        self.add_note_at(at, window, cx);
-    }
-
-    /// An empty note, its top-left corner at `at` (world units), with the keyboard.
-    pub(crate) fn add_note_at(&mut self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
-        self.space.pristine = false;
-        let rect = Rect::new(at.x, at.y, note::SIZE.w, note::SIZE.h);
-        let note = Note::new("", false, window, cx);
-        note.focus(window, cx);
-        self.add_block(rect, Body::Note(note));
-        cx.notify();
-    }
-
-    /// A note shows its rendered text, or its editor again. Leaving the editor hands the keyboard
-    /// to the canvas; going back to it gives the editor the keyboard.
-    pub(crate) fn toggle_preview(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.release_focus(id, window, cx);
-        if let Some(Body::Note(note)) = self.space.blocks.get_mut(&id) {
-            note.preview = !note.preview;
-            if !note.preview {
-                note.focus(window, cx);
-            }
-            cx.notify();
+    /// A block was just added: it is focused, pops in, and Ctrl+Z takes it away (unless the
+    /// canvas is being restored or blocks come back by an undo: `quiet`).
+    fn added(&mut self, id: BlockId) {
+        let before = self.space.focused;
+        self.space.focused = Some(id);
+        self.space.selected.clear();
+        self.space.appearing.insert(id, Instant::now());
+        if !self.quiet {
+            self.keep(Change::Close(vec![id]), Then::New);
         }
+        // In grid mode it takes half of the focused tile; its place on the canvas, for when the
+        // grid ends, is off the others' places there.
+        if self.space.grid.is_some() {
+            let taken: Vec<Rect> = self
+                .space
+                .canvas
+                .blocks()
+                .iter()
+                .filter(|b| b.id != id)
+                .map(|b| self.space.home(b))
+                .collect();
+            if let Some(b) = self.space.canvas.get_mut(id) {
+                b.rect = templum_canvas::cascade(b.rect, &taken);
+            }
+            self.join_grid(id, before);
+        }
+    }
+
+    /// Changes the boards with `f`, keeping them as they were for Ctrl+Z (when it changed
+    /// them).
+    pub(crate) fn edit_boards<R>(&mut self, f: impl FnOnce(&mut Boards) -> R) -> R {
+        let before = self.boards.clone();
+        let result = f(&mut self.boards);
+        if self.boards != before {
+            self.boards_undo.push(before);
+            if self.boards_undo.len() > BOARD_UNDO {
+                self.boards_undo.remove(0);
+            }
+        }
+        result
+    }
+
+    /// Ctrl+Z on a kanban block: the boards as before their last change. False: nothing to undo.
+    pub(super) fn undo_boards(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(mut before) = self.boards_undo.pop() else {
+            return false;
+        };
+        // Ids are never handed out twice: a block or a file may still name an undone board.
+        before.next_id = before.next_id.max(self.boards.next_id);
+        self.boards = before;
+        cx.notify();
+        true
     }
 
     /// A terminal in `folder`, placed to the right of `block`, with `command` typed in (not
@@ -82,10 +95,8 @@ impl Workspace {
         command: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        let Some(anchor) = self.space.canvas.get(block).map(|b| b.rect) else {
-            return;
-        };
+    ) -> Option<BlockId> {
+        let anchor = self.space.home(self.space.canvas.get(block)?);
         self.space.pristine = false;
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
         let rect = self.space.canvas.place_beside(anchor, size);
@@ -98,6 +109,89 @@ impl Workspace {
             }
         }
         window.focus(&self.focus_handle, cx);
+        id
+    }
+
+    /// Shows the terminal waiting for the person (it asked for attention): this workspace's
+    /// first, then the others' in the sidebar's order, the oldest block first. Going there is
+    /// seeing it, so the next time shows the next one. None waiting: a notification says so.
+    pub(crate) fn go_to_waiting(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let order = self.order();
+        let spaces =
+            std::iter::once(&self.space).chain(order.into_iter().filter(|s| s.id != self.space.id));
+        let waiting = spaces
+            .filter_map(|space| {
+                space
+                    .terminals()
+                    .filter(|(_, pane)| matches!(pane.alert, Some(Alert::Attention(_))))
+                    .map(|(id, _)| id)
+                    .min_by_key(|id| id.0)
+                    .map(|id| (space.id.clone(), id))
+            })
+            .next();
+        let Some((space, id)) = waiting else {
+            show_notification(
+                window,
+                cx,
+                Notification::info("No terminal is waiting for you".to_string()),
+            );
+            return;
+        };
+        if let Some(pane) = self
+            .space_by_id_mut(&space)
+            .and_then(|s| s.terminal_mut(id))
+        {
+            pane.alert = None;
+        }
+        self.reveal(&space, id, window, cx);
+    }
+
+    /// The terminals of this workspace, labeled, those running an agent first: every one, or
+    /// those whose folder is inside `root`.
+    pub(crate) fn terminal_list(&self, root: Option<&Path>) -> Vec<(BlockId, String)> {
+        let mut found: Vec<_> = self
+            .space
+            .terminals()
+            .filter(|(_, pane)| root.is_none_or(|root| pane.works_in(root)))
+            .map(|(id, pane)| {
+                let agent = self.agent_name(pane);
+                let label = label(agent, &pane.term.title(), pane.seen.folder.as_deref());
+                (agent.is_none(), id, label)
+            })
+            .collect();
+        found.sort_by_key(|(no_agent, id, _)| (*no_agent, id.0));
+        found
+            .into_iter()
+            .map(|(_, id, label)| (id, label))
+            .collect()
+    }
+
+    /// The agent running in a terminal, by its title (its id when Templum doesn't know it).
+    pub(crate) fn agent_name<'a>(&'a self, pane: &'a Pane) -> Option<&'a str> {
+        let agent = pane.seen.agent.as_ref()?;
+        Some(
+            self.agents
+                .iter()
+                .find(|a| a.id == *agent)
+                .map_or(agent.as_str(), |a| a.title.as_str()),
+        )
+    }
+
+    /// Types `text` into the terminal `to` for the person to send (never Enter), then shows it
+    /// with the keyboard.
+    pub(crate) fn send_to(
+        &mut self,
+        to: BlockId,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pane) = self.space.terminal(to) else {
+            return;
+        };
+        pane.term.type_in(text);
+        let space = self.space.id.clone();
+        self.reveal(&space, to, window, cx);
     }
 
     /// A block's editor is about to leave the frame: if it has the keyboard, the canvas takes it.
@@ -121,7 +215,7 @@ impl Workspace {
 
     /// A kanban block at the viewport's center, showing the board list.
     pub(crate) fn new_kanban(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let center = self.space.canvas.camera.to_world(self.center(window));
+        let center = self.space.camera().to_world(self.center(window));
         let size = kanban::SIZE;
         let at = self
             .space
@@ -176,13 +270,18 @@ impl Workspace {
         let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, self.cell.size);
         let rect = Rect::new(at.x, at.y, size.w, size.h);
         let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx)?;
+        let entry = self.agents.iter().find(|a| a.command == command);
+        let command = entry.map_or_else(
+            || command.to_string(),
+            |a| a.start_command(&uuid::Uuid::new_v4().to_string()),
+        );
         // The shell reads it once it is ready.
-        let line = format!("{command}\r");
-        self.space
-            .terminal(id)
-            .expect("just spawned")
-            .term
-            .write(line.into_bytes());
+        let line = format!("{}\r", self.typed(entry, &command));
+        // Known at once (Shift+Enter, closing), not at the next snapshot.
+        let agent = entry.map(|a| a.id.clone());
+        let pane = self.space.terminal_mut(id).expect("just spawned");
+        pane.term.write(line.into_bytes());
+        pane.seen.agent = agent;
         remember(&mut self.space.recent, folder.to_path_buf());
         window.focus(&self.focus_handle, cx);
         Some(id)
@@ -209,13 +308,13 @@ impl Workspace {
 
     /// A new board, shown in `block`.
     pub(crate) fn new_board(&mut self, block: BlockId, cx: &mut Context<Self>) {
-        let board = self.boards.add_board();
+        let board = self.edit_boards(Boards::add_board);
         self.show_board(block, board, cx);
     }
 
     /// Deletes a board and its cards; the blocks that showed it show the board list.
     pub(crate) fn delete_board(&mut self, board: u64, cx: &mut Context<Self>) {
-        self.boards.remove_board(board);
+        self.edit_boards(|b| b.remove_board(board));
         cx.notify();
     }
 
@@ -249,12 +348,13 @@ impl Workspace {
             command,
             palette: self.theme.palette,
             options: self.config.term_options(),
-            working_directory: folder,
+            working_directory: folder.clone(),
             integration: self
                 .integration
                 .clone()
                 .filter(|_| self.config.shell.integration),
         };
+        let start = folder.or_else(std::env::home_dir);
         let id = match Terminal::spawn(opts, self.notify.clone()) {
             Ok(term) => {
                 let id = self.space.canvas.add(rect);
@@ -265,10 +365,15 @@ impl Workspace {
                         snapshot: Rc::default(),
                         heard: (0, 0),
                         alert: None,
+                        seen: templum_terminal::Inspection {
+                            folder: start,
+                            ..Default::default()
+                        },
+                        usage: None,
+                        find: None,
                     }),
                 );
-                self.space.focused = Some(id);
-                self.space.appearing.insert(id, Instant::now());
+                self.added(id);
                 Some(id)
             }
             Err(err) => {
@@ -282,32 +387,119 @@ impl Workspace {
         id
     }
 
-    /// Closes a block. An editor with unsaved edits asks first: Save all, Don't save, Cancel.
+    /// Closes a block. An editor with unsaved edits asks first: Save all, Don't save, Cancel; a
+    /// terminal at work (an agent, a command running) too: Cancel or Close.
     pub(crate) fn close(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_blocks(vec![id], Then::New, window, cx);
+    }
+
+    /// Closes blocks as `close` does one; several ask once. `then` says where Ctrl+Z keeps them:
+    /// an undo or a redo closes only if its step is still next when the person answers.
+    pub(super) fn close_blocks(
+        &mut self,
+        ids: Vec<BlockId>,
+        then: Then,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let one = ids.len() == 1;
+        let busy: Vec<String> = ids
+            .iter()
+            .filter_map(|id| {
+                let pane = self.space.terminal(*id)?;
+                let why = alert::busy(&pane.term.status(), self.agent_name(pane))?;
+                Some(if one {
+                    why
+                } else {
+                    format!("{}: {why}", pane.term.title())
+                })
+            })
+            .collect();
         // Only this workspace: block ids count from 0 in every one.
-        let unsaved = self.space.unsaved(Some(id));
-        if unsaved.is_empty() {
-            self.remove_block(id, window, cx);
+        let unsaved: Vec<String> = ids
+            .iter()
+            .flat_map(|id| self.space.unsaved(Some(*id)))
+            .collect();
+        if busy.is_empty() && unsaved.is_empty() {
+            self.close_now(&ids, then, window, cx);
             return;
         }
         let ws = cx.entity();
-        let saver = ws.clone();
+        let close = {
+            let (ws, ids) = (ws.clone(), ids.clone());
+            move |window: &mut Window, cx: &mut App| {
+                ws.update(cx, |ws, cx| ws.close_now(&ids, then, window, cx))
+            }
+        };
+        let busy = busy.join(" ");
+        if unsaved.is_empty() {
+            let title = if one {
+                "Close the terminal?".to_string()
+            } else {
+                format!("Close {} blocks?", ids.len())
+            };
+            prompt::confirm(title, busy, "Close", close, window, cx);
+            return;
+        }
+        let mut why = format!("Unsaved: {}", unsaved.join(", "));
+        if !busy.is_empty() {
+            why = format!("{why}. {busy}");
+        }
+        let save = close.clone();
         prompt::save_or_discard(
             "Save changes?",
-            format!("Unsaved: {}", unsaved.join(", ")),
+            why,
             move |window, cx| {
-                saver.update(cx, |ws, cx| {
-                    let saved = ws.save_all(id, window, cx);
-                    if saved {
-                        ws.remove_block(id, window, cx);
+                // Every one is tried, even after a failure.
+                let saved = ws.update(cx, |ws, cx| {
+                    let mut ok = true;
+                    for id in &ids {
+                        ok &= ws.save_all(*id, window, cx);
                     }
-                    saved
-                })
+                    ok
+                });
+                if saved {
+                    save(window, cx);
+                }
+                saved
             },
-            move |window, cx| ws.update(cx, |ws, cx| ws.remove_block(id, window, cx)),
+            close,
             window,
             cx,
         );
+    }
+
+    /// Closes the blocks `ids` now, kept for Ctrl+Z (or Ctrl+Shift+Z, after an undo) as one
+    /// step. Nothing is focused after: the keyboard stays on the canvas, so Ctrl+Z reaches it,
+    /// not a terminal.
+    pub(super) fn close_now(
+        &mut self,
+        ids: &[BlockId],
+        then: Then,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.take_step(then) {
+            return;
+        }
+        let items: Vec<_> = self
+            .space
+            .canvas
+            .blocks()
+            .iter()
+            .filter(|b| ids.contains(&b.id))
+            .map(|b| (b.id, self.space.blocks[&b.id].item(self.space.home(b), cx)))
+            .collect();
+        let was_focused = self.space.focused.is_some_and(|id| ids.contains(&id));
+        for id in ids {
+            self.remove_block(*id, window, cx);
+        }
+        if was_focused {
+            self.space.focused = None;
+        }
+        if !items.is_empty() {
+            self.keep(Change::Open(items), then);
+        }
     }
 
     /// Removes a block and kills its shell (dropping the Terminal shuts it down).
@@ -318,27 +510,46 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.release_focus(id, window, cx);
-        let block = self.space.canvas.get(id).copied();
-        self.space.canvas.remove(id);
-        self.space.appearing.remove(&id);
-        let body = self.space.blocks.remove(&id);
-        if let (Some(block), Some(body)) = (block, body) {
+        if let Some((block, _, body)) = self.take_block(id, window, cx) {
+            // Its notes stay in the Notes dialog, but for blank ones: nothing is lost.
+            for note in body.note().map(Note::ids).unwrap_or_default() {
+                self.drop_if_blank(note);
+            }
             self.space.ghosts.push(Ghost {
                 block,
                 body,
                 since: Instant::now(),
             });
         }
+        cx.notify();
+    }
+
+    /// Takes a block off the canvas with what it holds, still running: the block, its rect on
+    /// the canvas (also while it is a tile) and its body.
+    pub(super) fn take_block(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(Block, Rect, Body)> {
+        self.release_focus(id, window, cx);
+        let block = self.space.canvas.get(id).copied();
+        let home = block.map(|b| self.space.home(&b));
+        self.space.canvas.remove(id);
+        self.space.appearing.remove(&id);
+        let body = self.space.blocks.remove(&id);
         if self.space.hovered == Some(id) {
             self.space.hovered = None;
         }
+        self.space.selected.retain(|s| *s != id);
+        // A tile's neighbour takes its place.
+        self.untile(id);
         if self.space.focused == Some(id) {
-            self.space.focused = self.space.canvas.top();
+            self.space.focused = self.space.top();
         }
         // A gesture on a block that's gone would do nothing anyway; end it.
         self.drag = None;
-        cx.notify();
+        Some((block?, home?, body?))
     }
 
     /// Finds the news in every workspace's terminals (see [`alert::news`]). A terminal being looked
@@ -359,8 +570,14 @@ impl Workspace {
             for (id, pane) in terminals {
                 let status = pane.term.status();
                 let new = alert::news(&status, pane.heard);
-                if i == 0 && status.finished > pane.heard.0 {
-                    finished_in.extend(pane.term.processes().reported);
+                if status.finished > pane.heard.0 {
+                    let reported = pane.term.processes().reported;
+                    if reported.is_some() {
+                        pane.seen.folder.clone_from(&reported);
+                    }
+                    if i == 0 {
+                        finished_in.extend(reported);
+                    }
                 }
                 pane.heard = (status.finished, status.attention);
                 if active && i == 0 && space.focused == Some(id) {
@@ -372,7 +589,9 @@ impl Workspace {
                         if several {
                             title = format!("{title} · {}", space.name);
                         }
-                        news.push((space.id.clone(), id, title, alert.clone()));
+                        // Another workspace's news shows its icon.
+                        let icon = space.look.icon.filter(|_| i > 0);
+                        news.push((space.id.clone(), id, title, alert.clone(), icon));
                     }
                     pane.alert = Some(alert);
                 }
@@ -394,18 +613,18 @@ impl Workspace {
         for id in repos {
             self.refresh_git(id, window, cx);
         }
-        let delivery = if self.config.terminal.notifications && !active {
-            NotificationDelivery::InAppAndSystem
-        } else {
-            NotificationDelivery::InApp
-        };
+        let delivery = self.delivery(window);
         let ws = cx.entity().downgrade();
-        for (space, block, title, alert) in news {
+        for (space, block, title, alert, icon) in news {
             let ws = ws.clone();
             let key = SharedString::from(format!("alert-{space}-{}", block.0));
-            let notification = Notification::new()
-                .id1::<Alert>(key)
-                .with_type(alert.kind())
+            let notification = Notification::new().id1::<Alert>(key);
+            // A notification's type would draw its own icon over the workspace's.
+            let notification = match icon {
+                Some(icon) => notification.icon(Icon::new(icon)),
+                None => notification.with_type(alert.kind()),
+            };
+            let notification = notification
                 .title(title)
                 .message(alert.text())
                 .delivery(delivery)
@@ -417,14 +636,24 @@ impl Workspace {
         }
     }
 
-    /// Where a new terminal starts (None: the home folder).
+    /// Where a new terminal starts (None: the home folder): the focused block's folder when
+    /// the settings say so, else the workspace's, else the settings'.
     pub(super) fn start_dir(&self, window: &mut Window, cx: &mut App) -> Option<PathBuf> {
-        match &self.config.shell.working_directory {
-            WorkingDirectory::Inherit => self
+        let setting = &self.config.shell.working_directory;
+        if matches!(setting, WorkingDirectory::Inherit)
+            && let Some(folder) = self
                 .space
                 .focused
-                .and_then(|id| self.space.blocks.get(&id)?.folder()),
-            WorkingDirectory::Home => None,
+                .and_then(|id| self.space.blocks.get(&id)?.folder())
+        {
+            return Some(folder);
+        }
+        // The workspace's choice is nearer than the settings'.
+        if let Some(folder) = self.space.folder.clone().filter(|f| f.is_dir()) {
+            return Some(folder);
+        }
+        match setting {
+            WorkingDirectory::Inherit | WorkingDirectory::Home => None,
             WorkingDirectory::Path(path) if path.is_dir() => Some(path.clone()),
             WorkingDirectory::Path(path) => {
                 let message = format!(
@@ -442,6 +671,7 @@ impl Workspace {
         self.space.pristine = false;
         self.space.canvas.raise(id);
         self.space.focused = Some(id);
+        self.space.selected.clear();
         self.space.selected_ink = None;
         // What types inside the block takes the keyboard; anything else leaves it with the
         // workspace.
@@ -457,22 +687,47 @@ impl Workspace {
     }
 
     pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rect = self.new_terminal_rect(window);
+        self.open(rect, window, cx);
+    }
+
+    /// Where a new terminal goes: the view's center, clear of the other blocks.
+    pub(super) fn new_terminal_rect(&mut self, window: &Window) -> Rect {
         self.space.pristine = false;
         let vp = self.viewport(window);
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
         let center = self
             .space
-            .canvas
-            .camera
+            .camera()
             .to_world(Point::new(vp.w / 2.0, vp.h / 2.0));
         let near = Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0);
-        let rect = self.space.canvas.place_new(size, near);
-        self.open(rect, window, cx);
+        self.space.canvas.place_new(size, near)
     }
 
     pub(super) fn close_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.space.focused {
             self.close(id, window, cx);
+            // The keyboard goes on to the block on top, as a terminal app's next tab.
+            if self.space.focused.is_none() {
+                self.space.focused = self.space.top();
+            }
         }
     }
+}
+
+/// A terminal as a menu names it: its agent, its title and its folder's name, each once.
+pub(super) fn label(agent: Option<&str>, title: &str, folder: Option<&Path>) -> String {
+    let folder = folder
+        .and_then(Path::file_name)
+        .map(|n| n.to_string_lossy().into_owned());
+    let mut parts: Vec<&str> = Vec::new();
+    for part in [agent, Some(title), folder.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        if !part.is_empty() && !parts.contains(&part) {
+            parts.push(part);
+        }
+    }
+    parts.join(" · ")
 }

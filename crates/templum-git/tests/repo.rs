@@ -1,8 +1,13 @@
 //! Runs the real `git` on a temporary repository. CI's runners have it.
 
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
-use templum_git::{Change, Operation, Pull, Repo, Side};
+use templum_git::{
+    Back, Change, HistoryQuery, Operation, Pull, Repo, Search, Side, Synced, clone_name,
+    clone_target,
+};
 
 /// A new repository on `main` with an author set, so commits work on a bare runner.
 fn fresh() -> (tempfile::TempDir, Repo) {
@@ -112,41 +117,154 @@ fn staging_a_renamed_file_and_one_with_a_space() {
         "the rename is one entry: {:?}",
         s.entries
     );
-    let diff = repo.diff(renamed, true).unwrap();
-    assert!(diff.contains("rename from old.txt"), "{diff}");
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    let renamed = d.staged.iter().find(|f| f.path() == "new.txt").unwrap();
+    assert_eq!(renamed.status, Change::Renamed);
+    assert_eq!(renamed.old_path.as_deref(), Some("old.txt"));
 }
 
 #[test]
-fn the_diff_of_each_kind_of_entry() {
+fn the_working_diff_has_both_sides_the_untracked_files_and_their_counts() {
+    use templum_git::Kind;
     let (dir, repo) = fresh();
     write(dir.path(), "a.txt", "one\n");
-    write(dir.path(), "bin", "\0\x01\x02");
-    let s = repo.status().unwrap();
-    let a = s.entries.iter().find(|e| e.path == "a.txt").unwrap();
-    assert_eq!(
-        repo.diff(a, false).unwrap(),
-        "+++ b/a.txt\n@@ -0,0 +1,1 @@\n+one\n"
-    );
-    let bin = s.entries.iter().find(|e| e.path == "bin").unwrap();
-    assert_eq!(repo.diff(bin, false).unwrap(), "Binary file");
     repo.stage(&["a.txt"]).unwrap();
     repo.commit("a", false).unwrap();
-    write(dir.path(), "a.txt", "one\ntwo\n");
-    let s = repo.status().unwrap();
-    let a = s.entries.iter().find(|e| e.path == "a.txt").unwrap();
-    let diff = repo.diff(a, false).unwrap();
-    assert!(
-        diff.contains("@@ -1 +1,2 @@") && diff.contains("+two"),
-        "{diff}"
-    );
+    // a.txt: "zero" staged, "two" not; n.txt untracked; bin untracked and binary.
+    write(dir.path(), "a.txt", "zero\none\n");
     repo.stage(&["a.txt"]).unwrap();
+    write(dir.path(), "a.txt", "zero\none\ntwo\n");
+    write(dir.path(), "n.txt", "new");
+    write(dir.path(), "bin", "\0\x01\x02");
     let s = repo.status().unwrap();
-    assert!(repo.diff(&s.entries[0], true).unwrap().contains("+two"));
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    let paths = |files: &[templum_git::FileDiff]| {
+        files
+            .iter()
+            .map(|f| f.path().to_string())
+            .collect::<Vec<_>>()
+    };
     assert_eq!(
-        repo.diff(&s.entries[0], false).unwrap(),
-        "",
-        "nothing unstaged"
+        paths(&d.unstaged),
+        ["a.txt", "bin", "n.txt"],
+        "tracked first, then untracked in the status's order"
     );
+    assert_eq!(paths(&d.staged), ["a.txt"]);
+    let a = &d.unstaged[0];
+    assert_eq!(a.status, Change::Modified);
+    assert_eq!((a.added(), a.removed()), (1, 0));
+    assert_eq!(
+        a.hunks[0].lines.last().map(|l| (l.kind, l.text.as_str())),
+        Some((Kind::Added, "two"))
+    );
+    assert_eq!(a.bytes, Some(13));
+    assert_eq!(a.lines, Some(3));
+    assert!(d.unstaged[1].binary, "bin");
+    assert_eq!(d.unstaged[1].bytes, Some(3));
+    assert_eq!(d.unstaged[1].lines, None, "not counted");
+    let n = &d.unstaged[2];
+    assert_eq!(n.status, Change::Added);
+    assert_eq!(n.hunks[0].lines[0].text, "new");
+    assert!(n.hunks[0].lines[0].no_newline);
+    assert_eq!(n.lines, Some(1), "a last line without a newline counts");
+    let staged = &d.staged[0];
+    assert_eq!(staged.hunks[0].lines[0].text, "zero");
+    assert_eq!(staged.hunks[0].lines[0].kind, Kind::Added);
+    // Nothing changed: the same value again (the panel compares them).
+    assert_eq!(repo.working_diff(&s, false, &[]).unwrap(), d);
+    // A clean tree is two empty lists.
+    repo.stage(&["a.txt", "n.txt", "bin"]).unwrap();
+    repo.commit("all", false).unwrap();
+    let s = repo.status().unwrap();
+    assert_eq!(
+        repo.working_diff(&s, false, &[]).unwrap(),
+        templum_git::WorkingDiff::default()
+    );
+}
+
+#[test]
+fn names_with_spaces_and_accents_come_as_themselves() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "with space.txt", "a\n");
+    write(dir.path(), "café.txt", "a\n");
+    repo.stage(&["with space.txt", "café.txt"]).unwrap();
+    repo.commit("two", false).unwrap();
+    write(dir.path(), "with space.txt", "b\n");
+    write(dir.path(), "café.txt", "b\n");
+    let s = repo.status().unwrap();
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    let mut paths: Vec<&str> = d.unstaged.iter().map(|f| f.path()).collect();
+    paths.sort();
+    assert_eq!(paths, ["café.txt", "with space.txt"]);
+}
+
+#[test]
+fn ignore_whitespace_hides_a_change_of_spaces_only() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("a", false).unwrap();
+    write(dir.path(), "a.txt", "one  \n");
+    let s = repo.status().unwrap();
+    assert_eq!(repo.working_diff(&s, false, &[]).unwrap().unstaged.len(), 1);
+    assert!(
+        repo.working_diff(&s, true, &[])
+            .unwrap()
+            .unstaged
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_whole_file_is_read_with_every_line_as_context() {
+    let (dir, repo) = fresh();
+    let lines: Vec<String> = (1..=20).map(|i| format!("line {i}\n")).collect();
+    write(dir.path(), "a.txt", &lines.concat());
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("a", false).unwrap();
+    let mut changed = lines.clone();
+    changed[9] = "LINE 10\n".to_string();
+    write(dir.path(), "a.txt", &changed.concat());
+    let s = repo.status().unwrap();
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    let h = &d.unstaged[0].hunks[0];
+    assert_eq!(
+        (h.old_start, h.old_len),
+        (7, 7),
+        "3 lines of context each side"
+    );
+    let d = repo
+        .working_diff(&s, false, &[(false, "a.txt".to_string())])
+        .unwrap();
+    let h = &d.unstaged[0].hunks[0];
+    assert_eq!(
+        (h.old_start, h.old_len, h.new_start, h.new_len),
+        (1, 20, 1, 20)
+    );
+    assert_eq!(h.lines.len(), 21, "20 lines, one of them twice");
+    // Asked for the staged side only, the unstaged read stays as it was.
+    let d = repo
+        .working_diff(&s, false, &[(true, "a.txt".to_string())])
+        .unwrap();
+    assert_eq!(d.unstaged[0].hunks[0].old_len, 7);
+}
+
+#[test]
+fn a_conflicted_file_comes_first_with_its_regions() {
+    let (dir, repo) = conflicted();
+    write(dir.path(), "other.txt", "x\n");
+    let s = repo.status().unwrap();
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    let paths: Vec<&str> = d.unstaged.iter().map(|f| f.path()).collect();
+    assert_eq!(paths, ["a.txt", "other.txt"], "conflicts first");
+    let a = &d.unstaged[0];
+    assert_eq!(a.status, Change::Conflict);
+    assert_eq!(
+        (a.hunks[0].context.as_str(), a.hunks[1].context.as_str()),
+        ("HEAD", "topic")
+    );
+    assert_eq!(a.hunks[0].lines[0].text, "main");
+    assert_eq!(a.hunks[1].lines[0].text, "topic");
 }
 
 #[test]
@@ -218,11 +336,8 @@ fn a_merge_in_progress_is_an_operation_and_aborting_ends_it() {
     assert_eq!(repo.operation(), Some(Operation::Merge));
     let s = repo.status().unwrap();
     assert_eq!(s.conflicts().len(), 1);
-    assert!(
-        repo.diff(s.conflicts()[0], false)
-            .unwrap()
-            .contains("<<<<<<<")
-    );
+    let file = std::fs::read_to_string(repo.root.join(&s.conflicts()[0].path)).unwrap();
+    assert!(file.contains("<<<<<<<"), "{file}");
     repo.abort(Operation::Merge).unwrap();
     assert_eq!(repo.operation(), None);
     assert!(repo.status().unwrap().entries.is_empty());
@@ -339,12 +454,12 @@ fn fetch_pull_and_push_against_a_local_remote() {
     assert!(templum_git::not_fast_forward(&err.stderr), "{err}");
     repo.pull(Pull::Merge).unwrap();
     assert!(dir.path().join("c.txt").is_file());
-    repo.push(None).unwrap();
+    repo.push().unwrap();
     assert_eq!(repo.status().unwrap().ahead, 0);
     // A new branch has no upstream until it is published.
     repo.run(&["checkout", "-q", "-b", "topic"]).unwrap();
     assert_eq!(repo.status().unwrap().upstream, None);
-    repo.push(Some("topic")).unwrap();
+    repo.publish("origin", "topic").unwrap();
     assert_eq!(
         repo.status().unwrap().upstream.as_deref(),
         Some("origin/topic")
@@ -365,7 +480,9 @@ fn a_remote_that_isnt_there_fails_with_the_command_in_the_error() {
 fn log_files_diffs_tags_branches_and_reverts() {
     let (dir, repo) = fresh();
     assert!(
-        repo.log(0, 10).unwrap().is_empty(),
+        repo.history(&HistoryQuery::default(), 0, 10)
+            .unwrap()
+            .is_empty(),
         "no commits: an empty log, not an error"
     );
     write(dir.path(), "a.txt", "one\n");
@@ -375,7 +492,7 @@ fn log_files_diffs_tags_branches_and_reverts() {
     write(dir.path(), "b.txt", "b\n");
     repo.stage(&["a.txt", "b.txt"]).unwrap();
     repo.commit("Second\n\nWith a body.", false).unwrap();
-    let log = repo.log(0, 10).unwrap();
+    let log = repo.history(&HistoryQuery::default(), 0, 10).unwrap();
     assert_eq!(log.len(), 2);
     assert_eq!(log[0].subject, "Second");
     assert_eq!(log[0].body, "With a body.");
@@ -387,23 +504,30 @@ fn log_files_diffs_tags_branches_and_reverts() {
     );
     assert_eq!(log[1].short, first);
     assert!(log[1].parents.is_empty());
-    assert_eq!(repo.log(1, 10).unwrap().len(), 1, "skip");
-    assert_eq!(repo.log(0, 1).unwrap().len(), 1, "count");
+    assert_eq!(
+        repo.history(&HistoryQuery::default(), 1, 10).unwrap().len(),
+        1,
+        "skip"
+    );
+    assert_eq!(
+        repo.history(&HistoryQuery::default(), 0, 1).unwrap().len(),
+        1,
+        "count"
+    );
     let files = repo.commit_files(&log[0].hash).unwrap();
     let got: Vec<_> = files.iter().map(|f| (f.change, f.path.as_str())).collect();
     assert_eq!(got, [(Change::Modified, "a.txt"), (Change::Added, "b.txt")]);
-    let diff = repo.commit_diff(&log[0].hash, &files[0]).unwrap();
-    assert!(diff.contains("+two"), "{diff}");
+    let diff = repo.commit_changes(&log[0].hash, false).unwrap();
+    assert_eq!(diff[0].path(), "a.txt");
+    assert!(diff[0].hunks[0].lines.iter().any(|l| l.text == "two"));
     let root = repo.commit_files(&log[1].hash).unwrap();
     assert_eq!(root.len(), 1, "a root commit's files");
-    assert!(
-        repo.commit_diff(&log[1].hash, &root[0])
-            .unwrap()
-            .contains("+one")
-    );
+    let diff = repo.commit_changes(&log[1].hash, false).unwrap();
+    assert_eq!(diff[0].path(), "a.txt");
+    assert!(diff[0].hunks[0].lines.iter().any(|l| l.text == "one"));
     repo.tag("v1", &log[1].hash).unwrap();
     assert!(
-        repo.log(0, 10).unwrap()[1]
+        repo.history(&HistoryQuery::default(), 0, 10).unwrap()[1]
             .refs
             .contains(&"tag: v1".to_string())
     );
@@ -417,7 +541,7 @@ fn log_files_diffs_tags_branches_and_reverts() {
     repo.revert(&log[0].hash).unwrap();
     assert!(!dir.path().join("b.txt").exists(), "reverted");
     assert!(
-        repo.log(0, 1).unwrap()[0]
+        repo.history(&HistoryQuery::default(), 0, 1).unwrap()[0]
             .subject
             .starts_with("Revert \"Second\"")
     );
@@ -511,7 +635,7 @@ fn stashes_are_listed_shown_applied_popped_and_dropped() {
     assert_eq!(s.len(), 1);
     assert_eq!(s[0].index, 0);
     assert_eq!(s[0].message, "On main: my work");
-    assert!(repo.stash_show(&s[0]).unwrap().contains("+changed"));
+    assert_eq!(repo.stash_diff(&s[0], false).unwrap()[0].added(), 1);
     repo.stash_apply(&s[0]).unwrap();
     assert_eq!(
         std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
@@ -624,14 +748,17 @@ fn the_first_line_is_the_reason_not_the_summary() {
 
 // Final review I6: a huge untracked file isn't read into the diff view.
 #[test]
-fn a_huge_untracked_file_is_named_not_shown() {
+fn a_huge_untracked_file_is_too_large_and_not_read() {
     let (dir, repo) = fresh();
     write(dir.path(), "big.csv", &"a,b\n".repeat(1_310_720));
     let s = repo.status().unwrap();
-    assert_eq!(
-        repo.diff(&s.entries[0], false).unwrap(),
-        "Too large to show (5.0 MB)"
-    );
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    let f = &d.unstaged[0];
+    assert!(f.too_large);
+    assert!(f.hunks.is_empty());
+    assert_eq!(f.path(), "big.csv");
+    assert_eq!(f.bytes, Some(5_242_880));
+    assert_eq!(f.lines, None);
 }
 
 // Re-graded from minor: Ignore anchors the path at the root and keeps the rest of the file.
@@ -698,4 +825,1123 @@ fn a_cancelled_command_is_killed_and_says_so() {
         "killed, not waited for"
     );
     assert!(repo.status().is_ok(), "the repo itself still answers");
+}
+
+#[test]
+fn root_of_finds_the_nearest_git_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(repo.join("src/sub")).unwrap();
+    let file = repo.join("src/sub/a.rs");
+    assert_eq!(templum_git::root_of(&file), Some(repo.as_path()));
+    // A worktree's or a submodule's .git is a file.
+    let module = repo.join("src/sub");
+    std::fs::write(module.join(".git"), "gitdir: ../../.git/modules/sub").unwrap();
+    assert_eq!(templum_git::root_of(&file), Some(module.as_path()));
+    let outside = dir.path().join("loose.txt");
+    assert_eq!(templum_git::root_of(&outside), None);
+}
+
+#[test]
+fn a_users_diff_prefixes_and_external_diff_are_overridden() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("a", false).unwrap();
+    // What a user's config can set: i/ and w/ prefixes, none at all, a diff program of its own.
+    for args in [
+        ["config", "diff.mnemonicPrefix", "true"].as_slice(),
+        &["config", "diff.noprefix", "true"],
+        &["config", "diff.external", "templum-no-such-diff"],
+    ] {
+        repo.run(args).unwrap();
+    }
+    write(dir.path(), "a.txt", "two\n");
+    let s = repo.status().unwrap();
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    assert_eq!(d.unstaged.len(), 1);
+    assert_eq!(d.unstaged[0].path(), "a.txt");
+    assert_eq!(d.unstaged[0].old_path.as_deref(), Some("a.txt"));
+    assert_eq!(d.unstaged[0].added(), 1);
+}
+
+#[test]
+fn past_the_budget_untracked_files_are_listed_unread_until_asked_for() {
+    let (dir, repo) = fresh();
+    // An agent unpacked a folder with no .gitignore: more new files than one read takes.
+    for i in 0..205 {
+        write(dir.path(), &format!("out/f{i:03}.txt"), "x\n");
+    }
+    let s = repo.status().unwrap();
+    let d = repo.working_diff(&s, false, &[]).unwrap();
+    assert_eq!(d.unstaged.len(), 205, "every file is listed");
+    let read = d.unstaged.iter().filter(|f| !f.unread).count();
+    assert_eq!(read, 200);
+    let last = d.unstaged.last().unwrap();
+    assert_eq!(last.path(), "out/f204.txt");
+    assert!(last.unread && last.hunks.is_empty());
+    assert_eq!(last.bytes, Some(2), "its size, from the folder");
+    assert_eq!(last.lines, None, "not read, not counted");
+    // Asked for (Show diff): read whatever the budget says.
+    let d = repo
+        .working_diff(&s, false, &[(false, "out/f204.txt".to_string())])
+        .unwrap();
+    let last = d.unstaged.last().unwrap();
+    assert!(!last.unread);
+    assert_eq!(last.hunks[0].lines[0].text, "x");
+}
+
+/// a.txt of 30 lines committed, then lines 2, 15 and 28 changed: three hunks.
+fn three_hunks() -> (tempfile::TempDir, Repo) {
+    let (dir, repo) = fresh();
+    let lines: Vec<String> = (1..=30).map(|i| format!("line {i}\n")).collect();
+    write(dir.path(), "a.txt", &lines.concat());
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("a", false).unwrap();
+    let mut changed = lines;
+    for i in [1, 14, 27] {
+        changed[i] = format!("LINE {}\n", i + 1);
+    }
+    write(dir.path(), "a.txt", &changed.concat());
+    (dir, repo)
+}
+
+fn working(repo: &Repo) -> templum_git::WorkingDiff {
+    repo.working_diff(&repo.status().unwrap(), false, &[])
+        .unwrap()
+}
+
+#[test]
+fn stage_unstage_and_discard_one_hunk_of_three() {
+    let (dir, repo) = three_hunks();
+    let d = working(&repo);
+    assert_eq!(d.unstaged[0].hunks.len(), 3);
+    let patch = templum_git::hunk_patch(&d.unstaged[0], 1).unwrap();
+    repo.apply_patch(&patch, true, false).unwrap();
+    let d = working(&repo);
+    assert_eq!(d.staged[0].hunks.len(), 1, "the middle hunk staged");
+    let added = d.staged[0].hunks[0]
+        .lines
+        .iter()
+        .find(|l| l.kind == templum_git::Kind::Added)
+        .unwrap();
+    assert_eq!(added.text, "LINE 15");
+    assert_eq!(d.unstaged[0].hunks.len(), 2, "the other two not");
+    let patch = templum_git::hunk_patch(&d.staged[0], 0).unwrap();
+    repo.apply_patch(&patch, true, true).unwrap();
+    let d = working(&repo);
+    assert!(d.staged.is_empty(), "unstaged again");
+    assert_eq!(d.unstaged[0].hunks.len(), 3);
+    let patch = templum_git::hunk_patch(&d.unstaged[0], 2).unwrap();
+    repo.apply_patch(&patch, false, true).unwrap();
+    let text = std::fs::read_to_string(dir.path().join("a.txt")).unwrap();
+    assert!(
+        text.contains("LINE 2\n") && text.contains("LINE 15\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("line 28\n") && !text.contains("LINE 28"),
+        "the last discarded"
+    );
+}
+
+#[test]
+fn a_hunk_patch_that_no_longer_applies_is_refused() {
+    let (dir, repo) = three_hunks();
+    let patch = templum_git::hunk_patch(&working(&repo).unstaged[0], 1).unwrap();
+    // An agent changed that part since the diff was read.
+    let text = std::fs::read_to_string(dir.path().join("a.txt"))
+        .unwrap()
+        .replace("LINE 15", "other");
+    write(dir.path(), "a.txt", &text);
+    let err = repo.apply_patch(&patch, false, true).unwrap_err();
+    assert!(err.stderr.contains("does not apply"), "{err:?}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        text,
+        "untouched"
+    );
+}
+
+#[test]
+fn hunks_of_a_crlf_file_a_file_without_a_last_newline_and_a_staged_rename() {
+    let (dir, repo) = fresh();
+    let crlf: String = (1..=12).map(|i| format!("l{i}\r\n")).collect();
+    write(dir.path(), "w.txt", &crlf);
+    let twenty: String = (1..=20).map(|i| format!("{i}\n")).collect();
+    write(dir.path(), "old.txt", &twenty);
+    write(dir.path(), "n.txt", "a\nb");
+    repo.stage(&["w.txt", "old.txt", "n.txt"]).unwrap();
+    repo.commit("base", false).unwrap();
+    // CRLF: discard the second of two hunks; the endings stay.
+    write(
+        dir.path(),
+        "w.txt",
+        &crlf
+            .replace("l1\r\n", "L1\r\n")
+            .replace("l12\r\n", "L12\r\n"),
+    );
+    let d = working(&repo);
+    let w = d.unstaged.iter().find(|f| f.path() == "w.txt").unwrap();
+    assert_eq!(w.hunks.len(), 2);
+    repo.apply_patch(&templum_git::hunk_patch(w, 1).unwrap(), false, true)
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("w.txt")).unwrap(),
+        crlf.replace("l1\r\n", "L1\r\n")
+    );
+    // No newline at the end, before and after: staged as it is.
+    write(dir.path(), "n.txt", "a\nB");
+    let n = working(&repo)
+        .unstaged
+        .into_iter()
+        .find(|f| f.path() == "n.txt")
+        .unwrap();
+    repo.apply_patch(&templum_git::hunk_patch(&n, 0).unwrap(), true, false)
+        .unwrap();
+    assert_eq!(repo.run(&["show", ":n.txt"]).unwrap(), b"a\nB");
+    // A staged rename with two hunks: unstaging one keeps the rename staged.
+    repo.run(&["mv", "old.txt", "new.txt"]).unwrap();
+    // Lines 3 and 18: two hunks, far enough apart.
+    let changed: String = (1..=20)
+        .map(|i| match i {
+            3 | 18 => format!("X{i}\n"),
+            _ => format!("{i}\n"),
+        })
+        .collect();
+    write(dir.path(), "new.txt", &changed);
+    repo.stage(&["new.txt"]).unwrap();
+    let d = working(&repo);
+    let renamed = d.staged.iter().find(|f| f.path() == "new.txt").unwrap();
+    assert_eq!(renamed.status, Change::Renamed);
+    assert_eq!(renamed.hunks.len(), 2);
+    repo.apply_patch(&templum_git::hunk_patch(renamed, 1).unwrap(), true, true)
+        .unwrap();
+    let d = working(&repo);
+    let renamed = d.staged.iter().find(|f| f.path() == "new.txt").unwrap();
+    assert_eq!(renamed.status, Change::Renamed, "still a rename");
+    assert_eq!(renamed.hunks.len(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hunk_of_a_file_whose_name_git_quotes() {
+    let (dir, repo) = fresh();
+    let name = "we\"ird\tname.txt";
+    write(dir.path(), name, "a\nb\n");
+    repo.stage(&[name]).unwrap();
+    repo.commit("w", false).unwrap();
+    write(dir.path(), name, "a\nB\n");
+    let d = working(&repo);
+    assert_eq!(d.unstaged[0].path(), name);
+    repo.apply_patch(
+        &templum_git::hunk_patch(&d.unstaged[0], 0).unwrap(),
+        true,
+        false,
+    )
+    .unwrap();
+    assert_eq!(working(&repo).staged[0].path(), name);
+}
+
+fn head(repo: &Repo) -> String {
+    String::from_utf8(repo.run(&["rev-parse", "--short", "HEAD"]).unwrap())
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
+#[test]
+fn undo_commit_takes_the_last_commit_back_and_keeps_its_changes_staged() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    // The repository's first commit has no parent: HEAD goes away, the file stays staged.
+    let first = repo.commit("First", false).unwrap();
+    assert_eq!(repo.undo_commit(&first, None).unwrap().unwrap(), "First");
+    let s = repo.status().unwrap();
+    assert_eq!(s.oid, None, "no commit again");
+    assert_eq!(s.entries[0].staged, Some(Change::Added));
+    let first = repo.commit("First", false).unwrap();
+    write(dir.path(), "a.txt", "two\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let second = repo.commit("Second\n\nWhy it changed.", false).unwrap();
+    assert_eq!(
+        repo.undo_commit(&second, None).unwrap().unwrap(),
+        "Second\n\nWhy it changed."
+    );
+    assert_eq!(head(&repo), first);
+    assert_eq!(
+        repo.status().unwrap().entries[0].staged,
+        Some(Change::Modified),
+        "its change still staged"
+    );
+    // After an Amend, the commit the amend replaced comes back, not its parent.
+    let second = repo.commit("Second", false).unwrap();
+    write(dir.path(), "a.txt", "three\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let replaced = repo.head().unwrap();
+    let amended = repo.commit("Second, amended", true).unwrap();
+    assert_eq!(
+        repo.undo_commit(&amended, Some(&replaced))
+            .unwrap()
+            .unwrap(),
+        "Second, amended"
+    );
+    assert_eq!(head(&repo), second);
+    // HEAD moved since (a terminal committed again): refused, nothing taken back.
+    assert_eq!(repo.undo_commit(&first, None).unwrap(), None);
+    assert_eq!(head(&repo), second);
+}
+
+#[test]
+fn a_commit_is_on_the_upstream_once_pushed() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let first = repo.commit("a", false).unwrap();
+    assert!(!repo.on_upstream(&first).unwrap(), "no upstream yet");
+    let _remote = with_remote(&repo);
+    assert!(repo.on_upstream(&first).unwrap(), "pushed");
+    write(dir.path(), "a.txt", "two\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let second = repo.commit("b", false).unwrap();
+    assert!(!repo.on_upstream(&second).unwrap(), "not pushed");
+    repo.run(&["checkout", "-q", "--detach"]).unwrap();
+    assert!(!repo.on_upstream(&second).unwrap(), "detached: no upstream");
+}
+
+#[test]
+fn stage_all_takes_new_changed_and_deleted_files() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "keep.txt", "1\n");
+    write(dir.path(), "gone.txt", "1\n");
+    repo.stage(&["keep.txt", "gone.txt"]).unwrap();
+    repo.commit("base", false).unwrap();
+    write(dir.path(), "keep.txt", "2\n");
+    std::fs::remove_file(dir.path().join("gone.txt")).unwrap();
+    write(dir.path(), "new/n.txt", "n\n");
+    repo.stage_all().unwrap();
+    let s = repo.status().unwrap();
+    let staged: Vec<_> = s
+        .entries
+        .iter()
+        .map(|e| (e.path.as_str(), e.staged))
+        .collect();
+    assert_eq!(
+        staged,
+        [
+            ("gone.txt", Some(Change::Deleted)),
+            ("keep.txt", Some(Change::Modified)),
+            ("new/n.txt", Some(Change::Added)),
+        ]
+    );
+    assert!(s.unstaged().is_empty());
+}
+
+#[test]
+fn a_file_that_isnt_utf8_has_no_hunk_patch() {
+    let (dir, repo) = fresh();
+    std::fs::write(dir.path().join("l.txt"), b"a\nb\ncaf\xe9\nc\n").unwrap();
+    repo.stage(&["l.txt"]).unwrap();
+    repo.commit("latin-1", false).unwrap();
+    std::fs::write(dir.path().join("l.txt"), b"a\nB\ncaf\xe9\nc\n").unwrap();
+    let d = working(&repo);
+    assert_eq!(d.unstaged[0].path(), "l.txt");
+    assert_eq!(
+        templum_git::hunk_patch(&d.unstaged[0], 0),
+        None,
+        "a patch from the lossy text would write U+FFFD over \\xe9"
+    );
+}
+
+#[test]
+fn undoing_an_amend_after_a_later_commit_was_undone_lands_on_the_replaced_commit() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let x = repo.commit("X", false).unwrap();
+    write(dir.path(), "a.txt", "two\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let replaced = repo.head().unwrap();
+    let x2 = repo.commit("X, amended", true).unwrap();
+    write(dir.path(), "a.txt", "three\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let y = repo.commit("Y", false).unwrap();
+    repo.undo_commit(&y, None).unwrap().unwrap();
+    assert_eq!(head(&repo), x2);
+    // HEAD@{1} is Y now: the amend's Undo must go back to X, not forward to Y.
+    repo.undo_commit(&x2, Some(&replaced)).unwrap().unwrap();
+    assert_eq!(head(&repo), x);
+}
+
+#[test]
+fn an_upstream_gone_from_the_server_isnt_one() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("a", false).unwrap();
+    let _remote = with_remote(&repo);
+    repo.run(&["switch", "-q", "-c", "topic"]).unwrap();
+    write(dir.path(), "a.txt", "two\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let mine = repo.commit("b", false).unwrap();
+    repo.run(&["push", "-q", "-u", "origin", "topic"]).unwrap();
+    // The pull request was merged and its branch deleted; a fetch prunes it.
+    repo.run(&["push", "-q", "origin", "--delete", "topic"])
+        .unwrap();
+    repo.run(&["fetch", "-q", "--prune"]).unwrap();
+    assert!(!repo.on_upstream(&mine).unwrap());
+}
+
+#[test]
+fn the_default_branch_is_origin_heads_else_main_else_master() {
+    let (dir, repo) = fresh();
+    assert_eq!(repo.default_branch(), None, "no commit, no branch");
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    assert_eq!(repo.default_branch().as_deref(), Some("main"));
+    repo.run(&["branch", "-m", "main", "master"]).unwrap();
+    assert_eq!(repo.default_branch().as_deref(), Some("master"));
+    // origin's HEAD names trunk: it wins over master.
+    repo.run(&["branch", "-m", "master", "main"]).unwrap();
+    let _remote = with_remote(&repo);
+    repo.run(&["branch", "trunk"]).unwrap();
+    repo.run(&["push", "-q", "origin", "trunk"]).unwrap();
+    repo.run(&["remote", "set-head", "origin", "trunk"])
+        .unwrap();
+    assert_eq!(repo.default_branch().as_deref(), Some("trunk"));
+    // No local trunk: the remote one.
+    repo.run(&["branch", "-D", "trunk"]).unwrap();
+    assert_eq!(repo.default_branch().as_deref(), Some("origin/trunk"));
+    // Without origin/HEAD (not fetched after: git 2.48+ would make it again).
+    repo.run(&["remote", "set-head", "origin", "-d"]).unwrap();
+    assert_eq!(repo.default_branch().as_deref(), Some("main"));
+}
+
+#[test]
+fn remotes_are_listed_and_publish_goes_to_the_one_named() {
+    let (dir, repo) = fresh();
+    assert!(repo.remotes().unwrap().is_empty());
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let _origin = with_remote(&repo);
+    let other = tempfile::tempdir().unwrap();
+    std::process::Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .current_dir(other.path())
+        .status()
+        .unwrap();
+    repo.run(&[
+        "remote",
+        "add",
+        "backup",
+        &other.path().display().to_string(),
+    ])
+    .unwrap();
+    assert_eq!(repo.remotes().unwrap(), ["backup", "origin"]);
+    repo.run(&["checkout", "-q", "-b", "topic"]).unwrap();
+    repo.publish("backup", "topic").unwrap();
+    assert_eq!(
+        repo.status().unwrap().upstream.as_deref(),
+        Some("backup/topic")
+    );
+}
+
+#[test]
+fn a_branch_not_checked_out_is_pushed_to_its_own_upstream() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let remote = with_remote(&repo);
+    write(dir.path(), "a.txt", "two\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("two", false).unwrap();
+    repo.run(&["checkout", "-q", "-b", "other"]).unwrap();
+    repo.push_branch("main").unwrap();
+    let theirs = std::process::Command::new("git")
+        .args(["rev-parse", "main"])
+        .current_dir(remote.path())
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&theirs.stdout).trim(),
+        repo.run(&["rev-parse", "main"])
+            .map(|o| String::from_utf8_lossy(&o).trim().to_string())
+            .unwrap()
+    );
+}
+
+#[test]
+fn the_unmerged_count_is_what_only_that_branch_has() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    repo.run(&["checkout", "-q", "-b", "feat"]).unwrap();
+    for n in ["b", "c", "d"] {
+        write(dir.path(), n, n);
+        repo.stage(&[n]).unwrap();
+        repo.commit(n, false).unwrap();
+    }
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    assert_eq!(repo.unmerged_count("feat").unwrap(), 3);
+    repo.run(&["branch", "copy", "feat~1"]).unwrap();
+    assert_eq!(
+        repo.unmerged_count("feat").unwrap(),
+        1,
+        "two are on copy too"
+    );
+}
+
+#[test]
+fn branches_have_their_last_commits_date() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let b = repo.branches().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    assert!((now - b[0].time).abs() < 120, "{} vs {now}", b[0].time);
+}
+
+#[test]
+fn clone_names_and_targets() {
+    assert_eq!(clone_name("git@github.com:me/app.git"), "app");
+    assert_eq!(clone_name("https://host/me/app/"), "app");
+    assert_eq!(clone_name("https://host/me/app.git/"), "app");
+    assert_eq!(clone_name("/srv/repos/tool"), "tool");
+    let empty = tempfile::tempdir().unwrap();
+    assert_eq!(
+        clone_target(empty.path(), "x/app.git"),
+        empty.path(),
+        "an empty folder takes it"
+    );
+    std::fs::write(empty.path().join("f"), "").unwrap();
+    assert_eq!(
+        clone_target(empty.path(), "x/app.git"),
+        empty.path().join("app"),
+        "beside what is there"
+    );
+    let missing = empty.path().join("new");
+    assert_eq!(
+        clone_target(&missing, "x/app.git"),
+        missing,
+        "a folder still to make"
+    );
+}
+
+#[test]
+fn clone_makes_the_repository_and_a_failed_one_leaves_nothing() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let remote = with_remote(&repo);
+    let parent = tempfile::tempdir().unwrap();
+    let into = parent.path().join("copy");
+    let cloned =
+        Repo::clone_into("git", &remote.path().display().to_string(), &into, None).unwrap();
+    assert!(cloned.root.join("a.txt").is_file());
+    let bad = parent.path().join("bad");
+    let err = Repo::clone_into(
+        "git",
+        "/no/such/repository",
+        &bad,
+        Some(Arc::new(AtomicBool::new(false))),
+    )
+    .unwrap_err();
+    assert!(!err.missing, "{err}");
+    assert!(!bad.exists(), "no half-made folder");
+}
+
+/// main (a.txt "one") and feat (b.txt), on main.
+fn two_branches() -> (tempfile::TempDir, Repo) {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    repo.run(&["checkout", "-q", "-b", "feat"]).unwrap();
+    write(dir.path(), "b.txt", "b\n");
+    repo.stage(&["b.txt"]).unwrap();
+    repo.commit("b", false).unwrap();
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    (dir, repo)
+}
+
+#[test]
+fn leaving_changes_on_a_branch_brings_them_back_when_returning() {
+    let (dir, repo) = two_branches();
+    write(dir.path(), "a.txt", "changed\n");
+    write(dir.path(), "new.txt", "untracked\n");
+    repo.stage(&["a.txt"]).unwrap();
+    assert_eq!(
+        repo.switch("feat", false, Some("main")).unwrap(),
+        Back::Nothing
+    );
+    assert_eq!(repo.status().unwrap().branch.as_deref(), Some("feat"));
+    assert!(repo.status().unwrap().entries.is_empty(), "left on main");
+    assert_eq!(
+        repo.stashes().unwrap()[0].message,
+        "On main: templum: left on main"
+    );
+    assert_eq!(repo.switch("main", false, None).unwrap(), Back::Popped);
+    let s = repo.status().unwrap();
+    let a = s.entries.iter().find(|e| e.path == "a.txt").unwrap();
+    assert_eq!(a.staged, Some(Change::Modified), "staged again");
+    assert!(dir.path().join("new.txt").is_file(), "untracked files too");
+    assert!(repo.stashes().unwrap().is_empty(), "popped, not applied");
+}
+
+#[test]
+fn bringing_changes_along_keeps_them_and_a_refused_switch_says_why() {
+    let (dir, repo) = two_branches();
+    write(dir.path(), "a.txt", "changed\n");
+    assert_eq!(repo.switch("feat", false, None).unwrap(), Back::Nothing);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "changed\n"
+    );
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    // feat changes a.txt too: carrying the change would overwrite it.
+    repo.run(&["stash", "-q"]).unwrap();
+    repo.run(&["checkout", "-q", "feat"]).unwrap();
+    write(dir.path(), "a.txt", "feat's\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("a on feat", false).unwrap();
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    repo.run(&["stash", "pop", "-q"]).unwrap();
+    let err = repo.switch("feat", false, None).unwrap_err();
+    assert!(err.stderr.contains("would be overwritten"), "{err}");
+}
+
+#[test]
+fn a_switch_that_fails_after_leaving_brings_the_changes_back() {
+    let (dir, repo) = two_branches();
+    write(dir.path(), "a.txt", "changed\n");
+    repo.stage(&["a.txt"]).unwrap();
+    write(dir.path(), "a.txt", "changed twice\n");
+    repo.switch("gone", false, Some("main")).unwrap_err();
+    assert!(
+        repo.stashes().unwrap().is_empty(),
+        "nothing hidden in a stash"
+    );
+    let s = repo.status().unwrap();
+    assert_eq!(s.branch.as_deref(), Some("main"));
+    assert_eq!(s.entries[0].staged, Some(Change::Modified));
+    assert_eq!(s.entries[0].unstaged, Some(Change::Modified));
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "changed twice\n"
+    );
+}
+
+#[test]
+fn the_newest_stash_left_on_a_branch_is_popped_and_the_older_stays() {
+    let (dir, repo) = two_branches();
+    write(dir.path(), "a.txt", "first\n");
+    repo.stash_push(&templum_git::left_on("main"), true)
+        .unwrap();
+    write(dir.path(), "a.txt", "second\n");
+    repo.switch("feat", false, Some("main")).unwrap();
+    assert_eq!(repo.switch("main", false, None).unwrap(), Back::Popped);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "second\n"
+    );
+    assert_eq!(
+        repo.stashes().unwrap().len(),
+        1,
+        "the older one stays in Stashes"
+    );
+}
+
+#[test]
+fn a_pop_that_conflicts_keeps_the_stash_and_says_so() {
+    let (dir, repo) = two_branches();
+    write(dir.path(), "a.txt", "mine\n");
+    repo.switch("feat", false, Some("main")).unwrap();
+    // Meanwhile main moves on the same line (a terminal, an agent).
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    write(dir.path(), "a.txt", "theirs\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("a again", false).unwrap();
+    repo.run(&["checkout", "-q", "feat"]).unwrap();
+    let back = repo.switch("main", false, None).unwrap();
+    assert!(matches!(back, Back::Kept(_)), "{back:?}");
+    assert_eq!(repo.stashes().unwrap().len(), 1, "kept");
+}
+
+#[test]
+fn a_remote_branch_makes_its_tracking_branch_or_goes_to_the_local_one() {
+    let (dir, repo) = two_branches();
+    let _remote = with_remote(&repo);
+    repo.run(&["push", "-q", "origin", "feat"]).unwrap();
+    repo.run(&["branch", "-D", "feat"]).unwrap();
+    repo.switch("origin/feat", true, None).unwrap();
+    let s = repo.status().unwrap();
+    assert_eq!(s.branch.as_deref(), Some("feat"));
+    assert_eq!(s.upstream.as_deref(), Some("origin/feat"));
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    // A local feat exists now: origin/feat goes to it.
+    repo.switch("origin/feat", true, None).unwrap();
+    assert_eq!(repo.status().unwrap().branch.as_deref(), Some("feat"));
+    assert!(dir.path().join("b.txt").is_file());
+}
+
+/// `repo` (main, a.txt) with an origin, and a second clone of it whose commits `repo` can get.
+fn with_other(repo: &Repo) -> (tempfile::TempDir, tempfile::TempDir, Repo) {
+    let remote = with_remote(repo);
+    let other_dir = tempfile::tempdir().unwrap();
+    let other = Repo::clone_into(
+        "git",
+        &remote.path().display().to_string(),
+        &other_dir.path().join("o"),
+        None,
+    )
+    .unwrap();
+    for args in [
+        ["config", "user.name", "Grace"].as_slice(),
+        &["config", "user.email", "grace@example.com"],
+        &["config", "commit.gpgsign", "false"],
+    ] {
+        other.run(args).unwrap();
+    }
+    (remote, other_dir, other)
+}
+
+fn commit_file(repo: &Repo, name: &str) {
+    write(&repo.root, name, name);
+    repo.stage(&[name]).unwrap();
+    repo.commit(name, false).unwrap();
+}
+
+#[test]
+fn sync_gets_and_sends_and_counts_both() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let (_remote, _o, other) = with_other(&repo);
+    assert_eq!(
+        repo.sync().unwrap(),
+        Synced::Done { got: 0, sent: 0 },
+        "up to date"
+    );
+    for n in ["b", "c", "d"] {
+        commit_file(&other, n);
+    }
+    other.push().unwrap();
+    assert_eq!(repo.sync().unwrap(), Synced::Done { got: 3, sent: 0 });
+    assert!(dir.path().join("d").is_file());
+    commit_file(&repo, "e");
+    commit_file(&repo, "f");
+    assert_eq!(repo.sync().unwrap(), Synced::Done { got: 0, sent: 2 });
+    let s = repo.status().unwrap();
+    assert_eq!((s.ahead, s.behind), (0, 0));
+}
+
+#[test]
+fn diverged_sync_changes_nothing_until_joined() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let (_remote, _o, other) = with_other(&repo);
+    commit_file(&other, "theirs");
+    other.push().unwrap();
+    commit_file(&repo, "mine");
+    let head = repo.head().unwrap();
+    assert_eq!(
+        repo.sync().unwrap(),
+        Synced::Diverged {
+            ahead: 1,
+            behind: 1
+        }
+    );
+    assert_eq!(repo.head().unwrap(), head, "nothing joined yet");
+    // Uncommitted changes don't stop the rebase (--autostash).
+    write(dir.path(), "a.txt", "dirty\n");
+    assert_eq!(
+        repo.sync_join(true).unwrap(),
+        Synced::Done { got: 1, sent: 1 }
+    );
+    let log = repo.run(&["log", "--format=%s"]).unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&log),
+        "mine\ntheirs\none\n",
+        "mine on top, no merge commit"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "dirty\n"
+    );
+}
+
+#[test]
+fn diverged_sync_joined_by_a_merge() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let (_remote, _o, other) = with_other(&repo);
+    commit_file(&other, "theirs");
+    other.push().unwrap();
+    commit_file(&repo, "mine");
+    repo.sync().unwrap();
+    assert_eq!(
+        repo.sync_join(false).unwrap(),
+        Synced::Done { got: 1, sent: 2 },
+        "mine and the merge"
+    );
+    assert_eq!(repo.status().unwrap().ahead, 0);
+}
+
+#[test]
+fn a_comparison_is_what_the_branch_has_and_a_commits_own_diff() {
+    let (dir, repo) = two_branches();
+    // feat gets a second commit; main moves on after feat left it.
+    write(dir.path(), "a.txt", "one\nmain moved\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("main moved", false).unwrap();
+    repo.run(&["checkout", "-q", "feat"]).unwrap();
+    write(dir.path(), "c.txt", "c\n");
+    repo.stage(&["c.txt"]).unwrap();
+    repo.commit("c", false).unwrap();
+    let log = repo.compare_log("main", "feat").unwrap();
+    let subjects: Vec<&str> = log.iter().map(|c| c.subject.as_str()).collect();
+    assert_eq!(subjects, ["c", "b"]);
+    let diff = repo.range_diff("main", "feat", false).unwrap();
+    let paths: Vec<&str> = diff.iter().map(|f| f.path()).collect();
+    assert_eq!(paths, ["b.txt", "c.txt"], "not main's own change to a.txt");
+    let one = repo.commit_changes(&log[0].hash, false).unwrap();
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].path(), "c.txt");
+    // The first commit has no parent; a merge is read against its first parent.
+    let root = repo.run(&["rev-list", "--max-parents=0", "HEAD"]).unwrap();
+    let root = String::from_utf8_lossy(&root).trim().to_string();
+    assert_eq!(
+        repo.commit_changes(&root, false).unwrap()[0].path(),
+        "a.txt"
+    );
+    repo.run(&["merge", "-q", "--no-edit", "main"]).unwrap();
+    let merge = repo.head().unwrap();
+    let merged = repo.commit_changes(&merge, false).unwrap();
+    assert_eq!(merged.len(), 1);
+    assert_eq!(
+        merged[0].path(),
+        "a.txt",
+        "what the merge brought onto feat"
+    );
+}
+
+/// A commit with no change, its dates set (seconds since 1970).
+fn commit_at(repo: &Repo, message: &str, seconds: u64) {
+    let date = format!("{seconds} +0000");
+    let ok = std::process::Command::new("git")
+        .args(["commit", "-q", "--allow-empty", "-m", message])
+        .current_dir(&repo.root)
+        .env("GIT_COMMITTER_DATE", &date)
+        .env("GIT_AUTHOR_DATE", &date)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+}
+
+#[test]
+fn history_is_in_date_order_even_with_a_skewed_clock() {
+    let (_dir, repo) = fresh();
+    commit_at(&repo, "P", 1_000_000_200);
+    repo.run(&["checkout", "-q", "-b", "side"]).unwrap();
+    commit_at(&repo, "S", 1_000_000_300);
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    // A child older than its parent: git's default order would show P before A.
+    commit_at(&repo, "A", 1_000_000_050);
+    repo.run(&["merge", "-q", "--no-ff", "--no-edit", "side"])
+        .unwrap();
+    let subjects: Vec<String> = repo
+        .history(&HistoryQuery::default(), 0, 10)
+        .unwrap()
+        .into_iter()
+        .map(|c| c.subject)
+        .collect();
+    assert_eq!(subjects[1..], ["S", "A", "P"], "{subjects:?}");
+}
+
+#[test]
+fn all_branches_and_the_three_searches() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.rs", "fn main() {}\n");
+    repo.stage(&["a.rs"]).unwrap();
+    repo.commit("Add main", false).unwrap();
+    repo.run(&["checkout", "-q", "-b", "side"]).unwrap();
+    write(dir.path(), "a.rs", "fn main() { helper(); }\n");
+    repo.stage(&["a.rs"]).unwrap();
+    repo.commit("Call the helper (wip", false).unwrap();
+    repo.run(&["checkout", "-q", "main"]).unwrap();
+    let q = |all: bool, search: Option<(Search, &str)>| HistoryQuery {
+        all,
+        search: search.map(|(s, t)| (s, t.to_string())),
+    };
+    let subjects = |q: HistoryQuery| -> Vec<String> {
+        repo.history(&q, 0, 10)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.subject)
+            .collect()
+    };
+    assert_eq!(subjects(q(false, None)), ["Add main"], "HEAD's history");
+    assert_eq!(subjects(q(true, None)).len(), 2, "every branch");
+    assert_eq!(
+        subjects(q(true, Some((Search::Message, "HELPER (WIP")))),
+        ["Call the helper (wip"],
+        "fixed text, no case"
+    );
+    assert_eq!(
+        subjects(q(true, Some((Search::Author, "ada lov")))).len(),
+        2
+    );
+    assert_eq!(
+        subjects(q(true, Some((Search::Code, "helper()")))),
+        ["Call the helper (wip"],
+        "added or removed text"
+    );
+    assert!(
+        subjects(q(true, Some((Search::Message, "[nothing")))).is_empty(),
+        "a bracket is just a bracket"
+    );
+}
+
+#[test]
+fn a_files_log_follows_its_renames() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\ntwo\nthree\nfour\nfive\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("add a", false).unwrap();
+    repo.run(&["mv", "a.txt", "b.txt"]).unwrap();
+    repo.commit("rename to b", false).unwrap();
+    write(dir.path(), "b.txt", "one\nTWO\nthree\nfour\nfive\n");
+    repo.stage(&["b.txt"]).unwrap();
+    repo.commit("change b", false).unwrap();
+    write(dir.path(), "other.txt", "x\n");
+    repo.stage(&["other.txt"]).unwrap();
+    repo.commit("other", false).unwrap();
+    let log = repo.file_log("b.txt", 0, 10).unwrap();
+    let got: Vec<(&str, &str, Option<&str>)> = log
+        .iter()
+        .map(|(c, f)| (c.subject.as_str(), f.path.as_str(), f.from.as_deref()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            ("change b", "b.txt", None),
+            ("rename to b", "b.txt", Some("a.txt")),
+            ("add a", "a.txt", None)
+        ]
+    );
+    assert_eq!(repo.file_log("b.txt", 1, 10).unwrap().len(), 2, "skip");
+    // The file as it was in its first commit, from its old name.
+    let first = &log[2].0.hash;
+    assert_eq!(
+        repo.file_at(first, "a.txt").unwrap(),
+        b"one\ntwo\nthree\nfour\nfive\n"
+    );
+    assert_eq!(repo.commit_info(first).unwrap().subject, "add a");
+}
+
+#[test]
+fn the_commits_not_pushed_are_head_s_past_the_upstream() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    assert!(repo.unpushed().unwrap().is_empty(), "no upstream");
+    let _remote = with_remote(&repo);
+    write(dir.path(), "a.txt", "two\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("two", false).unwrap();
+    let head = repo.head().unwrap();
+    assert_eq!(repo.unpushed().unwrap(), [head].into_iter().collect());
+}
+
+#[test]
+fn a_stashs_diff_has_its_new_files() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    write(dir.path(), "a.txt", "changed\n");
+    write(dir.path(), "new.txt", "n\n");
+    repo.stash_push("mine", true).unwrap();
+    let s = repo.stashes().unwrap();
+    let paths: Vec<String> = repo
+        .stash_diff(&s[0], false)
+        .unwrap()
+        .iter()
+        .map(|f| f.path().to_string())
+        .collect();
+    assert_eq!(paths, ["a.txt", "new.txt"]);
+}
+
+#[test]
+fn blame_names_each_lines_commit() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\ntwo\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let first = repo.commit("first", false).unwrap();
+    write(dir.path(), "a.txt", "one\nTWO\n");
+    repo.stage(&["a.txt"]).unwrap();
+    let second = repo.commit("second", false).unwrap();
+    write(dir.path(), "a.txt", "one\nTWO\nthree\n");
+    let lines = repo.blame("a.txt", None).unwrap();
+    assert!(lines[0].hash.starts_with(&first));
+    assert!(lines[1].hash.starts_with(&second));
+    assert!(
+        lines[2].hash.bytes().all(|b| b == b'0'),
+        "not committed yet"
+    );
+    let then = repo.blame("a.txt", Some(&first)).unwrap();
+    assert_eq!(then.len(), 2);
+    assert_eq!(then[1].text, "two");
+}
+
+// Final review, I5: a version restored takes the working tree's line endings.
+#[test]
+fn a_file_then_has_the_working_trees_line_endings() {
+    let (dir, repo) = fresh();
+    write(dir.path(), ".gitattributes", "*.txt eol=crlf\n");
+    write(dir.path(), "a.txt", "one\ntwo\n");
+    repo.stage(&[".gitattributes", "a.txt"]).unwrap();
+    repo.commit("add a", false).unwrap();
+    assert_eq!(
+        repo.file_at("HEAD", "a.txt").unwrap(),
+        b"one\r\ntwo\r\n",
+        "as a checkout writes it"
+    );
+}
+
+#[test]
+fn a_branch_gone_but_named_like_a_folder_is_refused_and_the_folders_edits_stay() {
+    // A branch `docs` deleted meanwhile (a terminal, an agent), and a folder `docs` edited:
+    // git must never read the name as a path and restore the folder from the index.
+    let (dir, repo) = two_branches();
+    write(dir.path(), "docs/x.md", "first\n");
+    repo.stage(&["docs/x.md"]).unwrap();
+    repo.commit("docs", false).unwrap();
+    for leave in [None, Some("main")] {
+        write(dir.path(), "docs/x.md", "edited\n");
+        assert!(repo.switch("docs", false, leave).is_err(), "{leave:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("docs/x.md")).unwrap(),
+            "edited\n",
+            "{leave:?}: the edit stays"
+        );
+        assert!(
+            repo.stashes().unwrap().is_empty(),
+            "{leave:?}: nothing hidden in a stash"
+        );
+        assert_eq!(repo.status().unwrap().branch.as_deref(), Some("main"));
+    }
+    // A remote one that isn't there is refused the same way.
+    assert!(repo.switch("origin/docs", true, None).is_err());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("docs/x.md")).unwrap(),
+        "edited\n"
+    );
+}
+
+#[test]
+fn sync_on_a_branch_deleted_on_the_server_says_so_and_sends_nothing() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let remote = with_remote(&repo);
+    repo.run(&["checkout", "-q", "-b", "topic"]).unwrap();
+    repo.publish("origin", "topic").unwrap();
+    // Merged and deleted on the server; this clone hasn't fetched since.
+    std::process::Command::new("git")
+        .args(["branch", "-q", "-D", "topic"])
+        .current_dir(remote.path())
+        .status()
+        .unwrap();
+    commit_file(&repo, "more");
+    assert_eq!(repo.sync().unwrap(), Synced::Gone);
+    let on_server = std::process::Command::new("git")
+        .args(["branch", "--list", "topic"])
+        .current_dir(remote.path())
+        .output()
+        .unwrap();
+    assert!(on_server.stdout.is_empty(), "nothing sent");
+}
+
+/// A clone that has started writing, then stops: cancelled, as a click on its spinning button
+/// does. A new folder goes; an empty one that was there is empty again.
+#[cfg(unix)]
+#[test]
+fn a_clone_stopped_midway_leaves_no_folder_and_an_empty_one_empty() {
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+    // `git clone` waiting on the network after it made the folder: a stand-in for git.
+    let bin = tempfile::tempdir().unwrap();
+    let slow = bin.path().join("slow-git");
+    std::fs::write(
+        &slow,
+        "#!/bin/sh\nfor a; do dest=$a; done\nmkdir -p \"$dest/.git\" && echo partial > \"$dest/.git/HEAD\"\nexec sleep 30\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    let empty = parent.path().join("empty");
+    std::fs::create_dir(&empty).unwrap();
+    for (into, existed) in [(parent.path().join("new"), false), (empty, true)] {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (stop, watched) = (cancel.clone(), into.join(".git"));
+        let stopper = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !watched.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            stop.store(true, Ordering::Relaxed);
+        });
+        let err = Repo::clone_into(
+            &slow.display().to_string(),
+            "https://example.com/me/app.git",
+            &into,
+            Some(cancel),
+        )
+        .unwrap_err();
+        stopper.join().unwrap();
+        assert!(err.cancelled(), "{err}");
+        if existed {
+            assert!(into.is_dir(), "the folder chosen stays");
+            assert_eq!(
+                std::fs::read_dir(&into).unwrap().count(),
+                0,
+                "emptied again"
+            );
+        } else {
+            assert!(!into.exists(), "no half-made folder");
+        }
+    }
+}
+
+#[test]
+fn sync_on_a_branch_never_published_says_so_not_deleted() {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("one", false).unwrap();
+    let _remote = with_remote(&repo);
+    // Made in a terminal: the block's status, up to 2 s old, still showed Sync.
+    repo.run(&["checkout", "-q", "-b", "new"]).unwrap();
+    assert_eq!(repo.sync().unwrap(), Synced::Unpublished);
 }

@@ -1,11 +1,15 @@
 //! Editor blocks: their folder, their tabs, and saving and reloading their files.
 
+use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
+use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::input::{EditorState, Position};
 use gpui_kit::component::notification::Notification;
-use gpui_kit::{Context, Entity, Window};
+use gpui_kit::prelude::*;
+use gpui_kit::{App, Context, Entity, SharedString, Window, px};
 use templum_canvas::{BlockId, Point, Rect};
 
 use crate::editor::{self, Editor};
@@ -17,7 +21,7 @@ use super::{Body, Workspace, remember, show_notification};
 impl Workspace {
     /// Asks for a folder, then opens an editor on it at the viewport's center.
     pub(crate) fn new_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let center = self.space.canvas.camera.to_world(self.center(window));
+        let center = self.space.camera().to_world(self.center(window));
         let size = editor::SIZE;
         let at = self
             .space
@@ -69,7 +73,8 @@ impl Workspace {
         Some(id)
     }
 
-    /// The system's folder picker, for an editor whose folder is gone.
+    /// The folder dialog, to point an editor at another folder: from its menu, or when its
+    /// folder is gone.
     pub(crate) fn choose_editor_folder(
         &mut self,
         id: BlockId,
@@ -77,24 +82,37 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let entity = cx.entity();
-        launcher::pick_folder(
-            Rc::new(move |folder, _, cx| {
-                entity.update(cx, |ws, cx| ws.set_editor_folder(id, folder, cx))
+        launcher::ask_folder_for(
+            self,
+            "Change the editor's folder".to_string(),
+            None,
+            Rc::new(move |folder, window, cx| {
+                entity.update(cx, |ws, cx| ws.set_editor_folder(id, folder, window, cx))
             }),
             window,
             cx,
         );
     }
 
-    /// Points an editor block at another folder, read afresh.
+    /// Points an editor block at another folder, read afresh. A path that isn't a folder
+    /// changes nothing.
     pub(crate) fn set_editor_folder(
         &mut self,
         id: BlockId,
         folder: &Path,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
+        self.space.editor(id)?;
+        if !folder.is_dir() {
+            let message = format!("{} isn't a folder", folder.display());
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+            return None;
+        }
         let editor = self.space.editor_mut(id)?;
         editor.folder = folder.to_path_buf();
+        editor.gone = false;
         editor.expanded.clear();
         // Changed files stay open (Save writes them where they were); the others close.
         editor.tabs.retain(|t| t.dirty);
@@ -319,22 +337,33 @@ impl Workspace {
     /// Asks before the window or Templum closes with unsaved files: Save all, Don't save or
     /// Cancel; either of the first two quits. True when nothing is unsaved and it may close now.
     pub(crate) fn may_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.may_close_then(|cx: &mut App| cx.quit(), window, cx)
+    }
+
+    /// [`Self::may_close`], with `then` instead of quitting (a restart).
+    pub(crate) fn may_close_then(
+        &mut self,
+        then: impl Fn(&mut App) + Clone + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let unsaved = self.unsaved_names();
         if unsaved.is_empty() {
             return true;
         }
         let ws = cx.entity();
+        let after_save = then.clone();
         prompt::save_or_discard(
             "Save changes before quitting?",
             format!("Unsaved: {}", unsaved.join(", ")),
             move |window, cx| {
                 let saved = ws.update(cx, |ws, cx| ws.save_spaces(None, window, cx));
                 if saved {
-                    cx.quit();
+                    after_save(cx);
                 }
                 saved
             },
-            |_, cx| cx.quit(),
+            move |_, cx| then(cx),
             window,
             cx,
         );
@@ -412,6 +441,9 @@ impl Workspace {
             let Body::Editor(editor) = body else {
                 continue;
             };
+            let gone = !editor.folder.is_dir();
+            changed |= gone != editor.gone;
+            editor.gone = gone;
             for tab in &mut editor.tabs {
                 let now = editor::mtime(&tab.path);
                 if now == tab.mtime {
@@ -493,11 +525,11 @@ impl Workspace {
             .map(|(id, _)| *id);
         let id = found.or_else(|| {
             let size = editor::SIZE;
-            let anchor = beside.and_then(|b| self.space.canvas.get(b).map(|b| b.rect));
+            let anchor = beside.and_then(|b| self.space.canvas.get(b).map(|b| self.space.home(b)));
             let at = match anchor {
                 Some(anchor) => self.space.canvas.place_beside(anchor, size).origin(),
                 None => {
-                    let center = self.space.canvas.camera.to_world(self.center(window));
+                    let center = self.space.camera().to_world(self.center(window));
                     self.space
                         .canvas
                         .place_new(
@@ -515,6 +547,52 @@ impl Workspace {
         self.open_file(id, path, line, window, cx);
         let space = self.space.id.clone();
         self.reveal(&space, id, window, cx);
+    }
+
+    /// The `open_file` command: the focused editor's files, found by typing part of a name;
+    /// Enter or a click opens the one chosen.
+    pub(super) fn open_file_by_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(block) = self.focused_editor() else {
+            return;
+        };
+        let Some(folder) = self.space.editor(block).map(|e| e.folder.clone()) else {
+            return;
+        };
+        let files = editor::files_in(&folder, editor::FILES_CAP);
+        let state = cx.new(|cx| CommandState::new(window, cx));
+        let ws = cx.entity();
+        let palette = state.clone();
+        // What the query picks, kept until it changes: the dialog is drawn on every frame.
+        let picked: Rc<RefCell<Option<Picked>>> = Rc::default();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let query = palette.read(cx).query(cx);
+            let mut cache = picked.borrow_mut();
+            if cache.as_ref().is_none_or(|(q, _)| *q != query) {
+                let found = editor::pick(&files, &query, editor::PICKED);
+                *cache = Some((query, found.into_iter().map(String::from).collect()));
+            }
+            let shown = cache.as_ref().map_or(Vec::new(), |(_, f)| f.clone());
+            drop(cache);
+            let items = shown
+                .iter()
+                .map(|file| CommandItem::new().label(file.clone()));
+            let (ws, folder) = (ws.clone(), folder.clone());
+            dialog.title("Open a file").w(px(560.0)).child(
+                Command::new(&palette)
+                    .items(items)
+                    // The list above is already the query's: no second filter.
+                    .filterable(false)
+                    .placeholder("Type part of a file's name")
+                    .on_confirm(move |at, window, cx| {
+                        let Some(file) = shown.get(at.row).map(|f| folder.join(f)) else {
+                            return;
+                        };
+                        window.close_dialog(cx);
+                        ws.update(cx, |ws, cx| ws.open_file(block, &file, None, window, cx));
+                    }),
+            )
+        });
+        state.update(cx, |state, cx| state.focus(window, cx));
     }
 
     /// The `go_to_line` command: a line number, then the cursor goes there.
@@ -557,3 +635,6 @@ impl Workspace {
             .filter(|id| self.space.editor(*id).is_some())
     }
 }
+
+/// The file picker's query and the files it picks.
+type Picked = (SharedString, Vec<String>);

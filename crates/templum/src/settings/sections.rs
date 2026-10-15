@@ -9,7 +9,7 @@ use gpui_kit::{App, ClickEvent, ElementId, Entity, SharedString, TestSupportExt,
 
 use super::agents::agent_row;
 use super::edits::set_shell;
-use super::fields::{CURSOR, Choice, FONT_SIZE, MODE, Number};
+use super::fields::{CURSOR, Choice, FONT_SIZE, MODE, Number, RESET, WARN};
 use super::row::{Row, menu_button, remove, text_input};
 use super::{
     NumberState, SCROLLBACK, Section, args_error, args_text, chip, folder_hint, folder_text,
@@ -211,11 +211,71 @@ pub(super) fn rows(
                     ),
             ]
         }
+        Section::Git => super::git::rows(ws, entity, window, cx),
         Section::Agents => ws
             .agents
             .iter()
             .map(|agent| agent_row(ws, entity, agent))
             .collect(),
+        Section::Usage => {
+            let on = ws.config.usage.claude_limits;
+            let e = entity.clone();
+            let mut rows = vec![
+                choice_row(ws, entity, &RESET, "Limit reset notifications")
+                    .description("When a 5-hour or weekly limit is back"),
+                choice_row(ws, entity, &WARN, "Warn near a limit")
+                    .description("Once per limit, with when it resets"),
+                Row::new("usage.claude_limits", "Claude Code limits")
+                    .description(
+                        "Templum asks Claude Code for them every 5 minutes (its /usage, which \
+                         costs nothing), and the Claude Code it opens hands them over as it \
+                         works. Your own status line still shows.",
+                    )
+                    .control(Switch::new("claude-limits-switch").checked(on).on_click(
+                        move |on: &bool, _, cx| {
+                            let on = *on;
+                            e.update(cx, |ws, cx| {
+                                ws.edit(
+                                    Edit::set("usage", "claude_limits", on),
+                                    |c| c.usage.claude_limits = on,
+                                    cx,
+                                )
+                            })
+                        },
+                    ))
+                    .reset(
+                        !on,
+                        remove(entity, "usage", "claude_limits", |c| {
+                            c.usage.claude_limits = true
+                        }),
+                    ),
+            ];
+            // Which agents' limits the title bar's meter shows, in turn.
+            for agent in templum_usage::LIMITED {
+                let shown = !ws.config.usage.hide.iter().any(|a| a == agent);
+                let (e, r) = (entity.clone(), entity.clone());
+                rows.push(
+                    Row::new(
+                        format!("usage.hide.{agent}"),
+                        format!("{} in the title bar", ws.agent_title(agent)),
+                    )
+                    .description("Its limits take turns with the others' in the title bar")
+                    .control(
+                        Switch::new(SharedString::from(format!("title-bar-{agent}-switch")))
+                            .checked(shown)
+                            .on_click(move |on: &bool, _, cx| {
+                                let on = *on;
+                                e.update(cx, |ws, cx| ws.show_in_title_bar(agent, on, cx))
+                            }),
+                    )
+                    .reset(!shown, move |_, cx| {
+                        r.update(cx, |ws, cx| ws.show_in_title_bar(agent, true, cx))
+                    }),
+                );
+            }
+            rows
+        }
+        Section::Updates => super::updates::rows(ws, entity),
         Section::Shortcuts => Command::ALL
             .map(|command| shortcut_row(ws, entity, command))
             .into_iter()
@@ -356,7 +416,7 @@ fn folder_kind_row(ws: &Workspace, entity: &Entity<Workspace>) -> Row {
         )
 }
 
-fn number_row(
+pub(super) fn number_row(
     ws: &Workspace,
     entity: &Entity<Workspace>,
     n: &'static Number,
@@ -521,7 +581,7 @@ fn shell_row(ws: &Workspace, entity: &Entity<Workspace>) -> Row {
         })
 }
 
-fn set_theme(c: &mut Config, dark: bool, name: String) {
+pub(crate) fn set_theme(c: &mut Config, dark: bool, name: String) {
     if dark {
         c.theme.dark = name;
     } else {

@@ -1,6 +1,7 @@
 //! Each target's menu: its items and what choosing them does.
 
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use crate::agents::AgentEntry;
 use gpui_kit::assets::IconName;
@@ -8,9 +9,10 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, ClipboardItem, Context, Entity, SharedString, Window, px};
-use templum_canvas::Point;
+use templum_canvas::{BlockId, Point};
 
-use super::Items;
+use super::{Items, SendTo, Tail};
+use crate::board::Label;
 use crate::git_block;
 use crate::kanban;
 use crate::launcher;
@@ -28,6 +30,66 @@ fn item(
     PopupMenuItem::new(label)
         .when_some(icon, |item, icon| item.icon(Icon::new(icon)))
         .on_click(move |_, window, cx| ws.update(cx, |ws, cx| act(ws, window, cx)))
+}
+
+/// Adding blocks, the canvas menu's and a tile's: AI agent ▸ and Add ▸ (Terminal, Kanban board,
+/// Note, Editor, Git), their top-left corner at `at` on the canvas. In grid mode they take half of
+/// the focused tile.
+fn adding(
+    ws: &Entity<Workspace>,
+    menu: PopupMenu,
+    agents: Vec<(AgentEntry, bool)>,
+    at: Point,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let (agent, add) = (ws.clone(), ws.clone());
+    menu.submenu_with_icon(
+        Some(Icon::new(IconName::Bot)),
+        "AI agent",
+        window,
+        cx,
+        move |menu, _, _| agent_items(&agent, menu, agents.clone(), at),
+    )
+    .submenu_with_icon(
+        Some(Icon::new(IconName::Plus)),
+        "Add",
+        window,
+        cx,
+        move |menu, _, _| {
+            let ws = &add;
+            menu.item(item(
+                ws,
+                "Terminal",
+                Some(IconName::SquareTerminal),
+                move |ws, window, cx| ws.add_terminal_at(at, window, cx),
+            ))
+            .item(item(
+                ws,
+                "Kanban board",
+                Some(IconName::LayoutDashboard),
+                move |ws, window, cx| ws.add_kanban_at(at, window, cx),
+            ))
+            .item(item(
+                ws,
+                "Note",
+                Some(IconName::StickyNote),
+                move |ws, window, cx| ws.add_note_at(at, window, cx),
+            ))
+            .item(item(
+                ws,
+                "Editor",
+                Some(IconName::FileCode),
+                move |ws, window, cx| ws.ask_editor_folder(at, window, cx),
+            ))
+            .item(item(
+                ws,
+                "Git",
+                Some(IconName::GitBranch),
+                move |ws, window, cx| ws.ask_git_folder(at, window, cx),
+            ))
+        },
+    )
 }
 
 /// The agents, installed first; the others say how to install them when chosen. `at`: where the
@@ -58,6 +120,52 @@ fn agent_items(
         .fold(menu.separator().label("Not installed"), entry)
 }
 
+/// One item per terminal (`Workspace::terminal_list`); `act` on the chosen one.
+fn terminal_items(
+    ws: &Entity<Workspace>,
+    menu: PopupMenu,
+    terminals: &[(BlockId, String)],
+    act: impl Fn(&mut Workspace, BlockId, &mut Window, &mut Context<Workspace>) + Clone + 'static,
+) -> PopupMenu {
+    terminals.iter().fold(menu, |menu, (id, label)| {
+        let (id, act) = (*id, act.clone());
+        menu.item(item(
+            ws,
+            label.clone(),
+            Some(IconName::SquareTerminal),
+            move |ws, window, cx| act(ws, id, window, cx),
+        ))
+    })
+}
+
+/// Send to ▸ the workspace's terminals: the text is typed into the chosen one, never run.
+/// Nothing without a terminal or a text.
+fn send_to(
+    ws: &Entity<Workspace>,
+    menu: PopupMenu,
+    send: SendTo,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    if send.to.is_empty() || send.text.trim().is_empty() {
+        return menu;
+    }
+    let ws = ws.clone();
+    let text: Rc<str> = send.text.into();
+    menu.submenu_with_icon(
+        Some(Icon::new(IconName::SquareTerminal)),
+        "Send to",
+        window,
+        cx,
+        move |menu, _, _| {
+            let text = text.clone();
+            terminal_items(&ws, menu, &send.to, move |ws, id, window, cx| {
+                ws.send_to(id, &text, window, cx)
+            })
+        },
+    )
+}
+
 /// What deleting `n` cards along with their board or column says.
 fn cards(n: usize) -> String {
     if n == 1 {
@@ -76,89 +184,127 @@ impl Items {
         cx: &mut Context<PopupMenu>,
     ) -> PopupMenu {
         match self {
-            Items::Canvas { at, agents } => {
-                let add = ws.clone();
-                let ws = ws.clone();
-                menu.submenu_with_icon(
-                    Some(Icon::new(IconName::Bot)),
-                    "AI agent",
-                    window,
-                    cx,
-                    move |menu, _, _| agent_items(&ws, menu, agents.clone(), at),
-                )
-                .submenu_with_icon(
-                    Some(Icon::new(IconName::Plus)),
-                    "Add",
-                    window,
-                    cx,
-                    move |menu, _, _| {
-                        let ws = &add;
-                        menu.item(item(
-                            ws,
-                            "Terminal",
-                            Some(IconName::SquareTerminal),
-                            move |ws, window, cx| ws.add_terminal_at(at, window, cx),
-                        ))
+            // Every block's menu ends the same way: grid mode's items, then Close.
+            Items::Block {
+                block,
+                inner,
+                tail,
+                close,
+                moving,
+                spaces,
+            } => {
+                let menu = inner.build(ws, menu, window, cx).separator();
+                let menu = match tail {
+                    Tail::Canvas { group } => menu.item(item(
+                        ws,
+                        "Fullscreen",
+                        Some(IconName::Maximize2),
+                        move |ws, window, cx| {
+                            let ids = if group.contains(&block) {
+                                group.clone()
+                            } else {
+                                vec![block]
+                            };
+                            ws.enter_grid(ids, window, cx)
+                        },
+                    )),
+                    Tail::Tile {
+                        flip,
+                        others,
+                        at,
+                        agents,
+                    } => {
+                        let bring = ws.clone();
+                        // New blocks take half of this tile: it has the focus.
+                        adding(ws, menu, agents, at, window, cx)
+                            .when(!others.is_empty(), |menu| {
+                                menu.submenu("From the canvas", window, cx, move |menu, _, _| {
+                                    others.iter().fold(menu, |menu, (id, title)| {
+                                        let id = *id;
+                                        menu.item(item(
+                                            &bring,
+                                            title.clone(),
+                                            None,
+                                            move |ws, window, cx| {
+                                                ws.add_to_grid(id, block, window, cx)
+                                            },
+                                        ))
+                                    })
+                                })
+                            })
+                            .separator()
+                            .when(flip, |menu| {
+                                menu.item(item(ws, "Flip the split", None, move |ws, _, cx| {
+                                    ws.flip_tile(block, cx)
+                                }))
+                            })
+                            .item(item(ws, "Leave the grid", None, move |ws, window, cx| {
+                                ws.leave_tile(block, window, cx)
+                            }))
+                            .item(item(
+                                ws,
+                                "Back to the canvas",
+                                Some(IconName::Minimize2),
+                                |ws, window, cx| ws.leave_grid(window, cx),
+                            ))
+                    }
+                };
+                let mover = ws.clone();
+                menu.submenu("Move to workspace", window, cx, move |menu, _, _| {
+                    let to_new = moving.clone();
+                    spaces
+                        .iter()
+                        .fold(menu, |menu, (id, name, takes)| {
+                            let (id, ids) = (id.clone(), moving.clone());
+                            menu.item(
+                                item(&mover, name.clone(), None, move |ws, window, cx| {
+                                    ws.move_blocks(ids.clone(), Some(&id), window, cx)
+                                })
+                                .disabled(!*takes),
+                            )
+                        })
+                        .when(!spaces.is_empty(), |menu| menu.separator())
                         .item(item(
-                            ws,
-                            "Kanban board",
-                            Some(IconName::LayoutDashboard),
-                            move |ws, window, cx| ws.add_kanban_at(at, window, cx),
+                            &mover,
+                            "New workspace",
+                            Some(IconName::Plus),
+                            move |ws, window, cx| ws.move_blocks(to_new.clone(), None, window, cx),
                         ))
-                        .item(item(
-                            ws,
-                            "Note",
-                            Some(IconName::StickyNote),
-                            move |ws, window, cx| ws.add_note_at(at, window, cx),
-                        ))
-                        .item(item(
-                            ws,
-                            "Editor",
-                            Some(IconName::FileCode),
-                            move |ws, window, cx| ws.ask_editor_folder(at, window, cx),
-                        ))
-                        .item(item(
-                            ws,
-                            "Git",
-                            Some(IconName::GitBranch),
-                            move |ws, window, cx| ws.ask_git_folder(at, window, cx),
-                        ))
-                    },
-                )
+                })
+                .item(item(
+                    ws,
+                    close,
+                    Some(IconName::Close),
+                    move |ws, window, cx| ws.close(block, window, cx),
+                ))
             }
-            Items::Terminal { block, selection } => menu
+            Items::Canvas { at, agents } => {
+                let notes = item(
+                    ws,
+                    "Notes…",
+                    Some(IconName::NotebookText),
+                    |_, window, cx| crate::note::open_notes(None, window, cx),
+                );
+                adding(ws, menu, agents, at, window, cx).item(notes)
+            }
+            Items::Terminal { selection } => menu
                 .item(
                     item(ws, "Copy", Some(IconName::Copy), |ws, _, cx| {
                         ws.copy_selection(cx)
                     })
                     .disabled(!selection),
                 )
-                .item(item(ws, "Paste", None, |ws, _, cx| ws.paste_clipboard(cx)))
-                .separator()
-                .item(item(
-                    ws,
-                    "Close terminal",
-                    Some(IconName::Close),
-                    move |ws, window, cx| ws.close(block, window, cx),
-                )),
-            Items::Kanban { block, listing } => menu
-                .item(item(
-                    ws,
-                    if listing {
-                        "Back to the board"
-                    } else {
-                        "Board list"
-                    },
-                    Some(IconName::ChevronsUpDown),
-                    move |ws, _, cx| ws.pick_board(block, cx),
-                ))
-                .separator()
-                .item(item(
-                    ws,
-                    "Close",
-                    Some(IconName::Close),
-                    move |ws, window, cx| ws.close(block, window, cx),
-                )),
+                .item(item(ws, "Paste", None, |ws, _, cx| ws.paste_clipboard(cx))),
+            Items::Kanban { block, listing } => menu.item(item(
+                ws,
+                if listing {
+                    "Back to the board"
+                } else {
+                    "Board list"
+                },
+                Some(IconName::ChevronsUpDown),
+                move |ws, _, cx| ws.pick_board(block, cx),
+            )),
             Items::Agents { at, agents } => agent_items(ws, menu, agents, at),
             Items::Tree {
                 block,
@@ -187,12 +333,18 @@ impl Items {
                 };
                 let mut menu = menu;
                 if let Some(p) = path.clone().filter(|_| !is_dir) {
-                    let open = p.clone();
+                    let (open, history, blame) = (p.clone(), p.clone(), p.clone());
                     menu = menu
                         .item(item(ws, "Open", None, move |ws, window, cx| {
                             ws.open_file(block, &open, None, window, cx)
                         }))
-                        .item(reveal(ws, p));
+                        .item(reveal(ws, p))
+                        .item(item(ws, "File history", None, move |ws, window, cx| {
+                            ws.history_from_tree(block, history.clone(), false, window, cx)
+                        }))
+                        .item(item(ws, "Blame", None, move |ws, window, cx| {
+                            ws.history_from_tree(block, blame.clone(), true, window, cx)
+                        }));
                 }
                 if path.is_none() || is_dir {
                     let (file_dir, folder_dir) = (dir.clone(), dir.clone());
@@ -245,7 +397,9 @@ impl Items {
                         ws,
                         "Open a terminal here",
                         Some(IconName::SquareTerminal),
-                        move |ws, window, cx| ws.terminal_beside(block, &p, None, window, cx),
+                        move |ws, window, cx| {
+                            ws.terminal_beside(block, &p, None, window, cx);
+                        },
                     ));
                 }
                 if let Some(p) = path.clone() {
@@ -308,7 +462,98 @@ impl Items {
                 }
                 menu
             }
-            Items::GitRow { block, list, entry } => {
+            Items::GitMore { block, busy, trash } => menu
+                .item(
+                    item(ws, "Fetch", None, move |ws, window, cx| {
+                        ws.fetch(block, window, cx)
+                    })
+                    .disabled(busy),
+                )
+                .item(
+                    item(ws, "Pull", None, move |ws, window, cx| {
+                        ws.pull(block, templum_git::Pull::FastForward, window, cx)
+                    })
+                    .disabled(busy),
+                )
+                .item(
+                    item(ws, "Push", Some(IconName::Upload), move |ws, window, cx| {
+                        ws.push(block, window, cx)
+                    })
+                    .disabled(busy),
+                )
+                .separator()
+                .when(trash, |menu| {
+                    menu.item(item(
+                        ws,
+                        "Recently discarded…",
+                        Some(IconName::ArchiveRestore),
+                        move |ws, window, cx| ws.show_discarded(block, window, cx),
+                    ))
+                })
+                .item(item(
+                    ws,
+                    "Clone a repository…",
+                    None,
+                    move |ws, window, cx| ws.ask_clone(block, window, cx),
+                )),
+            Items::GitRemotes {
+                at,
+                branch,
+                remotes,
+            } => remotes.into_iter().fold(menu, |menu, remote| {
+                let (branch, label, at) =
+                    (branch.clone(), format!("Publish to {remote}"), at.clone());
+                menu.item(item(
+                    ws,
+                    label,
+                    Some(IconName::Upload),
+                    move |ws, window, cx| {
+                        if ws.show_git_block(&at, window, cx) {
+                            ws.publish_to(at.block, remote.clone(), branch.clone(), window, cx)
+                        }
+                    },
+                ))
+            }),
+            Items::GitCommitMenu { block, label } => menu
+                .item(item(ws, label.clone(), None, move |ws, window, cx| {
+                    ws.git_commit(block, false, window, cx)
+                }))
+                .item(item(
+                    ws,
+                    format!("{label} & Push"),
+                    Some(IconName::Upload),
+                    move |ws, window, cx| ws.git_commit(block, true, window, cx),
+                )),
+            Items::GitGenerateMenu {
+                block,
+                models,
+                model,
+            } => {
+                let listed = !models.is_empty();
+                let menu = models.into_iter().fold(menu, |menu, m| {
+                    let checked = m == model;
+                    let chosen = m.clone();
+                    menu.item(
+                        item(ws, m, None, move |ws, _, cx| {
+                            ws.set_commit_model(&chosen, cx)
+                        })
+                        .checked(checked),
+                    )
+                });
+                let menu = if listed { menu.separator() } else { menu };
+                menu.item(item(
+                    ws,
+                    "Instructions for this repository…",
+                    None,
+                    move |ws, window, cx| ws.ask_repo_instructions(block, window, cx),
+                ))
+            }
+            Items::GitRow {
+                block,
+                list,
+                entry,
+                labels: (first, second),
+            } => {
                 use git_block::List;
                 let path = entry.path.clone();
                 let mut menu = menu;
@@ -323,71 +568,99 @@ impl Items {
                                 Some(IconName::FileCode),
                                 move |ws, window, cx| ws.open_from_git(block, &open, window, cx),
                             ))
-                            .item(item(ws, "Use ours", None, move |ws, window, cx| {
-                                ws.resolve(block, ours.clone(), templum_git::Side::Ours, window, cx)
-                            }))
-                            .item(item(ws, "Use theirs", None, move |ws, window, cx| {
-                                ws.resolve(
-                                    block,
-                                    theirs.clone(),
-                                    templum_git::Side::Theirs,
-                                    window,
-                                    cx,
-                                )
-                            }))
+                            .item(item(
+                                ws,
+                                format!("Use the version from {first}"),
+                                None,
+                                move |ws, window, cx| {
+                                    ws.resolve_file(
+                                        block,
+                                        ours.clone(),
+                                        templum_git::Side::Ours,
+                                        window,
+                                        cx,
+                                    )
+                                },
+                            ))
+                            .item(item(
+                                ws,
+                                format!("Use the version from {second}"),
+                                None,
+                                move |ws, window, cx| {
+                                    ws.resolve_file(
+                                        block,
+                                        theirs.clone(),
+                                        templum_git::Side::Theirs,
+                                        window,
+                                        cx,
+                                    )
+                                },
+                            ))
                             .item(item(
                                 ws,
                                 "Mark resolved",
                                 Some(IconName::Check),
                                 move |ws, window, cx| {
-                                    ws.stage(block, vec![resolved.clone()], window, cx)
+                                    ws.mark_resolved(block, resolved.clone(), window, cx)
                                 },
                             ));
                     }
-                    List::Staged => {
-                        let (unstage, open) = (path.clone(), path.clone());
-                        menu = menu
-                            .item(item(
-                                ws,
-                                "Unstage",
-                                Some(IconName::Minus),
-                                move |ws, window, cx| {
-                                    ws.unstage(block, vec![unstage.clone()], window, cx)
-                                },
-                            ))
-                            .item(item(
-                                ws,
-                                "Open",
-                                Some(IconName::FileCode),
-                                move |ws, window, cx| ws.open_from_git(block, &open, window, cx),
-                            ));
-                    }
-                    List::Unstaged => {
-                        let (stage, discard, open) = (path.clone(), path.clone(), path.clone());
-                        menu = menu
-                            .item(item(
+                    List::Files => {
+                        // Stage what isn't staged yet, Unstage what is: a file staged in part
+                        // offers both.
+                        if entry.unstaged.is_some() {
+                            let stage = path.clone();
+                            menu = menu.item(item(
                                 ws,
                                 "Stage",
                                 Some(IconName::Plus),
                                 move |ws, window, cx| {
                                     ws.stage(block, vec![stage.clone()], window, cx)
                                 },
-                            ))
-                            .item(item(
+                            ));
+                        }
+                        if entry.staged.is_some() {
+                            let unstage = path.clone();
+                            menu = menu.item(item(
+                                ws,
+                                "Unstage",
+                                Some(IconName::Minus),
+                                move |ws, window, cx| {
+                                    ws.unstage(block, vec![unstage.clone()], window, cx)
+                                },
+                            ));
+                        }
+                        if entry.unstaged.is_some() {
+                            let discard = path.clone();
+                            menu = menu.item(item(
                                 ws,
                                 "Discard changes…",
                                 Some(IconName::Undo2),
                                 move |ws, window, cx| {
                                     ws.discard(block, vec![discard.clone()], window, cx)
                                 },
-                            ))
-                            .item(item(
-                                ws,
-                                "Open",
-                                Some(IconName::FileCode),
-                                move |ws, window, cx| ws.open_from_git(block, &open, window, cx),
                             ));
+                        }
+                        let open = path.clone();
+                        menu = menu.item(item(
+                            ws,
+                            "Open",
+                            Some(IconName::FileCode),
+                            move |ws, window, cx| ws.open_from_git(block, &open, window, cx),
+                        ));
                     }
+                }
+                // A new file has no history yet.
+                if list != List::Conflicts && entry.unstaged != Some(templum_git::Change::Untracked)
+                {
+                    let (history, blame) = (path.clone(), path.clone());
+                    menu = menu
+                        .item(item(ws, "File history", None, move |ws, window, cx| {
+                            ws.file_history(block, history.clone(), window, cx)
+                        }))
+                        .item(item(ws, "Blame", None, move |ws, window, cx| {
+                            ws.blame_file(block, blame.clone(), None, window, cx)
+                        }));
                 }
                 let (copy, ignore) = (path.clone(), path.clone());
                 menu.item(item(
@@ -400,7 +673,49 @@ impl Items {
                     ws.ignore_path(block, ignore.clone(), window, cx)
                 }))
             }
-            Items::GitCommit { block, commit } => {
+            Items::GitLine {
+                block,
+                working,
+                path,
+                line,
+                selection,
+                line_text,
+                hunk_text,
+                send,
+            } => {
+                let has = selection.is_some();
+                let copy = selection.unwrap_or_default();
+                let menu = menu
+                    .item(
+                        item(ws, "Copy", Some(IconName::Copy), move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
+                        })
+                        .disabled(!has),
+                    )
+                    .item(item(ws, "Copy line", None, move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(line_text.clone()))
+                    }))
+                    .item(item(ws, "Copy hunk", None, move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(hunk_text.clone()))
+                    }));
+                let menu = send_to(ws, menu, send, window, cx);
+                menu.when(working, |menu| {
+                    menu.separator().item(item(
+                        ws,
+                        "Open in editor at this line",
+                        Some(IconName::FileCode),
+                        move |ws, window, cx| {
+                            ws.open_from_git_at(block, &path, Some(line), window, cx)
+                        },
+                    ))
+                })
+            }
+            Items::GitCommit {
+                block,
+                commit,
+                undo,
+                restore,
+            } => {
                 let (checkout, branch, tag, revert, copy) = (
                     commit.hash.clone(),
                     commit.hash.clone(),
@@ -408,12 +723,18 @@ impl Items {
                     commit.hash.clone(),
                     commit.hash.clone(),
                 );
+                let (short, restore_hash) = (commit.short.clone(), commit.hash.clone());
+                let message = if commit.body.is_empty() {
+                    commit.subject.clone()
+                } else {
+                    format!("{}\n\n{}", commit.subject, commit.body)
+                };
                 menu.item(item(ws, "Checkout…", None, move |ws, window, cx| {
                     ws.checkout_commit(block, checkout.clone(), window, cx)
                 }))
                 .item(item(
                     ws,
-                    "New branch from here…",
+                    "New branch here…",
                     Some(IconName::GitBranchPlus),
                     move |ws, window, cx| ws.branch_from(block, Some(branch.clone()), window, cx),
                 ))
@@ -429,26 +750,79 @@ impl Items {
                     Some(IconName::Undo2),
                     move |ws, window, cx| ws.revert_commit(block, revert.clone(), window, cx),
                 ))
+                .when(undo, |menu| {
+                    menu.item(item(
+                        ws,
+                        "Undo this commit",
+                        Some(IconName::Undo2),
+                        move |ws, window, cx| {
+                            ws.undo_commit(block, short.clone(), None, window, cx)
+                        },
+                    ))
+                })
                 .item(item(
                     ws,
                     "Copy hash",
                     Some(IconName::Copy),
                     move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(copy.clone())),
                 ))
+                .item(item(
+                    ws,
+                    "Copy message",
+                    Some(IconName::Copy),
+                    move |_, _, cx| {
+                        cx.write_to_clipboard(ClipboardItem::new_string(message.clone()))
+                    },
+                ))
+                .when_some(restore, |menu, then| {
+                    menu.item(item(
+                        ws,
+                        "Restore this version…",
+                        Some(IconName::Undo2),
+                        move |ws, window, cx| {
+                            ws.restore_version(
+                                block,
+                                restore_hash.clone(),
+                                then.clone(),
+                                window,
+                                cx,
+                            )
+                        },
+                    ))
+                })
+            }
+            Items::GitCommitFile { block, hash, path } => {
+                let (history, blame) = (path.clone(), path.clone());
+                menu.item(item(ws, "File history", None, move |ws, window, cx| {
+                    ws.file_history(block, history.clone(), window, cx)
+                }))
+                .item(item(ws, "Blame", None, move |ws, window, cx| {
+                    ws.blame_file(block, blame.clone(), Some(hash.clone()), window, cx)
+                }))
+                .item(item(
+                    ws,
+                    "Copy path",
+                    Some(IconName::Copy),
+                    move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(path.clone())),
+                ))
             }
             Items::GitBranch {
                 block,
                 branch,
                 current,
+                base,
             } => {
                 let name = branch.name.clone();
                 let into = current.unwrap_or_else(|| "HEAD".to_string());
                 let mut menu = menu;
-                if !branch.remote {
-                    let rename = name.clone();
-                    menu = menu.item(item(ws, "Rename…", None, move |ws, window, cx| {
-                        ws.rename_branch(block, rename.clone(), window, cx)
-                    }));
+                if let Some(base) = base.filter(|b| *b != name) {
+                    let compare = name.clone();
+                    menu = menu.item(item(
+                        ws,
+                        format!("Compare with {}", git_block::words::local_name(&base)),
+                        Some(IconName::GitCompare),
+                        move |ws, window, cx| ws.compare_branch(block, compare.clone(), window, cx),
+                    ));
                 }
                 if !branch.current {
                     let merge = name.clone();
@@ -458,6 +832,12 @@ impl Items {
                         Some(IconName::GitMerge),
                         move |ws, window, cx| ws.merge_branch(block, merge.clone(), window, cx),
                     ));
+                }
+                if !branch.remote {
+                    let rename = name.clone();
+                    menu = menu.item(item(ws, "Rename…", None, move |ws, window, cx| {
+                        ws.rename_branch(block, rename.clone(), window, cx)
+                    }));
                 }
                 if !branch.remote && !branch.current {
                     let delete = name.clone();
@@ -470,7 +850,8 @@ impl Items {
                         },
                     ));
                 }
-                if !branch.remote && branch.upstream.is_none() {
+                // No upstream, or one deleted on the server: Publish sends it (again).
+                if !branch.remote && (branch.upstream.is_none() || branch.gone) {
                     let publish = name.clone();
                     menu = menu.item(item(
                         ws,
@@ -505,21 +886,44 @@ impl Items {
                     Some(IconName::FileDiff),
                     move |ws, window, cx| ws.show_stash(block, index, window, cx),
                 )),
-            Items::Git { block } => menu
+            Items::Git { block, folder } => menu
+                .item(item(
+                    ws,
+                    "Change folder…",
+                    Some(IconName::FolderOpen),
+                    move |ws, window, cx| ws.choose_git_folder(block, window, cx),
+                ))
                 .item(item(
                     ws,
                     "Refresh",
                     Some(IconName::RefreshCw),
                     move |ws, window, cx| ws.refresh_git(block, window, cx),
                 ))
-                .separator()
+                .when_some(folder.filter(|f| f.is_dir()), |menu, folder| {
+                    menu.item(item(
+                        ws,
+                        "Open a terminal here",
+                        Some(IconName::SquareTerminal),
+                        move |ws, window, cx| {
+                            if let Some(id) = ws.terminal_beside(block, &folder, None, window, cx) {
+                                let space = ws.space.id.clone();
+                                ws.reveal(&space, id, window, cx);
+                            }
+                        },
+                    ))
+                }),
+            Items::Editor {
+                block,
+                tree,
+                wrap,
+                send,
+            } => menu
                 .item(item(
                     ws,
-                    "Close",
-                    Some(IconName::Close),
-                    move |ws, window, cx| ws.close(block, window, cx),
-                )),
-            Items::Editor { block, tree, wrap } => menu
+                    "Change folder…",
+                    Some(IconName::FolderOpen),
+                    move |ws, window, cx| ws.choose_editor_folder(block, window, cx),
+                ))
                 .item(item(
                     ws,
                     if tree {
@@ -540,48 +944,61 @@ impl Items {
                     None,
                     move |ws, window, cx| ws.toggle_wrap(block, window, cx),
                 ))
-                .separator()
-                .item(item(
-                    ws,
-                    "Close",
-                    Some(IconName::Close),
-                    move |ws, window, cx| ws.close(block, window, cx),
-                )),
+                .map(|menu| send_to(ws, menu, send, window, cx)),
+            Items::Reveal { terminals } => {
+                terminal_items(ws, menu, &terminals, |ws, id, window, cx| {
+                    let space = ws.space.id.clone();
+                    ws.reveal(&space, id, window, cx);
+                })
+            }
             Items::Ink { index } => menu.item(item(
                 ws,
                 "Delete",
                 Some(IconName::Delete),
                 move |ws, _, cx| ws.delete_ink(index, cx),
             )),
-            Items::Note { block, preview } => menu
+            Items::Note { block, color, send } => menu
                 .item(item(
                     ws,
-                    if preview { "Edit" } else { "Preview" },
-                    Some(if preview {
-                        IconName::EyeOff
-                    } else {
-                        IconName::Eye
-                    }),
-                    move |ws, window, cx| ws.toggle_preview(block, window, cx),
+                    "All notes…",
+                    Some(IconName::NotebookText),
+                    move |_, window, cx| crate::note::open_notes(Some(block), window, cx),
                 ))
-                .item(item(
-                    ws,
-                    "Copy all",
-                    Some(IconName::Copy),
-                    move |ws, _, cx| {
+                .item(
+                    item(ws, "Copy all", Some(IconName::Copy), move |ws, _, cx| {
                         if let Some(note) = ws.space.blocks.get(&block).and_then(|b| b.note()) {
                             let text = note.text(cx);
                             cx.write_to_clipboard(ClipboardItem::new_string(text));
                         }
-                    },
-                ))
-                .separator()
-                .item(item(
-                    ws,
-                    "Close",
-                    Some(IconName::Close),
-                    move |ws, window, cx| ws.close(block, window, cx),
-                )),
+                    })
+                    .disabled(color.is_none()),
+                )
+                .map(|menu| send_to(ws, menu, send, window, cx))
+                .when_some(color, |menu, color| {
+                    let ws = ws.clone();
+                    menu.submenu_with_icon(
+                        Some(Icon::new(IconName::Palette)),
+                        "Color",
+                        window,
+                        cx,
+                        move |menu, _, _| {
+                            let none = item(&ws, "None", None, move |ws, _, cx| {
+                                ws.set_note_color(block, None, cx)
+                            })
+                            .checked(color.is_none());
+                            Label::ALL.into_iter().fold(menu.item(none), |menu, label| {
+                                let name = label.name();
+                                let title = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
+                                menu.item(
+                                    item(&ws, title, None, move |ws, _, cx| {
+                                        ws.set_note_color(block, Some(label), cx)
+                                    })
+                                    .checked(color == Some(label)),
+                                )
+                            })
+                        },
+                    )
+                }),
             Items::Board {
                 block,
                 board,
@@ -638,7 +1055,7 @@ impl Items {
                                 return false;
                             }
                             ws.update(cx, |ws, cx| {
-                                ws.boards.rename_column(board, column, &title);
+                                ws.edit_boards(|b| b.rename_column(board, column, &title));
                                 cx.notify();
                             });
                             true
@@ -660,7 +1077,7 @@ impl Items {
                     Some(IconName::Delete),
                     move |ws, window, cx| {
                         if n == 0 {
-                            ws.boards.remove_column(board, column);
+                            ws.edit_boards(|b| b.remove_column(board, column));
                             cx.notify();
                             return;
                         }
@@ -671,7 +1088,7 @@ impl Items {
                             "Delete",
                             move |_, cx| {
                                 entity.update(cx, |ws, cx| {
-                                    ws.boards.remove_column(board, column);
+                                    ws.edit_boards(|b| b.remove_column(board, column));
                                     cx.notify();
                                 })
                             },
@@ -680,45 +1097,78 @@ impl Items {
                         );
                     },
                 )),
-            Items::Card { board, card } => menu
+            Items::Card { board, card, send } => menu
                 .item(item(ws, "Open", None, move |ws, window, cx| {
                     if let Some(current) = ws.boards.card(board, card).cloned() {
                         kanban::open_card(board, current, false, window, cx);
                     }
                 }))
+                .map(|menu| send_to(ws, menu, send, window, cx))
                 .separator()
                 .item(item(
                     ws,
                     "Delete card",
                     Some(IconName::Delete),
-                    move |ws, _, cx| {
-                        ws.boards.remove_card(board, card);
-                        cx.notify();
+                    move |ws, window, cx| {
+                        let title = ws
+                            .boards
+                            .card(board, card)
+                            .map_or_else(String::new, |c| c.title.clone());
+                        let ws = cx.entity();
+                        prompt::confirm(
+                            "Delete this card?",
+                            title,
+                            "Delete",
+                            move |_, cx| {
+                                ws.update(cx, |ws, cx| {
+                                    ws.edit_boards(|b| b.remove_card(board, card));
+                                    cx.notify();
+                                })
+                            },
+                            window,
+                            cx,
+                        );
                     },
                 )),
             Items::Space {
                 id,
                 name,
                 only_one,
+                active,
+                stoppable,
                 unsaved,
+                busy,
             } => {
+                let stop_id = id.clone();
                 let delete_id = id.clone();
                 let delete_name = name.clone();
-                menu.item(item(ws, "Rename…", None, move |_, window, cx| {
-                    let ws = cx.entity();
-                    let id = id.clone();
-                    prompt::ask_text(
-                        "Rename workspace",
-                        "Rename",
-                        name.clone(),
-                        move |text, window, cx| {
-                            ws.update(cx, |ws, cx| ws.rename_space(&id, &text, window, cx))
-                                .is_ok()
-                        },
-                        window,
-                        cx,
-                    )
-                }))
+                // What closing it loses, as closing blocks says.
+                let mut why = "Its terminals will close.".to_string();
+                for b in &busy {
+                    why = format!("{why} {b}");
+                }
+                let open_id = id.clone();
+                menu.item(
+                    item(ws, "Open", None, move |ws, window, cx| {
+                        if let Some(at) = ws.order().iter().position(|s| s.id == open_id) {
+                            ws.switch_to(at, window, cx);
+                        }
+                    })
+                    .disabled(active),
+                )
+                .item(item(
+                    ws,
+                    "Edit…",
+                    Some(IconName::Pencil),
+                    move |ws, window, cx| crate::space_dialog::open(ws, &id, window, cx),
+                ))
+                .separator()
+                .item(
+                    item(ws, "Stop", Some(IconName::Power), move |ws, window, cx| {
+                        ws.stop_space(&stop_id, window, cx)
+                    })
+                    .disabled(!stoppable),
+                )
                 .item(
                     item(
                         ws,
@@ -730,7 +1180,7 @@ impl Items {
                             if unsaved.is_empty() {
                                 prompt::confirm(
                                     format!("Delete {delete_name}?"),
-                                    "Its terminals will close.",
+                                    why.clone(),
                                     "Delete",
                                     move |window, cx| {
                                         ws.update(cx, |ws, cx| ws.delete_space(&id, window, cx))
@@ -744,10 +1194,7 @@ impl Items {
                             let (saver, save_id) = (ws.clone(), id.clone());
                             prompt::save_or_discard(
                                 format!("Delete {delete_name}?"),
-                                format!(
-                                    "Its terminals will close. Unsaved: {}",
-                                    unsaved.join(", ")
-                                ),
+                                format!("{why} Unsaved: {}", unsaved.join(", ")),
                                 move |window, cx| {
                                     saver.update(cx, |ws, cx| {
                                         let saved = ws.save_spaces(Some(&save_id), window, cx);
@@ -778,7 +1225,7 @@ fn rename_board(ws: &Entity<Workspace>, board: u64, text: &str, cx: &mut App) ->
         return false;
     }
     ws.update(cx, |ws, cx| {
-        ws.boards.rename_board(board, name);
+        ws.edit_boards(|b| b.rename_board(board, name));
         cx.notify();
     });
     true

@@ -110,6 +110,7 @@ tables):
 | `colors.bright.{same 8}` | no | copied from `normal` |
 | `colors.cursor.cursor` | no | the foreground |
 | `colors.selection.background` | no | derived (see below) |
+| `templum.{accent,canvas,dots}` | no | derived (see below); Templum's own table, see [themes.md](themes.md#theme-files) |
 
 - Colors are strings `"#rrggbb"` or `"0xrrggbb"`, case-insensitive. Any other string (Alacritty's `"CellForeground"`
   and `"CellBackground"`, for example) counts as missing.
@@ -125,13 +126,13 @@ sRGB, and `c @ a` is color `c` with alpha `a`.
 
 | Token | Value |
 |---|---|
-| `canvas` | `mix(background, black, 0.30)` for dark themes; `mix(background, black, 0.04)` for light ones |
-| `dot` | `foreground @ 0.12` |
+| `canvas` | `templum.canvas` if set; else `mix(background, black, 0.30)` for dark themes, `mix(background, black, 0.04)` for light ones |
+| `dot` | `templum.dots` if set (opaque); else `foreground @ 0.30` for dark themes, `foreground @ 0.22` for light ones |
 | `hairline` | `foreground @ 0.10` |
 | `title` / `title_dim` | `foreground @ 0.60` / `foreground @ 0.40` |
 | `hint` | `foreground @ 0.40` |
 | `hover` | `foreground @ 0.08` (behind the hovered ✕) |
-| `accent` | `normal.blue` |
+| `accent` | `templum.accent` if set, else `normal.blue`; `ring` is the accent `@ 0.40` |
 | `selection` | (`colors.selection.background` if set, else `normal.blue`) `@ 0.35`, drawn over the cells |
 | `cursor` | `colors.cursor.cursor` if set, else `foreground`; drawn as today (filled at 0.6 alpha when focused, outlined otherwise) |
 | `marked` | `normal.yellow` (IME pre-edit text, on `background`, underlined) |
@@ -140,8 +141,8 @@ sRGB, and `c @ a` is color `c` with alpha `a`.
 The gpui-kit theme, which the picker and the title bar use, gets its colors from the active theme as well:
 
 - `mode` is light or dark;
-- `background` and `title_bar` are transparent: gpui-kit's root paints `background` under the whole window, and
-  the glass must show through;
+- `background` is `canvas`: gpui-kit's root paints it under the whole window, the opaque canvas; `title_bar` is
+  transparent, drawn on it;
 - `popover` is the theme background;
 - `foreground` and `popover_foreground` are the theme foreground;
 - `border`, `title_bar_border` and `window_border` are `hairline`;
@@ -169,6 +170,8 @@ crediting its source and license.
 - **Folder:** the `themes` directory next to `config.toml` (see [Config file](#config-file)). Every `*.toml` file
   directly inside it is a theme.
 - **Name:** the file name without `.toml`. If it matches a built-in name, the user's theme wins.
+- **Making and editing:** Settings ▸ Appearance duplicates the theme in use into the folder and edits its colors;
+  the file of the theme in use is read again when it is saved ([themes.md](themes.md)).
 - **Loading:** the folder is read at startup and again every time the picker opens, so a downloaded theme appears
   without a restart.
 
@@ -182,7 +185,8 @@ crediting its source and license.
 
 - **The palette button opens a popover** under it, listing:
   - three groups of built-ins: "Catppuccin", "One" and "Apple";
-  - then "My themes", only when the folder has valid themes, sorted by name.
+  - then "My themes", only when the folder has valid themes, sorted by name;
+  - last, "Get more themes…", which opens the gallery ([themes.md](themes.md#the-gallery)).
 - **The active theme has a ✓.**
 - **Previewing:** hovering an item, or moving to it with ↑/↓, applies it as a preview to the whole window, terminals
   included.

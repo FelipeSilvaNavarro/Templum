@@ -119,14 +119,33 @@ pub(crate) fn cursor_quad(cell: Bounds<Pixels>, shape: CursorShape, z: f32) -> B
     }
 }
 
-/// The grid of one terminal: refreshes its snapshot (never blocking) and paints it. The
-/// focused one also reports its cursor to the workspace, for the IME popup.
+/// A dim run's opacity, letters and bars alike.
+const DIM: f32 = 0.66;
+/// Bars are drawn at this share of their text's opacity: a bar covers its cells solidly where
+/// letters cover about half of them, so at full strength bars would read heavier than the text.
+pub(crate) const BAR_OPACITY: f32 = 0.6;
+
+/// A bar on `cells`: as wide as they are, half their height (at least 1 px; GPUI snaps a
+/// quad's edges to device pixels), in their middle.
+pub(crate) fn bar_quad(cells: Bounds<Pixels>) -> Bounds<Pixels> {
+    let row = f32::from(cells.size.height);
+    let h = (row / 2.0).max(1.0);
+    Bounds::new(
+        point(cells.origin.x, cells.origin.y + px((row - h) / 2.0)),
+        size(cells.size.width, px(h)),
+    )
+}
+
+/// The grid of one terminal: refreshes its snapshot (never blocking) and paints it; with `bars`
+/// (far away) its text is bars of its colors, not shaped letters. The focused one also reports
+/// its cursor to the workspace, for the IME popup.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn body(
     term: SharedTerm,
     snapshot: Rc<RefCell<Snapshot>>,
     metrics: CellMetrics,
     zoom: f32,
+    bars: bool,
     focused: bool,
     marked: Option<String>,
     theme: Rc<Theme>,
@@ -141,6 +160,7 @@ pub(crate) fn body(
                 &snapshot,
                 bounds.origin,
                 zoom,
+                bars,
                 &metrics,
                 focused,
                 blink_on,
@@ -170,6 +190,7 @@ fn paint(
     snapshot: &RefCell<Snapshot>,
     origin: Point<Pixels>,
     z: f32,
+    bars: bool,
     metrics: &CellMetrics,
     focused: bool,
     blink_on: bool,
@@ -211,6 +232,18 @@ fn paint(
         for span in &row.selected {
             window.paint_quad(fill(cell(i, span.start, span.len), theme.ui.selection));
         }
+        if bars {
+            // Far away: a bar per run of non-blank cells of one color, on the letters' cells. No
+            // text is shaped, no glyph looked up.
+            for bar in row.bars() {
+                let alpha = BAR_OPACITY * if bar.dim { DIM } else { 1.0 };
+                window.paint_quad(fill(
+                    bar_quad(cell(i, bar.cols.start, bar.cols.len)),
+                    hsla(bar.fg, alpha),
+                ));
+            }
+            continue;
+        }
         if row.text.is_empty() {
             continue;
         }
@@ -232,7 +265,7 @@ fn paint(
                     },
                     ..metrics.font.clone()
                 },
-                color: hsla(r.fg, if r.dim { 0.66 } else { 1.0 }),
+                color: hsla(r.fg, if r.dim { DIM } else { 1.0 }),
                 background_color: None,
                 underline: None,
                 strikethrough: None,
@@ -344,5 +377,18 @@ mod tests {
             cursor_quad(cell, CursorShape::Beam, 0.25).size.width,
             px(1.)
         );
+    }
+
+    #[test]
+    fn a_bar_is_half_its_row_in_its_middle() {
+        let cells = Bounds::new(point(px(10.), px(20.)), size(px(24.), px(8.)));
+        assert_eq!(
+            bar_quad(cells),
+            Bounds::new(point(px(10.), px(22.)), size(px(24.), px(4.)))
+        );
+        // A row 1.5 px high still gets a 1 px bar, in its middle.
+        let thin = Bounds::new(point(px(0.), px(0.)), size(px(3.), px(1.5)));
+        assert_eq!(bar_quad(thin).size.height, px(1.));
+        assert_eq!(bar_quad(thin).origin.y, px(0.25));
     }
 }

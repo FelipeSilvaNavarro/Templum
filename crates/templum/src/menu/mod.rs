@@ -7,10 +7,11 @@ mod build;
 use std::path::PathBuf;
 
 use crate::agents::AgentEntry;
+use gpui_kit::SharedString;
 use gpui_kit::component::menu::PopupMenu;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, Context, DismissEvent, Entity, Focusable as _, Pixels, Point as PixelPoint,
+    AnyElement, App, Context, DismissEvent, Entity, Focusable as _, Pixels, Point as PixelPoint,
     ScrollWheelEvent, Subscription, Window, anchored, deferred, div, px,
 };
 use templum_canvas::{BlockId, Point};
@@ -24,8 +25,12 @@ use crate::workspace::{Body, Workspace};
 pub(crate) enum Target {
     /// The empty canvas, at a world point: blocks are added there.
     Canvas(Point),
-    /// A block, whatever it holds: the menu is built for its kind.
-    Block(BlockId),
+    /// A block, whatever it holds: the menu is built for its kind. `group`: the blocks selected
+    /// with it when it was right-clicked (focusing it drops the selection).
+    Block {
+        id: BlockId,
+        group: Vec<BlockId>,
+    },
     /// The AI agents alone (the toolbar): the chosen one opens at this world point.
     Agents(Point),
     /// A row of a kanban block's board list.
@@ -60,11 +65,36 @@ pub(crate) enum Target {
         block: BlockId,
         hash: String,
     },
+    /// A file of the commit shown in a Git block's History.
+    GitCommitFile {
+        block: BlockId,
+        hash: String,
+        path: String,
+    },
+    /// The ▾ beside a Git block's Commit button.
+    GitCommitMenu(BlockId),
+    /// The ⚙ beside a Git block's Generate ✨.
+    GitGenerateMenu(BlockId),
     /// A row of a Git block's Changes lists, by its list and its index in it.
     GitRow {
         block: BlockId,
         list: git_block::List,
         index: usize,
+    },
+    /// The terminals working in a Git block's repository (its top bar).
+    GitTerminals(BlockId),
+    /// The ⋯ of a Git block's top bar.
+    GitMore(BlockId),
+    /// Publish's remotes, when there are several: for the block `at` names.
+    GitRemotes {
+        at: crate::workspace::GitAt,
+        branch: String,
+        remotes: Vec<String>,
+    },
+    /// A line row of a Git block's diff panel, by its row index.
+    GitLine {
+        block: BlockId,
+        row: usize,
     },
     /// A row of an editor's file tree (a file or a folder), or its empty space (None).
     Tree {
@@ -95,7 +125,7 @@ impl Workspace {
         let back = window
             .focused(cx)
             .unwrap_or_else(|| self.focus_handle.clone());
-        let Some(items) = self.items(&target) else {
+        let Some(items) = self.items(&target, cx) else {
             return;
         };
         let view = PopupMenu::build(window, cx, move |menu, window, cx| {
@@ -125,9 +155,46 @@ impl Workspace {
             .collect()
     }
 
+    /// How block `block`'s menu ends: in grid mode, the tile's items; on the canvas, Fullscreen
+    /// (with `group`, the selection it is in).
+    fn tail(&self, block: BlockId, group: Vec<BlockId>, cx: &App) -> Tail {
+        match &self.space.grid {
+            None => Tail::Canvas { group },
+            Some(grid) => Tail::Tile {
+                at: self.space.camera().to_world(Point::new(
+                    grid.area.x + grid.area.w / 2.0,
+                    grid.area.y + grid.area.h / 2.0,
+                )),
+                agents: self.agents_for_menu(),
+                flip: grid.tiles.ids().len() > 1 && grid.homes.contains_key(&block),
+                others: self
+                    .space
+                    .canvas
+                    .blocks()
+                    .iter()
+                    .filter(|b| !self.space.shown(b.id))
+                    .map(|b| {
+                        (
+                            b.id,
+                            crate::block::title(self, &self.space.blocks[&b.id], cx),
+                        )
+                    })
+                    .collect(),
+            },
+        }
+    }
+
+    /// A menu's Send to: `text`, and the terminals it can go to.
+    fn send_to_menu(&self, text: String) -> SendTo {
+        SendTo {
+            text,
+            to: self.terminal_list(None),
+        }
+    }
+
     /// What the menu for `target` needs to know, read now: building it can't read the workspace.
-    fn items(&self, target: &Target) -> Option<Items> {
-        Some(match *target {
+    fn items(&self, target: &Target, cx: &App) -> Option<Items> {
+        Some(match target.clone() {
             Target::Canvas(at) => Items::Canvas {
                 at,
                 agents: self.agents_for_menu(),
@@ -136,26 +203,54 @@ impl Workspace {
                 at,
                 agents: self.agents_for_menu(),
             },
-            Target::Block(block) => match self.space.blocks.get(&block)? {
-                Body::Terminal(pane) => Items::Terminal {
+            Target::Block { id: block, group } => {
+                let body = self.space.blocks.get(&block)?;
+                let inner = match body {
+                    Body::Terminal(pane) => Items::Terminal {
+                        selection: pane.term.shared().selection_text().is_some(),
+                    },
+                    Body::Kanban(k) => Items::Kanban {
+                        block,
+                        listing: k.shown(self).is_none() && k.board.is_some(),
+                    },
+                    Body::Note(n) => Items::Note {
+                        block,
+                        color: n.tab().map(|t| self.notes.get(t.id).and_then(|e| e.color)),
+                        send: self.send_to_menu(n.to_send(cx)),
+                    },
+                    Body::Editor(e) => Items::Editor {
+                        block,
+                        tree: e.show_tree,
+                        wrap: e.wrap,
+                        send: self.send_to_menu(e.to_send(cx).unwrap_or_default()),
+                    },
+                    Body::Git(_) => Items::Git {
+                        block,
+                        folder: body.folder(),
+                    },
+                };
+                let moving = if group.contains(&block) {
+                    group.clone()
+                } else {
+                    vec![block]
+                };
+                Items::Block {
                     block,
-                    selection: pane.term.shared().selection_text().is_some(),
-                },
-                Body::Kanban(k) => Items::Kanban {
-                    block,
-                    listing: k.shown(self).is_none() && k.board.is_some(),
-                },
-                Body::Note(n) => Items::Note {
-                    block,
-                    preview: n.preview,
-                },
-                Body::Editor(e) => Items::Editor {
-                    block,
-                    tree: e.show_tree,
-                    wrap: e.wrap,
-                },
-                Body::Git(_) => Items::Git { block },
-            },
+                    inner: Box::new(inner),
+                    moving,
+                    spaces: self
+                        .others
+                        .iter()
+                        .map(|s| (s.id.clone(), s.name.clone(), s.takes_blocks()))
+                        .collect(),
+                    tail: self.tail(block, group, cx),
+                    close: if body.terminal().is_some() {
+                        "Close terminal"
+                    } else {
+                        "Close"
+                    },
+                }
+            }
             Target::Board { block, board } => Items::Board {
                 block,
                 board,
@@ -177,19 +272,41 @@ impl Workspace {
                     cards: found.map_or(0, |c| c.cards.len()),
                 }
             }
-            Target::Card { board, card } => Items::Card { board, card },
+            Target::Card { board, card } => Items::Card {
+                board,
+                card,
+                send: self.send_to_menu(
+                    self.boards
+                        .card(board, card)
+                        .map_or_else(String::new, |c| c.text()),
+                ),
+            },
             Target::Ink(index) => Items::Ink { index },
+            Target::GitCommitMenu(block) => Items::GitCommitMenu {
+                block,
+                label: self.space.git(block)?.commit_label(),
+            },
+            Target::GitGenerateMenu(block) => {
+                self.space.git(block)?.repo()?;
+                let agent = self.commit_agent.as_ref()?;
+                Items::GitGenerateMenu {
+                    block,
+                    models: agent.models.clone(),
+                    model: agent.model.clone(),
+                }
+            }
             Target::GitRow { block, list, index } => {
                 let git = self.space.git(block)?;
                 let entries = match list {
                     git_block::List::Conflicts => git.status.conflicts(),
-                    git_block::List::Staged => git.status.staged(),
-                    git_block::List::Unstaged => git.status.unstaged(),
+                    git_block::List::Files => git.status.files(),
                 };
+                let entry = (*entries.get(index)?).clone();
                 Items::GitRow {
                     block,
                     list,
-                    entry: (*entries.get(index)?).clone(),
+                    labels: git.conflict_labels(&entry.path),
+                    entry,
                 }
             }
             Target::GitStash { block, index } => {
@@ -206,17 +323,108 @@ impl Workspace {
                     block,
                     branch: git.branches.iter().find(|b| b.name == *name)?.clone(),
                     current: git.status.branch.clone(),
+                    base: git.default_branch.clone(),
                 }
             }
-            Target::GitCommit { block, ref hash } => Items::GitCommit {
+            Target::GitCommit { block, ref hash } => {
+                let git = self.space.git(block)?;
+                let commit = git.commits.iter().find(|c| c.hash == *hash)?.clone();
+                let s = &git.status;
+                // The newest commit of a branch, not on its upstream: it can be taken back.
+                let undo = s.oid.as_deref() == Some(commit.hash.as_str())
+                    && s.branch.is_some()
+                    && (s.upstream.is_none() || s.gone || s.ahead > 0);
+                // In a file's history: the file's path then, unless the commit deleted it.
+                let restore = git
+                    .file
+                    .as_ref()
+                    .and_then(|_| git.commits.iter().position(|c| c.hash == *hash))
+                    .and_then(|i| git.file_paths.get(i))
+                    .filter(|f| f.change != templum_git::Change::Deleted)
+                    .map(|f| f.path.clone());
+                Items::GitCommit {
+                    block,
+                    commit,
+                    undo,
+                    restore,
+                }
+            }
+            Target::GitCommitFile {
                 block,
-                commit: self
-                    .space
-                    .git(block)?
-                    .commits
+                ref hash,
+                ref path,
+            } => Items::GitCommitFile {
+                block,
+                hash: hash.clone(),
+                path: path.clone(),
+            },
+            Target::GitLine { block, row } => {
+                use git_block::diff_view::Row;
+                let p = self.space.git(block)?.diff();
+                let (file, hunk, line) = match *p.rows.get(row)? {
+                    Row::Line { file, hunk, line } => (file, hunk, line),
+                    // A pair: the selection's side, else the new line, else the old one.
+                    Row::Pair {
+                        file,
+                        hunk,
+                        old,
+                        new,
+                    } => {
+                        let side = match (p.selection.is_some(), p.split_right) {
+                            (true, true) => new,
+                            (true, false) => old,
+                            (false, _) => None,
+                        };
+                        (file, hunk, side.or(new).or(old)?)
+                    }
+                    _ => return None,
+                };
+                let s = &p.files[file];
+                let h = &s.diff.hunks[hunk];
+                let l = &h.lines[line];
+                let hunk_text = h
+                    .lines
                     .iter()
-                    .find(|c| c.hash == *hash)?
-                    .clone(),
+                    .map(|l| {
+                        format!(
+                            "{}{}",
+                            l.kind.sign(),
+                            l.text.strip_suffix('\r').unwrap_or(&l.text)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let selection = p.selected_text();
+                Items::GitLine {
+                    block,
+                    working: p.working(),
+                    path: s.diff.path().to_string(),
+                    line: l.new_no.unwrap_or(h.new_start.max(1)),
+                    send: self.send_to_menu(selection.clone().unwrap_or_else(|| hunk_text.clone())),
+                    selection,
+                    line_text: l.text.strip_suffix('\r').unwrap_or(&l.text).to_string(),
+                    hunk_text,
+                }
+            }
+            Target::GitMore(block) => {
+                let git = self.space.git(block)?;
+                Items::GitMore {
+                    block,
+                    busy: git.acting > 0,
+                    trash: self.trash.is_some(),
+                }
+            }
+            Target::GitRemotes {
+                ref at,
+                ref branch,
+                ref remotes,
+            } => Items::GitRemotes {
+                at: at.clone(),
+                branch: branch.clone(),
+                remotes: remotes.clone(),
+            },
+            Target::GitTerminals(block) => Items::Reveal {
+                terminals: self.terminal_list(Some(&self.space.git(block)?.repo()?.root)),
             },
             Target::Tree { block, ref path } => {
                 let is_dir = path.as_ref().is_some_and(|p| p.is_dir());
@@ -238,17 +446,59 @@ impl Workspace {
                     .find(|s| s.id == *id)
                     .map_or_else(String::new, |s| s.name.clone()),
                 only_one: self.others.is_empty(),
+                active: self.space.id == *id,
+                stoppable: self
+                    .spaces()
+                    .find(|s| s.id == *id)
+                    .is_some_and(|s| self.can_stop(s)),
                 unsaved: self
                     .spaces()
                     .find(|s| s.id == *id)
                     .map_or_else(Vec::new, |s| s.unsaved(None)),
+                busy: self
+                    .spaces()
+                    .find(|s| s.id == *id)
+                    .map_or_else(Vec::new, |s| self.busy_in(s)),
             },
         })
     }
 }
 
+/// A Send to submenu: the text, and the terminals listed (see `Workspace::terminal_list`).
+struct SendTo {
+    text: String,
+    to: Vec<(BlockId, String)>,
+}
+
+/// How a block's menu ends, before Close.
+enum Tail {
+    /// On the canvas: Fullscreen, for the block or the selection it was in.
+    Canvas { group: Vec<BlockId> },
+    /// In grid mode: new blocks (`agents`, placed on the canvas at `at`) and the blocks left on
+    /// the canvas, taking half of the tile; flip the split (with a neighbour), leave the grid,
+    /// back to the canvas.
+    Tile {
+        flip: bool,
+        others: Vec<(BlockId, SharedString)>,
+        at: Point,
+        agents: Vec<(AgentEntry, bool)>,
+    },
+}
+
 /// A target's menu, with what it shows read from the workspace.
 enum Items {
+    /// A block's menu: its kind's, then the same end for every kind.
+    Block {
+        block: BlockId,
+        inner: Box<Items>,
+        tail: Tail,
+        close: &'static str,
+        /// What Move to workspace moves: the selection the block is in, else the block.
+        moving: Vec<BlockId>,
+        /// The other workspaces, by id and name, and whether they take blocks (not a stopped
+        /// one, nor one whose file isn't written).
+        spaces: Vec<(String, String, bool)>,
+    },
     Canvas {
         at: Point,
         /// Each agent the menu lists, and whether its program was found.
@@ -259,7 +509,6 @@ enum Items {
         agents: Vec<(AgentEntry, bool)>,
     },
     Terminal {
-        block: BlockId,
         selection: bool,
     },
     Kanban {
@@ -269,34 +518,88 @@ enum Items {
     },
     Note {
         block: BlockId,
-        /// It shows rendered.
-        preview: bool,
+        /// The color of the note on screen; None without one.
+        color: Option<Option<crate::board::Label>>,
+        send: SendTo,
     },
     Editor {
         block: BlockId,
         tree: bool,
         wrap: bool,
+        send: SendTo,
     },
     Git {
         block: BlockId,
+        /// Its repository's root (its folder while there is none).
+        folder: Option<PathBuf>,
+    },
+    GitMore {
+        block: BlockId,
+        /// A command runs: Fetch, Pull and Push wait.
+        busy: bool,
+        /// Discards are kept (a data folder): Recently discarded… is offered.
+        trash: bool,
+    },
+    GitRemotes {
+        at: crate::workspace::GitAt,
+        branch: String,
+        remotes: Vec<String>,
+    },
+    GitCommitMenu {
+        block: BlockId,
+        /// "Commit", or "Commit all changes (5 files)".
+        label: String,
+    },
+    GitGenerateMenu {
+        block: BlockId,
+        /// The agent's models, the recommended one first, and the one in use.
+        models: Vec<String>,
+        model: String,
     },
     GitRow {
         block: BlockId,
         list: git_block::List,
         entry: Entry,
+        /// A conflict's parts, named after its markers' labels (the whole-file choices).
+        labels: (String, String),
     },
     GitCommit {
         block: BlockId,
         commit: Commit,
+        /// HEAD's commit, not pushed: Undo this commit.
+        undo: bool,
+        /// In a file's history, the file's path in this commit: Restore this version….
+        restore: Option<String>,
+    },
+    GitCommitFile {
+        block: BlockId,
+        hash: String,
+        path: String,
     },
     GitBranch {
         block: BlockId,
         branch: Branch,
         current: Option<String>,
+        /// The default branch: Compare with it.
+        base: Option<String>,
     },
     GitStash {
         block: BlockId,
         index: usize,
+    },
+    GitLine {
+        block: BlockId,
+        /// The working changes' panel: its lines are the file's (a comparison's aren't).
+        working: bool,
+        path: String,
+        /// Where Open in editor goes: the line's new number, else its hunk's first.
+        line: u32,
+        /// The panel's selection, for Copy.
+        selection: Option<String>,
+        line_text: String,
+        hunk_text: String,
+        /// The selection, else the hunk.
+        send: SendTo,
     },
     Board {
         block: BlockId,
@@ -313,16 +616,27 @@ enum Items {
     Card {
         board: u64,
         card: u64,
+        send: SendTo,
     },
     Space {
         id: String,
         name: String,
         only_one: bool,
+        /// It is the one shown.
+        active: bool,
+        /// Stop applies: it isn't the last one, nor stopped already.
+        stoppable: bool,
         /// Its editors' changed files.
         unsaved: Vec<String>,
+        /// Its terminals at work, and why.
+        busy: Vec<String>,
     },
     Ink {
         index: usize,
+    },
+    /// Terminals to show, one item each.
+    Reveal {
+        terminals: Vec<(BlockId, String)>,
     },
     Tree {
         block: BlockId,

@@ -1,6 +1,7 @@
 //! An editor block: a file tree, tabs of open files and gpui-kit's code editor, on one folder.
 //! See docs/specs/cockpit.md, section 7.
 
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -13,17 +14,18 @@ use gpui_kit::component::highlighter::Language;
 use gpui_kit::component::input::{
     Editor as EditorView, EditorState, InputEvent, Position, RopeExt as _, TabSize,
 };
-use gpui_kit::component::text::TextView;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, MouseButton, MouseDownEvent,
-    ScrollWheelEvent, SharedString, Stateful, StyleRefinement, Subscription, TestSupportExt,
-    Window, div, point, px, relative,
+    ScrollHandle, ScrollWheelEvent, SharedString, Stateful, StyleRefinement, Subscription,
+    TestSupportExt, Window, div, point, px, relative,
 };
-use templum_canvas::{BlockId, Rect, Size};
+use templum_canvas::{BlockId, Level, Rect, Size, chrome};
 
+use crate::grid::{BAR_OPACITY, hsla};
 use crate::menu::Target;
 use crate::session;
+use crate::silhouette::{self, Far};
 use crate::theme::Ui;
 use crate::workspace::Workspace;
 
@@ -254,6 +256,9 @@ pub(crate) struct Tab {
     pub conflict: bool,
     /// A Markdown file shown rendered.
     pub preview: bool,
+    pub preview_scroll: crate::markdown::PreviewScroll,
+    /// Its word map, drawn far away (`silhouette.rs`).
+    pub far: RefCell<Far>,
     _edits: Subscription,
 }
 
@@ -296,6 +301,8 @@ impl Tab {
         self.dirty = false;
         self.conflict = false;
         self.mtime = mtime(&self.path);
+        // Its rows are of the old text, which may have been as long: a word map is taken again.
+        *self.far.get_mut() = Far::default();
         Ok(())
     }
 
@@ -310,6 +317,9 @@ impl Tab {
 /// An editor block: one folder, the file tree over it, the open files.
 pub(crate) struct Editor {
     pub folder: PathBuf,
+    /// The folder wasn't there at the last look, on opening and every POLL: the body says so.
+    /// Never looked up while drawing: a stat each frame stalls on a slow or network disk.
+    pub gone: bool,
     pub tree: Entity<TreeState>,
     /// The folders read so far, by path: the root and each one expanded. A folder that was
     /// never expanded costs nothing (`node_modules`).
@@ -322,6 +332,8 @@ pub(crate) struct Editor {
     pub active: Option<usize>,
     /// When the tree was last read, for the refresh while the block is focused.
     pub tree_read: Instant,
+    /// The tree's row height when it was last drawn, to keep its rows through a zoom.
+    tree_row: Cell<f32>,
     _expansions: Subscription,
 }
 
@@ -332,6 +344,7 @@ impl Editor {
             ws.on_tree_event(&tree, event, cx)
         });
         let mut editor = Editor {
+            gone: !folder.is_dir(),
             folder,
             tree,
             dirs: HashMap::new(),
@@ -341,6 +354,7 @@ impl Editor {
             tabs: Vec::new(),
             active: None,
             tree_read: Instant::now(),
+            tree_row: Cell::new(0.0),
             _expansions,
         };
         editor.refresh(cx);
@@ -443,6 +457,8 @@ impl Editor {
             mtime: mtime(path),
             conflict: false,
             preview: false,
+            preview_scroll: crate::markdown::PreviewScroll::default(),
+            far: RefCell::default(),
             _edits,
         });
         self.active = Some(self.tabs.len() - 1);
@@ -466,6 +482,23 @@ impl Editor {
             }
             _ => false,
         }
+    }
+
+    /// What sending it to a terminal types: the active file's selection, or its path and the
+    /// cursor's line (`/abs/path:12`), which agents read.
+    pub fn to_send(&self, cx: &App) -> Option<String> {
+        let tab = self.active_tab()?;
+        let editor = tab.editor.read(cx);
+        let selected = editor.selected_value();
+        Some(if selected.trim().is_empty() {
+            format!(
+                "{}:{}",
+                tab.path.display(),
+                editor.cursor_position().line + 1
+            )
+        } else {
+            selected.to_string()
+        })
     }
 
     /// The keyboard is in one of the tabs' editors.
@@ -517,7 +550,7 @@ impl Editor {
 }
 
 /// Keeps the rows a gpui-kit editor shows when the zoom changes, as a photo would: its scroll
-/// offset is in pixels (gpui-base-0.7.1 src/input/base/state.rs:2997), so it scales with its
+/// offset is in pixels (gpui-base-0.7.3 src/input/base/state.rs:3111), so it scales with its
 /// rows, 1.5 × its font rounded (see `block::exact_rows`). Called where the editor is drawn at
 /// `font × z`, before it lays out.
 pub(crate) fn keep_rows(editor: &Entity<EditorState>, font: f32, z: f32, cx: &mut App) {
@@ -535,31 +568,118 @@ pub(crate) fn keep_rows(editor: &Entity<EditorState>, font: f32, z: f32, cx: &mu
     });
 }
 
+/// Keeps the rows a list shows when the zoom changes, as `keep_rows` does for an editor: its
+/// scroll offset is in pixels, so it scales with its rows, `row` high now and `last` when the
+/// list was last drawn.
+pub(crate) fn keep_list_rows(scroll: &ScrollHandle, last: &Cell<f32>, row: f32) {
+    let old = last.replace(row);
+    if old > 0.0 && old != row {
+        let at = scroll.offset();
+        scroll.set_offset(point(at.x, at.y / old * row));
+    }
+}
+
+/// How many of a folder's files Ctrl+P lists, and shows at once.
+pub(crate) const FILES_CAP: usize = 10_000;
+pub(crate) const PICKED: usize = 50;
+
+/// The files under `folder`, relative, those .gitignore leaves (and never `.git`'s), at most
+/// `cap`.
+// ponytail: walks on the UI thread; move it to the background if a large folder stalls.
+pub(crate) fn files_in(folder: &Path, cap: usize) -> Vec<String> {
+    ignore::WalkBuilder::new(folder)
+        .hidden(false)
+        .require_git(false)
+        .filter_entry(|e| e.file_name() != ".git")
+        .build()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
+        .filter_map(|e| {
+            let rel = e.path().strip_prefix(folder).ok()?;
+            Some(rel.to_string_lossy().into_owned())
+        })
+        .take(cap)
+        .collect()
+}
+
+/// Up to `limit` of `files` for `query`, best first: its name holds the query, then its path
+/// does, then the query's letters are in it in order; shorter paths first. Any case.
+pub(crate) fn pick<'a>(files: &'a [String], query: &str, limit: usize) -> Vec<&'a str> {
+    let query = query.trim().to_lowercase();
+    let mut found: Vec<(u8, usize, &str)> = files
+        .iter()
+        .filter_map(|file| {
+            let path = file.to_lowercase();
+            let name = path.rsplit(['/', '\\']).next().unwrap_or(&path);
+            let rank = if name.contains(&query) {
+                0
+            } else if path.contains(&query) {
+                1
+            } else if in_order(&query, &path) {
+                2
+            } else {
+                return None;
+            };
+            Some((rank, file.len(), file.as_str()))
+        })
+        .collect();
+    found.sort();
+    found.into_iter().take(limit).map(|(_, _, f)| f).collect()
+}
+
+/// `query`'s characters appear in `text` in its order.
+fn in_order(query: &str, text: &str) -> bool {
+    let mut rest = text.chars();
+    query.chars().all(|q| rest.any(|c| c == q))
+}
+
+/// The tree's rows at zoom `z`, whole pixels: their scroll scales exactly with them.
+fn tree_row(z: f32) -> f32 {
+    (ROW_H * z).round()
+}
+
 /// The body below the header, at the block's zoom `z`: the tree on the left (when shown) and
-/// the files on the right.
+/// the files on the right. Below Full the tree is its empty panel and the file its bars.
 pub(crate) fn body(
     ws: &Workspace,
     id: BlockId,
     editor: &Editor,
     z: f32,
+    level: Level,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    if !editor.folder.is_dir() {
+    if editor.gone {
         return gone(id, &editor.folder, ui, z, cx);
     }
-    let tree = editor.show_tree.then(|| tree_panel(id, editor, ui, z, cx));
+    let tree = editor.show_tree.then(|| {
+        if level == Level::Full {
+            tree_panel(id, editor, ui, z, cx)
+        } else {
+            // Its empty panel: the same width and border, no rows.
+            div()
+                .w(px(TREE_W * z))
+                .h_full()
+                .flex_shrink_0()
+                .border_r_1()
+                .border_color(ui.hairline)
+                .into_any_element()
+        }
+    });
     // The wheel scrolls the tree or the file and stops there; with Ctrl it zooms the canvas.
+    // Below Full there is nothing to scroll: the wheel moves the canvas.
     div()
         .size_full()
         .flex()
-        .on_scroll_wheel(|e: &ScrollWheelEvent, _, cx| {
-            if !e.modifiers.control {
-                cx.stop_propagation();
-            }
+        .when(level == Level::Full, |el| {
+            el.on_scroll_wheel(|e: &ScrollWheelEvent, _, cx| {
+                if !e.modifiers.control {
+                    cx.stop_propagation();
+                }
+            })
         })
         .children(tree)
-        .child(files(ws, id, editor, z, cx))
+        .child(files(ws, id, editor, z, level, cx))
         .into_any_element()
 }
 
@@ -589,7 +709,7 @@ fn gone(id: BlockId, folder: &Path, ui: Ui, z: f32, cx: &mut Context<Workspace>)
 /// A small outlined button, at the zoom.
 pub(crate) fn button(
     id: impl Into<ElementId>,
-    label: &'static str,
+    label: impl Into<SharedString>,
     ui: Ui,
     z: f32,
 ) -> Stateful<Div> {
@@ -608,7 +728,7 @@ pub(crate) fn button(
         .text_color(ui.title)
         .cursor_pointer()
         .hover(move |s| s.bg(ui.hover))
-        .child(label)
+        .child(label.into())
 }
 
 fn tree_panel(
@@ -620,6 +740,15 @@ fn tree_panel(
 ) -> AnyElement {
     let n = id.0 as usize;
     let entity = cx.entity();
+    let scroll = editor
+        .tree
+        .read(cx)
+        .scroll_handle()
+        .0
+        .borrow()
+        .base_handle
+        .clone();
+    keep_list_rows(&scroll, &editor.tree_row, tree_row(z));
     div()
         .id(("tree", n))
         .w(px(TREE_W * z))
@@ -681,7 +810,7 @@ fn row(
         .flex()
         .items_center()
         .gap(px(4.0 * z))
-        .h(px(ROW_H * z))
+        .h(px(tree_row(z)))
         .pl(px((8.0 + 14.0 * entry.depth() as f32) * z))
         .pr(px(6.0 * z))
         .text_size(px(12.0 * z))
@@ -729,11 +858,22 @@ fn files(
     id: BlockId,
     editor: &Editor,
     z: f32,
+    level: Level,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let n = id.0 as usize;
     let ui = ws.ui;
     let i = editor.active.unwrap_or(0);
+    // The files' width, world units: the block's inner width without the card's border and,
+    // when shown, the tree and its 1 px border (unscaled pixels both).
+    let preview_w = ws.space.canvas.get(id).map_or(0.0, |b| {
+        let inner = chrome::content_rect(b.rect).w - 2.0 * crate::block::BORDER;
+        if editor.show_tree {
+            inner - TREE_W - 1.0
+        } else {
+            inner
+        }
+    });
     let markdown = editor
         .active_tab()
         .is_some_and(|t| lang_of(&t.path) == "markdown");
@@ -816,37 +956,56 @@ fn files(
                     .into_any_element()
             }
             Content::Text { read_only, .. } => {
-                let view: AnyElement = if tab.preview {
-                    div()
-                        .id(("file-preview", n))
-                        .size_full()
-                        .overflow_y_scroll()
-                        .text_size(px(FONT * z))
-                        .px(px(6.0 * z))
-                        .child(TextView::markdown(
-                            ("file-markdown", n),
-                            tab.editor.read(cx).value(),
-                        ))
-                        .test_support()
-                        .into_any_element()
+                let view: AnyElement = if tab.preview && level != Level::Full {
+                    // Below Full, rendered Markdown is an empty area: no layout to draw bars
+                    // from, and everything around it stays in place.
+                    div().into_any_element()
+                } else if tab.preview {
+                    crate::markdown::preview(
+                        ("file-preview", n).into(),
+                        ("file-markdown", n).into(),
+                        tab.editor.read(cx).value(),
+                        &tab.preview_scroll,
+                        preview_w,
+                        FONT,
+                        z,
+                    )
                 } else {
-                    keep_rows(&tab.editor, FONT, z, cx);
-                    div()
-                        .id(("code", n))
-                        .size_full()
-                        .child(
-                            // The element sets the theme's code font and size itself, and the
-                            // read-only flag on every frame: they go on it, not on a parent.
-                            EditorView::new(&tab.editor)
-                                .appearance(false)
-                                .bordered(false)
-                                .readonly(read_only.is_some())
-                                .font_family(ws.cell.font.family.clone())
-                                .text_size(px(FONT * z))
-                                .h(relative(1.0)),
+                    let taken = silhouette::Taken {
+                        len: tab.editor.read(cx).text().len(),
+                        size: ws
+                            .space
+                            .canvas
+                            .get(id)
+                            .map_or((0.0, 0.0), |b| (b.rect.w, b.rect.h)),
+                        font: ws.cell.font.family.clone(),
+                        wrap: editor.wrap,
+                        tree: editor.show_tree,
+                    };
+                    let read_only = read_only.is_some();
+                    if level == Level::Full {
+                        tab.far.borrow_mut().full = Some((z, taken));
+                        div()
+                            .id(("code", n))
+                            .size_full()
+                            .child(code(ws, tab, read_only, z, cx))
+                            .test_support()
+                            .into_any_element()
+                    } else {
+                        // Its words as bars: no editor is built, its scroll stays as it was.
+                        silhouette::body(
+                            ("silhouette", n).into(),
+                            &tab.editor,
+                            &tab.far,
+                            taken,
+                            z,
+                            FONT,
+                            silhouette::tab_origin,
+                            hsla(ws.theme.palette.foreground, BAR_OPACITY),
+                            |cx| code(ws, tab, read_only, z, cx),
+                            cx,
                         )
-                        .test_support()
-                        .into_any_element()
+                    }
                 };
                 div()
                     .flex_1()
@@ -896,6 +1055,21 @@ fn files(
         .flex_col()
         .child(tabs)
         .child(area)
+        .into_any_element()
+}
+
+/// The active file in gpui-kit's editor at zoom `z`, its scroll kept in rows first. The element
+/// sets the theme's code font and size itself, and the read-only flag on every frame: they go on
+/// it, not on a parent.
+fn code(ws: &Workspace, tab: &Tab, read_only: bool, z: f32, cx: &mut App) -> AnyElement {
+    keep_rows(&tab.editor, FONT, z, cx);
+    EditorView::new(&tab.editor)
+        .appearance(false)
+        .bordered(false)
+        .readonly(read_only)
+        .font_family(ws.cell.font.family.clone())
+        .text_size(px(FONT * z))
+        .h(relative(1.0))
         .into_any_element()
 }
 
@@ -979,6 +1153,57 @@ fn tab_el(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn files_in_respects_gitignore_skips_git_and_caps() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        for f in [
+            "src/lib.rs",
+            "src/main.rs",
+            "target/out.bin",
+            ".git/HEAD",
+            ".env",
+        ] {
+            let path = d.join(f);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "").unwrap();
+        }
+        std::fs::write(d.join(".gitignore"), "target/\n").unwrap();
+        let mut files = files_in(d, 100);
+        files.sort();
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            files,
+            [
+                ".env".to_string(),
+                ".gitignore".to_string(),
+                format!("src{sep}lib.rs"),
+                format!("src{sep}main.rs"),
+            ]
+        );
+        assert_eq!(files_in(d, 2).len(), 2);
+    }
+
+    #[test]
+    fn pick_prefers_name_matches_then_paths_then_letters_in_order() {
+        let files: Vec<String> = [
+            "docs/library.md",
+            "src/lib.rs",
+            "lib/x.rs",
+            "src/main.rs",
+            "README.md",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            pick(&files, "lib", 10),
+            ["src/lib.rs", "docs/library.md", "lib/x.rs"]
+        );
+        assert_eq!(pick(&files, "smr", 10), ["src/main.rs"]);
+        assert_eq!(pick(&files, "MAIN", 10), ["src/main.rs"]);
+        assert_eq!(pick(&files, "", 2), ["lib/x.rs", "README.md"]);
+    }
 
     #[test]
     fn folders_come_first_then_files_sorted_without_case() {

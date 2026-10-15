@@ -7,7 +7,7 @@ use gpui_kit::{Context, Window};
 use templum_canvas::BlockId;
 use templum_git::{GitError, Repo};
 
-use crate::git_block;
+use crate::git_block::{self, words};
 use crate::prompt;
 
 use super::{Extra, GitAt, Workspace, notify_git_error};
@@ -27,78 +27,6 @@ impl Workspace {
                 match branches {
                     Ok(b) => git.branches = b,
                     Err(e) => git.error = Some(e.to_string()),
-                }
-            },
-            window,
-            cx,
-        );
-    }
-
-    /// Checks a branch out; one git refuses for local changes offers Stash and switch.
-    pub(crate) fn checkout_branch(
-        &mut self,
-        id: BlockId,
-        name: String,
-        remote: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
-            return;
-        };
-        let job_name = name.clone();
-        self.act_job(
-            self.here(id),
-            move || {
-                if remote {
-                    repo.checkout_remote(&job_name)
-                } else {
-                    repo.checkout(&job_name)
-                }
-            },
-            move |ws, at, result, window, cx| {
-                if let Err(e) = result {
-                    let entity = cx.entity();
-                    let block = at.block;
-                    let mut extra: Vec<Extra> = Vec::new();
-                    if e.stderr.contains("would be overwritten")
-                        || e.stderr.contains("local changes")
-                    {
-                        let name = name.clone();
-                        extra.push((
-                            "git-stash-switch",
-                            "Stash and switch",
-                            Rc::new(move |ws, window, cx| {
-                                ws.stash_and_switch(block, name.clone(), remote, window, cx)
-                            }),
-                        ));
-                    }
-                    notify_git_error(&entity, at.clone(), &e, extra, window, cx);
-                }
-                ws.after_action(at, window, cx);
-            },
-            window,
-            cx,
-        );
-    }
-
-    /// Stashes everything (untracked files too), then checks the branch out.
-    pub(crate) fn stash_and_switch(
-        &mut self,
-        id: BlockId,
-        name: String,
-        remote: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.git_action(
-            id,
-            move |repo| {
-                repo.stash_push(&format!("Templum: before switching to {name}"), true)?;
-                if remote {
-                    repo.checkout_remote(&name)
-                } else {
-                    repo.checkout(&name)
                 }
             },
             window,
@@ -207,21 +135,15 @@ impl Workspace {
             self.here(id),
             move || repo.delete_branch(&job_name, force),
             move |ws, at, result, window, cx| {
-                if let Err(e) = result {
-                    let entity = cx.entity();
-                    let block = at.block;
-                    let mut extra: Vec<Extra> = Vec::new();
-                    if !force && templum_git::not_merged(&e.stderr) {
-                        let name = name.clone();
-                        extra.push((
-                            "git-delete-force",
-                            "Delete anyway",
-                            Rc::new(move |ws, window, cx| {
-                                ws.delete_branch(block, name.clone(), true, window, cx)
-                            }),
-                        ));
+                match result {
+                    Err(e) if !force && templum_git::not_merged(&e.stderr) => {
+                        ws.ask_delete_anyway(at.clone(), name.clone(), window, cx)
                     }
-                    notify_git_error(&entity, at.clone(), &e, extra, window, cx);
+                    Err(e) => {
+                        let entity = cx.entity();
+                        notify_git_error(&entity, at.clone(), &e, Vec::new(), window, cx);
+                    }
+                    Ok(()) => {}
                 }
                 ws.after_action(at, window, cx);
             },
@@ -230,7 +152,54 @@ impl Workspace {
         );
     }
 
-    /// `git push -u origin <name>` for a local branch with no upstream.
+    /// `git branch -d` refused: counts what only that branch has, then asks to force it. The
+    /// answer acts on the block it is about, in its own workspace (`show_git_block`).
+    pub(super) fn ask_delete_anyway(
+        &mut self,
+        at: GitAt,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(repo) = self.git_at(&at).and_then(|g| g.repo().cloned()) else {
+            return;
+        };
+        let counted = name.clone();
+        self.git_job(
+            at,
+            move || repo.unmerged_count(&counted),
+            move |_, at, count, window, cx| {
+                let entity = cx.entity();
+                prompt::confirm(
+                    format!("Delete {name} anyway?"),
+                    words::unmerged(count.ok()),
+                    "Delete",
+                    move |window, cx| {
+                        let (name, at) = (name.clone(), at.clone());
+                        entity.update(cx, |ws, cx| {
+                            if ws.show_git_block(&at, window, cx) {
+                                ws.delete_now(at.block, name, true, window, cx)
+                            }
+                        })
+                    },
+                    window,
+                    cx,
+                );
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// The Branches tab's Remote heading: its rows show or hide.
+    pub(crate) fn toggle_remote_branches(&mut self, id: BlockId, cx: &mut Context<Self>) {
+        if let Some(git) = self.space.git_mut(id) {
+            git.remote_folded = !git.remote_folded;
+            cx.notify();
+        }
+    }
+
+    /// The Branches tab's Publish: `git push -u <remote> <name>`, the remote by Publish's rule.
     pub(crate) fn publish_branch(
         &mut self,
         id: BlockId,
@@ -238,7 +207,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.push_now(id, Some(name), window, cx);
+        self.publish(id, name, window, cx);
     }
 
     /// Runs one of fetch, pull and push, its button spinning meanwhile.
@@ -272,10 +241,7 @@ impl Workspace {
         git.sync = Some(which);
         git.cancel = Some(cancel.clone());
         let repo = repo.with_cancel(cancel);
-        let at = GitAt {
-            space: self.space.id.clone(),
-            block: id,
-        };
+        let at = self.here(id);
         self.act_job(
             at,
             move || job(&repo),
@@ -330,12 +296,12 @@ impl Workspace {
                 if how == Pull::FastForward && templum_git::not_fast_forward(&e.stderr) {
                     extra.push((
                         "git-pull-merge",
-                        "Merge",
+                        "Merge".into(),
                         Rc::new(move |ws, window, cx| ws.pull(block, Pull::Merge, window, cx)),
                     ));
                     extra.push((
                         "git-pull-rebase",
-                        "Rebase",
+                        "Rebase".into(),
                         Rc::new(move |ws, window, cx| ws.pull(block, Pull::Rebase, window, cx)),
                     ));
                 }
@@ -346,44 +312,27 @@ impl Workspace {
         );
     }
 
-    /// `git push`; a branch with no upstream asks, then `git push -u origin <branch>`.
+    /// `git push`; a branch with no upstream (or one gone from the server) is published instead
+    /// (the button says Publish branch: no question).
     pub(crate) fn push(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(git) = self.space.git(id) else {
             return;
         };
-        let publish = match (&git.status.upstream, &git.status.branch) {
-            (None, Some(branch)) => Some(branch.clone()),
-            _ => None,
-        };
-        let Some(branch) = publish else {
-            self.push_now(id, None, window, cx);
-            return;
-        };
-        let ws = cx.entity();
-        prompt::confirm(
-            format!("Publish {branch}?"),
-            format!("git push -u origin {branch}"),
-            "Push",
-            move |window, cx| {
+        let s = &git.status;
+        match &s.branch {
+            Some(branch) if s.upstream.is_none() || s.gone => {
                 let branch = branch.clone();
-                ws.update(cx, |ws, cx| ws.push_now(id, Some(branch), window, cx))
-            },
-            window,
-            cx,
-        );
+                self.publish(id, branch, window, cx)
+            }
+            _ => self.push_now(id, window, cx),
+        }
     }
 
-    pub(super) fn push_now(
-        &mut self,
-        id: BlockId,
-        publish: Option<String>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn push_now(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         self.git_sync(
             id,
             git_block::Sync::Push,
-            move |repo| repo.push(publish.as_deref()),
+            |repo| repo.push(),
             |_, at, e, window, cx| {
                 let ws = cx.entity();
                 notify_git_error(&ws, at, e, Vec::new(), window, cx)

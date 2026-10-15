@@ -10,7 +10,7 @@ use gpui_kit::{
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
     TestSupportExt, Window, canvas, div, fill, point, px, size,
 };
-use templum_canvas::{BlockId, Camera, Gesture, Guide, Point, dot_grid, dot_size};
+use templum_canvas::{BlockId, Camera, Gesture, Guide, Point, Rect, dot_grid, dot_size};
 
 use crate::block;
 use crate::menu;
@@ -99,6 +99,125 @@ impl Workspace {
     }
 }
 
+impl Workspace {
+    /// Grid mode, a tile held by its title past a click: its place outlined, dashed; the tile it
+    /// would trade places with, tinted and saying so; and its title following the pointer. Grid
+    /// mode's camera is at the origin at zoom 1: tile rects are where they are drawn.
+    fn swap_overlay(&self, cx: &mut gpui_kit::Context<Self>) -> Vec<gpui_kit::AnyElement> {
+        let Some(Drag::Swap { id, over, at, .. }) = self.drag else {
+            return Vec::new();
+        };
+        if !self.held(id) {
+            return Vec::new();
+        }
+        let ui = self.ui;
+        let title = |id: BlockId| {
+            self.space
+                .blocks
+                .get(&id)
+                .map(|body| block::title(self, body, cx))
+                .unwrap_or_default()
+        };
+        let place = |r: Rect| {
+            div()
+                .absolute()
+                .left(px(r.x))
+                .top(px(r.y))
+                .w(px(r.w))
+                .h(px(r.h))
+                .rounded(px(10.0))
+        };
+        let mut layers = Vec::new();
+        if let Some(r) = self.space.canvas.get(id).map(|b| b.rect) {
+            layers.push(
+                place(r)
+                    .id("swap-from")
+                    .border_2()
+                    .border_dashed()
+                    .border_color(ui.accent.opacity(0.7))
+                    .test_support()
+                    .into_any_element(),
+            );
+        }
+        if let Some((r, name)) = over.and_then(|o| Some((self.space.canvas.get(o)?.rect, title(o))))
+        {
+            layers.push(
+                place(r)
+                    .id("swap-target")
+                    .border_2()
+                    .border_color(ui.accent)
+                    .bg(ui.accent.opacity(0.14))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .px(px(14.0))
+                            .py(px(8.0))
+                            .rounded(px(8.0))
+                            .bg(ui.surface)
+                            .border_1()
+                            .border_color(ui.accent)
+                            .shadow(vec![shadow(ui.shadow)])
+                            .text_size(px(13.0))
+                            .text_color(ui.title)
+                            .child(
+                                gpui_kit::component::Icon::new(
+                                    gpui_kit::assets::IconName::ArrowLeftRight,
+                                )
+                                .size(px(14.0))
+                                .text_color(ui.accent),
+                            )
+                            .child(
+                                div()
+                                    .max_w(px(320.0))
+                                    .truncate()
+                                    .child(format!("Swap with {name}")),
+                            ),
+                    )
+                    .test_support()
+                    .into_any_element(),
+            );
+        }
+        layers.push(
+            div()
+                .id("swap-chip")
+                .absolute()
+                .left(px(at.x + 14.0))
+                .top(px(at.y + 14.0))
+                .max_w(px(280.0))
+                .px(px(10.0))
+                .py(px(6.0))
+                .rounded(px(8.0))
+                .bg(ui.surface)
+                .border_1()
+                .border_color(ui.accent)
+                .shadow(vec![shadow(ui.shadow)])
+                .text_size(px(12.0))
+                .text_color(ui.title)
+                .truncate()
+                .child(title(id))
+                .test_support()
+                .into_any_element(),
+        );
+        layers
+    }
+}
+
+/// A floating card's drop shadow.
+fn shadow(color: Hsla) -> gpui_kit::BoxShadow {
+    gpui_kit::BoxShadow {
+        color,
+        offset: point(px(0.0), px(8.0)),
+        blur_radius: px(20.0),
+        spread_radius: px(0.0),
+        inset: false,
+    }
+}
+
 /// The dot grid under the blocks: round dots centered on the world lattice. One layer: the
 /// dots don't overlap and share a draw order, so GPUI skips the per-primitive bounds lookup.
 fn paint_dots(camera: &Camera, color: Hsla, bounds: Bounds<Pixels>, window: &mut Window) {
@@ -184,12 +303,19 @@ impl Render for Workspace {
             .filter(|(_, pane)| pane.term.exited())
             .map(|(id, _)| id)
             .collect();
+        // Nothing left to lose: no question.
         for id in exited {
-            self.close(id, window, cx);
+            self.remove_block(id, window, cx);
         }
         self.hear(window, cx);
 
         let vp = self.viewport(window);
+        // Grid mode's tiles fill the area as it is now: the window or the sidebar may have changed.
+        if let Some(grid) = &mut self.space.grid {
+            grid.area = super::tiling::grid_area(vp);
+            self.retile();
+        }
+        let tiled = self.space.grid.is_some();
         if self.space.pristine
             && let Some(b) = self.space.canvas.bounds()
         {
@@ -201,6 +327,9 @@ impl Render for Workspace {
         }
         // Animations: drop the finished ones, and keep frames coming while any runs.
         let now = Instant::now();
+        if self.marquee_edge(vp, now) {
+            window.request_animation_frame();
+        }
         self.space
             .appearing
             .retain(|_, since| motion::progress(*since, now, motion::OPEN) < 1.0);
@@ -213,6 +342,22 @@ impl Render for Workspace {
                 window.request_animation_frame();
             } else if panel.closing {
                 self.settings = None;
+            }
+        }
+        if let Some(screen) = &self.screen {
+            let t = motion::progress(screen.since, now, motion::SLIDE);
+            if t < 1.0 {
+                window.request_animation_frame();
+            } else if screen.closing {
+                self.screen = None;
+            }
+        }
+        if let Some(welcome) = &self.welcome {
+            let t = motion::progress(welcome.since, now, motion::SLIDE);
+            if t < 1.0 {
+                window.request_animation_frame();
+            } else if welcome.closing {
+                self.welcome = None;
             }
         }
         if !self.space.appearing.is_empty() || !self.space.ghosts.is_empty() {
@@ -236,15 +381,28 @@ impl Render for Workspace {
                 self.space.canvas.camera
             }
         };
+        // The level of detail changes only at rest (docs/specs/level-of-detail.md, section 1).
+        if self.space.flight.is_none() {
+            self.space.rest = self.space.view.zoom();
+        }
         let visible: Vec<_> = self
             .space
             .canvas
             .visible_from(&self.space.view, vp)
+            .filter(|b| self.space.shown(b.id))
             .copied()
             .collect();
+        // Tiles trading places slide there.
+        if let Some(grid) = &mut self.space.grid {
+            grid.slides
+                .retain(|_, (_, since)| motion::progress(*since, now, motion::TILE) < 1.0);
+            if !grid.slides.is_empty() {
+                window.request_animation_frame();
+            }
+        }
         let mut blocks: Vec<_> = visible
             .into_iter()
-            .map(|b| {
+            .map(|mut b| {
                 let look = self
                     .space
                     .appearing
@@ -252,6 +410,14 @@ impl Render for Workspace {
                     .map_or(motion::Look::REST, |since| {
                         motion::opening(motion::progress(*since, now, motion::OPEN))
                     });
+                // A tile held to trade places is picked up.
+                let look = if self.held(b.id) { motion::HELD } else { look };
+                if let Some((was, since)) =
+                    self.space.grid.as_ref().and_then(|g| g.slides.get(&b.id))
+                {
+                    let t = motion::slide(motion::progress(*since, now, motion::TILE));
+                    b.rect = super::tiling::between(*was, b.rect, t);
+                }
                 let body = &self.space.blocks[&b.id];
                 block::render(self, b, body, look, true, window, cx)
             })
@@ -273,12 +439,15 @@ impl Render for Workspace {
         let layer = canvas(
             |_, _, _| {},
             move |bounds, _, window, cx| {
-                paint_dots(&camera, dot, bounds, window);
-                paint_guides(&camera, accent, bounds, &guides, window);
+                // Grid mode shows no canvas.
+                if !tiled {
+                    paint_dots(&camera, dot, bounds, window);
+                    paint_guides(&camera, accent, bounds, &guides, window);
+                }
                 window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
                 entity.update(cx, |ws, _| ws.origin = bounds.origin);
                 let on_move = entity.clone();
-                window.on_mouse_event(move |e: &MouseMoveEvent, phase, _, cx| {
+                window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, cx| {
                     if phase == DispatchPhase::Bubble {
                         on_move.update(cx, |ws, cx| {
                             // Alt let go while the window wasn't listening (another window had
@@ -291,6 +460,9 @@ impl Render for Workspace {
                                 ws.drag_to(e.position, e.modifiers.shift, cx);
                             } else {
                                 ws.end_drag();
+                                ws.hover_program(e.position, &e.modifiers);
+                                ws.pointer_moved = true;
+                                ws.follow_pointer(window, cx);
                             }
                         });
                     }
@@ -298,10 +470,15 @@ impl Render for Workspace {
                 let on_up = entity.clone();
                 window.on_mouse_event(move |e: &MouseUpEvent, phase, _, cx| {
                     if phase == DispatchPhase::Bubble {
-                        on_up.update(cx, |ws, cx| match e.button {
-                            MouseButton::Left => ws.release(e.position, cx),
-                            MouseButton::Middle => ws.end_drag(),
-                            _ => {}
+                        on_up.update(cx, |ws, cx| {
+                            if ws.release_program(e) {
+                                return;
+                            }
+                            match e.button {
+                                MouseButton::Left => ws.release(e.position, cx),
+                                MouseButton::Middle => ws.end_drag(),
+                                _ => {}
+                            }
                         });
                     }
                 });
@@ -311,8 +488,16 @@ impl Render for Workspace {
         .size_full();
 
         self.hand = window.modifiers().alt;
-        let hand = self.hand || self.tool == Tool::Hand;
+        let hand = (self.hand || self.tool == Tool::Hand) && !tiled;
         let panning = matches!(self.drag, Some(Drag::Canvas(Gesture::Pan { .. })));
+        // The selection rectangle being dragged, on screen.
+        let marquee = match &self.drag {
+            Some(Drag::Marquee { from, to, .. }) => {
+                Some(self.space.view.rect_to_screen(Rect::corners(*from, *to)))
+            }
+            _ => None,
+        };
+        let swapping = self.swap_overlay(cx);
         let area = div()
             .id("workspace")
             .relative()
@@ -335,8 +520,20 @@ impl Render for Workspace {
             .children(blocks)
             // The drawings, above the blocks; with a drawing tool on, a layer over them takes the
             // pointer.
-            .child(self.ink_layer(cx))
-            .when(self.tool.draws(), |el| {
+            .when(!tiled, |el| el.child(self.ink_layer(cx)))
+            .children(marquee.map(|r| {
+                div()
+                    .absolute()
+                    .left(px(r.x))
+                    .top(px(r.y))
+                    .w(px(r.w))
+                    .h(px(r.h))
+                    .border_1()
+                    .border_color(self.ui.accent)
+                    .bg(self.ui.accent.opacity(0.08))
+            }))
+            .children(swapping)
+            .when(self.tool.draws() && !tiled, |el| {
                 el.child(
                     div()
                         .id("ink-layer")
@@ -397,11 +594,20 @@ impl Render for Workspace {
                         .child(self.hint()),
                 )
             })
-            .child(toolbar::render(self, cx));
+            .when(!tiled, |el| el.child(toolbar::render(self, cx)));
         let picker = self
             .picker
             .as_ref()
             .map(|p| theme_picker::render(self, p, cx));
+        let usage = self.usage_open.then(|| crate::usage::popover(self, cx));
+        let screen = self
+            .screen
+            .as_ref()
+            .map(|s| crate::spaces_screen::render(self, s, now, window, cx));
+        let welcome = self
+            .welcome
+            .as_ref()
+            .map(|w| crate::welcome::render(self, w, now, window, cx));
         if self.recording.is_some() && !self.settings_focus.is_focused(window) {
             self.recording = None;
             self.key_note = None;
@@ -429,8 +635,12 @@ impl Render for Workspace {
                     .when(self.sidebar, |el| el.child(sidebar::render(self, cx)))
                     .child(area),
             )
+            // Under what the title bar opens: the settings, the theme picker, the screen.
+            .children(welcome)
             .children(panel)
             .children(picker)
+            .children(usage)
+            .children(screen)
             .children(self.menu.as_ref().map(|m| menu::render(m, window)))
     }
 }

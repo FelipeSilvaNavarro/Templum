@@ -4,7 +4,7 @@ use super::*;
 
 /// Draws frames (each hears the terminals) until `done`.
 #[cfg(unix)]
-fn until(
+pub(super) fn until(
     what: &str,
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
@@ -37,7 +37,7 @@ fn ring(ws: &Entity<Workspace>, id: templum_canvas::BlockId, cx: &mut TestAppCon
 }
 
 #[cfg(unix)]
-fn set_active(handle: AnyWindowHandle, active: bool, cx: &mut TestAppContext) {
+pub(super) fn set_active(handle: AnyWindowHandle, active: bool, cx: &mut TestAppContext) {
     if active {
         cx.update_window(handle, |_, window, _| window.activate_window())
             .unwrap();
@@ -562,5 +562,491 @@ fn only_painted_terminals_are_rearmed(cx: &mut TestAppContext) {
     });
     until("the exited block to close", handle, &ws, cx, |ws| {
         ws.space.terminal(hidden).is_none()
+    });
+}
+
+#[cfg(target_os = "macos")]
+const WAITING: &str = "cmd-shift-a";
+#[cfg(not(target_os = "macos"))]
+const WAITING: &str = "ctrl-shift-a";
+
+/// Its shortcut shows each terminal that asked for attention in turn, across workspaces (this
+/// one's first), never one that merely finished a command; then it says none is waiting.
+#[gpui_kit::test]
+fn go_to_waiting_visits_each_waiting_terminal_then_says_none(cx: &mut TestAppContext) {
+    use crate::alert::Alert;
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let (home, there) = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let home = ws.space.id.clone();
+                ws.add_terminal_at(Point::new(900.0, 0.0), window, cx);
+                let finished = ws.space.canvas.top().unwrap();
+                ws.space.terminal_mut(finished).unwrap().alert =
+                    Some(Alert::Finished(templum_terminal::Outcome {
+                        code: Some(0),
+                        took: std::time::Duration::from_secs(9),
+                    }));
+                ws.space.terminal_mut(first).unwrap().alert = Some(Alert::Attention(None));
+                ws.new_space(window, cx);
+                ws.add_terminal_at(Point::new(0.0, 0.0), window, cx);
+                let there = ws.space.canvas.top().unwrap();
+                ws.space.terminal_mut(there).unwrap().alert =
+                    Some(Alert::Attention(Some("Allow?".into())));
+                ws.switch_to(0, window, cx);
+                ws.focus_block(finished, window, cx);
+                (home, (ws.order()[1].id.clone(), there))
+            })
+        })
+        .unwrap();
+    let press = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.press(WAITING, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| (ws.space.id.clone(), ws.space.focused))
+    };
+    assert_eq!(
+        press(cx),
+        (home.clone(), Some(first)),
+        "this workspace's first"
+    );
+    assert_eq!(
+        press(cx),
+        (there.0.clone(), Some(there.1)),
+        "then the other's"
+    );
+    let notes = notification_count(handle, cx);
+    assert_eq!(press(cx), (there.0, Some(there.1)), "none left: it stays");
+    assert_eq!(notification_count(handle, cx), notes + 1, "and says so");
+}
+
+/// Shift+Enter sends ESC CR (a newline in Claude Code and Codex) only where an agent runs; a
+/// shell gets Enter. `cat` echoes ESC as "^[".
+#[cfg(unix)]
+#[gpui_kit::test]
+fn shift_enter_is_a_newline_only_in_an_agent(cx: &mut TestAppContext) {
+    use std::time::{Duration, Instant};
+    use templum_terminal::Snapshot;
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let shown_after = |cx: &mut TestAppContext, mark: &str| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("shift-enter", cx);
+        })
+        .unwrap();
+        ws.read_with(cx, |ws, _| {
+            let term = &ws.space.terminal(id).unwrap().term;
+            term.write(format!("{mark}\r").into_bytes())
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let shown = ws.read_with(cx, |ws, _| {
+                let mut snap = Snapshot::default();
+                snap.refresh(
+                    ws.space.terminal(id).unwrap().term.shared(),
+                    &ws.theme.palette,
+                );
+                snap.text()
+            });
+            if shown.contains(mark) {
+                return shown;
+            }
+            assert!(Instant::now() < deadline, "no echo: {shown:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let shell = shown_after(cx, "x");
+    assert!(!shell.contains("^["), "a shell gets Enter: {shell:?}");
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into())
+    });
+    let agent = shown_after(cx, "y");
+    assert!(agent.contains("^["), "an agent gets ESC CR: {agent:?}");
+}
+
+#[cfg(target_os = "macos")]
+const FIND: &str = "cmd-f";
+#[cfg(not(target_os = "macos"))]
+const FIND: &str = "ctrl-shift-f";
+
+/// The find field selects what it finds, says when nothing matches, and Esc gives the terminal
+/// the keyboard back. Nothing typed in it (Enter included) reaches the shell.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn the_find_field_selects_what_it_finds_and_esc_gives_the_terminal_back(cx: &mut TestAppContext) {
+    use std::time::{Duration, Instant};
+    use templum_terminal::Snapshot;
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let screen = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let mut snap = Snapshot::default();
+            snap.refresh(
+                ws.space.terminal(id).unwrap().term.shared(),
+                &ws.theme.palette,
+            );
+            snap.text()
+        })
+    };
+    let typed_until = |cx: &mut TestAppContext, text: &str, shown: &str| {
+        ws.read_with(cx, |ws, _| {
+            ws.space
+                .terminal(id)
+                .unwrap()
+                .term
+                .write(text.as_bytes().to_vec())
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !screen(cx).contains(shown) {
+            assert!(Instant::now() < deadline, "{:?}", screen(cx));
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    // cat shows it twice: its echo, then its output.
+    typed_until(cx, "hello\r", "hello\nhello");
+    let selected = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space
+                .terminal(id)
+                .unwrap()
+                .term
+                .shared()
+                .selection_text()
+        })
+    };
+    let missing = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space
+                .terminal(id)
+                .unwrap()
+                .find
+                .as_ref()
+                .unwrap()
+                .missing
+        })
+    };
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(FIND, cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("find", id.0 as usize)).is_some(),
+            "the field"
+        );
+    })
+    .unwrap();
+    cx.simulate_input(handle, "hello");
+    assert_eq!(selected(cx).as_deref(), Some("hello"));
+    assert!(!missing(cx));
+    cx.update_window(handle, |_, window, cx| {
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(selected(cx).as_deref(), Some("hello"), "the older one");
+    cx.simulate_input(handle, "zzz");
+    assert!(missing(cx), "no matches");
+    assert_eq!(selected(cx), None);
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        window.render_frame(cx);
+        let ws = ws.read(cx);
+        assert!(ws.space.terminal(id).unwrap().find.is_none(), "closed");
+        assert!(
+            ws.focus_handle.is_focused(window),
+            "the terminal's keys again"
+        );
+    })
+    .unwrap();
+    // Nothing reached cat in between: the next line comes right after.
+    typed_until(cx, "mark\r", "mark\nmark");
+    assert!(
+        screen(cx).contains("hello\nhello\nmark\nmark"),
+        "{:?}",
+        screen(cx)
+    );
+}
+
+/// A press with Ctrl (Cmd on macOS) at a terminal's cell `(row, col)`.
+#[cfg(unix)]
+pub(super) fn ctrl_click_cell(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+    (row, col): (usize, usize),
+) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let body = window.find(("body", id.0 as usize)).bounds();
+        let (cell, z) = {
+            let ws = ws.read(cx);
+            (ws.cell.size, ws.space.view.zoom())
+        };
+        let pad = templum_canvas::chrome::PAD * z;
+        let position = point(
+            body.origin.x + px(pad + (col as f32 + 0.5) * cell.w * z),
+            body.origin.y + px(pad + (row as f32 + 0.5) * cell.h * z),
+        );
+        let modifiers = Modifiers::secondary_key();
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position,
+                modifiers,
+                click_count: 1,
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+/// Writes `text` into the terminal (cat shows it) and waits until `shown` is on screen.
+#[cfg(unix)]
+fn shown_in(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId, text: &str, shown: &str) {
+    use std::time::{Duration, Instant};
+    use templum_terminal::Snapshot;
+    ws.read_with(cx, |ws, _| {
+        ws.space
+            .terminal(id)
+            .unwrap()
+            .term
+            .write(text.as_bytes().to_vec())
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let screen = ws.read_with(cx, |ws, _| {
+            let mut snap = Snapshot::default();
+            snap.refresh(
+                ws.space.terminal(id).unwrap().term.shared(),
+                &ws.theme.palette,
+            );
+            snap.text()
+        });
+        if screen.contains(shown) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "{screen:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Ctrl+click on `main.rs:2` printed in a terminal opens the file beside it at line 2, in an
+/// editor on the repository.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn ctrl_click_on_a_path_opens_it_beside_the_terminal_at_its_line(cx: &mut TestAppContext) {
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(repo.path().join(".git")).unwrap();
+    std::fs::create_dir_all(repo.path().join("src")).unwrap();
+    std::fs::write(repo.path().join("src/main.rs"), "one\ntwo\nthree\n").unwrap();
+    let (handle, ws) = open(cx);
+    let id = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let rect = templum_canvas::Rect::new(40.0, 40.0, 600.0, 300.0);
+                let id = ws
+                    .spawn_block(rect, Some(repo.path().join("src")), window, cx)
+                    .unwrap();
+                ws.space.appearing.clear();
+                id
+            })
+        })
+        .unwrap();
+    shown_in(&ws, cx, id, "main.rs:2\r", "main.rs:2\nmain.rs:2");
+    ctrl_click_cell(handle, &ws, cx, id, (0, 2));
+    ws.read_with(cx, |ws, cx| {
+        let (eid, e) = ws
+            .space
+            .blocks
+            .iter()
+            .find_map(|(id, b)| Some((*id, b.editor()?)))
+            .expect("an editor opened");
+        assert_eq!(
+            e.folder.canonicalize().unwrap(),
+            repo.path().canonicalize().unwrap(),
+            "the repository, not the terminal's folder"
+        );
+        let tab = e.active_tab().unwrap();
+        assert_eq!(tab.name(), "main.rs");
+        assert_eq!(tab.editor.read(cx).cursor_position().line, 1);
+        let rect = |b| ws.space.canvas.get(b).unwrap().rect;
+        assert_eq!(
+            rect(eid).x,
+            rect(id).x + rect(id).w + templum_canvas::BESIDE
+        );
+        assert_eq!(ws.space.focused, Some(eid));
+        assert!(
+            ws.space
+                .terminal(id)
+                .unwrap()
+                .term
+                .shared()
+                .selection_text()
+                .is_none()
+        );
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn ctrl_click_on_a_url_opens_the_browser(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    shown_in(
+        &ws,
+        cx,
+        id,
+        "see https://example.com/x\r",
+        "x\nsee https://example.com/x",
+    );
+    ctrl_click_cell(handle, &ws, cx, id, (0, 8));
+    assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/x"));
+}
+
+/// The terminal's paste shortcut pastes into its find field, not into the shell.
+#[gpui_kit::test]
+fn the_paste_shortcut_pastes_into_the_find_field(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("needle".into()));
+    let paste = if cfg!(target_os = "macos") {
+        "cmd-v"
+    } else {
+        "ctrl-shift-v"
+    };
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(FIND, cx);
+        window.render_frame(cx);
+        window.press(paste, cx);
+        window.render_frame(cx);
+        let ws = ws.read(cx);
+        let bar = ws.space.terminal(id).unwrap().find.as_ref().unwrap();
+        assert_eq!(bar.input.read(cx).value().as_ref(), "needle");
+    })
+    .unwrap();
+}
+
+/// `cat` prints back what it reads: written to it, `request` reaches the terminal as its
+/// program's (a TUI turning on the mouse, the kitty keyboard, the full screen).
+#[cfg(unix)]
+fn program_asks(
+    request: &str,
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    asked: impl Fn(templum_terminal::Modes) -> bool,
+) {
+    let id = first_id(ws, cx);
+    ws.read_with(cx, |ws, _| {
+        let term = &ws.space.terminal(id).unwrap().term;
+        term.write(format!("{request}\r").into_bytes())
+    });
+    until(request, handle, ws, cx, |ws| {
+        asked(ws.space.terminal(id).unwrap().term.shared().modes())
+    });
+}
+
+/// What `cat` shows: it echoes ESC as "^[".
+#[cfg(unix)]
+fn screen_of(ws: &Workspace, id: BlockId) -> String {
+    let mut snap = templum_terminal::Snapshot::default();
+    snap.refresh(
+        ws.space.terminal(id).unwrap().term.shared(),
+        &ws.theme.palette,
+    );
+    snap.text()
+}
+
+/// A program that asked for the mouse (SGR, with drags) hears a press, the drag and the
+/// release, and the wheel; no text gets selected.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_program_that_asked_for_the_mouse_hears_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    program_asks("\x1b[?1002h\x1b[?1006h", handle, &ws, cx, |m| m.mouse);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let body = window.find(("body", id.0 as usize)).bounds();
+        let from = point(body.origin.x + px(20.), body.origin.y + px(20.));
+        window.drag(from, point(from.x + px(80.), from.y), cx);
+        let at = (f32::from(from.x), f32::from(from.y));
+        wheel(window, cx, at, ScrollDelta::Lines(point(0., 1.)), false);
+    })
+    .unwrap();
+    until("the reports", handle, &ws, cx, |ws| {
+        screen_of(ws, id).contains("^[[<64;")
+    });
+    ws.read_with(cx, |ws, _| {
+        let shown = screen_of(ws, id);
+        assert_eq!(
+            shown.matches("^[[<0;").count(),
+            2,
+            "press, release: {shown:?}"
+        );
+        assert!(shown.contains("^[[<32;"), "the drag: {shown:?}");
+        let pane = ws.space.terminal(id).unwrap();
+        assert_eq!(pane.term.shared().selection_text(), None);
+        assert!(ws.drag.is_none());
+    });
+}
+
+/// With the kitty keyboard on, Shift+Enter says so itself, in an agent too (Claude Code makes it
+/// a new line).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn shift_enter_in_the_kitty_keyboard(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    program_asks("\x1b[>1u", handle, &ws, cx, |m| m.kitty_keys);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into())
+    });
+    cx.update_window(handle, |_, window, cx| window.press("shift-enter", cx))
+        .unwrap();
+    until("Shift+Enter", handle, &ws, cx, |ws| {
+        screen_of(ws, id).contains("^[[13;2u")
+    });
+}
+
+/// A program full screen gets the keys of the shortcuts that yield to it: Ctrl+- (Claude Code's
+/// undo) reaches it, the canvas doesn't zoom. New terminal stays Templum's.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_program_full_screen_gets_the_shortcuts_that_yield(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    program_asks("\x1b[?1049h", handle, &ws, cx, |m| m.full_screen);
+    let zoom = ws.read_with(cx, |ws, _| ws.space.canvas.camera.zoom());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl--", cx);
+        window.press(NEW, cx);
+    })
+    .unwrap();
+    until("Ctrl+-", handle, &ws, cx, |ws| {
+        screen_of(ws, id).contains("^_")
+    });
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.canvas.camera.zoom(), zoom);
+        assert_eq!(ws.space.canvas.blocks().len(), 2, "a new terminal");
     });
 }

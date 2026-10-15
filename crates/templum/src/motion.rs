@@ -13,6 +13,13 @@ pub(crate) const HOVER: Duration = Duration::from_millis(120);
 pub(crate) const THEME: Duration = Duration::from_millis(200);
 /// The camera glides to a new zoom (or a fit); eased with `slide`.
 pub(crate) const FLIGHT: Duration = Duration::from_millis(150);
+/// Two tiles trading places in grid mode slide to them; eased with `slide`.
+pub(crate) const TILE: Duration = Duration::from_millis(220);
+/// A tile held by its title to trade places: smaller and faded, picked up.
+pub(crate) const HELD: Look = Look {
+    scale: 0.96,
+    opacity: 0.45,
+};
 /// Blocks are scaled by redrawing them at zoom × scale, which rasterizes text at that size:
 /// scales snap to steps so only a few extra sizes are ever cached (like the zoom steps).
 const SCALE_STEP: f32 = 0.02;
@@ -40,6 +47,23 @@ pub(crate) fn progress(since: Instant, now: Instant, duration: Duration) -> f32 
 /// Ease-out (cubic): fast at first, settling at the end.
 pub(crate) fn slide(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
+}
+
+/// How much of a panel sliding in since `since` (out, when `closing`) is in view at `now`: 0
+/// hidden, 1 all.
+pub(crate) fn slid(since: Instant, closing: bool, now: Instant) -> f32 {
+    let t = slide(progress(since, now, SLIDE));
+    if closing { 1.0 - t } else { t }
+}
+
+/// When a slide turned the other way at `now` must have started, to go on from where it is (no
+/// jump when turned back mid-slide).
+pub(crate) fn turned(since: Instant, closing: bool, now: Instant) -> Instant {
+    let shown = slid(since, closing, now);
+    let eased = if closing { shown } else { 1.0 - shown };
+    // `slide` inverted: the progress that eases to `eased`.
+    let progress = 1.0 - (1.0 - eased).cbrt();
+    now.checked_sub(SLIDE.mul_f32(progress)).unwrap_or(now)
 }
 
 /// Ease-out that goes a little past 1 and settles back ("back out"), peaking near 1.13.

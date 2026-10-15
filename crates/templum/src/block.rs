@@ -10,11 +10,11 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Animation, AnimationExt as _, AnyElement, BoxShadow, ClickEvent, Context, ElementId, Hsla,
+    Animation, AnimationExt as _, AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Hsla,
     MouseButton, MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt, Window, div,
     point, px,
 };
-use templum_canvas::{Block, Point, Rect, chrome};
+use templum_canvas::{Block, BlockId, Edges, Level, Point, Rect, chrome};
 
 use crate::alert::{self, Alert};
 use crate::editor;
@@ -24,7 +24,7 @@ use crate::kanban;
 use crate::menu::Target;
 use crate::motion::{self, Look};
 use crate::note;
-use crate::workspace::{Body, Pane, Workspace};
+use crate::workspace::{Body, FindBar, Pane, Workspace};
 
 /// World units, like everything in a block.
 const TITLE_FONT: f32 = 12.0;
@@ -33,6 +33,13 @@ const RADIUS: f32 = 10.0;
 const RING: f32 = 2.0;
 /// The card's border (`border_1`), screen pixels: not zoomed.
 pub(crate) const BORDER: f32 = 1.0;
+/// How thick the strips along a block's edges that resize it are, screen pixels, at most: thinner
+/// when zoomed out, so the title stays easy to grab.
+const EDGE: f32 = 6.0;
+/// Below Full a title is a label this far in from the card's border, and a terminal's status
+/// dot in it is this wide: screen pixels, never zoomed.
+const LABEL_IN: f32 = 4.0;
+const DOT: f32 = 8.0;
 
 /// `look` scales the block around its center (it is drawn at zoom × scale) and fades it.
 /// A block that isn't `live` is a ghost fading out: no controls, and clicks go through it.
@@ -86,7 +93,23 @@ pub(crate) fn render(
         _ => Point::default(),
     };
     let focused = live && ws.space.focused == Some(id);
-    let target = Target::Block(id);
+    // Selected blocks wear the focused one's ring and border, and so does the tile a held one
+    // would trade places with.
+    let marked = focused || (live && (ws.space.selected.contains(&id) || ws.dropping_on(id)));
+    // How much of the body is drawn: by its text's size on screen at the zoom the camera rests at
+    // (docs/specs/level-of-detail.md, section 1); the block worked in (focused, or holding the
+    // keyboard: GPUI drops the focus of what isn't drawn) is always Full, asked only below Full.
+    let level = match body {
+        // Drawn in full down to the Card level, which its 13 px never reach (3.25 px at 25%).
+        Body::Kanban(_) => Level::Full,
+        Body::Terminal(_) => templum_canvas::level(ws.cell.font_size, ws.space.rest),
+        _ => templum_canvas::level(font, ws.space.rest),
+    };
+    let level = if level != Level::Full && (focused || (live && body.has_focus(window, cx))) {
+        Level::Full
+    } else {
+        level
+    };
     let hovered = live && ws.space.hovered == Some(id);
     let ui = ws.ui;
     // 0 at rest, 1 hovered; eased both ways.
@@ -98,7 +121,7 @@ pub(crate) fn render(
         cx,
     );
     let mut shadows = vec![shadow(ui.shadow, focused, lift, z)];
-    if focused {
+    if marked {
         shadows.push(BoxShadow {
             color: ui.ring,
             offset: point(px(0.0), px(0.0)),
@@ -108,43 +131,145 @@ pub(crate) fn render(
         });
     }
 
-    let title = div()
-        .id(("title", n))
-        .absolute()
-        .inset_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        // Clear of the close button on the right, and centered.
-        .px(px(28.0 * z))
-        .overflow_hidden()
-        .child(
-            div()
-                .truncate()
-                .text_size(px(TITLE_FONT * z))
-                .text_color(if focused { ui.title } else { ui.title_dim })
-                .child(match body {
-                    Body::Terminal(pane) => SharedString::from(pane.term.title()),
-                    Body::Kanban(k) => k.title(ws),
-                    Body::Note(n) => n.title(cx),
-                    Body::Editor(e) => e.title(),
-                    Body::Git(g) => g.title(),
-                }),
-        )
-        .when(live, |el| {
-            el.on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
-                    // A double-click frames the block; the camera flies, so nothing moves.
-                    if e.click_count == 2 {
-                        ws.frame_block(id, window, cx);
-                    } else {
-                        ws.begin_move(id, e.position);
-                    }
-                }),
-            )
+    // The card's background, a note's tint included; a label sits on it too.
+    let bg = match body {
+        Body::Note(note) => note
+            .tab()
+            .and_then(|t| ws.notes.get(t.id)?.color)
+            .map_or(ws.ui.surface, |color| ws.theme.note_bg(color)),
+        _ => ws.ui.surface,
+    };
+    // Below Full the title is a label: never scaled, at the card's top-left corner, over the
+    // header and the top of the body (docs/specs/level-of-detail.md, section 2).
+    let labeled = templum_canvas::level(TITLE_FONT, ws.space.rest) != Level::Full;
+    let title_text = div()
+        .id(("title-text", n))
+        .truncate()
+        .when(labeled, |el| el.min_w(px(0.0)))
+        .text_size(px(TITLE_FONT * if labeled { 1.0 } else { z }))
+        .text_color(if focused { ui.title } else { ui.title_dim })
+        .child(match body {
+            Body::Git(g) if labeled => format!("Git · {}", g.title()).into(),
+            body => title(ws, body, cx),
         })
         .test_support();
+    // A terminal's state: on the left of its header, or in its label.
+    let dot = match body {
+        Body::Terminal(pane) if live => status_dot(ws, pane).map(|(color, text)| {
+            div()
+                .id(("status", n))
+                .flex_shrink_0()
+                .size(px(if labeled { DOT } else { 7.0 * z }))
+                .rounded_full()
+                .bg(color)
+                .when(!labeled, |el| {
+                    el.absolute()
+                        .top(px((chrome::TITLE_H - 7.0) / 2.0 * z))
+                        .left(px(12.0 * z))
+                })
+                .tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
+                .test_support()
+        }),
+        _ => None,
+    };
+    let (label_dot, header_dot) = if labeled { (dot, None) } else { (None, dot) };
+    // Its agent's session, after the dot (docs/specs/usage.md); over the title, which moves the
+    // block as before.
+    let chip = match body {
+        Body::Terminal(pane) if live && !labeled => pane
+            .usage
+            .as_ref()
+            .and_then(crate::usage::chip)
+            .map(|(text, tip)| {
+                div()
+                    .id(("usage-chip", n))
+                    .absolute()
+                    .top(px(4.0 * z))
+                    .left(px(24.0 * z))
+                    .h(px(20.0 * z))
+                    .flex()
+                    .items_center()
+                    .text_size(px(11.0 * z))
+                    .text_color(ui.title_dim)
+                    .child(text)
+                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                    .test_support()
+            }),
+        _ => None,
+    };
+    let title = if labeled {
+        div()
+            .id(("title", n))
+            .absolute()
+            .top(px(LABEL_IN))
+            .left(px(LABEL_IN))
+            .max_w(px((r.w - 2.0 * BORDER - 2.0 * LABEL_IN).max(0.0)))
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(6.0))
+            .py(px(2.0))
+            .overflow_hidden()
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(ui.hairline)
+            .bg(bg)
+            .children(label_dot)
+            .child(title_text)
+    } else {
+        div()
+            .id(("title", n))
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            // Clear of the fullscreen and close buttons on the right (and of a terminal's chip
+            // on the left), and centered.
+            .px(px(if chip.is_some() { 120.0 } else { 52.0 } * z))
+            .overflow_hidden()
+            .child(title_text)
+    }
+    // The title is where the block is held to move it: an open hand over it, a closed one
+    // while it moves (CSS's grab and grabbing).
+    .when(live, |el| {
+        if ws.moving(id) {
+            el.cursor_grabbing()
+        } else {
+            el.cursor_grab()
+        }
+    })
+    .when(live, |el| {
+        el.on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                // Shift+click selects the block, or deselects it; it neither moves nor focuses.
+                if e.modifiers.shift {
+                    ws.toggle_selected(id, window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                // A double-click frames the block; the camera flies, so nothing moves.
+                if e.click_count == 2 {
+                    ws.frame_block(id, window, cx);
+                } else if ws.space.selected.contains(&id) {
+                    // A selected block's title moves every selected block, still selected.
+                    ws.begin_group_move(e.position);
+                    cx.stop_propagation();
+                    return;
+                } else {
+                    ws.begin_move(id, e.position);
+                }
+                // A label lies over the body: it takes the press itself, so a terminal under it
+                // starts no selection, and it focuses the block as the card would.
+                if labeled {
+                    ws.focus_block(id, window, cx);
+                    cx.stop_propagation();
+                }
+            }),
+        )
+    })
+    .test_support();
 
     // Painted over the title: pressing it never starts a move.
     let close = div()
@@ -167,26 +292,45 @@ pub(crate) fn render(
         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.close(id, window, cx)))
         .test_support();
 
-    // A terminal's state, on the left of its header.
-    let dot = match body {
-        Body::Terminal(pane) if live => status_dot(ws, pane).map(|(color, text)| {
-            div()
-                .id(("status", n))
-                .absolute()
-                .top(px((chrome::TITLE_H - 7.0) / 2.0 * z))
-                .left(px(12.0 * z))
-                .size(px(7.0 * z))
-                .rounded_full()
-                .bg(color)
-                .tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
-                .test_support()
-        }),
-        _ => None,
-    };
+    // Beside it: the block full screen (grid mode), or back to the canvas.
+    let tiled = ws.space.grid.is_some();
+    let fullscreen = div()
+        .id(("fullscreen", n))
+        .absolute()
+        .top(px(4.0 * z))
+        .right(px(28.0 * z))
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(20.0 * z))
+        .rounded(px(5.0 * z))
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .child(
+            Icon::new(if tiled {
+                IconName::Minimize2
+            } else {
+                IconName::Maximize2
+            })
+            .size(px(12.0 * z))
+            .text_color(ui.title),
+        )
+        .tooltip(move |window, cx| {
+            Tooltip::new(if tiled {
+                "Back to the canvas"
+            } else {
+                "Fullscreen"
+            })
+            .build(window, cx)
+        })
+        // The block isn't focused by this press: that would drop the selection going full screen.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.fullscreen(id, window, cx)))
+        .test_support();
 
     // A kanban block's board list, on the left of its header (over the title: no move).
     let boards = match body {
-        Body::Kanban(_) if live => Some(
+        Body::Kanban(_) if live && !labeled => Some(
             div()
                 .id(("boards", n))
                 .absolute()
@@ -210,43 +354,14 @@ pub(crate) fn render(
         ),
         _ => None,
     };
-    // A note's preview toggle, on the left of its header (over the title: no move).
+    // A note block's button to every note, on the left of its header (over the title: no move).
     let preview = match body {
-        Body::Note(note) if live => {
-            let on = note.preview;
-            Some(
-                div()
-                    .id(("preview", n))
-                    .absolute()
-                    .top(px(4.0 * z))
-                    .left(px(4.0 * z))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size(px(20.0 * z))
-                    .rounded(px(5.0 * z))
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(ui.hover))
-                    .child(
-                        Icon::new(if on { IconName::EyeOff } else { IconName::Eye })
-                            .size(px(12.0 * z))
-                            .text_color(ui.title),
-                    )
-                    .tooltip(move |window, cx| {
-                        Tooltip::new(if on { "Edit" } else { "Preview" }).build(window, cx)
-                    })
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.toggle_preview(id, window, cx)
-                    }))
-                    .test_support(),
-            )
-        }
+        Body::Note(_) if live && !labeled => Some(note::notes_button(ws, id, z, cx)),
         _ => None,
     };
     // An editor's file-tree toggle, on the left of its header (over the title: no move).
     let tree_toggle = match body {
-        Body::Editor(e) if live => {
+        Body::Editor(e) if live && !labeled => {
             let shown = e.show_tree;
             Some(
                 div()
@@ -285,16 +400,44 @@ pub(crate) fn render(
         }
         _ => None,
     };
+    // The resize strips, on the block under the pointer only (the pointer reaches an edge from
+    // inside the block): the top ones under the header's buttons, the others over the body.
+    let edge = (EDGE * z).clamp(2.0, EDGE);
+    // A tile's size is the grid's: it has no resize strips nor grip.
+    let (top_zones, other_zones) = if hovered && !tiled {
+        let mut zone = |edges| resize_zone(id, edges, edge, cx);
+        (
+            vec![
+                zone(Edges::TOP),
+                zone(Edges::TOP_LEFT),
+                zone(Edges::TOP_RIGHT),
+            ],
+            vec![
+                zone(Edges::LEFT),
+                zone(Edges::RIGHT),
+                zone(Edges::BOTTOM),
+                zone(Edges::BOTTOM_LEFT),
+                zone(Edges::BOTTOM_RIGHT),
+            ],
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let header = div()
         .relative()
         .w_full()
         .h(px(chrome::TITLE_H * z))
         .child(title)
-        .children(dot)
+        .children(top_zones)
+        .children(header_dot)
+        .children(chip)
         .children(boards)
         .children(preview)
         .children(tree_toggle)
-        .when(hovered, |el| el.child(fade_in(close, ("close-fade", n))));
+        .when(hovered, |el| {
+            el.child(fade_in(fullscreen, ("fullscreen-fade", n)))
+                .child(fade_in(close, ("close-fade", n)))
+        });
 
     let frame = div()
         .id(("body", n))
@@ -305,60 +448,103 @@ pub(crate) fn render(
         .h(px((r.h - chrome::TITLE_H * z).max(0.0)))
         .p(px(chrome::PAD * z))
         .overflow_hidden();
-    let content = match body {
-        Body::Terminal(pane) => frame
-            .when(live, |el| {
-                el.cursor_text()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |ws, e: &MouseDownEvent, _, _| ws.begin_select(id, e)),
-                    )
-                    .on_scroll_wheel(cx.listener(move |ws, e: &ScrollWheelEvent, _, cx| {
+    let content =
+        match body {
+            Body::Terminal(pane) => frame
+                // At the Card level nothing is inside: the grid isn't painted, so the terminal isn't
+                // re-armed and its output asks for no frames, as off screen.
+                .when(live && level != Level::Card, |el| {
+                    el.cursor_text().on_any_mouse_down(cx.listener(
+                        move |ws, e: &MouseDownEvent, window, cx| {
+                            let left = e.button == MouseButton::Left;
+                            // Ctrl+click (Cmd on macOS) opens a path or a link; the block's own
+                            // press would take the keyboard back from the editor it opened.
+                            if left && e.modifiers.secondary() && ws.open_link(id, e, window, cx) {
+                                cx.stop_propagation();
+                            } else if ws.press_program(id, e) {
+                                // The card focuses on a left press; the middle and right ones
+                                // are the program's, not the canvas's pan nor the block's menu.
+                                if !left {
+                                    ws.focus_block(id, window, cx);
+                                    cx.stop_propagation();
+                                }
+                            } else if left {
+                                ws.begin_select(id, e);
+                            }
+                        },
+                    ))
+                })
+                // Over bars the wheel moves the canvas: a far terminal's history stays still.
+                .when(live && level == Level::Full, |el| {
+                    el.on_scroll_wheel(cx.listener(move |ws, e: &ScrollWheelEvent, _, cx| {
                         ws.scroll_terminal(id, e, cx)
                     }))
-            })
-            .child(grid::body(
-                pane.term.shared().clone(),
-                pane.snapshot.clone(),
-                ws.cell.clone(),
-                z,
-                focused,
-                ws.marked.clone().filter(|_| focused),
-                ws.theme.clone(),
-                ws.blink_on,
-                cx.entity(),
-            )),
-        // A fading kanban block is drawn empty: its board is still live elsewhere.
-        Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
-        // A fading note is drawn empty, like a kanban block.
-        Body::Note(n) => frame.when(live, |el| {
-            el.child(settled_box(
-                block,
-                settled,
-                pull,
-                note::body(ws, id, n, settled, cx),
-            ))
-        }),
-        // A fading editor is drawn empty, like a note.
-        Body::Editor(e) => frame.when(live, |el| {
-            el.child(settled_box(
-                block,
-                settled,
-                pull,
-                editor::body(ws, id, e, settled, cx),
-            ))
-        }),
-        // A fading Git block is drawn empty, like a note.
-        Body::Git(g) => frame.when(live, |el| {
-            el.child(settled_box(
-                block,
-                settled,
-                pull,
-                git_block::body(ws, id, g, settled, cx),
-            ))
-        }),
-    }
-    .test_support();
+                })
+                .when(level != Level::Card, |el| {
+                    let grid = grid::body(
+                        pane.term.shared().clone(),
+                        pane.snapshot.clone(),
+                        ws.cell.clone(),
+                        z,
+                        level == Level::Silhouette,
+                        focused,
+                        ws.marked.clone().filter(|_| focused),
+                        ws.theme.clone(),
+                        ws.blink_on,
+                        cx.entity(),
+                    );
+                    if level == Level::Full {
+                        el.child(grid)
+                    } else {
+                        el.child(
+                            div()
+                                .id(("silhouette", n))
+                                .size_full()
+                                .child(grid)
+                                .test_support(),
+                        )
+                    }
+                })
+                // Its find field is kept while the block is far, and comes back with its letters.
+                .when_some(
+                    pane.find.as_ref().filter(|_| live && level == Level::Full),
+                    |el, bar| el.child(find_bar(ws, n, bar, z)),
+                ),
+            // A fading kanban block is drawn empty: its board is still live elsewhere.
+            Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
+            // A fading note is drawn empty, like a kanban block.
+            // Below Full a note shown rendered is its tinted card, empty: gpui-kit's Markdown view
+            // has no layout to draw bars from.
+            Body::Note(n) => frame.when(live, |el| {
+                el.child(settled_box(
+                    block,
+                    settled,
+                    pull,
+                    note::body(ws, id, n, settled, level, cx),
+                ))
+            }),
+            // A fading editor is drawn empty, like a note.
+            Body::Editor(e) => frame.when(live, |el| {
+                el.child(settled_box(
+                    block,
+                    settled,
+                    pull,
+                    editor::body(ws, id, e, settled, level, cx),
+                ))
+            }),
+            // A fading Git block is drawn empty, like a note. Below Full it is its card: its body is
+            // dozens of components whose shape says little from afar, and its diff rows and commit
+            // fields would do their per-frame work for nothing.
+            Body::Git(g) => frame.when(live && level == Level::Full, |el| {
+                el.child(settled_box(
+                    block,
+                    settled,
+                    pull,
+                    git_block::body(ws, id, g, settled, cx),
+                ))
+            }),
+        }
+        .test_support();
 
     let handle = div()
         .id(("handle", n))
@@ -380,7 +566,7 @@ pub(crate) fn render(
             // The handle overlaps the body: stop here so the body doesn't start a selection.
             cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
                 ws.focus_block(id, window, cx);
-                ws.begin_resize(id, e.position);
+                ws.begin_resize(id, Edges::BOTTOM_RIGHT, e.position);
                 cx.stop_propagation();
             }),
         )
@@ -402,21 +588,21 @@ pub(crate) fn render(
         .rounded(px(RADIUS * z))
         // Always 1 px, so focusing never moves the grid.
         .border_1()
-        .border_color(if focused {
+        .border_color(if marked {
             ui.accent
         } else {
             ui.hairline.lerp(&ui.hover_border, lift)
         })
-        .bg(ws.ui.surface)
+        .bg(bg)
         .shadow(shadows)
         .overflow_hidden()
         .when(live, |el| {
             // Nothing behind a block reacts to its clicks; wheel events still bubble
             // (title bar pans).
             el.block_mouse_except_scroll()
-                .on_hover(
-                    cx.listener(move |ws, hovered: &bool, _, cx| ws.hover_block(id, *hovered, cx)),
-                )
+                .on_hover(cx.listener(move |ws, hovered: &bool, window, cx| {
+                    ws.hover_block(id, *hovered, window, cx)
+                }))
                 // Blocking hides the workspace from pinch (it hit-tests like a click): zoom
                 // here too.
                 .on_pinch(cx.listener(|ws, e, window, cx| ws.on_pinch(e, window, cx)))
@@ -435,26 +621,141 @@ pub(crate) fn render(
                         cx.stop_propagation();
                     }),
                 )
-                // Its menu acts on it: it is focused first (copy, paste).
+                // Its menu acts on it: it is focused first (copy, paste). The selection it is in
+                // goes along (Fullscreen takes it), read before focusing drops it.
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+                        let group = if ws.space.selected.contains(&id) {
+                            ws.space.selected.clone()
+                        } else {
+                            Vec::new()
+                        };
                         ws.focus_block(id, window, cx);
-                        ws.open_menu(target.clone(), e.position, window, cx);
+                        let target = Target::Block { id, group };
+                        ws.open_menu(target, e.position, window, cx);
                         cx.stop_propagation();
                     }),
                 )
         })
-        .child(header)
-        .child(content)
-        .when(hovered, |el| el.child(fade_in(handle, ("handle-fade", n))))
+        .map(|el| {
+            // A label lies over the top of the body: the header is drawn after it then.
+            if labeled {
+                el.child(content).child(header)
+            } else {
+                el.child(header).child(content)
+            }
+        })
+        .children(other_zones)
+        .when(hovered && !tiled, |el| {
+            el.child(fade_in(handle, ("handle-fade", n)))
+        })
         .test_support()
         .into_any_element()
 }
 
+/// A block's title: a terminal's, a kanban block's board, a note's first line, an editor's file,
+/// a Git block's repository.
+pub(crate) fn title(ws: &Workspace, body: &Body, cx: &App) -> SharedString {
+    match body {
+        Body::Terminal(pane) => SharedString::from(pane.term.title()),
+        Body::Kanban(k) => k.title(ws),
+        Body::Note(n) => n.title(cx),
+        Body::Editor(e) => e.title(),
+        Body::Git(g) => g.title(),
+    }
+}
+
+/// A terminal's find field, over its top right corner; "No matches" beside it when so.
+fn find_bar(ws: &Workspace, n: usize, bar: &FindBar, z: f32) -> AnyElement {
+    div()
+        .id(("find", n))
+        .absolute()
+        .top(px(chrome::PAD * z))
+        .right(px(chrome::PAD * z))
+        .w(px(260.0 * z))
+        .flex()
+        .items_center()
+        .gap(px(6.0 * z))
+        .p(px(4.0 * z))
+        .rounded(px(6.0 * z))
+        .bg(ws.ui.surface)
+        .border_1()
+        .border_color(ws.ui.hairline)
+        // Clicks here are the field's, not a selection's in the grid below.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(git_block::field(&bar.input, z).flex_1())
+        .when(bar.missing, |el| {
+            el.child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(git_block::FONT * z))
+                    .text_color(hsla(ws.theme.palette.ansi[1], 1.0))
+                    .child("No matches"),
+            )
+        })
+        .test_support()
+        .into_any_element()
+}
+
+/// An invisible strip along a block's edge (`edge` thick), or a square at its corner, that resizes
+/// it by those `edges`, like a window's border.
+fn resize_zone(id: BlockId, edges: Edges, edge: f32, cx: &mut Context<Workspace>) -> AnyElement {
+    let corner = 2.0 * edge;
+    let name = match (edges.top, edges.bottom, edges.left, edges.right) {
+        (true, _, true, _) => "top-left",
+        (true, _, _, true) => "top-right",
+        (_, true, true, _) => "bottom-left",
+        (_, true, _, true) => "bottom-right",
+        (true, ..) => "top",
+        (_, true, ..) => "bottom",
+        (_, _, true, _) => "left",
+        _ => "right",
+    };
+    let el = div()
+        .id(ElementId::Name(format!("resize-{name}-{}", id.0).into()))
+        .absolute();
+    // Across: the edge's own side; along: clear of the corners' squares.
+    let el = match (edges.left || edges.right, edges.top || edges.bottom) {
+        (true, true) => el.size(px(corner)),
+        (true, false) => el.w(px(edge)).top(px(corner)).bottom(px(corner)),
+        _ => el.h(px(edge)).left(px(corner)).right(px(corner)),
+    };
+    let el = if edges.left {
+        el.left_0()
+    } else if edges.right {
+        el.right_0()
+    } else {
+        el
+    };
+    let el = if edges.top {
+        el.top_0()
+    } else if edges.bottom {
+        el.bottom_0()
+    } else {
+        el
+    };
+    let el = match name {
+        "top-left" | "bottom-right" => el.cursor_nwse_resize(),
+        "top-right" | "bottom-left" => el.cursor_nesw_resize(),
+        "top" | "bottom" => el.cursor_ns_resize(),
+        _ => el.cursor_ew_resize(),
+    };
+    el.on_mouse_down(
+        MouseButton::Left,
+        cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
+            ws.focus_block(id, window, cx);
+            ws.begin_resize(id, edges, e.position);
+            cx.stop_propagation();
+        }),
+    )
+    .test_support()
+    .into_any_element()
+}
+
 /// The zoom nearest `z` at which gpui-kit's editor rows, 1.5 × their text size of `font × zoom`,
-/// are whole pixels. GPUI rounds them to whole pixels (gpui-pre-0.3.8 src/style.rs:555,
-/// gpui-component-0.7.1 src/input/editor.rs:145): at any other zoom the rows grow a pixel at a
+/// are whole pixels. GPUI rounds them to whole pixels (gpui-pre-0.3.9 src/style.rs:555,
+/// gpui-component-0.7.3 src/input/editor.rs:145): at any other zoom the rows grow a pixel at a
 /// time while the letters grow smoothly, and the text below the first rows jumps.
 fn exact_rows(z: f32, font: f32) -> f32 {
     let row = 1.5 * font;

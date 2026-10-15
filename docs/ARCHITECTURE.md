@@ -9,11 +9,13 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 | Crate | Kind | Responsibility | May depend on the UI framework? |
 |---|---|---|---|
 | `templum` | bin | Window, event loop, rendering, input, wiring | **Yes, the only one** (`gpui-kit`) |
-| `templum-canvas` | lib | Pure model: camera (pan, zoom), blocks, hit-testing, snapping, layout (de)serialization | No |
+| `templum-canvas` | lib | Pure model: camera (pan, zoom), blocks, hit-testing, snapping, level of detail, layout (de)serialization | No |
 | `templum-terminal` | lib | Wraps `alacritty_terminal`: shell in a PTY, input, resize, key encoding, events | No |
-| `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values | No |
+| `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values, finds conflict regions by their markers (`conflict.rs`), lays History's commits out in lanes from their parents (`graph.rs`), turns a blame into the diff panel's rows (`blame.rs`), keeps the trash of discarded changes, and asks an AI agent for a commit message (`message.rs`) | No |
+| `templum-usage` | lib | Reads what CLI agents write about their sessions and plan limits: Claude Code's status line through Templum's relay, and its transcripts (`claude.rs`); Codex's rollout files (`codex.rs`); when to warn about a limit or tell its reset (`watch.rs`). Never an agent's credentials ([specs/usage.md](specs/usage.md)) | No |
+| `templum-update` | lib | Finds the newest release on GitHub (`lib.rs`), how Templum was installed and the release file that fits it (`install.rs`). Downloads it and checks GitHub's SHA-256 (`fetch.rs`), then puts it in place: a rename over the AppImage or executable, a bundle swap on macOS, an installer's command line, a command for a terminal ([specs/updates.md](specs/updates.md)) | No |
 
-All four crates exist. New library crates are created together with the first real code that needs
+All six crates exist. New library crates are created together with the first real code that needs
 them, never as empty scaffolding. The behavior of the current version is specified in
 [specs/walking-skeleton.md](specs/walking-skeleton.md), [specs/design-system.md](specs/design-system.md) and
 [specs/config.md](specs/config.md).
@@ -48,8 +50,14 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   Blocking here doubled frame times in the spike.
 - Only blocks inside the viewport are drawn.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
-  rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded;
-  far-away blocks are drawn simplified (level of detail). A zoom glides to its step over 150 ms through
+  rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.
+  Far away, each block is drawn at a level of detail picked by its text's size on screen at the zoom the camera
+  last came to rest at (`Space::rest`; `templum-canvas`'s `lod.rs`), so a level never changes mid-glide: Full
+  while the text is 5.5 px or more; Silhouette under it, where a terminal paints bars of its text's colors on the
+  letters' cells, an editor or a note bars of the words gpui-kit laid out in its last Full frame
+  (`silhouette.rs`), a Git block is its card and a kanban block is drawn in full; Card under 2.5 px. The block worked in (focused, or holding the
+  keyboard) is always Full, and below Full a title is a fixed-size label (specs/level-of-detail.md).
+  A zoom glides to its step over 150 ms through
   zooms snapped to 0.02 (`templum-canvas`'s `CameraFlight`); the camera holds the target, the workspace's `view`
   is what is drawn. Terminals and kanban blocks glide with the view. Editor, note and Git bodies glide too, but
   only through the zooms where gpui-kit's editor rows (1.5 × the font, rounded to whole pixels by GPUI) are
@@ -67,8 +75,14 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - The window is opaque: a solid canvas with a dot grid fixed to the world, and blocks drawn as cards on it
   ([specs/polish.md](specs/polish.md)).
 - A theme is a file in Alacritty's color format. `crates/templum/src/theme.rs` derives every interface color
-  from the terminal colors, so any Alacritty theme works. The built-ins live in `crates/templum/themes/`, with
-  their credits.
+  from the terminal colors, so any Alacritty theme works; an optional `[templum]` table sets the accent, the canvas
+  and the dots instead. The built-ins live in `crates/templum/themes/`, with their credits.
+- The file of the theme in use is polled with `config.toml` (`poll_theme` in `workspace/preferences.rs`): saving
+  it applies it, and a file that stops reading keeps the last good colors. New themes are written from
+  `theme::template`, never over an existing file.
+- `gallery.rs` lists alacritty-theme's files through GitHub's API (`templum_update::get`) and keeps them in
+  `<data folder>/theme-gallery/` (`index.json` and one `<git hash>.toml` per file); only files not cached are
+  downloaded. Installing copies one into the themes folder.
 - `templum-terminal` only knows a `Palette` (foreground, background, 16 ANSI colors). It never sees a theme.
 - `config.toml` holds the light and dark theme names; the picker edits it with `toml_edit`, keeping comments.
 
@@ -79,13 +93,39 @@ A file holds one responsibility; a module that grows past a few hundred lines be
 
 - `workspace/`: `mod.rs` has the types (`Workspace`, `Space`, `Body`, `Tool`…) and the constructor; each other file
   is an `impl Workspace` block for one area: `spaces.rs` (the workspaces), `blocks.rs` (adding, focusing and
-  closing blocks), `view.rs` (the camera), `input.rs` (keys and the pointer), `render.rs` (drawing a frame),
-  `drawing.rs` (the drawing tools), `persist.rs` (restoring and saving the canvas), `preferences.rs` (config,
+  closing blocks), `view.rs` (the camera), `input.rs` (keys and the pointer), `selection.rs` (selected blocks: Shift+drag,
+  Shift+click on a title; moving them together, Delete, Copy and Paste), `history.rs` (Ctrl+Z and Ctrl+Shift+Z on the
+  blocks: added, closed, moved, resized; each step keeps the change that takes it back), `tiling.rs` (grid mode:
+  blocks tiled full screen like Hyprland, [specs/grid.md](specs/grid.md)), `render.rs` (drawing a frame),
+  `drawing.rs` (the drawing tools), `note_tabs.rs` (note blocks' tabs and the notes they open), `persist.rs`
+  (restoring and saving the canvas), `preferences.rs` (config,
   themes, settings panel), `files.rs` and `file_tree.rs` (editor blocks), `git_ops.rs`, `git_changes.rs`,
-  `git_branches.rs` and `git_history.rs` (Git blocks). Methods a sibling or a test calls are `pub(super)`.
+  `git_branches.rs`, `git_history.rs`, `git_discard.rs` (discards through the trash), `git_keys.rs` (the
+  block's keys), `git_switch.rs` (switching branches without losing work), `git_sync.rs` (Sync, Publish, Clone),
+  `git_compare.rs` (a branch against the default one), `git_conflicts.rs` (conflicts region by region) and
+  `git_message.rs` (commit messages from an agent) (Git blocks), `usage.rs` (the agents' usage read after each
+  snapshot, the limits' notifications, the `--settings` the Claude Code Templum opens gets). Methods a sibling or a test calls are `pub(super)`.
   `workspace/tests/` holds its tests, one file per area, with the shared helpers in `tests/mod.rs`.
 - `settings/`, `git_block/` and `menu/`: the panel's sections, the Git block's tabs, and what each menu lists, each
-  in its own file behind the folder's `mod.rs`, which keeps the paths the rest of the crate uses.
+  in its own file behind the folder's `mod.rs`, which keeps the paths the rest of the crate uses. `git_block/diff_view/`
+  holds the diff panel: its rows model (`rows.rs`, pure; Split's pairs too), the highlight cache, the selection,
+  and the rows painted on a canvas in the terminal's font, unified or side by side; it shows the working changes,
+  a read-only list of files (a comparison, a commit, a stash) or a blame. Each tab has its own panel (Changes',
+  History's, Stashes', a comparison's: `Git::diff()` picks the one on screen), so the 2-second read of the
+  working changes never touches another tab's. `git_block/history.rs` draws History's left column: the commits
+  with their graph, or the commit shown. `git_block/words.rs` holds the Git words' tooltips and the sentences the block says;
+  `git_block/switcher.rs` the branch switcher.
+- `sidebar.rs`: the workspaces' tiles and a workspace's face (its image, icon or initials, in its color);
+  `spaces_screen.rs`: the workspaces screen (cards, search, keys, dragging to reorder); `space_dialog.rs`: a
+  workspace's look and its Edit… dialog ([specs/cockpit.md](specs/cockpit.md#6-the-workspaces-screen)).
+- `welcome.rs`: the welcome a first run opens over a frosted canvas (each block a soft shadow of its shape: GPUI has
+  no backdrop blur), five pages whose settings are the panel's rows (`settings/welcome.rs`); the first terminal
+  opens when it closes ([specs/welcome.md](specs/welcome.md)).
+- `usage.rs`: the title bar's usage meter, its popover and a terminal's usage chip.
+- `update.rs`: where an update stands (`Update`), its title-bar pill and its lines in Settings ▸ Updates;
+  `workspace/update.rs` checks GitHub at start and every day, downloads through `templum-update`, tells the news,
+  restarts (GPUI's `cx.restart()`) or types the package manager's command in a terminal, and swaps the files when
+  Templum quits ([specs/updates.md](specs/updates.md)).
 
 ## Configuration
 
@@ -94,7 +134,12 @@ A file holds one responsibility; a module that grows past a few hundred lines be
 - Shortcuts are Templum's own keymap (`crates/templum/src/keys.rs`), matched in the workspace's key handler, so a
   reload can replace them. GPUI key bindings are only used to keep Tab for the shell. Commands that only make sense
   in an editor (`save`, `close_tab`, `go_to_line`) are dropped by `effective` when no editor block has the focus, so
-  their keys reach the terminal.
+  their keys reach the terminal; so are zoom, settings, the theme picker and the prompt jumps
+  (`Command::yields_to_programs`) when a program took over the focused terminal (full screen, an agent, the mouse or
+  the kitty keyboard asked for): its own hotkeys use them.
+- `templum-terminal` encodes keys as xterm does, and in the kitty keyboard protocol for programs that turn it on
+  (Claude Code and Codex hear Shift+Enter); mouse events go to programs that asked for them (xterm's 1000/1002/1003,
+  SGR or UTF-8), Shift keeping a drag Templum's selection.
 - `templum-terminal` gets settings as plain values (`TermOptions`, a start folder) and reports a shell's folder
   through `sysinfo`. It never reads the file.
 - The settings panel (`crates/templum/src/settings/`) builds gpui-kit `Settings` pages from the active `Config`
@@ -106,9 +151,15 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   hand.
 - The workspace on screen is `Workspace::space`; the hidden ones (`others`) keep their terminals running, unarmed so
   their output never wakes the UI. The sidebar (`sidebar.rs`) switches them by swapping. `session.rs` keeps their
-  order and names in `workspaces/index.json` ([specs/workspaces.md](specs/workspaces.md)).
-- Every block's content is a `Body` in `Space::blocks`: a terminal, a kanban block, a note (`note.rs`, gpui-kit's
-  editor with the Markdown grammar), an editor (`editor.rs`: a lazy folder model behind gpui-base's `Tree`, tabs of
+  order, names and looks in `workspaces/index.json` ([specs/workspaces.md](specs/workspaces.md)). A stopped one
+  (`Space::stopped`) has no blocks: its canvas waits in `Space::saved`, which the snapshots never write over, and
+  `switch_to` restores it as a start does. Its processes end through `templum_terminal::tree` (read before the
+  shells hang up) and `kill_left` two seconds later. Moving blocks takes them off one space (`take_block`) and adds
+  them to another swapped in as the one shown (`with_space`), still running.
+- Every block's content is a `Body` in `Space::blocks`: a terminal, a kanban block, a note block (`note.rs`: tabs
+  of plain-text notes in gpui-kit's editor, and the Notes dialog; the notes themselves are app-wide in `notes.rs`, saved
+  in `notes.json` with the snapshot, every change written there as it is typed; `workspace/note_tabs.rs` opens, closes
+  and deletes them), an editor (`editor.rs`: a lazy folder model behind gpui-base's `Tree`, tabs of
   gpui-kit `EditorState`s, files read and written on the UI thread) or a Git block (`git_block/`: the repository's
   state read in the background by `templum-git`, one command at a time per block with the others waiting in turn,
   the lists, the diff view and the commit form; a failed `git` is a notification that can hand the command to a

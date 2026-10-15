@@ -82,12 +82,18 @@ zoom_in        = ["ctrl-=", "ctrl-+"]
 zoom_out       = "ctrl--"
 zoom_reset     = "ctrl-0"
 fit_all        = ["ctrl-shift-1", "ctrl-!"]
+toggle_grid    = "ctrl-shift-enter"   # the focused block (or the selection) full screen, and back
+focus_left     = "ctrl-alt-left"      # grid mode: the tile on that side (and right, up, down)
+swap_left      = "ctrl-alt-shift-left"  # grid mode: trade places with it (and right, up, down)
 theme_picker   = "ctrl-shift-p"
 open_config    = "ctrl-,"
+go_to_waiting  = "ctrl-shift-a"   # the terminal waiting for you
+find           = "ctrl-shift-f"   # in the focused terminal's history
+open_file      = "ctrl-p"         # in a focused editor: a file by name
 ```
 
 On macOS the default shortcuts are `cmd-t`, `cmd-w`, `cmd-c`, `cmd-v`, `cmd-=` and `cmd-+`, `cmd--`, `cmd-0`,
-`cmd-shift-1` and `cmd-!`, `cmd-shift-p` and `cmd-,`.
+`cmd-shift-1` and `cmd-!`, `cmd-shift-enter`, `cmd-shift-p`, `cmd-,`, `cmd-shift-a`, `cmd-f` and `cmd-p`.
 
 ### Rules per table
 
