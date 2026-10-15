@@ -32,6 +32,12 @@ pub fn claude(input: &Value) -> Option<AgentEvent> {
         "SessionStart" if input["source"] == "compact" => return None,
         "SessionStart" => AgentEvent::Started,
         "UserPromptSubmit" | "PostToolUse" => AgentEvent::Working,
+        // Esc while a tool runs ends the turn: no `Stop` comes.
+        "PostToolUseFailure" if input["is_interrupt"] == true => {
+            AgentEvent::Stopped { message: None }
+        }
+        // A tool that failed (an allowed `cargo test` that fails): it works on.
+        "PostToolUseFailure" => AgentEvent::Working,
         "Stop" => AgentEvent::Stopped {
             message: text("last_assistant_message"),
         },
@@ -51,8 +57,8 @@ pub fn claude(input: &Value) -> Option<AgentEvent> {
                     message: text("message"),
                 }
             }
-            // The prompt has sat idle: whatever the turn was, it isn't working. An interrupted
-            // turn (Esc) fires no hook of its own, so this is what ends its "Working". Not a
+            // The prompt has sat idle: whatever the turn was, it isn't working. Esc while the
+            // model writes fires no hook of its own, so this is what ends its "Working". Not a
             // wait for the person: the agent asks nothing.
             "idle_prompt" => AgentEvent::Stopped { message: None },
             _ => return None,
@@ -96,6 +102,29 @@ mod tests {
         assert_eq!(
             event(json!({ "hook_event_name": "PostToolUse", "tool_name": "Bash" })),
             Some(AgentEvent::Working)
+        );
+        assert_eq!(
+            event(json!({
+                "hook_event_name": "PostToolUseFailure",
+                "tool_name": "Bash",
+                "error": "exit code 101",
+                "is_interrupt": false,
+            })),
+            Some(AgentEvent::Working),
+            "a tool that failed after a permission: back to work, not still waiting"
+        );
+        assert_eq!(
+            event(json!({ "hook_event_name": "PostToolUseFailure", "tool_name": "Bash" })),
+            Some(AgentEvent::Working)
+        );
+        assert_eq!(
+            event(json!({
+                "hook_event_name": "PostToolUseFailure",
+                "tool_name": "Bash",
+                "is_interrupt": true,
+            })),
+            Some(AgentEvent::Stopped { message: None }),
+            "Esc during a tool ends the turn"
         );
         assert_eq!(
             event(json!({ "hook_event_name": "Stop", "last_assistant_message": "Done." })),

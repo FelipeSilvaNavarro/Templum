@@ -250,14 +250,15 @@ Claude Code's hooks:
 | `UserPromptSubmit` | working |
 | `PermissionRequest` | waiting for the person, "Allow *tool*?", as soon as the permission dialog opens. The hook prints nothing and exits 0, so the dialog still decides |
 | `PostToolUse` | working (again, after a permission) |
+| `PostToolUseFailure` | working (again, after a permission: an allowed tool may fail), or done without an answer when `is_interrupt` is true (Esc while the tool ran) |
 | `Stop` | done, with its last answer (`last_assistant_message`) |
 | `StopFailure` | done, without an answer: an API error ended the turn, and `Stop` doesn't come |
 | `Notification` | waiting for the person on `permission_prompt`, `elicitation_dialog` and `agent_needs_input` (they come only after about six seconds without typing, hence `PermissionRequest`); not working on `idle_prompt` (the prompt has sat idle): never a wait for the person, since the agent asks nothing; the others nothing |
 | `SessionEnd` | ended |
 
-An interrupted turn (Esc) fires no hook of its own: the dot stays on Working until the next prompt, or until
-`idle_prompt` comes after the prompt has sat idle for Claude Code's own delay (about a minute). Deferred:
-[minors](../minors.md#connections).
+Esc while a tool runs ends Working at once (`PostToolUseFailure` with `is_interrupt`). Esc while the model writes
+fires no hook of its own: the dot stays on Working until the next prompt, or until `idle_prompt` comes after the
+prompt has sat idle for Claude Code's own delay (about a minute). Deferred: [minors](../minors.md#connections).
 
 Claude Code merges hooks from every settings source, so the person's own hooks still run. Codex keeps one `notify`:
 see [Codex](#what-templum-types-into-each-agent) below.
@@ -282,6 +283,7 @@ comes only with the hooks: when the settings file can't be given (Templum's prog
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
     "PermissionRequest":[{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
     "PostToolUse":      [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
+    "PostToolUseFailure":[{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
     "Stop":             [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
     "StopFailure":      [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
     "Notification":     [{ "hooks": [{ "type": "command", "command": "/opt/templum hook claude", "timeout": 5 }] }],
@@ -405,7 +407,8 @@ No new dependency: `futures`, `serde`, `serde_json` and `uuid` are in the tree.
 **Unit (`templum-mcp`):** a request and a notification parse; bad JSON answers `-32700` with a null id; every line
 written ends in one newline; every tool parses its own example arguments and names a missing one; an unknown tool
 fails; `initialize`'s result; each Claude Code hook payload and Codex's `notify` become their event (`PermissionRequest`
-waits for the person, `StopFailure` and `idle_prompt` are done, a `compact` start is nothing), unknown ones none; the
+waits for the person, `PostToolUseFailure` works on unless it is an interrupt, which is done, `StopFailure` and
+`idle_prompt` are done, a `compact` start is nothing), unknown ones none; the
 bus: bind, hello, a request answered; a wrong first line or token closes the connection; two requests on one
 connection both answered; the socket file goes away with the bus and a stale one is replaced; a data folder too long
 for a socket puts it in a private (0700) temporary folder that goes with the bus; the bridge sends its hello first and

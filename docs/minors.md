@@ -479,7 +479,8 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   rows into one line, so with long wrapped lines it returns fewer than `n`, and the first may start in the middle of
   a line. Fix: read rows upward until `n` lines start in the range (a row that isn't the wrapped end of the one
   above).
-- [ ] **An interrupted Claude Code stays on Working for a while.** Esc in the middle of a turn fires no hook
-  (`crates/templum-mcp/src/hooks.rs:57`, at c0597d1), so the dot says Working until the next prompt or the
+- [ ] **A Claude Code interrupted while it writes stays on Working for a while.** Esc while a tool runs ends Working at
+  once (`PostToolUseFailure` with `is_interrupt`), but Esc while the model writes fires no hook
+  (`crates/templum-mcp/src/hooks.rs`, the `idle_prompt` arm), so the dot says Working until the next prompt or the
   `idle_prompt` notification, which Claude Code sends only after the prompt has sat idle (about a minute). Fix: a hook
   for interrupts when Claude Code has one; meanwhile the screen going still (batch 5).
