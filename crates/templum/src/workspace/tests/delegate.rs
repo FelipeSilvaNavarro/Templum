@@ -275,6 +275,33 @@ fn a_wait_that_times_out_gives_the_last_lines(cx: &mut TestAppContext) {
     );
 }
 
+/// Codex never says it works: once a task's wait timed out, only the task, still unanswered, tells
+/// that it does. `wait_for_idle` from the agent that handed it over waits for its answer, not
+/// the turn before's.
+#[gpui_kit::test]
+fn wait_for_idle_waits_for_a_task_whose_wait_timed_out(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let stopped = |message: &str| json!({ "event": "stopped", "message": message });
+    event(handle, &ws, cx, &worker, stopped("Old."));
+    let task = json!({ "block": them, "task": "think", "wait": true, "timeout": 2 });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    after(cx, 2000);
+    assert!(answered(&answers).0, "timed out");
+    // Its deadline passed.
+    ws.update(cx, |ws, _| {
+        let handed = ws.space.terminal_mut(theirs).unwrap().handed.as_mut();
+        let handed = handed.expect("unanswered");
+        handed.until = handed.since;
+    });
+    let idle = json!({ "block": them });
+    let waiting = call_later(handle, &ws, cx, &terminal, 2, "wait_for_idle", idle);
+    assert!(waiting.try_recv().is_err(), "it still works on the task");
+    event(handle, &ws, cx, &worker, stopped("Done."));
+    assert_eq!(answered(&waiting), (false, "Done.".to_string()));
+}
+
 #[gpui_kit::test]
 fn a_turns_end_and_its_timeout_answer_once(cx: &mut TestAppContext) {
     let (handle, ws, mine, theirs) = two_agents(cx);

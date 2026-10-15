@@ -268,7 +268,8 @@ impl Workspace {
     }
 
     /// `wait_for_idle` from the terminal `from` on the agent `block`: its last answer now when it
-    /// is idle, else once its turn, or the task it is on, ends.
+    /// is idle, else once its turn, or the task it is on, ends. A task the caller handed it is
+    /// waited for past its deadline while unanswered: Codex never says it works.
     pub(super) fn wait_for_idle(&self, from: &str, block: &str, timeout: u64) -> Outcome {
         let (space_id, me) = self.caller(from).expect("call found the caller");
         let space = self.space_named(&space_id).expect("the caller's workspace");
@@ -287,7 +288,8 @@ impl Workspace {
                 "{block} runs no agent: read_terminal reads its screen."
             )));
         }
-        if pane.busy(Instant::now()) {
+        let mine = pane.handed.as_ref().is_some_and(|h| h.by == from);
+        if mine || pane.busy(Instant::now()) {
             let what = Waiting::Turn {
                 of: pane.term.id().to_string(),
                 uid: block.to_string(),
