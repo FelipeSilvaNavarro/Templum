@@ -11,7 +11,7 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 | `templum` | bin | Window, event loop, rendering, input, wiring | **Yes, the only one** (`gpui-kit`) |
 | `templum-canvas` | lib | Pure model: camera (pan, zoom), blocks, hit-testing, snapping, level of detail, wires' curves (`wire.rs`), layout (de)serialization | No |
 | `templum-terminal` | lib | Wraps `alacritty_terminal`: shell in a PTY, input, resize, key encoding, events | No |
-| `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values, finds conflict regions by their markers (`conflict.rs`), lays History's commits out in lanes from their parents (`graph.rs`), turns a blame into the diff panel's rows (`blame.rs`), keeps the trash of discarded changes, and asks an AI agent for a commit message (`message.rs`) | No |
+| `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values, finds conflict regions by their markers (`conflict.rs`), lays History's commits out in lanes from their parents (`graph.rs`), turns a blame into the diff panel's rows (`blame.rs`), makes a worktree for a new branch under `.worktrees/` (`repo.rs`), keeps the trash of discarded changes, and asks an AI agent for a commit message (`message.rs`) | No |
 | `templum-usage` | lib | Reads what CLI agents write about their sessions and plan limits: Claude Code's status line through Templum's relay, and its transcripts (`claude.rs`, which also writes the settings file Claude Code is given, with Templum's hooks, and its `mcp.json`); Codex's rollout files (`codex.rs`); when to warn about a limit or tell its reset (`watch.rs`). Never an agent's credentials ([specs/usage.md](specs/usage.md)) | No |
 | `templum-update` | lib | Finds the newest release on GitHub (`lib.rs`), how Templum was installed and the release file that fits it (`install.rs`). Downloads it and checks GitHub's SHA-256 (`fetch.rs`), then puts it in place: a rename over the AppImage or executable, a bundle swap on macOS, an installer's command line, a command for a terminal ([specs/updates.md](specs/updates.md)) | No |
 | `templum-mcp` | lib | The bus Templum's blocks talk over: JSON-RPC lines on a local socket (`bus.rs`), the MCP tools (`tools.rs`), the agents' hook events (`hooks.rs`) and the `templum` command line (`cli.rs`: the MCP bridge, `hook`, the verbs) ([specs/connections.md](specs/connections.md)) | No |
@@ -55,7 +55,8 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   writer thread, and its lines reach the UI thread through a channel that `workspace/bus.rs` drains: the UI thread
   never touches a socket. Every terminal gets `TEMPLUM_BUS` and `<data>/bin` first in `PATH`, where `templum` is
   this Templum: a link to it on Unix, a hard link or a copy named `templum.exe` on Windows. `templum mcp`,
-  `templum hook …` and the verbs are the same program run without a window (`main.rs`).
+  `templum hook …` and the verbs are the same program run without a window (`main.rs`). Each connection has a number;
+  when one ends the UI hears it (`templum/closed`) and drops what it waited for.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.
   Far away, each block is drawn at a level of detail picked by its text's size on screen at the zoom the camera
@@ -113,7 +114,10 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   `git_compare.rs` (a branch against the default one), `git_conflicts.rs` (conflicts region by region) and
   `git_message.rs` (commit messages from an agent) (Git blocks), `usage.rs` (the agents' usage read after each
   snapshot, the limits' notifications, what the Claude Code and Codex Templum opens are given), `bus.rs` (the bus's
-  messages: the caller found by its `TEMPLUM_TERMINAL`, the tools, the agents' hook events). Methods a sibling or a
+  messages: the caller found by its `TEMPLUM_TERMINAL`, the tools, the agents' hook events), `waits.rs` (tool calls
+  that wait: a question, a request to connect, an agent's turn; their deadlines, cancels and the balloon's answers),
+  `delegate.rs` (tasks handed between agents: typing them, their answers, `reply`, `wait_for_idle`), `spawn.rs`
+  (`spawn_agent`: an agent beside the caller, its worktree, its prompt once it is ready). Methods a sibling or a
   test calls are `pub(super)`.
   `workspace/tests/` holds its tests, one file per area, with the shared helpers in `tests/mod.rs`.
 - `settings/`, `git_block/` and `menu/`: the panel's sections, the Git block's tabs, and what each menu lists, each
@@ -132,8 +136,10 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   no backdrop blur), five pages whose settings are the panel's rows (`settings/welcome.rs`); the first terminal
   opens when it closes ([specs/welcome.md](specs/welcome.md)).
 - `usage.rs`: the title bar's usage meter, its popover and a terminal's usage chip.
-- `wires.rs`: painting the wires in the layer under the blocks, with the dot grid
-  ([specs/connections.md](specs/connections.md#wires)).
+- `wires.rs`: painting the wires in the layer under the blocks, with the dot grid, and the dot that travels along one
+  while a task is handed over ([specs/connections.md](specs/connections.md#wires)).
+- `balloon.rs`: the balloon on a terminal block whose agent asks the person something
+  ([specs/connections.md](specs/connections.md#requests-from-agents)).
 - `update.rs`: where an update stands (`Update`), its title-bar pill and its lines in Settings ▸ Updates;
   `workspace/update.rs` checks GitHub at start and every day, downloads through `templum-update`, tells the news,
   restarts (GPUI's `cx.restart()`) or types the package manager's command in a terminal, and swaps the files when

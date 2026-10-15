@@ -561,3 +561,66 @@ Left by the second review of batch 2; line numbers are those of `development` at
   (`crates/templum/src/workspace/tiling.rs:304`) clears `selected_wire`, but `grid_on` always ends in `focus_block`,
   which clears it too, so `entering_grid_mode_lets_the_wire_go` passes without that line. A person sees nothing. Fix:
   drop the line, or keep it as a defensive reset as `calm()` does for the selected drawing.
+
+Left by batch 3 (agents together) and its review; line numbers are those of `development` at 6aa33f6.
+
+- [ ] **A spawned Claude Code without Templum's hooks never gets its prompt.** `open_agent`
+  (`crates/templum/src/workspace/spawn.rs:106`) leaves a Claude Code's prompt to its `SessionStart`; with
+  `[connections] enabled = false` or a path Templum can't type, it gets no hooks, so `templum spawn claude --prompt …`
+  opens it and nothing is typed, and `wait_for_idle` on it waits for its timeout. Fix: look at a Claude Code started
+  without hooks as at the others (`typed` knows whether it gave them).
+- [ ] **A task handed to an agent at work is answered by the turn it was on.** `delegate`
+  (`crates/templum/src/workspace/delegate.rs:97`) allows a task to an agent working on its own prompt (the spec's
+  Risks: typed input is queued), and `end_turn` (`delegate.rs:257`) answers it with the next turn's end; Codex runs
+  typed input as its next turn, so that is the turn under way. The same once a task handed without `wait` passed its
+  timeout while its agent still works on it: another agent's task is taken, and the first one's answer goes to it. A
+  person sees the delegating agent get the answer to another prompt. Fix: once Codex says when it starts working,
+  skip the turn that was under way when the task was typed (Claude Code may take queued input into the current
+  turn: check by hand first).
+- [ ] **A task whose paste the agent's screen never shows waits for its timeout.** `send_task`
+  (`crates/templum/src/workspace/delegate.rs:67`) holds its Enter back when the screen doesn't change within about
+  2 seconds (a dialog that ignores pastes), and nothing tells the delegating agent: it waits up to 10 minutes, then
+  gets the last screen lines. A person sees that agent stuck while the other shows its dialog. Fix: when the Enter is
+  held back, end the task at once with an error saying the agent didn't take it (only for `delegate` and a spawn's
+  prompt, not `reply`).
+- [ ] **The balloon covers the find field.** Both sit at the terminal's top right (`render`,
+  `crates/templum/src/balloon.rs:18`; `find_bar`, `crates/templum/src/block.rs:682`). A person who opens find while an
+  agent asks sees the balloon over the field. Fix: put the balloon under the find field while it is open.
+- [ ] **A long question is cut by its block.** The balloon is clipped by the block (`render`,
+  `crates/templum/src/balloon.rs:18`); in a small block a long question loses its end and its buttons. Fix: a scroll in
+  the balloon's text, or let it overflow the block.
+- [ ] **The keyboard goes nowhere when a question leaves while its field has it.** Only `answer_question`
+  (`crates/templum/src/workspace/waits.rs:202`) gives the keyboard back to the canvas; a question that expires
+  (`expire`, `waits.rs:132`), is cancelled (`cancel`, `waits.rs:157`), whose agent quits (`closed`, `waits.rs:164`) or
+  whose block closes drops its field with the keyboard in it, and GPUI sends keys to the window's root. A person typing
+  an answer sees their keys and shortcuts do nothing until a click. Fix: refocus the canvas in `render` when a wait's
+  field had the keyboard last frame and nothing has it now (or `on_focus_lost`).
+- [ ] **The balloon's field misses Templum's paste shortcut and Esc.** The balloon's branch of `on_key_down`
+  (`crates/templum/src/workspace/input.rs:618`) lets every command but Copy and Paste through, so Ctrl+Shift+V does
+  nothing there and Esc doesn't leave the field; the find field's branch above it handles both. Fix: the same two
+  cases as the find field's.
+- [ ] **The dot stops while it is off screen on a wire that is only partly in view.** A frame is asked for only when
+  the dot's point is in view (`crates/templum/src/workspace/render.rs:447`): once it leaves the view it stays there
+  until something else draws, then jumps. Fix: ask for frames while the wire's curve's bounds meet the view.
+- [ ] **A spawn in an untouched workspace lets the camera move.** `open_agent`
+  (`crates/templum/src/workspace/spawn.rs:106`) doesn't clear `space.pristine`, as `launch_agent` does, so in a
+  workspace no one has touched yet the next frame centres the camera on all the blocks; and the wire the person had
+  selected is let go (`added`). A person sees the view move when an agent spawns another. Fix: clear `pristine` and
+  keep `selected_wire` with the focus and the selection.
+- [ ] **No test hands a second task from another agent.** `delegate_refuses_what_it_mustnt_type_into`
+  (`crates/templum/src/workspace/tests/delegate.rs:93`) hands the second task from the same caller; the refusal
+  doesn't look at the caller, but a test with a third, wired agent would pin it. A person sees nothing. Fix: add it.
+- [ ] **A spawn making a worktree can't be withdrawn.** Its call is a job (`Outcome::Later`,
+  `crates/templum/src/workspace/bus.rs:167`), not a wait: a cancel or the agent quitting doesn't stop it, and a
+  `git worktree add` that hangs (a post-checkout hook) holds the call for good. A person sees the agent's call never
+  end. Fix: keep the job in `waits` with a deadline, or run git with a time limit.
+- [ ] **An agent the snapshots never recognize keeps a look running.** `watch_ready`
+  (`crates/templum/src/workspace/spawn.rs:166`) looks once a second until the prompt is typed or the block closes. A
+  person sees nothing (a small cost). Fix: give up after a few minutes.
+- [ ] **Each wait keeps a timer until its deadline.** `wait` (`crates/templum/src/workspace/waits.rs:96`) starts a
+  detached timer per call and leaves it to run out after the call is answered: up to an hour each. A person sees
+  nothing (a small cost). Fix: keep the timer's task in the `Wait`, so answering drops it.
+- [ ] **`send_to_terminal`'s Enter comes in the same burst as its text.** `call`'s `SendToTerminal` arm
+  (`crates/templum/src/workspace/bus.rs:326`) writes `\r` right after the paste; an agent may take it for a new line,
+  where `delegate` waits 150 ms. A person sees the text sit unsent in Claude Code's or Codex's prompt. Fix: send its
+  Enter with `send_task`'s delay (confirm with the manual check first).
