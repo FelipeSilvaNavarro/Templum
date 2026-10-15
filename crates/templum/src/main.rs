@@ -4,6 +4,7 @@
 
 mod agents;
 mod alert;
+mod balloon;
 mod bench;
 mod block;
 mod board;

@@ -34,6 +34,7 @@ mod wires;
 
 pub(crate) use find::FindBar;
 pub(crate) use git_message::TryIt;
+pub(crate) use waits::{Wait, Waiting};
 
 use std::cell::RefCell;
 use std::collections::HashMap;

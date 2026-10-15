@@ -298,6 +298,14 @@ impl Workspace {
         Some((first, 1 + asking.count()))
     }
 
+    /// The terminal whose balloon's field has the keyboard, if one does: the keys are the field's.
+    pub(crate) fn balloon_typing(&self, window: &Window, cx: &App) -> Option<&str> {
+        self.waits
+            .iter()
+            .find(|w| field_focused(w, window, cx))
+            .map(|w| w.from.as_str())
+    }
+
     /// The person isn't looking at the asking block (it is in another workspace, outside the
     /// view, or hidden by grid mode): a notification says what it asks; clicking it shows the
     /// block.

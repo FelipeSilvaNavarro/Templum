@@ -613,6 +613,16 @@ impl Workspace {
             }
             return;
         }
+        // A balloon's field has the keyboard: what it leaves (shortcuts aside) never reaches the
+        // shell of the focused terminal.
+        if self.balloon_typing(window, cx).is_some() {
+            if let Some(command) = command.filter(|c| !matches!(c, Command::Copy | Command::Paste))
+            {
+                self.command_key(e, Some(command), window, cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
         if self.picker.is_some() || command.is_some() {
             // While the picker is open, typing and shortcuts don't reach the terminal.
             self.command_key(e, command, window, cx);

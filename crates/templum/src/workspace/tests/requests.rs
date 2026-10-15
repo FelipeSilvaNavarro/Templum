@@ -353,3 +353,95 @@ fn closing_the_block_asked_for_withdraws_the_request(cx: &mut TestAppContext) {
     let (failed, text) = answered(&answers);
     assert!(failed && text.contains("was closed"), "{text}");
 }
+
+#[gpui_kit::test]
+fn the_balloons_buttons_answer_a_question_then_a_request(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let k = ws.read_with(cx, |ws, _| ws.space.uids[&kanban].clone());
+    let n = mine.0 as usize;
+    let part = crate::balloon::part;
+    let asked = json!({ "question": "Ship it?", "options": ["Yes", "Not yet"] });
+    let question = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    let request = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        2,
+        "connect",
+        json!({ "block": k }),
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(part(n, "count")).is_some(), "1 of 2");
+        window.click(part(n, "option-1"), cx);
+    })
+    .unwrap();
+    assert_eq!(answered(&question), (false, "Not yet".to_string()));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(part(n, "count")).is_none(), "the last one");
+        window.click(part(n, "allow"), cx);
+    })
+    .unwrap();
+    assert_eq!(answered(&request), (false, format!("Connected to {k}.")));
+    ws.read_with(cx, |ws, _| assert!(ws.space.wired(mine, kanban)));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("balloon", n)).is_none(),
+            "nothing left to ask"
+        );
+    })
+    .unwrap();
+}
+
+/// Ctrl+L and Enter typed in the balloon's field while the asking terminal is focused: the field
+/// takes them, the shell never sees them.
+#[cfg(target_os = "linux")]
+#[gpui_kit::test]
+fn keys_in_the_balloons_field_never_reach_the_terminal(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let answers = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        1,
+        "ask_user",
+        json!({ "question": "Name?" }),
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(mine, window, cx));
+        window.render_frame(cx);
+        let input = match &ws.read(cx).waits[0].what {
+            crate::workspace::Waiting::Question {
+                field: Some((input, _)),
+                ..
+            } => input.clone(),
+            _ => panic!("a question without options has a field"),
+        };
+        input.update(cx, |input, cx| input.focus(window, cx));
+        window.render_frame(cx);
+        window.input("Ada", cx);
+        window.press("ctrl-l", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    assert_eq!(answered(&answers), (false, "Ada".to_string()));
+    // `cat`'s tty would have echoed Ctrl+L as ^L.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let shown = ws.read_with(cx, |ws, _| {
+        let mut snap = templum_terminal::Snapshot::default();
+        snap.refresh(
+            ws.space.terminal(mine).unwrap().term.shared(),
+            &ws.theme.palette,
+        );
+        snap.text()
+    });
+    assert!(!shown.contains("^L") && !shown.contains("Ada"), "{shown:?}");
+}

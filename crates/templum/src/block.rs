@@ -105,11 +105,16 @@ pub(crate) fn render(
         Body::Terminal(_) => templum_canvas::level(ws.cell.font_size, ws.space.rest),
         _ => templum_canvas::level(font, ws.space.rest),
     };
-    let level = if level != Level::Full && (focused || (live && body.has_focus(window, cx))) {
-        Level::Full
-    } else {
-        level
-    };
+    // The block worked in: focused, holding the keyboard, or its balloon's field holding it.
+    let typing = live
+        && matches!(body, Body::Terminal(pane)
+            if ws.balloon_typing(window, cx) == Some(pane.term.id()));
+    let level =
+        if level != Level::Full && (focused || typing || (live && body.has_focus(window, cx))) {
+            Level::Full
+        } else {
+            level
+        };
     let hovered = live && ws.space.hovered == Some(id);
     let ui = ws.ui;
     // 0 at rest, 1 hovered; eased both ways.
@@ -649,6 +654,13 @@ pub(crate) fn render(
         .children(other_zones)
         .when(hovered && !tiled, |el| {
             el.child(fade_in(handle, ("handle-fade", n)))
+        })
+        // What its agent asks the person, over the terminal's top right corner, up close only.
+        .children(match body {
+            Body::Terminal(pane) if live && level == Level::Full => {
+                crate::balloon::render(ws, id, pane.term.id(), z, cx)
+            }
+            _ => None,
         })
         .test_support()
         .into_any_element()
