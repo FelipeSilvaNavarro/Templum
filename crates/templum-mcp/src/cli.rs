@@ -12,11 +12,13 @@ use crate::{hooks, rpc};
 /// The first arguments that make `templum` a command instead of the app.
 const VERBS: &[&str] = &[
     "mcp", "hook", "whoami", "blocks", "read", "send", "notify", "ask", "connect", "delegate",
-    "reply", "wait", "spawn", "kanban", "note", "open", "git",
+    "reply", "wait", "spawn", "kanban", "note", "open", "git", "wire",
 ];
 const READ: &str = "read <block> [-n <lines>] [--last] [--json]";
 const ASK: &str = "ask <question> [--option <answer>]… [--json]";
-const WAIT: &str = "wait <block> [--timeout <seconds>] [--json]";
+const WAIT: &str =
+    "wait <block> [--for idle|needs_you|command_finished|attention] [--timeout <seconds>] [--json]";
+const WIRE: &str = "wire <a> <b> [--json]";
 const SPAWN: &str =
     "spawn <agent> [--folder <folder>] [--worktree <name>] [--prompt <text>] [--json]";
 const KANBAN: &str = "kanban list [<board>] [--card <card>] | add <title> [--column <column>] \
@@ -174,13 +176,26 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("reply", [block, text @ ..]) if !text.is_empty() => {
             ("reply", json!({ "block": block, "text": text.join(" ") }))
         }
-        ("wait", [block]) => ("wait_for_idle", json!({ "block": block })),
-        ("wait", [block, "--timeout", seconds]) => {
-            let seconds: u64 = seconds.parse().map_err(|_| WAIT)?;
-            (
-                "wait_for_idle",
-                json!({ "block": block, "timeout": seconds }),
-            )
+        ("wait", [block, more @ ..]) => {
+            let mut arguments = json!({ "block": block });
+            let mut more = more.iter();
+            while let Some(flag) = more.next() {
+                let value = *more.next().ok_or(WAIT)?;
+                match *flag {
+                    "--for" => arguments["event"] = json!(value),
+                    "--timeout" => {
+                        let seconds: u64 = value.parse().map_err(|_| WAIT)?;
+                        arguments["timeout"] = json!(seconds);
+                    }
+                    _ => return Err(WAIT),
+                }
+            }
+            let name = if arguments.get("event").is_some() {
+                "wait_for"
+            } else {
+                "wait_for_idle"
+            };
+            (name, arguments)
         }
         ("spawn", [agent, more @ ..]) => {
             let mut arguments = json!({ "agent": agent });
@@ -271,6 +286,7 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         }
         ("git", ["status"]) => ("git_status", json!({})),
         ("git", ["status", block]) => ("git_status", json!({ "block": block })),
+        ("wire", [a, b]) => ("wire", json!({ "a": a, "b": b })),
         ("whoami", _) => return Err("whoami [--json]"),
         ("blocks", _) => return Err("blocks [--json]"),
         ("read", _) => return Err(READ),
@@ -284,6 +300,7 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("note", _) => return Err(NOTE),
         ("open", _) => return Err("open <path>[:<line>] [--json]"),
         ("git", _) => return Err("git status [<block>] [--json]"),
+        ("wire", _) => return Err(WIRE),
         _ => return Err("notify <text> [--json]"),
     };
     Ok(CallArgs {
@@ -575,8 +592,28 @@ mod tests {
                 json!({ "name": "reply", "arguments": { "block": "b7k2m", "text": "all green" } }),
             ),
             (
+                &["wait", "k9x1d"][..],
+                json!({ "name": "wait_for_idle", "arguments": { "block": "k9x1d" } }),
+            ),
+            (
                 &["wait", "k9x1d", "--timeout", "60"][..],
                 json!({ "name": "wait_for_idle", "arguments": { "block": "k9x1d", "timeout": 60 } }),
+            ),
+            (
+                &["wait", "k9x1d", "--for", "needs_you"][..],
+                json!({ "name": "wait_for", "arguments": { "block": "k9x1d", "event": "needs_you" } }),
+            ),
+            (
+                // The flags in either order.
+                &[
+                    "wait",
+                    "k9x1d",
+                    "--timeout",
+                    "60",
+                    "--for",
+                    "command_finished",
+                ][..],
+                json!({ "name": "wait_for", "arguments": { "block": "k9x1d", "timeout": 60, "event": "command_finished" } }),
             ),
             (
                 &[
@@ -609,9 +646,14 @@ mod tests {
             "no folder"
         );
         assert_eq!(
-            run_with(&["wait", "k9x1d", "--for", "idle"], &env(&bus), "").0,
+            run_with(&["wait", "k9x1d", "--for"], &env(&bus), "").0,
             2,
-            "--for is batch 5's"
+            "no event"
+        );
+        assert_eq!(
+            run_with(&["wait", "k9x1d", "--timeout", "soon"], &env(&bus), "").0,
+            2,
+            "no number"
         );
     }
 
@@ -698,8 +740,54 @@ mod tests {
     fn only_the_verbs_are_commands() {
         assert!(is_verb("mcp") && is_verb("hook") && is_verb("read"));
         assert!(is_verb("ask"));
+        assert!(is_verb("wire"));
         assert!(is_verb("kanban") && is_verb("note") && is_verb("open") && is_verb("git"));
         assert!(!is_verb("--bench") && !is_verb("--claude-statusline") && !is_verb(""));
+    }
+
+    #[test]
+    fn wire_sends_its_call_and_json_prints_the_whole_result() {
+        let (seen, calls) = std::sync::mpsc::channel();
+        let (_dir, bus) = test_bus(move |m| {
+            if let Incoming::Request { id, params, .. } = &m.incoming {
+                let _ = seen.send(params.clone());
+                let _ = m.reply.send(tool_result(id, &Reply::ok("Wired.")));
+            }
+        });
+        let (code, out, _) = run_with(&["wire", "b7k2m", "k9x1d", "--json"], &env(&bus), "");
+        assert_eq!(code, 0);
+        assert_eq!(
+            serde_json::from_str::<Value>(&out).unwrap(),
+            json!({ "content": [{ "type": "text", "text": "Wired." }] })
+        );
+        assert_eq!(
+            calls.recv_timeout(LIMIT).unwrap(),
+            json!({ "name": "wire", "arguments": { "a": "b7k2m", "b": "k9x1d" } })
+        );
+        let (code, _, err) = run_with(&["wire", "b7k2m"], &env(&bus), "");
+        assert_eq!(code, 2);
+        assert!(err.starts_with("usage: templum wire"), "{err}");
+    }
+
+    /// Every verb that makes a tool call takes --json, and its usage says so.
+    #[test]
+    fn every_verbs_usage_offers_json() {
+        let (none, one): ([String; 0], [String; 1]) = ([], ["x".into()]);
+        for verb in VERBS
+            .iter()
+            .copied()
+            .filter(|v| !matches!(*v, "mcp" | "hook"))
+        {
+            let usages: Vec<&str> = [&none[..], &one[..]]
+                .into_iter()
+                .filter_map(|args| call_of(verb, args).err())
+                .collect();
+            assert!(!usages.is_empty(), "{verb}");
+            for usage in usages {
+                assert!(usage.starts_with(verb), "{verb}: {usage}");
+                assert!(usage.ends_with("[--json]"), "{usage}");
+            }
+        }
     }
 
     #[test]
