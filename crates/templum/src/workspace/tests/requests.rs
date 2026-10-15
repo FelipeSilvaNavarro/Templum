@@ -478,6 +478,39 @@ fn the_balloons_buttons_answer_a_question_then_a_request(cx: &mut TestAppContext
     .unwrap();
 }
 
+/// The balloon's presses are its own, whatever the button: a right one opens no block menu, a
+/// middle one doesn't pan the canvas (and neither reaches a program that asked for the mouse).
+#[gpui_kit::test]
+fn the_balloons_right_and_middle_presses_stay_in_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let asked = json!({ "question": "Ship it?", "options": ["Yes"] });
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    let camera = ws.read_with(cx, |ws, _| ws.space.canvas.camera);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let corner = window.find(("balloon", n)).bounds().origin;
+        let at = (f32::from(corner.x) + 4.0, f32::from(corner.y) + 4.0);
+        right_click(window, cx, at);
+        let none = Modifiers::default();
+        press_with(
+            window,
+            cx,
+            MouseButton::Middle,
+            none,
+            at,
+            (at.0 + 100.0, at.1),
+        );
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.menu.is_none(), "no menu");
+        assert_eq!(ws.space.canvas.camera, camera, "no pan");
+    });
+}
+
 /// A double click answers one request: once the question is answered, the next request's buttons
 /// are drawn under the pointer, and the second click mustn't choose for the person.
 #[gpui_kit::test]

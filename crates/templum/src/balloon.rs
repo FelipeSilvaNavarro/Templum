@@ -4,9 +4,7 @@
 //! shows, with "1 of 3".
 
 use gpui_kit::prelude::*;
-use gpui_kit::{
-    AnyElement, ClickEvent, Context, ElementId, MouseButton, TestSupportExt, Window, div, px,
-};
+use gpui_kit::{AnyElement, ClickEvent, Context, ElementId, TestSupportExt, Window, div, px};
 use templum_canvas::{BlockId, chrome};
 
 use crate::git_block::{self, widgets::small};
@@ -50,8 +48,10 @@ pub(crate) fn render(
             .bg(ui.surface)
             .text_size(px(git_block::FONT * z))
             .text_color(ui.title)
-            // Its clicks are its own: no selection starts in the terminal under it.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            // Its presses are its own: no selection starts in the terminal under it, a program
+            // there that asked for the mouse hears none, the block's menu doesn't open, the
+            // canvas doesn't pan. Not `block_mouse_except_scroll`: the block would lose its hover.
+            .on_any_mouse_down(|_, _, cx| cx.stop_propagation())
             .when(count > 1, |el| {
                 el.child(
                     div()
