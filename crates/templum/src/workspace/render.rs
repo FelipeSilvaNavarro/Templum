@@ -438,6 +438,20 @@ impl Render for Workspace {
         let accent = self.ui.accent;
         // The wires, under the blocks (none in grid mode).
         let wires = self.wire_curves();
+        // A dot on each wire along which a task is handed over: still when motion is reduced, else
+        // drawn again about 30 times a second while one is in view (never at the display's rate).
+        let still = cx.reduce_motion();
+        let dots = self.wire_dots(now, still);
+        let zoom = camera.zoom();
+        let in_view = Rect::new(camera.origin.x, camera.origin.y, vp.w / zoom, vp.h / zoom);
+        if !still && dots.iter().any(|p| in_view.contains(*p)) {
+            self._dot_frame = cx.spawn(async move |ws, cx| {
+                cx.background_executor()
+                    .timer(crate::wires::DOT_FRAME)
+                    .await;
+                ws.update(cx, |_, cx| cx.notify()).ok();
+            });
+        }
         // A full-size layer under the blocks: the IME handler, the workspace origin, and
         // window-wide drag listeners (drags keep working outside the window).
         let layer = canvas(
@@ -446,7 +460,7 @@ impl Render for Workspace {
                 // Grid mode shows no canvas.
                 if !tiled {
                     paint_dots(&camera, dot, bounds, window);
-                    crate::wires::paint(&wires, &camera, bounds, window);
+                    crate::wires::paint(&wires, &dots, accent, &camera, bounds, window);
                     paint_guides(&camera, accent, bounds, &guides, window);
                 }
                 window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);

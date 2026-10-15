@@ -1,7 +1,10 @@
 //! Tasks handed between agents: `delegate`, `reply`, `wait_for_idle`, and the dot on the wire
 //! (docs/specs/connections.md, Delegating).
 
+use std::time::Instant;
+
 use serde_json::json;
+use templum_canvas::Wire;
 
 #[cfg(unix)]
 use super::bus::screen_with;
@@ -258,4 +261,84 @@ fn closing_the_agent_worked_on_answers_its_wait(cx: &mut TestAppContext) {
         failed && text.contains("was closed before it answered"),
         "{text}"
     );
+}
+
+#[gpui_kit::test]
+fn a_dot_travels_only_while_a_task_is_handed_over(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let dots = |cx: &mut TestAppContext, at: Instant, still: bool| {
+        ws.read_with(cx, |ws, _| ws.wire_dots(at, still))
+    };
+    assert!(
+        dots(cx, Instant::now(), false).is_empty(),
+        "nothing handed over"
+    );
+    call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "delegate",
+        json!({ "block": them, "task": "go" }),
+    );
+    let since = ws.read_with(cx, |ws, _| {
+        ws.space
+            .terminal(theirs)
+            .unwrap()
+            .handed
+            .as_ref()
+            .unwrap()
+            .since
+    });
+    let trip = crate::wires::DOT_TRIP;
+    // The wire runs from mine's right edge (740, 250) to theirs' left one (900, 250). The dot
+    // leaves from the agent that handed the task over, is halfway at half a trip, and starts again.
+    let near = |dots: Vec<Point>, x: f32| {
+        dots.len() == 1 && (dots[0].x - x).abs() < 0.5 && (dots[0].y - 250.0).abs() < 0.5
+    };
+    assert!(near(dots(cx, since, false), 740.0));
+    assert!(near(dots(cx, since + trip / 2, false), 820.0));
+    assert!(near(dots(cx, since + trip, false), 740.0));
+    assert!(
+        near(dots(cx, since, true), 820.0),
+        "still, at the middle, with reduced motion"
+    );
+    // Painted with the wires.
+    frame(handle, cx);
+    event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "stopped", "message": "Done." }),
+    );
+    assert!(
+        dots(cx, Instant::now(), false).is_empty(),
+        "the answer came back"
+    );
+}
+
+#[gpui_kit::test]
+fn the_dot_goes_with_its_wire_and_the_answer_still_comes(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let task = json!({ "block": them, "task": "go", "wait": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    ws.update(cx, |ws, cx| {
+        assert!(ws.disconnect(Wire { a: mine, b: theirs }, cx))
+    });
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.wire_dots(Instant::now(), false).is_empty())
+    });
+    event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "stopped", "message": "Done." }),
+    );
+    assert_eq!(answered(&answers), (false, "Done.".to_string()));
 }

@@ -942,6 +942,8 @@ pub struct Workspace {
     waits: Vec<waits::Wait>,
     /// The last wait's key.
     next_wait: u64,
+    /// Draws the next frame while a dot travels along a wire in view (`wires::DOT_FRAME`).
+    _dot_frame: Task<()>,
     _wake: Task<()>,
 }
 
@@ -1236,6 +1238,7 @@ impl Workspace {
             _bus: bus_task,
             waits: Vec::new(),
             next_wait: 0,
+            _dot_frame: Task::ready(()),
             _wake: wake,
         };
         // Relay files of Claude Code sessions long gone, at startup.

@@ -1,6 +1,8 @@
 //! Wires between blocks (docs/specs/connections.md, Wires): wiring and unwiring them, each a
 //! step of Ctrl+Z.
 
+use std::time::Instant;
+
 use gpui_kit::{Context, Hsla, MouseDownEvent, MouseUpEvent};
 use templum_canvas::{BlockId, Curve, HIT_PX, Point, Rect, Wire};
 
@@ -105,6 +107,40 @@ impl Workspace {
             curves.push((Curve::between(a.rect, end), self.ui.accent));
         }
         curves
+    }
+
+    /// The dots on the wires along which a task is handed over (docs/specs/connections.md, Wires):
+    /// each on its way from the agent that handed the task over to the one working on it, a trip
+    /// every DOT_TRIP; at the middle when `still` (reduced motion). None in grid mode, which hides
+    /// wires, nor without a wire between the two.
+    pub(super) fn wire_dots(&self, now: Instant, still: bool) -> Vec<Point> {
+        if self.space.grid.is_some() {
+            return Vec::new();
+        }
+        self.space
+            .terminals()
+            .filter_map(|(to, pane)| {
+                let handed = pane.task(now)?;
+                let (from, _) = self
+                    .space
+                    .terminals()
+                    .find(|(_, p)| p.term.id() == handed.by)?;
+                let wire = *self
+                    .space
+                    .wires
+                    .iter()
+                    .find(|w| **w == Wire { a: from, b: to })?;
+                let phase = if still {
+                    0.5
+                } else {
+                    let gone = now.saturating_duration_since(handed.since).as_secs_f32();
+                    (gone / crate::wires::DOT_TRIP.as_secs_f32()) % 1.0
+                };
+                // The curve runs from the wire's `a` to its `b`.
+                let t = if wire.a == from { phase } else { 1.0 - phase };
+                Some(self.space.curve(wire)?.at(t))
+            })
+            .collect()
     }
 
     /// The wire under a world point, within a click's reach; the newest first.
