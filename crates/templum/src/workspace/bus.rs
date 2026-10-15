@@ -312,7 +312,13 @@ impl Workspace {
                 let folder = folder
                     .map(|f| format!("  {}", f.display()))
                     .unwrap_or_default();
-                let tie = if b.id == me { "you" } else { "not connected" };
+                let tie = if b.id == me {
+                    "you"
+                } else if space.wired(me, b.id) {
+                    "connected"
+                } else {
+                    "not connected"
+                };
                 let state = space
                     .terminal(b.id)
                     .filter(|pane| pane.seen.agent.is_some())
@@ -337,29 +343,37 @@ impl Workspace {
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let (_, title, _) = self.about(&space.blocks[&me], cx);
         let uid = space.uids.get(&me).map_or("", String::as_str);
-        let others: Vec<String> = space
+        // The other blocks, split by their wire to the caller.
+        let (connected, others): (Vec<_>, Vec<_>) = space
             .canvas
             .blocks()
             .iter()
             .filter(|b| b.id != me)
             .map(|b| {
                 let (kind, title, _) = self.about(&space.blocks[&b.id], cx);
-                format!(
-                    "{} ({kind} {title:?})",
-                    space.uids.get(&b.id).map_or("", String::as_str)
-                )
+                let uid = space.uids.get(&b.id).map_or("", String::as_str);
+                (space.wired(me, b.id), format!("{uid} ({kind} {title:?})"))
             })
-            .collect();
-        format!(
-            "You are block {uid}, {title:?}, in Templum workspace {:?}. Other blocks there: {}. Name \
-             blocks by these ids. You may read and type into your own block; the person connects \
-             others to you by wiring them on the canvas. list_blocks gives the current list.",
-            space.name,
-            if others.is_empty() {
+            .partition(|(wired, _)| *wired);
+        let list = |blocks: Vec<(bool, String)>| {
+            if blocks.is_empty() {
                 "none".to_string()
             } else {
-                others.join(", ")
-            },
+                blocks
+                    .into_iter()
+                    .map(|(_, b)| b)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        };
+        format!(
+            "You are block {uid}, {title:?}, in Templum workspace {:?}. Connected to you: {}. In this \
+             workspace, not connected: {}. Name blocks by these ids. You may only read or write your \
+             own block and those connected to you; the person connects others by wiring them to your \
+             block on the canvas. list_blocks gives the current list.",
+            space.name,
+            list(connected),
+            list(others),
         )
     }
 }
@@ -396,15 +410,16 @@ pub(super) fn clean_title(title: &str) -> String {
     format!("{cut}…")
 }
 
-/// The block `uid` names in `space`, when the caller `me` may use it: until wires (batch 2),
-/// only its own.
+/// The block `uid` names in `space`, when the caller `me` may use it: its own, or one wired to
+/// it, looked at on each call.
 fn target(space: &Space, me: BlockId, uid: &str) -> Result<BlockId, Reply> {
     let Some(id) = space.block_by_uid(uid) else {
         return Err(Reply::err(format!(
             "There's no block {uid} in your workspace: list_blocks lists them."
         )));
     };
-    if id != me {
+    // ponytail: no `connect` tool yet (batch 3): the refusal sends the agent to the person.
+    if id != me && !space.wired(me, id) {
         return Err(Reply::err(format!(
             "{uid} isn't connected to you. Ask the person to wire it to your block on the canvas."
         )));

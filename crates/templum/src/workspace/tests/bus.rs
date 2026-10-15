@@ -216,6 +216,81 @@ fn another_block_is_refused_until_it_is_connected(cx: &mut TestAppContext) {
     );
 }
 
+/// The bus checks the wires at every call: wired, a terminal is read and typed into; unwired, the
+/// next call is refused. What initialize tells the agent is the wires of that moment.
+#[gpui_kit::test]
+fn a_wired_terminal_is_read_and_typed_into_until_it_is_unwired(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, mine) = three_blocks(handle, &ws, cx);
+    let other = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open(Rect::new(600.0, 400.0, 400.0, 300.0), window, cx);
+                ws.space.canvas.top().unwrap()
+            })
+        })
+        .unwrap();
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, theirs) = me(&ws, cx, other);
+    let (k, n) = ws.read_with(cx, |ws, _| {
+        (ws.space.uids[&kanban].clone(), ws.space.uids[&note].clone())
+    });
+    let typed = json!({ "block": theirs, "text": "hi" });
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "send_to_terminal",
+        typed.clone(),
+    );
+    assert!(failed && text.contains("isn't connected to you"), "{text}");
+    ws.update(cx, |ws, cx| assert!(ws.connect(mine, other, cx)));
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "send_to_terminal",
+        typed.clone(),
+    );
+    assert!(!failed, "{text}");
+    let read = json!({ "block": theirs, "lines": 5 });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "read_terminal", read);
+    assert!(!failed, "{text}");
+    let (_, list) = call(handle, &ws, cx, &terminal, "list_blocks", json!({}));
+    let line = list
+        .lines()
+        .find(|l| l.starts_with(&theirs))
+        .unwrap_or_default();
+    assert!(
+        line.ends_with("connected") && !line.contains("not connected"),
+        "{list}"
+    );
+    let instructions = |cx: &mut TestAppContext| {
+        let init = ask(handle, &ws, cx, &terminal, "initialize", json!({}));
+        init["result"]["instructions"].as_str().unwrap().to_string()
+    };
+    let told = instructions(cx);
+    assert!(
+        told.contains(&format!("Connected to you: {theirs} (terminal \"")),
+        "{told}"
+    );
+    assert!(
+        told.contains(&format!("not connected: {k} (kanban \""))
+            && told.contains(&format!("{n} (note \"")),
+        "{told}"
+    );
+    // Unwired by Ctrl+Z: refused at the next call.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| assert!(ws.undo_canvas(false, window, cx)))
+    })
+    .unwrap();
+    let (failed, text) = call(handle, &ws, cx, &terminal, "send_to_terminal", typed);
+    assert!(failed && text.contains("isn't connected to you"), "{text}");
+    assert!(instructions(cx).contains("Connected to you: none."));
+}
+
 #[gpui_kit::test]
 fn the_bus_answers_over_its_socket(cx: &mut TestAppContext) {
     let data = tempfile::tempdir().unwrap();
