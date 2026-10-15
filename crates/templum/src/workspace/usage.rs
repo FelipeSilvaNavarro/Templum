@@ -38,7 +38,7 @@ impl Workspace {
         });
         let arg = match (&self.data_dir, std::env::current_exe()) {
             (Some(data), Ok(exe)) if claude && !wsl && self.config.usage.claude_limits => {
-                templum_usage::claude::settings_arg(data, &exe, cfg!(windows))
+                templum_usage::claude::settings_arg(data, &exe, cfg!(windows), true, false)
             }
             _ => None,
         };
