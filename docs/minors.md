@@ -630,3 +630,14 @@ Left by the fourth review of batch 3; line numbers are those of `development` at
   send_to_terminal types into a terminal", whose Enter could answer Claude Code's trust question. It heals at the
   next snapshot (5 s). Fix: keep `seen.agent` while `pid` is None for `STARTS_WITHIN` after Templum typed any
   agent (a "typed at" time on `Pane`).
+
+Left by the seventh review of batch 3; line numbers are those of `development` at 8616ef8.
+
+- [ ] **A Claude Code stays "waiting for you" while a tool the person allowed runs.** `PermissionRequest`
+  (`crates/templum-mcp/src/hooks.rs:46`) sets "Allow Bash?", and no Claude Code hook fires between the person
+  allowing it and the tool's `PostToolUse` (`PreToolUse` comes before the permission check); `allowed`
+  (`crates/templum/src/workspace/bus.rs`) clears it at once only for Templum's own tools. A person who allows a
+  4-minute `cargo test` sees the yellow dot the whole time, `list_blocks` says it waits for its person, and another
+  agent's `delegate` or `reply` into it is refused (`takes_typing`, `crates/templum/src/workspace/delegate.rs:66`).
+  Fix: the screen going still or changing (batch 5) ends the wait; or Enter or a digit typed into a block showing
+  "Allow …?" turns it to Working (a denied dialog would then read Working too).
