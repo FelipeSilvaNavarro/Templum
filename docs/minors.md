@@ -598,9 +598,8 @@ Left by batch 3 (agents together) and its review; line numbers are those of `dev
   until something else draws, then jumps. Fix: ask for frames while the wire's curve's bounds meet the view.
 - [ ] **A spawn in an untouched workspace lets the camera move.** `open_agent`
   (`crates/templum/src/workspace/spawn.rs:106`) doesn't clear `space.pristine`, as `launch_agent` does, so in a
-  workspace no one has touched yet the next frame centres the camera on all the blocks; and the wire the person had
-  selected is let go (`added`). A person sees the view move when an agent spawns another. Fix: clear `pristine` and
-  keep `selected_wire` with the focus and the selection.
+  workspace no one has touched yet the next frame centres the camera on all the blocks. A person sees the view move
+  when an agent spawns another. Fix: clear `pristine`.
 - [ ] **No test hands a second task from another agent.** `delegate_refuses_what_it_mustnt_type_into`
   (`crates/templum/src/workspace/tests/delegate.rs:93`) hands the second task from the same caller; the refusal
   doesn't look at the caller, but a test with a third, wired agent would pin it. A person sees nothing. Fix: add it.

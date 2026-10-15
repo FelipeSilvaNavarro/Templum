@@ -5,6 +5,7 @@ use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
+use templum_canvas::Wire;
 
 use super::bus::{after, answered, call, call_later, event, me, result_of, screen_with};
 use super::delegate::snapshot;
@@ -30,14 +31,14 @@ fn spawner(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, Bloc
     (handle, ws, mine)
 }
 
-/// The block spawned beside `mine`: the other end of its one wire.
+/// The block spawned beside `mine`: the other end of its newest wire.
 fn spawned(ws: &Entity<Workspace>, cx: &mut TestAppContext, mine: BlockId) -> BlockId {
     ws.read_with(cx, |ws, _| {
         let wire = ws
             .space
             .wires
             .iter()
-            .find(|w| w.touches(mine))
+            .rfind(|w| w.touches(mine))
             .expect("wired to the caller");
         if wire.a == mine { wire.b } else { wire.a }
     })
@@ -68,6 +69,19 @@ fn enter(cx: &mut TestAppContext) {
 fn spawn_agent_opens_a_wired_agent_beside_the_caller(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
     let (terminal, _) = me(&ws, cx, mine);
+    // The person selected a wire.
+    let wire = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open(Rect::new(40.0, 500.0, 400.0, 300.0), window, cx);
+                let other = ws.space.canvas.top().unwrap();
+                assert!(ws.connect(mine, other, cx));
+                let wire = Wire::new(mine, other);
+                (ws.space.focused, ws.space.selected_wire) = (Some(mine), wire);
+                wire
+            })
+        })
+        .unwrap();
     let folder = tempfile::tempdir().unwrap();
     let spawn = json!({ "agent": "codex", "folder": folder.path() });
     let (failed, text) = call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
@@ -85,6 +99,7 @@ fn spawn_agent_opens_a_wired_agent_beside_the_caller(cx: &mut TestAppContext) {
             "beside the caller: {rect:?}"
         );
         assert_eq!(ws.space.focused, Some(mine), "the keyboard stays");
+        assert_eq!(ws.space.selected_wire, wire, "the selection stays");
         assert_eq!(
             ws.space.terminal(new).unwrap().seen.agent.as_deref(),
             Some("codex")
