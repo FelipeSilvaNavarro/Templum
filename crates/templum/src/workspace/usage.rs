@@ -54,8 +54,8 @@ impl Workspace {
         line
     }
 
-    /// New terminals run the shell named `name` (its program's file name): the configured one,
-    /// else the system's default.
+    /// New terminals run the shell named `name` (its program's file name, in any case:
+    /// `PowerShell.exe` is `powershell`): the configured one, else the system's default.
     fn shell_is(&self, name: &str) -> bool {
         let program = self
             .config
@@ -66,7 +66,7 @@ impl Workspace {
         program.is_some_and(|p| {
             std::path::Path::new(&p)
                 .file_stem()
-                .is_some_and(|s| s == name)
+                .is_some_and(|s| s.eq_ignore_ascii_case(name))
         })
     }
 

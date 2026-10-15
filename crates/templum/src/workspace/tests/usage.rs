@@ -47,6 +47,13 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
         let shell = ws.config.shell.program.clone();
         ws.config.shell.program = Some("powershell".into());
         assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex");
+        // Windows names its programs in any case.
+        for program in ["PowerShell.exe", "CMD.EXE"] {
+            ws.config.shell.program = Some(program.into());
+            assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex", "{program}");
+        }
+        ws.config.shell.program = Some("WSL.exe".into());
+        assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
         ws.config.shell.program = Some("pwsh".into());
         assert!(
             ws.typed(codex.as_ref(), "codex")
