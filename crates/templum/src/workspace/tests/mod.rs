@@ -645,6 +645,9 @@ mod selection;
 mod settings_edits;
 mod settings_panel;
 mod shortcuts;
+// `cat` stands in for the agents.
+#[cfg(unix)]
+mod spawn;
 mod terminals;
 mod themes;
 mod update;

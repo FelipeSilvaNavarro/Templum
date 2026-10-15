@@ -26,6 +26,7 @@ mod preferences;
 mod render;
 mod selection;
 mod spaces;
+mod spawn;
 mod tiling;
 mod update;
 mod usage;
@@ -133,6 +134,15 @@ pub(crate) struct Handed {
     pub until: Instant,
 }
 
+/// A prompt `spawn_agent` types into its agent once the agent is ready
+/// (docs/specs/connections.md, Spawning).
+pub(crate) struct Prompt {
+    pub text: String,
+    /// The agent's screen at the last look, once its process was seen: the same at the next look,
+    /// the agent is ready.
+    pub screen: Option<String>,
+}
+
 pub(crate) struct Pane {
     pub term: Terminal,
     pub snapshot: Rc<RefCell<Snapshot>>,
@@ -154,6 +164,8 @@ pub(crate) struct Pane {
     pub handed: Option<Handed>,
     /// Its agent's last answer: the message its last turn ended with, or its last `reply`.
     pub answer: Option<String>,
+    /// The prompt `spawn_agent` types once its agent is ready.
+    pub prompt: Option<Prompt>,
 }
 
 impl Pane {

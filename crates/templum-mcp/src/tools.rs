@@ -63,6 +63,17 @@ pub enum Call {
         block: String,
         timeout: u64,
     },
+    SpawnAgent(Spawn),
+}
+
+/// What `spawn_agent` opens: the agent (an id of Settings ▸ Agents), its prompt, its folder (the
+/// caller's when left out), and the worktree it makes first.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Spawn {
+    pub agent: String,
+    pub prompt: Option<String>,
+    pub folder: Option<String>,
+    pub worktree: Option<String>,
 }
 
 /// What a tool answers: its text, and whether it is a refusal or a failure.
@@ -238,6 +249,32 @@ pub fn list() -> Value {
                 "required": ["block"],
             },
         },
+        {
+            "name": "spawn_agent",
+            "description": "Opens a new agent block beside yours, connected to you: in your folder, the one you \
+                            name, or a new Git worktree of that folder's repository (.worktrees/<worktree>, on a \
+                            new branch of that name). A prompt is typed once the agent is ready, as a task you \
+                            handed it: wait_for_idle gets its answer. Says the new block's id and folder.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "agent": {
+                        "type": "string",
+                        "description": "Which agent: claude, codex, gemini, … (an id of Settings ▸ Agents).",
+                    },
+                    "prompt": { "type": "string" },
+                    "folder": {
+                        "type": "string",
+                        "description": "Where it starts, relative to your folder; yours when left out.",
+                    },
+                    "worktree": {
+                        "type": "string",
+                        "description": "A new branch's and worktree's name: letters, digits, - _ . and /.",
+                    },
+                },
+                "required": ["agent"],
+            },
+        },
     ]})
 }
 
@@ -269,6 +306,13 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             .filter(|n| *n >= 1)
             .map(|n| n.min(MAX_WAIT))
             .ok_or_else(|| format!("\"timeout\" is a number of seconds from 1 to {MAX_WAIT}")),
+    };
+    let optional = |key: &str| match &args[key] {
+        Value::Null => Ok(None),
+        value => value
+            .as_str()
+            .map(|s| Some(s.to_string()))
+            .ok_or_else(|| format!("\"{key}\" is a string")),
     };
     Ok(match name {
         "whoami" => Call::Whoami,
@@ -324,6 +368,12 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             block: text("block")?,
             timeout: seconds(IDLE_WAIT)?,
         },
+        "spawn_agent" => Call::SpawnAgent(Spawn {
+            agent: text("agent")?,
+            prompt: optional("prompt")?,
+            folder: optional("folder")?,
+            worktree: optional("worktree")?,
+        }),
         _ => return Err(format!("Unknown tool: {name}")),
     })
 }
@@ -378,6 +428,10 @@ mod tests {
             ),
             ("reply", json!({ "block": "b7k2m", "text": "Done." })),
             ("wait_for_idle", json!({ "block": "k9x1d", "timeout": 60 })),
+            (
+                "spawn_agent",
+                json!({ "agent": "codex", "prompt": "fix the tests", "folder": "../api", "worktree": "fix-tests" }),
+            ),
         ];
         let listed: Vec<String> = list()["tools"]
             .as_array()
@@ -467,6 +521,16 @@ mod tests {
             })
         );
         assert!(parse("reply", &json!({ "block": "b" })).is_err(), "no text");
+        assert_eq!(
+            parse("spawn_agent", &json!({ "agent": "claude" })),
+            Ok(Call::SpawnAgent(Spawn {
+                agent: "claude".into(),
+                prompt: None,
+                folder: None,
+                worktree: None
+            }))
+        );
+        assert!(parse("spawn_agent", &json!({ "agent": "claude", "prompt": 3 })).is_err());
         for bad in [
             json!({}),
             json!({ "question": "Why?", "options": "yes" }),

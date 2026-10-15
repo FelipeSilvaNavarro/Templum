@@ -11,11 +11,13 @@ use crate::{hooks, rpc};
 /// The first arguments that make `templum` a command instead of the app.
 const VERBS: &[&str] = &[
     "mcp", "hook", "whoami", "blocks", "read", "send", "notify", "ask", "connect", "delegate",
-    "reply", "wait",
+    "reply", "wait", "spawn",
 ];
 const READ: &str = "read <block> [-n <lines>] [--last] [--json]";
 const ASK: &str = "ask <question> [--option <answer>]… [--json]";
 const WAIT: &str = "wait <block> [--timeout <seconds>] [--json]";
+const SPAWN: &str =
+    "spawn <agent> [--folder <folder>] [--worktree <name>] [--prompt <text>] [--json]";
 
 pub fn is_verb(arg: &str) -> bool {
     VERBS.contains(&arg)
@@ -162,11 +164,26 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
                 json!({ "block": block, "timeout": seconds }),
             )
         }
+        ("spawn", [agent, more @ ..]) => {
+            let mut arguments = json!({ "agent": agent });
+            let mut more = more.iter();
+            while let Some(flag) = more.next() {
+                let key = match *flag {
+                    "--folder" => "folder",
+                    "--worktree" => "worktree",
+                    "--prompt" => "prompt",
+                    _ => return Err(SPAWN),
+                };
+                arguments[key] = json!(more.next().ok_or(SPAWN)?);
+            }
+            ("spawn_agent", arguments)
+        }
         ("whoami", _) => return Err("whoami [--json]"),
         ("blocks", _) => return Err("blocks [--json]"),
         ("read", _) => return Err(READ),
         ("send", _) => return Err("send <block> <text> [--enter] [--json]"),
         ("connect", _) => return Err("connect <block> [--json]"),
+        ("spawn", _) => return Err(SPAWN),
         ("delegate", _) => return Err("delegate <block> <task> [--wait] [--json]"),
         ("reply", _) => return Err("reply <block> <text> [--json]"),
         ("wait", _) => return Err(WAIT),
@@ -464,6 +481,17 @@ mod tests {
                 &["wait", "k9x1d", "--timeout", "60"][..],
                 json!({ "name": "wait_for_idle", "arguments": { "block": "k9x1d", "timeout": 60 } }),
             ),
+            (
+                &[
+                    "spawn",
+                    "codex",
+                    "--worktree",
+                    "fix-tests",
+                    "--prompt",
+                    "fix the tests",
+                ][..],
+                json!({ "name": "spawn_agent", "arguments": { "agent": "codex", "worktree": "fix-tests", "prompt": "fix the tests" } }),
+            ),
         ] {
             assert_eq!(run_with(args, &env(&bus), "").0, 0, "{args:?}");
             assert_eq!(calls.recv_timeout(LIMIT).unwrap(), sent);
@@ -472,6 +500,11 @@ mod tests {
             run_with(&["delegate", "k9x1d", "--wait"], &env(&bus), "").0,
             2,
             "no task"
+        );
+        assert_eq!(
+            run_with(&["spawn", "codex", "--folder"], &env(&bus), "").0,
+            2,
+            "no folder"
         );
         assert_eq!(
             run_with(&["wait", "k9x1d", "--for", "idle"], &env(&bus), "").0,

@@ -10,6 +10,7 @@ use gpui_kit::{App, Context, SharedString, Window};
 use templum_canvas::{Block, BlockId, Point, Rect, chrome};
 use templum_terminal::{SpawnOptions, Terminal};
 
+use crate::agents::AgentEntry;
 use crate::alert::{self, Alert};
 use crate::board::Boards;
 use crate::config::WorkingDirectory;
@@ -300,8 +301,25 @@ impl Workspace {
         self.space.pristine = false;
         let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, self.cell.size);
         let rect = Rect::new(at.x, at.y, size.w, size.h);
+        let entry = self.agents.iter().find(|a| a.command == command).cloned();
+        let id = self.start_agent(entry.as_ref(), command, folder, rect, window, cx)?;
+        window.focus(&self.focus_handle, cx);
+        Some(id)
+    }
+
+    /// A terminal at `rect` in `folder` with the agent `entry`'s command (`command` for one
+    /// Templum doesn't know) typed into its shell. It is focused on the canvas; the keyboard stays
+    /// where it is. The folder becomes this workspace's newest recent one.
+    pub(super) fn start_agent(
+        &mut self,
+        entry: Option<&AgentEntry>,
+        command: &str,
+        folder: &Path,
+        rect: Rect,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<BlockId> {
         let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx)?;
-        let entry = self.agents.iter().find(|a| a.command == command);
         let command = entry.map_or_else(
             || command.to_string(),
             |a| a.start_command(&uuid::Uuid::new_v4().to_string()),
@@ -314,7 +332,6 @@ impl Workspace {
         pane.term.write(line.into_bytes());
         pane.seen.agent = agent;
         remember(&mut self.space.recent, folder.to_path_buf());
-        window.focus(&self.focus_handle, cx);
         Some(id)
     }
 
@@ -406,6 +423,7 @@ impl Workspace {
                         state: None,
                         handed: None,
                         answer: None,
+                        prompt: None,
                     })),
                 );
                 self.added(id);

@@ -20,9 +20,11 @@ impl Pane {
         self.handed.as_ref().filter(|h| now < h.until)
     }
 
-    /// Its agent is at work: on a task, on a turn, or on a question to its person.
+    /// Its agent is at work: on a task, on a turn, on a question to its person, or about to get
+    /// its prompt.
     pub fn busy(&self, now: Instant) -> bool {
         self.task(now).is_some()
+            || self.prompt.is_some()
             || matches!(
                 self.state,
                 Some(AgentState::Working | AgentState::NeedsYou(_))

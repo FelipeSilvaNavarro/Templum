@@ -55,6 +55,8 @@ pub(super) enum Outcome {
     Now(Reply),
     /// It waits for this, at most these many seconds (`waits.rs`).
     Wait(Waiting, u64),
+    /// A job answers it when it is done (`spawn_agent` making a worktree).
+    Later(Task<Reply>),
 }
 
 /// What every terminal gets while the bus runs: its address and Templum's folder first in
@@ -162,6 +164,14 @@ impl Workspace {
                                     self.wait(asked, what, seconds, window, cx);
                                     return;
                                 }
+                                Outcome::Later(job) => {
+                                    cx.spawn(async move |_, _| {
+                                        let done = job.await;
+                                        let _ = reply.send(tools::tool_result(&id, &done));
+                                    })
+                                    .detach();
+                                    return;
+                                }
                             }
                         }
                     }
@@ -199,7 +209,14 @@ impl Workspace {
         };
         match event {
             AgentEvent::Working => pane.state = Some(AgentState::Working),
-            AgentEvent::Started => pane.state = Some(AgentState::Idle),
+            AgentEvent::Started => {
+                pane.state = Some(AgentState::Idle);
+                // A Claude Code spawn_agent opened is ready for its prompt: SessionStart comes after
+                // its question about trusting the folder, which a typed Enter would answer.
+                if let Some(prompt) = pane.prompt.take() {
+                    self.send_task(terminal, &prompt.text, cx);
+                }
+            }
             AgentEvent::Stopped { message } => {
                 pane.state = Some(AgentState::Idle);
                 if let Some(message) = &message {
@@ -342,6 +359,7 @@ impl Workspace {
             Call::WaitForIdle { block, timeout } => {
                 return self.wait_for_idle(terminal, &block, timeout);
             }
+            Call::SpawnAgent(spawn) => return self.spawn_agent(terminal, spawn, window, cx),
             Call::AskUser {
                 question,
                 options,
