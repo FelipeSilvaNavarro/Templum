@@ -575,6 +575,12 @@ impl Render for Workspace {
                                 cx.notify();
                             }),
                         )
+                        // Only over the canvas: not over the toolbar, the sidebar or outside the
+                        // window, where the block under the pointer can't be seen.
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|ws, e: &MouseUpEvent, _, cx| ws.end_wire(e, cx)),
+                        )
                         .on_scroll_wheel(cx.listener(Self::on_background_scroll))
                         .on_pinch(cx.listener(Self::on_pinch))
                         .test_support(),

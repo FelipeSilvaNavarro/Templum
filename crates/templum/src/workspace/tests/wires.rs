@@ -366,6 +366,65 @@ fn esc_during_a_wire_tool_drag_gives_it_up(cx: &mut TestAppContext) {
     );
 }
 
+/// The Wire tool let go over the toolbar, or outside the window, wires nothing, though a block
+/// lies under the pointer there: no one sees it.
+#[gpui_kit::test]
+fn the_wire_tool_let_go_off_the_canvas_wires_nothing(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, note, _) = apart(handle, &ws, cx);
+    let from = at(&ws, cx, (150.0, 140.0));
+    let o = ws.read_with(cx, |ws, _| ws.origin);
+    let toolbar = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-wire", cx);
+            window.render_frame(cx);
+            let c = window.find("toolbar").bounds().center();
+            (f32::from(c.x), f32::from(c.y))
+        })
+        .unwrap();
+    // The camera is at 100% on the world's origin: canvas points are world points.
+    let local = |p: (f32, f32)| (p.0 - f32::from(o.x), p.1 - f32::from(o.y));
+    let under = local(toolbar);
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(note).unwrap().rect =
+            Rect::new(under.0 - 50.0, under.1 - 50.0, 220.0, 200.0);
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        press_with(
+            window,
+            cx,
+            MouseButton::Left,
+            Modifiers::default(),
+            from,
+            toolbar,
+        );
+    })
+    .unwrap();
+    assert!(wires(&ws, cx).is_empty(), "under the toolbar");
+    // Above the window: the note reaches past its top.
+    let outside = (f32::from(o.x) + 600.0, -20.0);
+    let past = local(outside);
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(note).unwrap().rect =
+            Rect::new(past.0 - 50.0, past.1 - 150.0, 220.0, 200.0);
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        press_with(
+            window,
+            cx,
+            MouseButton::Left,
+            Modifiers::default(),
+            from,
+            outside,
+        );
+    })
+    .unwrap();
+    assert!(wires(&ws, cx).is_empty(), "outside the window");
+}
+
 /// Where the straight wire between the kanban block and the note runs (y 180, x 460 to 500), as
 /// a window position.
 fn on_the_wire(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> (f32, f32) {

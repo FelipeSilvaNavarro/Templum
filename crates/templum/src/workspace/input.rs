@@ -440,10 +440,9 @@ impl Workspace {
     /// focused (typing then reaches none; panning keeps the focus) and no block selected; on a
     /// wire, it selects the wire, so Delete removes it.
     pub(super) fn release(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
-        // The Wire tool let go: on another block, they are wired.
-        if let Some(Drag::Wire { from, .. }) = self.drag {
-            let at = self.space.canvas.camera.to_world(self.local(pos));
-            self.end_wire(from, at, cx);
+        // The Wire tool let go off the canvas (over it, its layer took the drag): its curve goes.
+        if matches!(self.drag, Some(Drag::Wire { .. })) {
+            cx.notify();
         }
         // A tile let go over another trades places with it.
         if let Some(Drag::Swap { id, over, .. }) = self.drag {

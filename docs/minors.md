@@ -533,10 +533,6 @@ Left by batch 2 (wires); line numbers are those of `development` at 825507d.
 
 Left by the review of batch 2; line numbers are those of `development` at 25f662e.
 
-- [ ] **Letting go off the canvas can wire a block no one sees.** `end_wire`
-  (`crates/templum/src/workspace/wires.rs:135`) takes the block at the world point under the pointer wherever it was
-  let go: over the toolbar, the sidebar or outside the window (Wayland keeps the grab), so a block hidden under the
-  toolbar or past the window's edge gets wired. Fix: wire only when the pointer is inside the canvas's viewport.
 - [ ] **Connect to ▸ can list several blocks under one title.** The submenus list blocks by `block::title`
   (`crates/templum/src/menu/mod.rs:174`), so several plain shells, or several Claude Code terminals, read alike. A
   person can't tell which one an entry wires. Fix: list terminals as Send to ▸ does, with `label` (agent · title ·

@@ -1,7 +1,7 @@
 //! Wires between blocks (docs/specs/connections.md, Wires): wiring and unwiring them, each a
 //! step of Ctrl+Z.
 
-use gpui_kit::{Context, Hsla, MouseDownEvent};
+use gpui_kit::{Context, Hsla, MouseDownEvent, MouseUpEvent};
 use templum_canvas::{BlockId, Curve, HIT_PX, Point, Rect, Wire};
 
 use super::history::{Change, Then};
@@ -131,12 +131,16 @@ impl Workspace {
         self.space.focused = None;
     }
 
-    /// The Wire tool let go at the world point `at`: on another block, the two are wired.
-    pub(super) fn end_wire(&mut self, from: BlockId, at: Point, cx: &mut Context<Self>) {
-        if let Some(to) = self.space.block_at(at) {
-            self.connect(from, to, cx);
+    /// The Wire tool let go over the canvas: on another block, the two are wired. Let go
+    /// anywhere else, `release` drops the drag.
+    pub(super) fn end_wire(&mut self, e: &MouseUpEvent, cx: &mut Context<Self>) {
+        if let Some(Drag::Wire { from, .. }) = self.drag.take() {
+            let at = self.space.canvas.camera.to_world(self.local(e.position));
+            if let Some(to) = self.space.block_at(at) {
+                self.connect(from, to, cx);
+            }
+            cx.notify();
         }
-        cx.notify();
     }
 
     /// Wires (`on`) or unwires `wire`; the change that takes it back is kept as `then` says.
