@@ -432,8 +432,9 @@ fn no_enter_goes_to_a_screen_the_task_didnt_change(cx: &mut TestAppContext) {
     let (terminal, _) = me(&ws, cx, mine);
     let (_, them) = me(&ws, cx, theirs);
     screen_with(&ws, cx, theirs, "ready");
-    // `cat`, not `stty`.
+    // `cat`, not `stty`, which the snapshot may have found in front.
     in_front(&ws, cx, theirs, true);
+    found(&ws, cx, theirs);
     let task = json!({ "block": them, "task": "go on", "wait": true });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     after(cx, 5000);
