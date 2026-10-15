@@ -398,6 +398,8 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum wire <a> <b>` | wires two blocks (only from a terminal of the same workspace) | 5 |
 
 A verb stays connected until its answer: stopped with Ctrl+C, what it waited for (a balloon) is withdrawn.
+`templum open` reads a relative path from the folder it runs in (an agent's shell tool may not be in the agent's), and
+takes `<path>:<line>:<column>` as compilers and grep print it, the column ignored.
 
 Any other first argument opens Templum, as today. On Windows the release program has no console, so the verbs'
 output reaches a pipe (`templum blocks | more`) but not a console directly.

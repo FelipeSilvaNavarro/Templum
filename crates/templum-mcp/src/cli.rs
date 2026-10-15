@@ -2,6 +2,7 @@
 //! bridge, the agents' hooks, and a verb per tool.
 
 use std::io::{self, BufRead as _, BufReader, Read, Write};
+use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
@@ -93,6 +94,19 @@ struct CallArgs {
     name: &'static str,
     arguments: Value,
     json: bool,
+}
+
+/// `path` from the folder the command runs in, `cwd`: Templum would read a relative path from the
+/// caller's folder, which for a command an agent runs is the agent's, not its shell tool's. `~` is
+/// left for Templum, which reads it as home.
+fn absolute(path: &str, cwd: Option<PathBuf>) -> String {
+    let home = path
+        .strip_prefix('~')
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '\\']));
+    match cwd {
+        Some(cwd) if !home => cwd.join(path).to_string_lossy().into_owned(),
+        _ => path.to_string(),
+    }
 }
 
 fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
@@ -238,14 +252,15 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
                 let (path, n) = at.rsplit_once(':')?;
                 (!path.is_empty()).then_some((path, n.parse().ok()?))
             }
+            let cwd = std::env::current_dir().ok();
             let mut arguments = json!({});
             match split(target) {
                 Some((at, column)) => {
                     let (path, line) = split(at).unwrap_or((at, column));
-                    arguments["path"] = json!(path);
+                    arguments["path"] = json!(absolute(path, cwd));
                     arguments["line"] = json!(line);
                 }
-                None => arguments["path"] = json!(target),
+                None => arguments["path"] = json!(absolute(target, cwd)),
             }
             ("open_file", arguments)
         }
@@ -678,6 +693,23 @@ mod tests {
     }
 
     #[test]
+    fn open_reads_a_relative_path_from_the_folder_it_runs_in() {
+        let cwd = std::env::temp_dir();
+        let whole = cwd.join("a.rs").to_string_lossy().into_owned();
+        assert_eq!(
+            absolute("src/a.rs", Some(cwd.clone())),
+            cwd.join("src/a.rs").to_string_lossy()
+        );
+        assert_eq!(absolute(&whole, Some("elsewhere".into())), whole);
+        assert_eq!(
+            absolute("~/a.rs", Some(cwd)),
+            "~/a.rs",
+            "Templum reads ~ as home"
+        );
+        assert_eq!(absolute("a.rs", None), "a.rs");
+    }
+
+    #[test]
     fn the_content_verbs_send_their_calls() {
         let (seen, calls) = std::sync::mpsc::channel();
         let (_dir, bus) = test_bus(move |m| {
@@ -686,6 +718,10 @@ mod tests {
                 let _ = m.reply.send(tool_result(id, &Reply::ok("ok")));
             }
         });
+        // A relative path goes from the folder the command runs in (a Windows drive's path is
+        // whole there, and Path::join keeps it as it is).
+        let here = std::env::current_dir().unwrap();
+        let at = |path: &str| here.join(path).to_string_lossy().into_owned();
         for (args, sent) in [
             (
                 &["kanban", "list"][..],
@@ -730,24 +766,24 @@ mod tests {
             ),
             (
                 &["open", "src/main.rs:12"][..],
-                json!({ "name": "open_file", "arguments": { "path": "src/main.rs", "line": 12 } }),
+                json!({ "name": "open_file", "arguments": { "path": at("src/main.rs"), "line": 12 } }),
             ),
             (
                 &["open", "README.md"][..],
-                json!({ "name": "open_file", "arguments": { "path": "README.md" } }),
+                json!({ "name": "open_file", "arguments": { "path": at("README.md") } }),
             ),
             (
                 &["open", r"C:\src\a.rs"][..],
-                json!({ "name": "open_file", "arguments": { "path": r"C:\src\a.rs" } }),
+                json!({ "name": "open_file", "arguments": { "path": at(r"C:\src\a.rs") } }),
             ),
             (
                 &["open", r"C:\src\a.rs:12"][..],
-                json!({ "name": "open_file", "arguments": { "path": r"C:\src\a.rs", "line": 12 } }),
+                json!({ "name": "open_file", "arguments": { "path": at(r"C:\src\a.rs"), "line": 12 } }),
             ),
             // path:line:column, as compilers and grep print it: the column is dropped.
             (
                 &["open", "src/main.rs:12:5"][..],
-                json!({ "name": "open_file", "arguments": { "path": "src/main.rs", "line": 12 } }),
+                json!({ "name": "open_file", "arguments": { "path": at("src/main.rs"), "line": 12 } }),
             ),
             (
                 &["git", "status"][..],
