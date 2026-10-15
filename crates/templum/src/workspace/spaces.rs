@@ -293,14 +293,16 @@ impl Workspace {
             .map(|b| b.id)
             .filter(|id| ids.contains(id))
             .collect();
-        let taken: Vec<(Rect, Body)> = order
+        // Each keeps its id there.
+        let taken: Vec<(Rect, Body, Option<String>)> = order
             .into_iter()
             .filter_map(|id| {
+                let uid = self.space.uids.get(&id).cloned();
                 let (_, home, body) = self.take_block(id, window, cx)?;
-                Some((home, body))
+                Some((home, body, uid))
             })
             .collect();
-        let Some(bounds) = taken.iter().map(|(r, _)| *r).reduce(|a, b| a.union(&b)) else {
+        let Some(bounds) = taken.iter().map(|(r, _, _)| *r).reduce(|a, b| a.union(&b)) else {
             return;
         };
         let moved = self.with_space(&to, |ws| {
@@ -308,7 +310,7 @@ impl Workspace {
             // Not a change to take back there.
             ws.quiet = true;
             let mut moved = Vec::new();
-            for (r, mut body) in taken {
+            for (r, mut body, uid) in taken {
                 match &mut body {
                     // Its commands in flight answer the block it was: they never come back to it.
                     Body::Git(git) => {
@@ -320,7 +322,11 @@ impl Workspace {
                     Body::Terminal(pane) => pane.find = None,
                     _ => {}
                 }
-                moved.push(ws.add_block(Rect::new(r.x + dx, r.y + dy, r.w, r.h), body));
+                let id = ws.add_block(Rect::new(r.x + dx, r.y + dy, r.w, r.h), body);
+                if let Some(uid) = uid {
+                    ws.space.uids.insert(id, uid);
+                }
+                moved.push(id);
             }
             ws.quiet = false;
             ws.space.pristine = false;

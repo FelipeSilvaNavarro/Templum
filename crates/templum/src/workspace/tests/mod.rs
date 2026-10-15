@@ -573,11 +573,13 @@ pub(super) fn three_blocks(
             ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 1.0);
             ws.space.canvas.get_mut(terminal).unwrap().rect = Rect::new(40.0, 400.0, 400.0, 300.0);
             let kanban = crate::session::Item::Kanban(crate::session::KanbanItem {
+                uid: String::new(),
                 rect: Rect::new(40.0, 40.0, 220.0, 200.0).into(),
                 board: None,
             });
             let hello = ws.notes.add("hello".into(), None, 0);
             let note = crate::session::Item::Note(crate::session::NoteItem {
+                uid: String::new(),
                 rect: Rect::new(300.0, 40.0, 220.0, 200.0).into(),
                 notes: vec![hello],
                 active: 0,
@@ -605,6 +607,7 @@ pub(super) fn at(ws: &Entity<Workspace>, cx: &mut TestAppContext, p: (f32, f32))
 }
 
 mod agents;
+mod block_ids;
 mod blocks;
 mod config_reload;
 mod drawing;

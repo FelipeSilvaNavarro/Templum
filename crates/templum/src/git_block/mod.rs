@@ -641,6 +641,7 @@ impl Git {
             }
         };
         session::GitItem {
+            uid: String::new(),
             rect: rect.into(),
             folder: self.folder.to_string_lossy().into_owned(),
             tab: self.tab.name().to_string(),

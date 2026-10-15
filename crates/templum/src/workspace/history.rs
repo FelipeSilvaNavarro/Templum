@@ -130,6 +130,11 @@ impl Workspace {
     ) {
         let (old, items): (Vec<_>, Vec<_>) = items.into_iter().unzip();
         let added = self.add_selected(&items, window, cx);
+        for (item, new) in items.iter().zip(&added) {
+            if let Some(new) = new {
+                self.adopt_uid(*new, item.uid());
+            }
+        }
         let mut ids = Vec::new();
         for (old, new) in old.into_iter().zip(added) {
             let Some(new) = new else { continue };

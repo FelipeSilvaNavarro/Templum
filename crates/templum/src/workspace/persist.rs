@@ -66,6 +66,11 @@ impl Workspace {
             ids.push(id);
         }
         self.quiet = false;
+        for (item, id) in saved.items.iter().zip(&ids) {
+            if let Some(id) = id {
+                self.adopt_uid(*id, item.uid());
+            }
+        }
         self.space.focused = saved.focused.and_then(|i| ids.get(i).copied().flatten());
         // Grid mode as it was left, over the canvas as it was.
         if let Some(tiles) = saved

@@ -33,8 +33,10 @@ impl Workspace {
     }
 
     /// A block was just added: it is focused, pops in, and Ctrl+Z takes it away (unless the
-    /// canvas is being restored or blocks come back by an undo: `quiet`).
+    /// canvas is being restored or blocks come back by an undo: `quiet`). It gets a new id.
     fn added(&mut self, id: BlockId) {
+        let uid = self.new_uid();
+        self.space.uids.insert(id, uid);
         let before = self.space.focused;
         self.space.focused = Some(id);
         self.space.selected.clear();
@@ -57,6 +59,34 @@ impl Workspace {
                 b.rect = templum_canvas::cascade(b.rect, &taken);
             }
             self.join_grid(id, before);
+        }
+    }
+
+    /// A block id no block of any workspace has: five letters and digits.
+    // ponytail: a stopped workspace's saved ids aren't checked (1 in 60 million per pair); check
+    // `Space::saved` too if one ever collides.
+    fn new_uid(&self) -> String {
+        loop {
+            let uid = base36(uuid::Uuid::new_v4().as_u128() % 36u128.pow(5), 5);
+            if !self.uid_taken(&uid) {
+                return uid;
+            }
+        }
+    }
+
+    fn uid_taken(&self, uid: &str) -> bool {
+        self.spaces().any(|s| s.uids.values().any(|u| u == uid))
+    }
+
+    /// Block `id`, just restored, takes back its saved id `uid`; one that is malformed or taken
+    /// (a file edited by hand) leaves it the new one it got.
+    pub(super) fn adopt_uid(&mut self, id: BlockId, uid: &str) {
+        let valid = (1..=12).contains(&uid.len())
+            && uid
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+        if valid && !self.uid_taken(uid) {
+            self.space.uids.insert(id, uid.to_string());
         }
     }
 
@@ -489,7 +519,7 @@ impl Workspace {
             .blocks()
             .iter()
             .filter(|b| ids.contains(&b.id))
-            .map(|b| (b.id, self.space.blocks[&b.id].item(self.space.home(b), cx)))
+            .map(|b| (b.id, self.space.item_of(b, cx)))
             .collect();
         let was_focused = self.space.focused.is_some_and(|id| ids.contains(&id));
         for id in ids {
@@ -539,6 +569,7 @@ impl Workspace {
         self.space.canvas.remove(id);
         self.space.appearing.remove(&id);
         let body = self.space.blocks.remove(&id);
+        self.space.uids.remove(&id);
         if self.space.hovered == Some(id) {
             self.space.hovered = None;
         }
@@ -731,4 +762,15 @@ pub(super) fn label(agent: Option<&str>, title: &str, folder: Option<&Path>) -> 
         }
     }
     parts.join(" · ")
+}
+
+/// `n` in base 36 (digits, then lowercase letters), `width` characters, zeros in front.
+fn base36(mut n: u128, width: usize) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut text = vec![b'0'; width];
+    for c in text.iter_mut().rev() {
+        *c = DIGITS[(n % 36) as usize];
+        n /= 36;
+    }
+    String::from_utf8(text).expect("ASCII")
 }

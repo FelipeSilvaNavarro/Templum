@@ -428,10 +428,35 @@ impl Item {
             Item::Git(g) => &mut g.rect,
         }
     }
+
+    /// The block's id (docs/specs/connections.md); empty in a file from before.
+    pub fn uid(&self) -> &str {
+        match self {
+            Item::Terminal(t) => &t.uid,
+            Item::Kanban(k) => &k.uid,
+            Item::Note(n) => &n.uid,
+            Item::Editor(e) => &e.uid,
+            Item::Git(g) => &g.uid,
+        }
+    }
+
+    pub fn set_uid(&mut self, uid: String) {
+        match self {
+            Item::Terminal(t) => t.uid = uid,
+            Item::Kanban(k) => k.uid = uid,
+            Item::Note(n) => n.uid = uid,
+            Item::Editor(e) => e.uid = uid,
+            Item::Git(g) => g.uid = uid,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct NoteItem {
+    /// The block's id for agents and wires (docs/specs/connections.md); a file from before has
+    /// none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uid: String,
     pub rect: SavedRect,
     /// The notes it shows as tabs, by their ids in `notes.json`, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -455,6 +480,10 @@ pub(crate) struct NoteItem {
 /// An editor block (docs/specs/cockpit.md, section 7).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct EditorItem {
+    /// The block's id for agents and wires (docs/specs/connections.md); a file from before has
+    /// none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uid: String,
     pub rect: SavedRect,
     pub folder: String,
     /// The open files, relative to the folder, in tab order.
@@ -471,6 +500,10 @@ pub(crate) struct EditorItem {
 /// A Git block (docs/specs/cockpit.md, section 8).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct GitItem {
+    /// The block's id for agents and wires (docs/specs/connections.md); a file from before has
+    /// none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uid: String,
     pub rect: SavedRect,
     pub folder: String,
     /// The tab shown: "changes", "history", "branches" or "stashes".
@@ -584,6 +617,10 @@ impl InkItem {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct KanbanItem {
+    /// The block's id for agents and wires (docs/specs/connections.md); a file from before has
+    /// none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uid: String,
     pub rect: SavedRect,
     /// The board it shows; missing while it shows the board list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -592,6 +629,10 @@ pub(crate) struct KanbanItem {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct TerminalItem {
+    /// The block's id for agents and wires (docs/specs/connections.md); a file from before has
+    /// none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uid: String,
     pub rect: SavedRect,
     /// Missing when the OS wouldn't say, or when the path isn't UTF-8 (JSON can't hold it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -646,8 +687,8 @@ pub(crate) struct Layout {
 }
 
 pub(crate) enum LayoutBlock {
-    /// A terminal's rect and its processes, read in the background.
-    Terminal(Rect, Processes),
+    /// A terminal's rect, its processes, read in the background, and its block id.
+    Terminal(Rect, Processes, String),
     /// Any other kind: its item, complete, built on the UI thread.
     Saved(Item),
 }
@@ -661,7 +702,7 @@ impl Layout {
             .blocks
             .iter()
             .filter_map(|b| match b {
-                LayoutBlock::Terminal(_, p) => Some(p.clone()),
+                LayoutBlock::Terminal(_, p, _) => Some(p.clone()),
                 LayoutBlock::Saved(_) => None,
             })
             .collect();
@@ -680,10 +721,11 @@ impl Layout {
                 .blocks
                 .iter()
                 .map(|b| match b {
-                    LayoutBlock::Terminal(rect, _) => {
+                    LayoutBlock::Terminal(rect, _, uid) => {
                         // One answer per terminal, in order.
                         let found = found.next().unwrap_or_default();
                         Item::Terminal(TerminalItem {
+                            uid: uid.clone(),
                             rect: (*rect).into(),
                             folder: found.folder.and_then(utf8),
                             agent: found.agent,
@@ -864,6 +906,7 @@ mod tests {
             },
             items: vec![
                 Item::Terminal(TerminalItem {
+                    uid: String::new(),
                     rect: SavedRect {
                         x: 0.0,
                         y: 0.0,
@@ -875,6 +918,7 @@ mod tests {
                     session: Some("0d5e5f4b-1c2d-4e3f-8a9b-0c1d2e3f4a5b".into()),
                 }),
                 Item::Terminal(TerminalItem {
+                    uid: String::new(),
                     rect: SavedRect {
                         x: 800.0,
                         y: 10.0,
@@ -886,6 +930,7 @@ mod tests {
                     session: None,
                 }),
                 Item::Kanban(KanbanItem {
+                    uid: String::new(),
                     rect: SavedRect {
                         x: -900.0,
                         y: 0.0,
@@ -1019,6 +1064,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut saved = sample();
         saved.items.push(Item::Note(NoteItem {
+            uid: String::new(),
             rect: SavedRect {
                 x: 1.0,
                 y: 2.0,
@@ -1452,12 +1498,21 @@ mod tests {
             camera,
             // No processes: their folders are unknown.
             blocks: vec![
-                LayoutBlock::Terminal(Rect::new(0.0, 0.0, 10.0, 10.0), Processes::default()),
+                LayoutBlock::Terminal(
+                    Rect::new(0.0, 0.0, 10.0, 10.0),
+                    Processes::default(),
+                    "t1".into(),
+                ),
                 LayoutBlock::Saved(Item::Kanban(KanbanItem {
+                    uid: String::new(),
                     rect: Rect::new(5.0, 5.0, 10.0, 10.0).into(),
                     board: Some(3),
                 })),
-                LayoutBlock::Terminal(Rect::new(20.0, 0.0, 30.0, 10.0), Processes::default()),
+                LayoutBlock::Terminal(
+                    Rect::new(20.0, 0.0, 30.0, 10.0),
+                    Processes::default(),
+                    "t2".into(),
+                ),
             ],
             focused: Some(1),
             recent: vec![PathBuf::from("/a"), PathBuf::from("/b")],
@@ -1467,6 +1522,8 @@ mod tests {
         };
         let (saved, _) = layout.snapshot(None);
         assert_eq!(saved.recent, ["/a", "/b"], "recent folders, newest first");
+        let uids: Vec<&str> = saved.items.iter().map(Item::uid).collect();
+        assert_eq!(uids, ["t1", "", "t2"], "each block keeps its id");
         assert_eq!(saved.version, VERSION);
         assert_eq!(
             saved.camera,

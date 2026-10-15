@@ -275,6 +275,7 @@ fn a_rectangle_held_near_the_edge_moves_the_camera_to_blocks_beyond_it(cx: &mut 
             ws.update(cx, |ws, cx| {
                 let vp = ws.viewport(window);
                 let beyond = crate::session::Item::Kanban(crate::session::KanbanItem {
+                    uid: String::new(),
                     rect: Rect::new(vp.w + 200.0, 60.0, 220.0, 200.0).into(),
                     board: None,
                 });

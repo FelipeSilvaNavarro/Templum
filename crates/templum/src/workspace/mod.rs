@@ -281,6 +281,7 @@ impl Body {
     pub fn item(&self, rect: templum_canvas::Rect, cx: &App) -> session::Item {
         match self {
             Body::Terminal(pane) => session::Item::Terminal(session::TerminalItem {
+                uid: String::new(),
                 rect: rect.into(),
                 folder: pane.seen.folder.clone().and_then(session::utf8),
                 agent: pane.seen.agent.clone(),
@@ -288,10 +289,12 @@ impl Body {
                 session: None,
             }),
             Body::Kanban(k) => session::Item::Kanban(session::KanbanItem {
+                uid: String::new(),
                 rect: rect.into(),
                 board: k.board,
             }),
             Body::Note(n) => session::Item::Note(session::NoteItem {
+                uid: String::new(),
                 rect: rect.into(),
                 notes: n.ids(),
                 active: n.active,
@@ -398,6 +401,9 @@ pub(crate) struct Space {
     pub canvas: Canvas,
     /// What each block of the canvas holds. Inserted and removed together with `canvas`'s blocks.
     pub blocks: HashMap<BlockId, Body>,
+    /// Each block's id for agents and wires (docs/specs/connections.md): unique in every
+    /// workspace, kept by restarts, undo and moves.
+    pub uids: HashMap<BlockId, String>,
     pub focused: Option<BlockId>,
     /// The selected blocks (Shift+drag, Shift+click on a title): Delete closes them, Copy and
     /// Paste copy them. Never the focused one: selecting takes the focus away.
@@ -477,6 +483,13 @@ impl Space {
             .find(|id| self.shown(*id))
     }
 
+    /// A block as a saved item at its rect on the canvas, with its id.
+    fn item_of(&self, block: &Block, cx: &App) -> session::Item {
+        let mut item = self.blocks[&block.id].item(self.home(block), cx);
+        item.set_uid(self.uids.get(&block.id).cloned().unwrap_or_default());
+        item
+    }
+
     /// The canvas as a snapshot needs it: rects and process ids, cheap on the UI thread.
     fn layout(&self, agents: Arc<Vec<templum_terminal::Detect>>, cx: &App) -> session::Layout {
         let blocks = self.canvas.blocks();
@@ -486,10 +499,12 @@ impl Space {
             blocks: blocks
                 .iter()
                 .map(|b| match &self.blocks[&b.id] {
-                    Body::Terminal(pane) => {
-                        session::LayoutBlock::Terminal(self.home(b), pane.term.processes())
-                    }
-                    body => session::LayoutBlock::Saved(body.item(self.home(b), cx)),
+                    Body::Terminal(pane) => session::LayoutBlock::Terminal(
+                        self.home(b),
+                        pane.term.processes(),
+                        self.uids.get(&b.id).cloned().unwrap_or_default(),
+                    ),
+                    _ => session::LayoutBlock::Saved(self.item_of(b, cx)),
                 })
                 .collect(),
             focused: self
@@ -533,6 +548,7 @@ impl Space {
             self.canvas.remove(id);
         }
         self.blocks.clear();
+        self.uids.clear();
         self.focused = None;
         self.selected.clear();
         self.hovered = None;
