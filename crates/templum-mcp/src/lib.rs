@@ -2,6 +2,7 @@
 //! socket, the MCP tools, the agents' hook events and the `templum` command line. No UI.
 
 pub mod bus;
+pub mod cli;
 pub mod hooks;
 pub mod rpc;
 pub mod tools;
