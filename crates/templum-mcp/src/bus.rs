@@ -109,11 +109,10 @@ fn serve(stream: Stream, tx: &UnboundedSender<Message>, token: Option<&str>) {
     else {
         return;
     };
-    let Ok(writer) = reader
-        .get_ref()
-        .set_read_timeout(None)
-        .and_then(|()| reader.get_ref().try_clone())
-    else {
+    if read_limit(reader.get_ref(), None).is_none() {
+        return;
+    }
+    let Ok(writer) = reader.get_ref().try_clone() else {
         return;
     };
     let (reply, replies) = std::sync::mpsc::channel::<String>();
@@ -166,7 +165,7 @@ fn first_line(reader: &mut BufReader<Stream>) -> Option<Vec<u8>> {
         let left = deadline
             .checked_duration_since(Instant::now())
             .filter(|left| !left.is_zero())?;
-        reader.get_ref().set_read_timeout(Some(left)).ok()?;
+        read_limit(reader.get_ref(), Some(left))?;
         let read = match reader.fill_buf() {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             read => read.ok().filter(|read| !read.is_empty())?,
@@ -183,6 +182,17 @@ fn first_line(reader: &mut BufReader<Stream>) -> Option<Vec<u8>> {
         if done {
             return Some(line);
         }
+    }
+}
+
+/// Sets `stream`'s read time limit (None: none). macOS refuses one on a socket its client already
+/// closed (EINVAL, as POSIX allows): a hook writes its event and exits at once, often before its
+/// reader thread runs. Such a socket's reads can't block, and what it sent is still there to
+/// read, so that refusal is no failure.
+fn read_limit(stream: &Stream, limit: Option<Duration>) -> Option<()> {
+    match stream.set_read_timeout(limit) {
+        Err(e) if e.kind() != io::ErrorKind::InvalidInput => None,
+        _ => Some(()),
     }
 }
 
