@@ -424,6 +424,8 @@ impl Workspace {
                         handed: None,
                         answer: None,
                         prompt: None,
+                        looks: Default::default(),
+                        typed: Default::default(),
                     })),
                 );
                 self.added(id);

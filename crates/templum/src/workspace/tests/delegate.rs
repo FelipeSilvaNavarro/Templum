@@ -815,3 +815,59 @@ fn a_wait_for_times_out_goes_with_its_block_and_shows_no_balloon(cx: &mut TestAp
         (true, format!("{them} was closed while you waited."))
     );
 }
+
+/// `cat` in block `id` prints `text` back, and the test waits until its screen shows it.
+#[cfg(unix)]
+fn shows(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId, text: &str) {
+    let line = format!("{text}\r").into_bytes();
+    ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().term.write(line));
+    screen_with(ws, cx, id, text);
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_screen_at_work_says_working_and_one_gone_still_ends_its_task(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    let state = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().state.clone())
+    };
+    // The person types: their keys change the screen, and tell nothing.
+    for i in 0..4 {
+        ws.read_with(cx, |ws, _| {
+            ws.space.terminal(theirs).unwrap().typed.set(true)
+        });
+        shows(&ws, cx, theirs, &format!("typed {i}"));
+        after(cx, 1000);
+    }
+    assert_eq!(state(&ws, cx), None);
+    // Its own output, a second apart: at work.
+    for i in 0..4 {
+        shows(&ws, cx, theirs, &format!("tick {i}"));
+        after(cx, 1000);
+    }
+    assert_eq!(state(&ws, cx), Some(AgentState::Working));
+    let idle = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        1,
+        "wait_for_idle",
+        json!({ "block": them }),
+    );
+    assert!(idle.try_recv().is_err(), "it waits while the agent works");
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    assert_eq!(state(&ws, cx), Some(AgentState::Idle));
+    let (failed, text) = answered(&idle);
+    assert!(
+        !failed
+            && text.starts_with("Its screen has been still for 5 seconds")
+            && text.contains("tick 3"),
+        "{text}"
+    );
+}

@@ -1,5 +1,6 @@
 //! The main view: the canvas of terminal blocks.
 
+mod activity;
 mod blocks;
 mod bus;
 mod content;
@@ -39,7 +40,7 @@ pub(crate) use find::FindBar;
 pub(crate) use git_message::TryIt;
 pub(crate) use waits::{Wait, Waiting};
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -167,6 +168,10 @@ pub(crate) struct Pane {
     pub answer: Option<String>,
     /// The prompt `spawn_agent` types once its agent is ready.
     pub prompt: Option<Prompt>,
+    /// The looks at its screen: its agent's state where its hooks say nothing (`activity.rs`).
+    pub looks: activity::Looks,
+    /// The person typed into it since the last look, which then tells nothing.
+    pub typed: Cell<bool>,
 }
 
 impl Pane {
@@ -842,6 +847,8 @@ pub struct Workspace {
     /// The last canvas write failed (and said so); the next good one says it works again.
     canvas_save_failed: bool,
     _snapshots: Task<()>,
+    /// Looks at the agents' screens each `activity::LOOK`.
+    _looks: Task<()>,
     /// Each agent's plan limits, as last read after a snapshot (docs/specs/usage.md).
     pub(crate) limits: Vec<(String, templum_usage::Limits)>,
     /// When to tell the user about them.
@@ -1077,6 +1084,14 @@ impl Workspace {
                 }
             }
         });
+        let looks = cx.spawn(async move |ws, cx| {
+            loop {
+                cx.background_executor().timer(activity::LOOK).await;
+                if ws.update(cx, |ws, cx| ws.look_at_agents(cx)).is_err() {
+                    break;
+                }
+            }
+        });
         cx.observe_window_appearance(window, |ws, window, cx| {
             ws.set_dark(is_dark(window.appearance()), cx)
         })
@@ -1204,6 +1219,7 @@ impl Workspace {
             snapshotting: false,
             canvas_save_failed: false,
             _snapshots: snapshots,
+            _looks: looks,
             limits: Vec::new(),
             watch: templum_usage::Watch::new(crate::notes::now()),
             usage_open: false,
