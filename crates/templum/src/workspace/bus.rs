@@ -369,13 +369,19 @@ const TITLE_CHARS: usize = 60;
 
 /// A title as agents are told it. A terminal's is whatever its programs set (OSC 0), and goes
 /// into an agent's instructions: no control characters, no invisible ones (zero widths,
-/// direction overrides), its line breaks and runs of blanks as one space, and at most 60
+/// direction overrides, soft hyphens, tags, which can carry hidden text), its line breaks and runs of blanks as one space, and at most 60
 /// characters.
 pub(super) fn clean_title(title: &str) -> String {
     let invisible = |c: char| {
         matches!(
             c,
-            '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+            '\u{00AD}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{FEFF}'
+                | '\u{E0000}'..='\u{E007F}'
         )
     };
     let kept: String = title

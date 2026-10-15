@@ -488,6 +488,11 @@ fn a_title_is_cleaned_before_an_agent_reads_it() {
         clean_title("a\u{200B}b \u{202E}gnp.exe\u{202C} \u{2066}c\u{2069}\u{FEFF}"),
         "ab gnp.exe c"
     );
+    // A soft hyphen, a word joiner, an invisible plus, and text in tags: \u{E0041} is a tagged "A".
+    assert_eq!(
+        clean_title("so\u{AD}ft\u{2060}\u{2064} x\u{E0001}\u{E0041}\u{E0062}\u{E007F}"),
+        "soft x"
+    );
     let long = clean_title(&"é".repeat(100));
     assert_eq!(long.chars().count(), 60, "{long}");
     assert!(long.ends_with("é…"), "{long}");
