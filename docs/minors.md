@@ -692,3 +692,14 @@ Left by batch 5; line numbers are those of `development` at f48c75c.
   then ends the task it was on. A Claude Code or Gemini CLI running a long, silent tool with no spinner shows idle,
   and the agent that handed it the task gets "Its screen has been still for 5 seconds" before the answer. Fix: watch
   it in the plan's manual check 4; raise `STILL`, or leave alone agents whose hooks spoke during the turn.
+- [ ] **Resizing an agent's block reads as its agent at work.** A resize re-wraps the terminal's lines
+  (`crates/templum/src/workspace/input.rs:149`, `preferences.rs:438`), and `look_at_agents`
+  (`crates/templum/src/workspace/activity.rs`) takes the changed screen for the agent's own output. A person dragging a
+  block's edge, or the window's, for 3 s or more sees idle agents turn Working for about 5 s, and a `wait_for_idle`
+  asked then gets "Its screen has been still for 5 seconds" instead of the agent's last answer. Fix: set the pane's
+  `scrolled` when its terminal is resized, so that look tells nothing.
+- [ ] **A watched shell that exits in a hidden window keeps its `wait_for` waiting.** `look`
+  (`crates/templum/src/workspace/waits.rs:493`) answers a closed block at once, but a block whose shell exited is only
+  taken off while the window draws (`crates/templum/src/workspace/render.rs:300-309`), so `look` still finds it. A
+  person whose `templum wait <block> --for command_finished` watches a terminal that exits while Templum is hidden sees
+  it wait until the window shows or the timeout passes. Fix: treat `pane.term.exited()` as closed in `look`.

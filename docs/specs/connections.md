@@ -573,7 +573,7 @@ Batches 2 and 3 paint, so their pull requests carry `--bench` and `--bench-mixed
 | A task typed into a Codex at work is answered by the turn it was on | One task at a time per agent; the rest is the person's to see in the agent's terminal |
 | An agent without events never says it is done | `reply`; its screen going still ends its task (`activity.rs`); else the wait's timeout with the last screen lines |
 | Gemini CLI ignores a system settings file root doesn't own | An extension the person installs once from Settings ▸ Connections |
-| A spinner drawn under a permission dialog would turn its yellow dot to Working | Checked by hand with Claude Code and Gemini CLI (manual check 4) |
+| A spinner drawn under a permission dialog would turn its yellow dot to Working | The screen ends a wait for the person only once the person typed into the terminal after it began; checked by hand with Claude Code and Gemini CLI (manual check 4) |
 | Windows: PowerShell may not wait for, or hand stdin to, `templum.exe` (a windowed program) in a Gemini hook | Checked by hand on Windows; else `$input \| & '<bin>' hook gemini` |
 | Codex's `-c` under `cmd.exe` and Windows PowerShell 5.1 | Not typed there (Git Bash is the default shell on Windows; pwsh 7 takes them) |
 | A path Templum can't type safely (`"`, `$`, `'`, a backtick…) | No connections for that agent, and a notification once per session (deferred) |
