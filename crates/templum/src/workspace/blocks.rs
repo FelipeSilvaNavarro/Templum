@@ -403,7 +403,6 @@ impl Workspace {
                         usage: None,
                         find: None,
                         state: None,
-                        answer: None,
                     }),
                 );
                 self.added(id);

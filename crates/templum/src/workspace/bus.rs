@@ -137,14 +137,10 @@ impl Workspace {
             .find(|pane| pane.term.id() == terminal);
         let Some(pane) = pane else { return };
         match event {
-            AgentEvent::Started => {
-                pane.state = Some(AgentState::Idle);
-                pane.answer = None;
-            }
             AgentEvent::Working => pane.state = Some(AgentState::Working),
-            AgentEvent::Stopped { message } => {
+            // Its last answer waits for delegating (batch 3).
+            AgentEvent::Started | AgentEvent::Stopped { .. } => {
                 pane.state = Some(AgentState::Idle);
-                pane.answer = message;
             }
             AgentEvent::NeedsYou { message } => pane.state = Some(AgentState::NeedsYou(message)),
             AgentEvent::Ended => pane.state = None,

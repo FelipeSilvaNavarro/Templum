@@ -136,8 +136,6 @@ pub(crate) struct Pane {
     /// Its agent's turn, as the agent's hooks last said; None until one speaks, and after its
     /// session ends.
     pub state: Option<AgentState>,
-    /// Its agent's last answer, as its hooks gave it.
-    pub answer: Option<String>,
 }
 
 impl Pane {

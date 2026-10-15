@@ -353,11 +353,7 @@ fn an_agents_hooks_set_its_state_and_its_dot(cx: &mut TestAppContext) {
         json!({ "event": "stopped", "message": "Done." }),
     );
     ws.read_with(cx, |ws, _| {
-        let pane = ws.space.terminal(id).unwrap();
-        assert_eq!(
-            (pane.state.clone(), pane.answer.as_deref()),
-            (Some(AgentState::Idle), Some("Done."))
-        );
+        assert_eq!(ws.space.terminal(id).unwrap().state, Some(AgentState::Idle));
     });
     assert_eq!(
         dot(&ws, cx),
