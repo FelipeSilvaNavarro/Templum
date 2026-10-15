@@ -137,7 +137,8 @@ later starts with none.
    `reply`, or the wait ends at its timeout with the agent's last screen lines.
 7. A task stays handed over until its answer comes, the agent's session ends (or a snapshot no longer finds the agent
    it found before: Codex says nothing when it quits), its block closes, or its timeout passes (`delegate`'s, 600 s
-   unless asked, also without `wait`).
+   unless asked, also without `wait`). Past its timeout the agent that handed it over still waits for its answer
+   with `wait_for_idle`; the wire's dot stops, and another agent may hand it a task.
 8. `reply` with no call waiting types `[reply from <title> (<id>)]` and the text, then Enter, into the agent named;
    never into a terminal running no agent, or an agent no snapshot has found yet.
 9. A task typed into an agent working on a prompt of its own is answered by the end of the next turn: Codex runs
@@ -253,7 +254,7 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `spawn_agent` | `agent` (an id of [agents.md](agents.md) or of `[agents]`), `prompt`, `folder`, `worktree` | [Spawning](#spawning) | — | 3 |
 | `delegate` | `block`, `task`, `wait` (false), `timeout` (600 s) | [Delegating](#delegating) | wired, an agent | 3 |
 | `reply` | `block`, `text` | Answers the task the block handed the caller; with none waiting, types `[reply from …]` and the text into it | wired | 3 |
-| `wait_for_idle` | `block`, `timeout` (300 s) | Waits until the agent finishes its turn; its last answer | wired | 3 |
+| `wait_for_idle` | `block`, `timeout` (300 s) | Waits until the agent finishes its turn, and for the answer to a task the caller handed it, past `delegate`'s timeout too; its last answer | wired | 3 |
 | `ask_user` | `question`, `options`, `timeout` (1800 s) | A question in a balloon ([Requests](#requests-from-agents)); the answer | — | 3 |
 | `list_cards` | `board` | The wired kanban block's board: columns, and each card's id, title, labels, assignee and comment count | wired kanban | 4 |
 | `create_card` | `board`, `column`, `title`, `description` | A new card at the column's end; its id | wired kanban | 4 |
