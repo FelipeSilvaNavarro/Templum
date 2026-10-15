@@ -415,11 +415,11 @@ fn a_wire_step_to_a_block_gone_is_skipped(cx: &mut TestAppContext) {
 }
 
 /// Wires run through the gaps people grab to move the canvas: a drag that starts on one still
-/// moves it, and the wire is selected.
+/// moves it, and like any pan it leaves the keyboard where it was and selects nothing.
 #[gpui_kit::test]
-fn a_drag_from_a_wire_moves_the_canvas(cx: &mut TestAppContext) {
+fn a_drag_from_a_wire_moves_the_canvas_and_keeps_the_keyboard(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
-    let (kanban, note, _) = apart(handle, &ws, cx);
+    let (kanban, note, terminal) = apart(handle, &ws, cx);
     ws.update(cx, |ws, cx| {
         ws.connect(kanban, note, cx);
     });
@@ -427,6 +427,7 @@ fn a_drag_from_a_wire_moves_the_canvas(cx: &mut TestAppContext) {
     let before = ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
+        window.click(("body", terminal.0 as usize), cx);
         let to = (on.0 - 100.0, on.1);
         press_with(window, cx, MouseButton::Left, Modifiers::default(), on, to);
     })
@@ -437,9 +438,48 @@ fn a_drag_from_a_wire_moves_the_canvas(cx: &mut TestAppContext) {
             before.x + 100.0,
             "it panned"
         );
+        assert_eq!(ws.space.focused, Some(terminal), "typing still reaches it");
+        assert_eq!(ws.space.selected_wire, None);
+    });
+}
+
+/// A double click on a wire is the canvas's: its terminal starts in the folder of the block
+/// that had the keyboard before the first click.
+#[gpui_kit::test]
+fn a_double_click_on_a_wire_starts_a_terminal_in_the_last_focused_folder(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = apart(handle, &ws, cx);
+    let folder = tempfile::tempdir().unwrap();
+    ws.update(cx, |ws, cx| {
+        ws.connect(kanban, note, cx);
+    });
+    // Clear of the wire, and focused.
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.add_editor_at(folder.path(), Point::new(900.0, 400.0), window, cx)
+            })
+        })
+        .unwrap();
+    assert_eq!(ws.read_with(cx, |ws, _| ws.space.focused), editor);
+    let on = on_the_wire(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        click(window, cx, on, 1);
         assert_eq!(
-            ws.space.selected_wire,
-            Some(Wire::new(kanban, note).unwrap())
+            ws.read(cx).space.selected_wire,
+            Some(Wire::new(kanban, note).unwrap()),
+            "the first click selects it"
+        );
+        click(window, cx, on, 2);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let new = ws.space.focused.unwrap();
+        assert!(ws.space.terminal(new).is_some(), "a new terminal");
+        assert_eq!(
+            ws.space.terminal(new).unwrap().seen.folder.as_deref(),
+            Some(folder.path())
         );
     });
 }

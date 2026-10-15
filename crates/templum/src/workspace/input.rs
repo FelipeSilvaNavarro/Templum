@@ -437,7 +437,8 @@ impl Workspace {
     }
 
     /// Mouse up: a press on the empty canvas that didn't pan is a click, and leaves no terminal
-    /// focused (typing then reaches none; panning keeps the focus) and no block selected.
+    /// focused (typing then reaches none; panning keeps the focus) and no block selected; on a
+    /// wire, it selects the wire, so Delete removes it.
     pub(super) fn release(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
         // The Wire tool let go: on another block, they are wired.
         if let Some(Drag::Wire { from, .. }) = self.drag {
@@ -455,12 +456,13 @@ impl Workspace {
         if self.space.canvas.blocks().iter().any(|b| self.moving(b.id)) {
             cx.notify();
         }
-        if let Some(start) = self.press {
+        if let Some((start, wire)) = self.press {
             let p = self.local(pos);
             let moved = (p.x - start.x).abs().max((p.y - start.y).abs());
             if moved < CLICK_SLOP {
                 self.unfocused = self.space.focused.take();
-                if self.unfocused.is_some() || !self.space.selected.is_empty() {
+                let had_wire = std::mem::replace(&mut self.space.selected_wire, wire);
+                if self.unfocused.is_some() || !self.space.selected.is_empty() || had_wire != wire {
                     self.space.selected.clear();
                     cx.notify();
                 }
@@ -806,20 +808,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        // A wire, under the drawings: a press selects it for Delete, and no block keeps the
-        // keyboard. Wires run where people grab the canvas: a drag from one still moves it.
-        let wire = if e.click_count == 1 && self.tool == Tool::Select {
-            self.wire_at(world)
-        } else {
-            None
-        };
-        if wire.is_some() {
-            self.space.selected.clear();
-            self.space.focused = None;
-        }
-        let had_ink = self.space.selected_ink.take().is_some();
-        let had_wire = std::mem::replace(&mut self.space.selected_wire, wire).is_some();
-        if had_ink || had_wire || wire.is_some() {
+        if self.space.selected_ink.take().is_some() {
             cx.notify();
         }
         if e.click_count == 2 {
@@ -830,8 +819,13 @@ impl Workspace {
             }
             self.add_terminal_at(at, window, cx);
         } else {
+            // A wire, under the drawings: a click on it selects it (`release`). Wires run where
+            // people grab the canvas: a drag from one moves it, as from anywhere.
+            let wire = (e.click_count == 1 && self.tool == Tool::Select)
+                .then(|| self.wire_at(world))
+                .flatten();
             self.drag = Some(Drag::Canvas(Gesture::pan(p)));
-            self.press = Some(p);
+            self.press = Some((p, wire));
         }
     }
 

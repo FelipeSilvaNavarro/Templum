@@ -759,8 +759,9 @@ pub struct Workspace {
     /// Blocks added now aren't kept for Ctrl+Z: a canvas being restored, closed blocks coming
     /// back.
     quiet: bool,
-    /// Where a press on the empty canvas started: released in place, it's a click.
-    press: Option<Point>,
+    /// Where a press on the empty canvas started, and the wire under it: released in place,
+    /// it's a click (that selects the wire).
+    press: Option<(Point, Option<Wire>)>,
     /// The block the last click on the empty canvas unfocused: a double-click's terminal starts
     /// in its folder.
     unfocused: Option<BlockId>,
