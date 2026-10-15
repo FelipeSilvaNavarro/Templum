@@ -3225,3 +3225,14 @@ git commit -m "docs(connections): describe the bus, block ids and what agents ar
    notification's click shows the block); `templum mcp` in Alacritty (outside Templum) exits 2 with its message.
 6. **Restart:** the blocks keep their ids (`templum blocks` before and after).
 7. **Your own hooks and status line** in `~/.claude/settings.json` still run in the Claude Code Templum opens.
+8. **A failing tool after a permission:** allow a `cargo test` that fails: the yellow dot turns back to Working at
+   once, not after the answer.
+9. **Esc during a tool:** press Esc while a long Bash command runs (`sleep 60`): the dot leaves Working at once.
+10. **Parallel subagents:** ask for two subagents at once and leave a permission dialog of one open: note whether the
+    other's tools turn the yellow back to Working (the minor "Parallel subagents can turn…").
+11. **`/mcp`:** open it and close it in an idle Claude Code: the dot doesn't stay on Working.
+12. **Windows, Codex through npm's `codex.cmd` under pwsh 7:** from AI agent ▸, `/mcp` lists `templum` and `whoami`
+    works; `templum blocks` in a Templum terminal runs this Templum (its folder first on PATH).
+13. **A hook's time on an AppImage build:** in a terminal of the AppImage, run
+    `time (echo '{"hook_event_name":"PostToolUse"}' | "$APPIMAGE" hook claude)`, and write the time in the minor
+    "Each hook runs the AppImage again".

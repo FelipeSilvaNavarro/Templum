@@ -435,9 +435,9 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   Code or Codex then starts without Templum's server: `/mcp` doesn't list it, and nothing says why. Fix: a
   notification once per session, from `launch_agent` and `resume_agent`, which have the window.
 - [ ] **Two Templums sharing a data folder share one `templum` link.** `templum_folder`
-  (`crates/templum/src/workspace/bus.rs:75`, at 2cbb1d9) points `<data>/bin/templum` at the last Templum started (an installed
-  one and `cargo run`), so a terminal of the first runs the second's program; its `TEMPLUM_BUS` still names its own
-  Templum. Fix: one link per bus (`<data>/bin/<pid>/templum`), removed with the bus.
+  (`crates/templum/src/workspace/bus.rs:75`, at 2cbb1d9) points `<data>/bin/templum` at the last Templum started (an
+  installed one and `cargo run`), so a terminal of the first runs the second's program; its `TEMPLUM_BUS` still names
+  its own Templum. Fix: one link per bus (`<data>/bin/<pid>/templum`), removed with the bus.
 - [ ] **The Claude Code settings file has its old name.** `claude-statusline.json`
   (`crates/templum-usage/src/claude.rs:23`) now holds the hooks too. A person reading `ps` sees a status-line file
   carry hooks. Fix: rename it `claude-settings.json` and delete the old one at start.
@@ -469,8 +469,11 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
 - [ ] **Reading a terminal's last command holds the terminal for its whole output.** `SharedTerm::last_command`
   (`crates/templum-terminal/src/terminal.rs:301`, at c0597d1) turns the whole command's output into text under the
   terminal's lock before `read_terminal` keeps its last 256 KB; a command that printed the whole history makes the
-  terminal (and its painting) wait while it is read. Fix: read at most `MAX_LINES` plus a screen of rows above the
-  end of the command.
+  terminal (and its painting) wait while it is read. Before that, `prompt_lines`
+  (`crates/templum-terminal/src/tap.rs:70`, at c0597d1) walks every line of the history, cell by cell, under the same
+  lock to find where the prompts start, so even a short last command costs a walk of the whole history (10,000 lines
+  by default). Fix: read at most `MAX_LINES` plus a screen of rows above the end of the command, and find the last
+  finished prompt by walking up from the bottom, stopping at the first.
 - [ ] **`read_terminal` with `lines` may give fewer lines, the first a piece of one.** `SharedTerm::lines`
   (`crates/templum-terminal/src/terminal.rs:285`, at c0597d1) reads `n` plus a screen of grid rows and joins wrapped
   rows into one line, so with long wrapped lines it returns fewer than `n`, and the first may start in the middle of
@@ -481,3 +484,15 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   (`crates/templum-mcp/src/hooks.rs`, the `idle_prompt` arm), so the dot says Working until the next prompt or the
   `idle_prompt` notification, which Claude Code sends only after the prompt has sat idle (about a minute). Fix: a hook
   for interrupts when Claude Code has one; meanwhile the screen going still (batch 5).
+- [ ] **Parallel subagents can turn a waiting Claude Code's dot back to Working.** With subagents running side by side,
+  one subagent's `PostToolUse` or `PostToolUseFailure` (`crates/templum-mcp/src/hooks.rs:34`, at 11a2fb0) arrives
+  while another waits at a permission dialog, and the yellow "Waiting for you" turns back to Working although the
+  dialog is still open. A person sees Working and doesn't look. Fix: keep the `tool_use_id` of the
+  `PermissionRequest` with the wait, and clear the yellow only on the `PostToolUse` or `PostToolUseFailure` with that
+  id.
+- [ ] **Each hook runs the AppImage again.** The hooks, the status line and the MCP server run Templum's program,
+  which is `$APPIMAGE` when Templum runs from one (`program`, `crates/templum/src/workspace/usage.rs:331`, at
+  11a2fb0), and each run mounts the image; Claude Code waits for its `PostToolUse` hook after every tool. A person
+  running the AppImage may see Claude Code pause after each tool. Fix: measure (the plan's manual check 13); if slow,
+  give the short-lived hook and status-line commands the running executable (they only run while Templum and its
+  mount do).
