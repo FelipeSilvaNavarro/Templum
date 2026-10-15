@@ -146,8 +146,8 @@ later starts with none.
 ### Spawning
 
 `spawn_agent` opens a new agent block beside the caller, wired to it, in the caller's folder or the one it names.
-With a worktree name, Templum first runs `git worktree add -b <name> <repository>/.worktrees/<name>` from the
-caller's repository (and adds `.worktrees/` to the repository's `.git/info/exclude` once), and the agent starts
+With a worktree name, Templum first runs `git worktree add -b <name> <repository>/.worktrees/<name>` from that
+folder's repository (and adds `.worktrees/` to the repository's `.git/info/exclude` once), and the agent starts
 there, so several agents can change one project at once without stepping on each other. A prompt is typed once the
 agent is ready: when Claude Code reports its session started; for the others, when the agent's process is seen and
 its screen has been still for a second. The result names the new block and its folder.
@@ -215,11 +215,11 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
   `2025-03-26`, `2024-11-05`: none of them changed what tools exchange), else `2025-11-25`; server `templum`,
   Templum's version, and `instructions` written for the caller:
 
-  > You are block b7k2m, "Claude Code · api", in workspace "Main". Connected to you: t4q8p (terminal "dev server"),
-  > k9x1d (kanban "Sprint"). In this workspace, not connected (ask with connect): 4qm2a (note "Ideas"). Name blocks by
-  > these ids. You may only read or write your own block and those connected to you; connect asks the person for
-  > another. list_blocks gives the current list. When a connected kanban has your task, move its card to Doing when
-  > you start and to Review when you are done; write what the next agent needs to know in the connected note.
+  > You are block b7k2m, "Claude Code · api", in Templum workspace "Main". Connected to you: t4q8p (terminal "dev
+  > server"), k9x1d (kanban "Sprint"). In this workspace, not connected (ask with connect): 4qm2a (note "Ideas"). Name
+  > blocks by these ids. You may only read or write your own block and those connected to you; connect asks the person
+  > for another. list_blocks gives the current list. When a connected kanban has your task, move its card to Doing
+  > when you start and to Review when you are done; write what the next agent needs to know in the connected note.
 
   The kanban and note sentence comes with their tools (batch 4).
 
