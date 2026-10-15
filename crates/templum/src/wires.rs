@@ -3,8 +3,13 @@
 
 use std::time::Duration;
 
-use gpui_kit::{Bounds, Hsla, PathBuilder, Pixels, Window, fill, point, px, size};
-use templum_canvas::{Camera, Curve, Point, Rect};
+use gpui_kit::prelude::*;
+use gpui_kit::{
+    Bounds, Div, Hsla, PathBuilder, Pixels, TestSupportExt as _, Window, div, fill, point, px, size,
+};
+use templum_canvas::{Camera, Curve, Level, Point, Rect, level};
+
+use crate::theme::Ui;
 
 /// A wire's width, world units.
 pub(crate) const WIDTH: f32 = 2.0;
@@ -25,6 +30,53 @@ pub(crate) fn width(zoom: f32) -> f32 {
 /// The dot's radius on screen at `zoom`, pixels: never under 2.5, so it shows on a 1 px wire.
 pub(crate) fn dot_radius(zoom: f32) -> f32 {
     (DOT * zoom).max(2.5)
+}
+
+/// A label's text size at zoom 1, pixels: a block title's.
+const LABEL_FONT: f32 = 12.0;
+/// The widest a label's pill grows at zoom 1; longer text ends in "…".
+const LABEL_WIDTH: f32 = 240.0;
+
+/// How much a wire's label is scaled, the canvas resting at `rest` and drawn at `zoom`: with the
+/// canvas at the Full level, at its own size at Silhouette (as a block's title label is), and not
+/// drawn at Card (docs/specs/connections.md, Wires).
+pub(crate) fn label_scale(rest: f32, zoom: f32) -> Option<f32> {
+    match level(LABEL_FONT, rest) {
+        Level::Full => Some(zoom),
+        Level::Silhouette => Some(1.0),
+        Level::Card => None,
+    }
+}
+
+/// The `n`th label drawn: `text` in a pill centered on `at` (pixels from the canvas's origin),
+/// scaled by `s`, in its wire's `color`.
+pub(crate) fn label(n: usize, text: String, at: Point, s: f32, color: Hsla, ui: Ui) -> Div {
+    let (w, h) = (LABEL_WIDTH * s, LABEL_FONT * 2.0 * s);
+    div()
+        .absolute()
+        .left(px(at.x - w / 2.0))
+        .top(px(at.y - h / 2.0))
+        .w(px(w))
+        .h(px(h))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .id(("wire-label", n))
+                .max_w(px(w))
+                .px(px(6.0 * s))
+                .py(px(2.0 * s))
+                .truncate()
+                .rounded_full()
+                .border_1()
+                .border_color(ui.hairline)
+                .bg(ui.surface)
+                .text_size(px(LABEL_FONT * s))
+                .text_color(color)
+                .child(text)
+                .test_support(),
+        )
 }
 
 /// Paints `curves` (world units) through `camera` into `bounds`, then a dot of the color `dot` at
@@ -73,6 +125,27 @@ pub(crate) fn paint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_label_scales_at_full_keeps_its_size_at_silhouette_and_goes_at_card() {
+        assert_eq!(label_scale(1.0, 1.0), Some(1.0));
+        assert_eq!(
+            label_scale(0.5, 0.5),
+            Some(0.5),
+            "12 px at 50% is 6 px: Full"
+        );
+        assert_eq!(
+            label_scale(0.25, 0.25),
+            Some(1.0),
+            "Silhouette: its own 12 px"
+        );
+        assert_eq!(label_scale(0.2, 0.2), None, "Card");
+        assert_eq!(
+            label_scale(1.0, 0.8),
+            Some(0.8),
+            "the level at rest, the size as drawn"
+        );
+    }
 
     #[test]
     fn a_wire_is_2_units_wide_and_never_under_a_pixel() {

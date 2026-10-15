@@ -444,6 +444,19 @@ impl Render for Workspace {
         let dots = self.wire_dots(now, still);
         let zoom = camera.zoom();
         let in_view = Rect::new(camera.origin.x, camera.origin.y, vp.w / zoom, vp.h / zoom);
+        // The wires' labels: on the wires, under the blocks.
+        let labels: Vec<_> = crate::wires::label_scale(self.space.rest, zoom)
+            .map(|s| {
+                self.wire_labels()
+                    .into_iter()
+                    .filter(|(at, ..)| in_view.contains(*at))
+                    .enumerate()
+                    .map(|(n, (at, text, color))| {
+                        crate::wires::label(n, text, camera.to_screen(at), s, color, self.ui)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         if !still && dots.iter().any(|p| in_view.contains(*p)) {
             self._dot_frame = cx.spawn(async move |ws, cx| {
                 cx.background_executor()
@@ -536,6 +549,7 @@ impl Render for Workspace {
             .on_scroll_wheel(cx.listener(Self::on_background_scroll))
             .on_pinch(cx.listener(Self::on_pinch))
             .child(layer)
+            .children(labels)
             .children(blocks)
             // The drawings, above the blocks; with a drawing tool on, a layer over them takes the
             // pointer.

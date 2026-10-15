@@ -169,6 +169,35 @@ impl Workspace {
     /// The wires to paint under the blocks, with their colors: the title's dim one; and the one
     /// the Wire tool draws, in the accent, to the facing edge of the block under the pointer or
     /// to the pointer. Grid mode hides them.
+    /// A wire's color: the title's dim one, the accent while it is selected.
+    fn wire_color(&self, wire: Wire) -> Hsla {
+        if self.space.selected_wire == Some(wire) {
+            self.ui.accent
+        } else {
+            self.ui.title_dim
+        }
+    }
+
+    /// The wires' labels to draw: each at its curve's middle (world units), in its wire's color.
+    /// Grid mode hides them.
+    pub(super) fn wire_labels(&self) -> Vec<(Point, String, Hsla)> {
+        if self.space.grid.is_some() {
+            return Vec::new();
+        }
+        self.space
+            .wires
+            .iter()
+            .filter_map(|w| {
+                let label = self.space.label(*w)?;
+                Some((
+                    self.space.curve(*w)?.at(0.5),
+                    label.to_string(),
+                    self.wire_color(*w),
+                ))
+            })
+            .collect()
+    }
+
     pub(super) fn wire_curves(&self) -> Vec<(Curve, Hsla)> {
         if self.space.grid.is_some() {
             return Vec::new();
@@ -178,11 +207,7 @@ impl Workspace {
             .wires
             .iter()
             .filter_map(|w| {
-                let color = if self.space.selected_wire == Some(*w) {
-                    self.ui.accent
-                } else {
-                    self.ui.title_dim
-                };
+                let color = self.wire_color(*w);
                 Some((self.space.curve(*w)?, color))
             })
             .collect();

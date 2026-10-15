@@ -568,10 +568,15 @@ fn rss_mb() -> Option<f64> {
     Some(kb / 1024.0)
 }
 
-/// Wires each block to the next, back to front, as a cockpit's are: the benches paint wires.
+/// Wires each block to the next, back to front, as a cockpit's are, each labeled: the benches
+/// paint wires and their labels.
 fn wire_in_a_chain(ws: &mut Workspace) {
     let ids: Vec<_> = ws.space.canvas.blocks().iter().map(|b| b.id).collect();
     for pair in ids.windows(2) {
-        ws.space.add_wire(pair[0], pair[1]);
+        if let Some(wire) = ws.space.add_wire(pair[0], pair[1])
+            && let Some(key) = ws.space.label_key(wire)
+        {
+            ws.space.labels.insert(key, "dev server".into());
+        }
     }
 }

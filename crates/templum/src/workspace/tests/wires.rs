@@ -1005,3 +1005,43 @@ fn a_saved_label_needs_its_wire_and_some_text(cx: &mut TestAppContext) {
         );
     });
 }
+
+#[gpui_kit::test]
+fn a_label_sits_at_the_wires_middle_down_to_25_percent_and_grid_mode_hides_it(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = apart(handle, &ws, cx);
+    ws.update(cx, |ws, cx| {
+        ws.connect(kanban, note, cx);
+        ws.rename_wire(Wire::new(kanban, note).unwrap(), "board", cx);
+        let labels = ws.wire_labels();
+        assert_eq!(labels.len(), 1);
+        assert_eq!(
+            (labels[0].0, labels[0].1.as_str(), labels[0].2),
+            (Point::new(480.0, 180.0), "board", ws.ui.title_dim)
+        );
+    });
+    for zoom in [1.0, 0.5, 0.25] {
+        ws.update(cx, |ws, _| {
+            ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), zoom);
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.try_find(("wire-label", 0usize)).is_some(),
+                "at {zoom}"
+            );
+        })
+        .unwrap();
+    }
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.enter_grid(vec![kanban, note], window, cx));
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("wire-label", 0usize)).is_none(),
+            "grid mode hides it"
+        );
+    })
+    .unwrap();
+}
