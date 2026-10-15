@@ -19,7 +19,7 @@ pub const ASK_WAIT: u64 = 1800;
 /// How long `delegate` waits for the answer, and how long a task stays handed over, seconds,
 /// unless asked.
 pub const TASK_WAIT: u64 = 600;
-/// How long `wait_for_idle` waits, seconds, unless asked.
+/// How long `wait_for_idle` and `wait_for` wait, seconds, unless asked.
 pub const IDLE_WAIT: u64 = 300;
 
 /// A tool call, its arguments checked.
@@ -63,6 +63,11 @@ pub enum Call {
         block: String,
         timeout: u64,
     },
+    WaitFor {
+        block: String,
+        event: Event,
+        timeout: u64,
+    },
     SpawnAgent(Spawn),
     ListCards {
         board: Option<String>,
@@ -99,6 +104,24 @@ pub enum Call {
     GitStatus {
         block: Option<String>,
     },
+    /// Wires two blocks: `templum wire`'s alone, never listed to agents.
+    Wire {
+        a: String,
+        b: String,
+    },
+}
+
+/// What `wait_for` waits for in a block.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Event {
+    /// The agent finishes its turn; at once when it is idle.
+    Idle,
+    /// The agent waits for its person (a permission, a question); at once when it already does.
+    NeedsYou,
+    /// The next command that finishes in the terminal (needs the shell's integration).
+    CommandFinished,
+    /// The terminal rings or sends a notification.
+    Attention,
 }
 
 /// What `spawn_agent` opens: the agent (an id of Settings ▸ Agents), its prompt, its folder (the
@@ -292,6 +315,27 @@ pub fn list() -> Value {
             },
         },
         {
+            "name": "wait_for",
+            "description": "Waits for an event in a block connected to you. idle: the agent finishes its turn \
+                            (at once when it is idle), with its last answer. needs_you: the agent waits for its \
+                            person, at a permission prompt or a question (at once when it already does). \
+                            command_finished: the next command that finishes in the terminal, with its output \
+                            (needs the shell's integration). attention: the terminal rings or sends a \
+                            notification. It may take minutes.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "block": block,
+                    "event": {
+                        "type": "string",
+                        "enum": ["idle", "needs_you", "command_finished", "attention"],
+                    },
+                    "timeout": seconds(IDLE_WAIT),
+                },
+                "required": ["block", "event"],
+            },
+        },
+        {
             "name": "spawn_agent",
             "description": "Opens a new agent block beside yours, connected to you: in your folder, the one you \
                             name, or a new Git worktree of that folder's repository (.worktrees/<worktree>, on a \
@@ -408,6 +452,12 @@ pub fn known(name: &str) -> bool {
         .is_some_and(|tools| tools.iter().any(|t| t["name"] == name))
 }
 
+/// `name` is a call only the command line makes (`templum wire`): not listed, so agents never
+/// see it.
+pub fn cli_only(name: &str) -> bool {
+    name == "wire"
+}
+
 /// The call `name` with its arguments `args`; Err says what is wrong with them.
 pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
     let text = |key: &str| {
@@ -509,6 +559,21 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             block: text("block")?,
             timeout: seconds(IDLE_WAIT)?,
         },
+        "wait_for" => Call::WaitFor {
+            block: text("block")?,
+            event: match args["event"].as_str() {
+                Some("idle") => Event::Idle,
+                Some("needs_you") => Event::NeedsYou,
+                Some("command_finished") => Event::CommandFinished,
+                Some("attention") => Event::Attention,
+                _ => {
+                    return Err(format!(
+                        "{name} needs \"event\": idle, needs_you, command_finished or attention"
+                    ));
+                }
+            },
+            timeout: seconds(IDLE_WAIT)?,
+        },
         "spawn_agent" => Call::SpawnAgent(Spawn {
             agent: text("agent")?,
             prompt: optional("prompt")?,
@@ -557,6 +622,10 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
         },
         "git_status" => Call::GitStatus {
             block: optional("block")?,
+        },
+        "wire" => Call::Wire {
+            a: text("a")?,
+            b: text("b")?,
         },
         _ => return Err(format!("Unknown tool: {name}")),
     })
@@ -612,6 +681,10 @@ mod tests {
             ),
             ("reply", json!({ "block": "b7k2m", "text": "Done." })),
             ("wait_for_idle", json!({ "block": "k9x1d", "timeout": 60 })),
+            (
+                "wait_for",
+                json!({ "block": "k9x1d", "event": "needs_you", "timeout": 60 }),
+            ),
             (
                 "spawn_agent",
                 json!({ "agent": "codex", "prompt": "fix the tests", "folder": "../api", "worktree": "fix-tests" }),
@@ -719,6 +792,28 @@ mod tests {
                 timeout: IDLE_WAIT
             })
         );
+        assert_eq!(
+            parse(
+                "wait_for",
+                &json!({ "block": "b", "event": "command_finished" })
+            ),
+            Ok(Call::WaitFor {
+                block: "b".into(),
+                event: Event::CommandFinished,
+                timeout: IDLE_WAIT
+            })
+        );
+        assert_eq!(
+            parse(
+                "wait_for",
+                &json!({ "block": "b", "event": "idle", "timeout": 99_999 })
+            ),
+            Ok(Call::WaitFor {
+                block: "b".into(),
+                event: Event::Idle,
+                timeout: MAX_WAIT
+            })
+        );
         assert!(parse("reply", &json!({ "block": "b" })).is_err(), "no text");
         assert_eq!(
             parse("spawn_agent", &json!({ "agent": "claude" })),
@@ -754,6 +849,73 @@ mod tests {
         ] {
             assert!(parse("ask_user", &bad).is_err(), "{bad}");
         }
+    }
+
+    /// The events tools/list offers are the ones wait_for takes; any other is refused, naming them.
+    #[test]
+    fn wait_for_takes_the_four_events_it_lists() {
+        let tools = list();
+        let listed = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "wait_for")
+            .unwrap();
+        assert_eq!(listed["inputSchema"]["required"], json!(["block", "event"]));
+        let events: Vec<Event> = listed["inputSchema"]["properties"]["event"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(
+                |name| match parse("wait_for", &json!({ "block": "b", "event": name })) {
+                    Ok(Call::WaitFor { event, .. }) => event,
+                    other => panic!("{name}: {other:?}"),
+                },
+            )
+            .collect();
+        assert_eq!(
+            events,
+            [
+                Event::Idle,
+                Event::NeedsYou,
+                Event::CommandFinished,
+                Event::Attention
+            ]
+        );
+        for bad in [
+            json!({ "block": "b" }),
+            json!({ "block": "b", "event": "done" }),
+            json!({ "block": "b", "event": 1 }),
+        ] {
+            let err = parse("wait_for", &bad).unwrap_err();
+            assert!(
+                err.contains("\"event\"") && err.contains("needs_you") && err.contains("attention"),
+                "{err}"
+            );
+        }
+        assert!(
+            parse(
+                "wait_for",
+                &json!({ "block": "b", "event": "idle", "timeout": 0 })
+            )
+            .is_err()
+        );
+    }
+
+    /// `wire` is the command line's: agents never see it listed, and only `templum wire` makes it.
+    #[test]
+    fn wire_is_the_command_lines_alone() {
+        assert!(!known("wire") && cli_only("wire"));
+        assert!(!cli_only("wait_for") && !cli_only("whoami"));
+        assert_eq!(
+            parse("wire", &json!({ "a": "b7k2m", "b": "k9x1d" })),
+            Ok(Call::Wire {
+                a: "b7k2m".into(),
+                b: "k9x1d".into()
+            })
+        );
+        let err = parse("wire", &json!({ "a": "b7k2m" })).unwrap_err();
+        assert!(err.contains("\"b\""), "{err}");
     }
 
     #[test]

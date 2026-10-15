@@ -377,6 +377,7 @@ impl Workspace {
                 return self.wait_for_idle(terminal, &block, timeout);
             }
             Call::SpawnAgent(spawn) => return self.spawn_agent(terminal, spawn, window, cx),
+            Call::WaitFor { .. } | Call::Wire { .. } => Reply::err("Not in this Templum yet."),
             Call::ListCards { board, card } => {
                 self.list_cards(terminal, board.as_deref(), card, cx)
             }
