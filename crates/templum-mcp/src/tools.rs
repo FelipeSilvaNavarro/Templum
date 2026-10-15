@@ -64,6 +64,41 @@ pub enum Call {
         timeout: u64,
     },
     SpawnAgent(Spawn),
+    ListCards {
+        board: Option<String>,
+        card: Option<u64>,
+    },
+    CreateCard {
+        board: Option<String>,
+        column: Option<String>,
+        title: String,
+        description: Option<String>,
+    },
+    MoveCard {
+        card: u64,
+        column: String,
+    },
+    CommentCard {
+        card: u64,
+        text: String,
+    },
+    ClaimCard {
+        card: u64,
+    },
+    ReadNote {
+        block: String,
+    },
+    AppendNote {
+        block: String,
+        text: String,
+    },
+    OpenFile {
+        path: String,
+        line: Option<u32>,
+    },
+    GitStatus {
+        block: Option<String>,
+    },
 }
 
 /// What `spawn_agent` opens: the agent (an id of Settings ▸ Agents), its prompt, its folder (the
@@ -118,6 +153,13 @@ pub fn initialize_result(params: &Value, instructions: &str) -> Value {
 pub fn list() -> Value {
     let block =
         json!({ "type": "string", "description": "A block's id, as list_blocks shows it." });
+    let board = json!({
+        "type": "string",
+        "description": "A board's name or id; may be left out when one kanban connected to you shows a board.",
+    });
+    let card = json!({ "type": "integer", "description": "A card's id, as list_cards shows it." });
+    let column =
+        json!({ "type": "string", "description": "A column's title (either case) or id." });
     let none = json!({ "type": "object", "properties": {} });
     let seconds = |default: u64| {
         json!({
@@ -275,6 +317,87 @@ pub fn list() -> Value {
                 "required": ["agent"],
             },
         },
+        {
+            "name": "list_cards",
+            "description": "A board shown by a kanban connected to you: its columns, and each card's id, title, \
+                            labels, assignee and comment count. With card, that card whole: its description and \
+                            comments too.",
+            "inputSchema": { "type": "object", "properties": { "board": board, "card": card } },
+        },
+        {
+            "name": "create_card",
+            "description": "Adds a card at the end of a column (the board's first when left out) of a board shown \
+                            by a kanban connected to you. Says its id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "board": board,
+                    "column": column,
+                    "title": { "type": "string" },
+                    "description": { "type": "string" },
+                },
+                "required": ["title"],
+            },
+        },
+        {
+            "name": "move_card",
+            "description": "Moves a card to the end of a column of its board.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "card": card, "column": column },
+                "required": ["card", "column"],
+            },
+        },
+        {
+            "name": "comment_card",
+            "description": "Adds a comment to a card, signed with your block's id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "card": card, "text": { "type": "string" } },
+                "required": ["card", "text"],
+            },
+        },
+        {
+            "name": "claim_card",
+            "description": "Makes you the card's assignee. Refused when another block holds it.",
+            "inputSchema": { "type": "object", "properties": { "card": card }, "required": ["card"] },
+        },
+        {
+            "name": "read_note",
+            "description": "The text of the note a note block connected to you shows.",
+            "inputSchema": { "type": "object", "properties": { "block": block }, "required": ["block"] },
+        },
+        {
+            "name": "append_note",
+            "description": "Adds text at the end of the note a note block connected to you shows, after a blank \
+                            line. The person sees it at once and can take it back.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "block": block, "text": { "type": "string" } },
+                "required": ["block", "text"],
+            },
+        },
+        {
+            "name": "open_file",
+            "description": "Shows a file, at a line, in the editor connected to you whose folder holds it; with \
+                            none, in a new editor beside your block, connected to you. The person's keyboard and \
+                            view stay where they are.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "The file, relative to your folder or whole." },
+                    "line": { "type": "integer", "minimum": 1, "description": "The line, from 1." },
+                },
+                "required": ["path"],
+            },
+        },
+        {
+            "name": "git_status",
+            "description": "The branch, how far ahead and behind its upstream, and the changed files of the \
+                            repository a Git block connected to you shows, as git status --short --branch prints \
+                            them. block may be left out when one Git block is connected to you.",
+            "inputSchema": { "type": "object", "properties": { "block": block } },
+        },
     ]})
 }
 
@@ -315,6 +438,23 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             .map(|s| Some(s.to_string()).filter(|s| !s.trim().is_empty()))
             .ok_or_else(|| format!("\"{key}\" is a string")),
     };
+    // Boards, columns and cards may come as numbers or as strings.
+    let named = |key: &str| match &args[key] {
+        Value::Null => Ok(None),
+        Value::Number(n) => Ok(Some(n.to_string())),
+        Value::String(s) => Ok(Some(s.trim().to_string()).filter(|s| !s.is_empty())),
+        _ => Err(format!("\"{key}\" is a name or an id")),
+    };
+    let id = |key: &str| -> Result<Option<u64>, String> {
+        let bad = || format!("\"{key}\" is an id, as list_cards shows it");
+        match &args[key] {
+            Value::Null => Ok(None),
+            Value::Number(n) => n.as_u64().map(Some).ok_or_else(bad),
+            Value::String(s) => s.trim().parse().map(Some).map_err(|_| bad()),
+            _ => Err(bad()),
+        }
+    };
+    let card = || id("card")?.ok_or_else(|| format!("{name} needs \"card\", a card's id"));
     Ok(match name {
         "whoami" => Call::Whoami,
         "list_blocks" => Call::ListBlocks,
@@ -375,6 +515,49 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             folder: optional("folder")?,
             worktree: optional("worktree")?,
         }),
+        "list_cards" => Call::ListCards {
+            board: named("board")?,
+            card: id("card")?,
+        },
+        "create_card" => Call::CreateCard {
+            board: named("board")?,
+            column: named("column")?,
+            title: text("title")?,
+            description: optional("description")?,
+        },
+        "move_card" => Call::MoveCard {
+            card: card()?,
+            column: named("column")?
+                .ok_or_else(|| format!("{name} needs \"column\", a title or an id"))?,
+        },
+        "comment_card" => Call::CommentCard {
+            card: card()?,
+            text: text("text")?,
+        },
+        "claim_card" => Call::ClaimCard { card: card()? },
+        "read_note" => Call::ReadNote {
+            block: text("block")?,
+        },
+        "append_note" => Call::AppendNote {
+            block: text("block")?,
+            text: text("text")?,
+        },
+        "open_file" => Call::OpenFile {
+            path: text("path")?,
+            line: match &args["line"] {
+                Value::Null => None,
+                value => Some(
+                    value
+                        .as_u64()
+                        .filter(|n| *n >= 1)
+                        .map(|n| n.min(u64::from(u32::MAX)) as u32)
+                        .ok_or_else(|| "\"line\" is a line number, from 1".to_string())?,
+                ),
+            },
+        },
+        "git_status" => Call::GitStatus {
+            block: optional("block")?,
+        },
         _ => return Err(format!("Unknown tool: {name}")),
     })
 }
@@ -433,6 +616,21 @@ mod tests {
                 "spawn_agent",
                 json!({ "agent": "codex", "prompt": "fix the tests", "folder": "../api", "worktree": "fix-tests" }),
             ),
+            ("list_cards", json!({ "board": "Sprint", "card": 12 })),
+            (
+                "create_card",
+                json!({ "board": "1", "column": "To do", "title": "Fix login", "description": "It 500s." }),
+            ),
+            ("move_card", json!({ "card": 12, "column": "Doing" })),
+            ("comment_card", json!({ "card": 12, "text": "On it." })),
+            ("claim_card", json!({ "card": "12" })),
+            ("read_note", json!({ "block": "4qm2a" })),
+            (
+                "append_note",
+                json!({ "block": "4qm2a", "text": "Next: the tests." }),
+            ),
+            ("open_file", json!({ "path": "src/main.rs", "line": 12 })),
+            ("git_status", json!({ "block": "g1t2k" })),
         ];
         let listed: Vec<String> = list()["tools"]
             .as_array()
@@ -602,5 +800,69 @@ mod tests {
         // Cut inside "é" (2 bytes): starts after it.
         assert_eq!(tail("abcé", 1), "");
         assert_eq!(tail("abcé", 2), "é");
+    }
+
+    #[test]
+    fn the_content_tools_take_names_or_ids_and_leave_out_what_they_may() {
+        assert_eq!(
+            parse("list_cards", &json!({})),
+            Ok(Call::ListCards {
+                board: None,
+                card: None
+            })
+        );
+        assert_eq!(
+            parse("list_cards", &json!({ "board": 1, "card": "7" })),
+            Ok(Call::ListCards {
+                board: Some("1".into()),
+                card: Some(7)
+            })
+        );
+        assert_eq!(
+            parse("create_card", &json!({ "title": "x" })),
+            Ok(Call::CreateCard {
+                board: None,
+                column: None,
+                title: "x".into(),
+                description: None
+            })
+        );
+        assert_eq!(
+            parse("move_card", &json!({ "card": 3, "column": 4 })),
+            Ok(Call::MoveCard {
+                card: 3,
+                column: "4".into()
+            })
+        );
+        assert_eq!(
+            parse("claim_card", &json!({ "card": " 9 " })),
+            Ok(Call::ClaimCard { card: 9 })
+        );
+        assert_eq!(
+            parse("open_file", &json!({ "path": "a.rs" })),
+            Ok(Call::OpenFile {
+                path: "a.rs".into(),
+                line: None
+            })
+        );
+        assert_eq!(
+            parse("git_status", &json!({ "block": "" })),
+            Ok(Call::GitStatus { block: None })
+        );
+        for (tool, bad) in [
+            ("move_card", json!({ "column": "Doing" })),
+            ("move_card", json!({ "card": "x", "column": "Doing" })),
+            ("move_card", json!({ "card": 1 })),
+            ("comment_card", json!({ "card": 1 })),
+            ("claim_card", json!({ "card": -1 })),
+            ("create_card", json!({})),
+            ("open_file", json!({ "path": "a.rs", "line": 0 })),
+            ("open_file", json!({})),
+            ("append_note", json!({ "block": "n" })),
+        ] {
+            assert!(parse(tool, &bad).is_err(), "{tool} {bad}");
+        }
+        let err = parse("move_card", &json!({ "column": "Doing" })).unwrap_err();
+        assert!(err.contains("\"card\""), "{err}");
     }
 }

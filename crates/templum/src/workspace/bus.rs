@@ -377,6 +377,15 @@ impl Workspace {
                 return self.wait_for_idle(terminal, &block, timeout);
             }
             Call::SpawnAgent(spawn) => return self.spawn_agent(terminal, spawn, window, cx),
+            Call::ListCards { .. }
+            | Call::CreateCard { .. }
+            | Call::MoveCard { .. }
+            | Call::CommentCard { .. }
+            | Call::ClaimCard { .. }
+            | Call::ReadNote { .. }
+            | Call::AppendNote { .. }
+            | Call::OpenFile { .. }
+            | Call::GitStatus { .. } => Reply::err("Not in this Templum yet."),
             Call::AskUser {
                 question,
                 options,
