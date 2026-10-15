@@ -464,7 +464,3 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   (`crates/templum-mcp/src/bus.rs`, `listen`), and `remove_stale` only clears `<data>/bus`: a crash leaves that
   folder and its socket file there. Fix: at start, run `remove_stale` on the user's own `templum-*` folders in the
   temporary folder, and remove each one left empty.
-- [ ] **No test says a pasted block gets a new id.** `copy_blocks` (`crates/templum/src/workspace/selection.rs:144`)
-  copies items without their `uid`, so `paste_blocks` gives each a new one, but the spec's test list
-  (docs/specs/connections.md, Testing) names a test for it that doesn't exist. Fix: copy a block, paste it, and
-  assert the two ids differ.

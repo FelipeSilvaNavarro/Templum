@@ -104,6 +104,9 @@ fn copy_paste_and_delete_selected_blocks(cx: &mut TestAppContext) {
         assert_eq!(pasted.len(), 2, "the pasted blocks are selected");
         assert!(!pasted.contains(&kanban) && !pasted.contains(&note));
         assert!(ws.space.kanban(pasted[0]).is_some());
+        // A copy is another block for agents and wires (docs/specs/connections.md, Identity).
+        assert_ne!(ws.space.uids[&pasted[0]], ws.space.uids[&kanban]);
+        assert_eq!(ws.space.uids[&pasted[0]].len(), 5);
         let copy = ws.space.blocks[&pasted[1]].note().unwrap();
         assert_eq!(copy.text(cx), "hello");
         let original = ws.space.blocks[&note].note().unwrap();
