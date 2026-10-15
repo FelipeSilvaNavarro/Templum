@@ -173,12 +173,15 @@ https://modelcontextprotocol.io/specification/2025-06-18)); tools only, no resou
 - **`initialize`** answers protocol version `2025-06-18` (or the client's, when older and known), server
   `templum`, Templum's version, and `instructions` written for the caller:
 
-  > You are block b7k2m, 'Claude Code · api', in workspace 'Main'. Connected to you: t4q8p (terminal
-  > 'dev server'), k9x1d (kanban 'Sprint'). In this workspace, not connected (ask with connect): 4qm2a (note
-  > 'Ideas'). Name blocks by these ids. You may only read or write blocks connected to you. When a connected kanban has your task, move
+  > You are block b7k2m, "Claude Code · api", in workspace "Main". Connected to you: t4q8p (terminal
+  > "dev server"), k9x1d (kanban "Sprint"). In this workspace, not connected (ask with connect): 4qm2a (note
+  > "Ideas"). Name blocks by these ids. You may only read or write blocks connected to you. When a connected kanban has your task, move
   > its card to Doing when you start and to Review when you are done; write what the next agent needs to know in
   > the connected note.
 
+  Titles come from what runs in a block (a terminal's is whatever its programs set), so the instructions, `whoami`
+  and `list_blocks` give them cleaned: no control characters, line breaks and runs of blanks as one space, at most
+  60 characters (cut with "…"), and the instructions quote them as JSON strings are.
 - **`tools/list`** is the same for every caller; which blocks a tool may touch is checked at each call.
 - **Results** are text (`content: [{type: "text"}]`). A refusal or a failure is a result with `isError: true` and a
   sentence that says what to do next: `k9x1d isn't connected to you. Ask the person with connect("k9x1d").`

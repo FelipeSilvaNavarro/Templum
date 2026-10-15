@@ -250,10 +250,11 @@ impl Workspace {
         }
     }
 
-    /// A block's kind, title and folder, as `whoami` and `list_blocks` say them.
+    /// A block's kind, title (made safe to hand an agent) and folder, as `whoami` and
+    /// `list_blocks` say them.
     fn about(&self, body: &Body, cx: &App) -> (&'static str, String, Option<PathBuf>) {
         let title = || crate::block::title(self, body, cx).to_string();
-        match body {
+        let (kind, title, folder) = match body {
             Body::Terminal(pane) => (
                 "terminal",
                 self.agent_name(pane)
@@ -264,7 +265,8 @@ impl Workspace {
             Body::Note(_) => ("note", title(), None),
             Body::Editor(e) => ("editor", title(), Some(e.folder.clone())),
             Body::Git(_) => ("git", title(), body.folder()),
-        }
+        };
+        (kind, clean_title(&title), folder)
     }
 
     /// One line per block of `space`, back to front: id, kind, title, folder, and its tie to
@@ -313,13 +315,13 @@ impl Workspace {
             .map(|b| {
                 let (kind, title, _) = self.about(&space.blocks[&b.id], cx);
                 format!(
-                    "{} ({kind} '{title}')",
+                    "{} ({kind} {title:?})",
                     space.uids.get(&b.id).map_or("", String::as_str)
                 )
             })
             .collect();
         format!(
-            "You are block {uid}, '{title}', in Templum workspace '{}'. Other blocks there: {}. Name \
+            "You are block {uid}, {title:?}, in Templum workspace {:?}. Other blocks there: {}. Name \
              blocks by these ids. You may read and type into your own block; the person connects \
              others to you by wiring them on the canvas. list_blocks gives the current list.",
             space.name,
@@ -330,6 +332,25 @@ impl Workspace {
             },
         )
     }
+}
+
+/// The most characters of a title an agent is told.
+const TITLE_CHARS: usize = 60;
+
+/// A title as agents are told it. A terminal's is whatever its programs set (OSC 0), and goes
+/// into an agent's instructions: no control characters, its line breaks and runs of blanks as
+/// one space, and at most 60 characters.
+pub(super) fn clean_title(title: &str) -> String {
+    let kept: String = title
+        .chars()
+        .filter(|c| c.is_whitespace() || !c.is_control())
+        .collect();
+    let flat = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= TITLE_CHARS {
+        return flat;
+    }
+    let cut: String = flat.chars().take(TITLE_CHARS - 1).collect();
+    format!("{cut}…")
 }
 
 /// The block `uid` names in `space`, when the caller `me` may use it: until wires (batch 2),
