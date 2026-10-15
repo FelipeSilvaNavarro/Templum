@@ -361,6 +361,24 @@ fn a_worktree_name_that_cant_be_a_branch_or_is_taken_is_refused() {
     }
 }
 
+/// A worktree of a bare repository: the repository has no main working tree to put
+/// `.worktrees` in.
+#[test]
+fn a_worktree_of_a_bare_repository_is_refused() {
+    let (_dir, repo) = committed();
+    let bare = with_remote(&repo);
+    let tree = bare.path().join("main");
+    let added = std::process::Command::new("git")
+        .args(["worktree", "add", "-q", &tree.display().to_string(), "main"])
+        .current_dir(bare.path())
+        .status()
+        .unwrap();
+    assert!(added.success());
+    let linked = Repo::discover("git", &tree).unwrap().expect("a worktree");
+    let err = linked.add_worktree("api").unwrap_err();
+    assert!(err.first_line().contains("bare repository"), "{err}");
+}
+
 #[test]
 fn the_author_comes_from_the_config() {
     let (_dir, repo) = fresh();

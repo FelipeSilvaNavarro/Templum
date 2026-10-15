@@ -257,6 +257,36 @@ fn a_templum_tool_the_person_allowed_works_again(cx: &mut TestAppContext) {
     assert_eq!(state(cx), Some(crate::workspace::AgentState::Working));
 }
 
+/// A block in another workspace asks: the person can't see it, though its id there is the one of a
+/// block in view here (ids count from 0 in each workspace).
+#[gpui_kit::test]
+fn a_question_from_another_workspace_is_a_notification(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let there = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.move_blocks(vec![note], None, window, cx);
+                let there = ws.others.last().unwrap().id.clone();
+                ws.move_blocks(vec![mine], Some(&there), window, cx);
+                there
+            })
+        })
+        .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.caller(&terminal),
+            Some((there, kanban)),
+            "the kanban's id here"
+        )
+    });
+    let before = notification_count(handle, cx);
+    let asked = json!({ "question": "Here?", "options": ["Yes"] });
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    assert_eq!(notification_count(handle, cx), before + 1);
+}
+
 #[gpui_kit::test]
 fn allow_wires_the_blocks_and_deny_refuses(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
@@ -303,6 +333,29 @@ fn allow_wires_the_blocks_and_deny_refuses(cx: &mut TestAppContext) {
     let (failed, text) = answered(&answers);
     assert!(failed && text.contains("didn't connect you"), "{text}");
     ws.read_with(cx, |ws, _| assert!(!ws.space.wired(mine, note)));
+}
+
+/// The block asked for moved to another workspace while the person was asked: Allow can't wire
+/// it from here.
+#[gpui_kit::test]
+fn allow_refuses_a_block_moved_to_another_workspace(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let k = ws.read_with(cx, |ws, _| ws.space.uids[&kanban].clone());
+    let ask = json!({ "block": k });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "connect", ask);
+    let key = last_wait(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.move_blocks(vec![kanban], None, window, cx))
+    })
+    .unwrap();
+    ws.update(cx, |ws, cx| ws.answer_connect(key, true, cx));
+    let (failed, text) = answered(&answers);
+    assert!(failed && text.contains("isn't in your workspace"), "{text}");
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.spaces().all(|s| s.wires.is_empty()), "nothing wired")
+    });
 }
 
 #[gpui_kit::test]
