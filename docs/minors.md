@@ -528,8 +528,10 @@ Left by batch 2 (wires); line numbers are those of `development` at 825507d.
 - [ ] **Ctrl+Z after Connect to ▸ in a terminal's menu reaches the terminal.** The right-click focuses the block
   (`crates/templum/src/block.rs:624-637`), and the menu's wiring (`wiring`, `crates/templum/src/menu/build.rs:170`)
   leaves it focused, so the Ctrl+Z that should take the wire back goes to the terminal; the Wire tool leaves no block
-  focused and doesn't have this. A person presses Ctrl+Z and sees `^Z` in the shell. Fix: Connect to ▸ and
-  Disconnect from ▸ leave no block focused, as `begin_wire` does.
+  focused and doesn't have this. A wire's own **Disconnect** (`Items::Wire`, `crates/templum/src/menu/build.rs:1007`,
+  at f1e6811) has it too: the right-click on a wire keeps the focused block, and the menu gives it the keyboard back.
+  A person presses Ctrl+Z and sees `^Z` in the shell (it can suspend the agent), and the wire stays gone. Fix:
+  wiring or unwiring from any menu leaves no block focused, as `begin_wire` does.
 
 Left by the review of batch 2; line numbers are those of `development` at 25f662e.
 
@@ -537,3 +539,25 @@ Left by the review of batch 2; line numbers are those of `development` at 25f662
   (`crates/templum/src/menu/mod.rs:174`), so several plain shells, or several Claude Code terminals, read alike. A
   person can't tell which one an entry wires. Fix: list terminals as Send to ▸ does, with `label` (agent · title ·
   folder, `crates/templum/src/workspace/blocks.rs:763`).
+
+Left by the second review of batch 2; line numbers are those of `development` at f1e6811.
+
+- [ ] **A wire being drawn can stay on screen after its drag ended.** `end_drag`
+  (`crates/templum/src/workspace/input.rs:432`) clears `Drag::Wire` without a redraw, and it is what a move with no
+  button down (`crates/templum/src/workspace/render.rs:465`) and a middle-button release (`render.rs:482`) call. A
+  person who middle-clicks while drawing a wire, or whose release Templum never got, sees the accent curve stay until
+  something else redraws (the marquee's rectangle lingers the same way). Fix: redraw in `end_drag` when the drag it
+  clears is a `Drag::Wire`.
+- [ ] **Letting go of the Wire tool throws away any drag.** `end_wire` (`crates/templum/src/workspace/wires.rs:137`)
+  takes whatever drag is under way, not only `Drag::Wire`; with the Wire tool on, an Alt-pan let go over the canvas
+  loses its `Drag::Canvas`. Harmless today (`release` does nothing special for a pan), but the next drag that does
+  would break. Fix: take the drag only when it is `Drag::Wire`.
+- [ ] **A Wire-tool press on the empty canvas takes the keyboard.** `begin_wire`
+  (`crates/templum/src/workspace/wires.rs:131`) sets `focused = None` even when the press is on no block, where the
+  spec says nothing happens. A person with a terminal focused who picks the Wire tool and misses a block finds their
+  typing no longer reaches the terminal. Fix: unfocus only when a drag starts (plan decision 6 reads it as it is,
+  matching a click on the empty canvas with Select).
+- [ ] **Entering grid mode's wire reset has no test of its own.** `calm()`
+  (`crates/templum/src/workspace/tiling.rs:304`) clears `selected_wire`, but `grid_on` always ends in `focus_block`,
+  which clears it too, so `entering_grid_mode_lets_the_wire_go` passes without that line. A person sees nothing. Fix:
+  drop the line, or keep it as a defensive reset as `calm()` does for the selected drawing.
