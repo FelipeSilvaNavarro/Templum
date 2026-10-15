@@ -658,3 +658,15 @@ Left by batch 4 (content); line numbers are those of `development` at 9e33f19.
   with `read_file` to refuse what an editor can't show, then `open_tab` (`crates/templum/src/editor.rs:425`) reads it
   again, both on the main thread: up to 32 MB twice. A person sees a short stall when an agent opens a big file. Fix:
   refuse from the metadata and the first 8 KB only, or hand `open_tab` what was read.
+- [ ] **`append_note` scrolls the note back to the person's caret.** `append_note`
+  (`crates/templum/src/workspace/content.rs:384-386`, at 808544d) moves the caret to the end to `insert`, then puts it
+  back with `set_selected_range`, whose `move_to` scrolls to it (gpui-base-0.7.3 `src/input/base/movement.rs:62-95`). A
+  person who scrolled away from their caret to read the note sees the view jump back to it when an agent adds to the
+  note. Fix: keep `scroll_offset()` before the moves and put it back with `set_scroll_offset` after them
+  (gpui-base-0.7.3 `src/input/base/state.rs:3111-3118`), if the deferred offset wins over `move_to`'s scroll.
+- [ ] **`open_file` may stall on Windows.** `open_file_for` (`crates/templum/src/workspace/content.rs:403`, at
+  808544d) takes the caller's folder from `Body::folder` (`crates/templum/src/workspace/mod.rs:316`), that is
+  `Terminal::cwd` → `inspect` (`crates/templum-terminal/src/terminal.rs:717`, `:384`), which on Windows reads every
+  process's folder and command line, "slow enough to keep off the UI thread", on the UI thread at every call. A
+  person on Windows sees Templum stop for a moment each time an agent opens a file. Fix: read the folder on the
+  background executor (`Outcome::Later`, as `git_status`), or use `seen.folder` (the last snapshot's) on Windows.
