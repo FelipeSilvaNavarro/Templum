@@ -488,8 +488,10 @@ impl Workspace {
                     e.set_selected_range(offset..offset, cx);
                 });
             }
-            if had_keys {
-                editor.focus(window, cx);
+            // A tab with no text to type in (a Markdown preview): the canvas takes the keys, as
+            // `release_focus` does, rather than leave them in a hidden tab.
+            if had_keys && !editor.focus(window, cx) {
+                window.focus(&ws.focus_handle, cx);
             }
             Some((ws.space.uids.get(&id)?.clone(), path, new))
         });

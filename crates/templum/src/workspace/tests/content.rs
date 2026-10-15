@@ -687,6 +687,46 @@ fn an_editor_with_the_keyboard_gives_it_to_the_tab_opened(cx: &mut TestAppContex
     .unwrap();
 }
 
+/// An editor with the keyboard shows a file it has open rendered (a Markdown preview): no text
+/// to type in, so the canvas takes the keys rather than leave them in the tab now hidden.
+#[gpui_kit::test]
+fn an_editor_with_the_keyboard_showing_a_preview_gives_it_to_the_canvas(cx: &mut TestAppContext) {
+    let (_dir, folder) = a_project();
+    std::fs::write(folder.join("c.md"), "# c\n").unwrap();
+    let (handle, ws) = open(cx);
+    let terminal = first_id(&ws, cx);
+    let editor = open_editor(handle, &ws, cx, &folder);
+    let (me, _) = me(&ws, cx, terminal);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            assert!(ws.connect(terminal, editor, cx));
+            let e = ws.space.editor_mut(editor).unwrap();
+            let md = e.open_tab(&folder.join("c.md"), window, cx).unwrap();
+            e.tabs[md].preview = true;
+            e.open_tab(&folder.join("a.rs"), window, cx).unwrap();
+            assert!(ws.space.editor(editor).unwrap().focus(window, cx));
+        })
+    })
+    .unwrap();
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "open_file",
+        json!({ "path": folder.join("c.md") }),
+    );
+    assert!(!failed, "{text}");
+    cx.update_window(handle, |_, window, cx| {
+        let ws = ws.read(cx);
+        let e = ws.space.editor(editor).unwrap();
+        assert!(e.active_tab().unwrap().preview);
+        assert!(!e.has_focus(window, cx), "no keys in the hidden a.rs tab");
+        assert!(ws.focus_handle.is_focused(window), "the canvas has them");
+    })
+    .unwrap();
+}
+
 #[gpui_kit::test]
 fn git_status_matches_the_repository(cx: &mut TestAppContext) {
     let repo = committed_repo();
