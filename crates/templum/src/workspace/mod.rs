@@ -2,6 +2,7 @@
 
 mod blocks;
 mod bus;
+mod content;
 mod delegate;
 mod drawing;
 mod file_tree;
@@ -698,7 +699,6 @@ impl Space {
         self.blocks.get_mut(&id)?.terminal_mut()
     }
 
-    #[cfg(test)]
     pub fn kanban(&self, id: BlockId) -> Option<&Kanban> {
         self.blocks.get(&id)?.kanban()
     }

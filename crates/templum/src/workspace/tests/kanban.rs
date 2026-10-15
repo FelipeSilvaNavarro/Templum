@@ -239,27 +239,6 @@ fn kanban_blocks_and_boards_come_back(cx: &mut TestAppContext) {
     });
 }
 
-/// A kanban block on a new board with one card in its first column: (block, board, card).
-fn board_with_a_card(
-    handle: AnyWindowHandle,
-    ws: &Entity<Workspace>,
-    cx: &mut TestAppContext,
-) -> (BlockId, u64, u64) {
-    cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| {
-            ws.add_kanban_at(Point::new(900.0, 0.0), window, cx);
-            let block = ws.space.canvas.top().unwrap();
-            ws.new_board(block, cx);
-            let board = ws.space.kanban(block).unwrap().board.unwrap();
-            let todo = ws.boards.board(board).unwrap().columns[0].id;
-            let card = ws.edit_boards(|b| b.add_card(board, todo)).unwrap();
-            ws.space.appearing.clear();
-            (block, board, card)
-        })
-    })
-    .unwrap()
-}
-
 #[gpui_kit::test]
 fn deleting_a_card_from_its_menu_asks_first(cx: &mut TestAppContext) {
     use gpui_kit::component::WindowExt as _;

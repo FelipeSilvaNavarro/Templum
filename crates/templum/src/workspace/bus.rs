@@ -377,15 +377,31 @@ impl Workspace {
                 return self.wait_for_idle(terminal, &block, timeout);
             }
             Call::SpawnAgent(spawn) => return self.spawn_agent(terminal, spawn, window, cx),
-            Call::ListCards { .. }
-            | Call::CreateCard { .. }
-            | Call::MoveCard { .. }
-            | Call::CommentCard { .. }
-            | Call::ClaimCard { .. }
-            | Call::ReadNote { .. }
-            | Call::AppendNote { .. }
-            | Call::OpenFile { .. }
-            | Call::GitStatus { .. } => Reply::err("Not in this Templum yet."),
+            Call::ListCards { board, card } => {
+                self.list_cards(terminal, board.as_deref(), card, cx)
+            }
+            Call::CreateCard {
+                board,
+                column,
+                title,
+                description,
+            } => self.create_card(
+                terminal,
+                board.as_deref(),
+                column.as_deref(),
+                &title,
+                description,
+                cx,
+            ),
+            Call::MoveCard { card, column } => self.move_card(terminal, card, &column, cx),
+            Call::CommentCard { card, text } => self.comment_card(terminal, card, &text, cx),
+            Call::ClaimCard { card } => self.claim_card(terminal, card, cx),
+            Call::ReadNote { block } => self.read_note(terminal, &block, cx),
+            Call::AppendNote { block, text } => {
+                self.append_note(terminal, &block, &text, window, cx)
+            }
+            Call::OpenFile { path, line } => self.open_file_for(terminal, &path, line, window, cx),
+            Call::GitStatus { block } => return self.git_status(terminal, block.as_deref(), cx),
             Call::AskUser {
                 question,
                 options,
@@ -443,6 +459,14 @@ impl Workspace {
         (kind, clean_title(&title), folder)
     }
 
+    /// The title agents see for the block `uid`, in any workspace; None when none has it.
+    pub(crate) fn uid_title(&self, uid: &str, cx: &App) -> Option<String> {
+        self.spaces().find_map(|s| {
+            let id = s.block_by_uid(uid)?;
+            Some(self.about(s.blocks.get(&id)?, cx).1)
+        })
+    }
+
     /// One line per block of `space`, back to front: id, kind, title, folder, and its tie to
     /// the caller `me`.
     fn block_lines(&self, space: &Space, me: BlockId, cx: &App) -> Vec<String> {
@@ -479,7 +503,7 @@ impl Workspace {
     }
 
     /// What `initialize` tells the agent in `terminal` about itself.
-    fn instructions(&self, terminal: &str, cx: &App) -> String {
+    pub(super) fn instructions(&self, terminal: &str, cx: &App) -> String {
         let Some((space_id, me)) = self.caller(terminal) else {
             return "This terminal isn't a block of this Templum: its tools won't work here."
                 .into();
@@ -514,7 +538,9 @@ impl Workspace {
             "You are block {uid}, {title:?}, in Templum workspace {:?}. Connected to you: {}. In this \
              workspace, not connected (ask with connect): {}. Name blocks by these ids. You may only read \
              or write your own block and those connected to you; connect asks the person for another. \
-             list_blocks gives the current list.",
+             list_blocks gives the current list. When a connected kanban has your task, move its card \
+             to Doing when you start and to Review when you are done; write what the next agent needs \
+             to know in the connected note.",
             space.name,
             list(connected),
             list(others),
@@ -525,11 +551,10 @@ impl Workspace {
 /// The most characters of a title an agent is told.
 const TITLE_CHARS: usize = 60;
 
-/// A title as agents are told it. A terminal's is whatever its programs set (OSC 0), and goes
-/// into an agent's instructions: no control characters, no invisible ones (zero widths,
-/// direction overrides, soft hyphens, tags, which can carry hidden text), its line breaks and runs of blanks as one space, and at most 60
-/// characters.
-pub(super) fn clean_title(title: &str) -> String {
+/// Text as agents are told it, on one line: no control characters, no invisible ones (zero
+/// widths, direction overrides, soft hyphens, tags, which can carry hidden text), its line breaks
+/// and runs of blanks as one space.
+pub(super) fn flat(text: &str) -> String {
     let invisible = |c: char| {
         matches!(
             c,
@@ -542,11 +567,17 @@ pub(super) fn clean_title(title: &str) -> String {
                 | '\u{E0000}'..='\u{E007F}'
         )
     };
-    let kept: String = title
+    let kept: String = text
         .chars()
         .filter(|&c| (c.is_whitespace() || !c.is_control()) && !invisible(c))
         .collect();
-    let flat = kept.split_whitespace().collect::<Vec<_>>().join(" ");
+    kept.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// A title as agents are told it. A terminal's is whatever its programs set (OSC 0), and goes
+/// into an agent's instructions: `flat`, and at most 60 characters.
+pub(super) fn clean_title(title: &str) -> String {
+    let flat = flat(title);
     if flat.chars().count() <= TITLE_CHARS {
         return flat;
     }
