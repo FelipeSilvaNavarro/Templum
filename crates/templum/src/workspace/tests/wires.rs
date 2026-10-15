@@ -1,6 +1,6 @@
 //! Wires between blocks (docs/specs/connections.md, Wires).
 
-use templum_canvas::Wire;
+use templum_canvas::{Color, Drawing, ShapeKind, Wire};
 
 use super::*;
 use crate::workspace::Tool;
@@ -311,6 +311,137 @@ fn the_wire_tool_wires_the_block_pressed_to_the_one_let_go_on(cx: &mut TestAppCo
         assert!(ws.read(cx).space.wires.is_empty());
         window.press("escape", cx);
         assert_eq!(ws.read(cx).tool, Tool::Select);
+    })
+    .unwrap();
+}
+
+/// Where the straight wire between the kanban block and the note runs (y 180, x 460 to 500), as
+/// a window position.
+fn on_the_wire(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> (f32, f32) {
+    at(ws, cx, (480.0, 180.0))
+}
+
+#[gpui_kit::test]
+fn a_click_selects_a_wire_and_delete_removes_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = apart(handle, &ws, cx);
+    let wire = Wire::new(kanban, note).unwrap();
+    ws.update(cx, |ws, cx| {
+        ws.connect(kanban, note, cx);
+    });
+    let on = on_the_wire(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        click(window, cx, on, 1);
+        window.render_frame(cx);
+        let w = ws.read(cx);
+        assert_eq!(w.space.selected_wire, Some(wire));
+        assert_eq!(w.space.focused, None, "Delete and Backspace go to the wire");
+        assert_eq!(w.wire_curves()[0].1, w.ui.accent);
+        window.press("escape", cx);
+        assert_eq!(ws.read(cx).space.selected_wire, None, "Esc unselects");
+        click(window, cx, on, 1);
+        window.press("backspace", cx);
+        assert!(ws.read(cx).space.wires.is_empty());
+        assert_eq!(ws.read(cx).space.selected_wire, None);
+        window.press(UNDO, cx);
+        assert_eq!(ws.read(cx).space.wires, [wire], "Ctrl+Z brings it back");
+    })
+    .unwrap();
+}
+
+/// A selected wire never takes a terminal's Backspace: a block that took the keyboard since
+/// (clicked, or just added) drops the wire's selection, and with a block focused the key is
+/// never the wire's.
+#[gpui_kit::test]
+fn a_terminal_with_the_keyboard_keeps_its_backspace(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = apart(handle, &ws, cx);
+    let wire = Wire::new(kanban, note).unwrap();
+    ws.update(cx, |ws, cx| {
+        ws.connect(kanban, note, cx);
+    });
+    let on = on_the_wire(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        click(window, cx, on, 1);
+        window.click(("body", terminal.0 as usize), cx);
+        assert_eq!(ws.read(cx).space.focused, Some(terminal));
+        assert_eq!(ws.read(cx).space.selected_wire, None);
+        window.press("backspace", cx);
+        click(window, cx, on, 1);
+        window.press(NEW, cx);
+        assert_eq!(ws.read(cx).space.selected_wire, None);
+        window.press("backspace", cx);
+        ws.update(cx, |ws, _| {
+            ws.space.selected_wire = Some(wire);
+            ws.space.focused = Some(terminal);
+        });
+        window.press("backspace", cx);
+        assert_eq!(
+            ws.read(cx).space.wires,
+            [wire],
+            "every Backspace was a terminal's"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_wire_under_a_drawing_or_a_block_isnt_the_one_clicked(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = apart(handle, &ws, cx);
+    ws.update(cx, |ws, cx| {
+        ws.connect(kanban, note, cx);
+        // A line drawn across the wire: drawings are above wires.
+        ws.space.ink.push(Drawing::Shape {
+            kind: ShapeKind::Line,
+            from: Point::new(480.0, 140.0),
+            to: Point::new(480.0, 220.0),
+            width: 4.0,
+            color: Color::Red,
+        });
+    });
+    let on = on_the_wire(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        click(window, cx, on, 1);
+        assert_eq!(ws.read(cx).space.selected_ink, Some(0));
+        assert_eq!(ws.read(cx).space.selected_wire, None);
+        ws.update(cx, |ws, _| {
+            ws.space.ink.clear();
+            ws.space.selected_ink = None;
+            // The terminal, behind the other two, now covers the gap the wire crosses.
+            ws.space.canvas.get_mut(terminal).unwrap().rect = Rect::new(450.0, 100.0, 300.0, 200.0);
+        });
+        window.render_frame(cx);
+        click(window, cx, on, 1);
+        assert_eq!(
+            ws.read(cx).space.focused,
+            Some(terminal),
+            "the block's click"
+        );
+        assert_eq!(ws.read(cx).space.selected_wire, None);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn right_clicking_a_wire_offers_disconnect(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, _) = apart(handle, &ws, cx);
+    ws.update(cx, |ws, cx| {
+        ws.connect(kanban, note, cx);
+    });
+    let on = on_the_wire(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        right_click(window, cx, on);
+        window.render_frame(cx);
+        assert!(ws.read(cx).menu.is_some(), "the wire's menu");
+        window.within("popup-menu").click(0usize, cx);
+        window.render_frame(cx);
+        assert!(ws.read(cx).space.wires.is_empty());
     })
     .unwrap();
 }

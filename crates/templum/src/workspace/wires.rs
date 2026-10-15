@@ -2,7 +2,7 @@
 //! step of Ctrl+Z.
 
 use gpui_kit::{Context, Hsla, MouseDownEvent};
-use templum_canvas::{BlockId, Curve, Point, Rect, Wire};
+use templum_canvas::{BlockId, Curve, HIT_PX, Point, Rect, Wire};
 
 use super::history::{Change, Then};
 use super::{Drag, Space, Workspace};
@@ -28,12 +28,18 @@ impl Space {
     fn remove_wire(&mut self, wire: Wire) -> bool {
         let before = self.wires.len();
         self.wires.retain(|w| *w != wire);
+        if self.selected_wire == Some(wire) {
+            self.selected_wire = None;
+        }
         self.wires.len() < before
     }
 
     /// Block `id` leaves the canvas: its wires go.
     pub(super) fn unwire(&mut self, id: BlockId) {
         self.wires.retain(|w| !w.touches(id));
+        if self.selected_wire.is_some_and(|w| w.touches(id)) {
+            self.selected_wire = None;
+        }
     }
 
     /// The top block drawn at a world point.
@@ -78,7 +84,14 @@ impl Workspace {
             .space
             .wires
             .iter()
-            .filter_map(|w| Some((self.space.curve(*w)?, self.ui.title_dim)))
+            .filter_map(|w| {
+                let color = if self.space.selected_wire == Some(*w) {
+                    self.ui.accent
+                } else {
+                    self.ui.title_dim
+                };
+                Some((self.space.curve(*w)?, color))
+            })
             .collect();
         if let Some(Drag::Wire { from, to }) = &self.drag
             && let Some(a) = self.space.canvas.get(*from)
@@ -92,6 +105,17 @@ impl Workspace {
             curves.push((Curve::between(a.rect, end), self.ui.accent));
         }
         curves
+    }
+
+    /// The wire under a world point, within a click's reach; the newest first.
+    pub(super) fn wire_at(&self, world: Point) -> Option<Wire> {
+        let reach = HIT_PX / self.space.canvas.camera.zoom() + crate::wires::WIDTH / 2.0;
+        self.space
+            .wires
+            .iter()
+            .rev()
+            .copied()
+            .find(|w| self.space.curve(*w).is_some_and(|c| c.hit(world, reach)))
     }
 
     /// A press with the Wire tool: on a block, a wire starts from it. No block keeps the

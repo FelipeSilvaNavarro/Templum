@@ -462,6 +462,8 @@ pub(crate) struct Space {
     pub selected_ink: Option<usize>,
     /// The wires between its blocks (docs/specs/connections.md), oldest first.
     pub wires: Vec<Wire>,
+    /// The selected wire: Delete removes it. Never with a block focused or selected.
+    pub selected_wire: Option<Wire>,
     /// The changes that take back each change of the blocks (added, closed, moved, resized), by
     /// their step numbers, newest last, at most CANVAS_UNDO; and those of the undone ones.
     pub undo: Vec<(u64, history::Change)>,
@@ -587,6 +589,7 @@ impl Space {
         self.ink.clear();
         self.selected_ink = None;
         self.wires.clear();
+        self.selected_wire = None;
         self.undo.clear();
         self.redo.clear();
         self.ink_undo.clear();

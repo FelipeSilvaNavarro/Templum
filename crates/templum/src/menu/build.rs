@@ -1004,6 +1004,14 @@ impl Items {
                 Some(IconName::Delete),
                 move |ws, _, cx| ws.delete_ink(index, cx),
             )),
+            Items::Wire { wire } => menu.item(item(
+                ws,
+                "Disconnect",
+                Some(IconName::Unplug),
+                move |ws, _, cx| {
+                    ws.disconnect(wire, cx);
+                },
+            )),
             Items::Note { block, color, send } => menu
                 .item(item(
                     ws,

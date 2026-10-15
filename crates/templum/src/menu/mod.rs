@@ -14,7 +14,7 @@ use gpui_kit::{
     AnyElement, App, Context, DismissEvent, Entity, Focusable as _, Pixels, Point as PixelPoint,
     ScrollWheelEvent, Subscription, Window, anchored, deferred, div, px,
 };
-use templum_canvas::{BlockId, Point};
+use templum_canvas::{BlockId, Point, Wire};
 use templum_git::{Branch, Commit, Entry};
 
 use crate::git_block;
@@ -50,6 +50,8 @@ pub(crate) enum Target {
     Space(String),
     /// A drawing, by its index in the space's ink.
     Ink(usize),
+    /// A wire between two blocks.
+    Wire(Wire),
     /// A stash in a Git block's Stashes tab, by N in `stash@{N}`.
     GitStash {
         block: BlockId,
@@ -301,6 +303,7 @@ impl Workspace {
                 ),
             },
             Target::Ink(index) => Items::Ink { index },
+            Target::Wire(wire) => Items::Wire { wire },
             Target::GitCommitMenu(block) => Items::GitCommitMenu {
                 block,
                 label: self.space.git(block)?.commit_label(),
@@ -657,6 +660,10 @@ enum Items {
     },
     Ink {
         index: usize,
+    },
+    /// A wire: Disconnect.
+    Wire {
+        wire: Wire,
     },
     /// Terminals to show, one item each.
     Reveal {

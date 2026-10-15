@@ -15,6 +15,7 @@ impl Workspace {
         self.menu = None;
         self.shapes_open = false;
         self.space.selected_ink = None;
+        self.space.selected_wire = None;
         window.focus(&self.focus_handle, cx);
         cx.notify();
     }

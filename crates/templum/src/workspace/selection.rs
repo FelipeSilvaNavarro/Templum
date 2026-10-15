@@ -117,6 +117,7 @@ impl Workspace {
     ) {
         self.space.focused = None;
         self.space.selected_ink = None;
+        self.space.selected_wire = None;
         let selected = &mut self.space.selected;
         match selected.iter().position(|s| *s == id) {
             Some(i) => {

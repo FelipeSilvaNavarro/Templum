@@ -301,6 +301,7 @@ impl Workspace {
         space.appearing.clear();
         space.selected.clear();
         space.selected_ink = None;
+        space.selected_wire = None;
         space.framed = None;
         space.flight = None;
         space.view = space.canvas.camera;

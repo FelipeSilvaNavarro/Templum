@@ -40,6 +40,7 @@ impl Workspace {
         let before = self.space.focused;
         self.space.focused = Some(id);
         self.space.selected.clear();
+        self.space.selected_wire = None;
         self.space.appearing.insert(id, Instant::now());
         if !self.quiet {
             self.keep(Change::Close(vec![id]), Then::New);
@@ -715,6 +716,7 @@ impl Workspace {
         self.space.focused = Some(id);
         self.space.selected.clear();
         self.space.selected_ink = None;
+        self.space.selected_wire = None;
         // What types inside the block takes the keyboard; anything else leaves it with the
         // workspace.
         if !self

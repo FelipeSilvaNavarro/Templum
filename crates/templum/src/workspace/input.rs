@@ -54,6 +54,10 @@ impl Workspace {
             self.open_menu(menu::Target::Ink(index), e.position, window, cx);
             return;
         }
+        if let Some(wire) = self.wire_at(at) {
+            self.open_menu(menu::Target::Wire(wire), e.position, window, cx);
+            return;
+        }
         self.open_menu(menu::Target::Canvas(at), e.position, window, cx);
     }
 
@@ -620,6 +624,7 @@ impl Workspace {
             && (self.tool != Tool::Select
                 || self.shapes_open
                 || self.space.selected_ink.is_some()
+                || self.space.selected_wire.is_some()
                 || !self.space.selected.is_empty())
         {
             self.space.selected.clear();
@@ -633,6 +638,17 @@ impl Workspace {
             && matches!(k.key.as_str(), "delete" | "backspace")
         {
             self.delete_ink(index, cx);
+            cx.stop_propagation();
+            return;
+        }
+        // A selected wire: Delete and Backspace remove it, while no block has the keyboard.
+        if let Some(wire) = self.space.selected_wire
+            && self.space.focused.is_none()
+            && self.canvas_has_keys(window)
+            && !k.modifiers.modified()
+            && matches!(k.key.as_str(), "delete" | "backspace")
+        {
+            self.disconnect(wire, cx);
             cx.stop_propagation();
             return;
         }
@@ -769,6 +785,7 @@ impl Workspace {
         let world = self.space.canvas.camera.to_world(p);
         if e.modifiers.shift && e.click_count == 1 {
             self.space.selected_ink = None;
+            self.space.selected_wire = None;
             self.begin_marquee(p);
             cx.notify();
             return;
@@ -778,6 +795,7 @@ impl Workspace {
             && let Some(index) = self.ink_at(world)
         {
             self.space.selected_ink = Some(index);
+            self.space.selected_wire = None;
             self.space.focused = None;
             self.drag = Some(Drag::MoveInk {
                 index,
@@ -788,7 +806,22 @@ impl Workspace {
             cx.notify();
             return;
         }
-        if self.space.selected_ink.take().is_some() {
+        // A wire, under the drawings: a click selects it for Delete, and no block keeps the
+        // keyboard.
+        if e.click_count == 1
+            && self.tool == Tool::Select
+            && let Some(wire) = self.wire_at(world)
+        {
+            self.space.selected_wire = Some(wire);
+            self.space.selected_ink = None;
+            self.space.selected.clear();
+            self.space.focused = None;
+            self.press = None;
+            cx.notify();
+            return;
+        }
+        let had_ink = self.space.selected_ink.take().is_some();
+        if self.space.selected_wire.take().is_some() || had_ink {
             cx.notify();
         }
         if e.click_count == 2 {

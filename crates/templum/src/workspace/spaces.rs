@@ -217,6 +217,7 @@ impl Workspace {
         left.flight = None;
         left.view = left.canvas.camera;
         left.selected_ink = None;
+        left.selected_wire = None;
         self.drag = None;
         self.press = None;
         self.marked = None;
