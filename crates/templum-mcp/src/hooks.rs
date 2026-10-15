@@ -78,6 +78,26 @@ pub fn codex(input: &Value) -> Option<AgentEvent> {
     })
 }
 
+/// A Gemini CLI hook's input (as of 0.63), read as Claude Code's. None for what Templum doesn't
+/// follow.
+pub fn gemini(input: &Value) -> Option<AgentEvent> {
+    let text = |key: &str| input[key].as_str().map(str::to_string);
+    Some(match input["hook_event_name"].as_str()? {
+        "SessionStart" => AgentEvent::Started,
+        // After a permission the person granted, the tool's end says it works again.
+        "BeforeAgent" | "AfterTool" => AgentEvent::Working,
+        "AfterAgent" => AgentEvent::Stopped {
+            message: text("prompt_response"),
+        },
+        // Its permission dialog opened. The hook prints nothing, so the dialog still decides.
+        "Notification" if input["notification_type"] == "ToolPermission" => AgentEvent::NeedsYou {
+            message: text("message"),
+        },
+        "SessionEnd" => AgentEvent::Ended,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +256,70 @@ mod tests {
             })
         );
         assert_eq!(codex(&json!({ "type": "something-else" })), None);
+    }
+
+    #[test]
+    fn gemini_clis_hooks_become_events_as_claude_codes() {
+        let event = |input: Value| gemini(&input);
+        for source in ["startup", "resume", "clear"] {
+            assert_eq!(
+                event(json!({ "hook_event_name": "SessionStart", "source": source })),
+                Some(AgentEvent::Started),
+                "{source}"
+            );
+        }
+        assert_eq!(
+            event(json!({ "hook_event_name": "BeforeAgent", "prompt": "hi" })),
+            Some(AgentEvent::Working)
+        );
+        // After a permission the person granted, the tool's end says it works again.
+        assert_eq!(
+            event(json!({ "hook_event_name": "AfterTool", "tool_name": "run_shell_command" })),
+            Some(AgentEvent::Working)
+        );
+        assert_eq!(
+            event(json!({
+                "hook_event_name": "AfterAgent",
+                "prompt": "hi",
+                "prompt_response": "Done.",
+            })),
+            Some(AgentEvent::Stopped {
+                message: Some("Done.".into())
+            })
+        );
+        assert_eq!(
+            event(json!({ "hook_event_name": "AfterAgent" })),
+            Some(AgentEvent::Stopped { message: None })
+        );
+        assert_eq!(
+            event(json!({
+                "hook_event_name": "Notification",
+                "notification_type": "ToolPermission",
+                "message": "Tool Shell requires execution",
+                "details": {},
+            })),
+            Some(AgentEvent::NeedsYou {
+                message: Some("Tool Shell requires execution".into())
+            }),
+            "waiting for you as soon as the dialog opens"
+        );
+        assert_eq!(
+            event(json!({
+                "hook_event_name": "Notification",
+                "notification_type": "Other",
+                "message": "x",
+            })),
+            None,
+            "other notifications say nothing of the agent's state"
+        );
+        assert_eq!(
+            event(json!({ "hook_event_name": "SessionEnd", "reason": "exit" })),
+            Some(AgentEvent::Ended)
+        );
+        for other in ["BeforeTool", "BeforeModel", "AfterModel", "PreCompress"] {
+            assert_eq!(event(json!({ "hook_event_name": other })), None, "{other}");
+        }
+        assert_eq!(event(json!("garbage")), None);
     }
 
     #[test]

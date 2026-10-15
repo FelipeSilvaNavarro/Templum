@@ -390,14 +390,17 @@ fn one_call(
     2
 }
 
-/// The event an agent's hook hands over: Claude Code's on stdin, Codex's as an argument.
+/// The event an agent's hook hands over: Claude Code's and Gemini CLI's on stdin, Codex's as an
+/// argument.
 fn hook_event(args: &[String], stdin: &mut dyn Read) -> Option<hooks::AgentEvent> {
+    let mut on_stdin = || {
+        let mut input = String::new();
+        stdin.read_to_string(&mut input).ok()?;
+        serde_json::from_str::<Value>(&input).ok()
+    };
     match args.first()?.as_str() {
-        "claude" => {
-            let mut input = String::new();
-            stdin.read_to_string(&mut input).ok()?;
-            hooks::claude(&serde_json::from_str(&input).ok()?)
-        }
+        "claude" => hooks::claude(&on_stdin()?),
+        "gemini" => hooks::gemini(&on_stdin()?),
         "codex" => hooks::codex(&serde_json::from_str(args.get(1)?).ok()?),
         _ => None,
     }
@@ -702,6 +705,19 @@ mod tests {
             Incoming::Notification {
                 method: "templum/event".into(),
                 params: json!({ "event": "stopped", "message": "Fixed." }),
+            }
+        );
+        // Gemini CLI's, on stdin as Claude Code's: its stdout must stay empty too.
+        let gemini = r#"{"hook_event_name":"AfterAgent","prompt_response":"Done."}"#;
+        assert_eq!(
+            run_with(&["hook", "gemini"], &env(&bus), gemini),
+            (0, String::new(), String::new())
+        );
+        assert_eq!(
+            events.recv_timeout(LIMIT).unwrap().1,
+            Incoming::Notification {
+                method: "templum/event".into(),
+                params: json!({ "event": "stopped", "message": "Done." }),
             }
         );
         // Outside Templum, and with what Templum doesn't follow: nothing, quietly.
