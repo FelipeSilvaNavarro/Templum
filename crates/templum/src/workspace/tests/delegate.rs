@@ -920,6 +920,80 @@ fn a_dialog_in_a_task_is_told_once(cx: &mut TestAppContext) {
     assert_eq!(told(cx).len(), 2);
 }
 
+/// A task handed over without `wait` gives no answer within its timeout: its asker hears it
+/// failed, and later its end too. One it waits for hears its timeout from its call.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    asker(&ws, cx, mine);
+    event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({ "event": "needs_you", "message": "Allow Edit?" }),
+    );
+    let told = |cx: &mut TestAppContext| -> Vec<String> {
+        notices(&ws, cx).into_iter().map(|(_, t)| t).collect()
+    };
+    let task = json!({ "block": them, "task": "think", "timeout": 2 });
+    call(handle, &ws, cx, &terminal, "delegate", task);
+    // Its Enter goes while the test's clock runs: the screen shows the task in real time.
+    screen_with(&ws, cx, theirs, "think");
+    after(cx, 2000);
+    after(cx, 1000);
+    let t = told(cx);
+    assert!(
+        t.len() == 1
+            && t[0].starts_with("[task t1 from ")
+            && t[0].contains(": failed in ")
+            && t[0].contains(&format!(
+                "] What happened is in the pasted text.\nNo answer from {them} within 2 seconds; it may still be \
+                 working, and its end comes back too."
+            )),
+        "{t:?}"
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.space
+                .terminal(theirs)
+                .unwrap()
+                .handed
+                .as_ref()
+                .map(|h| h.id),
+            Some(1)
+        )
+    });
+    // Its end, later.
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "stopped", "message": "Late." }),
+    );
+    after(cx, 1000);
+    let t = told(cx);
+    assert!(
+        t.len() == 2 && t[1].contains(": done in ") && t[1].ends_with("\nLate."),
+        "{t:?}"
+    );
+    // With `wait`: its call says it timed out, and nothing is typed.
+    let task = json!({ "block": them, "task": "ponder", "wait": true, "timeout": 2 });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    screen_with(&ws, cx, theirs, "ponder");
+    enter(cx);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    after(cx, 2000);
+    assert!(answered(&answers).0, "timed out");
+    after(cx, 1000);
+    assert_eq!(told(cx).len(), 2);
+}
+
 /// The notices once there are `n`: a read on the background executor may come a moment later.
 #[cfg(unix)]
 fn notices_until(

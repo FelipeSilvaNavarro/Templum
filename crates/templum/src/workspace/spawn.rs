@@ -177,6 +177,17 @@ impl Workspace {
             self.next_task += 1;
             let id = self.next_task;
             let text = format!("[from {by}, task t{id}] {TASK_LEAD}\n{prompt}");
+            let handed = Handed {
+                id,
+                // Its session starts with its task: all it spends is the task's.
+                usage: Some(templum_usage::Session {
+                    cost_usd: Some(0.0),
+                    tokens: Some(0),
+                    ..Default::default()
+                }),
+                ..Handed::new(from, Duration::from_secs(tools::TASK_WAIT))
+            };
+            let until = handed.until;
             if let Some(pane) = self.pane_mut(&terminal) {
                 pane.prompt = Some(Prompt {
                     text,
@@ -184,17 +195,9 @@ impl Workspace {
                     gated: entry.builtin == Some(Agent::CLAUDE)
                         || entry.builtin == Some(Agent::CODEX),
                 });
-                pane.handed = Some(Handed {
-                    id,
-                    // Its session starts with its task: all it spends is the task's.
-                    usage: Some(templum_usage::Session {
-                        cost_usd: Some(0.0),
-                        tokens: Some(0),
-                        ..Default::default()
-                    }),
-                    ..Handed::new(from, Duration::from_secs(tools::TASK_WAIT))
-                });
+                pane.handed = Some(handed);
             }
+            self.time_out(terminal.clone(), id, until, tools::TASK_WAIT, cx);
             // Every agent is looked at, hooks or not: Codex's SessionStart comes only with its
             // first prompt, and Claude Code's while it doesn't take pastes yet, after asking
             // whether to trust the folder (a typed Enter would answer that).
