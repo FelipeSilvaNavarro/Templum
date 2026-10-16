@@ -1,7 +1,7 @@
 # Connections: blocks that talk to each other
 
 - **Date:** 2026-10-15
-- **Status:** Batches 1 to 5 implemented; 6 to 8 (orchestration) specified
+- **Status:** Batches 1 to 5 implemented; batch 6 planned ([plan](../plans/2026-10-16-connections-batch-6.md)); 7 and 8 (orchestration) specified
 - **Builds on:** [agents.md](agents.md) (opening agents), [usage.md](usage.md) (the `--settings` Templum types for
   Claude Code), [shell-integration.md](shell-integration.md) (command marks, notifications),
   [persistence.md](persistence.md), [kanban.md](kanban.md) and [cockpit.md](cockpit.md) (notes, the editor, drawing)
