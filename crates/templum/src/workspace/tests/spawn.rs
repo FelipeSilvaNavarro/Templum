@@ -279,41 +279,74 @@ fn close_block_closes_only_what_the_caller_opened(cx: &mut TestAppContext) {
 fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
     let (terminal, _) = me(&ws, cx, mine);
+    for (conn, agent) in [(1, "claude"), (2, "codex")] {
+        let folder = tempfile::tempdir().unwrap();
+        let spawn = json!({ "agent": agent, "folder": folder.path(), "prompt": "say hi" });
+        call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+        let new = spawned(&ws, cx, mine);
+        in_front(&ws, cx, new, true);
+        found(&ws, cx, new);
+        let (theirs, uid) = me(&ws, cx, new);
+        let idle = json!({ "block": uid });
+        let waiting = call_later(handle, &ws, cx, &terminal, conn, "wait_for_idle", idle);
+        let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+        let prompt = |cx: &mut TestAppContext| {
+            ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some())
+        };
+        // Its trust question hides the cursor; and an input that doesn't bracket pastes isn't its
+        // box.
+        for bytes in [&b"\x1b[?25l\r"[..], b"\x1b[?25h\x1b[?2004l\r"] {
+            prints(&ws, cx, new, bytes);
+            for _ in 0..4 {
+                std::thread::sleep(Duration::from_millis(100));
+                after(cx, look);
+            }
+            assert!(prompt(cx), "{agent} typed into a question: {bytes:?}");
+        }
+        prints(&ws, cx, new, b"\x1b[?2004h\r");
+        let mut looks = 0;
+        while prompt(cx) {
+            assert!(looks < 10, "{agent} never typed");
+            std::thread::sleep(Duration::from_millis(100));
+            after(cx, look);
+            looks += 1;
+        }
+        // A task the caller hands over, under its own first line.
+        screen_with(&ws, cx, new, "] Your task is in the pasted text: do it.");
+        screen_with(&ws, cx, new, "say hi");
+        enter(cx);
+        said_twice(&ws, cx, new);
+        event(
+            handle,
+            &ws,
+            cx,
+            &theirs,
+            json!({ "event": "submitted", "at_enter": true }),
+        );
+        event(
+            handle,
+            &ws,
+            cx,
+            &theirs,
+            json!({ "event": "stopped", "message": "hi" }),
+        );
+        assert_eq!(answered(&waiting), (false, "hi".to_string()), "{agent}");
+    }
+}
+
+/// The person types into a spawned agent before its prompt is (its trust question answered): that
+/// turn isn't its task, and its end answers nothing.
+#[gpui_kit::test]
+fn a_turn_before_a_spawns_prompt_is_typed_isnt_its_task(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
     let folder = tempfile::tempdir().unwrap();
     let spawn = json!({ "agent": "claude", "folder": folder.path(), "prompt": "say hi" });
     call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
     let new = spawned(&ws, cx, mine);
-    in_front(&ws, cx, new, true);
-    found(&ws, cx, new);
     let (theirs, uid) = me(&ws, cx, new);
     let idle = json!({ "block": uid });
     let waiting = call_later(handle, &ws, cx, &terminal, 1, "wait_for_idle", idle);
-    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
-    let prompt = |cx: &mut TestAppContext| {
-        ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some())
-    };
-    // Its trust question hides the cursor; and an input that doesn't bracket pastes isn't its box.
-    for bytes in [&b"\x1b[?25l\r"[..], b"\x1b[?25h\x1b[?2004l\r"] {
-        prints(&ws, cx, new, bytes);
-        for _ in 0..4 {
-            std::thread::sleep(Duration::from_millis(100));
-            after(cx, look);
-        }
-        assert!(prompt(cx), "typed into a question: {bytes:?}");
-    }
-    prints(&ws, cx, new, b"\x1b[?2004h\r");
-    let mut looks = 0;
-    while prompt(cx) {
-        assert!(looks < 10, "never typed");
-        std::thread::sleep(Duration::from_millis(100));
-        after(cx, look);
-        looks += 1;
-    }
-    // A task the caller hands over, under its own first line.
-    screen_with(&ws, cx, new, "] Your task is in the pasted text: do it.");
-    screen_with(&ws, cx, new, "say hi");
-    enter(cx);
-    said_twice(&ws, cx, new);
     event(
         handle,
         &ws,
@@ -326,9 +359,13 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
         &ws,
         cx,
         &theirs,
-        json!({ "event": "stopped", "message": "hi" }),
+        json!({ "event": "stopped", "message": "the person's answer" }),
     );
-    assert_eq!(answered(&waiting), (false, "hi".to_string()));
+    assert!(waiting.try_recv().is_err(), "answered by the person's turn");
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(new).unwrap();
+        assert!(pane.prompt.is_some() && !pane.handed.as_ref().unwrap().taken);
+    });
 }
 
 /// A minute after its spawn its person still hasn't answered what its agent asks: the prompt is
