@@ -881,6 +881,53 @@ fn interrupt_presses_esc_and_ends_the_callers_task(cx: &mut TestAppContext) {
     assert!(failed && text.contains("another agent"), "{text}");
 }
 
+/// Keys from another block name it after the dot, in place of the usage chip, and in the dot's
+/// tooltip, for ten seconds.
+#[gpui_kit::test]
+fn keys_name_who_pressed_them_for_ten_seconds(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let (terminal, _) = me(&ws, cx, id);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().seen.agent = Some("codex".into())
+    });
+    event(handle, &ws, cx, &terminal, json!({ "event": "working" }));
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().keys_from =
+            Some(("Claude Code (b7k2m)".into(), Instant::now()))
+    });
+    let tip = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            crate::block::status_dot(ws, ws.space.terminal(id).unwrap()).map(|(_, t)| t.to_string())
+        })
+    };
+    let chip = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(("answered-by", id.0 as usize)).is_some()
+        })
+        .unwrap()
+    };
+    assert_eq!(
+        tip(&ws, cx).as_deref(),
+        Some("Working · answered by Claude Code (b7k2m)")
+    );
+    assert!(chip(cx));
+    ws.update(cx, |ws, _| {
+        let at = &mut ws
+            .space
+            .terminal_mut(id)
+            .unwrap()
+            .keys_from
+            .as_mut()
+            .unwrap()
+            .1;
+        *at = at.checked_sub(std::time::Duration::from_secs(11)).unwrap();
+    });
+    assert_eq!(tip(&ws, cx).as_deref(), Some("Working"));
+    assert!(!chip(cx));
+}
+
 /// `cat` in block `id` prints `bytes` back, as a program would.
 #[cfg(unix)]
 fn prints(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId, bytes: &'static [u8]) {

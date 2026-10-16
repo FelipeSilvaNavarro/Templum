@@ -34,6 +34,8 @@ const KEY_GAP: Duration = Duration::from_millis(50);
 const KEYS_SETTLE: Duration = Duration::from_millis(300);
 /// The lines of the screen `send_keys` answers with.
 const KEYS_LINES: usize = 20;
+/// How long a terminal says which block pressed keys in it ("answered by").
+pub(crate) const ANSWERED_FOR: Duration = Duration::from_secs(10);
 
 /// What a look at an agent's screen, while a typed task waits for its Enter, says to do.
 #[derive(Debug, PartialEq)]
@@ -109,6 +111,14 @@ impl EnterWait {
 }
 
 impl Pane {
+    /// Who pressed keys in it (`send_keys`, `interrupt`), while ANSWERED_FOR hasn't passed.
+    pub fn answered_by(&self) -> Option<&str> {
+        self.keys_from
+            .as_ref()
+            .filter(|(_, at)| at.elapsed() < ANSWERED_FOR)
+            .map(|(by, _)| by.as_str())
+    }
+
     /// The end of what its terminal shows, to tell whether it changed.
     pub fn screen(&self) -> String {
         self.term.shared().lines(SCREEN_LINES).join("\n")
@@ -301,6 +311,14 @@ impl Workspace {
                     pane.typed.set(true);
                     pane.keys_from = Some((by.clone(), Instant::now()));
                     pane.term.press(&key);
+                    if i + 1 == keys.len() {
+                        // "answered by" goes with no other frame to take it.
+                        cx.spawn(async move |ws, cx| {
+                            cx.background_executor().timer(ANSWERED_FOR).await;
+                            let _ = ws.update(cx, |_, cx| cx.notify());
+                        })
+                        .detach();
+                    }
                     cx.notify();
                     true
                 });

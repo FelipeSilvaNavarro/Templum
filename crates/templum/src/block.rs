@@ -178,28 +178,36 @@ pub(crate) fn render(
         _ => None,
     };
     let (label_dot, header_dot) = if labeled { (dot, None) } else { (None, dot) };
-    // Its agent's session, after the dot (docs/specs/usage.md); over the title, which moves the
-    // block as before.
+    // After the dot, over the title, which moves the block as before: who pressed keys in it for
+    // a few seconds (docs/specs/connections.md), else its agent's session (docs/specs/usage.md).
+    let chip = |id: &'static str, text: String, tip: String| {
+        div()
+            .id((id, n))
+            .absolute()
+            .top(px(4.0 * z))
+            .left(px(24.0 * z))
+            .h(px(20.0 * z))
+            .flex()
+            .items_center()
+            .text_size(px(11.0 * z))
+            .text_color(ui.title_dim)
+            .child(text)
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .test_support()
+    };
     let chip = match body {
-        Body::Terminal(pane) if live && !labeled => pane
-            .usage
-            .as_ref()
-            .and_then(crate::usage::chip)
-            .map(|(text, tip)| {
-                div()
-                    .id(("usage-chip", n))
-                    .absolute()
-                    .top(px(4.0 * z))
-                    .left(px(24.0 * z))
-                    .h(px(20.0 * z))
-                    .flex()
-                    .items_center()
-                    .text_size(px(11.0 * z))
-                    .text_color(ui.title_dim)
-                    .child(text)
-                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                    .test_support()
-            }),
+        Body::Terminal(pane) if live && !labeled => match pane.answered_by() {
+            Some(by) => Some(chip(
+                "answered-by",
+                format!("answered by {by}"),
+                format!("{by} pressed keys in this terminal"),
+            )),
+            None => pane
+                .usage
+                .as_ref()
+                .and_then(crate::usage::chip)
+                .map(|(text, tip)| chip("usage-chip", text, tip)),
+        },
         _ => None,
     };
     let title = if labeled {
@@ -821,7 +829,8 @@ fn shadow(color: Hsla, focused: bool, lift: f32, z: f32) -> BoxShadow {
 /// attention, red or green when a long command ended. Then a question its agent asks the person
 /// (yellow; the balloon shows it up close). Then an agent's turn (its hooks) before the shell's:
 /// yellow while it waits for the person, the accent while it works. Then a command running, then
-/// a last command that failed. Nothing when the shell doesn't say (no shell integration).
+/// a last command that failed. Nothing when the shell doesn't say (no shell integration). Its
+/// text names the block that pressed keys in it, for ANSWERED_FOR.
 pub(crate) fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedString)> {
     let ansi = |i: usize| hsla(ws.theme.palette.ansi[i], 1.0);
     let (color, text) = match &pane.alert {
@@ -857,7 +866,10 @@ pub(crate) fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedStr
             },
         },
     };
-    Some((color, text.into()))
+    Some(match pane.answered_by() {
+        Some(by) => (color, format!("{text} · answered by {by}").into()),
+        None => (color, text.into()),
+    })
 }
 
 #[cfg(test)]
