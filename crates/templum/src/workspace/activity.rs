@@ -111,7 +111,9 @@ impl Workspace {
             .flat_map(|s| s.blocks.values_mut())
             .filter_map(Body::terminal_mut)
         {
-            if pane.seen.agent.is_none() {
+            // A spawn's prompt still waiting: its screen is its start and its first questions,
+            // which `look_ready` watches, and the minute ends its task.
+            if pane.seen.agent.is_none() || pane.prompt.is_some() {
                 pane.looks = Looks::default();
                 continue;
             }

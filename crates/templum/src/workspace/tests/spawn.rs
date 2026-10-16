@@ -366,6 +366,45 @@ fn a_prompt_not_typed_within_a_minute_ends_its_task_with_its_screen(cx: &mut Tes
     );
 }
 
+/// A spawned agent's start moves its screen, then its trust question sits still: the screen's
+/// looks tell nothing while its prompt waits, so its task isn't ended as at rest after 5 seconds,
+/// and the minute still ends it, with the question.
+#[gpui_kit::test]
+fn the_looks_leave_a_spawn_whose_prompt_waits_alone(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "claude", "folder": folder.path(), "prompt": "say hi" });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    in_front(&ws, cx, new, true);
+    found(&ws, cx, new);
+    let (_, uid) = me(&ws, cx, new);
+    prints(&ws, cx, new, b"Trust this folder?\x1b[?25l\r");
+    screen_with(&ws, cx, new, "Trust this folder?");
+    let idle = json!({ "block": uid });
+    let waiting = call_later(handle, &ws, cx, &terminal, 1, "wait_for_idle", idle);
+    // As the looks would take its start for work.
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(new).unwrap().state = Some(AgentState::Working)
+    });
+    for _ in 0..6 {
+        after(cx, 1000);
+    }
+    assert!(waiting.try_recv().is_err(), "its task stays handed over");
+    ws.update(cx, |ws, _| {
+        let handed = ws.space.terminal_mut(new).unwrap().handed.as_mut().unwrap();
+        handed.since -= crate::workspace::spawn::STARTS_WITHIN;
+    });
+    after(cx, crate::workspace::spawn::READY_LOOK.as_millis() as u64);
+    let (failed, text) = answered(&waiting);
+    assert!(
+        failed && text.starts_with(&format!("{uid} never got its prompt")),
+        "{text}"
+    );
+}
+
 /// A snapshot taken while the new shell still starts (its rc files) finds no agent in it: the
 /// Claude Code Templum typed there stays known, and its prompt is sent once its input is ready.
 #[gpui_kit::test]
