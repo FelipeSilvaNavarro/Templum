@@ -9,7 +9,7 @@ use templum_mcp::{Reply, tools};
 use templum_terminal::{KEY_NAMES, named_key};
 use templum_usage::Session;
 
-use super::bus::{Outcome, flat, target};
+use super::bus::{Outcome, clean_title, flat, target};
 use super::waits::Waiting;
 use super::{AgentState, Handed, Pane, Space, Workspace};
 
@@ -43,6 +43,8 @@ pub(super) const TASK_LEAD: &str = "Your task is in the pasted text: do it.";
 /// What the first line of a task's end says follows it: its answer, or why it failed.
 pub(super) const DONE_LEAD: &str = "Its answer is in the pasted text.";
 pub(super) const FAILED_LEAD: &str = "What happened is in the pasted text.";
+/// What the first line of a notice of a task's dialog says follows it.
+pub(super) const SCREEN_LEAD: &str = "Its screen is in the pasted text.";
 /// How long after a task's end what it spent is read: Claude Code's status line gives its last
 /// cost about 0.3 s after its `Stop`.
 pub(super) const SPENT_AFTER: Duration = Duration::from_secs(1);
@@ -814,6 +816,35 @@ impl Workspace {
             });
         })
         .detach();
+    }
+
+    /// The agent in `terminal` started waiting for its person, asking `what`, its `screen` as
+    /// drawn: the agent that handed it its task hears so, unless a call of its waits for the
+    /// task's end (docs/specs/connections.md, Delegating 10).
+    pub(super) fn tell_waiting(
+        &mut self,
+        terminal: &str,
+        what: Option<&str>,
+        screen: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(handed) = self.pane(terminal).and_then(|p| p.handed.as_ref()) else {
+            return;
+        };
+        if self.waits_on(&handed.by, terminal) {
+            return;
+        }
+        let (id, by) = (handed.id, handed.by.clone());
+        let asks = what
+            .map(clean_title)
+            .filter(|w| !w.is_empty())
+            .map(|w| format!(": {w}"))
+            .unwrap_or_default();
+        let text = format!(
+            "[task t{id} from {} waits for its person{asks}] {SCREEN_LEAD}\n{screen}",
+            self.signature_of(terminal, cx)
+        );
+        self.queue_notice(by, text, cx);
     }
 
     /// Queues the notice `text` for the agent in the terminal `to`, then types what may go now.

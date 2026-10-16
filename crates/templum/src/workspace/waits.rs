@@ -138,7 +138,7 @@ impl Workspace {
         ) {
             self.tell_asking(&wait, window, cx);
             // Its block waits for its person now.
-            self.needs_you(&wait.from, Some(&wait.summary()), cx);
+            self.needs_you(&wait.from, Some(&wait.summary()), true, cx);
         }
         self.waits.push(wait);
         if looks {
@@ -449,8 +449,14 @@ impl Workspace {
 
     /// The block of the terminal `terminal` waits for its person (its agent asks for `what`, or
     /// its balloon does): the `wait_for(needs_you)` on it are answered DRAWN later, with its
-    /// screen as drawn by then.
-    pub(super) fn needs_you(&mut self, terminal: &str, what: Option<&str>, cx: &mut Context<Self>) {
+    /// screen as drawn by then. `tell`: a new wait, which the agent that handed it a task hears of.
+    pub(super) fn needs_you(
+        &mut self,
+        terminal: &str,
+        what: Option<&str>,
+        tell: bool,
+        cx: &mut Context<Self>,
+    ) {
         let terminal = terminal.to_string();
         let what = what.map(str::to_string);
         cx.spawn(async move |ws, cx| {
@@ -472,6 +478,9 @@ impl Workspace {
                     .collect();
                 for (key, uid) in waiting {
                     ws.answer(key, waiting_for_person(&uid, what.as_deref(), &screen), cx);
+                }
+                if tell {
+                    ws.tell_waiting(&terminal, what.as_deref(), &screen, cx);
                 }
             });
         })

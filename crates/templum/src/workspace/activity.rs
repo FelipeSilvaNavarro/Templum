@@ -150,7 +150,7 @@ impl Workspace {
             self.end_turn(&terminal, reply, cx);
         }
         for terminal in stuck {
-            self.needs_you(&terminal, Some(STUCK_TEXT), cx);
+            self.needs_you(&terminal, Some(STUCK_TEXT), true, cx);
         }
         if changed {
             cx.notify();

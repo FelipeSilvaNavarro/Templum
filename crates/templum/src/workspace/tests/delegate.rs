@@ -845,6 +845,81 @@ fn a_task_whose_agent_left_or_block_closed_comes_back_as_failed(cx: &mut TestApp
     );
 }
 
+/// A task's agent starts waiting for its person: the agent that handed it hears so, with the
+/// dialog as drawn, once per wait, what it asks on one line. Not while a call of its waits for
+/// the task's end: it is inside that call.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_dialog_in_a_task_is_told_once(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    asker(&ws, cx, mine);
+    event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({ "event": "needs_you", "message": "Allow Edit?" }),
+    );
+    let send = |cx: &mut TestAppContext, e: serde_json::Value| event(handle, &ws, cx, &worker, e);
+    let asks = |m: serde_json::Value| json!({ "event": "needs_you", "message": m });
+    let told = |cx: &mut TestAppContext| -> Vec<String> {
+        notices(&ws, cx).into_iter().map(|(_, t)| t).collect()
+    };
+    call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "delegate",
+        json!({ "block": them, "task": "go" }),
+    );
+    screen_with(&ws, cx, theirs, "go");
+    enter(cx);
+    send(cx, json!({ "event": "submitted" }));
+    send(cx, asks(json!("Allow Bash?")));
+    shows(&ws, cx, theirs, "1. Yes, proceed (y)");
+    // The same wait: its notification, and another message for it.
+    send(cx, asks(serde_json::Value::Null));
+    send(cx, asks(json!("Claude needs your permission")));
+    after(cx, 300);
+    let t = told(cx);
+    assert_eq!(t.len(), 1, "{t:?}");
+    assert!(
+        t[0].starts_with("[task t1 from ")
+            && t[0].contains(&format!(
+                "({them}) waits for its person: Allow Bash?] Its screen is in the pasted text.\n"
+            ))
+            && t[0].contains("1. Yes, proceed (y)"),
+        "{}",
+        t[0]
+    );
+    // Allowed, it works, and asks again: a new wait.
+    send(cx, json!({ "event": "working" }));
+    send(cx, asks(json!("Allow\nEdit?")));
+    after(cx, 300);
+    let t = told(cx);
+    assert!(
+        t.len() == 2 && t[1].contains("waits for its person: Allow Edit?]"),
+        "{t:?}"
+    );
+    // A call of its asker waits for the task's end.
+    let _idle = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        2,
+        "wait_for_idle",
+        json!({ "block": them }),
+    );
+    send(cx, json!({ "event": "working" }));
+    send(cx, asks(json!("Allow Bash?")));
+    after(cx, 300);
+    assert_eq!(told(cx).len(), 2);
+}
+
 /// The notices once there are `n`: a read on the background executor may come a moment later.
 #[cfg(unix)]
 fn notices_until(
@@ -1900,8 +1975,18 @@ fn a_hooked_agent_gone_still_keeps_its_task_and_says_so(cx: &mut TestAppContext)
     let (handle, ws, mine, theirs) = two_agents(cx);
     let (terminal, _) = me(&ws, cx, mine);
     let (worker, them) = me(&ws, cx, theirs);
-    let task = json!({ "block": them, "task": "think", "wait": true });
-    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    // Mine asks its person: the notice waits, to be read here.
+    asker(&ws, cx, mine);
+    event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({ "event": "needs_you", "message": "Allow Edit?" }),
+    );
+    let task = json!({ "block": them, "task": "think" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    assert!(!failed, "{text}");
     screen_with(&ws, cx, theirs, "think");
     enter(cx);
     // Its screen settled before the looks start counting.
@@ -1923,9 +2008,20 @@ fn a_hooked_agent_gone_still_keeps_its_task_and_says_so(cx: &mut TestAppContext)
     after(cx, 300);
     let stuck = Some(AgentState::NeedsYou(Some(STUCK_TEXT.into())));
     assert_eq!(state_of(&ws, cx, theirs), stuck);
-    assert!(answers.try_recv().is_err(), "its task stays handed over");
+    ws.read_with(cx, |ws, _| {
+        let handed = &ws.space.terminal(theirs).unwrap().handed;
+        assert!(handed.is_some(), "its task stays handed over");
+    });
     let (failed, text) = answered(&needs_you);
     assert!(!failed && text.contains("it seems stuck"), "{text}");
+    let told = notices(&ws, cx);
+    assert!(
+        told.len() == 1
+            && told[0].1.contains(&format!(
+                "({them}) waits for its person: it seems stuck, its screen still for 30 seconds]"
+            )),
+        "{told:?}"
+    );
     ticks(&ws, cx, theirs, 0, 4);
     assert_eq!(state_of(&ws, cx, theirs), Some(AgentState::Working));
 }

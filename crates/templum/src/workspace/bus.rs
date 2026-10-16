@@ -291,8 +291,10 @@ impl Workspace {
             AgentEvent::NeedsYou { message: None }
                 if matches!(pane.state, Some(AgentState::NeedsYou(Some(_)))) => {}
             AgentEvent::NeedsYou { message } => {
+                // Already waiting: the same dialog (Claude Code's notification about it).
+                let new = !matches!(pane.state, Some(AgentState::NeedsYou(_)));
                 pane.state = Some(AgentState::NeedsYou(message.clone()));
-                self.needs_you(terminal, message.as_deref(), cx);
+                self.needs_you(terminal, message.as_deref(), new, cx);
             }
             AgentEvent::Ended => {
                 pane.state = None;
