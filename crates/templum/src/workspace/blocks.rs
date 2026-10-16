@@ -427,6 +427,8 @@ impl Workspace {
                         looks: Default::default(),
                         typed: Default::default(),
                         scrolled: Default::default(),
+                        events: 0,
+                        speaks: false,
                     })),
                 );
                 self.added(id);

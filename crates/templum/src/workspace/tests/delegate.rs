@@ -1044,3 +1044,56 @@ fn the_wheel_and_the_mouse_tell_nothing(cx: &mut TestAppContext) {
         "the mouse answers no dialog"
     );
 }
+
+/// An agent whose hooks speak (Claude Code, Gemini CLI) says it took a task: its turn starts. With
+/// no word from it, Templum presses Enter once more (the first may have joined the paste, as a
+/// new line); still none, the task ends untaken, and the agent that handed it over hears so.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_task_no_hook_confirms_gets_its_enter_again_then_ends(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    event(handle, &ws, cx, &worker, json!({ "event": "started" }));
+    let task = json!({ "block": them, "task": "think", "wait": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    screen_with(&ws, cx, theirs, "think");
+    enter(cx);
+    let confirm = crate::workspace::delegate::CONFIRM.as_millis() as u64;
+    after(cx, confirm);
+    assert!(answers.try_recv().is_err(), "it gets its Enter again first");
+    after(cx, confirm);
+    let (failed, text) = answered(&answers);
+    assert!(failed && text.contains("didn't take the task"), "{text}");
+}
+
+/// A hook after the Enter (its turn started) confirms it; an agent at work queued the task; one
+/// whose hooks never said a turn started (Codex, a `claude` typed by hand) can't confirm it, and
+/// Templum never presses Enter blindly into it. None of them ends the task untaken.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_task_confirmed_queued_or_unconfirmable_stays_handed(cx: &mut TestAppContext) {
+    let confirm = crate::workspace::delegate::CONFIRM.as_millis() as u64;
+    for before in ["none", "started", "working"] {
+        let (handle, ws, mine, theirs) = two_agents(cx);
+        let (terminal, _) = me(&ws, cx, mine);
+        let (worker, them) = me(&ws, cx, theirs);
+        if before != "none" {
+            event(handle, &ws, cx, &worker, json!({ "event": before }));
+        }
+        let task = json!({ "block": them, "task": "think", "wait": true });
+        let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+        screen_with(&ws, cx, theirs, "think");
+        enter(cx);
+        if before == "started" {
+            // Its turn starts: `UserPromptSubmit`.
+            event(handle, &ws, cx, &worker, json!({ "event": "working" }));
+        }
+        after(cx, 2 * confirm);
+        // The screen gone still may end a working agent's task: never as untaken.
+        if let Ok(line) = answers.try_recv() {
+            let (_, text) = result_of(&line);
+            assert!(!text.contains("didn't take"), "{before}: {text}");
+        }
+    }
+}

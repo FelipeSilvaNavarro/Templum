@@ -176,6 +176,11 @@ pub(crate) struct Pane {
     /// The person scrolled it, or its program heard their mouse, since the last look, which then
     /// tells nothing.
     pub scrolled: Cell<bool>,
+    /// How many hook events its agent sent: a task's Enter is confirmed by one more.
+    pub events: u64,
+    /// Its agent's hooks say when a turn starts and when it asks its person (Claude Code's,
+    /// Gemini CLI's), not only when a turn ends (Codex's): a dialog of it would be heard.
+    pub speaks: bool,
 }
 
 impl Pane {
@@ -678,6 +683,7 @@ impl Space {
                 // mustn't come back with the next agent started there by hand.
                 if seen.agent.is_none() {
                     pane.state = None;
+                    pane.speaks = false;
                     // Found before, so it left; one not found yet may still be starting, and one
                     // Templum started there stays known while its prompt waits, until its shell
                     // took too long to start it: it never did.

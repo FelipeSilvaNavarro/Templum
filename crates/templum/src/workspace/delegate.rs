@@ -18,6 +18,86 @@ pub(super) const ENTER_AFTER: Duration = Duration::from_millis(150);
 const ENTER_LOOKS: u32 = 13;
 /// The lines at the end of a terminal compared to tell whether its screen changed.
 const SCREEN_LINES: usize = 100;
+/// Looks in a row the screen must stay the same after the agent's terminal is resized: it has
+/// redrawn at its new size, and read what was typed meanwhile.
+const SETTLED: u32 = 2;
+/// How long after a task's Enter an agent whose hooks speak must say it took it: its turn
+/// started (Claude Code's `UserPromptSubmit`, Gemini CLI's `BeforeAgent`), a dialog opened, or
+/// its turn ended.
+pub(super) const CONFIRM: Duration = Duration::from_secs(3);
+
+/// What a look at an agent's screen, while a typed task waits for its Enter, says to do.
+#[derive(Debug, PartialEq)]
+enum Step {
+    Wait,
+    Enter,
+    GiveUp,
+}
+
+/// The wait for a typed task's Enter (`send_task`): the agent's screen must show the paste. A
+/// resize meanwhile redraws it at its new size, which shows nothing of the paste.
+struct EnterWait {
+    /// The screen the paste must change.
+    before: String,
+    size: (u16, u16),
+    /// Since a resize: the last screen, and how many looks in a row saw it.
+    settling: Option<(String, u32)>,
+    looks: u32,
+}
+
+impl EnterWait {
+    fn new(before: String, size: (u16, u16)) -> Self {
+        Self {
+            before,
+            size,
+            settling: None,
+            looks: 0,
+        }
+    }
+
+    /// A look at the agent's `screen`, its terminal now `size`; `takes`: Templum may still type
+    /// into it; `speaks`: its hooks say when it starts a turn or asks its person, so a dialog of
+    /// it would be heard, and its Enter is confirmed. After a resize, the screen settling shows
+    /// such an agent read the paste; for another (Codex, whose approval Templum doesn't hear) it
+    /// is the new start, and only a change after it is the paste.
+    fn look(&mut self, screen: String, size: (u16, u16), takes: bool, speaks: bool) -> Step {
+        if !takes {
+            return Step::GiveUp;
+        }
+        self.looks += 1;
+        if size != self.size {
+            self.size = size;
+            self.settling = Some((screen, 0));
+            self.looks = 0;
+            return Step::Wait;
+        }
+        if let Some((last, still)) = self.settling.take() {
+            let still = if screen == last { still + 1 } else { 0 };
+            if still >= SETTLED {
+                if speaks {
+                    return Step::Enter;
+                }
+                self.before = screen;
+                self.looks = 0;
+                return Step::Wait;
+            }
+            self.settling = Some((screen, still));
+            return match (self.looks < ENTER_LOOKS, speaks) {
+                (true, _) => Step::Wait,
+                // Moving all along: alive, and reading what it is typed.
+                (false, true) => Step::Enter,
+                (false, false) => Step::GiveUp,
+            };
+        }
+        if screen != self.before {
+            Step::Enter
+        } else if self.looks < ENTER_LOOKS {
+            Step::Wait
+        } else {
+            Step::GiveUp
+        }
+    }
+}
 
 impl Pane {
     /// The end of what its terminal shows, to tell whether it changed.
@@ -86,44 +166,93 @@ impl Pane {
 
 impl Workspace {
     /// Types `text` into the agent in terminal `terminal` as one paste, then Enter a moment later,
-    /// once its screen shows the paste, if Templum still may type into it. A screen that doesn't
-    /// (a dialog that ignores pastes, as Codex's approval does, which Templum hears nothing of),
-    /// or an agent that started asking its person meanwhile (a working agent's screen changes all
-    /// along), gets no Enter: it would pick the dialog's answer for the person. A `task` (not a
-    /// reply) then ends at once, untaken.
+    /// once its screen shows the paste (`EnterWait`), if Templum still may type into it. A screen
+    /// that doesn't (a dialog that ignores pastes, as Codex's approval does, which Templum hears
+    /// nothing of), or an agent that started asking its person meanwhile (a working agent's
+    /// screen changes all along), gets no Enter: it would pick the dialog's answer for the
+    /// person. A `task` (not a reply) then ends at once, untaken. An agent whose hooks speak
+    /// confirms its Enter (`confirm`).
     pub(super) fn send_task(&self, terminal: &str, text: &str, task: bool, cx: &mut Context<Self>) {
         let Some(pane) = self.pane(terminal) else {
             return;
         };
-        let before = pane.screen();
+        let mut wait = EnterWait::new(pane.screen(), pane.term.grid_size());
         pane.term.type_in(text);
         let terminal = terminal.to_string();
         cx.spawn(async move |ws, cx| {
-            for look in 1..=ENTER_LOOKS {
+            // Some(the hook events heard at its Enter, when its hooks speak) once done looking.
+            let entered = loop {
                 cx.background_executor().timer(ENTER_AFTER).await;
-                let done = ws.update(cx, |ws, cx| {
+                let step = ws.update(cx, |ws, cx| {
                     let Some(pane) = ws.pane(&terminal) else {
-                        return true;
+                        return Some(None);
                     };
                     let takes = pane.takes_typing("").is_ok();
-                    if takes && pane.screen() != before {
-                        pane.term.write(&b"\r"[..]);
-                        return true;
+                    let size = pane.term.grid_size();
+                    match wait.look(pane.screen(), size, takes, pane.speaks) {
+                        Step::Wait => None,
+                        Step::Enter => {
+                            pane.term.write(&b"\r"[..]);
+                            Some(pane.speaks.then_some(pane.events))
+                        }
+                        Step::GiveUp => {
+                            if task {
+                                ws.not_taken(&terminal, cx);
+                            }
+                            Some(None)
+                        }
                     }
-                    if takes && look < ENTER_LOOKS {
-                        return false;
-                    }
-                    if task {
-                        ws.not_taken(&terminal, cx);
-                    }
-                    true
                 });
-                if done.unwrap_or(true) {
+                match step {
+                    Ok(None) => {}
+                    Ok(Some(entered)) => break entered,
+                    Err(_) => return,
+                }
+            };
+            let Some(heard) = entered else {
+                return;
+            };
+            for again in [true, false] {
+                cx.background_executor().timer(CONFIRM).await;
+                let done = ws
+                    .update(cx, |ws, cx| ws.confirm(&terminal, heard, again, task, cx))
+                    .unwrap_or(true);
+                if done {
                     break;
                 }
             }
         })
         .detach();
+    }
+
+    /// A look, CONFIRM after its Enter, at the agent in `terminal` that was typed a task or a reply
+    /// (`heard`: the hook events it had sent then). A hook since says it took it: its turn started, a dialog opened,
+    /// or its turn ended; an agent at work queued it. Otherwise, while Templum may still type into
+    /// it, it gets its Enter `again`, once (the first may have joined the paste as a new line, as
+    /// when the person resized its block); after that a `task` ends untaken. True when done.
+    fn confirm(
+        &mut self,
+        terminal: &str,
+        heard: u64,
+        again: bool,
+        task: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(pane) = self.pane(terminal) else {
+            return true;
+        };
+        let working = pane.state == Some(AgentState::Working);
+        if pane.events != heard || working || pane.takes_typing("").is_err() {
+            return true;
+        }
+        if again {
+            pane.term.write(&b"\r"[..]);
+            return false;
+        }
+        if task {
+            self.not_taken(terminal, cx);
+        }
+        true
     }
 
     /// The agent in the terminal `terminal` got no Enter for the task typed into it: the task, if
@@ -327,5 +456,99 @@ impl Workspace {
         for key in waiting {
             self.answer(key, reply.clone(), cx);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SIZE: (u16, u16) = (80, 24);
+    const BIG: (u16, u16) = (100, 30);
+
+    fn wait() -> EnterWait {
+        EnterWait::new("› ".into(), SIZE)
+    }
+
+    #[test]
+    fn enter_goes_once_the_screen_shows_the_paste() {
+        let mut w = wait();
+        assert_eq!(w.look("› ".into(), SIZE, true, false), Step::Wait);
+        assert_eq!(
+            w.look("› fix the tests".into(), SIZE, true, false),
+            Step::Enter
+        );
+    }
+
+    #[test]
+    fn no_enter_for_a_screen_that_never_shows_the_paste_nor_into_a_dialog() {
+        let mut w = wait();
+        for _ in 1..ENTER_LOOKS {
+            assert_eq!(w.look("› ".into(), SIZE, true, false), Step::Wait);
+        }
+        assert_eq!(w.look("› ".into(), SIZE, true, false), Step::GiveUp);
+        assert_eq!(
+            wait().look("› fix".into(), SIZE, false, true),
+            Step::GiveUp,
+            "a dialog opened: Templum may not type into it"
+        );
+    }
+
+    /// The person resizes the agent's block: it redraws at its new size, which is no sign that it
+    /// read the paste. Its Enter waits until its screen settles.
+    #[test]
+    fn a_resize_isnt_the_paste() {
+        let mut w = wait();
+        assert_eq!(w.look("redrawn".into(), BIG, true, true), Step::Wait);
+        assert_eq!(w.look("redrawn › fix".into(), BIG, true, true), Step::Wait);
+        assert_eq!(w.look("redrawn › fix".into(), BIG, true, true), Step::Wait);
+        assert_eq!(
+            w.look("redrawn › fix".into(), BIG, true, true),
+            Step::Enter,
+            "settled: an agent whose dialogs are heard gets its Enter, and confirms it"
+        );
+        // One whose dialogs Templum doesn't hear (Codex's approval): the settled screen is the
+        // new start, and only a change after it is the paste.
+        let mut w = wait();
+        for _ in 0..3 {
+            assert_eq!(w.look("redrawn".into(), BIG, true, false), Step::Wait);
+        }
+        assert_eq!(w.look("redrawn".into(), BIG, true, false), Step::Wait);
+        assert_eq!(
+            w.look("redrawn › fix".into(), BIG, true, false),
+            Step::Enter
+        );
+        let mut w = wait();
+        for _ in 0..3 {
+            w.look("redrawn".into(), BIG, true, false);
+        }
+        for _ in 1..ENTER_LOOKS {
+            assert_eq!(w.look("redrawn".into(), BIG, true, false), Step::Wait);
+        }
+        assert_eq!(
+            w.look("redrawn".into(), BIG, true, false),
+            Step::GiveUp,
+            "the paste may have been drawn with the redraw: no Enter it can't tell is safe"
+        );
+    }
+
+    #[test]
+    fn a_screen_that_keeps_moving_after_a_resize() {
+        let moving = |w: &mut EnterWait, speaks: bool| {
+            let mut step = Step::Wait;
+            for n in 0..=ENTER_LOOKS {
+                step = w.look(format!("frame {n}"), BIG, true, speaks);
+                if step != Step::Wait {
+                    break;
+                }
+            }
+            step
+        };
+        assert_eq!(
+            moving(&mut wait(), true),
+            Step::Enter,
+            "alive, and its Enter is confirmed"
+        );
+        assert_eq!(moving(&mut wait(), false), Step::GiveUp);
     }
 }

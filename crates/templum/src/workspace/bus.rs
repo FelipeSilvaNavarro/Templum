@@ -225,6 +225,10 @@ impl Workspace {
         // Keys typed before this event answer nothing it brings (a dialog opening now).
         pane.looks.heard();
         pane.typed.set(false);
+        pane.events += 1;
+        if !matches!(event, AgentEvent::Stopped { .. }) {
+            pane.speaks = true;
+        }
         match event {
             AgentEvent::Working => pane.state = Some(AgentState::Working),
             AgentEvent::Started => {
@@ -258,6 +262,7 @@ impl Workspace {
             }
             AgentEvent::Ended => {
                 pane.state = None;
+                pane.speaks = false;
                 self.agent_left(terminal, cx);
             }
         }
