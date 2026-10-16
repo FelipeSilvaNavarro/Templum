@@ -766,9 +766,16 @@ Left by batch 7 and its review; line numbers are those of `development` at eb394
   hooked Codex's first one comes with its first prompt (its `SessionStart` too), so `send_task` gives that task no
   confirmation and no second Enter. Fix: set `speaks` when `typed()` gave Codex its hooks and its person trusted
   them (none says so before a prompt: keep as is unless it bites).
-- [ ] **A Codex whose person trusted only some of its hooks never answers a task.** Codex's review trusts hook by hook;
-  without `UserPromptSubmit`, `Stopped` (`bus.rs`) never finds the task taken, and the task waits for its timeout.
-  Fix: take a `Stopped` from an agent whose `submitted` is still 0 as the task's.
+- [ ] **A Codex whose person trusted only some of its hooks fails its tasks.** Codex's review trusts hook by hook;
+  without `UserPromptSubmit`, `Pane::submitted` stays 0. Once any other hook but `Stop` and `Interrupt` spoke
+  (`SessionStart`, `PostToolUse`, `PermissionRequest` set `Pane::speaks`), `confirm`
+  (`crates/templum/src/workspace/delegate.rs`) finds no prompt taken 3 s after a task's Enter and a screen that
+  changed ("Working (3s)"), and ends the task at once as "didn't take the task" while Codex does it. Before any spoke
+  (its first task, or only `Stop` and `Interrupt` trusted) no confirmation comes: its `Stop` (`bus.rs`) finds the
+  task not taken, answers nothing and rests it before its screen's looks can, so that task waits for its timeout
+  (with `Stop` untrusted too, the looks end it after 5 still seconds, with its screen). Fix: once a `Working` or
+  `Stopped` comes from a Codex whose `submitted` is still 0 (a turn ran, and no `UserPromptSubmit` said so), take it
+  as one without that hook: `confirm` leaves its tasks alone, and its `Stopped` answers the task handed over.
 - [ ] **Gemini CLI's `BeforeAgent` for a prompt typed while it works is unchecked.** `hooks::gemini`
   (`crates/templum-mcp/src/hooks.rs`) takes it as Codex's (`at_enter: false`); if Gemini CLI fires it at the Enter
   and queues the prompt, a turn under way would answer the task. Fix: check by hand once logged in; `at_enter:
@@ -785,11 +792,40 @@ Left by batch 7 and its review; line numbers are those of `development` at eb394
   those seconds is queued by Claude Code behind the person's turn, but `Submitted` finds the agent Idle and doesn't
   mark it `behind`: the person's turn's end answers it with their answer. Fix: keep `Working` on a `Stopped` that
   comes while a prompt Claude Code queued is pending (a pane-level `behind`).
-- [ ] **Esc while Claude Code writes, with a task queued behind its turn, loses the task's answer.** No hook ends the
-  interrupted turn, so the task's `behind` (`Handed`, `crates/templum/src/workspace/mod.rs`) stays set; the queued
-  task then runs as a new turn (no `UserPromptSubmit`) and its `Stop` (`bus.rs`) only clears `behind`. The agent that
-  handed it gets "Its turn ended without an answer" from `idle_prompt` a minute later instead of the answer. Fix:
-  clear `behind` when the person's keys (`Pane::person_typed`) come while the agent works; no hook tells today.
+- [ ] **Esc while Claude Code writes loses the answer of a task queued behind its turn, or handed over just after.**
+  No hook ends the interrupted turn, so the task's `behind` (`Handed`, `crates/templum/src/workspace/mod.rs`) stays
+  set; the queued task then runs as a new turn (no `UserPromptSubmit`) and its `Stop` (`bus.rs`) only clears
+  `behind`. The agent that handed it gets "Its turn ended without an answer" from `idle_prompt` a minute later
+  instead of the answer. A task delegated in the seconds after such an Esc, while Templum still has it `Working`
+  (about 6 s, until its screen's looks rest it), is `queued` too: Claude Code takes it at once, its
+  `UserPromptSubmit` comes at its Enter while it is still `Working`, so the `Submitted` arm of `agent_event`
+  (`bus.rs`) marks it `behind`; answered without a tool, its `Stop` only clears `behind`, and the same `idle_prompt`
+  ends it. A `Working` only the looks set does the same. Fix: clear `behind` when the person's keys
+  (`Pane::person_typed`) come while the agent works (no hook tells today); and in `agent_event` read
+  `pane.looks.answered || pane.typed.get()` before `heard()`, marking `behind` only when neither is set (`turn &&
+  at_enter && !that`).
+- [ ] **The person's prompt entered just before a task can answer it.** The person presses Enter on their own prompt
+  in Claude Code and, in the moment before its `UserPromptSubmit` comes (about 0.3 s), an agent delegates to it: it
+  is still Idle, so the task isn't `queued`. The person's `Submitted` (`agent_event`,
+  `crates/templum/src/workspace/bus.rs`) marks the task taken and not `behind`, the task's own `Submitted` is
+  ignored, and the person's turn's `Stop` answers the task with the person's answer. Fix: carry the hook's `prompt`
+  in `Submitted` (`hooks::claude`, `crates/templum-mcp/src/hooks.rs`) and count one toward the task only if it comes
+  after the task's Enter and starts with `[from `.
+- [ ] **A hooked agent whose screen moves with no hook seems stuck half a minute later.** `Looks::state`
+  (`crates/templum/src/workspace/activity.rs`) turns an Idle agent `Working` when its screen changes in 3 of 4 looks,
+  hooks or not; one whose hooks speak, then still for 30 looks, seems stuck: its dot turns yellow and `delegate`
+  refuses it as waiting for its person (before batch 7 it rested after 5 still seconds). The person's own slower
+  `Stop` or `SessionStart` hooks drawing after Templum's, or a background task's footer, can do it. Claude Code
+  comes back at its `idle_prompt` a minute later; Codex stays so until a hook comes or its screen moves again. Fix:
+  a bit in `Looks` set when `state()` turns `Working` from None or Idle, cleared by `heard()`: only an agent a hook
+  set `Working` seems stuck; one the looks set rests after `STILL` looks.
+- [ ] **An agent that seems stuck never rests from its screen.** In `Looks::state` (`activity.rs`) only a changing
+  screen leaves `STUCK_TEXT`. A Claude Code dialog no hook tells of, open mid-turn, seems stuck after 30 s; the
+  person declines it or presses Esc, and the agent is back at its prompt with no hook and a still screen: the dot
+  stays yellow, `delegate` refuses it as waiting for its person, and its task waits (Claude Code until its
+  `idle_prompt` a minute later ends the task without an answer; Codex until the task's timeout). Fix:
+  `Some(NeedsYou(Some(m))) if m == STUCK_TEXT && self.answered && still >= STILL => Some(Idle)`, which ends the
+  task with its screen through the `still` list of `look_at_agents`.
 - [ ] **A Claude Code subagent's tool end may take a queued task into the wrong turn.** The `Working` arm (`bus.rs`)
   clears `behind` on any `PostToolUse`, as the spikes saw a tool's end take a queued prompt into the turn under way
   (S2); whether a subagent's tool end does too wasn't checked. If not, the main turn's `Stop` answers the task with
