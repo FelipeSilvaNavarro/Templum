@@ -12,12 +12,15 @@ use templum_mcp::tools::Event;
 use templum_mcp::{Replier, Reply, tools};
 
 use super::bus::{Outcome, target};
-use super::{AgentState, Workspace};
+use super::{AgentState, Pane, Workspace};
 
 /// The lines of an agent's screen a turn's wait that times out gives.
 pub(super) const LAST_LINES: usize = 40;
 /// How often a `wait_for` a command or an alert looks at its terminal's counters.
 const EVENT_LOOK: Duration = Duration::from_millis(250);
+/// How long after a hook says its agent waits for its person its screen is read: the hook comes
+/// before its dialog is drawn (it may answer the dialog; Codex's drew 25 ms after).
+const DRAWN: Duration = Duration::from_millis(300);
 
 /// A tool call waiting for its answer.
 pub(crate) struct Wait {
@@ -424,7 +427,7 @@ impl Workspace {
                 _ => self.balloon(&of).map(|(wait, _)| Some(wait.summary())),
             };
             if let Some(what) = asks {
-                return Outcome::Now(waiting_for_person(block, what.as_deref()));
+                return Outcome::Now(waiting_for_person(block, what.as_deref(), &pane.tail()));
             }
         }
         let status = pane.term.status();
@@ -438,24 +441,34 @@ impl Workspace {
     }
 
     /// The block of the terminal `terminal` waits for its person (its agent asks for `what`, or
-    /// its balloon does): the `wait_for(needs_you)` on it are answered.
+    /// its balloon does): the `wait_for(needs_you)` on it are answered DRAWN later, with its
+    /// screen as drawn by then.
     pub(super) fn needs_you(&mut self, terminal: &str, what: Option<&str>, cx: &mut Context<Self>) {
-        let waiting: Vec<(u64, String)> = self
-            .waits
-            .iter()
-            .filter_map(|w| match &w.what {
-                Waiting::Event {
-                    of,
-                    uid,
-                    event: Event::NeedsYou,
-                    ..
-                } if of == terminal => Some((w.key, uid.clone())),
-                _ => None,
-            })
-            .collect();
-        for (key, uid) in waiting {
-            self.answer(key, waiting_for_person(&uid, what), cx);
-        }
+        let terminal = terminal.to_string();
+        let what = what.map(str::to_string);
+        cx.spawn(async move |ws, cx| {
+            cx.background_executor().timer(DRAWN).await;
+            let _ = ws.update(cx, |ws, cx| {
+                let screen = ws.pane(&terminal).map(Pane::tail).unwrap_or_default();
+                let waiting: Vec<(u64, String)> = ws
+                    .waits
+                    .iter()
+                    .filter_map(|w| match &w.what {
+                        Waiting::Event {
+                            of,
+                            uid,
+                            event: Event::NeedsYou,
+                            ..
+                        } if *of == terminal => Some((w.key, uid.clone())),
+                        _ => None,
+                    })
+                    .collect();
+                for (key, uid) in waiting {
+                    ws.answer(key, waiting_for_person(&uid, what.as_deref(), &screen), cx);
+                }
+            });
+        })
+        .detach();
     }
 
     /// Looks at the terminal a `wait_for(command_finished | attention)` watches, every EVENT_LOOK,
@@ -529,12 +542,17 @@ fn field_focused(wait: &Wait, window: &Window, cx: &App) -> bool {
     )
 }
 
-/// `wait_for(needs_you)`'s answer: block `uid` waits for its person, for `what` when it says.
-fn waiting_for_person(uid: &str, what: Option<&str>) -> Reply {
-    Reply::ok(match what.filter(|w| !w.is_empty()) {
+/// `wait_for(needs_you)`'s answer: block `uid` waits for its person, for `what` when it says,
+/// with its `screen`'s last lines (the dialog as drawn).
+fn waiting_for_person(uid: &str, what: Option<&str>, screen: &str) -> Reply {
+    let asks = match what.filter(|w| !w.is_empty()) {
         Some(what) => format!("{uid} is waiting for its person: {what}"),
         None => format!("{uid} is waiting for its person."),
-    })
+    };
+    Reply::ok(format!(
+        "{asks} Its screen:\n{}",
+        tools::tail(screen, tools::MAX_TEXT)
+    ))
 }
 
 /// What a `wait_for` waited for, as its timeout says it: "No call for attention in t4q8p…".

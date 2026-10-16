@@ -693,7 +693,7 @@ fn an_agents_hooks_set_its_state_and_its_dot(cx: &mut TestAppContext) {
     let (_, list) = call(handle, &ws, cx, &terminal, "list_blocks", json!({}));
     assert!(
         list.lines()
-            .any(|l| l.starts_with(&uid) && l.contains("waiting for its person")),
+            .any(|l| l.starts_with(&uid) && l.contains("waiting for its person: Allow Bash?")),
         "{list}"
     );
     event(

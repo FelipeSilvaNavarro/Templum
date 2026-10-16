@@ -178,9 +178,15 @@ impl Pane {
                 "{uid} runs no agent: send_to_terminal types into a terminal."
             )));
         }
-        if matches!(self.state, Some(AgentState::NeedsYou(_))) {
+        if let Some(AgentState::NeedsYou(what)) = &self.state {
+            let asks = match what.as_deref().filter(|w| !w.is_empty()) {
+                Some(what) => format!(": {what}"),
+                None => String::new(),
+            };
             return Err(Reply::err(format!(
-                "{uid} is waiting for its person: Templum won't type into it now. Try again later."
+                "{uid} is waiting for its person{asks}. Templum won't type into it now; send_keys \
+                 answers its dialog. Its screen:\n{}",
+                tools::tail(&self.tail(), tools::MAX_TEXT)
             )));
         }
         Ok(())

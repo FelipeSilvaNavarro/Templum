@@ -566,9 +566,12 @@ impl Workspace {
                     .filter(|pane| pane.seen.agent.is_some())
                     .and_then(|pane| pane.state.as_ref())
                     .map(|state| match state {
-                        AgentState::Working => ", working",
-                        AgentState::Idle => ", idle",
-                        AgentState::NeedsYou(_) => ", waiting for its person",
+                        AgentState::Working => ", working".to_string(),
+                        AgentState::Idle => ", idle".to_string(),
+                        AgentState::NeedsYou(Some(what)) if !what.is_empty() => {
+                            format!(", waiting for its person: {}", clean_title(what))
+                        }
+                        AgentState::NeedsYou(_) => ", waiting for its person".to_string(),
                     })
                     .unwrap_or_default();
                 format!("{uid}  {kind}  {title}{folder}  {tie}{state}")

@@ -699,9 +699,14 @@ fn wait_for_needs_you_now_or_when_it_asks(cx: &mut TestAppContext) {
         json!({ "event": "needs_you", "message": "Allow Bash?" }),
     );
     let asks = format!("{them} is waiting for its person: Allow Bash?");
-    assert_eq!(answered(&answers), (false, asks.clone()));
+    after(cx, 300);
+    let (failed, text) = answered(&answers);
+    assert!(!failed && text.starts_with(&asks), "{text}");
     let (failed, text) = call(handle, &ws, cx, &terminal, "wait_for", needs_you.clone());
-    assert_eq!((failed, text), (false, asks), "at once while it still asks");
+    assert!(
+        !failed && text.starts_with(&asks),
+        "at once while it still asks: {text}"
+    );
     // Its own question, in its balloon, is a wait for its person too.
     event(handle, &ws, cx, &worker, json!({ "event": "working" }));
     let answers = call_later(handle, &ws, cx, &terminal, 2, "wait_for", needs_you);
@@ -714,12 +719,72 @@ fn wait_for_needs_you_now_or_when_it_asks(cx: &mut TestAppContext) {
         "ask_user",
         json!({ "question": "Which branch?" }),
     );
-    assert_eq!(
-        answered(&answers),
-        (
-            false,
-            format!("{them} is waiting for its person: Which branch?")
-        )
+    after(cx, 300);
+    let (failed, text) = answered(&answers);
+    let asks = format!("{them} is waiting for its person: Which branch?");
+    assert!(!failed && text.starts_with(&asks), "{text}");
+}
+
+/// The dialog an agent waits on, as drawn: what answers it with `send_keys` reads its options.
+/// Its hook comes before it is drawn (the hook may answer it).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn wait_for_needs_you_shows_the_dialog_as_drawn(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let needs_you = json!({ "block": them, "event": "needs_you" });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "wait_for", needs_you.clone());
+    event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "needs_you", "message": "Allow Bash?" }),
+    );
+    shows(&ws, cx, theirs, "1. Yes, proceed (y)");
+    after(cx, 300);
+    let (failed, text) = answered(&answers);
+    assert!(
+        !failed
+            && text.starts_with(&format!("{them} is waiting for its person: Allow Bash?"))
+            && text.contains("1. Yes, proceed (y)"),
+        "{text}"
+    );
+    let (failed, text) = call(handle, &ws, cx, &terminal, "wait_for", needs_you);
+    assert!(
+        !failed && text.contains("1. Yes, proceed (y)"),
+        "at once too: {text}"
+    );
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn delegate_into_a_dialog_is_refused_with_its_screen(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "needs_you", "message": "Allow Bash?" }),
+    );
+    shows(
+        &ws,
+        cx,
+        theirs,
+        "3. No, and tell Codex what to do differently (esc)",
+    );
+    let task = json!({ "block": them, "task": "go" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    assert!(
+        failed
+            && text.contains("waiting for its person: Allow Bash?")
+            && text.contains("send_keys")
+            && text.contains("3. No, and tell Codex"),
+        "{text}"
     );
 }
 
