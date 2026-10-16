@@ -40,6 +40,8 @@ pub(super) const TAIL_LINES: usize = 20;
 /// What a task's first line asks, after who hands it over: Claude Code takes a long paste alone
 /// for data it was shown, and does what typed text with it asks.
 pub(super) const TASK_LEAD: &str = "Your task is in the pasted text: do it.";
+/// What a change's first line asks, after who changes which task.
+pub(super) const CHANGE_LEAD: &str = "The change is in the pasted text: do it.";
 /// What the first line of a task's end says follows it: its answer, or why it failed.
 pub(super) const DONE_LEAD: &str = "Its answer is in the pasted text.";
 pub(super) const FAILED_LEAD: &str = "What happened is in the pasted text.";
@@ -564,7 +566,10 @@ impl Workspace {
     }
 
     /// `delegate` from the terminal `from`: `task` typed into the agent `block` under a line
-    /// saying who hands it over; with `wait`, the call waits for its answer.
+    /// saying who hands it over; with `wait`, the call waits for its answer. Into an agent on the
+    /// caller's own task (also past its deadline), it is a change to that task, typed at once: the
+    /// end of the turn that takes it answers the task, whose timeout starts again
+    /// (docs/specs/connections.md, Delegating 11).
     pub(super) fn delegate(
         &mut self,
         from: &str,
@@ -592,27 +597,51 @@ impl Workspace {
         if let Err(refused) = pane.takes_handing(block) {
             return Outcome::Now(refused);
         }
-        if pane.task(now).is_some() {
+        let mine = pane.handed.as_ref().filter(|h| h.by == from).map(|h| h.id);
+        if mine.is_none() && pane.task(now).is_some() {
             return Outcome::Now(Reply::err(format!(
                 "{block} is already on a task another agent handed it: wait_for_idle(\"{block}\") \
                  waits for its end."
             )));
         }
+        // A spawn's prompt still waits: a change typed now would come before it.
+        if let Some(id) = mine
+            && pane.prompt.is_some()
+        {
+            return Outcome::Now(Reply::err(format!(
+                "{block} hasn't got task t{id} yet: it is starting. Change it once it has."
+            )));
+        }
         let worker = pane.term.id().to_string();
         let usage = pane.usage.clone();
         let by = self.signature(space, me, cx);
-        self.next_task += 1;
-        let id = self.next_task;
-        let from_line = format!("[from {by}, task t{id}] {TASK_LEAD}\n{task}");
-        self.send_task(&worker, &from_line, true, cx);
-        let handed = Handed {
-            id,
-            usage,
-            ..Handed::new(from, Duration::from_secs(timeout))
+        let id = mine.unwrap_or_else(|| {
+            self.next_task += 1;
+            self.next_task
+        });
+        let line = match mine {
+            Some(_) => format!("[from {by}, a change to task t{id}] {CHANGE_LEAD}\n{task}"),
+            None => format!("[from {by}, task t{id}] {TASK_LEAD}\n{task}"),
         };
-        let until = handed.until;
+        self.send_task(&worker, &line, true, cx);
+        let until = Instant::now() + Duration::from_secs(timeout);
         if let Some(pane) = self.pane_mut(&worker) {
-            pane.handed = Some(handed);
+            match (mine, pane.handed.as_mut()) {
+                // The turn that takes the change answers it.
+                (Some(_), Some(handed)) => {
+                    handed.taken = false;
+                    handed.behind = false;
+                    handed.until = until;
+                }
+                _ => {
+                    pane.handed = Some(Handed {
+                        id,
+                        usage,
+                        until,
+                        ..Handed::new(from, Duration::from_secs(timeout))
+                    })
+                }
+            }
         }
         cx.notify();
         if wait {
@@ -624,7 +653,10 @@ impl Workspace {
             Outcome::Wait(what, timeout)
         } else {
             self.time_out(worker, id, until, timeout, cx);
-            Outcome::Now(Reply::ok(format!("Handed to {block} as task t{id}.")))
+            Outcome::Now(Reply::ok(match mine {
+                Some(_) => format!("Typed into {block} as a change to task t{id}."),
+                None => format!("Handed to {block} as task t{id}."),
+            }))
         }
     }
 

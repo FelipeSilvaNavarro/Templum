@@ -251,9 +251,12 @@ fn delegate_refuses_what_it_mustnt_type_into(cx: &mut TestAppContext) {
     event(handle, &ws, cx, &worker, json!({ "event": "working" }));
     let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task.clone());
     assert!(!failed, "{text}");
-    // On a task already: a second one would take the first one's answer.
+    // On the caller's own task: a change to it (another agent's: another_agents_task_is_still_refused).
     let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task.clone());
-    assert!(failed && text.contains("already on a task"), "{text}");
+    assert_eq!(
+        (failed, text),
+        (false, format!("Typed into {them} as a change to task t1."))
+    );
     // To itself, and to a terminal running no agent.
     let mine_task = json!({ "block": uid, "task": "go" });
     let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", mine_task);
@@ -992,6 +995,151 @@ fn a_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) {
     assert!(answered(&answers).0, "timed out");
     after(cx, 1000);
     assert_eq!(told(cx).len(), 2);
+}
+
+/// The agent whose task it is changes it while its agent works: typed at once, under a line naming
+/// the task; the end of the turn that took the change answers it, and its timeout starts again.
+/// Before a spawned agent got its prompt nothing goes: it would come first.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_change_from_the_asker_goes_into_its_task(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let send = |cx: &mut TestAppContext, e: serde_json::Value| event(handle, &ws, cx, &worker, e);
+    call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "delegate",
+        json!({ "block": them, "task": "say A" }),
+    );
+    screen_with(&ws, cx, theirs, "say A");
+    enter(cx);
+    send(cx, json!({ "event": "submitted" }));
+    let change = json!({ "block": them, "task": "also say B", "wait": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 2, "delegate", change);
+    screen_with(
+        &ws,
+        cx,
+        theirs,
+        &format!("({uid}), a change to task t1] The change is in the pasted text: do it."),
+    );
+    ws.read_with(cx, |ws, _| {
+        let handed = ws.space.terminal(theirs).unwrap().handed.as_ref().unwrap();
+        assert!(handed.id == 1 && !handed.taken);
+    });
+    // The turn under way ends before taking it; Codex takes it into the next.
+    send(cx, json!({ "event": "stopped", "message": "A" }));
+    assert!(answers.try_recv().is_err(), "the turn before the change");
+    send(cx, json!({ "event": "submitted" }));
+    send(cx, json!({ "event": "stopped", "message": "B" }));
+    assert_eq!(answered(&answers), (false, "B".to_string()));
+    // Its timeout starts again from the change's.
+    asker(&ws, cx, mine);
+    event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({ "event": "needs_you", "message": "Allow Edit?" }),
+    );
+    call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "delegate",
+        json!({ "block": them, "task": "count", "timeout": 2 }),
+    );
+    screen_with(&ws, cx, theirs, "count");
+    enter(cx);
+    send(cx, json!({ "event": "submitted" }));
+    let change = json!({ "block": them, "task": "count to 9", "timeout": 5 });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", change);
+    assert_eq!(
+        (failed, text),
+        (false, format!("Typed into {them} as a change to task t2."))
+    );
+    // Its Enter goes while the test's clock runs: else no Enter, and the task ends untaken.
+    screen_with(&ws, cx, theirs, "count to 9");
+    after(cx, 2000);
+    after(cx, 1000);
+    assert!(
+        notices(&ws, cx).is_empty(),
+        "the first deadline passed quietly"
+    );
+    after(cx, 2000);
+    after(cx, 1000);
+    let told = notices(&ws, cx);
+    assert!(
+        told.len() == 1 && told[0].1.contains("within 5 seconds"),
+        "{told:?}"
+    );
+    // A spawned agent whose prompt still waits.
+    ws.update(cx, |ws, _| {
+        let pane = ws.space.terminal_mut(theirs).unwrap();
+        pane.handed = Some(crate::workspace::Handed {
+            id: 7,
+            ..crate::workspace::Handed::new(&terminal, std::time::Duration::from_secs(600))
+        });
+        pane.prompt = Some(crate::workspace::Prompt {
+            text: "say hi".into(),
+            screen: None,
+            gated: false,
+        });
+    });
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "delegate",
+        json!({ "block": them, "task": "say ho" }),
+    );
+    assert!(failed && text.contains("hasn't got task t7 yet"), "{text}");
+}
+
+/// Another agent's task: refused, whether it waits or not, and the task stays its asker's.
+#[gpui_kit::test]
+fn another_agents_task_is_still_refused(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let third = another_agent(handle, &ws, cx, theirs);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (other, _) = me(&ws, cx, third);
+    let (_, them) = me(&ws, cx, theirs);
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "delegate",
+            json!({ "block": them, "task": "a" })
+        )
+        .0
+    );
+    for wait in [false, true] {
+        let task = json!({ "block": them, "task": "b", "wait": wait });
+        let (failed, text) = call(handle, &ws, cx, &other, "delegate", task);
+        assert!(
+            failed && text.contains("already on a task another agent handed it"),
+            "{text}"
+        );
+    }
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.space
+                .terminal(theirs)
+                .unwrap()
+                .handed
+                .as_ref()
+                .unwrap()
+                .by,
+            terminal
+        )
+    });
 }
 
 /// The notices once there are `n`: a read on the background executor may come a moment later.
