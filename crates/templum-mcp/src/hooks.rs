@@ -22,7 +22,12 @@ pub enum AgentEvent {
     /// It works on: a tool just ran.
     Working,
     /// It finished its turn, with its last answer.
-    Stopped { message: Option<String> },
+    Stopped {
+        message: Option<String>,
+        /// The transcript its hook named (`transcript_path`), for the notice of a task's end.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transcript: Option<String>,
+    },
     /// It waits for the person: a permission, a question.
     NeedsYou { message: Option<String> },
     /// The session ended.
@@ -41,13 +46,15 @@ pub fn claude(input: &Value) -> Option<AgentEvent> {
         "UserPromptSubmit" => AgentEvent::Submitted { at_enter: true },
         "PostToolUse" => AgentEvent::Working,
         // Esc while a tool runs ends the turn: no `Stop` comes.
-        "PostToolUseFailure" if input["is_interrupt"] == true => {
-            AgentEvent::Stopped { message: None }
-        }
+        "PostToolUseFailure" if input["is_interrupt"] == true => AgentEvent::Stopped {
+            message: None,
+            transcript: text("transcript_path"),
+        },
         // A tool that failed (an allowed `cargo test` that fails): it works on.
         "PostToolUseFailure" => AgentEvent::Working,
         "Stop" => AgentEvent::Stopped {
             message: text("last_assistant_message"),
+            transcript: text("transcript_path"),
         },
         // The permission dialog just opened (its notification only comes after seconds
         // without typing). The hook prints nothing, so the dialog still decides.
@@ -61,7 +68,10 @@ pub fn claude(input: &Value) -> Option<AgentEvent> {
             }),
         },
         // A turn an API error ended: no `Stop`, and no answer.
-        "StopFailure" => AgentEvent::Stopped { message: None },
+        "StopFailure" => AgentEvent::Stopped {
+            message: None,
+            transcript: text("transcript_path"),
+        },
         "Notification" => match input["notification_type"].as_str()? {
             // The dialog `PermissionRequest` already said, seconds ago: its "Allow …?" stays.
             "permission_prompt" => AgentEvent::NeedsYou { message: None },
@@ -71,7 +81,10 @@ pub fn claude(input: &Value) -> Option<AgentEvent> {
             // The prompt has sat idle: whatever the turn was, it isn't working. Esc while the
             // model writes fires no hook of its own, so this is what ends its "Working". Not a
             // wait for the person: the agent asks nothing.
-            "idle_prompt" => AgentEvent::Stopped { message: None },
+            "idle_prompt" => AgentEvent::Stopped {
+                message: None,
+                transcript: text("transcript_path"),
+            },
             _ => return None,
         },
         "SessionEnd" => AgentEvent::Ended,
@@ -82,6 +95,7 @@ pub fn claude(input: &Value) -> Option<AgentEvent> {
 /// A Codex hook's input (as of 0.154, docs/plans/2026-10-16-connections-batch-7.md, S1). None
 /// for what Templum doesn't follow: `SessionEnd` also comes after 30 idle minutes.
 pub fn codex(input: &Value) -> Option<AgentEvent> {
+    let text = |key: &str| input[key].as_str().map(str::to_string);
     Some(match input["hook_event_name"].as_str()? {
         "SessionStart" if input["source"] == "compact" => return None,
         "SessionStart" => AgentEvent::Started,
@@ -95,10 +109,14 @@ pub fn codex(input: &Value) -> Option<AgentEvent> {
             }),
         },
         "Stop" => AgentEvent::Stopped {
-            message: input["last_assistant_message"].as_str().map(str::to_string),
+            message: text("last_assistant_message"),
+            transcript: text("transcript_path"),
         },
         // Esc or Ctrl+C: the turn ends, no `Stop` comes.
-        "Interrupt" => AgentEvent::Stopped { message: None },
+        "Interrupt" => AgentEvent::Stopped {
+            message: None,
+            transcript: text("transcript_path"),
+        },
         _ => return None,
     })
 }
@@ -115,6 +133,7 @@ pub fn gemini(input: &Value) -> Option<AgentEvent> {
         "AfterTool" => AgentEvent::Working,
         "AfterAgent" => AgentEvent::Stopped {
             message: text("prompt_response"),
+            transcript: text("transcript_path"),
         },
         // Its permission dialog opened. The hook prints nothing, so the dialog still decides.
         "Notification" if input["notification_type"] == "ToolPermission" => AgentEvent::NeedsYou {
@@ -173,18 +192,47 @@ mod tests {
                 "tool_name": "Bash",
                 "is_interrupt": true,
             })),
-            Some(AgentEvent::Stopped { message: None }),
+            Some(AgentEvent::Stopped {
+                message: None,
+                transcript: None
+            }),
             "Esc during a tool ends the turn"
         );
         assert_eq!(
             event(json!({ "hook_event_name": "Stop", "last_assistant_message": "Done." })),
             Some(AgentEvent::Stopped {
-                message: Some("Done.".into())
+                message: Some("Done.".into()),
+                transcript: None,
+            })
+        );
+        let path = "/home/u/.claude/projects/p/727bd1ac.jsonl";
+        assert_eq!(
+            event(
+                json!({ "hook_event_name": "Stop", "last_assistant_message": "Done.",
+                "transcript_path": path })
+            ),
+            Some(AgentEvent::Stopped {
+                message: Some("Done.".into()),
+                transcript: Some(path.into())
+            }),
+            "the notice of a task's end names it"
+        );
+        assert_eq!(
+            event(
+                json!({ "hook_event_name": "PostToolUseFailure", "is_interrupt": true,
+                "transcript_path": path })
+            ),
+            Some(AgentEvent::Stopped {
+                message: None,
+                transcript: Some(path.into())
             })
         );
         assert_eq!(
             event(json!({ "hook_event_name": "Stop" })),
-            Some(AgentEvent::Stopped { message: None }),
+            Some(AgentEvent::Stopped {
+                message: None,
+                transcript: None
+            }),
             "a Claude Code that doesn't say its answer"
         );
         assert_eq!(
@@ -254,7 +302,10 @@ mod tests {
                 "message": "Claude is waiting for your input",
             })),
             // Not None: after an Esc, nothing else says the turn is over.
-            Some(AgentEvent::Stopped { message: None }),
+            Some(AgentEvent::Stopped {
+                message: None,
+                transcript: None
+            }),
             "an idle prompt means not working, never a wait for the person"
         );
         assert_eq!(
@@ -263,7 +314,10 @@ mod tests {
                 "error_type": "rate_limit",
                 "error_message": "Rate limited",
             })),
-            Some(AgentEvent::Stopped { message: None }),
+            Some(AgentEvent::Stopped {
+                message: None,
+                transcript: None
+            }),
             "a turn an API error ended"
         );
         assert_eq!(
@@ -279,6 +333,8 @@ mod tests {
     fn codex_hooks_become_events() {
         let event = |input: Value| codex(&input);
         let turn = "01a14375-fd15-7fb2-b94b-e4a7c7102723";
+        let rollout =
+            "/home/u/.codex/sessions/2026/10/16/rollout-2026-10-16T03-44-39-01a14374.jsonl";
         let start = json!({ "hook_event_name": "SessionStart", "source": "startup",
             "session_id": "01a14374", "model": "gpt-5.6-luna", "permission_mode": "default" });
         assert_eq!(event(start), Some(AgentEvent::Started));
@@ -312,15 +368,20 @@ mod tests {
         assert_eq!(
             event(
                 json!({ "hook_event_name": "Stop", "turn_id": turn, "stop_hook_active": false,
-                "last_assistant_message": "A B" })
+                "last_assistant_message": "A B", "transcript_path": rollout })
             ),
             Some(AgentEvent::Stopped {
-                message: Some("A B".into())
+                message: Some("A B".into()),
+                transcript: Some(rollout.into()),
             })
         );
         assert_eq!(
-            event(json!({ "hook_event_name": "Interrupt", "turn_id": turn })),
-            Some(AgentEvent::Stopped { message: None }),
+            event(json!({ "hook_event_name": "Interrupt", "turn_id": turn,
+                "transcript_path": rollout })),
+            Some(AgentEvent::Stopped {
+                message: None,
+                transcript: Some(rollout.into())
+            }),
             "Esc or Ctrl+C: no Stop comes"
         );
         // Also after 30 idle minutes: a snapshot tells when Codex quits.
@@ -353,14 +414,19 @@ mod tests {
                 "hook_event_name": "AfterAgent",
                 "prompt": "hi",
                 "prompt_response": "Done.",
+                "transcript_path": "/tmp/g.json",
             })),
             Some(AgentEvent::Stopped {
-                message: Some("Done.".into())
+                message: Some("Done.".into()),
+                transcript: Some("/tmp/g.json".into()),
             })
         );
         assert_eq!(
             event(json!({ "hook_event_name": "AfterAgent" })),
-            Some(AgentEvent::Stopped { message: None })
+            Some(AgentEvent::Stopped {
+                message: None,
+                transcript: None
+            })
         );
         assert_eq!(
             event(json!({
@@ -397,10 +463,22 @@ mod tests {
     fn events_go_over_the_bus_as_tagged_json() {
         assert_eq!(
             serde_json::to_value(AgentEvent::Stopped {
-                message: Some("x".into())
+                message: Some("x".into()),
+                transcript: None
             })
             .unwrap(),
-            json!({ "event": "stopped", "message": "x" })
+            json!({ "event": "stopped", "message": "x" }),
+            "no transcript, no key: the event an older Templum reads"
+        );
+        assert_eq!(
+            serde_json::from_value::<AgentEvent>(
+                json!({ "event": "stopped", "message": "x", "transcript": "/t" })
+            )
+            .unwrap(),
+            AgentEvent::Stopped {
+                message: Some("x".into()),
+                transcript: Some("/t".into())
+            }
         );
         assert_eq!(
             serde_json::from_value::<AgentEvent>(json!({ "event": "needs_you", "message": null }))

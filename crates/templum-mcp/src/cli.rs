@@ -751,7 +751,7 @@ mod tests {
                 let _ = seen.send((m.hello.client, m.incoming));
             }
         });
-        let stop = r#"{"hook_event_name":"Stop","last_assistant_message":"Done."}"#;
+        let stop = r#"{"hook_event_name":"Stop","last_assistant_message":"Done.","transcript_path":"/t.jsonl"}"#;
         assert_eq!(
             run_with(&["hook", "claude"], &env(&bus), stop),
             (0, String::new(), String::new())
@@ -762,7 +762,7 @@ mod tests {
                 "hook".to_string(),
                 Incoming::Notification {
                     method: "templum/event".into(),
-                    params: json!({ "event": "stopped", "message": "Done." }),
+                    params: json!({ "event": "stopped", "message": "Done.", "transcript": "/t.jsonl" }),
                 }
             )
         );

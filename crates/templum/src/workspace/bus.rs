@@ -257,7 +257,7 @@ impl Workspace {
                 }
             }
             AgentEvent::Started => pane.state = Some(AgentState::Idle),
-            AgentEvent::Stopped { message } => {
+            AgentEvent::Stopped { message, .. } => {
                 pane.state = Some(AgentState::Idle);
                 if let Some(message) = &message {
                     pane.answer = Some(message.clone());
