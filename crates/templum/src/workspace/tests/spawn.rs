@@ -183,6 +183,68 @@ fn spawn_agent_types_its_model_and_effort_first(cx: &mut TestAppContext) {
     assert!(!repo.path().join(".worktrees").exists(), "no worktree made");
 }
 
+/// An agent closes the blocks it opened while it is wired to them, as one step of Ctrl+Z, which
+/// brings one back still opened by it, its agent resumed with its model.
+#[gpui_kit::test]
+fn close_block_closes_only_what_the_caller_opened(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path(), "model": "gpt-5.6-luna" });
+    assert!(!call(handle, &ws, cx, &terminal, "spawn_agent", spawn).0);
+    let new = spawned(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, new);
+    let close = json!({ "block": them });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "close_block", close.clone());
+    assert!(
+        !failed && text.starts_with(&format!("Closed {them}.")),
+        "{text}"
+    );
+    ws.read_with(cx, |ws, _| assert!(ws.space.block_by_uid(&them).is_none()));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| assert!(ws.undo_canvas(false, window, cx)))
+    })
+    .unwrap();
+    let back = spawned(&ws, cx, mine);
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.uids[&back], them);
+        let pane = ws.space.terminal(back).unwrap();
+        assert_eq!(pane.opened_by.as_deref(), Some(uid.as_str()));
+    });
+    screen_with(&ws, cx, back, "codex resume --last -m gpt-5.6-luna");
+    // A block the person opened, the caller's own, and one no longer wired: the person's.
+    let other = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open(Rect::new(40.0, 900.0, 400.0, 300.0), window, cx);
+                let other = ws.space.canvas.top().unwrap();
+                assert!(ws.connect(mine, other, cx));
+                other
+            })
+        })
+        .unwrap();
+    let (_, theirs) = me(&ws, cx, other);
+    for block in [&theirs, &uid] {
+        let (failed, text) = call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": block }),
+        );
+        assert!(
+            failed && text == format!("Only the person closes {block}: you didn't open it."),
+            "{text}"
+        );
+    }
+    ws.update(cx, |ws, cx| {
+        assert!(ws.disconnect(Wire::new(mine, back).unwrap(), cx))
+    });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "close_block", close);
+    assert!(failed && text.contains("isn't connected to you"), "{text}");
+}
+
 #[gpui_kit::test]
 fn a_claude_codes_prompt_is_typed_once_it_started(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);

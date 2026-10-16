@@ -447,7 +447,7 @@ impl Workspace {
             Call::GitStatus { block } => return self.git_status(terminal, block.as_deref(), cx),
             Call::SendKeys { block, keys } => return self.send_keys(terminal, &block, keys, cx),
             Call::Interrupt { block } => return self.interrupt(terminal, &block, cx),
-            Call::CloseBlock { .. } => Reply::err("This Templum can't do that yet."),
+            Call::CloseBlock { block } => self.close_block(terminal, &block, window, cx),
             Call::AskUser {
                 question,
                 options,

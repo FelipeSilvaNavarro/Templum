@@ -9,7 +9,8 @@ use templum_canvas::{BlockId, Rect, Size, chrome};
 use templum_mcp::{Reply, tools};
 use templum_terminal::Agent;
 
-use super::bus::Outcome;
+use super::bus::{Outcome, target};
+use super::history::Then;
 use super::{AGENT_COLS, AGENT_ROWS, Handed, Prompt, Space, Workspace};
 use crate::agents::AgentEntry;
 
@@ -184,6 +185,36 @@ impl Workspace {
         }
         cx.notify();
         Reply::ok(said)
+    }
+
+    /// `close_block` from the terminal `from`: the block `block`, which it opened with
+    /// `spawn_agent` and is still wired to (unwiring it takes the consent back), closed without
+    /// asking the person, as one step of Ctrl+Z, also in a workspace not shown.
+    pub(super) fn close_block(
+        &mut self,
+        from: &str,
+        block: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let (space_id, me) = self.caller(from).expect("call found the caller");
+        let space = self.space_named(&space_id).expect("the caller's workspace");
+        let id = match target(space, me, block) {
+            Ok(id) => id,
+            Err(refused) => return refused,
+        };
+        // Any other kind of block was opened by no agent.
+        let opener = space.terminal(id).and_then(|p| p.opened_by.as_ref());
+        if opener.is_none() || opener != space.uids.get(&me) {
+            return Reply::err(format!(
+                "Only the person closes {block}: you didn't open it."
+            ));
+        }
+        self.in_space(&space_id, |ws| ws.close_now(&[id], Then::New, window, cx));
+        cx.notify();
+        Reply::ok(format!(
+            "Closed {block}. The person can bring it back with Ctrl+Z."
+        ))
     }
 
     /// Looks, every READY_LOOK, whether the agent in `terminal` is ready for its prompt, until it
