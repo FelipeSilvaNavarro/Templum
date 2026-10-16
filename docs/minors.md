@@ -606,10 +606,6 @@ Left by batch 3 (agents together) and its review; line numbers are those of `dev
 - [ ] **Each wait keeps a timer until its deadline.** `wait` (`crates/templum/src/workspace/waits.rs:96`) starts a
   detached timer per call and leaves it to run out after the call is answered: up to an hour each. A person sees
   nothing (a small cost). Fix: keep the timer's task in the `Wait`, so answering drops it.
-- [ ] **`send_to_terminal`'s Enter comes in the same burst as its text.** `call`'s `SendToTerminal` arm
-  (`crates/templum/src/workspace/bus.rs:326`) writes `\r` right after the paste; an agent may take it for a new line,
-  where `delegate` waits 150 ms. A person sees the text sit unsent in Claude Code's or Codex's prompt. Fix: send its
-  Enter with `send_task`'s delay (confirm with the manual check first).
 
 Left by the fourth review of batch 3; line numbers are those of `development` at 242654d.
 

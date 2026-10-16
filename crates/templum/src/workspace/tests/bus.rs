@@ -276,8 +276,17 @@ fn a_terminal_types_into_itself_and_reads_it_back(cx: &mut TestAppContext) {
     let typed = json!({ "block": uid, "text": "hello there", "enter": true });
     let (failed, text) = call(handle, &ws, cx, &terminal, "send_to_terminal", typed);
     assert!(!failed, "{text}");
-    // The tty shows the text as it is typed; `cat` prints it again on the next row only once
-    // Enter sends the line (rows are trimmed and joined without a break).
+    // The tty shows the text as it is typed; its Enter waits ENTER_AFTER on the test's clock, so
+    // `cat` hasn't printed it again yet.
+    screen_with(&ws, cx, first, "hello there");
+    std::thread::sleep(Duration::from_millis(300));
+    let alone = screen_until(&ws, cx, first, |_| true);
+    assert_eq!(alone.matches("hello there").count(), 1, "{alone}");
+    after(
+        cx,
+        crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
+    );
+    // `cat` prints it again on the next row once Enter sent the line (rows are joined).
     screen_with(&ws, cx, first, "hello therehello there");
     let (failed, text) = call(
         handle,

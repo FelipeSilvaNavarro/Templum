@@ -11,6 +11,7 @@ use serde_json::json;
 use templum_canvas::BlockId;
 use templum_mcp::{Bus, Call, Incoming, Message, Reply, rpc, tools};
 
+use super::delegate::ENTER_AFTER;
 use super::waits::{Asked, Waiting};
 use super::{AgentState, Body, Pane, Space, Workspace, show_notification};
 
@@ -379,7 +380,18 @@ impl Workspace {
                 };
                 pane.term.type_in(&text);
                 if enter {
-                    pane.term.write(&b"\r"[..]);
+                    // As a task's: an agent may take keys that come in one burst for a paste,
+                    // where Enter is a new line.
+                    let terminal = pane.term.id().to_string();
+                    cx.spawn(async move |ws, cx| {
+                        cx.background_executor().timer(ENTER_AFTER).await;
+                        let _ = ws.update(cx, |ws, _| {
+                            if let Some(pane) = ws.pane(&terminal) {
+                                pane.term.write(&b"\r"[..]);
+                            }
+                        });
+                    })
+                    .detach();
                 }
                 Reply::ok(format!("Typed into {block}."))
             }
