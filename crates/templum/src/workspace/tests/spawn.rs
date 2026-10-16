@@ -194,13 +194,33 @@ fn close_block_closes_only_what_the_caller_opened(cx: &mut TestAppContext) {
     assert!(!call(handle, &ws, cx, &terminal, "spawn_agent", spawn).0);
     let new = spawned(&ws, cx, mine);
     let (_, them) = me(&ws, cx, new);
+    // The last snapshot found its session: Ctrl+Z resumes it, not the folder's latest (the
+    // caller's, in the same folder).
+    let session = "0d5e5f4b-1c2d-4e3f-8a9b-0c1d2e3f4a5b";
+    ws.update(cx, |ws, _| {
+        ws.space.saved = Some(
+            serde_json::from_value(json!({
+                "version": 1, "camera": { "x": 0, "y": 0, "zoom": 1 },
+                "items": [{ "kind": "terminal", "uid": them, "rect": { "x": 0, "y": 0, "w": 1, "h": 1 },
+                            "agent": "codex", "session": session }],
+            }))
+            .unwrap(),
+        )
+    });
     let close = json!({ "block": them });
     let (failed, text) = call(handle, &ws, cx, &terminal, "close_block", close.clone());
     assert!(
         !failed && text.starts_with(&format!("Closed {them}.")),
         "{text}"
     );
-    ws.read_with(cx, |ws, _| assert!(ws.space.block_by_uid(&them).is_none()));
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.block_by_uid(&them).is_none());
+        // Its shell ends now, not after a fade a workspace not shown never draws.
+        assert!(
+            ws.space.ghosts.iter().all(|g| g.block.id != new),
+            "no ghost"
+        );
+    });
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| assert!(ws.undo_canvas(false, window, cx)))
     })
@@ -211,7 +231,12 @@ fn close_block_closes_only_what_the_caller_opened(cx: &mut TestAppContext) {
         let pane = ws.space.terminal(back).unwrap();
         assert_eq!(pane.opened_by.as_deref(), Some(uid.as_str()));
     });
-    screen_with(&ws, cx, back, "codex resume --last -m gpt-5.6-luna");
+    screen_with(
+        &ws,
+        cx,
+        back,
+        &format!("codex resume {session} -m gpt-5.6-luna"),
+    );
     // A block the person opened, the caller's own, and one no longer wired: the person's.
     let other = cx
         .update_window(handle, |_, window, cx| {

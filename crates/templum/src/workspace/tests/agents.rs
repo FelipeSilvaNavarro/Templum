@@ -159,6 +159,7 @@ fn an_agent_that_left_takes_its_model_and_effort_with_it(cx: &mut TestAppContext
                 Some("gpt-5.6-luna".into()),
                 Some("high".into()),
             );
+            pane.flags_for = Some("codex".into());
         })
     };
     let kept = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
@@ -186,6 +187,12 @@ fn an_agent_that_left_takes_its_model_and_effort_with_it(cx: &mut TestAppContext
     spawned(&ws, cx);
     snapshot(handle, &ws, cx, id, found(None, None));
     assert_eq!(kept(&ws, cx).1, None, "its agent left");
+    // A spawned Codex no snapshot ever found (it never started, or quit at once), and `claude`
+    // typed by hand there: not Codex's model.
+    spawned(&ws, cx);
+    snapshot(handle, &ws, cx, id, found(None, None));
+    snapshot(handle, &ws, cx, id, found(Some("claude"), Some(3)));
+    assert_eq!(kept(&ws, cx).1, None, "another agent, never seen before it");
 }
 
 #[test]

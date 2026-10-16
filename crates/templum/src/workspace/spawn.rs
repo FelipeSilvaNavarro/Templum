@@ -144,6 +144,7 @@ impl Workspace {
                 let pane = ws.space.terminal_mut(id)?;
                 pane.opened_by = opener;
                 (pane.model, pane.effort) = (spawn.model.clone(), spawn.effort.clone());
+                pane.flags_for = Some(entry.id.clone());
                 let terminal = ws.space.terminal(id)?.term.id().to_string();
                 Some((ws.space.uids.get(&id)?.clone(), terminal))
             })
@@ -210,7 +211,12 @@ impl Workspace {
                 "Only the person closes {block}: you didn't open it."
             ));
         }
-        self.in_space(&space_id, |ws| ws.close_now(&[id], Then::New, window, cx));
+        self.in_space(&space_id, |ws| {
+            ws.close_now(&[id], Then::New, window, cx);
+            // Its shell and agent end now: a ghost waits for a frame of its workspace, which one
+            // not shown, or a window not drawn, doesn't have.
+            ws.space.ghosts.retain(|g| g.block.id != id);
+        });
         cx.notify();
         Reply::ok(format!(
             "Closed {block}. The person can bring it back with Ctrl+Z."

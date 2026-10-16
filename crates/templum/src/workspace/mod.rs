@@ -191,6 +191,9 @@ pub(crate) struct Pane {
     /// with that agent.
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// The agent `model` and `effort` were typed for, by id: another found there isn't given
+    /// them, also when no snapshot found this one (it never started, or quit at once).
+    pub flags_for: Option<String>,
 }
 
 impl Pane {
@@ -590,10 +593,25 @@ impl Space {
         self.uids.iter().find(|(_, u)| *u == uid).map(|(id, _)| *id)
     }
 
-    /// A block as a saved item at its rect on the canvas, with its id.
+    /// A block as a saved item at its rect on the canvas, with its id. A terminal's agent keeps
+    /// the session the last snapshot found it on: closed and brought back, it resumes that one,
+    /// not the folder's latest (another agent's there, maybe the one that closed it).
     fn item_of(&self, block: &Block, cx: &App) -> session::Item {
+        let uid = self.uids.get(&block.id).cloned().unwrap_or_default();
         let mut item = self.blocks[&block.id].item(self.home(block), cx);
-        item.set_uid(self.uids.get(&block.id).cloned().unwrap_or_default());
+        if let session::Item::Terminal(t) = &mut item {
+            t.session = self
+                .saved
+                .iter()
+                .flat_map(|s| &s.items)
+                .find_map(|saved| match saved {
+                    session::Item::Terminal(s) if s.uid == uid && s.agent == t.agent => {
+                        s.session.clone()
+                    }
+                    _ => None,
+                });
+        }
+        item.set_uid(uid);
         item
     }
 
@@ -606,13 +624,13 @@ impl Space {
             blocks: blocks
                 .iter()
                 .map(|b| match &self.blocks[&b.id] {
-                    Body::Terminal(pane) => session::LayoutBlock::Terminal(
-                        pane.item(
-                            self.home(b),
-                            self.uids.get(&b.id).cloned().unwrap_or_default(),
-                        ),
-                        pane.term.processes(),
-                    ),
+                    Body::Terminal(pane) => {
+                        let uid = self.uids.get(&b.id).cloned().unwrap_or_default();
+                        let mut item = pane.item(self.home(b), uid);
+                        // What the snapshot compares with the agent it finds there.
+                        item.agent = pane.flags_for.clone().or(item.agent);
+                        session::LayoutBlock::Terminal(item, pane.term.processes())
+                    }
                     _ => session::LayoutBlock::Saved(self.item_of(b, cx)),
                 })
                 .collect(),
@@ -709,10 +727,13 @@ impl Space {
             if let Some(pane) = self.terminal_mut(id) {
                 // A folder the snapshot couldn't read keeps the one known.
                 seen.folder = seen.folder.or(pane.seen.folder.take());
-                // The model and the effort are its agent's, found before: gone with it, or with
-                // another agent there (typed by hand). One still starting keeps them.
-                if pane.seen.pid.is_some() && seen.agent != pane.seen.agent {
-                    (pane.model, pane.effort) = (None, None);
+                // The model and the effort are the agent's they were typed for: gone once another
+                // agent is found there (typed by hand), or once that agent, found before, left.
+                // One still starting keeps them.
+                let other = seen.agent.is_some() && seen.agent != pane.flags_for;
+                let left = pane.seen.pid.is_some() && seen.agent.is_none();
+                if other || left {
+                    (pane.model, pane.effort, pane.flags_for) = (None, None, None);
                 }
                 // Its agent is gone (one that crashed says no SessionEnd): what its hooks said
                 // mustn't come back with the next agent started there by hand.

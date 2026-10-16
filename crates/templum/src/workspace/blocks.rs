@@ -436,6 +436,7 @@ impl Workspace {
                         opened_by: None,
                         model: None,
                         effort: None,
+                        flags_for: None,
                     })),
                 );
                 self.added(id);

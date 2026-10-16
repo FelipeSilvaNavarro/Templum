@@ -710,8 +710,9 @@ pub(crate) struct Layout {
 }
 
 pub(crate) enum LayoutBlock {
-    /// A terminal as the UI thread knows it: its id, rect, opener, model and effort; its folder,
-    /// agent and session come from its processes, read in the background.
+    /// A terminal as the UI thread knows it: its id, rect, opener, model and effort, and as its
+    /// agent the one they were typed for (else the one last seen); its folder, agent and session
+    /// come from its processes, read in the background.
     Terminal(TerminalItem, Processes),
     /// Any other kind: its item, complete, built on the UI thread.
     Saved(Item),

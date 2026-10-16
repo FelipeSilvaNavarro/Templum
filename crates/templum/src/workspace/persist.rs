@@ -172,6 +172,7 @@ impl Workspace {
             pane.seen.agent = Some(agent);
             if args.is_ok() {
                 (pane.model, pane.effort) = (saved.model.clone(), saved.effort.clone());
+                pane.flags_for = pane.seen.agent.clone();
             }
         }
     }
