@@ -1,7 +1,7 @@
 # Connections: blocks that talk to each other
 
 - **Date:** 2026-10-15
-- **Status:** Batches 1 to 5 implemented; batch 6 planned ([plan](../plans/2026-10-16-connections-batch-6.md)); 7 and 8 (orchestration) specified
+- **Status:** Batches 1 to 6 implemented; 7 and 8 (orchestration) specified
 - **Builds on:** [agents.md](agents.md) (opening agents), [usage.md](usage.md) (the `--settings` Templum types for
   Claude Code), [shell-integration.md](shell-integration.md) (command marks, notifications),
   [persistence.md](persistence.md), [kanban.md](kanban.md) and [cockpit.md](cockpit.md) (notes, the editor, drawing)
@@ -219,14 +219,16 @@ adds (Claude Code's `--mcp-config` takes every word after it):
 | Agent | `model` | `effort` |
 |---|---|---|
 | Claude Code | `--model <m>` | `--effort <e>`: `low`, `medium`, `high`, `xhigh`, `max` |
-| Codex | `-m <m>` | `-c model_reasoning_effort=<e>`: the values Codex takes (checked when batch 6 is planned) |
+| Codex | `-m <m>` | `-c model_reasoning_effort=<e>`: `low`, `medium`, `high`, `xhigh`, `max`, `ultra` (Codex 0.154's models; `ultra` only some of them), unquoted: Codex reads a word that isn't TOML as a string |
 | Gemini CLI | `-m <m>` | — |
 
 They are typed into a shell: a model is 1 to 64 letters, digits, `.`, `-`, `_`, `:` and `/`, beginning with a letter
 or a digit (no option can hide in it); an effort is one of its agent's. Anything else, an effort for Gemini CLI, or
 either for another agent is refused before anything opens, a worktree included. The block keeps them: a restart, or
-Ctrl+Z after a close, resumes its agent with them while that agent runs there. The result names them ("…, connected
-to you, on gpt-5.6-luna (high).").
+Ctrl+Z after a close, resumes its agent with them while that agent runs there. A snapshot that finds that agent gone,
+or another agent there, drops them (also from the file it writes then): they remember the agent they were typed for, so
+one typed by hand where a spawned agent never started doesn't get them. Templum's agents get them also when the person
+changed their command. The result names them ("…, connected to you, on gpt-5.6-luna (high).").
 
 The keyboard, the selection and the camera stay where they were; one Ctrl+Z closes the new block and its wire. The
 worktree comes from the repository of the folder the agent starts in, always under its main working tree's
@@ -249,17 +251,21 @@ Batch 6.
   a dialog takes `2` as its option, where a pasted `2` lands in the agent's input. The result ends with the last 20
   lines of the screen, 300 ms after the last key.
 - **Dialogs.** Keys go into an agent waiting for its person too: the wire is the person's consent that the agents
-  on it answer each other's dialogs. They count as the person's keys for its state ([An agent's
-  state](#an-agents-state)), and the block shows **answered by** *Claude Code · api* after its dot for 10 seconds,
-  and in its dot's tooltip. Refused: the caller's own block, and an agent on another agent's task unless it waits for
-  its person.
+  on it answer each other's dialogs. Keys from another block count as the person's keys for its state ([An agent's
+  state](#an-agents-state)), and the block shows **answered by** *Claude Code (b7k2m)* (the caller as its `[from …]`
+  line names it) after its dot for 10 seconds, in place of its usage chip, and in its dot's tooltip, whatever it was
+  waiting for: a trust question no hook tells of is no wait Templum knows. Refused: the caller's own block, and an
+  agent on another agent's task unless it waits for its person.
 - **`interrupt`** presses Esc once in an agent wired to the caller while it works or waits for its person (a second
-  Esc at Claude Code's empty prompt opens its rewind), and ends the task the caller handed it: its waits get
-  "Interrupted by you." Refused while it is idle, and while it is on another agent's task. Its result ends with the
-  screen, as `send_keys`'s.
+  Esc at Claude Code's empty prompt opens its rewind), and ends the task the caller handed it (a spawned agent's
+  prompt still waiting is dropped with it): its waits get "Interrupted by you." Refused while it is idle, and while
+  it is on another agent's task. Its result ends with the screen, as `send_keys`'s.
 - **`close_block`** closes a block the caller opened with `spawn_agent` and is still wired to (unwiring it takes
-  the consent back), without asking the person, as one step of Ctrl+Z; Ctrl+Z brings it back as any closed block,
-  its agent resumed. Any other: "Only the person closes k9x1d: you didn't open it."
+  the consent back), without asking the person, as one step of Ctrl+Z; its agent ends at once, with no fade (one in a
+  workspace not shown would wait for a frame). Ctrl+Z brings it back as any closed block, its agent resumed on the
+  session the last snapshot found it on (not the folder's latest, the caller's when they share it), with its model.
+  Any other: "Only the person closes k9x1d: you didn't open it." One it opened but is no longer wired to is refused
+  as any block not connected: connect asks the person again.
 - `send_to_terminal`'s Enter goes 150 ms after its text, as a task's does.
 
 ## Identity
@@ -602,8 +608,8 @@ the switch, the server's command for other agents with a Copy button, and Gemini
 | `templum-usage/src/gemini.rs` (new) | the Gemini CLI extension | 5 |
 | `templum/src/workspace/activity.rs` (new) | an agent's state from its screen | 5 |
 | `templum/src/settings/connections.rs` (new), `workspace/usage.rs` | Settings ▸ Connections; running Gemini CLI | 5 |
-| `templum-terminal/src/input.rs`, `terminal.rs`, `agent.rs` | named keys and `Terminal::press`; each agent's model and effort flags | 6 |
-| `templum/src/workspace/delegate.rs`, `spawn.rs`, `bus.rs`, `session.rs`, `persist.rs`, `block.rs` | `send_keys`, `interrupt`, `close_block`; `opened_by`, `model` and `effort` saved and resumed; "answered by" | 6 |
+| `templum-terminal/src/input.rs`, `terminal.rs`, `agent.rs`; `templum/src/agents.rs` | named keys and `Terminal::press`; each agent's model and effort flags (`launch_args`) | 6 |
+| `templum/src/workspace/delegate.rs`, `spawn.rs`, `bus.rs`, `mod.rs`, `blocks.rs`, `persist.rs`, `selection.rs`; `session.rs`, `block.rs` | `send_keys`, `interrupt`, `close_block`; `opened_by`, `model` and `effort` saved and resumed; "answered by" | 6 |
 | `templum-mcp/src/hooks.rs`, `lib.rs`, `cli.rs`; `templum/src/workspace/delegate.rs`, `activity.rs`, `spawn.rs`, `waits.rs` | Codex's hooks; a prompt taken (`Submitted`) confirms a task; a prompt waits for its agent's input; seems stuck; dialogs as drawn | 7 |
 | `templum/src/workspace/delegate.rs`, `waits.rs`, `bus.rs` | task ids, the notices typed back, changes to a task, a task's timeout | 8 |
 
@@ -670,7 +676,8 @@ keys; keys reach a terminal in bracketed-paste mode as keys, never `ESC[200~`; k
 say who answered; the caller's own block and another agent's task are refused; `interrupt` presses Esc and ends the
 caller's task; `send_to_terminal`'s Enter comes after its text; `spawn_agent` types its model and effort first and a bad
 one opens nothing; `close_block` closes only what the caller opened and Ctrl+Z brings it back; `opened_by`, `model`
-and `effort` survive a round trip, and an older file loads.
+and `effort` survive a round trip, and an older file loads; a snapshot that finds another agent drops the model and
+the effort; a model Templum can't type in a hand-edited file isn't typed.
 
 **Batch 7:** Codex's hook payloads become their events (`compact` and `SessionEnd` none); Codex's hook flags; a turn
 that ends before its task was taken doesn't answer it; only a prompt taken confirms a task (not a `Stopped` event, not

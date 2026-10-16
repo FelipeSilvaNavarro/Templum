@@ -710,3 +710,61 @@ Left by batch 5; line numbers are those of `development` at f48c75c.
   person who began typing into that agent in those 3 seconds sees their half-written line sent with the task. Fix:
   skip the second Enter when the person typed into the terminal since the first (a counter of their keys on the
   pane, as `typed` is for the screen's looks).
+
+Left by batch 6; line numbers are those of `development` at 476b772.
+
+- [ ] **Claude Code's `[1m]` models can't be asked for.** `Agent::launch_args`
+  (`crates/templum-terminal/src/agent.rs:384`, `model_typable` at `:437`) takes letters, digits, `.-_:/` only, so
+  `opus[1m]` (its 1M-token context) is refused: brackets need quoting in each shell. An agent asking for it is
+  refused. Fix: quote the model per shell (`'…'` for POSIX shells and pwsh) and allow `[` `]`.
+- [ ] **`close_block` closes a block the person is typing in.** `close_block`
+  (`crates/templum/src/workspace/spawn.rs:193`) asks no one; Ctrl+Z brings the block back with a new shell, without
+  what the person had typed and not sent. Fix: refuse while the person typed into it in the last few seconds (the
+  counter batch 8 adds for its notices).
+- [ ] **A wrapper set as Claude Code's or Codex's command gets their model flags.** `AgentEntry::launch_args`
+  (`crates/templum/src/agents.rs:80`) gives a model and an effort to Templum's agents whatever their command, where
+  `start_command` (`:50`) adds a session id only when the command runs the agent's own program. A person whose
+  `[agents] claude = { command = "my-wrapper" }` doesn't pass flags on sees it fail when an agent spawns it with a
+  model. Fix: refuse them when `program()` isn't the agent's, as `start_command` does.
+- [ ] **Codex's `ultra` is typed for any model.** Codex 0.154 lists `ultra` only for gpt-6-astra, gpt-5.6-sol and
+  gpt-5.6-terra (`codex debug models`), and `launch_args` (`crates/templum-terminal/src/agent.rs:384`) checks against
+  Codex's whole list. A person sees Codex refuse or lower it for gpt-5.6-luna (manual check 1 says which). Fix: check
+  the effort against the model's `supported_reasoning_levels` in `~/.codex/models_cache.json`, which `codex_models`
+  (`crates/templum/src/agents.rs:185`) already reads.
+
+Left by the review of batch 6; line numbers are those of `development` at dd11cad.
+
+- [ ] **An interrupt between a task's paste and its Enter still sends the task.** `send_task`'s loop
+  (`crates/templum/src/workspace/delegate.rs:352`) never checks that the task is still handed over. A person whose agent
+  interrupts another one right after delegating sees Esc, then the Enter, and the agent start the task no one awaits.
+  Fix: in that loop, when `task` is true, stop once `pane.handed` is None.
+- [ ] **A third agent waiting on the interrupted one hears "Interrupted by you."** `interrupt` ends the turn through
+  `end_turn` (`crates/templum/src/workspace/delegate.rs:615`), which answers every `Waiting::Turn` on that terminal. A
+  person sees a third agent's `wait_for_idle` say it interrupted, when another did. Fix: give "Interrupted by you."
+  to the waits from the caller, and "Interrupted by {signature}." to the others.
+- [ ] **A spawn's prompt can't be interrupted before its agent shows.** `interrupt`
+  (`crates/templum/src/workspace/delegate.rs:243`) refuses "runs no agent" (`:261`) while the spawned agent isn't in
+  front of its shell yet, and once it shows its trust question the Esc answers that (Claude Code exits on it). A
+  person sees the caller unable to call back a task it handed with its spawn. Fix: when it is the caller's task and
+  `prompt` is still Some, end the task and drop the prompt without pressing Esc, before the "runs no agent" check.
+- [ ] **Keys go on after the block is unwired mid-call.** `press_keys`
+  (`crates/templum/src/workspace/delegate.rs:293`) checks only that the terminal is still there before each key. A
+  person who unwires the block, or moves it to another workspace, during a call (up to about 750 ms) sees its last
+  keys still arrive. Fix: run `caller` and `target` again before each key.
+- [ ] **`close_block` offers to connect when connecting wouldn't help.** `close_block`
+  (`crates/templum/src/workspace/spawn.rs:194`) checks the wire before who opened the block, so a block the caller
+  neither opened nor is wired to gets "isn't connected to you. Ask the person with connect(…)". An agent that asks
+  and gets the wire is then told only the person closes it. Fix: check `opened_by` first; one it opened but is no
+  longer wired to still gets the connect hint (the spec's rule).
+- [ ] **The "answered by" chip has no width limit.** The chip (`crates/templum/src/block.rs:183`) shows the whole
+  signature; from a plain shell it is the terminal's title (up to 60 characters). A person sees it run over the
+  block's header for 10 seconds. Fix: cap its width and truncate it as the title is.
+- [ ] **An uppercase key under the kitty keyboard's every-key mode goes without Shift.** `named_key`
+  (`crates/templum-terminal/src/input.rs:115`) types a character as its own key: with `REPORT_ALL_KEYS_AS_ESC`, `Y` is
+  `ESC[89u` where a keyboard sends `ESC[121;2u`. Neither Claude Code nor Codex turns that mode on; a person sees a
+  program that does take `Y` for another key. Fix: map an ASCII uppercase letter to its lowercase key with Shift,
+  keeping the character.
+- [ ] **A few refusals and the hidden workspace aren't tested.** No test calls `interrupt` on a block that runs no
+  agent or isn't a terminal, `send_keys` on one that isn't a terminal, nor `close_block` from a caller in a workspace
+  not shown (`crates/templum/src/workspace/tests/delegate.rs`, `tests/spawn.rs`). A person sees nothing. Fix: add
+  them.

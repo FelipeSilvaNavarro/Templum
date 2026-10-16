@@ -116,8 +116,9 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   snapshot, the limits' notifications, what the Claude Code and Codex Templum opens are given), `bus.rs` (the bus's
   messages: the caller found by its `TEMPLUM_TERMINAL`, the tools, the agents' hook events), `waits.rs` (tool calls
   that wait: a question, a request to connect, an agent's turn; their deadlines, cancels and the balloon's answers),
-  `delegate.rs` (tasks handed between agents: typing them, their answers, `reply`, `wait_for_idle`), `spawn.rs`
-  (`spawn_agent`: an agent beside the caller, its worktree, its prompt once it is ready), `content.rs` (the tools on a
+  `delegate.rs` (tasks handed between agents: typing them, their answers, `reply`, `wait_for_idle`, `send_keys` and
+  `interrupt`), `spawn.rs` (`spawn_agent`: an agent beside the caller, its worktree, its model and effort, its prompt
+  once it is ready, `close_block`), `content.rs` (the tools on a
   wired block's content: a kanban's cards, a note, a file opened in an editor, a Git block's status). Methods a
   sibling or a test calls are `pub(super)`.
   `workspace/tests/` holds its tests, one file per area, with the shared helpers in `tests/mod.rs`.
@@ -198,7 +199,7 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   agent's resume command typed into its block); a file it can't read is set aside as `.bak`. Each item carries its
   block's `uid` (`Space::uids`: five letters and digits, what agents name blocks by), kept by a restart, an undo and
   a move to another workspace; a missing, taken or malformed one is replaced; the canvas's `wires` name their blocks
-  by it.
+  by it. A terminal's item also keeps the block that opened it (`opened_by`) and its agent's model and effort.
 
 ## Distribution
 
