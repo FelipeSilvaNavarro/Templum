@@ -778,6 +778,16 @@ impl Terminal {
         }
     }
 
+    /// Presses `key` as the keyboard would: its bytes in the program's mode (`key`), else the
+    /// character it types, raw: never as a paste, which a dialog would ignore.
+    pub fn press(&self, key: &KeyInput) {
+        if !self.key(key)
+            && let Some(text) = key.key_char
+        {
+            self.write(text.as_bytes().to_vec());
+        }
+    }
+
     /// Reports a mouse event to the program, at its cell clamped to the grid. False when the
     /// program didn't ask for this event.
     pub fn mouse(&self, input: &MouseInput) -> bool {
