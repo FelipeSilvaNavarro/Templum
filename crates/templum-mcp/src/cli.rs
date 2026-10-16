@@ -11,16 +11,36 @@ use crate::{hooks, rpc};
 
 /// The first arguments that make `templum` a command instead of the app.
 const VERBS: &[&str] = &[
-    "mcp", "hook", "whoami", "blocks", "read", "send", "notify", "ask", "connect", "delegate",
-    "reply", "wait", "spawn", "kanban", "note", "open", "git", "wire",
+    "mcp",
+    "hook",
+    "whoami",
+    "blocks",
+    "read",
+    "send",
+    "notify",
+    "ask",
+    "connect",
+    "delegate",
+    "reply",
+    "wait",
+    "spawn",
+    "kanban",
+    "note",
+    "open",
+    "git",
+    "wire",
+    "keys",
+    "interrupt",
+    "close",
 ];
 const READ: &str = "read <block> [-n <lines>] [--last] [--json]";
 const ASK: &str = "ask <question> [--option <answer>]… [--json]";
 const WAIT: &str =
     "wait <block> [--for idle|needs_you|command_finished|attention] [--timeout <seconds>] [--json]";
 const WIRE: &str = "wire <a> <b> [--json]";
-const SPAWN: &str =
-    "spawn <agent> [--folder <folder>] [--worktree <name>] [--prompt <text>] [--json]";
+const SPAWN: &str = "spawn <agent> [--folder <folder>] [--worktree <name>] [--prompt <text>] \
+                     [--model <model>] [--effort <effort>] [--json]";
+const KEYS: &str = "keys <block> <key>… [--json]";
 const KANBAN: &str = "kanban list [<board>] [--card <card>] | add <title> [--column <column>] \
                       [--description <text>] [--board <board>] | move <card> <column> | comment <card> <text> \
                       | claim <card> [--json]";
@@ -205,6 +225,8 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
                     "--folder" => "folder",
                     "--worktree" => "worktree",
                     "--prompt" => "prompt",
+                    "--model" => "model",
+                    "--effort" => "effort",
                     _ => return Err(SPAWN),
                 };
                 let value = *more.next().ok_or(SPAWN)?;
@@ -287,6 +309,11 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("git", ["status"]) => ("git_status", json!({})),
         ("git", ["status", block]) => ("git_status", json!({ "block": block })),
         ("wire", [a, b]) => ("wire", json!({ "a": a, "b": b })),
+        ("keys", [block, keys @ ..]) if !keys.is_empty() => {
+            ("send_keys", json!({ "block": block, "keys": keys }))
+        }
+        ("interrupt", [block]) => ("interrupt", json!({ "block": block })),
+        ("close", [block]) => ("close_block", json!({ "block": block })),
         ("whoami", _) => return Err("whoami [--json]"),
         ("blocks", _) => return Err("blocks [--json]"),
         ("read", _) => return Err(READ),
@@ -301,6 +328,9 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("open", _) => return Err("open <path>[:<line>] [--json]"),
         ("git", _) => return Err("git status [<block>] [--json]"),
         ("wire", _) => return Err(WIRE),
+        ("keys", _) => return Err(KEYS),
+        ("interrupt", _) => return Err("interrupt <block> [--json]"),
+        ("close", _) => return Err("close <block> [--json]"),
         _ => return Err("notify <text> [--json]"),
     };
     Ok(CallArgs {
@@ -577,6 +607,55 @@ mod tests {
     }
 
     #[test]
+    fn the_control_verbs_send_their_calls() {
+        let (seen, calls) = std::sync::mpsc::channel();
+        let (_dir, bus) = test_bus(move |m| {
+            if let Incoming::Request { id, params, .. } = &m.incoming {
+                let _ = seen.send(params.clone());
+                let _ = m.reply.send(tool_result(id, &Reply::ok("ok")));
+            }
+        });
+        for (args, sent) in [
+            (
+                &["keys", "k9x1d", "2", "enter"][..],
+                json!({ "name": "send_keys", "arguments": { "block": "k9x1d", "keys": ["2", "enter"] } }),
+            ),
+            (
+                &["interrupt", "k9x1d"][..],
+                json!({ "name": "interrupt", "arguments": { "block": "k9x1d" } }),
+            ),
+            (
+                &["close", "k9x1d"][..],
+                json!({ "name": "close_block", "arguments": { "block": "k9x1d" } }),
+            ),
+            (
+                &[
+                    "spawn",
+                    "codex",
+                    "--model",
+                    "gpt-5.6-luna",
+                    "--effort",
+                    "high",
+                ][..],
+                json!({ "name": "spawn_agent", "arguments": { "agent": "codex", "model": "gpt-5.6-luna", "effort": "high" } }),
+            ),
+        ] {
+            assert_eq!(run_with(args, &env(&bus), "").0, 0, "{args:?}");
+            assert_eq!(calls.recv_timeout(LIMIT).unwrap(), sent, "{args:?}");
+        }
+        for (args, usage) in [
+            (&["keys", "k9x1d"][..], "usage: templum keys"),
+            (&["interrupt"][..], "usage: templum interrupt"),
+            (&["close", "a", "b"][..], "usage: templum close"),
+            (&["spawn", "codex", "--effort"][..], "usage: templum spawn"),
+        ] {
+            let (code, _, err) = run_with(args, &env(&bus), "");
+            assert_eq!(code, 2, "{args:?}");
+            assert!(err.starts_with(usage), "{args:?}: {err}");
+        }
+    }
+
+    #[test]
     fn delegate_reply_and_wait_send_their_calls() {
         let (seen, calls) = std::sync::mpsc::channel();
         let (_dir, bus) = test_bus(move |m| {
@@ -757,6 +836,7 @@ mod tests {
         assert!(is_verb("mcp") && is_verb("hook") && is_verb("read"));
         assert!(is_verb("ask"));
         assert!(is_verb("wire"));
+        assert!(is_verb("keys") && is_verb("interrupt") && is_verb("close"));
         assert!(is_verb("kanban") && is_verb("note") && is_verb("open") && is_verb("git"));
         assert!(!is_verb("--bench") && !is_verb("--claude-statusline") && !is_verb(""));
     }

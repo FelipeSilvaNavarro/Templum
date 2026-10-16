@@ -35,6 +35,7 @@ impl Workspace {
             prompt,
             folder,
             worktree,
+            ..
         } = spawn;
         let Some(entry) = self.agents.iter().find(|a| a.id == agent).cloned() else {
             let ids: Vec<&str> = self.agents.iter().map(|a| a.id.as_str()).collect();

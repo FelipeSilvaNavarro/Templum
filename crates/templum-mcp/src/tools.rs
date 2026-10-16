@@ -21,6 +21,8 @@ pub const ASK_WAIT: u64 = 1800;
 pub const TASK_WAIT: u64 = 600;
 /// How long `wait_for_idle` and `wait_for` wait, seconds, unless asked.
 pub const IDLE_WAIT: u64 = 300;
+/// The most keys `send_keys` presses in one call.
+pub const MAX_KEYS: usize = 16;
 
 /// A tool call, its arguments checked.
 #[derive(Clone, Debug, PartialEq)]
@@ -104,6 +106,19 @@ pub enum Call {
     GitStatus {
         block: Option<String>,
     },
+    /// Presses keys in a terminal, by name (`templum_terminal::KEY_NAMES`, checked by the app).
+    SendKeys {
+        block: String,
+        keys: Vec<String>,
+    },
+    /// Esc in an agent; ends the task the caller handed it.
+    Interrupt {
+        block: String,
+    },
+    /// Closes a block the caller opened with `spawn_agent`.
+    CloseBlock {
+        block: String,
+    },
     /// Wires two blocks: `templum wire`'s alone, never listed to agents.
     Wire {
         a: String,
@@ -132,6 +147,9 @@ pub struct Spawn {
     pub prompt: Option<String>,
     pub folder: Option<String>,
     pub worktree: Option<String>,
+    /// The model and the reasoning effort its agent starts on, checked by the app.
+    pub model: Option<String>,
+    pub effort: Option<String>,
 }
 
 /// What a tool answers: its text, and whether it is a refusal or a failure.
@@ -340,7 +358,8 @@ pub fn list() -> Value {
             "description": "Opens a new agent block beside yours, connected to you: in your folder, the one you \
                             name, or a new Git worktree of that folder's repository (.worktrees/<worktree>, on a \
                             new branch of that name). A prompt is typed once the agent is ready, as a task you \
-                            handed it: wait_for_idle gets its answer. Says the new block's id and folder.",
+                            handed it: wait_for_idle gets its answer. Says the new block's id and folder. \
+                            With model and effort, its command line starts it on them, and so does every resume.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -356,6 +375,15 @@ pub fn list() -> Value {
                     "worktree": {
                         "type": "string",
                         "description": "A new branch's and worktree's name: letters, digits, - _ . and /.",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Its model: claude --model, codex -m, gemini -m. Letters, digits, . - _ : and /.",
+                    },
+                    "effort": {
+                        "type": "string",
+                        "description": "Its reasoning effort. claude: low, medium, high, xhigh, max. codex: low, medium, \
+                                        high, xhigh, max, ultra. gemini takes none.",
                     },
                 },
                 "required": ["agent"],
@@ -441,6 +469,42 @@ pub fn list() -> Value {
                             repository a Git block connected to you shows, as git status --short --branch prints \
                             them. block may be left out when one Git block is connected to you.",
             "inputSchema": { "type": "object", "properties": { "block": block } },
+        },
+        {
+            "name": "send_keys",
+            "description": "Presses keys in a terminal connected to you, one at a time, as a keyboard does (never \
+                            as a paste): to answer an agent's dialog (a permission, a trust question) or drive a \
+                            program. Keys: enter, escape, tab, shift+tab, backspace, delete, up, down, left, right, \
+                            home, end, page_up, page_down, space, ctrl+<letter>, or one character (2, y). Returns \
+                            the last 20 lines of its screen after them. Not your own block, nor an agent on another \
+                            agent's task unless it waits for its person.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "block": block,
+                    "keys": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 1,
+                        "maxItems": MAX_KEYS,
+                    },
+                },
+                "required": ["block", "keys"],
+            },
+        },
+        {
+            "name": "interrupt",
+            "description": "Presses Esc once in an agent connected to you while it works or waits for its person, \
+                            and ends the task you handed it: its waits get \"Interrupted by you.\" Returns its \
+                            screen after. Refused while it is idle or on another agent's task.",
+            "inputSchema": { "type": "object", "properties": { "block": block }, "required": ["block"] },
+        },
+        {
+            "name": "close_block",
+            "description": "Closes a block you opened with spawn_agent and are still connected to, without asking \
+                            the person (they bring it back with Ctrl+Z, its agent resumed). Only the person closes \
+                            any other block.",
+            "inputSchema": { "type": "object", "properties": { "block": block }, "required": ["block"] },
         },
     ]})
 }
@@ -579,6 +643,8 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             prompt: optional("prompt")?,
             folder: optional("folder")?,
             worktree: optional("worktree")?,
+            model: optional("model")?,
+            effort: optional("effort")?,
         }),
         "list_cards" => Call::ListCards {
             board: named("board")?,
@@ -622,6 +688,27 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
         },
         "git_status" => Call::GitStatus {
             block: optional("block")?,
+        },
+        "send_keys" => Call::SendKeys {
+            block: text("block")?,
+            keys: match &args["keys"] {
+                Value::Array(keys) if (1..=MAX_KEYS).contains(&keys.len()) => keys
+                    .iter()
+                    .map(|k| k.as_str().map(str::to_string))
+                    .collect::<Option<_>>(),
+                _ => None,
+            }
+            .ok_or_else(|| {
+                format!(
+                    "{name} needs \"keys\", a list of 1 to {MAX_KEYS} key names (enter, escape, ctrl+c, 2…)"
+                )
+            })?,
+        },
+        "interrupt" => Call::Interrupt {
+            block: text("block")?,
+        },
+        "close_block" => Call::CloseBlock {
+            block: text("block")?,
         },
         "wire" => Call::Wire {
             a: text("a")?,
@@ -687,7 +774,8 @@ mod tests {
             ),
             (
                 "spawn_agent",
-                json!({ "agent": "codex", "prompt": "fix the tests", "folder": "../api", "worktree": "fix-tests" }),
+                json!({ "agent": "codex", "prompt": "fix the tests", "folder": "../api", "worktree": "fix-tests",
+                        "model": "gpt-5.6-luna", "effort": "high" }),
             ),
             ("list_cards", json!({ "board": "Sprint", "card": 12 })),
             (
@@ -704,6 +792,12 @@ mod tests {
             ),
             ("open_file", json!({ "path": "src/main.rs", "line": 12 })),
             ("git_status", json!({ "block": "g1t2k" })),
+            (
+                "send_keys",
+                json!({ "block": "k9x1d", "keys": ["2", "enter"] }),
+            ),
+            ("interrupt", json!({ "block": "k9x1d" })),
+            ("close_block", json!({ "block": "k9x1d" })),
         ];
         let listed: Vec<String> = list()["tools"]
             .as_array()
@@ -821,13 +915,15 @@ mod tests {
                 agent: "claude".into(),
                 prompt: None,
                 folder: None,
-                worktree: None
+                worktree: None,
+                model: None,
+                effort: None
             }))
         );
         assert_eq!(
             parse(
                 "spawn_agent",
-                &json!({ "agent": "claude", "prompt": "", "folder": "", "worktree": "" })
+                &json!({ "agent": "claude", "prompt": "", "folder": "", "worktree": "", "model": "", "effort": "" })
             ),
             parse("spawn_agent", &json!({ "agent": "claude" })),
             "an empty string is no value"
@@ -835,7 +931,7 @@ mod tests {
         assert_eq!(
             parse(
                 "spawn_agent",
-                &json!({ "agent": "claude", "prompt": " \n", "folder": " ", "worktree": "\t" })
+                &json!({ "agent": "claude", "prompt": " \n", "folder": " ", "worktree": "\t", "model": " ", "effort": "\t" })
             ),
             parse("spawn_agent", &json!({ "agent": "claude" })),
             "nor is a blank one: a blank prompt typed is no task"
@@ -900,6 +996,42 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// send_keys takes 1 to 16 keys, as strings; their names are the app's to check.
+    #[test]
+    fn send_keys_takes_one_to_sixteen_keys() {
+        assert_eq!(
+            parse("send_keys", &json!({ "block": "b", "keys": ["ctrl+c"] })),
+            Ok(Call::SendKeys {
+                block: "b".into(),
+                keys: vec!["ctrl+c".into()]
+            })
+        );
+        let (full, over) = (vec!["y"; MAX_KEYS], vec!["y"; MAX_KEYS + 1]);
+        assert!(parse("send_keys", &json!({ "block": "b", "keys": full })).is_ok());
+        for bad in [
+            json!({ "block": "b" }),
+            json!({ "block": "b", "keys": [] }),
+            json!({ "block": "b", "keys": over }),
+            json!({ "block": "b", "keys": "enter" }),
+            json!({ "block": "b", "keys": [13] }),
+        ] {
+            let err = parse("send_keys", &bad).unwrap_err();
+            assert!(
+                err.contains("\"keys\"") && err.contains("16"),
+                "{bad}: {err}"
+            );
+        }
+        assert_eq!(
+            parse("interrupt", &json!({ "block": "b" })),
+            Ok(Call::Interrupt { block: "b".into() })
+        );
+        assert_eq!(
+            parse("close_block", &json!({ "block": "b" })),
+            Ok(Call::CloseBlock { block: "b".into() })
+        );
+        assert!(parse("close_block", &json!({})).is_err());
     }
 
     /// `wire` is the command line's: agents never see it listed, and only `templum wire` makes it.
