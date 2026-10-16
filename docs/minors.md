@@ -332,6 +332,10 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **Limits of a session closed long ago still show.** The meter (`crates/templum/src/usage.rs`) shows a window
   until its reset time, even when the last session that read it closed hours ago and the user may have used it
   elsewhere. Fix: say "as of" with the read's time in the popover.
+- [ ] **Claude Code's tokens in a terminal's usage tooltip are its context, not what it used.** `relayed`
+  (`crates/templum-usage/src/claude.rs`) sums `context_window.total_input_tokens` and `total_output_tokens`, which
+  batch 8's spike S8-1 found are its last call's (38279 = 10 + 10 + 38259 cached); the tooltip's "Tokens: 38k" reads
+  as the session's. Fix: drop `tokens` for a relayed session (its cost is shown), or name it "Context".
 
 ## Programs in a terminal
 
@@ -579,9 +583,6 @@ Left by batch 3 (agents together) and its review; line numbers are those of `dev
   (`crates/templum/src/workspace/spawn.rs:106`) doesn't clear `space.pristine`, as `launch_agent` does, so in a
   workspace no one has touched yet the next frame centres the camera on all the blocks. A person sees the view move
   when an agent spawns another. Fix: clear `pristine`.
-- [ ] **No test hands a second task from another agent.** `delegate_refuses_what_it_mustnt_type_into`
-  (`crates/templum/src/workspace/tests/delegate.rs:93`) hands the second task from the same caller; the refusal
-  doesn't look at the caller, but a test with a third, wired agent would pin it. A person sees nothing. Fix: add it.
 - [ ] **A spawn making a worktree can't be withdrawn.** Its call is a job (`Outcome::Later`,
   `crates/templum/src/workspace/bus.rs:167`), not a wait: a cancel or the agent quitting doesn't stop it, and a
   `git worktree add` that hangs (a post-checkout hook) holds the call for good. A person sees the agent's call never
@@ -684,7 +685,7 @@ Left by batch 6; line numbers are those of `development` at 476b772.
   kill it, and Ctrl+Z bring back only a shell in its folder, not that program: once a snapshot (about every 5 s) has
   seen the agent gone, `seen.agent` is None and `Space::item_of` (`crates/templum/src/workspace/mod.rs`) saves no
   agent; only in those first seconds does Ctrl+Z start the agent again. Fix: refuse while the person typed into it in
-  the last few seconds (the counter batch 8 adds for its notices), and while a program other than the agent is in
+  the last few seconds (`Pane::keyed`, batch 7's), and while a program other than the agent is in
   front (`processes().foreground` neither the shell nor `seen.pid`), or clear `opened_by` once the person types there
   after its agent quit.
 - [ ] **A wrapper set as Claude Code's or Codex's command gets their model flags.** `AgentEntry::launch_args`
@@ -872,3 +873,29 @@ Left by batch 7 and its review; line numbers are those of `development` at eb394
   terminal then, also one registered meanwhile after the dialog closed (a hook that answered it at once). The agent
   waiting is told its peer waits for its person when it no longer does. Fix: collect the wait keys when the hook
   comes, answer only those, and skip when the pane is gone.
+
+Left by batch 8 and its review; line numbers are those of `development` at c51be7e.
+
+- [ ] **What Claude Code spent comes back only with its status line, and Gemini CLI's never.** `spent`
+  (`crates/templum/src/workspace/delegate.rs`) takes the usage chip's figures: a Claude Code without the status line
+  (`usage.claude_limits` off) gives no cost, and its transcript-read session no tokens; Gemini CLI's session isn't
+  read. A person sees `[task t7 …: done in 31 s, transcript …]` without a figure. Fix: sum the `usage` of the
+  assistant lines its transcript (`transcript_path`) gained since the hand-over.
+- [ ] **A notice doesn't count its task's tool calls.** `tell_end` (`delegate.rs`) says time, spending and transcript;
+  Claude Code's subagents also say how many tools they ran. Fix: count `Working` events (each tool's end) on
+  `Handed` from the hand-over.
+- [ ] **A task past its timeout that another agent takes over never comes back.** Its notice said "its end comes back
+  too", but `delegate` (`delegate.rs`) lets another agent hand that agent a task once the deadline passed, replacing
+  `handed`; the first asker never hears. Fix: when replacing a timed-out task of another asker, tell that asker it
+  failed ("{uid} took another agent's task").
+- [ ] **A waited task whose call its client dropped has its timeout told by no one.** `time_out` runs only for a task
+  handed without `wait`; Claude Code stops waiting on a call past 2 minutes, and a task that then hangs is never
+  said to have timed out (its end still comes). Fix: arm the timer for every task, telling only when no call waits.
+- [ ] **A notice reaches an asker inside another tool call only once that call returns.** Claude Code and Codex queue
+  typed text while a tool runs (batch 7's S2, S3): an asker waiting on `delegate` with `wait` to another agent, or
+  on `ask_user`, reads a notice of another task late. A person sees the asker answer it minutes after it was typed.
+  Fix: none needed unless it bites; the notice's time says when the task ended.
+- [ ] **Two tasks that end within a second may come back out of order.** `tell_end` (`delegate.rs`) queues each
+  end's notice only once its own read of what the task spent is done, on the background executor; a slower read (a
+  long Codex rollout) queues later, so the asker may get t8's end before t7's. Its header says each one's time. Fix:
+  queue the notice at the end and fill in what it spent once read, delivering a notice only once filled.
