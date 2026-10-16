@@ -762,6 +762,34 @@ fn the_end_says_what_it_spent_and_its_transcript(cx: &mut TestAppContext) {
     });
 }
 
+/// The transcript a notice names is its agent's: one that left, with its hook or without a word
+/// (a snapshot no longer finds it), takes it along, and an agent without hooks started next in
+/// its terminal names none.
+#[gpui_kit::test]
+fn an_agent_that_left_takes_its_transcript_along(cx: &mut TestAppContext) {
+    let (handle, ws, _, theirs) = two_agents(cx);
+    let (worker, _) = me(&ws, cx, theirs);
+    let transcript = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space.terminal(theirs).unwrap().transcript.clone()
+        })
+    };
+    let stopped = json!({ "event": "stopped", "message": "Done.", "transcript": "/t.jsonl" });
+    event(handle, &ws, cx, &worker, stopped.clone());
+    assert_eq!(transcript(cx).as_deref(), Some("/t.jsonl"));
+    event(handle, &ws, cx, &worker, json!({ "event": "ended" }));
+    assert_eq!(transcript(cx), None, "its session ended");
+    event(handle, &ws, cx, &worker, stopped);
+    snapshot(
+        handle,
+        &ws,
+        cx,
+        theirs,
+        templum_terminal::Inspection::default(),
+    );
+    assert_eq!(transcript(cx), None, "a snapshot no longer finds it");
+}
+
 /// A task whose agent left, or whose block the person closed, comes back as failed, saying why.
 /// One its asker ends itself (`interrupt`, `close_block`) comes back as nothing: it knows.
 #[cfg(unix)]

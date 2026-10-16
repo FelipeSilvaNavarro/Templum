@@ -760,13 +760,17 @@ impl Workspace {
 
     /// The agent in the terminal `terminal` is gone: its session ended, a snapshot no longer
     /// finds its process (it crashed, or Codex quit, which says nothing), or one spawned with a
-    /// prompt no snapshot found within `STARTS_WITHIN` never started.
+    /// prompt no snapshot found within `STARTS_WITHIN` never started. Its transcript goes with it,
+    /// once its task's end named it: an agent without hooks started next there names none.
     pub(super) fn agent_left(&mut self, terminal: &str, cx: &mut Context<Self>) {
         self.end_turn(
             terminal,
             Reply::err("Its agent ended before it answered."),
             cx,
         );
+        if let Some(pane) = self.pane_mut(terminal) {
+            pane.transcript = None;
+        }
     }
 
     /// The agent in the terminal `terminal` ended its turn, or its session: the task it was on is
