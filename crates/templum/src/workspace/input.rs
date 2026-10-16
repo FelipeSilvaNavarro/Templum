@@ -146,7 +146,7 @@ impl Workspace {
     pub(super) fn fit_terminal(&mut self, id: BlockId, rect: Rect) {
         let (cols, rows) = chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
         if let Some(pane) = self.space.terminal_mut(id) {
-            pane.term.resize(cols, rows, self.cell.px());
+            pane.fit(cols, rows, self.cell.px());
         }
     }
 

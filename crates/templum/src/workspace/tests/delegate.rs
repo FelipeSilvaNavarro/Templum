@@ -1364,6 +1364,26 @@ fn a_dialog_stays_yellow_until_its_person_answers(cx: &mut TestAppContext) {
     assert_eq!(state_of(&ws, cx, theirs), Some(AgentState::Working));
 }
 
+/// A resize redraws an agent at its new size: its looks don't take that for work (which, for one
+/// whose hooks speak, would "seem stuck" 30 s later).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn resizing_an_idle_agent_isnt_work(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let (handle, ws, _, theirs) = two_agents(cx);
+    let (worker, _) = me(&ws, cx, theirs);
+    event(handle, &ws, cx, &worker, json!({ "event": "started" }));
+    for (i, width) in [400.0, 700.0, 400.0, 700.0].into_iter().enumerate() {
+        ws.update(cx, |ws, _| {
+            ws.fit_terminal(theirs, Rect::new(900.0, 100.0, width, 300.0))
+        });
+        // Its agent redraws at the new size.
+        shows(&ws, cx, theirs, &format!("frame {i}"));
+        after(cx, 1000);
+    }
+    assert_eq!(state_of(&ws, cx, theirs), Some(AgentState::Idle));
+}
+
 /// Its hooks spoke, and its screen went still while it worked (a dialog no hook tells of, a hang):
 /// it seems stuck, waits for its person, keeps its task, and works again once its screen moves.
 #[cfg(unix)]

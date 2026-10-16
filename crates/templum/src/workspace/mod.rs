@@ -239,6 +239,15 @@ impl Pane {
         }
     }
 
+    /// Its terminal resized to `cols` × `rows`: its program redraws at the new size, which the
+    /// next look at its screen mustn't take for its agent at work.
+    pub fn fit(&mut self, cols: u16, rows: u16, cell_px: (u16, u16)) {
+        if self.term.grid_size() != (cols, rows) {
+            self.scrolled.set(true);
+        }
+        self.term.resize(cols, rows, cell_px);
+    }
+
     /// Its folder, as last seen, is `root` or inside it.
     pub fn works_in(&self, root: &std::path::Path) -> bool {
         self.seen

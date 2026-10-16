@@ -110,9 +110,9 @@ person typed into since its last hook (an Esc while Claude Code writes, which no
 still for 5 looks while it works is at rest instead, and the task it was on ends with its last 40 screen lines. A wait
 for the person ends from the screen only once the person typed into the terminal since it began (they answered the
 dialog): a subagent drawing under an open dialog doesn't end it, nor does a still screen. A look right after the person
-typed, pasted, clicked or scrolled in it tells nothing, and the looks before it count no more. A spawned agent whose
-prompt still waits isn't looked at: its screen is its start and its first questions, which [Spawning](#spawning)
-watches, and the minute there ends its task.
+typed, pasted, clicked or scrolled in it, or its block was resized (its agent redraws at the new size), tells nothing,
+and the looks before it count no more. A spawned agent whose prompt still waits isn't looked at: its screen is its start
+and its first questions, which [Spawning](#spawning) watches, and the minute there ends its task.
 
 An alert the terminal already shows (attention, a finished command) comes first. An agent the last snapshot doesn't
 see (it crashed: no `SessionEnd`) shows no state, and its state is forgotten, so a `claude` typed there by hand

@@ -435,7 +435,7 @@ impl Workspace {
                 if let (Some(pane), Some(block)) = (body.terminal_mut(), space.canvas.get(*id)) {
                     let content = chrome::content_rect(block.rect).size();
                     let (cols, rows) = chrome::grid_size(content, self.cell.size);
-                    pane.term.resize(cols, rows, self.cell.px());
+                    pane.fit(cols, rows, self.cell.px());
                 }
             }
         }
