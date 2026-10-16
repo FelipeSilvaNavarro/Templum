@@ -355,6 +355,50 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
     }
 }
 
+/// A spawned agent's task gives no answer within the time a task gets: its caller hears it failed,
+/// as of a task handed over without `wait`.
+#[gpui_kit::test]
+fn a_spawns_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    // Mine runs Claude Code and asks its person: the notice waits, to be read here.
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(mine).unwrap().seen.agent = Some("claude".into())
+    });
+    found(&ws, cx, mine);
+    event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({ "event": "needs_you", "message": "Allow Edit?" }),
+    );
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path(), "prompt": "say hi" });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    in_front(&ws, cx, new, true);
+    found(&ws, cx, new);
+    let (theirs, uid) = me(&ws, cx, new);
+    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+    let mut looks = 0;
+    while ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some()) {
+        assert!(looks < 10, "never typed");
+        std::thread::sleep(Duration::from_millis(100));
+        after(cx, look);
+        looks += 1;
+    }
+    screen_with(&ws, cx, new, "say hi");
+    enter(cx);
+    event(handle, &ws, cx, &theirs, json!({ "event": "submitted" }));
+    after(cx, templum_mcp::tools::TASK_WAIT * 1000);
+    let told: Vec<String> = ws.read_with(cx, |ws, _| {
+        ws.notices.iter().map(|n| n.text.clone()).collect()
+    });
+    let within = format!("No answer from {uid} within 600 seconds");
+    assert!(told.iter().any(|t| t.contains(&within)), "{told:?}");
+}
+
 /// The person types into a spawned agent before its prompt is (its trust question answered): that
 /// turn isn't its task, and its end answers nothing.
 #[gpui_kit::test]
