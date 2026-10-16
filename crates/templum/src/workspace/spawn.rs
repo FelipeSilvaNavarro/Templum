@@ -30,20 +30,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Outcome {
-        let tools::Spawn {
-            agent,
-            prompt,
-            folder,
-            worktree,
-            ..
-        } = spawn;
-        let Some(entry) = self.agents.iter().find(|a| a.id == agent).cloned() else {
+        let Some(entry) = self.agents.iter().find(|a| a.id == spawn.agent).cloned() else {
             let ids: Vec<&str> = self.agents.iter().map(|a| a.id.as_str()).collect();
             return Outcome::Now(Reply::err(format!(
-                "There's no agent {agent}. These are: {}.",
+                "There's no agent {}. These are: {}.",
+                spawn.agent,
                 ids.join(", ")
             )));
         };
+        // Typed into a shell: anything it can't type safely opens nothing, a worktree included.
+        if let Err(why) = entry.launch_args(spawn.model.as_deref(), spawn.effort.as_deref()) {
+            return Outcome::Now(Reply::err(why));
+        }
         if !templum_terminal::installed(entry.program()) {
             return Outcome::Now(Reply::err(format!(
                 "{} isn't installed on this computer ({} wasn't found).",
@@ -56,9 +54,9 @@ impl Workspace {
         let here = space.blocks[&me]
             .folder()
             .or_else(|| space.terminal(me)?.seen.folder.clone());
-        let folder = match (folder, here) {
+        let folder = match (spawn.folder.as_deref(), here) {
             (Some(named), here) => {
-                let named = crate::launcher::expand(&named);
+                let named = crate::launcher::expand(named);
                 match here {
                     Some(here) if named.is_relative() => here.join(named),
                     _ => named,
@@ -74,8 +72,8 @@ impl Workspace {
         if !folder.is_dir() {
             return Outcome::Now(Reply::err(format!("{} isn't a folder.", folder.display())));
         }
-        let Some(name) = worktree else {
-            return Outcome::Now(self.open_agent(from, &entry, &folder, prompt, window, cx));
+        let Some(name) = spawn.worktree.clone() else {
+            return Outcome::Now(self.open_agent(from, &entry, &folder, &spawn, window, cx));
         };
         let (program, from) = (self.config.git.program().to_string(), from.to_string());
         Outcome::Later(cx.spawn_in(window, async move |ws, cx| {
@@ -97,7 +95,7 @@ impl Workspace {
             match made {
                 Ok(path) => ws
                     .update_in(cx, |ws, window, cx| {
-                        ws.open_agent(&from, &entry, &path, prompt, window, cx)
+                        ws.open_agent(&from, &entry, &path, &spawn, window, cx)
                     })
                     .unwrap_or_else(|_| Reply::err("Templum closed.")),
                 Err(why) => Reply::err(why),
@@ -107,20 +105,23 @@ impl Workspace {
 
     /// Opens `entry` in `folder` beside the caller (terminal `from`), where it overlaps nothing,
     /// toward the blocks wired to the caller (`Space::room_near`), wired to it: one Ctrl+Z
-    /// closes both. The keyboard, the selection and the camera stay. `prompt` is typed once the
+    /// closes both. The keyboard, the selection and the camera stay. Its agent starts on the
+    /// spawn's model and effort (checked by `spawn_agent`), and its prompt is typed once the
     /// agent is ready, as a task the caller handed over.
     fn open_agent(
         &mut self,
         from: &str,
         entry: &AgentEntry,
         folder: &Path,
-        prompt: Option<String>,
+        spawn: &tools::Spawn,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Reply {
         let Some((space_id, me)) = self.caller(from) else {
             return Reply::err("Your block was closed before the agent could open.");
         };
+        let (model, effort) = (spawn.model.as_deref(), spawn.effort.as_deref());
+        let args = entry.launch_args(model, effort).unwrap_or_default();
         let opened = self
             .in_space(&space_id, |ws| {
                 let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, ws.cell.size);
@@ -132,10 +133,16 @@ impl Workspace {
                 );
                 // In grid mode a new block takes half of the focused tile: the caller's.
                 ws.space.focused = Some(me);
-                let id = ws.start_agent(Some(entry), &entry.command, folder, rect, window, cx);
+                let id =
+                    ws.start_agent(Some(entry), &entry.command, &args, folder, rect, window, cx);
                 (ws.space.focused, ws.space.selected, ws.space.selected_wire) = kept;
                 let id = id?;
                 ws.space.add_wire(me, id);
+                // The caller may close it (`close_block`); a resume types its model again.
+                let opener = ws.space.uids.get(&me).cloned();
+                let pane = ws.space.terminal_mut(id)?;
+                pane.opened_by = opener;
+                (pane.model, pane.effort) = (spawn.model.clone(), spawn.effort.clone());
                 let terminal = ws.space.terminal(id)?.term.id().to_string();
                 Some((ws.space.uids.get(&id)?.clone(), terminal))
             })
@@ -147,12 +154,18 @@ impl Workspace {
                 folder.display()
             ));
         };
+        let on = match (model, effort) {
+            (Some(m), Some(e)) => format!(", on {m} ({e})"),
+            (Some(m), None) => format!(", on {m}"),
+            (None, Some(e)) => format!(", with {e} effort"),
+            (None, None) => String::new(),
+        };
         let mut said = format!(
-            "Opened {} as {uid} in {}, connected to you.",
+            "Opened {} as {uid} in {}, connected to you{on}.",
             entry.title,
             folder.display()
         );
-        if let Some(text) = prompt {
+        if let Some(text) = spawn.prompt.clone() {
             let now = Instant::now();
             if let Some(pane) = self.pane_mut(&terminal) {
                 pane.prompt = Some(Prompt { text, screen: None });

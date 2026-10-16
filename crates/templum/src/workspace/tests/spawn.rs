@@ -118,6 +118,71 @@ fn spawn_agent_opens_a_wired_agent_beside_the_caller(cx: &mut TestAppContext) {
     assert!(failed && text.contains("isn't a folder"), "{text}");
 }
 
+/// The model and the effort go right after the agent's command (`cat` here), before what Templum
+/// adds; anything it can't type safely opens nothing, a worktree included.
+#[gpui_kit::test]
+fn spawn_agent_types_its_model_and_effort_first(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path(), "model": "gpt-5.6-luna", "effort": "high" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    assert!(
+        !failed && text.ends_with("connected to you, on gpt-5.6-luna (high)."),
+        "{text}"
+    );
+    let new = spawned(&ws, cx, mine);
+    screen_with(
+        &ws,
+        cx,
+        new,
+        "cat -m gpt-5.6-luna -c model_reasoning_effort=high",
+    );
+    ws.read_with(cx, |ws, _| {
+        let p = ws.space.terminal(new).unwrap();
+        assert_eq!(
+            (
+                p.opened_by.as_deref(),
+                p.model.as_deref(),
+                p.effort.as_deref()
+            ),
+            (Some(uid.as_str()), Some("gpt-5.6-luna"), Some("high"))
+        );
+    });
+    let spawn =
+        json!({ "agent": "claude", "folder": folder.path(), "model": "opus", "effort": "max" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    assert!(!failed, "{text}");
+    let second = spawned(&ws, cx, mine);
+    screen_with(&ws, cx, second, "cat --model opus --effort max");
+    let repo = committed_repo();
+    let blocks = ws.read_with(cx, |ws, _| ws.space.blocks.len());
+    for (bad, why) in [
+        (
+            json!({ "agent": "codex", "model": "opus;rm -rf ~" }),
+            "letters, digits",
+        ),
+        (json!({ "agent": "gemini", "effort": "high" }), "no effort"),
+        (
+            json!({ "agent": "copilot", "model": "gpt-5" }),
+            "a model or an effort",
+        ),
+        (
+            json!({ "agent": "codex", "effort": "extreme", "folder": repo.path(), "worktree": "w" }),
+            "low, medium",
+        ),
+    ] {
+        let (failed, text) = call(handle, &ws, cx, &terminal, "spawn_agent", bad.clone());
+        assert!(failed && text.contains(why), "{bad}: {text}");
+    }
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.blocks.len()),
+        blocks,
+        "nothing opened"
+    );
+    assert!(!repo.path().join(".worktrees").exists(), "no worktree made");
+}
+
 #[gpui_kit::test]
 fn a_claude_codes_prompt_is_typed_once_it_started(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);

@@ -302,18 +302,21 @@ impl Workspace {
         let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, self.cell.size);
         let rect = Rect::new(at.x, at.y, size.w, size.h);
         let entry = self.agents.iter().find(|a| a.command == command).cloned();
-        let id = self.start_agent(entry.as_ref(), command, folder, rect, window, cx)?;
+        let id = self.start_agent(entry.as_ref(), command, "", folder, rect, window, cx)?;
         window.focus(&self.focus_handle, cx);
         Some(id)
     }
 
     /// A terminal at `rect` in `folder` with the agent `entry`'s command (`command` for one
-    /// Templum doesn't know) typed into its shell. It is focused on the canvas; the keyboard stays
+    /// Templum doesn't know) typed into its shell, `args` after it (`launch_args`: a model and an
+    /// effort) and before what Templum adds. It is focused on the canvas; the keyboard stays
     /// where it is. The folder becomes this workspace's newest recent one.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn start_agent(
         &mut self,
         entry: Option<&AgentEntry>,
         command: &str,
+        args: &str,
         folder: &Path,
         rect: Rect,
         window: &mut Window,
@@ -323,7 +326,7 @@ impl Workspace {
         let command = entry.map_or_else(
             || command.to_string(),
             |a| a.start_command(&uuid::Uuid::new_v4().to_string()),
-        );
+        ) + args;
         // The shell reads it once it is ready.
         let line = format!("{}\r", self.typed(entry, &command));
         // Known at once (Shift+Enter, closing), not at the next snapshot.
