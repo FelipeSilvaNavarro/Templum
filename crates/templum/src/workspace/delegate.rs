@@ -370,7 +370,7 @@ impl Workspace {
                         Step::Wait => None,
                         Step::Enter => {
                             pane.term.write(&b"\r"[..]);
-                            Some(pane.speaks.then_some(pane.events))
+                            Some(pane.speaks.then_some(pane.submitted))
                         }
                         Step::GiveUp => {
                             if task {
@@ -419,7 +419,7 @@ impl Workspace {
             return true;
         };
         let working = pane.state == Some(AgentState::Working);
-        if pane.events != heard || working || pane.takes_typing("").is_err() {
+        if pane.submitted != heard || working || pane.takes_typing("").is_err() {
             return true;
         }
         if again {
@@ -488,11 +488,7 @@ impl Workspace {
         let from_line = format!("[from {}]\n{task}", self.signature(space, me, cx));
         self.send_task(&worker, &from_line, true, cx);
         if let Some(pane) = self.pane_mut(&worker) {
-            pane.handed = Some(Handed {
-                by: from.to_string(),
-                since: now,
-                until: now + Duration::from_secs(timeout),
-            });
+            pane.handed = Some(Handed::new(from, Duration::from_secs(timeout)));
         }
         cx.notify();
         if wait {

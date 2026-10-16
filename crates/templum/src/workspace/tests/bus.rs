@@ -677,7 +677,7 @@ fn an_agents_hooks_set_its_state_and_its_dot(cx: &mut TestAppContext) {
                 .map(|(_, text)| text.to_string())
         })
     };
-    event(handle, &ws, cx, &terminal, json!({ "event": "working" }));
+    event(handle, &ws, cx, &terminal, json!({ "event": "submitted" }));
     assert_eq!(dot(&ws, cx).as_deref(), Some("Working"));
     event(
         handle,
@@ -712,7 +712,7 @@ fn an_agents_hooks_set_its_state_and_its_dot(cx: &mut TestAppContext) {
         "done with its turn: the terminal's usual dot"
     );
     // An agent the snapshot no longer sees (it crashed): its state is not shown.
-    event(handle, &ws, cx, &terminal, json!({ "event": "working" }));
+    event(handle, &ws, cx, &terminal, json!({ "event": "submitted" }));
     ws.update(cx, |ws, _| {
         ws.space.terminal_mut(id).unwrap().seen.agent = None
     });
@@ -733,7 +733,7 @@ fn a_crashed_agents_state_never_comes_back(cx: &mut TestAppContext) {
     ws.update(cx, |ws, _| {
         ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into())
     });
-    event(handle, &ws, cx, &terminal, json!({ "event": "working" }));
+    event(handle, &ws, cx, &terminal, json!({ "event": "submitted" }));
     // The snapshot sees no agent any more, then the one typed by hand.
     ws.update(cx, |ws, _| {
         ws.space
@@ -748,6 +748,46 @@ fn a_crashed_agents_state_never_comes_back(cx: &mut TestAppContext) {
             Some("Working".to_string())
         );
     });
+}
+
+/// A command an interrupt left running ends later with Codex's `PostToolUse`: an idle agent stays
+/// idle. Only a prompt taken starts a turn; a tool's end after a permission is work again.
+#[gpui_kit::test]
+fn a_tools_end_starts_no_turn(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let (terminal, _) = me(&ws, cx, id);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().seen.agent = Some("codex".into())
+    });
+    let state = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().state.clone())
+    };
+    event(handle, &ws, cx, &terminal, json!({ "event": "working" }));
+    assert_eq!(state(cx), None);
+    event(handle, &ws, cx, &terminal, json!({ "event": "submitted" }));
+    event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({ "event": "stopped", "message": null }),
+    );
+    event(handle, &ws, cx, &terminal, json!({ "event": "working" }));
+    assert_eq!(
+        state(cx),
+        Some(AgentState::Idle),
+        "the interrupted turn's command ended"
+    );
+    let asks = json!({ "event": "needs_you", "message": "Allow Bash?" });
+    event(handle, &ws, cx, &terminal, asks);
+    event(handle, &ws, cx, &terminal, json!({ "event": "working" }));
+    assert_eq!(
+        state(cx),
+        Some(AgentState::Working),
+        "allowed, it works again"
+    );
 }
 
 /// A title a program set can say anything: agents get it on one line, short, without control

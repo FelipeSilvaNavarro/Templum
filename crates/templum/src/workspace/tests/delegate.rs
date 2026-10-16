@@ -169,6 +169,7 @@ fn a_delegation_that_waits_ends_with_the_turns_answer(cx: &mut TestAppContext) {
     let task = json!({ "block": them, "task": "run the tests", "wait": true });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     assert!(answers.try_recv().is_err(), "it waits for the answer");
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
     event(
         handle,
         &ws,
@@ -236,7 +237,7 @@ fn wait_for_idle_waits_for_the_turn_and_gives_the_last_answer(cx: &mut TestAppCo
     let idle = json!({ "block": them });
     let (failed, text) = call(handle, &ws, cx, &terminal, "wait_for_idle", idle.clone());
     assert!(!failed && text.contains("is idle"), "{text}");
-    event(handle, &ws, cx, &worker, json!({ "event": "working" }));
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
     let answers = call_later(handle, &ws, cx, &terminal, 1, "wait_for_idle", idle.clone());
     assert!(
         answers.try_recv().is_err(),
@@ -304,6 +305,7 @@ fn wait_for_idle_waits_for_a_task_whose_wait_timed_out(cx: &mut TestAppContext) 
     let idle = json!({ "block": them });
     let waiting = call_later(handle, &ws, cx, &terminal, 2, "wait_for_idle", idle);
     assert!(waiting.try_recv().is_err(), "it still works on the task");
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
     event(handle, &ws, cx, &worker, stopped("Done."));
     assert_eq!(answered(&waiting), (false, "Done.".to_string()));
 }
@@ -315,6 +317,7 @@ fn a_turns_end_and_its_timeout_answer_once(cx: &mut TestAppContext) {
     let (worker, them) = me(&ws, cx, theirs);
     let task = json!({ "block": them, "task": "go", "wait": true, "timeout": 2 });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
     event(
         handle,
         &ws,
@@ -325,6 +328,43 @@ fn a_turns_end_and_its_timeout_answer_once(cx: &mut TestAppContext) {
     after(cx, 3000);
     assert_eq!(answered(&answers), (false, "Done.".to_string()));
     assert!(answers.try_recv().is_err(), "answered once");
+}
+
+/// The turn an agent was on when a task was typed into it ends first, and isn't the task's
+/// answer. Codex says it took the task once a turn takes it in; Claude Code says so at its Enter
+/// (`at_enter`) and queues it behind the turn under way, which a tool's end takes it into.
+#[gpui_kit::test]
+fn a_turns_end_before_its_task_was_taken_doesnt_answer_it(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let send = |cx: &mut TestAppContext, e: serde_json::Value| event(handle, &ws, cx, &worker, e);
+    let submitted = |at_enter: bool| json!({ "event": "submitted", "at_enter": at_enter });
+    let stopped = |message: &str| json!({ "event": "stopped", "message": message });
+    let task = json!({ "block": them, "task": "say B", "wait": true });
+    // Codex at work on its person's prompt: the turn under way ends before taking the task.
+    send(cx, submitted(false));
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task.clone());
+    send(cx, stopped("A"));
+    assert!(answers.try_recv().is_err(), "the turn it was on");
+    send(cx, submitted(false));
+    send(cx, stopped("B"));
+    assert_eq!(answered(&answers), (false, "B".to_string()));
+    // Claude Code queues it at its Enter; the turn under way ends with no tool after it.
+    send(cx, submitted(true));
+    let answers = call_later(handle, &ws, cx, &terminal, 2, "delegate", task.clone());
+    send(cx, submitted(true));
+    send(cx, stopped("1 to 300"));
+    assert!(answers.try_recv().is_err(), "the turn it was queued behind");
+    send(cx, stopped("B"));
+    assert_eq!(answered(&answers), (false, "B".to_string()));
+    // A tool's end takes it into the turn under way, whose end answers it.
+    send(cx, submitted(true));
+    let answers = call_later(handle, &ws, cx, &terminal, 3, "delegate", task);
+    send(cx, submitted(true));
+    send(cx, json!({ "event": "working" }));
+    send(cx, stopped("A\nB"));
+    assert_eq!(answered(&answers), (false, "A\nB".to_string()));
 }
 
 #[gpui_kit::test]
@@ -390,6 +430,7 @@ fn a_dot_travels_only_while_a_task_is_handed_over(cx: &mut TestAppContext) {
     );
     // Painted with the wires.
     frame(handle, cx);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
     event(
         handle,
         &ws,
@@ -416,6 +457,7 @@ fn the_dot_goes_with_its_wire_and_the_answer_still_comes(cx: &mut TestAppContext
     ws.read_with(cx, |ws, _| {
         assert!(ws.wire_dots(Instant::now(), false).is_empty())
     });
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
     event(
         handle,
         &ws,
@@ -460,12 +502,10 @@ fn no_enter_goes_to_a_screen_the_task_didnt_change(cx: &mut TestAppContext) {
     assert!(!handed(cx), "the task ended");
     // A task another agent handed it stays, whatever happens to a reply typed into it.
     ws.update(cx, |ws, _| {
-        let now = Instant::now();
-        ws.space.terminal_mut(theirs).unwrap().handed = Some(crate::workspace::Handed {
-            by: "another".into(),
-            since: now,
-            until: now + std::time::Duration::from_secs(600),
-        });
+        ws.space.terminal_mut(theirs).unwrap().handed = Some(crate::workspace::Handed::new(
+            "another",
+            std::time::Duration::from_secs(600),
+        ));
     });
     let reply = json!({ "block": them, "text": "Done." });
     let (failed, text) = call(handle, &ws, cx, &terminal, "reply", reply);
@@ -483,7 +523,7 @@ fn no_enter_goes_to_an_agent_that_started_asking_its_person(cx: &mut TestAppCont
     let (handle, ws, mine, theirs) = two_agents(cx);
     let (terminal, _) = me(&ws, cx, mine);
     let (worker, them) = me(&ws, cx, theirs);
-    event(handle, &ws, cx, &worker, json!({ "event": "working" }));
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
     let task = json!({ "block": them, "task": "go on", "wait": true });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     screen_with(&ws, cx, theirs, "go on");
@@ -780,12 +820,10 @@ fn send_keys_refuses_its_own_block_an_unknown_key_and_another_agents_task(cx: &m
     assert!(!typed, "no key went before the refusal");
     // On another agent's task: refused while it works, not while it waits for its person.
     ws.update(cx, |ws, _| {
-        let now = Instant::now();
-        ws.space.terminal_mut(theirs).unwrap().handed = Some(Handed {
-            by: "elsewhere".into(),
-            since: now,
-            until: now + std::time::Duration::from_secs(600),
-        });
+        ws.space.terminal_mut(theirs).unwrap().handed = Some(Handed::new(
+            "elsewhere",
+            std::time::Duration::from_secs(600),
+        ));
     });
     let (failed, text) = call(
         handle,
@@ -870,12 +908,10 @@ fn interrupt_presses_esc_and_ends_the_callers_task(cx: &mut TestAppContext) {
     );
     // Another agent's task: only that agent stops it.
     ws.update(cx, |ws, _| {
-        let now = Instant::now();
-        ws.space.terminal_mut(theirs).unwrap().handed = Some(crate::workspace::Handed {
-            by: "elsewhere".into(),
-            since: now,
-            until: now + std::time::Duration::from_secs(600),
-        });
+        ws.space.terminal_mut(theirs).unwrap().handed = Some(crate::workspace::Handed::new(
+            "elsewhere",
+            std::time::Duration::from_secs(600),
+        ));
     });
     let (failed, text) = call(handle, &ws, cx, &terminal, "interrupt", stop);
     assert!(failed && text.contains("another agent"), "{text}");
@@ -891,7 +927,7 @@ fn keys_name_who_pressed_them_for_ten_seconds(cx: &mut TestAppContext) {
     ws.update(cx, |ws, _| {
         ws.space.terminal_mut(id).unwrap().seen.agent = Some("codex".into())
     });
-    event(handle, &ws, cx, &terminal, json!({ "event": "working" }));
+    event(handle, &ws, cx, &terminal, json!({ "event": "submitted" }));
     ws.update(cx, |ws, _| {
         ws.space.terminal_mut(id).unwrap().keys_from =
             Some(("Claude Code (b7k2m)".into(), Instant::now()))
@@ -1309,7 +1345,7 @@ fn a_task_no_hook_confirms_gets_its_enter_again_then_ends(cx: &mut TestAppContex
 #[gpui_kit::test]
 fn a_task_confirmed_queued_or_unconfirmable_stays_handed(cx: &mut TestAppContext) {
     let confirm = crate::workspace::delegate::CONFIRM.as_millis() as u64;
-    for before in ["none", "started", "working"] {
+    for before in ["none", "started", "submitted"] {
         let (handle, ws, mine, theirs) = two_agents(cx);
         let (terminal, _) = me(&ws, cx, mine);
         let (worker, them) = me(&ws, cx, theirs);
@@ -1322,7 +1358,7 @@ fn a_task_confirmed_queued_or_unconfirmable_stays_handed(cx: &mut TestAppContext
         enter(cx);
         if before == "started" {
             // Its turn starts: `UserPromptSubmit`.
-            event(handle, &ws, cx, &worker, json!({ "event": "working" }));
+            event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
         }
         after(cx, 2 * confirm);
         // The screen gone still may end a working agent's task: never as untaken.

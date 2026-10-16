@@ -430,7 +430,7 @@ impl Workspace {
                         looks: Default::default(),
                         typed: Default::default(),
                         scrolled: Default::default(),
-                        events: 0,
+                        submitted: 0,
                         speaks: false,
                         keys_from: None,
                         opened_by: None,

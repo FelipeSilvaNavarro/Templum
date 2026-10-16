@@ -226,13 +226,35 @@ impl Workspace {
         // Keys typed before this event answer nothing it brings (a dialog opening now).
         pane.looks.heard();
         pane.typed.set(false);
-        pane.events += 1;
         if !matches!(event, AgentEvent::Stopped { .. }) {
             pane.speaks = true;
         }
         match event {
-            AgentEvent::Working | AgentEvent::Submitted { .. } => {
-                pane.state = Some(AgentState::Working)
+            AgentEvent::Submitted { at_enter } => {
+                let turn = pane.state == Some(AgentState::Working);
+                pane.state = Some(AgentState::Working);
+                pane.submitted += 1;
+                // Its task, once typed: a spawn's prompt waits in `prompt` until then.
+                let typed = pane.prompt.is_none();
+                if let Some(handed) = pane.handed.as_mut().filter(|h| typed && !h.taken) {
+                    handed.taken = true;
+                    // Claude Code says so at its Enter, also for a prompt it queues behind its turn.
+                    handed.behind = turn && at_enter;
+                }
+            }
+            AgentEvent::Working => {
+                // At work again after a permission. Never a new turn: a command an interrupt left
+                // running ends later (Codex).
+                if matches!(
+                    pane.state,
+                    Some(AgentState::Working | AgentState::NeedsYou(_))
+                ) {
+                    pane.state = Some(AgentState::Working);
+                }
+                // A tool's end takes the prompt Claude Code queued into the turn under way.
+                if let Some(handed) = pane.handed.as_mut() {
+                    handed.behind = false;
+                }
             }
             AgentEvent::Started => {
                 pane.state = Some(AgentState::Idle);
@@ -247,13 +269,19 @@ impl Workspace {
                 if let Some(message) = &message {
                     pane.answer = Some(message.clone());
                 }
-                let reply = match message {
-                    Some(message) => Reply::ok(message),
-                    None => Reply::err(
-                        "Its turn ended without an answer: an error, or it was interrupted.",
-                    ),
-                };
-                self.end_turn(terminal, reply, cx);
+                // The turn the task was typed in on, or the one Claude Code queued it behind: the
+                // next turn's end is its own.
+                if let Some(handed) = pane.handed.as_mut().filter(|h| !h.taken || h.behind) {
+                    handed.behind = false;
+                } else {
+                    let reply = match message {
+                        Some(message) => Reply::ok(message),
+                        None => Reply::err(
+                            "Its turn ended without an answer: an error, or it was interrupted.",
+                        ),
+                    };
+                    self.end_turn(terminal, reply, cx);
+                }
             }
             // A wait that says nothing new (Claude Code's notification about the dialog its
             // `PermissionRequest` opened) keeps what it asks: `allowed` looks for it.

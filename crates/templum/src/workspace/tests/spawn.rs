@@ -304,6 +304,7 @@ fn a_claude_codes_prompt_is_typed_once_it_started(cx: &mut TestAppContext) {
     enter(cx);
     said_twice(&ws, cx, new);
     assert!(waiting.try_recv().is_err(), "it works on it");
+    event(handle, &ws, cx, &theirs, json!({ "event": "submitted" }));
     event(
         handle,
         &ws,

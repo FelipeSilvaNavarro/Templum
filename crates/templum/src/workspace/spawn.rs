@@ -2,7 +2,7 @@
 //! to it, in its folder, another, or a new Git worktree; its prompt typed once it is ready.
 
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use gpui_kit::{Context, Window};
 use templum_canvas::{BlockId, Rect, Size, chrome};
@@ -168,14 +168,9 @@ impl Workspace {
             folder.display()
         );
         if let Some(text) = spawn.prompt.clone() {
-            let now = Instant::now();
             if let Some(pane) = self.pane_mut(&terminal) {
                 pane.prompt = Some(Prompt { text, screen: None });
-                pane.handed = Some(Handed {
-                    by: from.to_string(),
-                    since: now,
-                    until: now + Duration::from_secs(tools::TASK_WAIT),
-                });
+                pane.handed = Some(Handed::new(from, Duration::from_secs(tools::TASK_WAIT)));
             }
             // Claude Code says when it started, after asking whether to trust the folder (a typed
             // Enter would answer that); the others are looked at.

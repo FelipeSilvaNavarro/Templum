@@ -135,6 +135,26 @@ pub(crate) struct Handed {
     pub since: Instant,
     /// After this it is no longer awaited: its dot stops, and another task may be handed over.
     pub until: Instant,
+    /// Its agent took it (`Submitted`, the first after it was typed): only now may a turn's end
+    /// answer it.
+    pub taken: bool,
+    /// Claude Code queued it behind the turn under way (`Submitted` at its Enter while it worked):
+    /// that turn's end isn't its answer, unless a tool's end takes it into the turn first.
+    pub behind: bool,
+}
+
+impl Handed {
+    /// Handed over by the terminal `by` now, awaited for `timeout`; not taken yet.
+    pub(crate) fn new(by: &str, timeout: Duration) -> Self {
+        let since = Instant::now();
+        Self {
+            by: by.to_string(),
+            since,
+            until: since + timeout,
+            taken: false,
+            behind: false,
+        }
+    }
 }
 
 /// A prompt `spawn_agent` types into its agent once the agent is ready
@@ -176,8 +196,8 @@ pub(crate) struct Pane {
     /// The person scrolled it, or its program heard their mouse, since the last look, which then
     /// tells nothing.
     pub scrolled: Cell<bool>,
-    /// How many hook events its agent sent: a task's Enter is confirmed by one more.
-    pub events: u64,
+    /// How many prompts its agent took (`Submitted`): a task's Enter is confirmed by one more.
+    pub submitted: u64,
     /// Its agent's hooks say when a turn starts and when it asks its person (Claude Code's,
     /// Gemini CLI's, and Codex's once its person trusted them), not only when a turn ends: a
     /// dialog of it would be heard.
