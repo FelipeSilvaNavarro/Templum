@@ -193,6 +193,9 @@ pub(crate) struct Pane {
     pub looks: activity::Looks,
     /// The person typed into it since the last look, which then tells nothing.
     pub typed: Cell<bool>,
+    /// When the person last typed into it (a key, a paste, text): a second Enter for a task
+    /// would send their half-written line.
+    pub keyed: Cell<Option<Instant>>,
     /// The person scrolled it, or its program heard their mouse, since the last look, which then
     /// tells nothing.
     pub scrolled: Cell<bool>,

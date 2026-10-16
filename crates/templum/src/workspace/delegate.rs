@@ -23,17 +23,19 @@ const SCREEN_LINES: usize = 100;
 /// Looks in a row the screen must stay the same after the agent's terminal is resized: it has
 /// redrawn at its new size, and read what was typed meanwhile.
 const SETTLED: u32 = 2;
-/// How long after a task's Enter an agent whose hooks speak must say it took it: its turn
-/// started (Claude Code's `UserPromptSubmit`, Gemini CLI's `BeforeAgent`), a dialog opened, or
-/// its turn ended.
+/// How long after a task's Enter an agent whose hooks speak must say it took it (`Submitted`), or
+/// open a dialog: only a prompt taken confirms it.
 pub(super) const CONFIRM: Duration = Duration::from_secs(3);
+/// The person typed into an agent this recently: they are still typing, and a second Enter for a
+/// task would send their half-written line.
+pub(super) const TYPING: Duration = Duration::from_secs(3);
 /// Between two keys `send_keys` presses: an Esc and the key after it in one burst read as
 /// Alt+key.
 const KEY_GAP: Duration = Duration::from_millis(50);
 /// How long after its last key `send_keys` reads the screen it answers with.
 const KEYS_SETTLE: Duration = Duration::from_millis(300);
-/// The lines of the screen `send_keys` answers with.
-const KEYS_LINES: usize = 20;
+/// The last lines of a screen Templum answers with (`send_keys`, a task not taken).
+pub(super) const TAIL_LINES: usize = 20;
 /// How long a terminal says which block pressed keys in it ("answered by").
 pub(crate) const ANSWERED_FOR: Duration = Duration::from_secs(10);
 
@@ -117,6 +119,17 @@ impl Pane {
             .as_ref()
             .filter(|(_, at)| at.elapsed() < ANSWERED_FOR)
             .map(|(by, _)| by.as_str())
+    }
+
+    /// The person typed into it: a key, a paste, text.
+    pub(super) fn person_typed(&self) {
+        self.typed.set(true);
+        self.keyed.set(Some(Instant::now()));
+    }
+
+    /// The last `TAIL_LINES` lines its terminal shows, as an agent is answered with them.
+    pub(super) fn tail(&self) -> String {
+        self.term.shared().lines(TAIL_LINES).join("\n")
     }
 
     /// The end of what its terminal shows, to tell whether it changed.
@@ -328,10 +341,7 @@ impl Workspace {
             }
             cx.background_executor().timer(KEYS_SETTLE).await;
             let lines = ws
-                .update(cx, |ws, _| {
-                    ws.pane(&worker)
-                        .map(|p| p.term.shared().lines(KEYS_LINES).join("\n"))
-                })
+                .update(cx, |ws, _| ws.pane(&worker).map(Pane::tail))
                 .ok()
                 .flatten()
                 .unwrap_or_default();
@@ -353,11 +363,13 @@ impl Workspace {
         let Some(pane) = self.pane(terminal) else {
             return;
         };
+        // At work, it queues the task: Codex says it took it only once a turn takes it in.
+        let queued = pane.state == Some(AgentState::Working);
         let mut wait = EnterWait::new(pane.screen(), pane.term.grid_size());
         pane.term.type_in(text);
         let terminal = terminal.to_string();
         cx.spawn(async move |ws, cx| {
-            // Some(the hook events heard at its Enter, when its hooks speak) once done looking.
+            // Some(the prompts it had taken at its Enter, when its hooks speak) once done looking.
             let entered = loop {
                 cx.background_executor().timer(ENTER_AFTER).await;
                 let step = ws.update(cx, |ws, cx| {
@@ -386,43 +398,57 @@ impl Workspace {
                     Err(_) => return,
                 }
             };
-            let Some(heard) = entered else {
+            let Some(submitted) = entered else {
                 return;
             };
-            for again in [true, false] {
+            // Its screen just after the Enter: a second one goes only into the same.
+            cx.background_executor().timer(ENTER_AFTER).await;
+            let Ok(Some(screen)) = ws.update(cx, |ws, _| ws.pane(&terminal).map(Pane::screen))
+            else {
+                return;
+            };
+            cx.background_executor().timer(CONFIRM - ENTER_AFTER).await;
+            let again = Some(screen.as_str());
+            let done = ws
+                .update(cx, |ws, cx| {
+                    ws.confirm(&terminal, submitted, queued, again, task, cx)
+                })
+                .unwrap_or(true);
+            if !done {
                 cx.background_executor().timer(CONFIRM).await;
-                let done = ws
-                    .update(cx, |ws, cx| ws.confirm(&terminal, heard, again, task, cx))
-                    .unwrap_or(true);
-                if done {
-                    break;
-                }
+                let _ = ws.update(cx, |ws, cx| {
+                    ws.confirm(&terminal, submitted, queued, None, task, cx)
+                });
             }
         })
         .detach();
     }
 
     /// A look, CONFIRM after its Enter, at the agent in `terminal` that was typed a task or a reply
-    /// (`heard`: the hook events it had sent then). A hook since says it took it: its turn started, a dialog opened,
-    /// or its turn ended; an agent at work queued it. Otherwise, while Templum may still type into
-    /// it, it gets its Enter `again`, once (the first may have joined the paste as a new line, as
-    /// when the person resized its block); after that a `task` ends untaken. True when done.
+    /// (docs/specs/connections.md, Delegating 2, **Confirmed**; `submitted`: the prompts it had
+    /// taken then). One more prompt taken confirms it, and so does a dialog it opened; an agent at
+    /// work when it was typed (`queued`) took it into its queue. Nothing else does: not a turn's
+    /// end, nor a moving screen. Otherwise it gets its Enter once more (the first may have joined
+    /// the paste as a new line), only while its screen is still `again` (a dialog no hook tells of
+    /// would have drawn) and the person hasn't typed into it for TYPING; else a `task` ends
+    /// untaken. True when done.
     fn confirm(
         &mut self,
         terminal: &str,
-        heard: u64,
-        again: bool,
+        submitted: u64,
+        queued: bool,
+        again: Option<&str>,
         task: bool,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(pane) = self.pane(terminal) else {
             return true;
         };
-        let working = pane.state == Some(AgentState::Working);
-        if pane.submitted != heard || working || pane.takes_typing("").is_err() {
+        if pane.submitted != submitted || queued || pane.takes_typing("").is_err() {
             return true;
         }
-        if again {
+        let typing = pane.keyed.get().is_some_and(|at| at.elapsed() < TYPING);
+        if !typing && again.is_some_and(|screen| screen == pane.screen()) {
             pane.term.write(&b"\r"[..]);
             return false;
         }
@@ -432,19 +458,24 @@ impl Workspace {
         true
     }
 
-    /// The agent in the terminal `terminal` got no Enter for the task typed into it: the task, if
-    /// it is still handed over, ends, and the calls waiting on it hear so.
+    /// The agent in the terminal `terminal` didn't take the task typed into it: the task, if it is
+    /// still handed over, ends, and the calls waiting on it hear so, with its screen.
     fn not_taken(&mut self, terminal: &str, cx: &mut Context<Self>) {
-        if !self.pane(terminal).is_some_and(|p| p.handed.is_some()) {
+        let Some(tail) = self
+            .pane(terminal)
+            .filter(|p| p.handed.is_some())
+            .map(Pane::tail)
+        else {
             return;
-        }
+        };
         let uid = self
             .caller(terminal)
             .and_then(|(space, id)| self.space_named(&space)?.uids.get(&id).cloned())
             .unwrap_or_default();
         let why = format!(
             "{uid} didn't take the task: it may be showing a dialog. Look at its block, then try \
-             again."
+             again. The last lines of its screen:\n{}",
+            tools::tail(&tail, tools::MAX_TEXT)
         );
         self.end_turn(terminal, Reply::err(why), cx);
     }

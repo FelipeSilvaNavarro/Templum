@@ -1369,12 +1369,120 @@ fn a_task_no_hook_confirms_gets_its_enter_again_then_ends(cx: &mut TestAppContex
     let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
     screen_with(&ws, cx, theirs, "think");
     enter(cx);
+    screen_until(&ws, cx, theirs, |s| s.matches("think").count() >= 2);
     let confirm = crate::workspace::delegate::CONFIRM.as_millis() as u64;
     after(cx, confirm);
     assert!(answers.try_recv().is_err(), "it gets its Enter again first");
     after(cx, confirm);
     let (failed, text) = answered(&answers);
+    assert!(
+        failed && text.contains("didn't take the task") && text.contains("think"),
+        "{text}"
+    );
+}
+
+/// A turn's end (Claude Code's idle prompt comes a minute after its last turn) and a screen its
+/// looks take for one at work confirm nothing: only the prompt taken does, and its turn's end then
+/// answers the task.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn only_its_prompt_taken_confirms_a_task(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let confirm = crate::workspace::delegate::CONFIRM.as_millis() as u64;
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    event(handle, &ws, cx, &worker, json!({ "event": "started" }));
+    let task = json!({ "block": them, "task": "think", "wait": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    screen_with(&ws, cx, theirs, "think");
+    enter(cx);
+    screen_until(&ws, cx, theirs, |s| s.matches("think").count() >= 2);
+    event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "stopped", "message": null }),
+    );
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(theirs).unwrap().state = Some(AgentState::Working)
+    });
+    after(cx, 2 * confirm);
+    let (failed, text) = answered(&answers);
     assert!(failed && text.contains("didn't take the task"), "{text}");
+    // Idle again, its prompt taken: confirmed, and its turn's end answers the task.
+    event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "stopped", "message": null }),
+    );
+    let task = json!({ "block": them, "task": "ponder", "wait": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 2, "delegate", task);
+    screen_with(&ws, cx, theirs, "ponder");
+    enter(cx);
+    event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "submitted", "at_enter": true }),
+    );
+    after(cx, 2 * confirm);
+    assert!(answers.try_recv().is_err(), "taken: it works on it");
+    event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "stopped", "message": "Pondered." }),
+    );
+    assert_eq!(answered(&answers), (false, "Pondered.".to_string()));
+}
+
+/// No word 3 s after the Enter: a screen that changed since just after it drew something no hook
+/// tells of (a trust question), and the person typing there would send their own half line with
+/// a second Enter. Neither gets one: the task ends at that look, with the screen as it is.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn no_second_enter_into_a_changed_screen_or_while_the_person_types(cx: &mut TestAppContext) {
+    let confirm = crate::workspace::delegate::CONFIRM.as_millis() as u64;
+    let enter_after = crate::workspace::delegate::ENTER_AFTER.as_millis() as u64;
+    for case in ["a question drew", "the person types"] {
+        let (handle, ws, mine, theirs) = two_agents(cx);
+        let (terminal, _) = me(&ws, cx, mine);
+        let (worker, them) = me(&ws, cx, theirs);
+        event(handle, &ws, cx, &worker, json!({ "event": "started" }));
+        let task = json!({ "block": them, "task": "think", "wait": true });
+        let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+        screen_with(&ws, cx, theirs, "think");
+        enter(cx);
+        screen_until(&ws, cx, theirs, |s| s.matches("think").count() >= 2);
+        // The screen just after the Enter, which a second one would need unchanged.
+        after(cx, enter_after);
+        if case == "a question drew" {
+            shows(&ws, cx, theirs, "Trust these hooks?");
+        } else {
+            ws.read_with(cx, |ws, _| {
+                ws.space.terminal(theirs).unwrap().person_typed()
+            });
+        }
+        after(cx, confirm);
+        // Answered at the first look: a second Enter would have waited 3 s more.
+        let (failed, text) = answered(&answers);
+        assert!(
+            failed && text.contains("didn't take the task"),
+            "{case}: {text}"
+        );
+        if case == "a question drew" {
+            assert!(
+                text.contains("Trust these hooks?"),
+                "the screen as it is: {text}"
+            );
+        }
+    }
 }
 
 /// A hook after the Enter (its turn started) confirms it; an agent at work queued the task; one

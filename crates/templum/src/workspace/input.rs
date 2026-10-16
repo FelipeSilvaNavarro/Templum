@@ -429,7 +429,7 @@ impl Workspace {
             return;
         };
         if let Some(pane) = self.space.focused_terminal() {
-            pane.typed.set(true);
+            pane.person_typed();
             pane.term.paste(&text);
         }
     }
@@ -746,7 +746,7 @@ impl Workspace {
                     && !option_types_text(&k.key, k.key_char.as_deref(), cfg!(target_os = "macos")),
             shift: k.modifiers.shift,
         };
-        pane.typed.set(true);
+        pane.person_typed();
         if pane.term.key(&input) {
             // Keeps the platform from also feeding key_char to the text-input path.
             cx.stop_propagation();
@@ -975,7 +975,7 @@ impl EntityInputHandler for Workspace {
     ) {
         self.marked = None;
         if let Some(pane) = self.space.focused_terminal() {
-            pane.typed.set(true);
+            pane.person_typed();
             pane.term.write(text.as_bytes().to_vec());
         }
         cx.notify();

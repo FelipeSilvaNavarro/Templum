@@ -429,6 +429,7 @@ impl Workspace {
                         prompt: None,
                         looks: Default::default(),
                         typed: Default::default(),
+                        keyed: Default::default(),
                         scrolled: Default::default(),
                         submitted: 0,
                         speaks: false,
