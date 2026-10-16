@@ -693,6 +693,136 @@ fn wait_for_idle_is_wait_for_idle_and_the_rest_need_a_wire(cx: &mut TestAppConte
     assert!(failed && text.contains("isn't connected to you"), "{text}");
 }
 
+/// Keys go as a keyboard sends them, never as a paste: a dialog takes `2` as its option, where a
+/// pasted one would land in the agent's input.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn send_keys_presses_keys_not_a_paste(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    // `cat` prints the sequence back: the terminal now brackets pastes, as Claude Code's does.
+    prints(&ws, cx, theirs, b"\x1b[?2004hon\r");
+    screen_with(&ws, cx, theirs, "2004honon");
+    let keys = json!({ "block": them, "keys": ["2", "escape"] });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "send_keys", keys);
+    let (failed, text) = heard(cx, &answers);
+    assert!(
+        !failed && text.starts_with(&format!("Pressed 2 keys in {them}.")),
+        "{text}"
+    );
+    assert!(text.ends_with("2^["), "the screen after them: {text}");
+    let shown = screen_with(&ws, cx, theirs, "2^[");
+    assert!(!shown.contains("200~"), "never a paste: {shown}");
+}
+
+/// Keys go into an agent waiting for its person, as the person's: once its screen moves, it works.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn send_keys_takes_a_dialog_as_the_persons_keys(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let asks = json!({ "event": "needs_you", "message": "Allow Bash?" });
+    event(handle, &ws, cx, &worker, asks);
+    let keys = json!({ "block": them, "keys": ["2"] });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "send_keys", keys);
+    let (failed, text) = heard(cx, &answers);
+    assert!(
+        !failed && text.starts_with(&format!("Pressed 1 key in {them}.")),
+        "{text}"
+    );
+    ws.read_with(cx, |ws, _| {
+        let (by, _) = ws
+            .space
+            .terminal(theirs)
+            .unwrap()
+            .keys_from
+            .clone()
+            .expect("who");
+        assert!(by.ends_with(&format!("({uid})")), "{by}");
+    });
+    ticks(&ws, cx, theirs, 0, 4);
+    assert_eq!(state_of(&ws, cx, theirs), Some(AgentState::Working));
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn send_keys_refuses_its_own_block_an_unknown_key_and_another_agents_task(cx: &mut TestAppContext) {
+    use crate::workspace::Handed;
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let pressing = |block: &str, keys: serde_json::Value| json!({ "block": block, "keys": keys });
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "send_keys",
+        pressing(&uid, json!(["y"])),
+    );
+    assert!(failed && text.contains("yours"), "{text}");
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "send_keys",
+        pressing(&them, json!(["y", "foo"])),
+    );
+    assert!(
+        failed && text.contains("\"foo\"") && text.contains("page_up"),
+        "{text}"
+    );
+    let typed = ws.read_with(cx, |ws, _| ws.space.terminal(theirs).unwrap().typed.get());
+    assert!(!typed, "no key went before the refusal");
+    // On another agent's task: refused while it works, not while it waits for its person.
+    ws.update(cx, |ws, _| {
+        let now = Instant::now();
+        ws.space.terminal_mut(theirs).unwrap().handed = Some(Handed {
+            by: "elsewhere".into(),
+            since: now,
+            until: now + std::time::Duration::from_secs(600),
+        });
+    });
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "send_keys",
+        pressing(&them, json!(["y"])),
+    );
+    assert!(failed && text.contains("another agent"), "{text}");
+    event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "needs_you", "message": "Allow Bash?" }),
+    );
+    let y = pressing(&them, json!(["y"]));
+    let answers = call_later(handle, &ws, cx, &terminal, 2, "send_keys", y);
+    assert!(
+        !heard(cx, &answers).0,
+        "it waits for its person: its dialog takes keys"
+    );
+    // Its block closes between two keys: the call ends there.
+    let ab = pressing(&them, json!(["a", "b"]));
+    let answers = call_later(handle, &ws, cx, &terminal, 3, "send_keys", ab);
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.close_now(&[theirs], crate::workspace::history::Then::New, window, cx)
+        })
+    })
+    .unwrap();
+    let (failed, text) = heard(cx, &answers);
+    assert!(failed && text.contains("closed"), "{text}");
+}
+
 /// `cat` in block `id` prints `bytes` back, as a program would.
 #[cfg(unix)]
 fn prints(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId, bytes: &'static [u8]) {

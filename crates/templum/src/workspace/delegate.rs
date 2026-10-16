@@ -3,12 +3,14 @@
 
 use std::time::{Duration, Instant};
 
-use gpui_kit::Context;
-use templum_mcp::Reply;
+use gpui_kit::{App, Context, Task};
+use templum_canvas::BlockId;
+use templum_mcp::{Reply, tools};
+use templum_terminal::{KEY_NAMES, named_key};
 
 use super::bus::{Outcome, target};
 use super::waits::Waiting;
-use super::{AgentState, Handed, Pane, Workspace};
+use super::{AgentState, Handed, Pane, Space, Workspace};
 
 /// How long after a task is typed its Enter goes: an agent may take keys that come in one burst
 /// for a paste, where Enter is a new line.
@@ -25,6 +27,13 @@ const SETTLED: u32 = 2;
 /// started (Claude Code's `UserPromptSubmit`, Gemini CLI's `BeforeAgent`), a dialog opened, or
 /// its turn ended.
 pub(super) const CONFIRM: Duration = Duration::from_secs(3);
+/// Between two keys `send_keys` presses: an Esc and the key after it in one burst read as
+/// Alt+key.
+const KEY_GAP: Duration = Duration::from_millis(50);
+/// How long after its last key `send_keys` reads the screen it answers with.
+const KEYS_SETTLE: Duration = Duration::from_millis(300);
+/// The lines of the screen `send_keys` answers with.
+const KEYS_LINES: usize = 20;
 
 /// What a look at an agent's screen, while a typed task waits for its Enter, says to do.
 #[derive(Debug, PartialEq)]
@@ -165,6 +174,106 @@ impl Pane {
 }
 
 impl Workspace {
+    /// The block `id` of `space` as an agent reads who wrote to it: `Claude Code (b7k2m)`, its
+    /// title as `about` gives it.
+    pub(super) fn signature(&self, space: &Space, id: BlockId, cx: &App) -> String {
+        let (_, title, _) = self.about(&space.blocks[&id], cx);
+        let uid = space.uids.get(&id).cloned().unwrap_or_default();
+        format!("{title} ({uid})")
+    }
+
+    /// `send_keys` from the terminal `from`: `keys` pressed in the terminal `block`, also into
+    /// an agent waiting for its person (the wire is the person's consent that the agents on it
+    /// answer each other's dialogs), never into one on another agent's task while it works.
+    pub(super) fn send_keys(
+        &mut self,
+        from: &str,
+        block: &str,
+        keys: Vec<String>,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
+        let (space_id, me) = self.caller(from).expect("call found the caller");
+        let space = self.space_named(&space_id).expect("the caller's workspace");
+        let to = match target(space, me, block) {
+            Ok(to) => to,
+            Err(refused) => return Outcome::Now(refused),
+        };
+        if to == me {
+            return Outcome::Now(Reply::err(
+                "This block is yours: send_keys presses keys in another block.",
+            ));
+        }
+        let Some(pane) = space.terminal(to) else {
+            return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
+        };
+        if let Some(bad) = keys.iter().find(|k| named_key(k).is_none()) {
+            return Outcome::Now(Reply::err(format!(
+                "{bad:?} isn't a key Templum knows. Keys: {KEY_NAMES}."
+            )));
+        }
+        let asks = matches!(pane.state, Some(AgentState::NeedsYou(_)));
+        if pane.task(Instant::now()).is_some_and(|h| h.by != from) && !asks {
+            return Outcome::Now(Reply::err(format!(
+                "{block} is on a task another agent handed it: only that agent presses keys in it \
+                 while it works. wait_for_idle(\"{block}\") waits for its end."
+            )));
+        }
+        let worker = pane.term.id().to_string();
+        let by = self.signature(space, me, cx);
+        let said = match keys.len() {
+            1 => format!("Pressed 1 key in {block}."),
+            n => format!("Pressed {n} keys in {block}."),
+        };
+        Outcome::Later(self.press_keys(worker, by, keys, said, cx))
+    }
+
+    /// Presses `keys` in the terminal `worker`, KEY_GAP apart, as keys `by` pressed (the person's,
+    /// for the screen's looks); then `said` and its screen, KEYS_SETTLE after the last. The
+    /// terminal is found again before each key: one closed meanwhile ends the call there.
+    pub(super) fn press_keys(
+        &self,
+        worker: String,
+        by: String,
+        keys: Vec<String>,
+        said: String,
+        cx: &mut Context<Self>,
+    ) -> Task<Reply> {
+        cx.spawn(async move |ws, cx| {
+            for (i, key) in keys.iter().enumerate() {
+                if i > 0 {
+                    cx.background_executor().timer(KEY_GAP).await;
+                }
+                let pressed = ws.update(cx, |ws, cx| {
+                    let (Some(pane), Some(key)) = (ws.pane_mut(&worker), named_key(key)) else {
+                        return false;
+                    };
+                    // The person's keys, for the screen's looks: a dialog they answer ends.
+                    pane.typed.set(true);
+                    pane.keys_from = Some((by.clone(), Instant::now()));
+                    pane.term.press(&key);
+                    cx.notify();
+                    true
+                });
+                if !pressed.unwrap_or(false) {
+                    return Reply::err("Its block was closed before every key was pressed.");
+                }
+            }
+            cx.background_executor().timer(KEYS_SETTLE).await;
+            let lines = ws
+                .update(cx, |ws, _| {
+                    ws.pane(&worker)
+                        .map(|p| p.term.shared().lines(KEYS_LINES).join("\n"))
+                })
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            Reply::ok(format!(
+                "{said} Its screen now:\n{}",
+                tools::tail(&lines, tools::MAX_TEXT)
+            ))
+        })
+    }
+
     /// Types `text` into the agent in terminal `terminal` as one paste, then Enter a moment later,
     /// once its screen shows the paste (`EnterWait`), if Templum still may type into it. A screen
     /// that doesn't (a dialog that ignores pastes, as Codex's approval does, which Templum hears
@@ -308,14 +417,8 @@ impl Workspace {
             )));
         }
         let worker = pane.term.id().to_string();
-        let (_, title, _) = self.about(&space.blocks[&me], cx);
-        let uid = space.uids.get(&me).cloned().unwrap_or_default();
-        self.send_task(
-            &worker,
-            &format!("[from {title} ({uid})]\n{task}"),
-            true,
-            cx,
-        );
+        let from_line = format!("[from {}]\n{task}", self.signature(space, me, cx));
+        self.send_task(&worker, &from_line, true, cx);
         if let Some(pane) = self.pane_mut(&worker) {
             pane.handed = Some(Handed {
                 by: from.to_string(),
@@ -373,9 +476,7 @@ impl Workspace {
             if let Err(refused) = pane.takes_handing(block) {
                 return refused;
             }
-            let (_, title, _) = self.about(&space.blocks[&me], cx);
-            let uid = space.uids.get(&me).cloned().unwrap_or_default();
-            let reply = format!("[reply from {title} ({uid})]\n{text}");
+            let reply = format!("[reply from {}]\n{text}", self.signature(space, me, cx));
             self.send_task(&asker, &reply, false, cx);
         }
         if let Some(mine) = self.pane_mut(from) {

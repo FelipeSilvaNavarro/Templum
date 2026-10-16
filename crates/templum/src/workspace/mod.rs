@@ -181,6 +181,9 @@ pub(crate) struct Pane {
     /// Its agent's hooks say when a turn starts and when it asks its person (Claude Code's,
     /// Gemini CLI's), not only when a turn ends (Codex's): a dialog of it would be heard.
     pub speaks: bool,
+    /// Who pressed keys in it last (`send_keys`, `interrupt`), as its `[from …]` line names
+    /// them, and when.
+    pub keys_from: Option<(String, Instant)>,
 }
 
 impl Pane {

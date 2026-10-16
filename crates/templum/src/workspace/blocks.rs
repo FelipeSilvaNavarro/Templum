@@ -429,6 +429,7 @@ impl Workspace {
                         scrolled: Default::default(),
                         events: 0,
                         speaks: false,
+                        keys_from: None,
                     })),
                 );
                 self.added(id);
