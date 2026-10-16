@@ -246,8 +246,19 @@ fn initialize_lists_the_tools_and_says_who_the_agent_is(cx: &mut TestAppContext)
             && instructions.contains("in Templum workspace \"Main\""),
         "{instructions}"
     );
+    assert!(
+        instructions.ends_with(
+            "A task you hand over without wait comes back typed into your terminal as [task …]: it isn't the \
+             person writing."
+        ),
+        "{instructions}"
+    );
     let tools = ask(handle, &ws, cx, &terminal, "tools/list", Value::Null);
     assert_eq!(tools["result"], templum_mcp::tools::list());
+    assert!(
+        tools["result"].to_string().contains("[task t7"),
+        "delegate says how its end comes back"
+    );
     assert_eq!(
         ask(handle, &ws, cx, &terminal, "ping", Value::Null)["result"],
         json!({})

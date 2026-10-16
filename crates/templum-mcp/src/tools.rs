@@ -296,10 +296,13 @@ pub fn list() -> Value {
         {
             "name": "delegate",
             "description": "Hands a task to an agent connected to you: Templum types it into its terminal, after \
-                            a line saying it is from you, and sends it. Its answer is its last message when it \
-                            finishes its turn, or what it sends you with reply. With wait, waits for that answer \
-                            (it may take minutes); without, wait_for_idle gets it later. Refused while the agent \
-                            waits for its person or is on another agent's task.",
+                            a line saying it is from you and its id (t7), and sends it. Its answer is its last \
+                            message when it finishes its turn, or what it sends you with reply. With wait, waits \
+                            for that answer (it may take minutes); without, says its id at once, and its end comes \
+                            back typed into your terminal as [task t7 …] with its time, what it spent and its \
+                            transcript, as does a dialog it waits on. To the agent on your task, it is a change to \
+                            that task, typed at once. Refused while the agent waits for its person or is on \
+                            another agent's task.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -314,7 +317,7 @@ pub fn list() -> Value {
         {
             "name": "reply",
             "description": "Answers the task an agent connected to you handed you (it began with [from <title> \
-                            (<id>)]): the agent waiting for it gets your text now. When it isn't waiting, the \
+                            (<id>), task t7]): the agent waiting for it gets your text now. When it isn't waiting, the \
                             text is typed into its terminal after a line saying it is from you.",
             "inputSchema": {
                 "type": "object",
@@ -358,7 +361,8 @@ pub fn list() -> Value {
             "description": "Opens a new agent block beside yours, connected to you: in your folder, the one you \
                             name, or a new Git worktree of that folder's repository (.worktrees/<worktree>, on a \
                             new branch of that name). A prompt is typed once the agent is ready, as a task you \
-                            handed it: wait_for_idle gets its answer. Says the new block's id and folder. \
+                            handed it (the result says its id): its end comes back as delegate's does, or \
+                            wait_for_idle gets it. Says the new block's id and folder. \
                             With model and effort, its command line starts it on them, and so does every resume.",
             "inputSchema": {
                 "type": "object",
