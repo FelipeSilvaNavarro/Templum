@@ -141,11 +141,12 @@ later starts with none.
 
 1. *Claude Code · api* is wired to *Codex · api*. It calls `delegate` with Codex's block id and a task.
 2. Templum types into Codex's terminal a first line, `[from Claude Code · api (b7k2m)] Your task is in the pasted text:
-   do it.`, as a paste of its own, then the task as a second paste (batch 7; before, both as one: Claude Code takes a
-   paste of 4 lines or more than 800 characters for data it was shown, not for what it is asked, unless typed text comes
-   with it), then Enter, a moment (150 ms) after the paste: an agent may take keys that come in one burst for a paste,
-   where Enter is a new line. The Enter goes only once the agent's screen shows the paste (Templum looks for about 2
-   seconds), and only if Templum still may type into it (5): a dialog that ignores pastes, such as Codex's approval,
+   do it.` (from batch 8 it names the task: `[from Claude Code · api (b7k2m), task t7]`), as a paste of its own, then
+   the task as a second paste (batch 7; before, both as one: Claude Code takes a paste of 4 lines or more than 800
+   characters for data it was shown, not for what it is asked, unless typed text comes with it), then Enter, a moment
+   (150 ms) after the paste: an agent may take keys that come in one burst for a paste, where Enter is a new line. The
+   Enter goes only once the agent's screen shows the paste (Templum looks for about 2 seconds), and only if Templum
+   still may type into it (5): a dialog that ignores pastes, such as Codex's approval,
    which Templum hears nothing of, or a permission prompt that opened meanwhile, gets no Enter that would answer it. The
    task then ends at once: the delegating agent is told the agent didn't take it, and to look at its block. The person
    sees it arrive. A resize of the agent's block meanwhile redraws it at its new size, which shows nothing of the paste:
@@ -167,7 +168,7 @@ later starts with none.
 4. When Codex finishes its turn, its last answer becomes the result of Claude Code's `delegate` (when it asked to
    wait), or of a later `wait_for_idle`. If Codex calls `reply` first, that text is the answer instead. Each task
    has an id (`t7`, batch 8), which `delegate` and `spawn_agent` say; `delegate` without `wait` answers at once:
-   "Handed to k9x1d as task t7."
+   "Handed to k9x1d as task t7.". Ids count from `t1` each time Templum starts: tasks aren't saved ([Files](#files)).
 5. Templum refuses to type into an agent that is waiting for its person (a permission prompt would take the text
    as its answer; the refusal says what it asks and gives the last 20 lines of its screen, the dialog as drawn, so
    the caller can answer it with `send_keys`), into a terminal running no agent (`send_to_terminal` is for those),
@@ -185,7 +186,8 @@ later starts with none.
 8. `reply` with no call waiting types `[reply from <title> (<id>)]` and the text, then Enter, into the agent named;
    never into a terminal running no agent, or an agent no snapshot has found yet. From batch 7 the first line goes as
    a task's does (2): `[reply from <title> (<id>)] Its reply is in the pasted text.`, then the text. From batch 8 the
-   line names the task: `[reply from <title> (<id>) to task t7]`.
+   line names the task the agent it goes to handed the replier, if any: `[reply from <title> (<id>) to task t7] Its
+   reply is in the pasted text.`; that reply is the task's end, and no notice (10) follows it.
 9. A task typed into an agent at work on a prompt of its own is answered by the end of the turn that took it
    (batch 7, once its hooks say when it takes a prompt). Codex takes it into the turn under way once a tool ends or
    its answer is written, and says so then, in that turn. Claude Code says so at its Enter and queues it: a tool's
@@ -193,20 +195,34 @@ later starts with none.
    leaves it to the next turn, which no hook says starts, and that turn's end answers it. An Esc while it writes
    ends its turn with no hook, and the task's answer is lost (deferred: [minors](../minors.md#connections)).
 10. **Its end comes back** (batch 8). When a task ends and no call of the agent that handed it over waits for it
-    (`delegate` with `wait`, `wait_for_idle`), Templum types into that agent, as a reply is typed:
-    `[task t7 from Codex · api (k9x1d): done in 31 s, 60231 tokens, transcript /…/rollout.jsonl]` and its answer
-    on the lines after; `failed` instead of `done`, then why: it didn't take the task, its agent left, its block
-    closed, or it gave no answer within its timeout (it may still work: a later answer comes too). Tokens are its
-    session's since the task was handed over, as Templum reads them for its usage chip (Claude Code with its status
-    line, Codex); none for the others. A task whose agent starts waiting for its person, or seems stuck, sends
-    `[task t7 from Codex · api (k9x1d) waits for its person: Allow Bash?]` and the last 20 lines of its screen, once
-    per wait. While the asker waits for its person, its agent is starting, or its person typed into it in the last
-    3 seconds, a notice waits, oldest first. Into a terminal whose agent is gone (its shell is in front, as when
-    `templum delegate` ran from a script), never: the notice is dropped.
+    (`delegate` with `wait`, `wait_for_idle`; a call its client cancelled, as Claude Code does past 2 minutes, no
+    longer waits), Templum types into that agent, as a reply is typed, a first line
+    `[task t7 from Codex · api (k9x1d): done in 31 s, 60231 tokens, transcript /…/rollout.jsonl] Its answer is in the
+    pasted text.` and its answer on the lines after; `failed` instead of `done` and `What happened is in the pasted
+    text.`, then why: it didn't take the task, its turn ended without an answer (an error, an Esc), its agent left,
+    its block closed, or it gave no answer within its timeout (it may still work: a later end comes too). What it
+    spent is what its usage chip shows ([usage.md](usage.md)), since the task was handed over: Claude Code's cost
+    (`$0.42`, with its status line, whose token totals are its last call's context, not what it used: batch 8's
+    spikes), Codex's tokens; a spawned agent's task counts its whole session; nothing when unknown. Templum reads it
+    again a second after the end (Claude Code's status line gives its last cost about 0.3 s after its `Stop`), and the
+    notice goes then. The transcript is the one its agent's last turn's end named (`transcript_path`). A task whose
+    agent starts waiting for its person (a hook says so while it wasn't waiting already, its balloon asks, or it seems
+    stuck) sends `[task t7 from Codex · api (k9x1d) waits for its person: Allow Bash?] Its screen is in the pasted
+    text.` and the last 20 lines of its screen, as drawn (300 ms after its hook), once per wait; not while a call of
+    the asker waits for the task, which hears its end. A task's timeout is told by the asker's call that waits for it,
+    else by a notice; a task handed with `wait` gets no notice of its timeout. While the asker waits for its person,
+    its agent is starting (no snapshot found it yet), its person typed into it in the last 3 seconds, or another
+    notice went into it in the last 3 seconds (that one's Enter, and a second one, may still be due), a notice waits,
+    oldest first. Into a terminal whose agent is gone (its shell is in front, as when `templum delegate` ran from a
+    script), never: the notice is dropped.
 11. **A change** (batch 8). `delegate` from the agent whose task it is changes that task: typed at once under
-    `[from Claude Code · api (b7k2m), a change to task t7]`, even while it works, as Claude Code's queued messages
-    are; the task's answer is the end of the turn that took the change. Any other agent is still refused.
-12. `interrupt` by the agent that handed the task over ends it without a notice ([Keys](#keys-stopping-and-closing)).
+    `[from Claude Code · api (b7k2m), a change to task t7] The change is in the pasted text: do it.`, even while it
+    works, as Claude Code's queued messages are; the task's answer is the end of the turn that took the change, and
+    its timeout starts again from the change's. Answered "Typed into k9x1d as a change to task t7." (or, with `wait`,
+    the task's end); refused while the agent waits for its person (5), and while a spawned agent hasn't got its
+    prompt yet (it would come first). Any other agent is still refused.
+12. `interrupt` by the agent that handed the task over ends it without a notice ([Keys](#keys-stopping-and-closing)),
+    and so does its `close_block`.
 
 ### Spawning
 
@@ -225,8 +241,9 @@ Windows, whose console may not pass those on, the still screen alone). Neither o
 `SessionStart` comes only with its first prompt, and Claude Code's a moment before its input box is ready, its
 bracketed paste off and on again. A prompt not typed within a minute of the spawn (its person hasn't answered) is
 dropped, and its task ends with the last 20 lines of its screen. From batch 7 it is typed under a first line
-`[from <caller>] Your task is in the pasted text: do it.`, as a task is ([Delegating](#delegating) 2). The result
-names the new block and its folder.
+`[from <caller>] Your task is in the pasted text: do it.`, as a task is ([Delegating](#delegating) 2); from batch 8
+`[from <caller>, task t8]`. The result names the new block and its folder, and from batch 8 ends "Its prompt is
+typed once it is ready, as task t8."
 
 `spawn_agent` takes a `model` and an `effort` (batch 6), typed after the agent's command and before what Templum
 adds (Claude Code's `--mcp-config` takes every word after it):
@@ -375,9 +392,9 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `send_to_terminal` | `block`, `text`, `enter` (false) | Types the text, as a paste; Enter after it when asked | wired | 1 |
 | `notify` | `text` | A notification from the caller ([Requests](#requests-from-agents)) | — | 1 |
 | `connect` | `block`, `timeout` (1800 s) | Asks the person to wire the caller to the block; waits for the answer | — | 3 |
-| `spawn_agent` | `agent` (an id of [agents.md](agents.md) or of `[agents]`), `prompt`, `folder`, `worktree`, `model`, `effort` | [Spawning](#spawning) | — | 3, 6 |
-| `delegate` | `block`, `task`, `wait` (false), `timeout` (600 s) | [Delegating](#delegating); without `wait`, says the task's id at once, and its end is typed into the caller's terminal | wired, an agent | 3, 8 |
-| `reply` | `block`, `text` | Answers the task the block handed the caller; with none waiting, types `[reply from …]` and the text into it | wired | 3 |
+| `spawn_agent` | `agent` (an id of [agents.md](agents.md) or of `[agents]`), `prompt`, `folder`, `worktree`, `model`, `effort` | [Spawning](#spawning); the prompt's task id | — | 3, 6, 8 |
+| `delegate` | `block`, `task`, `wait` (false), `timeout` (600 s) | [Delegating](#delegating); without `wait`, says the task's id at once, and its end is typed into the caller's terminal; to the agent on the caller's task, a change to it | wired, an agent | 3, 8 |
+| `reply` | `block`, `text` | Answers the task the block handed the caller; with none waiting, types `[reply from …]` (from batch 8 naming the task) and the text into it | wired | 3, 8 |
 | `wait_for_idle` | `block`, `timeout` (300 s) | Waits until the agent finishes its turn, and for the answer to a task the caller handed it, past `delegate`'s timeout too; its last answer | wired | 3 |
 | `ask_user` | `question`, `options`, `timeout` (1800 s) | A question in a balloon ([Requests](#requests-from-agents)); the answer | — | 3 |
 | `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, assignee and comment count; with `card`, that card whole: its description and comments | wired kanban | 4 |
@@ -450,6 +467,11 @@ but for `SessionStart`, `transcript_path`, `cwd`, `model` and `permission_mode`)
 | `Interrupt` | done, without an answer: Esc or Ctrl+C stopped the turn, and no `Stop` comes. Codex gives it 3 s at most |
 
 Codex's `SessionEnd` isn't followed (Codex also sends it after 30 idle minutes): a snapshot tells when Codex quits.
+
+From batch 8 a turn's end (done, with or without an answer) also hands Templum the `transcript_path` its hook got:
+Claude Code's and Codex's payloads carry it in every hook (batch 7's spike logs); Gemini CLI's is assumed (not checked:
+no login). Templum keeps the last one a terminal's agent named, until its next session starts, for the notice of a
+task's end ([Delegating](#delegating) 10).
 
 Claude Code merges hooks from every settings source, so the person's own hooks still run; Codex merges those of its
 `-c` flags with the person's `hooks.json` too (its `/hooks` lists both, each active).
@@ -547,7 +569,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum hook gemini` | Gemini CLI's hooks (JSON on stdin) | 5 |
 | `templum connect <block>` | `connect` | 3 |
 | `templum spawn <agent> [--folder <f>] [--worktree <name>] [--prompt <text>] [--model <m>] [--effort <e>]` | `spawn_agent` | 3, 6 |
-| `templum delegate <block> <task> [--wait]` | `delegate` | 3 |
+| `templum delegate <block> <task> [--wait]` | `delegate` (from batch 8 it prints the task's id; a script's terminal gets no notice: `templum wait` waits for its end) | 3, 8 |
 | `templum reply <block> <text>` | `reply` | 3 |
 | `templum wait <block> [--for <event>] [--timeout <s>]` | `wait_for_idle`, `wait_for` | 3, 5 |
 | `templum ask <question> [--option <o>]…` | `ask_user` | 3 |
@@ -600,6 +622,8 @@ the switch, the server's command for other agents with a Copy button, and Gemini
 - **Terminal items** (batch 6) also keep `opened_by` (the block id of the agent that spawned it), `model` and
   `effort` (what `spawn_agent` was given). A pasted block has none; an older file loads with none; an older Templum
   ignores them.
+- **Tasks** (batch 8) aren't saved: a restart drops the tasks handed over, with no notice, and their ids count from
+  `t1` again.
 - **`<data>/mcp.json`** and the hooks in `<data>/claude-statusline.json` are written when an agent is opened, only
   when they changed, atomically.
 
@@ -630,7 +654,7 @@ the switch, the server's command for other agents with a Copy button, and Gemini
 | `templum-terminal/src/input.rs`, `terminal.rs`, `agent.rs`; `templum/src/agents.rs` | named keys and `Terminal::press`; each agent's model and effort flags (`launch_args`) | 6 |
 | `templum/src/workspace/delegate.rs`, `spawn.rs`, `bus.rs`, `mod.rs`, `blocks.rs`, `persist.rs`, `selection.rs`; `session.rs`, `block.rs` | `send_keys`, `interrupt`, `close_block`; `opened_by`, `model` and `effort` saved and resumed; "answered by" | 6 |
 | `templum-mcp/src/hooks.rs`, `lib.rs`, `cli.rs`; `templum-terminal/src/terminal.rs`; `templum/src/workspace/bus.rs`, `delegate.rs`, `activity.rs`, `spawn.rs`, `waits.rs`, `input.rs`, `mod.rs` | Codex's hooks; a prompt taken (`Submitted`) confirms a task and decides which turn answers it; the first line as a paste of its own; a prompt waits for its agent's input (`Modes::typing`); seems stuck; dialogs as drawn | 7 |
-| `templum/src/workspace/delegate.rs`, `waits.rs`, `bus.rs` | task ids, the notices typed back, changes to a task, a task's timeout | 8 |
+| `templum-mcp/src/hooks.rs`, `tools.rs`; `templum/src/workspace/delegate.rs`, `waits.rs`, `bus.rs`, `activity.rs`, `spawn.rs`, `blocks.rs`, `usage.rs`, `mod.rs` | task ids; the notices typed back (`Workspace::notices`, delivered as each look and each notice comes), with what the task spent read again a second after its end; changes to a task; a task's timeout; the transcript a turn's end names | 8 |
 
 Every request reaches the main thread through a channel the bus's threads write to, drained by a task as the
 terminals' wake-ups are; the main thread never touches a socket. A request that waits keeps its reply channel in
@@ -707,10 +731,15 @@ agent's input to take pastes and show its cursor, Claude Code's without any hook
 ends its task with its screen; a hooked agent gone still keeps its task and seems stuck, unless the person typed into
 it; `wait_for(needs_you)` and `delegate`'s refusal show the dialog as drawn, `list_blocks` what it asks.
 
-**Batch 8:** a task handed without `wait` comes back typed, with its id, time and tokens; a waiting call gets the answer
-and no notice; a notice waits while its asker asks its person, and never goes into a shell; a dialog in a task is told
-once; a change from the asker goes into its task and another agent is still refused; a task past its timeout comes
-back as failed.
+**Batch 8:** a task handed without `wait` comes back typed, with its id and time; what it spent is its cost, else its
+tokens, read again after its end, and its transcript is the one its hooks named, on one line; a waiting call gets the
+answer and no notice, one its client cancelled gets the notice; a notice waits while its asker asks its person, is
+starting or its person types, goes at least 3 s after another into the same agent, oldest first, and never goes into a
+shell (also when its agent quit while it waited); a task whose agent left or whose block closed comes back as failed,
+one its asker interrupts or closes doesn't; a dialog in a task is told once per wait, seeming stuck too, and not while
+a call waits for the task; a change from the asker goes into its task and restarts its timeout, none goes before a
+spawn's prompt, and another agent is still refused; a task past its timeout comes back as failed, and its later end
+too; a task handed with `wait` gets no notice of its timeout.
 
 **Manual (Hyprland):** Claude Code from the menu: `/mcp` lists `templum` connected, "list the blocks" and "read the
 last 30 lines of the dev server" work, the dot follows its turns and a permission prompt; Codex: `/mcp` lists it;
@@ -750,7 +779,8 @@ Batches 2, 3 and 6 to 8 paint or type into agents, so their pull requests carry 
 and 8 start with checks by hand of the agents themselves (what Codex takes on its command line and the payloads of its
 hooks; when Claude Code and Codex fire `UserPromptSubmit` for a prompt typed while they work; the key that stops a turn;
 when each agent turns bracketed paste on), and their plans correct this spec with what they find (batch 7's: [Spike
-results](../plans/2026-10-16-connections-batch-7.md#spike-results)).
+results](../plans/2026-10-16-connections-batch-7.md#spike-results); batch 8's: [Spike
+results](../plans/2026-10-16-connections-batch-8.md#spike-results)).
 
 ## Risks
 
@@ -764,6 +794,9 @@ results](../plans/2026-10-16-connections-batch-7.md#spike-results)).
 | A dialog no hook tells of (a trust question, Codex's choice of model) | No blind second Enter into a changed screen; a hooked agent gone still for 30 seconds seems stuck, and its asker hears so |
 | Codex's hooks need its person's trust | Asked once, about one fixed command (`templum hook codex`); never `--dangerously-bypass-hook-trust` |
 | A notice typed into an agent the person is typing into | It waits until the person stopped typing for 3 seconds; never into a shell |
+| What a task spent, read before its agent wrote its last figure | Read again a second after its end: Claude Code's status line gives its last cost 0.3 s after its `Stop`, Codex writes its tokens just before its own (batch 8's spikes) |
+| Claude Code's status-line token totals are its last call's context, not what it used (batch 8's spikes) | The notice gives its cost, as its usage chip does |
+| Two notices into one agent in a moment would share an Enter | The next waits 3 seconds after the last |
 | A spawned agent's prompt typed while it asks a first-run question (trusting a new folder, Codex's hooks) | From batch 7 Claude Code's and Codex's wait until they bracket pastes and show their cursor, which both hide in those questions (checked by hand); on Windows the still screen alone |
 | Claude Code takes a long paste for data it was shown, not for what it is asked (batch 7's spikes) | The first line, `[from …]` and a sentence, goes as a paste of its own, which Claude Code reads as typed |
 | A command an interrupt left running ends later, with Codex's `PostToolUse` | A tool's end never starts a turn (batch 7) |
