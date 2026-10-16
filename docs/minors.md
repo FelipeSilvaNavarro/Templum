@@ -919,3 +919,46 @@ Left by batch 8 and its review; line numbers are those of `development` at c51be
   person starts another there before the task ends, the new session is typed `[task t7 …]`, a task it never handed
   over, and may act on it. Fix: in `agent_left` (also run on a session's end), drop the notices to that terminal and
   mark the tasks it handed (`Handed::by` that terminal) so their end isn't told.
+- [ ] **On Windows, a notice queued right after its asker's agent quit can go into Git Bash.** `takes_notice`
+  (`crates/templum/src/workspace/delegate.rs`) drops a notice when the shell is in front, but `shell_in_front` is
+  always false on Windows, and `agent_left` leaves `seen.agent` and `seen.pid` set until the next snapshot (up to
+  5 s). A person sees the worker's answer typed with Enter into the shell after Codex's `/quit` or Claude Code's
+  `/exit`, and bash runs its lines as commands (`reply` has the same gap, but notices come on their own). Fix: in
+  `agent_left`, set `seen.pid = None`, so `takes_notice` waits until a snapshot finds an agent again or clears
+  `seen.agent`, which drops the notice.
+- [ ] **A task whose agent quit without a hook is told under the shell's title.** `see`
+  (`crates/templum/src/workspace/persist.rs`) writes the new `seen` (no agent) before it calls `agent_left`, so
+  `signature_of` (`delegate.rs`) falls back to the terminal's title. A person sees the asker get `[task t1 from sh
+  (kf3jc): failed in 0 s] …` for a Codex that quit mid-task (Codex sends no hook when it quits). Fix: call
+  `agent_left` before `see` overwrites `seen`, or keep the worker's signature on `Handed` at hand-over; assert the
+  title in `a_task_whose_agent_left_or_block_closed_comes_back_as_failed`.
+- [ ] **No test pins that a timeout isn't typed while a call of its asker waits.** `timed_out` (`delegate.rs`) skips
+  the notice when `waits_on` says a call of the asker waits for the task; removing that check fails no test. If it
+  broke, a person would see an asker inside `wait_for_idle` also typed `failed … within 600 seconds`. Fix: delegate
+  without `wait` with `timeout: 2`, keep a `wait_for_idle` (timeout 10) pending past the deadline, and assert no
+  notice.
+- [ ] **What the next task spent can start from a stale figure after a task ended through a call.** `tell_end`
+  (`delegate.rs`) writes its fresh read of what the task spent back into `pane.usage`, but a task that ended into a
+  waiting call (`delegate` with `wait`, `wait_for_idle`) or through `reply` doesn't read again, so `pane.usage` stays
+  the last snapshot's, up to 5 s old (spike S8-2: a Codex call or two short). A person sees the next task handed right
+  after it come back with the earlier task's last calls counted in its tokens or cost. Fix: do the `SPENT_AFTER` read
+  and write-back whenever `end_turn` or `reply_to` takes a `handed`, telling only when no call waits.
+- [ ] **A person's half-typed message goes out with a notice.** `takes_notice` (`delegate.rs`) waits only `TYPING`
+  (3 s) after the last key: a person who pauses longer mid-message in their orchestrator gets the notice pasted after
+  their draft, and its Enter sends both. Fix: a longer quiet time for notices than for a task, or wait while the
+  agent's input line isn't empty, if the screen can tell.
+- [ ] **A notice whose Enter never goes is lost.** `deliver_notices` (`delegate.rs`) takes a notice off the queue
+  before `send_task(…, false)` types it, and with `task` false a `GiveUp` does nothing. A person sees an asker whose
+  screen ignored the paste (a Codex whose hooks haven't spoken yet) never hear its task's end. Fix: when its Enter
+  gives up, put the notice back at the front of `Workspace::notices`.
+- [ ] **A task or a reply typed right after a notice can share its Enter.** Only notices wait `NOTICE_GAP` after
+  `Pane::sent` (`takes_notice`, `delegate.rs`); `delegate` and `reply` (`takes_handing`) don't. A person sees, at
+  worst, a task typed within about 2 s of a notice ended as untaken ("didn't take the task") while its agent works on
+  it (batch 7 had this between a task and a reply; notices make it likelier, as they come on their own). Fix: make
+  `takes_handing` refuse, with "try again in a few seconds", while `sent` is within `NOTICE_GAP`.
+- [ ] **That a task's end comes back after Claude Code stops waiting rests on `notifications/cancelled`, never seen
+  live.** Review Focus 2 is tested only through `bus_note`'s cancel. If Claude Code moves a call past 2 minutes to
+  the background without cancelling it, the wait stays to its 600 s deadline: `waits_on` (`delegate.rs`) is true at
+  the task's end, the answer goes to a call nobody reads, and a person sees nothing typed into the asker. Fix: check
+  it by hand (`delegate` with `wait` on a `sleep 150` task, the `[task …]` comes back typed); if the cancel never
+  comes, drop a wait whose client went away (its MCP connection's request id answered or abandoned).

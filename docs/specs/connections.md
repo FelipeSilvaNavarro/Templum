@@ -471,8 +471,8 @@ Codex's `SessionEnd` isn't followed (Codex also sends it after 30 idle minutes):
 
 From batch 8 a turn's end (done, with or without an answer) also hands Templum the `transcript_path` its hook got:
 Claude Code's and Codex's payloads carry it in every hook (batch 7's spike logs); Gemini CLI's is assumed (not checked:
-no login). Templum keeps the last one a terminal's agent named, until its next session starts, for the notice of a
-task's end ([Delegating](#delegating) 10).
+no login). Templum keeps the last one a terminal's agent named, until its next session starts or the agent leaves, for
+the notice of a task's end ([Delegating](#delegating) 10).
 
 Claude Code merges hooks from every settings source, so the person's own hooks still run; Codex merges those of its
 `-c` flags with the person's `hooks.json` too (its `/hooks` lists both, each active).
@@ -735,12 +735,12 @@ it; `wait_for(needs_you)` and `delegate`'s refusal show the dialog as drawn, `li
 **Batch 8:** a task handed without `wait` comes back typed, with its id and time; what it spent is its cost, else its
 tokens, read again after its end, and its transcript is the one its hooks named, on one line; a waiting call gets the
 answer and no notice, one its client cancelled gets the notice; a notice waits while its asker asks its person, is
-starting or its person types, goes at least 3 s after another into the same agent, oldest first, and never goes into a
-shell (also when its agent quit while it waited); a task whose agent left or whose block closed comes back as failed,
-one its asker interrupts or closes doesn't; a dialog in a task is told once per wait, seeming stuck too, and not while
-a call waits for the task; a change from the asker goes into its task and restarts its timeout, none goes before a
-spawn's prompt, and another agent is still refused; a task past its timeout comes back as failed, and its later end
-too; a task handed with `wait` gets no notice of its timeout.
+starting or its person types, goes at least 5.1 s after anything Templum typed into the same agent, oldest first, and
+never goes into a shell (also when its agent quit while it waited); a task whose agent left or whose block closed comes
+back as failed, one its asker interrupts or closes doesn't; a dialog in a task is told once per wait, seeming stuck too,
+and not while a call waits for the task; a change from the asker goes into its task and restarts its timeout, none goes
+before a spawn's prompt, and another agent is still refused; a task past its timeout comes back as failed, and its later
+end too; a task handed with `wait` gets no notice of its timeout.
 
 **Manual (Hyprland):** Claude Code from the menu: `/mcp` lists `templum` connected, "list the blocks" and "read the
 last 30 lines of the dev server" work, the dot follows its turns and a permission prompt; Codex: `/mcp` lists it;
