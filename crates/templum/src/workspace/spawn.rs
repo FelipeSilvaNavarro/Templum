@@ -209,7 +209,8 @@ impl Workspace {
 
     /// `close_block` from the terminal `from`: the block `block`, which it opened with
     /// `spawn_agent` and is still wired to (unwiring it takes the consent back), closed without
-    /// asking the person, as one step of Ctrl+Z, also in a workspace not shown.
+    /// asking the person, as one step of Ctrl+Z, also in a workspace not shown. The task the
+    /// caller handed it ends untold: the caller knows (docs/specs/connections.md, Delegating 12).
     pub(super) fn close_block(
         &mut self,
         from: &str,
@@ -229,6 +230,12 @@ impl Workspace {
             return Reply::err(format!(
                 "Only the person closes {block}: you didn't open it."
             ));
+        }
+        let terminal = space.terminal(id).map(|p| p.term.id().to_string());
+        if let Some(pane) = terminal.as_deref().and_then(|t| self.pane_mut(t))
+            && pane.handed.as_ref().is_some_and(|h| h.by == from)
+        {
+            pane.handed = None;
         }
         self.in_space(&space_id, |ws| {
             ws.close_now(&[id], Then::New, window, cx);

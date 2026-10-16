@@ -52,6 +52,33 @@ fn agents_running(
     (handle, ws, mine, theirs)
 }
 
+/// A third terminal at (40, 500), 700 × 300, running Codex as far as Templum knows, found in front
+/// of its shell (Unix) and wired to `to`.
+fn another_agent(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    to: BlockId,
+) -> BlockId {
+    let id = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open(Rect::new(40.0, 500.0, 700.0, 300.0), window, cx);
+                let id = ws.space.canvas.top().unwrap();
+                ws.space.terminal_mut(id).unwrap().seen.agent = Some("codex".into());
+                ws.space.appearing.clear();
+                assert!(ws.connect(id, to, cx));
+                id
+            })
+        })
+        .unwrap();
+    frame(handle, cx);
+    #[cfg(unix)]
+    in_front(ws, cx, id, true);
+    found(ws, cx, id);
+    id
+}
+
 /// A snapshot found the agent of terminal block `id`: in front of its shell (Unix), or below it
 /// (Windows, which has no process in front).
 pub(super) fn found(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) {
@@ -730,6 +757,92 @@ fn the_end_says_what_it_spent_and_its_transcript(cx: &mut TestAppContext) {
     ws.read_with(cx, |ws, _| {
         assert!(ws.space.terminal(theirs).unwrap().transcript.is_none())
     });
+}
+
+/// A task whose agent left, or whose block the person closed, comes back as failed, saying why.
+/// One its asker ends itself (`interrupt`, `close_block`) comes back as nothing: it knows.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_task_whose_agent_left_or_block_closed_comes_back_as_failed(cx: &mut TestAppContext) {
+    use templum_terminal::Inspection;
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let extra = another_agent(handle, &ws, cx, mine);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    let (_, other) = me(&ws, cx, extra);
+    asker(&ws, cx, mine);
+    event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({ "event": "needs_you", "message": "Allow Edit?" }),
+    );
+    let hand = |cx: &mut TestAppContext, block: &str| {
+        let task = json!({ "block": block, "task": "go" });
+        let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+        assert!(!failed, "{text}");
+    };
+    // Its agent left: a snapshot no longer finds it.
+    hand(cx, &them);
+    snapshot(handle, &ws, cx, theirs, Inspection::default());
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(theirs).unwrap().seen.agent = Some("codex".into())
+    });
+    found(&ws, cx, theirs);
+    // Interrupted by its asker.
+    hand(cx, &them);
+    let _stopped = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        1,
+        "interrupt",
+        json!({ "block": them }),
+    );
+    // Closed by the person.
+    hand(cx, &them);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.remove_block(theirs, window, cx))
+    })
+    .unwrap();
+    // Closed by its asker, which opened it.
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(extra).unwrap().opened_by = Some(uid.clone())
+    });
+    hand(cx, &other);
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": other })
+        )
+        .0
+    );
+    after(cx, 1000);
+    let told: Vec<String> = notices(&ws, cx).into_iter().map(|(_, t)| t).collect();
+    assert_eq!(told.len(), 2, "t1 and t3 only: {told:?}");
+    // Both ended in the same instant of the test's clock: found by their ids.
+    let task = |id: &str| {
+        told.iter()
+            .find(|t| t.starts_with(&format!("[task {id} from ")))
+            .unwrap()
+    };
+    assert!(
+        task("t1").contains(": failed in ")
+            && task("t1").ends_with(
+                "] What happened is in the pasted text.\nIts agent ended before it answered."
+            ),
+        "{told:?}"
+    );
+    assert!(
+        task("t3").ends_with(&format!("\n{them} was closed before it answered.")),
+        "{told:?}"
+    );
 }
 
 /// The notices once there are `n`: a read on the background executor may come a moment later.

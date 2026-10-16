@@ -312,6 +312,7 @@ impl Workspace {
     /// `interrupt` from the terminal `from`: Esc once in the agent `block` while it works or waits
     /// for its person. The task the caller handed it ends first, its waits hearing so at once,
     /// with the prompt a spawn still keeps for it: typed later, it would start work no one awaits.
+    /// The caller isn't told of that end: it knows (docs/specs/connections.md, Delegating 12).
     pub(super) fn interrupt(&mut self, from: &str, block: &str, cx: &mut Context<Self>) -> Outcome {
         let now = Instant::now();
         let (space_id, me) = self.caller(from).expect("call found the caller");
@@ -348,10 +349,11 @@ impl Workspace {
         let worker = pane.term.id().to_string();
         let by = self.signature(space, me, cx);
         let said = if mine {
-            self.end_turn(&worker, Reply::err("Interrupted by you."), cx);
             if let Some(pane) = self.pane_mut(&worker) {
+                pane.handed = None;
                 pane.prompt = None;
             }
+            self.end_turn(&worker, Reply::err("Interrupted by you."), cx);
             format!("Pressed Esc in {block}, and ended the task you handed it.")
         } else {
             format!("Pressed Esc in {block}.")

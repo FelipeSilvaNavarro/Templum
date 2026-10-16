@@ -581,12 +581,18 @@ impl Workspace {
 
     /// Removes a block and kills its shell (dropping the Terminal shuts it down).
     /// The block leaves the canvas at once; it stays on screen as a ghost while it fades out.
+    /// The task its agent was on ends: the agent that handed it over hears so.
     pub(super) fn remove_block(
         &mut self,
         id: BlockId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(terminal) = self.space.terminal(id).map(|p| p.term.id().to_string()) {
+            let uid = self.space.uids.get(&id).cloned().unwrap_or_default();
+            let why = format!("{uid} was closed before it answered.");
+            self.end_turn(&terminal, templum_mcp::Reply::err(why), cx);
+        }
         if let Some((block, _, body)) = self.take_block(id, window, cx) {
             // Its notes stay in the Notes dialog, but for blank ones: nothing is lost.
             for note in body.note().map(Note::ids).unwrap_or_default() {
