@@ -464,7 +464,7 @@ impl Workspace {
                 Some((id, path)) => (id, path, false),
                 None => {
                     let anchor = ws.space.home(ws.space.canvas.get(me)?);
-                    let rect = ws.space.canvas.place_beside(anchor, crate::editor::SIZE);
+                    let rect = ws.space.room_beside(&[anchor], crate::editor::SIZE);
                     let kept = (
                         ws.space.focused,
                         ws.space.selected.clone(),

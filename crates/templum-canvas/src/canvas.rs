@@ -104,20 +104,6 @@ impl Canvas {
         cascade(Rect::new(near.x, near.y, size.w, size.h), &taken)
     }
 
-    /// A spot to the right of `anchor`, top-aligned, a BESIDE gap away; cascading down by
-    /// CASCADE while a block's top-left corner is already there.
-    pub fn place_beside(&self, anchor: Rect, size: Size) -> Rect {
-        let mut p = Point::new(anchor.x + anchor.w + BESIDE, anchor.y);
-        while self
-            .blocks
-            .iter()
-            .any(|b| (b.rect.x - p.x).abs() < 8.0 && (b.rect.y - p.y).abs() < 8.0)
-        {
-            p.y += CASCADE;
-        }
-        Rect::new(p.x, p.y, size.w, size.h)
-    }
-
     /// Frames every block; with none, back to 100% around the viewport center.
     pub fn fit_all(&mut self, viewport: Size) {
         match self.bounds() {
@@ -131,6 +117,61 @@ impl Canvas {
     fn index(&self, id: BlockId) -> Option<usize> {
         self.blocks.iter().position(|b| b.id == id)
     }
+}
+
+/// Where a block of `size` goes beside `anchors` (a block and those wired to it), over no rect of
+/// `taken`: a BESIDE gap right of an anchor, below, left or above it, at its edge or a BESIDE
+/// gap past each rect in the way along that side. The spot nearest the anchors all together wins (the
+/// sum of its gaps to them), so a block's connections draw it their way; on a tie the first
+/// anchor's, in that order of sides. With none free, right of everything.
+pub fn free_spot(taken: &[Rect], anchors: &[Rect], size: Size) -> Rect {
+    let first = anchors.first().copied().unwrap_or_default();
+    let (w, h) = (size.w, size.h);
+    let clear = |spot: &Rect| !taken.iter().any(|t| t.intersects(spot));
+    let mut best: Option<(f32, Rect)> = None;
+    for a in anchors {
+        // Along a side: at the anchor's edge, then just past each rect in the way.
+        let ys: Vec<f32> = std::iter::once(a.y)
+            .chain(
+                taken
+                    .iter()
+                    .flat_map(|t| [t.bottom() + BESIDE, t.y - BESIDE - h]),
+            )
+            .collect();
+        let xs: Vec<f32> = std::iter::once(a.x)
+            .chain(
+                taken
+                    .iter()
+                    .flat_map(|t| [t.right() + BESIDE, t.x - BESIDE - w]),
+            )
+            .collect();
+        let (right, left) = (a.right() + BESIDE, a.x - BESIDE - w);
+        let (below, above) = (a.bottom() + BESIDE, a.y - BESIDE - h);
+        let spots = (ys.iter().map(|&y| Rect::new(right, y, w, h)))
+            .chain(xs.iter().map(|&x| Rect::new(x, below, w, h)))
+            .chain(ys.iter().map(|&y| Rect::new(left, y, w, h)))
+            .chain(xs.iter().map(|&x| Rect::new(x, above, w, h)));
+        for spot in spots.filter(clear) {
+            let far: f32 = anchors.iter().map(|a| gap(&spot, a).round()).sum();
+            if best.is_none_or(|(least, _)| far < least) {
+                best = Some((far, spot));
+            }
+        }
+    }
+    best.map_or_else(
+        || {
+            let edge = taken.iter().map(Rect::right).fold(first.right(), f32::max);
+            Rect::new(edge + BESIDE, first.y, w, h)
+        },
+        |(_, spot)| spot,
+    )
+}
+
+/// How far apart two rects are: 0 when they touch or overlap.
+fn gap(a: &Rect, b: &Rect) -> f32 {
+    let dx = (b.x - a.right()).max(a.x - b.right()).max(0.0);
+    let dy = (b.y - a.bottom()).max(a.y - b.bottom()).max(0.0);
+    dx.hypot(dy)
 }
 
 /// `rect`, shifted by [`CASCADE`] while one of `taken`'s top-left corners is within 8 units of
@@ -233,19 +274,81 @@ mod tests {
     }
 
     #[test]
-    fn place_beside_sits_to_the_right_and_cascades_down_off_taken_spots() {
-        let mut c = Canvas::default();
+    fn a_free_spot_sits_to_the_right_and_slides_past_what_is_in_the_way() {
         let anchor = Rect::new(100.0, 50.0, 300.0, 200.0);
         let size = Size::new(100.0, 60.0);
         assert_eq!(
-            c.place_beside(anchor, size),
+            free_spot(&[anchor], &[anchor], size),
             Rect::new(100.0 + 300.0 + BESIDE, 50.0, 100.0, 60.0)
         );
-        c.add(Rect::new(100.0 + 300.0 + BESIDE + 3.0, 52.0, 10.0, 10.0));
+        let small = Rect::new(100.0 + 300.0 + BESIDE + 3.0, 52.0, 10.0, 10.0);
         assert_eq!(
-            c.place_beside(anchor, size),
-            Rect::new(100.0 + 300.0 + BESIDE, 50.0 + CASCADE, 100.0, 60.0)
+            free_spot(&[anchor, small], &[anchor], size),
+            Rect::new(100.0 + 300.0 + BESIDE, 62.0 + BESIDE, 100.0, 60.0),
+            "down its right side, past the block there"
         );
+    }
+
+    /// `spot` is over no rect of `taken`.
+    fn clear(spot: Rect, taken: &[Rect]) -> bool {
+        !taken.iter().any(|t| t.intersects(&spot))
+    }
+
+    #[test]
+    fn a_free_spot_goes_toward_the_anchors_connections() {
+        let a = Rect::new(100.0, 50.0, 300.0, 200.0);
+        let size = Size::new(100.0, 60.0);
+        assert_eq!(
+            free_spot(&[a], &[a], size),
+            Rect::new(424.0, 50.0, 100.0, 60.0),
+            "alone: on its right"
+        );
+        // Its connection is below it: the new block goes between them.
+        let below = Rect::new(100.0, 700.0, 300.0, 100.0);
+        assert_eq!(
+            free_spot(&[a, below], &[a, below], size),
+            Rect::new(100.0, 274.0, 100.0, 60.0)
+        );
+    }
+
+    #[test]
+    fn a_boxed_in_anchor_sends_the_block_beside_its_connection() {
+        let a = Rect::new(100.0, 50.0, 300.0, 200.0);
+        let walls = [
+            Rect::new(424.0, 0.0, 400.0, 400.0),
+            Rect::new(0.0, 274.0, 1000.0, 400.0),
+            Rect::new(-500.0, 0.0, 576.0, 400.0),
+            Rect::new(0.0, -500.0, 1000.0, 526.0),
+        ];
+        let far = Rect::new(2000.0, 50.0, 200.0, 100.0);
+        let taken: Vec<Rect> = [a, far].into_iter().chain(walls).collect();
+        let size = Size::new(100.0, 60.0);
+        let spot = free_spot(&taken, &[a, far], size);
+        assert!(clear(spot, &taken), "{spot:?}");
+        assert!(
+            spot.x > 824.0 && spot.right() <= far.x - BESIDE + 0.5,
+            "past the walls, toward its connection: {spot:?}"
+        );
+    }
+
+    /// Whatever is around, the spot found overlaps nothing.
+    #[test]
+    fn a_free_spot_never_overlaps() {
+        let mut seed: u32 = 7;
+        let mut next = |n: u32| {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            ((seed >> 16) % n) as f32
+        };
+        for _ in 0..200 {
+            let taken: Vec<Rect> = (0..12)
+                .map(|_| Rect::new(next(1600), next(1200), 50.0 + next(500), 40.0 + next(400)))
+                .collect();
+            let anchors = [taken[0], taken[1], taken[2]];
+            let size = Size::new(80.0 + next(700), 60.0 + next(500));
+            let spot = free_spot(&taken, &anchors, size);
+            assert_eq!(spot.size(), size);
+            assert!(clear(spot, &taken), "{spot:?} in {taken:?}");
+        }
     }
 
     #[test]

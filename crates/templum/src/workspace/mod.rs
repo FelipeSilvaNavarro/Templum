@@ -58,7 +58,7 @@ use gpui_kit::{
 };
 use templum_canvas::{
     Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, Point, Rect,
-    ShapeKind, Size, Tile, Wire, chrome,
+    ShapeKind, Size, Tile, Wire, chrome, free_spot,
 };
 use templum_git::GitError;
 use templum_terminal::{Notify, Snapshot, Terminal};
@@ -545,6 +545,16 @@ impl Space {
             .and_then(|g| g.homes.get(&block.id))
             .copied()
             .unwrap_or(block.rect)
+    }
+
+    /// A spot for a block of `size` beside `anchors` (the first preferred) that overlaps no block
+    /// nor drawing ([`free_spot`]): to the right of a lone anchor, top-aligned, when nothing is
+    /// there. Blocks are where they sit on the canvas, also in grid mode.
+    pub(super) fn room_beside(&self, anchors: &[Rect], size: Size) -> Rect {
+        let taken: Vec<Rect> = (self.canvas.blocks().iter().map(|b| self.home(b)))
+            .chain(self.ink.iter().map(Drawing::bounds))
+            .collect();
+        free_spot(&taken, anchors, size)
     }
 
     /// The block on top among those drawn.

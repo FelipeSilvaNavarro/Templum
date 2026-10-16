@@ -527,7 +527,7 @@ impl Workspace {
             let size = editor::SIZE;
             let anchor = beside.and_then(|b| self.space.canvas.get(b).map(|b| self.space.home(b)));
             let at = match anchor {
-                Some(anchor) => self.space.canvas.place_beside(anchor, size).origin(),
+                Some(anchor) => self.space.room_beside(&[anchor], size).origin(),
                 None => {
                     let center = self.space.camera().to_world(self.center(window));
                     self.space

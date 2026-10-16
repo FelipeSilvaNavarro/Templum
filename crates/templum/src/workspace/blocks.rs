@@ -131,7 +131,7 @@ impl Workspace {
         let anchor = self.space.home(self.space.canvas.get(block)?);
         self.space.pristine = false;
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
-        let rect = self.space.canvas.place_beside(anchor, size);
+        let rect = self.space.room_beside(&[anchor], size);
         let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx);
         if let (Some(id), Some(command)) = (id, command) {
             // Typed, not run: the person reads it and presses Enter (it may delete or push).
