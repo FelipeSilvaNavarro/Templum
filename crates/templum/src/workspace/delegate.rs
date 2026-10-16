@@ -39,8 +39,17 @@ pub(super) const TAIL_LINES: usize = 20;
 /// What a task's first line asks, after who hands it over: Claude Code takes a long paste alone
 /// for data it was shown, and does what typed text with it asks.
 pub(super) const TASK_LEAD: &str = "Your task is in the pasted text: do it.";
+/// What the first line of a task's end says follows it: its answer, or why it failed.
+pub(super) const DONE_LEAD: &str = "Its answer is in the pasted text.";
+pub(super) const FAILED_LEAD: &str = "What happened is in the pasted text.";
 /// How long a terminal says which block pressed keys in it ("answered by").
 pub(crate) const ANSWERED_FOR: Duration = Duration::from_secs(10);
+
+/// What a task's agent did, to type into the agent that handed it (its terminal `to`).
+pub(crate) struct Notice {
+    pub to: String,
+    pub text: String,
+}
 
 /// What a look at an agent's screen, while a typed task waits for its Enter, says to do.
 #[derive(Debug, PartialEq)]
@@ -190,6 +199,15 @@ impl Pane {
             )));
         }
         Ok(())
+    }
+
+    /// Templum may type a notice into it now (docs/specs/connections.md, Delegating 10). None:
+    /// never, no agent runs there (a shell would run the text); Some(false): not now.
+    pub(super) fn takes_notice(&self) -> Option<bool> {
+        if self.seen.agent.is_none() || self.shell_in_front() {
+            return None;
+        }
+        Some(true)
     }
 
     /// `takes_typing`, for what another agent hands it (`delegate`, `reply`): only once a snapshot
@@ -483,6 +501,13 @@ impl Workspace {
             .unwrap_or_default()
     }
 
+    /// The `signature` of the block of the terminal `terminal`; empty when it is gone.
+    pub(super) fn signature_of(&self, terminal: &str, cx: &App) -> String {
+        self.caller(terminal)
+            .and_then(|(space, id)| Some(self.signature(self.space_named(&space)?, id, cx)))
+            .unwrap_or_default()
+    }
+
     /// The agent in the terminal `terminal` didn't take the task typed into it: the task, if it is
     /// still handed over, ends, and the calls waiting on it hear so, with its screen.
     fn not_taken(&mut self, terminal: &str, cx: &mut Context<Self>) {
@@ -673,19 +698,69 @@ impl Workspace {
     }
 
     /// The agent in the terminal `terminal` ended its turn, or its session: the task it was on is
-    /// no longer handed over, and the calls waiting on it get `reply`.
+    /// no longer handed over, and the calls waiting on it get `reply`; the agent that handed the
+    /// task over hears so, typed, when no call of its waits for it (docs/specs/connections.md,
+    /// Delegating 10).
     pub(super) fn end_turn(&mut self, terminal: &str, reply: Reply, cx: &mut Context<Self>) {
-        if let Some(pane) = self.pane_mut(terminal) {
-            pane.handed = None;
-        }
+        let handed = self.pane_mut(terminal).and_then(|p| p.handed.take());
         let waiting: Vec<u64> = self
             .waits
             .iter()
             .filter(|w| matches!(&w.what, Waiting::Turn { of, .. } if of == terminal))
             .map(|w| w.key)
             .collect();
+        if let Some(handed) = handed.filter(|h| !self.waits_on(&h.by, terminal)) {
+            self.tell_end(terminal, &handed, &reply, cx);
+        }
         for key in waiting {
             self.answer(key, reply.clone(), cx);
+        }
+    }
+
+    /// The task `handed` to the agent in `terminal` ended with `reply`: its asker hears so.
+    pub(super) fn tell_end(
+        &mut self,
+        terminal: &str,
+        handed: &Handed,
+        reply: &Reply,
+        cx: &mut Context<Self>,
+    ) {
+        let (word, lead) = if reply.is_error {
+            ("failed", FAILED_LEAD)
+        } else {
+            ("done", DONE_LEAD)
+        };
+        let text = format!(
+            "[task t{} from {}: {word} in {} s] {lead}\n{}",
+            handed.id,
+            self.signature_of(terminal, cx),
+            handed.since.elapsed().as_secs(),
+            reply.text
+        );
+        self.queue_notice(handed.by.clone(), text, cx);
+    }
+
+    /// Queues the notice `text` for the agent in the terminal `to`, then types what may go now.
+    pub(super) fn queue_notice(&mut self, to: String, text: String, cx: &mut Context<Self>) {
+        self.notices.push(Notice { to, text });
+        self.deliver_notices(cx);
+    }
+
+    /// Types the notices whose agents take them now, oldest first; drops those whose terminal
+    /// runs no agent any more (docs/specs/connections.md, Delegating 10).
+    pub(super) fn deliver_notices(&mut self, cx: &mut Context<Self>) {
+        let mut i = 0;
+        while i < self.notices.len() {
+            match self.pane(&self.notices[i].to).and_then(Pane::takes_notice) {
+                None => {
+                    self.notices.remove(i);
+                }
+                Some(false) => i += 1,
+                Some(true) => {
+                    let notice = self.notices.remove(i);
+                    self.send_task(&notice.to, &notice.text, false, cx);
+                }
+            }
         }
     }
 }

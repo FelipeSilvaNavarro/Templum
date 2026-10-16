@@ -1097,6 +1097,9 @@ pub struct Workspace {
     next_wait: u64,
     /// The last task's id.
     pub(crate) next_task: u64,
+    /// What tasks' agents did, waiting to be typed into the agents that handed them over, oldest
+    /// first (`delegate.rs`).
+    pub(crate) notices: Vec<delegate::Notice>,
     /// Draws the next frame while a dot travels along a wire in view (`wires::DOT_FRAME`).
     _dot_frame: Task<()>,
     _wake: Task<()>,
@@ -1203,7 +1206,11 @@ impl Workspace {
         let looks = cx.spawn(async move |ws, cx| {
             loop {
                 cx.background_executor().timer(activity::LOOK).await;
-                if ws.update(cx, |ws, cx| ws.look_at_agents(cx)).is_err() {
+                let looked = ws.update(cx, |ws, cx| {
+                    ws.look_at_agents(cx);
+                    ws.deliver_notices(cx);
+                });
+                if looked.is_err() {
                     break;
                 }
             }
@@ -1404,6 +1411,7 @@ impl Workspace {
             waits: Vec::new(),
             next_wait: 0,
             next_task: 0,
+            notices: Vec::new(),
             _dot_frame: Task::ready(()),
             _wake: wake,
         };

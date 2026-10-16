@@ -91,6 +91,60 @@ fn enter(cx: &mut TestAppContext) {
     );
 }
 
+/// Mine runs Claude Code too, found by a snapshot: what comes back is typed into it.
+#[cfg(unix)]
+fn asker(ws: &Entity<Workspace>, cx: &mut TestAppContext, mine: BlockId) {
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(mine).unwrap().seen.agent = Some("claude".into())
+    });
+    found(ws, cx, mine);
+}
+
+/// The notices waiting to be typed, oldest first: to whom, and what.
+#[cfg(unix)]
+fn notices(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<(String, String)> {
+    ws.read_with(cx, |ws, _| {
+        ws.notices
+            .iter()
+            .map(|n| (n.to.clone(), n.text.clone()))
+            .collect()
+    })
+}
+
+/// The terminal `from` hands block `theirs` the task `said` without waiting; its agent takes it
+/// and ends with the answer `said`; then a second passes (what it spent is read then).
+#[cfg(unix)]
+fn done_task(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    from: &str,
+    theirs: BlockId,
+    said: &str,
+) {
+    let (worker, them) = me(ws, cx, theirs);
+    let (failed, text) = call(
+        handle,
+        ws,
+        cx,
+        from,
+        "delegate",
+        json!({ "block": them, "task": said }),
+    );
+    assert!(!failed, "{text}");
+    screen_with(ws, cx, theirs, said);
+    enter(cx);
+    event(handle, ws, cx, &worker, json!({ "event": "submitted" }));
+    event(
+        handle,
+        ws,
+        cx,
+        &worker,
+        json!({ "event": "stopped", "message": said }),
+    );
+    after(cx, 1000);
+}
+
 #[cfg(unix)]
 #[gpui_kit::test]
 fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
@@ -374,6 +428,126 @@ fn a_turns_end_and_its_timeout_answer_once(cx: &mut TestAppContext) {
     after(cx, 3000);
     assert_eq!(answered(&answers), (false, "Done.".to_string()));
     assert!(answers.try_recv().is_err(), "answered once");
+}
+
+/// A task handed over without `wait` ends: the agent that handed it hears so in its terminal,
+/// under a first line naming the task, its agent and its time.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_task_handed_without_wait_comes_back_typed(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    asker(&ws, cx, mine);
+    // One word: a space where the echo's row ends is lost when the rows are joined.
+    done_task(handle, &ws, cx, &terminal, theirs, "Green.");
+    // `cat` echoes what is typed: the notice, its first line and its answer as one line.
+    let shown = screen_with(&ws, cx, mine, "Green.");
+    assert!(
+        shown.contains("[task t1 from ")
+            && shown.contains(&format!("({them}): done in "))
+            && shown.contains(" s] Its answer is in the pasted text. Green."),
+        "{shown}"
+    );
+    assert!(notices(&ws, cx).is_empty());
+}
+
+/// A call of the agent that handed the task over waits for it: that call gets the answer, and
+/// nothing is typed. One its client gave up on (Claude Code past 2 minutes) waits no more.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_waiting_call_gets_the_answer_and_no_notice(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    asker(&ws, cx, mine);
+    let ends = |cx: &mut TestAppContext, said: &str| {
+        screen_with(&ws, cx, theirs, said);
+        enter(cx);
+        event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+        event(
+            handle,
+            &ws,
+            cx,
+            &worker,
+            json!({ "event": "stopped", "message": said }),
+        );
+    };
+    // `delegate` with `wait`.
+    let task = json!({ "block": them, "task": "one", "wait": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    ends(cx, "one");
+    assert_eq!(answered(&answers), (false, "one".to_string()));
+    after(cx, 1000);
+    // `wait_for_idle` after one without.
+    call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "delegate",
+        json!({ "block": them, "task": "two" }),
+    );
+    let idle = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        2,
+        "wait_for_idle",
+        json!({ "block": them }),
+    );
+    ends(cx, "two");
+    assert_eq!(answered(&idle), (false, "two".to_string()));
+    after(cx, 1000);
+    assert!(notices(&ws, cx).is_empty());
+    // Cancelled: its end comes back typed.
+    let task = json!({ "block": them, "task": "three", "wait": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 3, "delegate", task);
+    super::bus::bus_note(
+        handle,
+        &ws,
+        cx,
+        3,
+        "notifications/cancelled",
+        json!({ "requestId": 3 }),
+    );
+    ends(cx, "three");
+    assert!(answers.try_recv().is_err(), "no one waits");
+    after(cx, 1000);
+    let shown = screen_with(&ws, cx, mine, "[task t3 from ");
+    assert!(
+        !shown.contains("[task t1") && !shown.contains("[task t2"),
+        "{shown}"
+    );
+}
+
+/// The agent that handed a task over isn't there to read its end: a script's `templum delegate`
+/// in a shell, or an agent that quit. Nothing is typed into that shell: the notice is dropped.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_notice_never_goes_into_a_shell(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    // Mine runs no agent.
+    done_task(handle, &ws, cx, &terminal, theirs, "One.");
+    assert!(notices(&ws, cx).is_empty(), "dropped");
+    // Its agent quit: its shell is in front, though the last snapshot still has it.
+    ws.update(cx, |ws, _| {
+        let pane = ws.space.terminal_mut(mine).unwrap();
+        pane.seen.agent = Some("claude".into());
+        pane.seen.pid = Some(1);
+    });
+    done_task(handle, &ws, cx, &terminal, theirs, "Two.");
+    assert!(notices(&ws, cx).is_empty(), "dropped");
+    // An agent again: typed, and that one only.
+    found(&ws, cx, mine);
+    done_task(handle, &ws, cx, &terminal, theirs, "Three.");
+    let shown = screen_with(&ws, cx, mine, "[task t3 from ");
+    assert!(
+        !shown.contains("[task t1") && !shown.contains("[task t2"),
+        "{shown}"
+    );
 }
 
 /// The turn an agent was on when a task was typed into it ends first, and isn't the task's

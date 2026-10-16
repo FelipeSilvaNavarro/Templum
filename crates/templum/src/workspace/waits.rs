@@ -195,6 +195,13 @@ impl Workspace {
         cx.notify();
     }
 
+    /// A call from the terminal `from` waits for the turn of the agent in the terminal `of`.
+    pub(super) fn waits_on(&self, from: &str, of: &str) -> bool {
+        self.waits
+            .iter()
+            .any(|w| w.from == from && matches!(&w.what, Waiting::Turn { of: o, .. } if o == of))
+    }
+
     /// The connection `conn` ended (its agent quit, its command exited): what it waited for has
     /// no one to answer.
     pub(super) fn closed(&mut self, conn: u64, cx: &mut Context<Self>) {
