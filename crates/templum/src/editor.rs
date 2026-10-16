@@ -538,6 +538,7 @@ impl Editor {
             })
             .collect();
         session::EditorItem {
+            uid: String::new(),
             rect: rect.into(),
             folder: self.folder.to_string_lossy().into_owned(),
             active: self

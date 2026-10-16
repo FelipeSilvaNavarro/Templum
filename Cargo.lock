@@ -6786,6 +6786,7 @@ dependencies = [
  "tempfile",
  "templum-canvas",
  "templum-git",
+ "templum-mcp",
  "templum-terminal",
  "templum-update",
  "templum-usage",
@@ -6803,6 +6804,17 @@ name = "templum-git"
 version = "0.1.1"
 dependencies = [
  "tempfile",
+]
+
+[[package]]
+name = "templum-mcp"
+version = "0.1.1"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
 ]
 
 [[package]]

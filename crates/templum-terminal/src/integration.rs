@@ -418,6 +418,7 @@ mod tests {
                         options: TermOptions::default(),
                         working_directory: Some(home.to_path_buf()),
                         integration: None,
+                        env: Vec::new(),
                     },
                     Arc::new(|| {}),
                 )

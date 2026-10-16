@@ -217,6 +217,7 @@ impl Workspace {
         left.flight = None;
         left.view = left.canvas.camera;
         left.selected_ink = None;
+        left.selected_wire = None;
         self.drag = None;
         self.press = None;
         self.marked = None;
@@ -293,14 +294,16 @@ impl Workspace {
             .map(|b| b.id)
             .filter(|id| ids.contains(id))
             .collect();
-        let taken: Vec<(Rect, Body)> = order
+        // Each keeps its id there.
+        let taken: Vec<(Rect, Body, Option<String>)> = order
             .into_iter()
             .filter_map(|id| {
+                let uid = self.space.uids.get(&id).cloned();
                 let (_, home, body) = self.take_block(id, window, cx)?;
-                Some((home, body))
+                Some((home, body, uid))
             })
             .collect();
-        let Some(bounds) = taken.iter().map(|(r, _)| *r).reduce(|a, b| a.union(&b)) else {
+        let Some(bounds) = taken.iter().map(|(r, _, _)| *r).reduce(|a, b| a.union(&b)) else {
             return;
         };
         let moved = self.with_space(&to, |ws| {
@@ -308,7 +311,7 @@ impl Workspace {
             // Not a change to take back there.
             ws.quiet = true;
             let mut moved = Vec::new();
-            for (r, mut body) in taken {
+            for (r, mut body, uid) in taken {
                 match &mut body {
                     // Its commands in flight answer the block it was: they never come back to it.
                     Body::Git(git) => {
@@ -320,7 +323,11 @@ impl Workspace {
                     Body::Terminal(pane) => pane.find = None,
                     _ => {}
                 }
-                moved.push(ws.add_block(Rect::new(r.x + dx, r.y + dy, r.w, r.h), body));
+                let id = ws.add_block(Rect::new(r.x + dx, r.y + dy, r.w, r.h), body);
+                if let Some(uid) = uid {
+                    ws.space.uids.insert(id, uid);
+                }
+                moved.push(id);
             }
             ws.quiet = false;
             ws.space.pristine = false;
@@ -358,6 +365,16 @@ impl Workspace {
         let result = f(self);
         std::mem::swap(&mut self.space, &mut self.others[i]);
         Some(result)
+    }
+
+    /// Runs `f` with the workspace `id` as the one shown: at once when it is, else as `with_space`
+    /// does. None when there is no such workspace.
+    pub(super) fn in_space<R>(&mut self, id: &str, f: impl FnOnce(&mut Self) -> R) -> Option<R> {
+        if self.space.id == id {
+            Some(f(self))
+        } else {
+            self.with_space(id, f)
+        }
     }
 
     /// A new workspace, shown, with its Edit… dialog open to name it.

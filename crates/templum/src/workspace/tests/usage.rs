@@ -2,30 +2,144 @@
 
 use super::*;
 
-/// The Claude Code Templum types gets Templum's status line, which hands Templum the limits.
+/// The Claude Code and Codex Templum types get its server and hooks; Claude Code its status line
+/// too (docs/specs/connections.md, What Templum types into each agent).
 #[gpui_kit::test]
-fn the_claude_code_templum_opens_gets_its_status_line(cx: &mut TestAppContext) {
+fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAppContext) {
     let data = tempfile::tempdir().unwrap();
     let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
     ws.update(cx, |ws, _| {
         let agent = |id: &str| ws.agents.iter().find(|a| a.id == id).cloned();
         let (claude, codex) = (agent("claude"), agent("codex"));
-        let settings = data.path().join("claude-statusline.json");
-        let arg =
-            templum_usage::claude::typed_path(&settings.to_string_lossy(), cfg!(windows)).unwrap();
+        let typed = |name: &str| {
+            templum_usage::claude::typed_path(
+                &data.path().join(name).to_string_lossy(),
+                cfg!(windows),
+            )
+            .unwrap()
+        };
+        let (settings, mcp) = (typed("claude-statusline.json"), typed("mcp.json"));
         assert_eq!(
             ws.typed(claude.as_ref(), "claude --continue"),
-            format!("claude --continue --settings {arg}")
+            format!("claude --continue --settings {settings} --mcp-config {mcp}")
         );
-        let written = std::fs::read_to_string(&settings).unwrap();
-        assert!(written.contains("--claude-statusline"), "{written}");
-        assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex");
+        let written = std::fs::read_to_string(data.path().join("claude-statusline.json")).unwrap();
+        assert!(
+            written.contains("--claude-statusline") && written.contains(" hook claude"),
+            "{written}"
+        );
+        let server: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(data.path().join("mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            server["mcpServers"]["templum"]["args"],
+            serde_json::json!(["mcp"])
+        );
+        #[cfg(unix)]
+        assert!(
+            ws.typed(codex.as_ref(), "codex resume 0d5e")
+                .starts_with("codex resume 0d5e -c 'mcp_servers.templum.command="),
+            "{}",
+            ws.typed(codex.as_ref(), "codex resume 0d5e")
+        );
+        #[cfg(unix)]
+        {
+            let line = ws.typed(codex.as_ref(), "codex");
+            let stop = r#"-c 'hooks.Stop=[{hooks=[{type="command",command="templum hook codex",timeout=5}]}]'"#;
+            assert!(line.contains(stop) && !line.contains("notify"), "{line}");
+            // No `<data>/bin` on the terminal's PATH: the server, not hooks running a `templum`
+            // it can't find.
+            let env = ws.bus_env.clone();
+            ws.bus_env.retain(|(k, _)| k != "PATH");
+            let line = ws.typed(codex.as_ref(), "codex");
+            assert!(
+                line.contains("mcp_servers.templum") && !line.contains("hooks."),
+                "{line}"
+            );
+            ws.bus_env = env;
+        }
         assert_eq!(ws.typed(None, "claude"), "claude");
+        // Windows PowerShell 5.1 passes `args=["mcp"]` on as `args=[mcp]`; pwsh 7 doesn't.
+        let shell = ws.config.shell.program.clone();
+        ws.config.shell.program = Some("powershell".into());
+        assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex");
+        // Windows names its programs in any case.
+        for program in ["PowerShell.exe", "CMD.EXE"] {
+            ws.config.shell.program = Some(program.into());
+            assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex", "{program}");
+        }
+        ws.config.shell.program = Some("WSL.exe".into());
+        assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
+        ws.config.shell.program = Some("pwsh".into());
+        assert!(
+            ws.typed(codex.as_ref(), "codex")
+                .contains("mcp_servers.templum")
+        );
+        ws.config.shell.program = shell;
+        // Connections off: the status line only, and nothing for Codex.
+        ws.config.connections.enabled = false;
+        assert_eq!(
+            ws.typed(claude.as_ref(), "claude"),
+            format!("claude --settings {settings}")
+        );
+        assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex");
         ws.config.usage.claude_limits = false;
         assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
+        // Connections without the status line: the hooks still need the settings file.
+        ws.config.connections.enabled = true;
+        assert_eq!(
+            ws.typed(claude.as_ref(), "claude"),
+            format!("claude --settings {settings} --mcp-config {mcp}")
+        );
+        // A bus that couldn't start: no server, no hooks.
+        let bus = ws.bus.take();
+        assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
+        ws.bus = bus;
         // Without a data folder, nothing would read what the relay writes.
-        ws.config.usage.claude_limits = true;
         ws.data_dir = None;
+        assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
+    });
+}
+
+/// A program path a shell would expand (`$`) can't be typed into the hooks: the server isn't
+/// given either, or the agent would be connected with a dot that never moves.
+#[test]
+fn claude_code_gets_the_server_only_with_the_hooks() {
+    use crate::workspace::usage::claude_flags;
+    let data = tempfile::tempdir().unwrap();
+    let flags = claude_flags(
+        data.path(),
+        std::path::Path::new("/opt/templum"),
+        cfg!(windows),
+        false,
+        true,
+    );
+    assert!(
+        flags.contains(" --settings ") && flags.contains(" --mcp-config "),
+        "{flags}"
+    );
+    assert_eq!(
+        claude_flags(
+            data.path(),
+            std::path::Path::new("/opt/$x/templum"),
+            cfg!(windows),
+            false,
+            true
+        ),
+        ""
+    );
+}
+
+/// A data folder a shell would expand (`$`): the agent starts as typed, without a broken line.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_untypeable_data_folder_gives_no_connections(cx: &mut TestAppContext) {
+    let parent = tempfile::tempdir().unwrap();
+    let data = parent.path().join("a$b");
+    std::fs::create_dir(&data).unwrap();
+    let (_, ws) = open_in(cx, None, Some(data));
+    ws.update(cx, |ws, _| {
+        let claude = ws.agents.iter().find(|a| a.id == "claude").cloned();
         assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
     });
 }
@@ -238,4 +352,24 @@ fn claude_code_is_asked_for_its_limits_when_wanted(cx: &mut TestAppContext) {
         ws.data_dir = None;
         assert_eq!(ws.claude_poll_job(), None);
     });
+}
+
+#[cfg(unix)]
+#[test]
+fn gemini_cli_links_the_extension_or_says_why_not() {
+    use crate::workspace::usage::gemini_run;
+    let data = tempfile::tempdir().unwrap();
+    // `true` and `false` stand in for gemini: whatever they are given, they succeed or fail.
+    assert_eq!(gemini_run(Some("true".into()), data.path(), true), Ok(()));
+    assert!(
+        data.path()
+            .join("gemini")
+            .join("gemini-extension.json")
+            .exists(),
+        "the extension is written first"
+    );
+    let why = gemini_run(Some("false".into()), data.path(), false).unwrap_err();
+    assert!(why.starts_with("Gemini CLI failed"), "{why}");
+    let why = gemini_run(None, data.path(), true).unwrap_err();
+    assert!(why.contains("didn't find Gemini CLI"), "{why}");
 }

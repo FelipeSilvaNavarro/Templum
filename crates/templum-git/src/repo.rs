@@ -444,6 +444,43 @@ impl Repo {
         std::fs::write(file, bytes)
     }
 
+    /// A worktree for a new branch `name`, from HEAD, at `.worktrees/<name>` in the repository's
+    /// main working tree (also when this is a linked worktree). `.worktrees/` goes once into the
+    /// repository's `info/exclude`, so `git status` never lists it. Its folder.
+    pub fn add_worktree(&self, name: &str) -> Result<PathBuf, GitError> {
+        let refused = |why: String| GitError {
+            command: shown(&self.program, &["worktree", "add", "-b", name]),
+            code: None,
+            stderr: format!("fatal: {why}"),
+            missing: false,
+        };
+        if !worktree_name_ok(name) {
+            return Err(refused(format!(
+                "'{name}' can't name a worktree: use letters, digits, '-', '_', '.' and '/'"
+            )));
+        }
+        // The main working tree is the list's first; a bare repository has none.
+        let list = self.text(&["worktree", "list", "--porcelain"])?;
+        let mut first = list.split("\n\n").next().unwrap_or_default().lines();
+        let main = first
+            .next()
+            .and_then(|l| l.strip_prefix("worktree "))
+            .map(PathBuf::from);
+        let Some(main) = main.filter(|_| !first.any(|l| l == "bare")) else {
+            return Err(refused(
+                "a bare repository has no working tree to branch from".into(),
+            ));
+        };
+        let common = self.text(&["rev-parse", "--git-common-dir"])?;
+        let exclude = self.root.join(common.trim()).join("info").join("exclude");
+        add_line(&exclude, ".worktrees/")
+            .map_err(|e| refused(format!("couldn't write {}: {e}", exclude.display())))?;
+        let path = main.join(".worktrees").join(name);
+        let dest = path.to_string_lossy().into_owned();
+        self.run(&["worktree", "add", "-q", "-b", name, &dest])?;
+        Ok(path)
+    }
+
     /// `git commit -m message` (`--amend` with `amend`): the new commit's short hash.
     pub fn commit(&self, message: &str, amend: bool) -> Result<String, GitError> {
         let mut args = vec!["commit", "-q", "-m", message];
@@ -1334,6 +1371,46 @@ impl Repo {
             r => r.map(drop),
         }
     }
+}
+
+/// `name` can name a branch and a folder under `.worktrees`: letters, digits, `-`, `_`, `.` and
+/// `/` between its parts; no part empty, starting or ending with `.`; no `..`; no `.lock` at the
+/// end; not starting with `-` (git would take it for an option). Git refuses whatever else a
+/// branch can't be.
+fn worktree_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 100
+        && !name.starts_with('-')
+        && !name.contains("..")
+        && !name.ends_with(".lock")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c))
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with('.'))
+}
+
+/// Adds `line` to the file at `path` (made, with its folder, when missing) unless one of its
+/// lines already is that.
+fn add_line(path: &Path, line: &str) -> io::Result<()> {
+    let mut text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    if text.lines().any(|l| l.trim() == line) {
+        return Ok(());
+    }
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(line);
+    text.push('\n');
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder)?;
+    }
+    std::fs::write(path, text)
 }
 
 /// The work tree holding `file`, without running git: the nearest folder above it with a `.git`

@@ -308,6 +308,8 @@ impl Render for Workspace {
             self.remove_block(id, window, cx);
         }
         self.hear(window, cx);
+        // A tool call whose block is gone is withdrawn (docs/specs/connections.md).
+        self.drop_orphans(cx);
 
         let vp = self.viewport(window);
         // Grid mode's tiles fill the area as it is now: the window or the sidebar may have changed.
@@ -434,6 +436,35 @@ impl Render for Workspace {
         let dot = self.ui.dot;
         let guides = self.space.guides.clone();
         let accent = self.ui.accent;
+        // The wires, under the blocks (none in grid mode).
+        let wires = self.wire_curves();
+        // A dot on each wire along which a task is handed over: still when motion is reduced, else
+        // drawn again about 30 times a second while one is in view (never at the display's rate).
+        let still = cx.reduce_motion();
+        let dots = self.wire_dots(now, still);
+        let zoom = camera.zoom();
+        let in_view = Rect::new(camera.origin.x, camera.origin.y, vp.w / zoom, vp.h / zoom);
+        // The wires' labels: on the wires, under the blocks.
+        let labels: Vec<_> = crate::wires::label_scale(self.space.rest, zoom)
+            .map(|s| {
+                self.wire_labels()
+                    .into_iter()
+                    .filter(|(at, ..)| in_view.contains(*at))
+                    .enumerate()
+                    .map(|(n, (at, text, color))| {
+                        crate::wires::label(n, text, camera.to_screen(at), s, color, self.ui)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !still && dots.iter().any(|p| in_view.contains(*p)) {
+            self._dot_frame = cx.spawn(async move |ws, cx| {
+                cx.background_executor()
+                    .timer(crate::wires::DOT_FRAME)
+                    .await;
+                ws.update(cx, |_, cx| cx.notify()).ok();
+            });
+        }
         // A full-size layer under the blocks: the IME handler, the workspace origin, and
         // window-wide drag listeners (drags keep working outside the window).
         let layer = canvas(
@@ -442,6 +473,7 @@ impl Render for Workspace {
                 // Grid mode shows no canvas.
                 if !tiled {
                     paint_dots(&camera, dot, bounds, window);
+                    crate::wires::paint(&wires, &dots, accent, &camera, bounds, window);
                     paint_guides(&camera, accent, bounds, &guides, window);
                 }
                 window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
@@ -517,6 +549,7 @@ impl Render for Workspace {
             .on_scroll_wheel(cx.listener(Self::on_background_scroll))
             .on_pinch(cx.listener(Self::on_pinch))
             .child(layer)
+            .children(labels)
             .children(blocks)
             // The drawings, above the blocks; with a drawing tool on, a layer over them takes the
             // pointer.
@@ -548,6 +581,35 @@ impl Render for Workspace {
                                 cx.stop_propagation();
                                 cx.notify();
                             }),
+                        )
+                        .on_scroll_wheel(cx.listener(Self::on_background_scroll))
+                        .on_pinch(cx.listener(Self::on_pinch))
+                        .test_support(),
+                )
+            })
+            // The Wire tool: a layer over the blocks takes the pointer, as a drawing tool's does.
+            .when(self.tool == Tool::Wire && !tiled, |el| {
+                el.child(
+                    div()
+                        .id("wire-layer")
+                        .absolute()
+                        .size_full()
+                        .cursor_crosshair()
+                        .occlude()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|ws, e: &MouseDownEvent, window, cx| {
+                                window.focus(&ws.focus_handle, cx);
+                                ws.begin_wire(e);
+                                cx.stop_propagation();
+                                cx.notify();
+                            }),
+                        )
+                        // Only over the canvas: not over the toolbar, the sidebar or outside the
+                        // window, where the block under the pointer can't be seen.
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|ws, e: &MouseUpEvent, _, cx| ws.end_wire(e, cx)),
                         )
                         .on_scroll_wheel(cx.listener(Self::on_background_scroll))
                         .on_pinch(cx.listener(Self::on_pinch))

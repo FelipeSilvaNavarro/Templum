@@ -534,7 +534,7 @@ fn a_blocks_menu_goes_in_flips_adds_leaves_and_comes_back(cx: &mut TestAppContex
     let (handle, ws) = open(cx);
     let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
     ws.update(cx, |ws, _| ws.space.selected = vec![kanban, terminal]);
-    // Copy, Paste, —, Fullscreen, Close terminal.
+    // Copy, Paste, —, Fullscreen, Connect to ▸, Move to workspace ▸, Close terminal.
     pick(handle, cx, terminal, 3, None);
     let tiles = |cx: &mut TestAppContext| {
         ws.read_with(cx, |ws, _| ws.space.grid.as_ref().map(|g| g.tiles.ids()))

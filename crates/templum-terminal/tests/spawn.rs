@@ -34,6 +34,7 @@ fn runs_a_command_and_reports_its_exit() {
             options: TermOptions::default(),
             working_directory: None,
             integration: None,
+            env: Vec::new(),
         },
         notify,
     )
@@ -73,6 +74,7 @@ fn shells_start_in_the_home_directory() {
             options: TermOptions::default(),
             working_directory: None,
             integration: None,
+            env: Vec::new(),
         },
         notify,
     )
@@ -116,6 +118,7 @@ fn starts_in_the_given_folder_and_reports_it() {
             options: TermOptions::default(),
             working_directory: Some(dir.clone()),
             integration: None,
+            env: Vec::new(),
         },
         Arc::new(|| {}),
     )
@@ -154,6 +157,7 @@ fn cwd_follows_the_shell_in_the_foreground() {
             options: TermOptions::default(),
             working_directory: Some(start.path().to_path_buf()),
             integration: None,
+            env: Vec::new(),
         },
         Arc::new(|| {}),
     )
@@ -193,6 +197,7 @@ fn long_lived(dir: &std::path::Path) -> Terminal {
             options: TermOptions::default(),
             working_directory: Some(dir.to_path_buf()),
             integration: None,
+            env: Vec::new(),
         },
         Arc::new(|| {}),
     )
@@ -245,6 +250,7 @@ fn inspect_finds_an_agent_and_its_folder() {
         options: TermOptions::default(),
         working_directory: Some(work.path().to_path_buf()),
         integration: None,
+        env: Vec::new(),
     };
     // Another test may fork while `fake_claude` still has its copy open for writing; that
     // child keeps the handle until it execs, and running `claude` meanwhile fails with
@@ -293,6 +299,7 @@ fn each_terminal_gets_its_own_id_in_its_environment() {
                 options: TermOptions::default(),
                 working_directory: None,
                 integration: None,
+                env: Vec::new(),
             },
             Arc::new(|| {}),
         )
@@ -337,6 +344,51 @@ fn each_terminal_gets_its_own_id_in_its_environment() {
     );
 }
 
+/// What Templum adds to a terminal's environment reaches its programs (the bus's address).
+#[test]
+fn extra_variables_reach_the_shell() {
+    #[cfg(unix)]
+    let command = (
+        "sh".to_string(),
+        vec![
+            "-c".to_string(),
+            "printf 'bus=%s;' \"$TEMPLUM_BUS\"".to_string(),
+        ],
+    );
+    #[cfg(windows)]
+    let command = (
+        "cmd".to_string(),
+        vec!["/C".to_string(), "echo bus=%TEMPLUM_BUS%;".to_string()],
+    );
+    let term = Terminal::spawn(
+        SpawnOptions {
+            cols: 60,
+            rows: 5,
+            cell_px: (8, 16),
+            command: Some(command),
+            palette: Palette::default(),
+            options: TermOptions::default(),
+            working_directory: None,
+            integration: None,
+            env: vec![("TEMPLUM_BUS".into(), "unix:/x.sock".into())],
+        },
+        Arc::new(|| {}),
+    )
+    .expect("spawn");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !term.exited() {
+        assert!(Instant::now() < deadline, "the command never exited");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut snapshot = Snapshot::default();
+    snapshot.refresh(term.shared(), &Palette::default());
+    assert!(
+        snapshot.text().contains("bus=unix:/x.sock;"),
+        "{:?}",
+        snapshot.text()
+    );
+}
+
 /// A harmless long-running program, copied under an agent's name into `bin`.
 fn fake_claude(bin: &std::path::Path) -> std::path::PathBuf {
     #[cfg(unix)]
@@ -372,6 +424,7 @@ fn inspect_reads_the_session_an_agent_was_started_on() {
         options: TermOptions::default(),
         working_directory: None,
         integration: None,
+        env: Vec::new(),
     };
     // As in `inspect_finds_an_agent_and_its_folder`: a fork may hold the copy open a moment.
     let term = loop {
@@ -429,6 +482,7 @@ fn inspect_finds_an_agent_the_shell_started() {
             options: TermOptions::default(),
             working_directory: Some(work.path().to_path_buf()),
             integration: None,
+            env: Vec::new(),
         },
         Arc::new(|| {}),
     )
@@ -483,6 +537,7 @@ fn a_tree_is_ended_even_when_it_ignores_hangup() {
             options: TermOptions::default(),
             working_directory: None,
             integration: None,
+            env: Vec::new(),
         },
         Arc::new(|| {}),
     )

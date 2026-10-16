@@ -9,13 +9,14 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 | Crate | Kind | Responsibility | May depend on the UI framework? |
 |---|---|---|---|
 | `templum` | bin | Window, event loop, rendering, input, wiring | **Yes, the only one** (`gpui-kit`) |
-| `templum-canvas` | lib | Pure model: camera (pan, zoom), blocks, hit-testing, snapping, level of detail, layout (de)serialization | No |
+| `templum-canvas` | lib | Pure model: camera (pan, zoom), blocks, hit-testing, snapping, level of detail, wires' curves (`wire.rs`), layout (de)serialization | No |
 | `templum-terminal` | lib | Wraps `alacritty_terminal`: shell in a PTY, input, resize, key encoding, events | No |
-| `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values, finds conflict regions by their markers (`conflict.rs`), lays History's commits out in lanes from their parents (`graph.rs`), turns a blame into the diff panel's rows (`blame.rs`), keeps the trash of discarded changes, and asks an AI agent for a commit message (`message.rs`) | No |
-| `templum-usage` | lib | Reads what CLI agents write about their sessions and plan limits: Claude Code's status line through Templum's relay, and its transcripts (`claude.rs`); Codex's rollout files (`codex.rs`); when to warn about a limit or tell its reset (`watch.rs`). Never an agent's credentials ([specs/usage.md](specs/usage.md)) | No |
+| `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values, finds conflict regions by their markers (`conflict.rs`), lays History's commits out in lanes from their parents (`graph.rs`), turns a blame into the diff panel's rows (`blame.rs`), makes a worktree for a new branch under `.worktrees/` (`repo.rs`), keeps the trash of discarded changes, and asks an AI agent for a commit message (`message.rs`) | No |
+| `templum-usage` | lib | Reads what CLI agents write about their sessions and plan limits: Claude Code's status line through Templum's relay, and its transcripts (`claude.rs`, which also writes the settings file Claude Code is given, with Templum's hooks, and its `mcp.json`); Codex's rollout files (`codex.rs`); the Gemini CLI extension (`gemini.rs`); when to warn about a limit or tell its reset (`watch.rs`). Never an agent's credentials ([specs/usage.md](specs/usage.md)) | No |
 | `templum-update` | lib | Finds the newest release on GitHub (`lib.rs`), how Templum was installed and the release file that fits it (`install.rs`). Downloads it and checks GitHub's SHA-256 (`fetch.rs`), then puts it in place: a rename over the AppImage or executable, a bundle swap on macOS, an installer's command line, a command for a terminal ([specs/updates.md](specs/updates.md)) | No |
+| `templum-mcp` | lib | The bus Templum's blocks talk over: JSON-RPC lines on a local socket (`bus.rs`), the MCP tools (`tools.rs`), the agents' hook events (`hooks.rs`) and the `templum` command line (`cli.rs`: the MCP bridge, `hook`, the verbs) ([specs/connections.md](specs/connections.md)) | No |
 
-All six crates exist. New library crates are created together with the first real code that needs
+All seven crates exist. New library crates are created together with the first real code that needs
 them, never as empty scaffolding. The behavior of the current version is specified in
 [specs/walking-skeleton.md](specs/walking-skeleton.md), [specs/design-system.md](specs/design-system.md) and
 [specs/config.md](specs/config.md).
@@ -49,6 +50,13 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   off screen are never re-armed, so their output can't drive frames; a shell's exit wakes the UI anyway.
   Blocking here doubled frame times in the spike.
 - Only blocks inside the viewport are drawn.
+- **The bus** (`templum-mcp`'s `bus.rs`, [specs/connections.md](specs/connections.md)): a local socket (Unix) or
+  loopback TCP with a token (Windows) in the data folder. A thread accepts connections; each has a reader thread and a
+  writer thread, and its lines reach the UI thread through a channel that `workspace/bus.rs` drains: the UI thread
+  never touches a socket. Every terminal gets `TEMPLUM_BUS` and `<data>/bin` first in `PATH`, where `templum` is
+  this Templum: a link to it on Unix, a hard link or a copy named `templum.exe` on Windows. `templum mcp`,
+  `templum hook …` and the verbs are the same program run without a window (`main.rs`). Each connection has a number;
+  when one ends the UI hears it (`templum/closed`) and drops what it waited for.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.
   Far away, each block is drawn at a level of detail picked by its text's size on screen at the zoom the camera
@@ -97,14 +105,22 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   Shift+click on a title; moving them together, Delete, Copy and Paste), `history.rs` (Ctrl+Z and Ctrl+Shift+Z on the
   blocks: added, closed, moved, resized; each step keeps the change that takes it back), `tiling.rs` (grid mode:
   blocks tiled full screen like Hyprland, [specs/grid.md](specs/grid.md)), `render.rs` (drawing a frame),
-  `drawing.rs` (the drawing tools), `note_tabs.rs` (note blocks' tabs and the notes they open), `persist.rs`
+  `drawing.rs` (the drawing tools), `wires.rs` (wires between blocks: wiring and unwiring, their undo steps, the Wire
+  tool, selecting a wire, the curves to paint), `note_tabs.rs` (note blocks' tabs and the notes they open), `persist.rs`
   (restoring and saving the canvas), `preferences.rs` (config,
   themes, settings panel), `files.rs` and `file_tree.rs` (editor blocks), `git_ops.rs`, `git_changes.rs`,
   `git_branches.rs`, `git_history.rs`, `git_discard.rs` (discards through the trash), `git_keys.rs` (the
   block's keys), `git_switch.rs` (switching branches without losing work), `git_sync.rs` (Sync, Publish, Clone),
   `git_compare.rs` (a branch against the default one), `git_conflicts.rs` (conflicts region by region) and
   `git_message.rs` (commit messages from an agent) (Git blocks), `usage.rs` (the agents' usage read after each
-  snapshot, the limits' notifications, the `--settings` the Claude Code Templum opens gets). Methods a sibling or a test calls are `pub(super)`.
+  snapshot, the limits' notifications, what the Claude Code and Codex Templum opens are given), `bus.rs` (the bus's
+  messages: the caller found by its `TEMPLUM_TERMINAL`, the tools, the agents' hook events), `waits.rs` (tool calls
+  that wait: a question, a request to connect, an agent's turn; their deadlines, cancels and the balloon's answers),
+  `delegate.rs` (tasks handed between agents: typing them, their answers, `reply`, `wait_for_idle`, `send_keys` and
+  `interrupt`), `spawn.rs` (`spawn_agent`: an agent beside the caller, its worktree, its model and effort, its prompt
+  once it is ready, `close_block`), `content.rs` (the tools on a
+  wired block's content: a kanban's cards, a note, a file opened in an editor, a Git block's status). Methods a
+  sibling or a test calls are `pub(super)`.
   `workspace/tests/` holds its tests, one file per area, with the shared helpers in `tests/mod.rs`.
 - `settings/`, `git_block/` and `menu/`: the panel's sections, the Git block's tabs, and what each menu lists, each
   in its own file behind the folder's `mod.rs`, which keeps the paths the rest of the crate uses. `git_block/diff_view/`
@@ -122,6 +138,10 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   no backdrop blur), five pages whose settings are the panel's rows (`settings/welcome.rs`); the first terminal
   opens when it closes ([specs/welcome.md](specs/welcome.md)).
 - `usage.rs`: the title bar's usage meter, its popover and a terminal's usage chip.
+- `wires.rs`: painting the wires in the layer under the blocks, with the dot grid, and the dot that travels along one
+  while a task is handed over ([specs/connections.md](specs/connections.md#wires)).
+- `balloon.rs`: the balloon on a terminal block whose agent asks the person something
+  ([specs/connections.md](specs/connections.md#requests-from-agents)).
 - `update.rs`: where an update stands (`Update`), its title-bar pill and its lines in Settings ▸ Updates;
   `workspace/update.rs` checks GitHub at start and every day, downloads through `templum-update`, tells the news,
   restarts (GPUI's `cx.restart()`) or types the package manager's command in a terminal, and swaps the files when
@@ -131,6 +151,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
 
 - `config.toml` is read into a typed `Config` (`crates/templum/src/config.rs`) and polled every 0.5 s. A reload
   applies only what changed; an invalid file keeps the last valid config and shows a notification.
+  `[connections] enabled` decides whether the Claude Code and Codex Templum opens get its MCP server and hooks
+  ([specs/connections.md](specs/connections.md)); the bus runs either way.
 - Shortcuts are Templum's own keymap (`crates/templum/src/keys.rs`), matched in the workspace's key handler, so a
   reload can replace them. GPUI key bindings are only used to keep Tab for the shell. Commands that only make sense
   in an editor (`save`, `close_tab`, `go_to_line`) are dropped by `effective` when no editor block has the focus, so
@@ -174,7 +196,10 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   (`templum_terminal::inspect`: folders, and whether Claude Code or Codex runs, by `agent_of`), builds the `Saved`
   file content and writes it when it changed; on quit it runs at once. Writes take turns and an older one never
   replaces a newer one. At startup a saved canvas is restored (camera, blocks back to front, focus, folders, and an
-  agent's resume command typed into its block); a file it can't read is set aside as `.bak`.
+  agent's resume command typed into its block); a file it can't read is set aside as `.bak`. Each item carries its
+  block's `uid` (`Space::uids`: five letters and digits, what agents name blocks by), kept by a restart, an undo and
+  a move to another workspace; a missing, taken or malformed one is replaced; the canvas's `wires` name their blocks
+  by it. A terminal's item also keeps the block that opened it (`opened_by`) and its agent's model and effort.
 
 ## Distribution
 

@@ -290,7 +290,7 @@ fn distance(a: Point, b: Point) -> f32 {
 }
 
 /// Distance from `p` to the segment `a`–`b`.
-fn segment_distance(p: Point, a: Point, b: Point) -> f32 {
+pub(crate) fn segment_distance(p: Point, a: Point, b: Point) -> f32 {
     let (abx, aby) = (b.x - a.x, b.y - a.y);
     let len2 = abx * abx + aby * aby;
     let t = if len2 == 0.0 {

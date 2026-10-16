@@ -54,6 +54,10 @@ impl Workspace {
             self.open_menu(menu::Target::Ink(index), e.position, window, cx);
             return;
         }
+        if let Some(wire) = self.wire_at(at) {
+            self.open_menu(menu::Target::Wire(wire), e.position, window, cx);
+            return;
+        }
         self.open_menu(menu::Target::Canvas(at), e.position, window, cx);
     }
 
@@ -142,7 +146,7 @@ impl Workspace {
     pub(super) fn fit_terminal(&mut self, id: BlockId, rect: Rect) {
         let (cols, rows) = chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
         if let Some(pane) = self.space.terminal_mut(id) {
-            pane.term.resize(cols, rows, self.cell.px());
+            pane.fit(cols, rows, self.cell.px());
         }
     }
 
@@ -241,6 +245,7 @@ impl Workspace {
                     d.move_by(dx, dy);
                 }
             }
+            Some(Drag::Wire { to, .. }) => *to = self.space.canvas.camera.to_world(p),
             None => return,
         }
         cx.notify();
@@ -264,7 +269,7 @@ impl Workspace {
     }
 
     /// Tells the program in terminal `id` about the mouse at `cell` (row, column): false when it
-    /// didn't ask for such events.
+    /// didn't ask for such events. One that did may change its screen (`activity.rs`).
     fn report(
         &self,
         id: BlockId,
@@ -282,9 +287,13 @@ impl Workspace {
             alt: m.alt,
             shift: m.shift,
         };
-        self.space
-            .terminal(id)
-            .is_some_and(|pane| pane.term.mouse(&input))
+        self.space.terminal(id).is_some_and(|pane| {
+            let told = pane.term.mouse(&input);
+            if told {
+                pane.scrolled.set(true);
+            }
+            told
+        })
     }
 
     /// A press in terminal `id`'s body goes to its program when it asked for the mouse (a TUI,
@@ -420,6 +429,7 @@ impl Workspace {
             return;
         };
         if let Some(pane) = self.space.focused_terminal() {
+            pane.person_typed();
             pane.term.paste(&text);
         }
     }
@@ -432,8 +442,13 @@ impl Workspace {
     }
 
     /// Mouse up: a press on the empty canvas that didn't pan is a click, and leaves no terminal
-    /// focused (typing then reaches none; panning keeps the focus) and no block selected.
+    /// focused (typing then reaches none; panning keeps the focus) and no block selected; on a
+    /// wire, it selects the wire, so Delete removes it.
     pub(super) fn release(&mut self, pos: PixelPoint<Pixels>, cx: &mut Context<Self>) {
+        // The Wire tool let go off the canvas (over it, its layer took the drag): its curve goes.
+        if matches!(self.drag, Some(Drag::Wire { .. })) {
+            cx.notify();
+        }
         // A tile let go over another trades places with it.
         if let Some(Drag::Swap { id, over, .. }) = self.drag {
             if let Some(other) = over {
@@ -445,12 +460,13 @@ impl Workspace {
         if self.space.canvas.blocks().iter().any(|b| self.moving(b.id)) {
             cx.notify();
         }
-        if let Some(start) = self.press {
+        if let Some((start, wire)) = self.press {
             let p = self.local(pos);
             let moved = (p.x - start.x).abs().max((p.y - start.y).abs());
             if moved < CLICK_SLOP {
                 self.unfocused = self.space.focused.take();
-                if self.unfocused.is_some() || !self.space.selected.is_empty() {
+                let had_wire = std::mem::replace(&mut self.space.selected_wire, wire);
+                if self.unfocused.is_some() || !self.space.selected.is_empty() || had_wire != wire {
                     self.space.selected.clear();
                     cx.notify();
                 }
@@ -602,6 +618,16 @@ impl Workspace {
             }
             return;
         }
+        // A balloon's field has the keyboard: what it leaves (shortcuts aside) never reaches the
+        // shell of the focused terminal.
+        if self.balloon_typing(window, cx).is_some() {
+            if let Some(command) = command.filter(|c| !matches!(c, Command::Copy | Command::Paste))
+            {
+                self.command_key(e, Some(command), window, cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
         if self.picker.is_some() || command.is_some() {
             // While the picker is open, typing and shortcuts don't reach the terminal.
             self.command_key(e, command, window, cx);
@@ -614,6 +640,7 @@ impl Workspace {
             && (self.tool != Tool::Select
                 || self.shapes_open
                 || self.space.selected_ink.is_some()
+                || self.space.selected_wire.is_some()
                 || !self.space.selected.is_empty())
         {
             self.space.selected.clear();
@@ -627,6 +654,17 @@ impl Workspace {
             && matches!(k.key.as_str(), "delete" | "backspace")
         {
             self.delete_ink(index, cx);
+            cx.stop_propagation();
+            return;
+        }
+        // A selected wire: Delete and Backspace remove it, while no block has the keyboard.
+        if let Some(wire) = self.space.selected_wire
+            && self.space.focused.is_none()
+            && self.canvas_has_keys(window)
+            && !k.modifiers.modified()
+            && matches!(k.key.as_str(), "delete" | "backspace")
+        {
+            self.disconnect(wire, cx);
             cx.stop_propagation();
             return;
         }
@@ -708,6 +746,7 @@ impl Workspace {
                     && !option_types_text(&k.key, k.key_char.as_deref(), cfg!(target_os = "macos")),
             shift: k.modifiers.shift,
         };
+        pane.person_typed();
         if pane.term.key(&input) {
             // Keeps the platform from also feeding key_char to the text-input path.
             cx.stop_propagation();
@@ -763,6 +802,7 @@ impl Workspace {
         let world = self.space.canvas.camera.to_world(p);
         if e.modifiers.shift && e.click_count == 1 {
             self.space.selected_ink = None;
+            self.space.selected_wire = None;
             self.begin_marquee(p);
             cx.notify();
             return;
@@ -772,6 +812,7 @@ impl Workspace {
             && let Some(index) = self.ink_at(world)
         {
             self.space.selected_ink = Some(index);
+            self.space.selected_wire = None;
             self.space.focused = None;
             self.drag = Some(Drag::MoveInk {
                 index,
@@ -793,8 +834,13 @@ impl Workspace {
             }
             self.add_terminal_at(at, window, cx);
         } else {
+            // A wire, under the drawings: a click on it selects it (`release`). Wires run where
+            // people grab the canvas: a drag from one moves it, as from anywhere.
+            let wire = (e.click_count == 1 && self.tool == Tool::Select)
+                .then(|| self.wire_at(world))
+                .flatten();
             self.drag = Some(Drag::Canvas(Gesture::pan(p)));
-            self.press = Some(p);
+            self.press = Some((p, wire));
         }
     }
 
@@ -870,6 +916,7 @@ impl Workspace {
                     .all(|_| self.report(id, cell, Some(button), MouseKind::Press, &e.modifiers))
             });
             if !told && let Some(pane) = self.space.terminal(id) {
+                pane.scrolled.set(true);
                 pane.term.scroll(lines as i32);
             }
             cx.notify();
@@ -928,6 +975,7 @@ impl EntityInputHandler for Workspace {
     ) {
         self.marked = None;
         if let Some(pane) = self.space.focused_terminal() {
+            pane.person_typed();
             pane.term.write(text.as_bytes().to_vec());
         }
         cx.notify();

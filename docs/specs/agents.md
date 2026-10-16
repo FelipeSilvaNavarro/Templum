@@ -21,7 +21,7 @@ project folder you pick, and each workspace remembers the folders you opened age
 ## Out of scope
 
 - Installing agents for the user, logging in, or passing them settings (except the status line Claude Code gets for
-  its plan limits, [usage.md](usage.md)).
+  its plan limits, [usage.md](usage.md), and the hooks and the MCP server of [connections.md](connections.md)).
 - A per-agent setting for extra arguments.
 - Agents that need a terminal of their own outside Templum (Warp), or that are dead (Roo Code, Plandex, Mentat).
 

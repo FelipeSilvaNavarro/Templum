@@ -15,6 +15,7 @@ fn a_workspace_shows_an_agent_from_its_last_snapshot() {
                 zoom: 1.0,
             },
             items: vec![Item::Terminal(TerminalItem {
+                uid: String::new(),
                 rect: SavedRect {
                     x: 0.0,
                     y: 0.0,
@@ -24,11 +25,15 @@ fn a_workspace_shows_an_agent_from_its_last_snapshot() {
                 folder: None,
                 agent: agent.map(String::from),
                 session: None,
+                opened_by: None,
+                model: None,
+                effort: None,
             })],
             focused: None,
             recent: Vec::new(),
             ink: Vec::new(),
             grid: None,
+            wires: Vec::new(),
         }),
         ..crate::workspace::Space::default()
     };

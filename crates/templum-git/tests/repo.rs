@@ -299,6 +299,86 @@ fn ignore_appends_a_line_to_gitignore() {
     );
 }
 
+/// `fresh()` with one commit: a branch can start from HEAD.
+fn committed() -> (tempfile::TempDir, Repo) {
+    let (dir, repo) = fresh();
+    write(dir.path(), "a.txt", "one\n");
+    repo.stage(&["a.txt"]).unwrap();
+    repo.commit("First", false).unwrap();
+    (dir, repo)
+}
+
+#[test]
+fn a_worktree_gets_a_new_branch_under_dot_worktrees_kept_out_of_status() {
+    let (dir, repo) = committed();
+    let main = dir.path().canonicalize().unwrap();
+    let path = repo.add_worktree("fix/login").unwrap();
+    assert_eq!(
+        path.canonicalize().unwrap(),
+        main.join(".worktrees").join("fix").join("login")
+    );
+    assert!(path.join("a.txt").is_file());
+    let made = Repo::discover("git", &path).unwrap().expect("a worktree");
+    assert_eq!(made.status().unwrap().branch.as_deref(), Some("fix/login"));
+    // From that worktree, the next one still goes under the main tree's .worktrees.
+    let docs = made.add_worktree("docs").unwrap();
+    assert_eq!(
+        docs.canonicalize().unwrap(),
+        main.join(".worktrees").join("docs")
+    );
+    let exclude = std::fs::read_to_string(dir.path().join(".git/info/exclude")).unwrap();
+    assert_eq!(
+        exclude.lines().filter(|l| *l == ".worktrees/").count(),
+        1,
+        "added once: {exclude}"
+    );
+    assert!(
+        repo.status().unwrap().entries.is_empty(),
+        "git status doesn't list them"
+    );
+}
+
+#[test]
+fn a_worktree_name_that_cant_be_a_branch_or_is_taken_is_refused() {
+    let (dir, repo) = committed();
+    for bad in [
+        "", "-f", "../out", "a/../b", ".hidden", "a b", "x.lock", "a//b", "end/", "dot.", "é",
+    ] {
+        let err = repo.add_worktree(bad).unwrap_err();
+        assert!(
+            err.first_line().contains("can't name a worktree"),
+            "{bad:?}: {err}"
+        );
+    }
+    assert!(!dir.path().join(".worktrees").exists(), "nothing made");
+    repo.add_worktree("api").unwrap();
+    for taken in ["api", "main"] {
+        let err = repo.add_worktree(taken).unwrap_err();
+        assert!(
+            err.first_line().contains("already exists"),
+            "{taken}: {err}"
+        );
+    }
+}
+
+/// A worktree of a bare repository: the repository has no main working tree to put
+/// `.worktrees` in.
+#[test]
+fn a_worktree_of_a_bare_repository_is_refused() {
+    let (_dir, repo) = committed();
+    let bare = with_remote(&repo);
+    let tree = bare.path().join("main");
+    let added = std::process::Command::new("git")
+        .args(["worktree", "add", "-q", &tree.display().to_string(), "main"])
+        .current_dir(bare.path())
+        .status()
+        .unwrap();
+    assert!(added.success());
+    let linked = Repo::discover("git", &tree).unwrap().expect("a worktree");
+    let err = linked.add_worktree("api").unwrap_err();
+    assert!(err.first_line().contains("bare repository"), "{err}");
+}
+
 #[test]
 fn the_author_comes_from_the_config() {
     let (_dir, repo) = fresh();

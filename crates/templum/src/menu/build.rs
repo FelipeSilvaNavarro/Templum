@@ -9,7 +9,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, ClipboardItem, Context, Entity, SharedString, Window, px};
-use templum_canvas::{BlockId, Point};
+use templum_canvas::{BlockId, Point, Wire};
 
 use super::{Items, SendTo, Tail};
 use crate::board::Label;
@@ -166,6 +166,45 @@ fn send_to(
     )
 }
 
+/// Connect to ▸ (`on`) the blocks listed, or Disconnect from ▸ them; nothing when there are none.
+fn wiring(
+    ws: &Entity<Workspace>,
+    menu: PopupMenu,
+    block: BlockId,
+    blocks: Vec<(BlockId, SharedString)>,
+    on: bool,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    if blocks.is_empty() {
+        return menu;
+    }
+    let (icon, label) = if on {
+        (IconName::Cable, "Connect to")
+    } else {
+        (IconName::Unplug, "Disconnect from")
+    };
+    let ws = ws.clone();
+    menu.submenu_with_icon(
+        Some(Icon::new(icon)),
+        label,
+        window,
+        cx,
+        move |menu, _, _| {
+            blocks.iter().fold(menu, |menu, (other, title)| {
+                let other = *other;
+                menu.item(item(&ws, title.clone(), None, move |ws, _, cx| {
+                    if on {
+                        ws.connect(block, other, cx);
+                    } else {
+                        ws.disconnect(Wire { a: block, b: other }, cx);
+                    }
+                }))
+            })
+        },
+    )
+}
+
 /// What deleting `n` cards along with their board or column says.
 fn cards(n: usize) -> String {
     if n == 1 {
@@ -195,19 +234,27 @@ impl Items {
             } => {
                 let menu = inner.build(ws, menu, window, cx).separator();
                 let menu = match tail {
-                    Tail::Canvas { group } => menu.item(item(
-                        ws,
-                        "Fullscreen",
-                        Some(IconName::Maximize2),
-                        move |ws, window, cx| {
-                            let ids = if group.contains(&block) {
-                                group.clone()
-                            } else {
-                                vec![block]
-                            };
-                            ws.enter_grid(ids, window, cx)
-                        },
-                    )),
+                    Tail::Canvas {
+                        group,
+                        connect,
+                        disconnect,
+                    } => {
+                        let menu = menu.item(item(
+                            ws,
+                            "Fullscreen",
+                            Some(IconName::Maximize2),
+                            move |ws, window, cx| {
+                                let ids = if group.contains(&block) {
+                                    group.clone()
+                                } else {
+                                    vec![block]
+                                };
+                                ws.enter_grid(ids, window, cx)
+                            },
+                        ));
+                        let menu = wiring(ws, menu, block, connect, true, window, cx);
+                        wiring(ws, menu, block, disconnect, false, window, cx)
+                    }
                     Tail::Tile {
                         flip,
                         others,
@@ -957,6 +1004,30 @@ impl Items {
                 Some(IconName::Delete),
                 move |ws, _, cx| ws.delete_ink(index, cx),
             )),
+            Items::Wire { wire } => menu
+                .item(item(ws, "Rename wire…", None, move |ws, window, cx| {
+                    let label = ws.space.label(wire).unwrap_or_default().to_string();
+                    let entity = cx.entity();
+                    prompt::ask_text(
+                        "Rename wire",
+                        "Rename",
+                        label,
+                        move |text, _, cx| {
+                            entity.update(cx, |ws, cx| ws.rename_wire(wire, &text, cx));
+                            true
+                        },
+                        window,
+                        cx,
+                    )
+                }))
+                .item(item(
+                    ws,
+                    "Disconnect",
+                    Some(IconName::Unplug),
+                    move |ws, _, cx| {
+                        ws.disconnect(wire, cx);
+                    },
+                )),
             Items::Note { block, color, send } => menu
                 .item(item(
                     ws,

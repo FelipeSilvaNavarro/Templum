@@ -88,6 +88,7 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
             ws.config.shell.integration,
             ws.config.terminal.notifications,
             ws.config.usage.claude_limits,
+            ws.config.connections.enabled,
         )
     };
     for (tab, field, reset, line) in [
@@ -108,6 +109,12 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
             "field-usage.claude_limits",
             "reset-usage.claude_limits",
             "claude_limits = false",
+        ),
+        (
+            "settings-tab-connections",
+            "field-connections.enabled",
+            "reset-connections.enabled",
+            "enabled = false",
         ),
     ] {
         cx.update_window(handle, |_, window, cx| {
@@ -131,7 +138,7 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
     }
     assert_eq!(
         ws.read_with(cx, |ws, _| on(ws)),
-        (true, true, true),
+        (true, true, true, true),
         "back on"
     );
     ws.update(cx, |ws, _| ws.save());
@@ -139,9 +146,44 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
     assert!(
         !text.contains("integration")
             && !text.contains("notifications")
-            && !text.contains("claude_limits"),
+            && !text.contains("claude_limits")
+            && !text.contains("enabled"),
         "{text}"
     );
+}
+
+#[gpui_kit::test]
+fn connections_give_the_servers_command_to_copy_and_ask_before_gemini(cx: &mut TestAppContext) {
+    use gpui_kit::component::WindowExt as _;
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-tab-connections", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("connections-command").is_some());
+        window.click("connections-copy", cx);
+        window.click("gemini-setup", cx);
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "it asks first");
+        window.within("dialog").click("cancel", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let bin = data.path().join("bin").join(if cfg!(windows) {
+        "templum.exe"
+    } else {
+        "templum"
+    });
+    assert_eq!(
+        cx.read_from_clipboard().and_then(|c| c.text()),
+        Some(format!("{} mcp", bin.display()))
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.gemini_job.is_none(), "Cancel runs nothing")
+    });
 }
 
 #[gpui_kit::test]

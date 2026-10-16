@@ -4,6 +4,7 @@
 
 mod agents;
 mod alert;
+mod balloon;
 mod bench;
 mod block;
 mod board;
@@ -35,6 +36,7 @@ mod toolbar;
 mod update;
 mod usage;
 mod welcome;
+mod wires;
 mod workspace;
 
 use gpui_kit::component::TitleBar;
@@ -49,6 +51,19 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some(templum_usage::claude::RELAY_FLAG) {
         relay();
         return;
+    }
+    // `templum mcp`, `templum hook claude`, `templum read <block>`…: no window
+    // (docs/specs/connections.md).
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().is_some_and(|a| templum_mcp::cli::is_verb(a)) {
+        let code = templum_mcp::cli::run(
+            &args,
+            &templum_mcp::cli::Env::of_process(),
+            Box::new(std::io::stdin()),
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+        );
+        std::process::exit(code);
     }
     let mixed = std::env::args().any(|a| a == "--bench-mixed");
     let far = std::env::args().any(|a| a == "--bench-far");

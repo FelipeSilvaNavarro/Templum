@@ -117,6 +117,7 @@ impl Workspace {
     ) {
         self.space.focused = None;
         self.space.selected_ink = None;
+        self.space.selected_wire = None;
         let selected = &mut self.space.selected;
         match selected.iter().position(|s| *s == id) {
             Some(i) => {
@@ -187,7 +188,11 @@ impl Workspace {
             rect.y += dy;
             match item {
                 // A second agent resuming the same conversation would fight over it.
-                session::Item::Terminal(t) => t.agent = None,
+                // Opened by the person; a model needs its agent.
+                session::Item::Terminal(t) => {
+                    t.agent = None;
+                    t.opened_by = None;
+                }
                 // A note is open in one tab at most: the copy shows copies.
                 session::Item::Note(n) => {
                     let now = crate::notes::now();

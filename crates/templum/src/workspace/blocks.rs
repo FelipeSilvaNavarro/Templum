@@ -10,6 +10,7 @@ use gpui_kit::{App, Context, SharedString, Window};
 use templum_canvas::{Block, BlockId, Point, Rect, chrome};
 use templum_terminal::{SpawnOptions, Terminal};
 
+use crate::agents::AgentEntry;
 use crate::alert::{self, Alert};
 use crate::board::Boards;
 use crate::config::WorkingDirectory;
@@ -33,11 +34,14 @@ impl Workspace {
     }
 
     /// A block was just added: it is focused, pops in, and Ctrl+Z takes it away (unless the
-    /// canvas is being restored or blocks come back by an undo: `quiet`).
+    /// canvas is being restored or blocks come back by an undo: `quiet`). It gets a new id.
     fn added(&mut self, id: BlockId) {
+        let uid = self.new_uid();
+        self.space.uids.insert(id, uid);
         let before = self.space.focused;
         self.space.focused = Some(id);
         self.space.selected.clear();
+        self.space.selected_wire = None;
         self.space.appearing.insert(id, Instant::now());
         if !self.quiet {
             self.keep(Change::Close(vec![id]), Then::New);
@@ -57,6 +61,34 @@ impl Workspace {
                 b.rect = templum_canvas::cascade(b.rect, &taken);
             }
             self.join_grid(id, before);
+        }
+    }
+
+    /// A block id no block of any workspace has: five letters and digits.
+    // ponytail: a stopped workspace's saved ids aren't checked (1 in 60 million per pair); check
+    // `Space::saved` too if one ever collides.
+    fn new_uid(&self) -> String {
+        loop {
+            let uid = base36(uuid::Uuid::new_v4().as_u128() % 36u128.pow(5), 5);
+            if !self.uid_taken(&uid) {
+                return uid;
+            }
+        }
+    }
+
+    pub(super) fn uid_taken(&self, uid: &str) -> bool {
+        self.spaces().any(|s| s.uids.values().any(|u| u == uid))
+    }
+
+    /// Block `id`, just restored, takes back its saved id `uid`; one that isn't five lowercase
+    /// letters and digits, or is taken (a file edited by hand), leaves it the new one it got.
+    pub(super) fn adopt_uid(&mut self, id: BlockId, uid: &str) {
+        let valid = uid.len() == 5
+            && uid
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit());
+        if valid && !self.uid_taken(uid) {
+            self.space.uids.insert(id, uid.to_string());
         }
     }
 
@@ -99,7 +131,7 @@ impl Workspace {
         let anchor = self.space.home(self.space.canvas.get(block)?);
         self.space.pristine = false;
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
-        let rect = self.space.canvas.place_beside(anchor, size);
+        let rect = self.space.room_beside(&[anchor], size);
         let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx);
         if let (Some(id), Some(command)) = (id, command) {
             // Typed, not run: the person reads it and presses Enter (it may delete or push).
@@ -269,12 +301,32 @@ impl Workspace {
         self.space.pristine = false;
         let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, self.cell.size);
         let rect = Rect::new(at.x, at.y, size.w, size.h);
+        let entry = self.agents.iter().find(|a| a.command == command).cloned();
+        let id = self.start_agent(entry.as_ref(), command, "", folder, rect, window, cx)?;
+        window.focus(&self.focus_handle, cx);
+        Some(id)
+    }
+
+    /// A terminal at `rect` in `folder` with the agent `entry`'s command (`command` for one
+    /// Templum doesn't know) typed into its shell, `args` after it (`launch_args`: a model and an
+    /// effort) and before what Templum adds. It is focused on the canvas; the keyboard stays
+    /// where it is. The folder becomes this workspace's newest recent one.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn start_agent(
+        &mut self,
+        entry: Option<&AgentEntry>,
+        command: &str,
+        args: &str,
+        folder: &Path,
+        rect: Rect,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<BlockId> {
         let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx)?;
-        let entry = self.agents.iter().find(|a| a.command == command);
         let command = entry.map_or_else(
             || command.to_string(),
             |a| a.start_command(&uuid::Uuid::new_v4().to_string()),
-        );
+        ) + args;
         // The shell reads it once it is ready.
         let line = format!("{}\r", self.typed(entry, &command));
         // Known at once (Shift+Enter, closing), not at the next snapshot.
@@ -283,7 +335,6 @@ impl Workspace {
         pane.term.write(line.into_bytes());
         pane.seen.agent = agent;
         remember(&mut self.space.recent, folder.to_path_buf());
-        window.focus(&self.focus_handle, cx);
         Some(id)
     }
 
@@ -353,6 +404,7 @@ impl Workspace {
                 .integration
                 .clone()
                 .filter(|_| self.config.shell.integration),
+            env: self.bus_env.clone(),
         };
         let start = folder.or_else(std::env::home_dir);
         let id = match Terminal::spawn(opts, self.notify.clone()) {
@@ -360,7 +412,7 @@ impl Workspace {
                 let id = self.space.canvas.add(rect);
                 self.space.blocks.insert(
                     id,
-                    Body::Terminal(Pane {
+                    Body::Terminal(Box::new(Pane {
                         term,
                         snapshot: Rc::default(),
                         heard: (0, 0),
@@ -371,7 +423,24 @@ impl Workspace {
                         },
                         usage: None,
                         find: None,
-                    }),
+                        state: None,
+                        handed: None,
+                        answer: None,
+                        prompt: None,
+                        looks: Default::default(),
+                        typed: Default::default(),
+                        keyed: Default::default(),
+                        scrolled: Default::default(),
+                        submitted: 0,
+                        speaks: false,
+                        keys_from: None,
+                        opened_by: None,
+                        model: None,
+                        effort: None,
+                        flags_for: None,
+                        sent: None,
+                        transcript: None,
+                    })),
                 );
                 self.added(id);
                 Some(id)
@@ -488,7 +557,15 @@ impl Workspace {
             .blocks()
             .iter()
             .filter(|b| ids.contains(&b.id))
-            .map(|b| (b.id, self.space.blocks[&b.id].item(self.space.home(b), cx)))
+            .map(|b| (b.id, self.space.item_of(b, cx)))
+            .collect();
+        // Their wires go with them; undoing the close brings them back.
+        let wires: Vec<_> = self
+            .space
+            .wires
+            .iter()
+            .filter(|w| ids.iter().any(|id| w.touches(*id)))
+            .copied()
             .collect();
         let was_focused = self.space.focused.is_some_and(|id| ids.contains(&id));
         for id in ids {
@@ -498,18 +575,24 @@ impl Workspace {
             self.space.focused = None;
         }
         if !items.is_empty() {
-            self.keep(Change::Open(items), then);
+            self.keep(Change::Open(items, wires), then);
         }
     }
 
     /// Removes a block and kills its shell (dropping the Terminal shuts it down).
     /// The block leaves the canvas at once; it stays on screen as a ghost while it fades out.
+    /// The task its agent was on ends: the agent that handed it over hears so.
     pub(super) fn remove_block(
         &mut self,
         id: BlockId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(terminal) = self.space.terminal(id).map(|p| p.term.id().to_string()) {
+            let uid = self.space.uids.get(&id).cloned().unwrap_or_default();
+            let why = format!("{uid} was closed before it answered.");
+            self.end_turn(&terminal, templum_mcp::Reply::err(why), cx);
+        }
         if let Some((block, _, body)) = self.take_block(id, window, cx) {
             // Its notes stay in the Notes dialog, but for blank ones: nothing is lost.
             for note in body.note().map(Note::ids).unwrap_or_default() {
@@ -538,6 +621,8 @@ impl Workspace {
         self.space.canvas.remove(id);
         self.space.appearing.remove(&id);
         let body = self.space.blocks.remove(&id);
+        self.space.uids.remove(&id);
+        self.space.unwire(id);
         if self.space.hovered == Some(id) {
             self.space.hovered = None;
         }
@@ -673,6 +758,7 @@ impl Workspace {
         self.space.focused = Some(id);
         self.space.selected.clear();
         self.space.selected_ink = None;
+        self.space.selected_wire = None;
         // What types inside the block takes the keyboard; anything else leaves it with the
         // workspace.
         if !self
@@ -730,4 +816,15 @@ pub(super) fn label(agent: Option<&str>, title: &str, folder: Option<&Path>) -> 
         }
     }
     parts.join(" · ")
+}
+
+/// `n` in base 36 (digits, then lowercase letters), `width` characters, zeros in front.
+fn base36(mut n: u128, width: usize) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut text = vec![b'0'; width];
+    for c in text.iter_mut().rev() {
+        *c = DIGITS[(n % 36) as usize];
+        n /= 36;
+    }
+    String::from_utf8(text).expect("ASCII")
 }

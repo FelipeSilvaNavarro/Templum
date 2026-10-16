@@ -22,6 +22,7 @@ use crate::workspace::Workspace;
 
 mod agents;
 mod colors;
+mod connections;
 mod edits;
 mod fields;
 mod fonts;
@@ -61,13 +62,14 @@ pub(crate) enum Section {
     Tools,
     Git,
     Agents,
+    Connections,
     Usage,
     Updates,
     Shortcuts,
 }
 
 impl Section {
-    pub const ALL: [Section; 10] = [
+    pub const ALL: [Section; 11] = [
         Section::Appearance,
         Section::Font,
         Section::Terminal,
@@ -75,6 +77,7 @@ impl Section {
         Section::Tools,
         Section::Git,
         Section::Agents,
+        Section::Connections,
         Section::Usage,
         Section::Updates,
         Section::Shortcuts,
@@ -89,6 +92,7 @@ impl Section {
             Section::Tools => "Tools",
             Section::Git => "Git",
             Section::Agents => "Agents",
+            Section::Connections => "Connections",
             Section::Usage => "Usage",
             Section::Updates => "Updates",
             Section::Shortcuts => "Shortcuts",
@@ -105,6 +109,7 @@ impl Section {
             Section::Tools => "settings-tab-tools",
             Section::Git => "settings-tab-git",
             Section::Agents => "settings-tab-agents",
+            Section::Connections => "settings-tab-connections",
             Section::Usage => "settings-tab-usage",
             Section::Updates => "settings-tab-updates",
             Section::Shortcuts => "settings-tab-shortcuts",
@@ -125,6 +130,10 @@ impl Section {
             Section::Agents => Some(
                 "The AI agents in the canvas menu. Change one of Templum's, or add your own; ↺ puts \
                  one of Templum's back as it was.",
+            ),
+            Section::Connections => Some(
+                "What the agents in the canvas get from Templum: its MCP server, to read and type \
+                 into the blocks wired to them, and its hooks, for the dot on their terminal.",
             ),
             Section::Usage => Some(
                 "Claude Code's and Codex's plan limits, shown in the title bar, and each agent's \

@@ -60,12 +60,39 @@ impl Workspace {
             let in_its_folder = folder.is_some();
             let id = self.spawn_block(rect, folder, window, cx);
             failed |= id.is_none();
-            if let (Some(id), true) = (id, in_its_folder) {
-                self.resume_agent(id, t);
+            if let Some(id) = id {
+                self.restore_terminal(id, t, in_its_folder);
             }
             ids.push(id);
         }
         self.quiet = false;
+        for (item, id) in saved.items.iter().zip(&ids) {
+            if let Some(id) = id {
+                self.adopt_uid(*id, item.uid());
+            }
+        }
+        // The wires, by block id, once the blocks have theirs back: one whose block didn't come
+        // back, of a block to itself, or a second between two, is dropped.
+        for wire in &saved.wires {
+            let (Some(a), Some(b)) = (
+                self.space.block_by_uid(&wire.a),
+                self.space.block_by_uid(&wire.b),
+            ) else {
+                continue;
+            };
+            let label = wire
+                .label
+                .as_deref()
+                .map(str::trim)
+                .filter(|l| !l.is_empty());
+            if self.space.add_wire(a, b).is_some()
+                && let Some(label) = label
+            {
+                let key = super::wires::label_key(&wire.a, &wire.b);
+                let label = label.chars().take(super::wires::LABEL_MAX).collect();
+                self.space.labels.insert(key, label);
+            }
+        }
         self.space.focused = saved.focused.and_then(|i| ids.get(i).copied().flatten());
         // Grid mode as it was left, over the canvas as it was.
         if let Some(tiles) = saved
@@ -106,14 +133,19 @@ impl Workspace {
         self.space.saved = Some(saved);
     }
 
-    /// Types what brings back the agent of the saved terminal `saved` (one Templum knows), its
-    /// session when it was found, into the terminal `id`, just started. The shell reads it once
-    /// it is ready.
-    fn resume_agent(&mut self, id: BlockId, saved: &session::TerminalItem) {
+    /// A saved terminal `saved`, just started as the terminal `id`: who opened it, and, when
+    /// `resume`, its agent (one Templum knows) typed back with its session when it was found, and
+    /// its model and effort when it can type them safely (a hand-edited file may hold others).
+    /// The shell reads it once it is ready.
+    fn restore_terminal(&mut self, id: BlockId, saved: &session::TerminalItem, resume: bool) {
+        if let Some(pane) = self.space.terminal_mut(id) {
+            pane.opened_by = saved.opened_by.clone();
+        }
         let Some(agent) = saved
             .agent
             .as_deref()
             .and_then(|a| self.agents.iter().find(|known| known.id == a))
+            .filter(|_| resume)
         else {
             return;
         };
@@ -125,11 +157,23 @@ impl Workspace {
             _ => true,
         };
         let command = agent.resume_command_for(session, kept);
-        let line = format!("{}\r", self.typed(Some(agent), &command));
+        let (model, effort) = (saved.model.as_deref(), saved.effort.as_deref());
+        let args = agent.launch_args(model, effort);
+        let line = format!(
+            "{}\r",
+            self.typed(
+                Some(agent),
+                &format!("{command}{}", args.as_deref().unwrap_or(""))
+            )
+        );
         let agent = agent.id.clone();
         if let Some(pane) = self.space.terminal_mut(id) {
             pane.term.write(line.into_bytes());
             pane.seen.agent = Some(agent);
+            if args.is_ok() {
+                (pane.model, pane.effort) = (saved.model.clone(), saved.effort.clone());
+                pane.flags_for = pane.seen.agent.clone();
+            }
         }
     }
 
@@ -149,9 +193,7 @@ impl Workspace {
                 // An agent resumes the folder's latest conversation: anywhere else, it's another one.
                 let in_its_folder = folder.is_some();
                 let id = self.spawn_block(rect, folder, window, cx)?;
-                if in_its_folder {
-                    self.resume_agent(id, t);
-                }
+                self.restore_terminal(id, t, in_its_folder);
                 Some(id)
             }
             session::Item::Kanban(k) => clamped_rect(k.rect.into(), kanban::MIN).map(|rect| {
@@ -219,7 +261,7 @@ impl Workspace {
                 if let Some(a) = e.active.filter(|a| *a < editor.tabs.len()) {
                     editor.active = Some(a);
                 }
-                self.add_block(rect, Body::Editor(editor))
+                self.add_block(rect, Body::Editor(Box::new(editor)))
             }),
         }
     }
@@ -321,8 +363,12 @@ impl Workspace {
             None => {}
         }
         for (id, terminals, saved, written) in done {
-            if let Some(space) = self.space_by_id_mut(&id) {
-                space.see(terminals);
+            let gone = self
+                .space_by_id_mut(&id)
+                .map(|space| space.see(terminals))
+                .unwrap_or_default();
+            for terminal in gone {
+                self.agent_left(&terminal, cx);
             }
             match written {
                 None => {}

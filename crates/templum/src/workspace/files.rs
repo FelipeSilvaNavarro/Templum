@@ -66,7 +66,7 @@ impl Workspace {
         self.space.pristine = false;
         let rect = Rect::new(at.x, at.y, editor::SIZE.w, editor::SIZE.h);
         let editor = Editor::new(folder.to_path_buf(), true, cx);
-        let id = self.add_block(rect, Body::Editor(editor));
+        let id = self.add_block(rect, Body::Editor(Box::new(editor)));
         remember(&mut self.space.recent, folder.to_path_buf());
         window.focus(&self.focus_handle, cx);
         cx.notify();
@@ -527,7 +527,7 @@ impl Workspace {
             let size = editor::SIZE;
             let anchor = beside.and_then(|b| self.space.canvas.get(b).map(|b| self.space.home(b)));
             let at = match anchor {
-                Some(anchor) => self.space.canvas.place_beside(anchor, size).origin(),
+                Some(anchor) => self.space.room_beside(&[anchor], size).origin(),
                 None => {
                     let center = self.space.camera().to_world(self.center(window));
                     self.space

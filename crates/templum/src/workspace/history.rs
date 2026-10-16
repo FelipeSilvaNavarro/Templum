@@ -2,7 +2,7 @@
 //! resized. What is inside a block (a shell, a note's text, a board's cards) keeps its own undo.
 
 use gpui_kit::{Context, Window};
-use templum_canvas::{BlockId, Rect};
+use templum_canvas::{BlockId, Rect, Wire};
 
 use crate::session;
 
@@ -14,18 +14,32 @@ use super::{CANVAS_UNDO, Workspace};
 pub(crate) enum Change {
     /// Close these blocks (they were added).
     Close(Vec<BlockId>),
-    /// Bring these blocks back as they were when closed, by the ids they had.
-    Open(Vec<(BlockId, session::Item)>),
+    /// Bring these blocks back as they were when closed, by the ids they had, with the wires they
+    /// had.
+    Open(Vec<(BlockId, session::Item)>, Vec<Wire>),
     /// Put these blocks at these rects (they were moved or resized).
     Place(Vec<(BlockId, Rect)>),
+    /// Wire these blocks (they were unwired).
+    Connect(Wire),
+    /// Unwire them (they were wired).
+    Disconnect(Wire),
+    /// Give this wire this label, or none (it had another).
+    Label(Wire, Option<String>),
 }
 
 impl Change {
     fn ids(&mut self) -> Vec<&mut BlockId> {
         match self {
             Change::Close(ids) => ids.iter_mut().collect(),
-            Change::Open(items) => items.iter_mut().map(|(id, _)| id).collect(),
+            Change::Open(items, wires) => items
+                .iter_mut()
+                .map(|(id, _)| id)
+                .chain(wires.iter_mut().flat_map(|Wire { a, b }| [a, b]))
+                .collect(),
             Change::Place(rects) => rects.iter_mut().map(|(id, _)| id).collect(),
+            Change::Connect(Wire { a, b })
+            | Change::Disconnect(Wire { a, b })
+            | Change::Label(Wire { a, b }, _) => vec![a, b],
         }
     }
 }
@@ -93,12 +107,19 @@ impl Workspace {
                 return false;
             };
             let then = if redo { Then::Redo(n) } else { Then::Undo(n) };
-            // A step whose blocks are all gone (a shell that exited) has nothing to take back.
-            let gone = !matches!(change, Change::Open(_))
-                && change
-                    .ids()
-                    .iter()
-                    .all(|id| self.space.canvas.get(**id).is_none());
+            // A step whose blocks are all gone (a shell that exited) has nothing to take back; nor
+            // has a wire's when one of its blocks is.
+            let wire = matches!(
+                change,
+                Change::Connect(_) | Change::Disconnect(_) | Change::Label(..)
+            );
+            let missing = |id: &&mut BlockId| self.space.canvas.get(**id).is_none();
+            let gone = !matches!(change, Change::Open(..))
+                && if wire {
+                    change.ids().iter().any(missing)
+                } else {
+                    change.ids().iter().all(missing)
+                };
             if gone {
                 self.take_step(then);
                 continue;
@@ -106,13 +127,25 @@ impl Workspace {
             match change {
                 // It may ask first (a terminal at work, unsaved files).
                 Change::Close(ids) => self.close_blocks(ids, then, window, cx),
-                Change::Open(items) => {
+                Change::Open(items, wires) => {
                     self.take_step(then);
-                    self.reopen(items, then, window, cx);
+                    self.reopen(items, wires, then, window, cx);
                 }
                 Change::Place(rects) => {
                     self.take_step(then);
                     self.place(rects, then, cx);
+                }
+                Change::Connect(wire) => {
+                    self.take_step(then);
+                    self.set_wire(wire, true, then, cx);
+                }
+                Change::Disconnect(wire) => {
+                    self.take_step(then);
+                    self.set_wire(wire, false, then, cx);
+                }
+                Change::Label(wire, label) => {
+                    self.take_step(then);
+                    self.set_label(wire, label, then, cx);
                 }
             }
             return true;
@@ -120,26 +153,38 @@ impl Workspace {
     }
 
     /// Brings closed blocks back where they were, selected (a terminal as a shell in its folder,
-    /// resuming its agent). The steps that named them name them by their new ids.
+    /// resuming its agent), with their wires to the blocks still there. The steps that named them,
+    /// and their wires, name them by their new ids.
     fn reopen(
         &mut self,
         items: Vec<(BlockId, session::Item)>,
+        mut wires: Vec<Wire>,
         then: Then,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let (old, items): (Vec<_>, Vec<_>) = items.into_iter().unzip();
         let added = self.add_selected(&items, window, cx);
+        for (item, new) in items.iter().zip(&added) {
+            if let Some(new) = new {
+                self.adopt_uid(*new, item.uid());
+            }
+        }
         let mut ids = Vec::new();
         for (old, new) in old.into_iter().zip(added) {
             let Some(new) = new else { continue };
             let steps = self.space.undo.iter_mut().chain(&mut self.space.redo);
-            for id in steps.flat_map(|(_, change)| change.ids()) {
+            let ends = wires.iter_mut().flat_map(|Wire { a, b }| [a, b]);
+            for id in steps.flat_map(|(_, change)| change.ids()).chain(ends) {
                 if *id == old {
                     *id = new;
                 }
             }
             ids.push(new);
+        }
+        // A wire whose other block is closed too, or gone, stays out.
+        for wire in wires {
+            self.space.add_wire(wire.a, wire.b);
         }
         if !ids.is_empty() {
             self.keep(Change::Close(ids), then);

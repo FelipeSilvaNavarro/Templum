@@ -39,6 +39,7 @@ pub(crate) struct Config {
     pub git: GitConfig,
     pub usage: UsageConfig,
     pub updates: UpdatesConfig,
+    pub connections: ConnectionsConfig,
     /// `[agents.<id>]`: changes to one of Templum's AI agents (only what differs), or an agent of
     /// the user's own.
     pub agents: BTreeMap<String, AgentConfig>,
@@ -269,6 +270,21 @@ pub(crate) struct UpdatesConfig {
 impl Default for UpdatesConfig {
     fn default() -> Self {
         Self { check: true }
+    }
+}
+
+/// `[connections]`: Templum's MCP server and hooks for the agents it opens
+/// (docs/specs/connections.md).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct ConnectionsConfig {
+    /// The Claude Code and Codex Templum opens get its MCP server and hooks.
+    pub enabled: bool,
+}
+
+impl Default for ConnectionsConfig {
+    fn default() -> Self {
+        Self { enabled: true }
     }
 }
 
@@ -830,6 +846,10 @@ pub(crate) fn template(macos: bool) -> String {
         "## Look for a new version on GitHub at start and once a day, and download it: Templum\n",
         "## asks before restarting into it.\n",
         "# check = true\n\n",
+        "[connections]\n",
+        "## The Claude Code and Codex Templum opens get its MCP server and hooks: they can read and\n",
+        "## type into the blocks wired to them (docs/specs/connections.md).\n",
+        "# enabled = true\n\n",
         "[git]\n",
         "# program = \"git\"   # a name on PATH, or a path\n\n",
         "[keys]\n",
@@ -1326,6 +1346,19 @@ scrollback = 500
         let err = parse("[usage]\nwarn = 85\n").unwrap_err();
         assert!(err.contains("usage.warn"), "{err}");
         assert!(parse("[usage]\nreset = \"sometimes\"\n").is_err());
+    }
+
+    #[test]
+    fn connections_are_on_unless_turned_off() {
+        assert!(parse("").unwrap().connections.enabled);
+        assert!(
+            !parse("[connections]\nenabled = false\n")
+                .unwrap()
+                .connections
+                .enabled
+        );
+        let err = parse("[connections]\nmcp = true\n").unwrap_err();
+        assert!(err.contains("mcp"), "{err}");
     }
 
     #[test]

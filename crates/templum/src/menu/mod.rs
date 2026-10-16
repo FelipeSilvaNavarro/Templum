@@ -14,7 +14,7 @@ use gpui_kit::{
     AnyElement, App, Context, DismissEvent, Entity, Focusable as _, Pixels, Point as PixelPoint,
     ScrollWheelEvent, Subscription, Window, anchored, deferred, div, px,
 };
-use templum_canvas::{BlockId, Point};
+use templum_canvas::{BlockId, Point, Wire};
 use templum_git::{Branch, Commit, Entry};
 
 use crate::git_block;
@@ -50,6 +50,8 @@ pub(crate) enum Target {
     Space(String),
     /// A drawing, by its index in the space's ink.
     Ink(usize),
+    /// A wire between two blocks.
+    Wire(Wire),
     /// A stash in a Git block's Stashes tab, by N in `stash@{N}`.
     GitStash {
         block: BlockId,
@@ -156,10 +158,29 @@ impl Workspace {
     }
 
     /// How block `block`'s menu ends: in grid mode, the tile's items; on the canvas, Fullscreen
-    /// (with `group`, the selection it is in).
+    /// (with `group`, the selection it is in) and its wiring.
     fn tail(&self, block: BlockId, group: Vec<BlockId>, cx: &App) -> Tail {
         match &self.space.grid {
-            None => Tail::Canvas { group },
+            None => {
+                let (disconnect, connect) = self
+                    .space
+                    .canvas
+                    .blocks()
+                    .iter()
+                    .filter(|b| b.id != block)
+                    .map(|b| {
+                        (
+                            b.id,
+                            crate::block::title(self, &self.space.blocks[&b.id], cx),
+                        )
+                    })
+                    .partition(|(id, _)| self.space.wired(block, *id));
+                Tail::Canvas {
+                    group,
+                    connect,
+                    disconnect,
+                }
+            }
             Some(grid) => Tail::Tile {
                 at: self.space.camera().to_world(Point::new(
                     grid.area.x + grid.area.w / 2.0,
@@ -282,6 +303,7 @@ impl Workspace {
                 ),
             },
             Target::Ink(index) => Items::Ink { index },
+            Target::Wire(wire) => Items::Wire { wire },
             Target::GitCommitMenu(block) => Items::GitCommitMenu {
                 block,
                 label: self.space.git(block)?.commit_label(),
@@ -472,8 +494,13 @@ struct SendTo {
 
 /// How a block's menu ends, before Close.
 enum Tail {
-    /// On the canvas: Fullscreen, for the block or the selection it was in.
-    Canvas { group: Vec<BlockId> },
+    /// On the canvas: Fullscreen, for the block or the selection it was in; Connect to ▸ the
+    /// blocks not wired to it and Disconnect from ▸ those that are, by title, back to front.
+    Canvas {
+        group: Vec<BlockId>,
+        connect: Vec<(BlockId, SharedString)>,
+        disconnect: Vec<(BlockId, SharedString)>,
+    },
     /// In grid mode: new blocks (`agents`, placed on the canvas at `at`) and the blocks left on
     /// the canvas, taking half of the tile; flip the split (with a neighbour), leave the grid,
     /// back to the canvas.
@@ -633,6 +660,10 @@ enum Items {
     },
     Ink {
         index: usize,
+    },
+    /// A wire: Rename wire…, Disconnect.
+    Wire {
+        wire: Wire,
     },
     /// Terminals to show, one item each.
     Reveal {

@@ -16,9 +16,10 @@ use gpui_kit::{
 };
 use templum_canvas::{BlockId, Size};
 
-use crate::board::{Board, Boards, Card, Column, Label};
+use crate::board::{Board, Boards, Card, Column, Comment, Label};
 use crate::grid::hsla;
 use crate::menu::Target;
+use crate::notes;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
 
@@ -465,13 +466,54 @@ fn card_view(
             )
         })
         .child(div().text_size(px(13.0 * z)).child(title))
-        .when(!card.description.is_empty(), |el| {
-            el.child(
-                Icon::new(IconName::FileText)
-                    .size(px(12.0 * z))
-                    .text_color(ui.title_dim),
-            )
-        })
+        .when(
+            !card.description.is_empty() || !card.comments.is_empty() || card.assignee.is_some(),
+            |el| {
+                let count = card.comments.len();
+                let who = card
+                    .assignee
+                    .as_ref()
+                    .map(|uid| ws.uid_title(uid, cx).unwrap_or_else(|| uid.clone()));
+                el.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0 * z))
+                        .text_size(px(11.0 * z))
+                        .text_color(ui.title_dim)
+                        .when(!card.description.is_empty(), |el| {
+                            el.child(
+                                Icon::new(IconName::FileText)
+                                    .size(px(12.0 * z))
+                                    .text_color(ui.title_dim),
+                            )
+                        })
+                        .when(count > 0, |el| {
+                            el.child(
+                                div()
+                                    .id(name("comments", n, id))
+                                    .child(if count == 1 {
+                                        "1 comment".to_string()
+                                    } else {
+                                        format!("{count} comments")
+                                    })
+                                    .test_support(),
+                            )
+                        })
+                        .when_some(who, |el, who| {
+                            el.child(
+                                div()
+                                    .id(name("assignee", n, id))
+                                    .ml_auto()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(who)
+                                    .test_support(),
+                            )
+                        }),
+                )
+            },
+        )
         .drag_over::<CardDrag>(move |s, _, _, _| s.border_color(ui.accent))
         .on_drag(CardDrag { board, card: id }, move |_, _, _, cx| {
             let text = preview_title.clone();
@@ -548,6 +590,7 @@ pub(crate) fn open_card(
             .rows(5)
             .default_value(current.description)
     });
+    let comment = cx.new(|cx| TextareaState::new(window, cx).rows(2));
     // Subscribed through the app: the workspace these update isn't leased, and they need no
     // window. Enter in the title confirms the dialog by itself. The dialog's typing is one undo
     // step for the board (its fields undo each key): taken at its first change.
@@ -616,6 +659,65 @@ pub(crate) fn open_card(
                 })
                 .test_support()
         });
+        let (assignee, comments) = ws_now
+            .boards
+            .card(board, card)
+            .map(|c| (c.assignee.clone(), c.comments.clone()))
+            .unwrap_or_default();
+        let now = notes::now();
+        let author = |by: &str| {
+            if by == "you" {
+                "You".to_string()
+            } else {
+                ws_now.uid_title(by, cx).unwrap_or_else(|| by.to_string())
+            }
+        };
+        let assignee = assignee.map(|uid| (author(&uid), ws.clone()));
+        let comments: Vec<_> = comments
+            .iter()
+            .map(|c| {
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(ui.title_dim)
+                            .child(format!("{} · {}", author(&c.by), notes::ago(c.at, now))),
+                    )
+                    .child(div().text_size(px(13.0)).child(c.text.clone()))
+            })
+            .collect();
+        let add = {
+            let (ws, comment) = (ws.clone(), comment.clone());
+            div()
+                .id("add-comment")
+                .px(px(10.0))
+                .py(px(4.0))
+                .rounded(px(6.0))
+                .text_size(px(12.0))
+                .cursor_pointer()
+                .hover(move |s| s.bg(ui.hover))
+                .child("Add comment")
+                .on_click(move |_: &ClickEvent, window, cx| {
+                    let text = comment.read(cx).value().trim().to_string();
+                    if text.is_empty() {
+                        return;
+                    }
+                    ws.update(cx, |ws, cx| {
+                        let said = Comment {
+                            by: "you".into(),
+                            text,
+                            at: notes::now(),
+                        };
+                        ws.edit_boards(|b| b.edit_card(board, card, |c| c.comments.push(said)));
+                        cx.notify();
+                    });
+                    comment.update(cx, |c, cx| c.set_value("", window, cx));
+                })
+                .test_support()
+        };
         let delete = {
             let ws = ws.clone();
             div()
@@ -663,6 +765,35 @@ pub(crate) fn open_card(
                     .child(Textarea::new(&description))
                     .child(field("Labels"))
                     .child(div().flex().gap(px(6.0)).children(toggles))
+                    .when_some(assignee, |el, (who, ws)| {
+                        el.child(field("Assignee")).child(
+                            div().flex().items_center().gap(px(6.0)).child(who).child(
+                                div()
+                                    .id("unassign")
+                                    .cursor_pointer()
+                                    .hover(move |s| s.bg(ui.hover))
+                                    .child(Icon::new(IconName::Close).size(px(12.0)))
+                                    .on_click(move |_: &ClickEvent, _, cx| {
+                                        ws.update(cx, |ws, cx| {
+                                            ws.edit_boards(|b| {
+                                                b.edit_card(board, card, |c| c.assignee = None)
+                                            });
+                                            cx.notify();
+                                        })
+                                    })
+                                    .test_support(),
+                            ),
+                        )
+                    })
+                    .child(field("Comments"))
+                    .children(comments)
+                    .child(
+                        div()
+                            .id("comment-field")
+                            .child(Textarea::new(&comment))
+                            .test_support(),
+                    )
+                    .child(div().flex().justify_end().child(add))
                     .child(div().flex().justify_end().child(delete)),
             )
     });

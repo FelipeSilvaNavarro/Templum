@@ -29,6 +29,36 @@ fn quiet() -> (String, Vec<String>) {
     return ("cmd".into(), vec!["/K".into()]);
 }
 
+/// `script` run by `sh` with job control: each program it runs is in front of it while it runs,
+/// as an agent is in front of the shell it was typed into. `quiet`'s `cat` is the shell itself.
+#[cfg(unix)]
+fn jobs(script: &str) -> (String, Vec<String>) {
+    ("sh".into(), vec!["-c".into(), format!("set -m; {script}")])
+}
+
+/// `quiet`, run as an agent is: in front of its shell (Unix; Windows can't tell who is in front).
+fn agent_cat() -> (String, Vec<String>) {
+    // `; true`: `sh` would run a last `cat` in its own place, as the shell.
+    #[cfg(unix)]
+    return jobs("cat; true");
+    #[cfg(windows)]
+    return quiet();
+}
+
+/// Waits until a program terminal `id`'s shell runs is in front of it (`job`), or the shell is.
+#[cfg(unix)]
+fn in_front(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId, job: bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let p = ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().term.processes());
+        if (p.foreground != p.shell) == job {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "{p:?}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 fn open(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>) {
     open_with(cx, None)
 }
@@ -573,11 +603,13 @@ pub(super) fn three_blocks(
             ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 1.0);
             ws.space.canvas.get_mut(terminal).unwrap().rect = Rect::new(40.0, 400.0, 400.0, 300.0);
             let kanban = crate::session::Item::Kanban(crate::session::KanbanItem {
+                uid: String::new(),
                 rect: Rect::new(40.0, 40.0, 220.0, 200.0).into(),
                 board: None,
             });
             let hello = ws.notes.add("hello".into(), None, 0);
             let note = crate::session::Item::Note(crate::session::NoteItem {
+                uid: String::new(),
                 rect: Rect::new(300.0, 40.0, 220.0, 200.0).into(),
                 notes: vec![hello],
                 active: 0,
@@ -598,6 +630,27 @@ pub(super) fn three_blocks(
     .unwrap()
 }
 
+/// A kanban block on a new board with one card in its first column: (block, board, card).
+pub(super) fn board_with_a_card(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> (BlockId, u64, u64) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.add_kanban_at(Point::new(900.0, 0.0), window, cx);
+            let block = ws.space.canvas.top().unwrap();
+            ws.new_board(block, cx);
+            let board = ws.space.kanban(block).unwrap().board.unwrap();
+            let todo = ws.boards.board(board).unwrap().columns[0].id;
+            let card = ws.edit_boards(|b| b.add_card(board, todo)).unwrap();
+            ws.space.appearing.clear();
+            (block, board, card)
+        })
+    })
+    .unwrap()
+}
+
 /// A local canvas point as a window position.
 pub(super) fn at(ws: &Entity<Workspace>, cx: &mut TestAppContext, p: (f32, f32)) -> (f32, f32) {
     let o = ws.read_with(cx, |ws, _| ws.origin);
@@ -605,8 +658,12 @@ pub(super) fn at(ws: &Entity<Workspace>, cx: &mut TestAppContext, p: (f32, f32))
 }
 
 mod agents;
+mod block_ids;
 mod blocks;
+mod bus;
 mod config_reload;
+mod content;
+mod delegate;
 mod drawing;
 mod editor;
 mod editor_tabs;
@@ -634,14 +691,19 @@ mod moving;
 mod navigation;
 mod notes;
 mod persistence;
+mod requests;
 mod screen;
 mod selection;
 mod settings_edits;
 mod settings_panel;
 mod shortcuts;
+// `cat` stands in for the agents.
+#[cfg(unix)]
+mod spawn;
 mod terminals;
 mod themes;
 mod update;
 mod usage;
 mod welcome;
+mod wires;
 mod workspaces;

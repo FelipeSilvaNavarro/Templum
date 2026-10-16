@@ -21,6 +21,22 @@ pub const RELAY_FLAG: &str = "--claude-statusline";
 
 /// The settings file the Claude Code Templum opens is given, in Templum's data folder.
 const SETTINGS: &str = "claude-statusline.json";
+/// The MCP config the Claude Code Templum opens is given (`--mcp-config`).
+const MCP: &str = "mcp.json";
+/// What each hook runs after Templum's program (docs/specs/connections.md, Hooks).
+const HOOK: &str = "hook claude";
+/// The Claude Code hooks Templum follows a session's turns with.
+const HOOKED: [&str; 9] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PermissionRequest",
+    "PostToolUse",
+    "PostToolUseFailure",
+    "Stop",
+    "StopFailure",
+    "Notification",
+    "SessionEnd",
+];
 
 /// A relay file older than this when Templum starts is deleted (a week's window, and a day).
 pub const KEEP_SECS: u64 = 8 * 24 * 3600;
@@ -173,30 +189,74 @@ fn run(command: &str, input: &[u8]) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// Writes the settings file the Claude Code Templum opens is given, naming `exe` (Templum's
-/// program) as its status line, with Templum's data folder `data`, and returns its path as typed
-/// after `--settings` in a shell. None when a path can't be typed safely in every shell.
-pub fn settings_arg(data: &Path, exe: &Path, windows: bool) -> Option<String> {
+/// Writes the settings file the Claude Code Templum opens is given, with Templum's data folder
+/// `data` and its program `exe`: Templum's status line when `status_line`, and the hooks that
+/// tell Templum its turns when `hooks`. Returns its path as typed after `--settings` in a shell;
+/// None when there is nothing to give, or a path can't be typed safely in every shell.
+pub fn settings_arg(
+    data: &Path,
+    exe: &Path,
+    windows: bool,
+    status_line: bool,
+    hooks: bool,
+) -> Option<String> {
     let path = data.join(SETTINGS);
     let typed = typed_path(&path.to_string_lossy(), windows)?;
     // Linux names a program replaced while it runs (an upgrade) "<path> (deleted)": the new one
     // is at the path.
     let exe = exe.to_string_lossy();
     let exe = typed_path(exe.strip_suffix(" (deleted)").unwrap_or(&exe), windows)?;
-    // The relay is told the folder: Claude Code's environment may name another one.
-    let folder = typed_path(&data.to_string_lossy(), windows)?;
-    let settings = serde_json::json!({
-        "statusLine": {
-            "type": "command",
-            "command": format!("{exe} {RELAY_FLAG} {folder}"),
-            "padding": 0,
-        }
-    });
-    let text = serde_json::to_vec_pretty(&settings).expect("JSON");
-    if std::fs::read(&path).ok().as_deref() != Some(&text[..]) {
-        write_atomic(&path, &text).ok()?;
+    let mut settings = serde_json::Map::new();
+    if status_line {
+        // The relay is told the folder: Claude Code's environment may name another one.
+        let folder = typed_path(&data.to_string_lossy(), windows)?;
+        settings.insert(
+            "statusLine".into(),
+            serde_json::json!({
+                "type": "command",
+                "command": format!("{exe} {RELAY_FLAG} {folder}"),
+                "padding": 0,
+            }),
+        );
     }
+    if hooks {
+        let hook = serde_json::json!([{
+            "hooks": [{ "type": "command", "command": format!("{exe} {HOOK}"), "timeout": 5 }]
+        }]);
+        let all: serde_json::Map<String, serde_json::Value> = HOOKED
+            .iter()
+            .map(|event| (event.to_string(), hook.clone()))
+            .collect();
+        settings.insert("hooks".into(), all.into());
+    }
+    if settings.is_empty() {
+        return None;
+    }
+    write_changed(&path, &serde_json::Value::Object(settings))?;
     Some(typed)
+}
+
+/// Writes the MCP config the Claude Code Templum opens is given: Templum's own server, `exe
+/// mcp`. Returns its path as typed after `--mcp-config` in a shell; None when it can't be.
+pub fn mcp_arg(data: &Path, exe: &Path, windows: bool) -> Option<String> {
+    let path = data.join(MCP);
+    let typed = typed_path(&path.to_string_lossy(), windows)?;
+    let exe = exe.to_string_lossy();
+    let exe = exe.strip_suffix(" (deleted)").unwrap_or(&exe);
+    let config = serde_json::json!({
+        "mcpServers": { "templum": { "type": "stdio", "command": exe, "args": ["mcp"] } }
+    });
+    write_changed(&path, &config)?;
+    Some(typed)
+}
+
+/// Writes `value` to `path` unless the file already holds it.
+pub(crate) fn write_changed(path: &Path, value: &serde_json::Value) -> Option<()> {
+    let text = serde_json::to_vec_pretty(value).expect("JSON");
+    if std::fs::read(path).ok().as_deref() != Some(&text[..]) {
+        write_atomic(path, &text).ok()?;
+    }
+    Some(())
 }
 
 /// `path` as one word in bash, zsh, fish, PowerShell and cmd: as is when it is plain, in double
@@ -683,7 +743,14 @@ mod tests {
     #[test]
     fn the_settings_file_names_templum_as_the_status_line() {
         let dir = tempfile::tempdir().unwrap();
-        let typed = settings_arg(dir.path(), Path::new("/opt/Templum/templum"), false).unwrap();
+        let typed = settings_arg(
+            dir.path(),
+            Path::new("/opt/Templum/templum"),
+            false,
+            true,
+            false,
+        )
+        .unwrap();
         assert_eq!(typed, dir.path().join(SETTINGS).display().to_string());
         let written: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dir.path().join(SETTINGS)).unwrap()).unwrap();
@@ -695,15 +762,82 @@ mod tests {
             )
         );
         assert_eq!(
-            settings_arg(dir.path(), Path::new("/opt/$x/templum"), false),
+            settings_arg(dir.path(), Path::new("/opt/$x/templum"), false, true, false),
             None
         );
         // Upgraded while it runs: the new program is at the old path.
-        settings_arg(dir.path(), Path::new("/usr/bin/templum (deleted)"), false).unwrap();
+        settings_arg(
+            dir.path(),
+            Path::new("/usr/bin/templum (deleted)"),
+            false,
+            true,
+            false,
+        )
+        .unwrap();
         let written = std::fs::read_to_string(dir.path().join(SETTINGS)).unwrap();
         assert!(
             written.contains("\"/usr/bin/templum --claude-statusline"),
             "{written}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_settings_file_holds_the_status_line_the_hooks_or_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = Path::new("/opt/templum");
+        let read = || {
+            serde_json::from_slice::<serde_json::Value>(
+                &std::fs::read(dir.path().join(SETTINGS)).unwrap(),
+            )
+            .unwrap()
+        };
+        settings_arg(dir.path(), exe, false, false, true).unwrap();
+        let written = read();
+        assert!(written.get("statusLine").is_none());
+        let hooks = written["hooks"].as_object().unwrap();
+        assert_eq!(hooks.len(), HOOKED.len());
+        assert_eq!(
+            hooks["Stop"][0]["hooks"][0]["command"],
+            "/opt/templum hook claude"
+        );
+        assert_eq!(hooks["PostToolUse"][0]["hooks"][0]["timeout"], 5);
+        // The permission dialog opening: the wait for the person, at once.
+        assert_eq!(
+            hooks["PermissionRequest"][0]["hooks"][0]["command"],
+            "/opt/templum hook claude"
+        );
+        // A turn an API error ends fires this instead of Stop.
+        assert_eq!(
+            hooks["StopFailure"][0]["hooks"][0]["command"],
+            "/opt/templum hook claude"
+        );
+        // A tool that fails (or Esc during it) fires this instead of PostToolUse.
+        assert_eq!(
+            hooks["PostToolUseFailure"][0]["hooks"][0]["command"],
+            "/opt/templum hook claude"
+        );
+        settings_arg(dir.path(), exe, false, true, true).unwrap();
+        assert!(read()["statusLine"].is_object() && read()["hooks"].is_object());
+        assert_eq!(settings_arg(dir.path(), exe, false, false, false), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_mcp_config_names_templums_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let typed = mcp_arg(dir.path(), Path::new("/opt/Templum App/templum"), false).unwrap();
+        assert_eq!(typed, dir.path().join(MCP).display().to_string());
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join(MCP)).unwrap()).unwrap();
+        // Not typed in a shell: the path as it is.
+        assert_eq!(
+            written["mcpServers"]["templum"],
+            serde_json::json!({ "type": "stdio", "command": "/opt/Templum App/templum", "args": ["mcp"] })
+        );
+        assert_eq!(
+            mcp_arg(Path::new("/home/$x"), Path::new("/opt/templum"), false),
+            None
         );
     }
 

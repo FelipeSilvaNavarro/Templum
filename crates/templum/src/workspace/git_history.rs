@@ -537,11 +537,7 @@ impl Workspace {
                 let Some(anchor) = self.space.canvas.get(editor).map(|b| self.space.home(b)) else {
                     return;
                 };
-                let at = self
-                    .space
-                    .canvas
-                    .place_beside(anchor, git_block::SIZE)
-                    .origin();
+                let at = self.space.room_beside(&[anchor], git_block::SIZE).origin();
                 let Some(id) = self.add_git_at(&root, at, window, cx) else {
                     return;
                 };

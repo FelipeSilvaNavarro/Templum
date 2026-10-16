@@ -49,6 +49,19 @@ pub(crate) struct Card {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub labels: Vec<Label>,
+    /// The block id of the agent working on it (`claim_card`); the person frees it in the open card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignee: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<Comment>,
+}
+
+/// A comment on a card: by an agent's block id, or `"you"` for the person; `at` in Unix seconds.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Comment {
+    pub by: String,
+    pub text: String,
+    pub at: u64,
 }
 
 impl Card {
@@ -237,8 +250,36 @@ impl Boards {
             title: "New card".into(),
             description: String::new(),
             labels: Vec::new(),
+            assignee: None,
+            comments: Vec::new(),
         });
         Some(id)
+    }
+
+    /// The board and column holding `card`: ids are unique across boards.
+    pub fn find_card(&self, card: u64) -> Option<(u64, u64)> {
+        self.boards.iter().find_map(|b| {
+            b.columns
+                .iter()
+                .find(|c| c.cards.iter().any(|x| x.id == card))
+                .map(|c| (b.id, c.id))
+        })
+    }
+
+    /// The column of `board` that `name` names: its id, else its title in either case (the first).
+    pub fn column_named(&self, board: u64, name: &str) -> Option<u64> {
+        let columns = &self.board(board)?.columns;
+        let name = name.trim();
+        let title = name.to_lowercase();
+        columns
+            .iter()
+            .find(|c| c.id.to_string() == name)
+            .or_else(|| {
+                columns
+                    .iter()
+                    .find(|c| c.title.trim().to_lowercase() == title)
+            })
+            .map(|c| c.id)
     }
 
     pub fn card(&self, board: u64, card: u64) -> Option<&Card> {
@@ -480,5 +521,69 @@ mod tests {
         };
         assert_eq!(read.boards[0].columns[0].cards[0].labels, [Label::Green]);
         assert_eq!(read.next_id, 3, "missing: after the largest id");
+    }
+
+    #[test]
+    fn a_card_is_found_by_its_id_alone() {
+        let (mut boards, board, columns, cards) = abc();
+        let other = boards.add_board();
+        let todo = boards.board(other).unwrap().columns[0].id;
+        let far = boards.add_card(other, todo).unwrap();
+        assert_eq!(boards.find_card(cards[1]), Some((board, columns[0])));
+        assert_eq!(boards.find_card(far), Some((other, todo)));
+        assert_eq!(boards.find_card(9_999), None);
+    }
+
+    #[test]
+    fn a_column_is_named_by_its_id_or_its_title_in_either_case() {
+        let (boards, board, columns, _) = abc();
+        assert_eq!(boards.column_named(board, "doing"), Some(columns[1]));
+        assert_eq!(boards.column_named(board, " DONE "), Some(columns[2]));
+        assert_eq!(
+            boards.column_named(board, &columns[0].to_string()),
+            Some(columns[0])
+        );
+        assert_eq!(boards.column_named(board, "Review"), None);
+        assert_eq!(boards.column_named(9_999, "Doing"), None);
+    }
+
+    #[test]
+    fn assignee_and_comments_read_back_and_an_older_card_has_none() {
+        let (mut boards, board, _, cards) = abc();
+        boards.edit_card(board, cards[0], |c| {
+            c.assignee = Some("b7k2m".into());
+            c.comments.push(Comment {
+                by: "b7k2m".into(),
+                text: "On it.\nTwo lines.".into(),
+                at: 1_760_000_000,
+            });
+            c.comments.push(Comment {
+                by: "you".into(),
+                text: "Thanks".into(),
+                at: 1_760_000_100,
+            });
+        });
+        let d = tempfile::tempdir().unwrap();
+        save(d.path(), &boards, 1).unwrap();
+        assert_eq!(load(d.path()), Loaded::Saved(boards));
+        let text = std::fs::read_to_string(path(d.path())).unwrap();
+        assert!(
+            text.contains("\"assignee\": \"b7k2m\"") && text.contains("\"by\": \"you\""),
+            "{text}"
+        );
+        // A card without them writes neither key (an older Templum reads the file as before).
+        let fresh = r#"{"version":1,"boards":[{"id":1,"name":"B","columns":[{"id":2,"title":"T","cards":[{"id":3,"title":"x"}]}]}]}"#;
+        std::fs::write(path(d.path()), fresh).unwrap();
+        let Loaded::Saved(read) = load(d.path()) else {
+            panic!("not read")
+        };
+        let card = &read.boards[0].columns[0].cards[0];
+        assert_eq!((card.assignee.as_deref(), card.comments.len()), (None, 0));
+        save(d.path(), &read, 2).unwrap();
+        let again = std::fs::read_to_string(path(d.path())).unwrap();
+        assert!(
+            !again.contains("assignee") && !again.contains("comments"),
+            "{again}"
+        );
     }
 }

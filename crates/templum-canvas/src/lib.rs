@@ -13,9 +13,10 @@ mod ink;
 mod lod;
 mod snap;
 mod tile;
+mod wire;
 
 pub use camera::{Camera, FIT_MARGIN, ZOOM_STEPS};
-pub use canvas::{BESIDE, Block, BlockId, CASCADE, Canvas, cascade};
+pub use canvas::{BESIDE, Block, BlockId, CASCADE, Canvas, cascade, free_spot};
 pub use dots::{DOT_SPACING, DotGrid, MIN_DOT_GAP, dot_grid, dot_size};
 pub use flight::{CameraFlight, FLIGHT_ZOOM_STEP};
 pub use geometry::{Point, Rect, Size};
@@ -27,3 +28,4 @@ pub use ink::{
 pub use lod::{CARD_BELOW, GREEK_BELOW, Level, level};
 pub use snap::{Guide, SNAP_PX, Snapped, snap_move, snap_resize};
 pub use tile::{Direction, GAP, Split, Tile, neighbour};
+pub use wire::{Curve, Wire};

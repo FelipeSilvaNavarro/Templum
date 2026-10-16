@@ -4,7 +4,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{Icon, Sizable as _};
 use gpui_kit::prelude::*;
-use gpui_kit::{Div, ElementId, Entity, Stateful, div, px};
+use gpui_kit::{Div, ElementId, Entity, SharedString, Stateful, div, px};
 use templum_git::Change;
 
 use super::{Check, FONT};
@@ -93,10 +93,11 @@ pub(crate) fn field(state: &Entity<InputState>, z: f32) -> Input {
 /// A text button in a list's header, and the panel's.
 pub(crate) fn small(
     id: impl Into<ElementId>,
-    label: &'static str,
+    label: impl Into<SharedString>,
     ui: Ui,
     z: f32,
 ) -> Stateful<Div> {
+    let label: SharedString = label.into();
     div()
         .id(id)
         .px(px(6.0 * z))

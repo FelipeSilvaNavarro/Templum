@@ -24,7 +24,7 @@ use crate::kanban;
 use crate::menu::Target;
 use crate::motion::{self, Look};
 use crate::note;
-use crate::workspace::{Body, FindBar, Pane, Workspace};
+use crate::workspace::{AgentState, Body, FindBar, Pane, Workspace};
 
 /// World units, like everything in a block.
 const TITLE_FONT: f32 = 12.0;
@@ -105,11 +105,16 @@ pub(crate) fn render(
         Body::Terminal(_) => templum_canvas::level(ws.cell.font_size, ws.space.rest),
         _ => templum_canvas::level(font, ws.space.rest),
     };
-    let level = if level != Level::Full && (focused || (live && body.has_focus(window, cx))) {
-        Level::Full
-    } else {
-        level
-    };
+    // The block worked in: focused, holding the keyboard, or its balloon's field holding it.
+    let typing = live
+        && matches!(body, Body::Terminal(pane)
+            if ws.balloon_typing(window, cx) == Some(pane.term.id()));
+    let level =
+        if level != Level::Full && (focused || typing || (live && body.has_focus(window, cx))) {
+            Level::Full
+        } else {
+            level
+        };
     let hovered = live && ws.space.hovered == Some(id);
     let ui = ws.ui;
     // 0 at rest, 1 hovered; eased both ways.
@@ -173,28 +178,36 @@ pub(crate) fn render(
         _ => None,
     };
     let (label_dot, header_dot) = if labeled { (dot, None) } else { (None, dot) };
-    // Its agent's session, after the dot (docs/specs/usage.md); over the title, which moves the
-    // block as before.
+    // After the dot, over the title, which moves the block as before: who pressed keys in it for
+    // a few seconds (docs/specs/connections.md), else its agent's session (docs/specs/usage.md).
+    let chip = |id: &'static str, text: String, tip: String| {
+        div()
+            .id((id, n))
+            .absolute()
+            .top(px(4.0 * z))
+            .left(px(24.0 * z))
+            .h(px(20.0 * z))
+            .flex()
+            .items_center()
+            .text_size(px(11.0 * z))
+            .text_color(ui.title_dim)
+            .child(text)
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            .test_support()
+    };
     let chip = match body {
-        Body::Terminal(pane) if live && !labeled => pane
-            .usage
-            .as_ref()
-            .and_then(crate::usage::chip)
-            .map(|(text, tip)| {
-                div()
-                    .id(("usage-chip", n))
-                    .absolute()
-                    .top(px(4.0 * z))
-                    .left(px(24.0 * z))
-                    .h(px(20.0 * z))
-                    .flex()
-                    .items_center()
-                    .text_size(px(11.0 * z))
-                    .text_color(ui.title_dim)
-                    .child(text)
-                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                    .test_support()
-            }),
+        Body::Terminal(pane) if live && !labeled => match pane.answered_by() {
+            Some(by) => Some(chip(
+                "answered-by",
+                format!("answered by {by}"),
+                format!("{by} pressed keys in this terminal"),
+            )),
+            None => pane
+                .usage
+                .as_ref()
+                .and_then(crate::usage::chip)
+                .map(|(text, tip)| chip("usage-chip", text, tip)),
+        },
         _ => None,
     };
     let title = if labeled {
@@ -650,6 +663,13 @@ pub(crate) fn render(
         .when(hovered && !tiled, |el| {
             el.child(fade_in(handle, ("handle-fade", n)))
         })
+        // What its agent asks the person, over the terminal's top right corner, up close only.
+        .children(match body {
+            Body::Terminal(pane) if live && level == Level::Full => {
+                crate::balloon::render(ws, id, pane.term.id(), z, cx)
+            }
+            _ => None,
+        })
         .test_support()
         .into_any_element()
 }
@@ -806,29 +826,50 @@ fn shadow(color: Hsla, focused: bool, lift: f32, z: f32) -> BoxShadow {
 }
 
 /// The dot before a terminal's title, and what it says. News first: yellow when it asked for
-/// attention, red or green when a long command ended. Then a command running, then a last command
-/// that failed. Nothing when the shell doesn't say (no shell integration).
-fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedString)> {
+/// attention, red or green when a long command ended. Then a question its agent asks the person
+/// (yellow; the balloon shows it up close). Then an agent's turn (its hooks) before the shell's:
+/// yellow while it waits for the person, the accent while it works. Then a command running, then
+/// a last command that failed. Nothing when the shell doesn't say (no shell integration). Its
+/// text names the block that pressed keys in it, for ANSWERED_FOR.
+pub(crate) fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedString)> {
     let ansi = |i: usize| hsla(ws.theme.palette.ansi[i], 1.0);
     let (color, text) = match &pane.alert {
         Some(a @ Alert::Attention(_)) => (ansi(3), a.text()),
         Some(a) if a.failed() => (ansi(1), a.text()),
         Some(a) => (ansi(2), a.text()),
-        None => {
-            let status = pane.term.status();
-            match (status.running, status.last) {
-                (Some(since), _) => (
-                    ws.ui.accent,
-                    format!("Running for {}", alert::took(since.elapsed())),
+        None => match ws.balloon(pane.term.id()) {
+            Some((wait, _)) => (ansi(3), format!("Waiting for you: {}", wait.summary())),
+            // An agent the last snapshot no longer sees (it crashed) says nothing of its turn.
+            None => match pane.state.as_ref().filter(|_| pane.seen.agent.is_some()) {
+                Some(AgentState::NeedsYou(asks)) => (
+                    ansi(3),
+                    asks.as_ref().map_or_else(
+                        || "Waiting for you".to_string(),
+                        |a| format!("Waiting for you: {a}"),
+                    ),
                 ),
-                (None, Some(last)) if last.code.is_some_and(|c| c != 0) => {
-                    (ansi(1), alert::finished(&last))
+                Some(AgentState::Working) => (ws.ui.accent, "Working".to_string()),
+                Some(AgentState::Idle) => return None,
+                None => {
+                    let status = pane.term.status();
+                    match (status.running, status.last) {
+                        (Some(since), _) => (
+                            ws.ui.accent,
+                            format!("Running for {}", alert::took(since.elapsed())),
+                        ),
+                        (None, Some(last)) if last.code.is_some_and(|c| c != 0) => {
+                            (ansi(1), alert::finished(&last))
+                        }
+                        _ => return None,
+                    }
                 }
-                _ => return None,
-            }
-        }
+            },
+        },
     };
-    Some((color, text.into()))
+    Some(match pane.answered_by() {
+        Some(by) => (color, format!("{text} · answered by {by}").into()),
+        None => (color, text.into()),
+    })
 }
 
 #[cfg(test)]

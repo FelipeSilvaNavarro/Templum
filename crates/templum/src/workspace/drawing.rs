@@ -9,12 +9,16 @@ use crate::ink;
 use super::{Drag, INK_UNDO, Tool, Workspace};
 
 impl Workspace {
-    /// The toolbar's tool; the keyboard goes back to the canvas.
+    /// The toolbar's tool; the keyboard goes back to the canvas. A wire being drawn is given up.
     pub(crate) fn set_tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.drag, Some(Drag::Wire { .. })) {
+            self.drag = None;
+        }
         self.tool = tool;
         self.menu = None;
         self.shapes_open = false;
         self.space.selected_ink = None;
+        self.space.selected_wire = None;
         window.focus(&self.focus_handle, cx);
         cx.notify();
     }
@@ -141,7 +145,7 @@ impl Workspace {
                 self.drag = Some(Drag::Erase { erased, last: p });
                 return;
             }
-            Tool::Select | Tool::Hand => return,
+            Tool::Select | Tool::Hand | Tool::Wire => return,
         };
         self.drag = Some(Drag::Ink(drawing));
     }

@@ -1,6 +1,10 @@
 //! The main view: the canvas of terminal blocks.
 
+mod activity;
 mod blocks;
+mod bus;
+mod content;
+mod delegate;
 mod drawing;
 mod file_tree;
 mod files;
@@ -24,15 +28,20 @@ mod preferences;
 mod render;
 mod selection;
 mod spaces;
+mod spawn;
 mod tiling;
 mod update;
 mod usage;
 mod view;
+mod waits;
+mod wires;
 
+pub(crate) use bus::templum_in;
 pub(crate) use find::FindBar;
 pub(crate) use git_message::TryIt;
+pub(crate) use waits::{Wait, Waiting};
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -49,7 +58,7 @@ use gpui_kit::{
 };
 use templum_canvas::{
     Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, Point, Rect,
-    ShapeKind, Size, Tile, chrome,
+    ShapeKind, Size, Tile, Wire, chrome, free_spot,
 };
 use templum_git::GitError;
 use templum_terminal::{Notify, Snapshot, Terminal};
@@ -108,6 +117,65 @@ pub fn bind_keys(cx: &mut App) {
     // them.
 }
 
+/// What an agent's hooks last said of its turn (docs/specs/connections.md, Hooks).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum AgentState {
+    Working,
+    /// Done with its turn, or not started on one.
+    Idle,
+    /// Waiting for the person, with what it asks.
+    NeedsYou(Option<String>),
+}
+
+/// A task handed to a terminal's agent (`delegate`, or `spawn_agent`'s prompt), while its answer
+/// is awaited (docs/specs/connections.md, Delegating).
+pub(crate) struct Handed {
+    /// Its id, said `t7`; counts from 1 each time Templum starts (`Workspace::next_task`); 0 for
+    /// one made with `new`.
+    pub id: u64,
+    /// The terminal of the agent that handed it over.
+    pub by: String,
+    pub since: Instant,
+    /// After this it is no longer awaited: its dot stops, and another task may be handed over.
+    pub until: Instant,
+    /// Its agent took it (`Submitted`, the first after it was typed): only now may a turn's end
+    /// answer it.
+    pub taken: bool,
+    /// Claude Code queued it behind the turn under way (`Submitted` at its Enter while it worked):
+    /// that turn's end isn't its answer, unless a tool's end takes it into the turn first.
+    pub behind: bool,
+    /// Its agent's usage when it was handed over: what its end says it spent counts from it.
+    pub usage: Option<templum_usage::Session>,
+}
+
+impl Handed {
+    /// Handed over by the terminal `by` now, awaited for `timeout`; not taken yet.
+    pub(crate) fn new(by: &str, timeout: Duration) -> Self {
+        let since = Instant::now();
+        Self {
+            id: 0,
+            by: by.to_string(),
+            since,
+            until: since + timeout,
+            taken: false,
+            behind: false,
+            usage: None,
+        }
+    }
+}
+
+/// A prompt `spawn_agent` types into its agent once the agent is ready
+/// (docs/specs/connections.md, Spawning).
+pub(crate) struct Prompt {
+    pub text: String,
+    /// The agent's screen at the last look, once its process was seen: the same at the next look,
+    /// the agent is ready.
+    pub screen: Option<String>,
+    /// Its agent is Claude Code or Codex, whose prompt also waits for its input box
+    /// (`Modes::typing`): their trust questions come first.
+    pub gated: bool,
+}
+
 pub(crate) struct Pane {
     pub term: Terminal,
     pub snapshot: Rc<RefCell<Snapshot>>,
@@ -122,9 +190,76 @@ pub(crate) struct Pane {
     pub usage: Option<templum_usage::Session>,
     /// Its find field, while open.
     pub find: Option<Box<find::FindBar>>,
+    /// Its agent's turn, as the agent's hooks last said; None until one speaks, and after its
+    /// session ends.
+    pub state: Option<AgentState>,
+    /// The task another agent handed its agent, while its answer is awaited.
+    pub handed: Option<Handed>,
+    /// Its agent's last answer: the message its last turn ended with, or its last `reply`.
+    pub answer: Option<String>,
+    /// The prompt `spawn_agent` types once its agent is ready.
+    pub prompt: Option<Prompt>,
+    /// The looks at its screen: its agent's state where its hooks say nothing (`activity.rs`).
+    pub looks: activity::Looks,
+    /// The person typed into it since the last look, which then tells nothing.
+    pub typed: Cell<bool>,
+    /// When the person last typed into it (a key, a paste, text): a second Enter for a task
+    /// would send their half-written line.
+    pub keyed: Cell<Option<Instant>>,
+    /// The person scrolled it, or its program heard their mouse, since the last look, which then
+    /// tells nothing.
+    pub scrolled: Cell<bool>,
+    /// How many prompts its agent took (`Submitted`): a task's Enter is confirmed by one more.
+    pub submitted: u64,
+    /// Its agent's hooks say when a turn starts and when it asks its person (Claude Code's,
+    /// Gemini CLI's, and Codex's once its person trusted them), not only when a turn ends: a
+    /// dialog of it would be heard.
+    pub speaks: bool,
+    /// Who pressed keys in it last (`send_keys`, `interrupt`), as its `[from …]` line names
+    /// them, and when.
+    pub keys_from: Option<(String, Instant)>,
+    /// The block id of the agent that opened it with `spawn_agent`, which may close it; none for
+    /// one the person opened or pasted.
+    pub opened_by: Option<String>,
+    /// The model and the effort `spawn_agent` gave its agent, typed again when it resumes; gone
+    /// with that agent.
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// The agent `model` and `effort` were typed for, by id: another found there isn't given
+    /// them, also when no snapshot found this one (it never started, or quit at once).
+    pub flags_for: Option<String>,
+    /// When Templum last typed into it (a task, a reply, a notice): a notice waits NOTICE_GAP
+    /// after, while that text's Enter, and a second one, may still be due.
+    pub sent: Option<Instant>,
+    /// The transcript its agent's last turn's end named, until its next session starts.
+    pub transcript: Option<String>,
 }
 
 impl Pane {
+    /// Its saved item at `rect`, with the block id `uid`: its folder and agent as last seen (a
+    /// snapshot reads them in the background), no session (pasted, it resumes no agent).
+    pub fn item(&self, rect: templum_canvas::Rect, uid: String) -> session::TerminalItem {
+        session::TerminalItem {
+            uid,
+            rect: rect.into(),
+            folder: self.seen.folder.clone().and_then(session::utf8),
+            agent: self.seen.agent.clone(),
+            session: None,
+            opened_by: self.opened_by.clone(),
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+        }
+    }
+
+    /// Its terminal resized to `cols` × `rows`: its program redraws at the new size, which the
+    /// next look at its screen mustn't take for its agent at work.
+    pub fn fit(&mut self, cols: u16, rows: u16, cell_px: (u16, u16)) {
+        if self.term.grid_size() != (cols, rows) {
+            self.scrolled.set(true);
+        }
+        self.term.resize(cols, rows, cell_px);
+    }
+
     /// Its folder, as last seen, is `root` or inside it.
     pub fn works_in(&self, root: &std::path::Path) -> bool {
         self.seen
@@ -154,10 +289,12 @@ pub(crate) struct Ghost {
 
 /// What a block holds. Every block on a canvas is one of these.
 pub(crate) enum Body {
-    Terminal(Pane),
+    /// Boxed, as Git is: what a terminal keeps for its agent outweighs the other kinds.
+    Terminal(Box<Pane>),
     Kanban(Kanban),
     Note(Note),
-    Editor(Editor),
+    /// Boxed: on Windows, where a path takes more bytes, it is over 200 bytes larger than a note.
+    Editor(Box<Editor>),
     /// Boxed: its fields (the editors of its diff and commit form) outweigh the other kinds.
     Git(Box<Git>),
 }
@@ -280,18 +417,14 @@ impl Body {
     /// snapshot reads them in the background).
     pub fn item(&self, rect: templum_canvas::Rect, cx: &App) -> session::Item {
         match self {
-            Body::Terminal(pane) => session::Item::Terminal(session::TerminalItem {
-                rect: rect.into(),
-                folder: pane.seen.folder.clone().and_then(session::utf8),
-                agent: pane.seen.agent.clone(),
-                // Pasted, it resumes no agent.
-                session: None,
-            }),
+            Body::Terminal(pane) => session::Item::Terminal(pane.item(rect, String::new())),
             Body::Kanban(k) => session::Item::Kanban(session::KanbanItem {
+                uid: String::new(),
                 rect: rect.into(),
                 board: k.board,
             }),
             Body::Note(n) => session::Item::Note(session::NoteItem {
+                uid: String::new(),
                 rect: rect.into(),
                 notes: n.ids(),
                 active: n.active,
@@ -364,6 +497,11 @@ enum Drag {
         last: Point,
         moved: bool,
     },
+    /// The Wire tool pressed on block `from`; the pointer is at the world point `to`.
+    Wire {
+        from: BlockId,
+        to: Point,
+    },
 }
 
 /// A workspace in grid mode (docs/specs/grid.md): some of its blocks tiled over its area, at
@@ -398,6 +536,9 @@ pub(crate) struct Space {
     pub canvas: Canvas,
     /// What each block of the canvas holds. Inserted and removed together with `canvas`'s blocks.
     pub blocks: HashMap<BlockId, Body>,
+    /// Each block's id for agents and wires (docs/specs/connections.md): unique in every
+    /// workspace, kept by restarts, undo and moves.
+    pub uids: HashMap<BlockId, String>,
     pub focused: Option<BlockId>,
     /// The selected blocks (Shift+drag, Shift+click on a title): Delete closes them, Copy and
     /// Paste copy them. Never the focused one: selecting takes the focus away.
@@ -434,6 +575,14 @@ pub(crate) struct Space {
     pub ink: Vec<Drawing>,
     /// The selected drawing, by its index in `ink`.
     pub selected_ink: Option<usize>,
+    /// The wires between its blocks (docs/specs/connections.md), oldest first.
+    pub wires: Vec<Wire>,
+    /// The selected wire: Delete removes it. Never with a block focused or selected.
+    pub selected_wire: Option<Wire>,
+    /// The wires' labels, by the block ids (`uids`) of their ends, the smaller first. A label
+    /// stays when its wire goes: Ctrl+Z bringing the wire back, or its closed block, brings it
+    /// back too. Only the wires there are save theirs.
+    pub labels: HashMap<(String, String), String>,
     /// The changes that take back each change of the blocks (added, closed, moved, resized), by
     /// their step numbers, newest last, at most CANVAS_UNDO; and those of the undone ones.
     pub undo: Vec<(u64, history::Change)>,
@@ -467,6 +616,16 @@ impl Space {
             .unwrap_or(block.rect)
     }
 
+    /// A spot for a block of `size` beside `anchors` (the first preferred) that overlaps no block
+    /// nor drawing ([`free_spot`]): to the right of a lone anchor, top-aligned, when nothing is
+    /// there. Blocks are where they sit on the canvas, also in grid mode.
+    pub(super) fn room_beside(&self, anchors: &[Rect], size: Size) -> Rect {
+        let taken: Vec<Rect> = (self.canvas.blocks().iter().map(|b| self.home(b)))
+            .chain(self.ink.iter().map(Drawing::bounds))
+            .collect();
+        free_spot(&taken, anchors, size)
+    }
+
     /// The block on top among those drawn.
     pub fn top(&self) -> Option<BlockId> {
         self.canvas
@@ -475,6 +634,33 @@ impl Space {
             .rev()
             .map(|b| b.id)
             .find(|id| self.shown(*id))
+    }
+
+    /// The block whose id is `uid`.
+    pub fn block_by_uid(&self, uid: &str) -> Option<BlockId> {
+        self.uids.iter().find(|(_, u)| *u == uid).map(|(id, _)| *id)
+    }
+
+    /// A block as a saved item at its rect on the canvas, with its id. A terminal's agent keeps
+    /// the session the last snapshot found it on: closed and brought back, it resumes that one,
+    /// not the folder's latest (another agent's there, maybe the one that closed it).
+    fn item_of(&self, block: &Block, cx: &App) -> session::Item {
+        let uid = self.uids.get(&block.id).cloned().unwrap_or_default();
+        let mut item = self.blocks[&block.id].item(self.home(block), cx);
+        if let session::Item::Terminal(t) = &mut item {
+            t.session = self
+                .saved
+                .iter()
+                .flat_map(|s| &s.items)
+                .find_map(|saved| match saved {
+                    session::Item::Terminal(s) if s.uid == uid && s.agent == t.agent => {
+                        s.session.clone()
+                    }
+                    _ => None,
+                });
+        }
+        item.set_uid(uid);
+        item
     }
 
     /// The canvas as a snapshot needs it: rects and process ids, cheap on the UI thread.
@@ -487,9 +673,13 @@ impl Space {
                 .iter()
                 .map(|b| match &self.blocks[&b.id] {
                     Body::Terminal(pane) => {
-                        session::LayoutBlock::Terminal(self.home(b), pane.term.processes())
+                        let uid = self.uids.get(&b.id).cloned().unwrap_or_default();
+                        let mut item = pane.item(self.home(b), uid);
+                        // What the snapshot compares with the agent it finds there.
+                        item.agent = pane.flags_for.clone().or(item.agent);
+                        session::LayoutBlock::Terminal(item, pane.term.processes())
                     }
-                    body => session::LayoutBlock::Saved(body.item(self.home(b), cx)),
+                    _ => session::LayoutBlock::Saved(self.item_of(b, cx)),
                 })
                 .collect(),
             focused: self
@@ -501,6 +691,17 @@ impl Space {
             grid: self.grid.as_ref().and_then(|g| {
                 session::SavedTile::of(&g.tiles, &|id| blocks.iter().position(|b| b.id == id))
             }),
+            wires: self
+                .wires
+                .iter()
+                .filter_map(|w| {
+                    Some(session::SavedWire {
+                        a: self.uids.get(&w.a)?.clone(),
+                        b: self.uids.get(&w.b)?.clone(),
+                        label: self.label(*w).map(str::to_string),
+                    })
+                })
+                .collect(),
         }
     }
 
@@ -533,6 +734,7 @@ impl Space {
             self.canvas.remove(id);
         }
         self.blocks.clear();
+        self.uids.clear();
         self.focused = None;
         self.selected.clear();
         self.hovered = None;
@@ -543,6 +745,9 @@ impl Space {
         self.framed = None;
         self.ink.clear();
         self.selected_ink = None;
+        self.wires.clear();
+        self.selected_wire = None;
+        self.labels.clear();
         self.undo.clear();
         self.redo.clear();
         self.ink_undo.clear();
@@ -560,15 +765,48 @@ impl Space {
             .collect()
     }
 
-    /// Tells each terminal what a snapshot found in it.
-    fn see(&mut self, found: Vec<(BlockId, templum_terminal::Inspection)>) {
+    /// Tells each terminal what a snapshot found in it. The terminals whose agent, found running
+    /// before, is gone, or whose agent spawned with a prompt no snapshot found within
+    /// `STARTS_WITHIN` never started: what was handed to it has no one to answer.
+    fn see(&mut self, found: Vec<(BlockId, templum_terminal::Inspection)>) -> Vec<String> {
+        let now = Instant::now();
+        let mut gone = Vec::new();
         for (id, mut seen) in found {
             if let Some(pane) = self.terminal_mut(id) {
                 // A folder the snapshot couldn't read keeps the one known.
                 seen.folder = seen.folder.or(pane.seen.folder.take());
+                // The model and the effort are the agent's they were typed for: gone once another
+                // agent is found there (typed by hand), or once that agent, found before, left.
+                // One still starting keeps them.
+                let other = seen.agent.is_some() && seen.agent != pane.flags_for;
+                let left = pane.seen.pid.is_some() && seen.agent.is_none();
+                if other || left {
+                    (pane.model, pane.effort, pane.flags_for) = (None, None, None);
+                }
+                // Its agent is gone (one that crashed says no SessionEnd): what its hooks said
+                // mustn't come back with the next agent started there by hand.
+                if seen.agent.is_none() {
+                    pane.state = None;
+                    pane.speaks = false;
+                    // Found before, so it left; one not found yet may still be starting, and one
+                    // Templum started there stays known while its prompt waits, until its shell
+                    // took too long to start it: it never did.
+                    let starting = pane
+                        .task(now)
+                        .is_some_and(|h| now < h.since + spawn::STARTS_WITHIN);
+                    if pane.seen.pid.is_some() {
+                        pane.prompt = None;
+                        gone.push(pane.term.id().to_string());
+                    } else if pane.prompt.is_some() && starting {
+                        seen.agent = pane.seen.agent.take();
+                    } else if pane.prompt.take().is_some() {
+                        gone.push(pane.term.id().to_string());
+                    }
+                }
                 pane.seen = seen;
             }
         }
+        gone
     }
 
     /// Every terminal block, in no order.
@@ -586,7 +824,6 @@ impl Space {
         self.blocks.get_mut(&id)?.terminal_mut()
     }
 
-    #[cfg(test)]
     pub fn kanban(&self, id: BlockId) -> Option<&Kanban> {
         self.blocks.get(&id)?.kanban()
     }
@@ -636,6 +873,8 @@ pub(crate) enum Tool {
     Select,
     /// Pans with any drag or wheel, over blocks too, like holding Alt.
     Hand,
+    /// Wires two blocks: pressed on one, let go on another. Stays on.
+    Wire,
     Pen,
     Highlighter,
     Shape(ShapeKind),
@@ -695,8 +934,9 @@ pub struct Workspace {
     /// Blocks added now aren't kept for Ctrl+Z: a canvas being restored, closed blocks coming
     /// back.
     quiet: bool,
-    /// Where a press on the empty canvas started: released in place, it's a click.
-    press: Option<Point>,
+    /// Where a press on the empty canvas started, and the wire under it: released in place,
+    /// it's a click (that selects the wire).
+    press: Option<(Point, Option<Wire>)>,
     /// The block the last click on the empty canvas unfocused: a double-click's terminal starts
     /// in its folder.
     unfocused: Option<BlockId>,
@@ -727,6 +967,8 @@ pub struct Workspace {
     /// The last canvas write failed (and said so); the next good one says it works again.
     canvas_save_failed: bool,
     _snapshots: Task<()>,
+    /// Looks at the agents' screens each `activity::LOOK`.
+    _looks: Task<()>,
     /// Each agent's plan limits, as last read after a snapshot (docs/specs/usage.md).
     pub(crate) limits: Vec<(String, templum_usage::Limits)>,
     /// When to tell the user about them.
@@ -849,6 +1091,25 @@ pub struct Workspace {
     pub(crate) git_version: Option<Result<String, String>>,
     /// Settings ▸ Git ▸ Try it, running or done.
     pub(crate) message_try: Option<TryIt>,
+    /// Settings ▸ Connections ▸ Gemini CLI: Install or Remove running, or what went wrong.
+    pub(crate) gemini_job: Option<TryIt>,
+    /// The bus the programs in Templum's terminals talk to (docs/specs/connections.md); None
+    /// without a data folder.
+    pub(crate) bus: Option<templum_mcp::Bus>,
+    /// What every new terminal's environment gets while the bus runs.
+    bus_env: Vec<(String, String)>,
+    _bus: Task<()>,
+    /// The tool calls waiting for an answer, oldest first (`waits.rs`).
+    waits: Vec<waits::Wait>,
+    /// The last wait's key.
+    next_wait: u64,
+    /// The last task's id.
+    pub(crate) next_task: u64,
+    /// What tasks' agents did, waiting to be typed into the agents that handed them over, oldest
+    /// first (`delegate.rs`).
+    pub(crate) notices: Vec<delegate::Notice>,
+    /// Draws the next frame while a dot travels along a wire in view (`wires::DOT_FRAME`).
+    _dot_frame: Task<()>,
     _wake: Task<()>,
 }
 
@@ -950,6 +1211,18 @@ impl Workspace {
                 }
             }
         });
+        let looks = cx.spawn(async move |ws, cx| {
+            loop {
+                cx.background_executor().timer(activity::LOOK).await;
+                let looked = ws.update(cx, |ws, cx| {
+                    ws.look_at_agents(cx);
+                    ws.deliver_notices(cx);
+                });
+                if looked.is_err() {
+                    break;
+                }
+            }
+        });
         cx.observe_window_appearance(window, |ws, window, cx| {
             ws.set_dark(is_dark(window.appearance()), cx)
         })
@@ -1036,6 +1309,7 @@ impl Workspace {
                 async {}
             }),
         ];
+        let (bus, bus_env, bus_task) = bus::start(data_dir.as_deref(), window, cx);
         let mut ws = Self {
             space: Space::default(),
             others: Vec::new(),
@@ -1076,6 +1350,7 @@ impl Workspace {
             snapshotting: false,
             canvas_save_failed: false,
             _snapshots: snapshots,
+            _looks: looks,
             limits: Vec::new(),
             watch: templum_usage::Watch::new(crate::notes::now()),
             usage_open: false,
@@ -1133,10 +1408,19 @@ impl Workspace {
             _git: git,
             git_version: None,
             message_try: None,
+            gemini_job: None,
             config,
             keymap,
             agents: effective_agents,
             commit_agent,
+            bus,
+            bus_env,
+            _bus: bus_task,
+            waits: Vec::new(),
+            next_wait: 0,
+            next_task: 0,
+            notices: Vec::new(),
+            _dot_frame: Task::ready(()),
             _wake: wake,
         };
         // Relay files of Claude Code sessions long gone, at startup.

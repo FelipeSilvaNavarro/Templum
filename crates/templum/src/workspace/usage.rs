@@ -2,7 +2,9 @@
 //! reading what the agents write after each snapshot, and the notifications
 //! (docs/specs/usage.md).
 
-use std::path::PathBuf;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::notification::{Notification, NotificationDelivery, NotificationType};
@@ -11,7 +13,7 @@ use templum_canvas::BlockId;
 use templum_terminal::Agent;
 use templum_usage::{Event, Limits, Proc, Session, Watch};
 
-use super::{Workspace, show_notification};
+use super::{Pane, TryIt, Workspace, show_notification};
 use crate::agents::AgentEntry;
 use crate::config::Edit;
 use crate::notes;
@@ -24,28 +26,65 @@ pub(super) const CLAUDE_EVERY: Duration = Duration::from_secs(5 * 60);
 /// What a read found: each terminal's session, in the order asked, and each agent's limits.
 pub(crate) type Read = (Vec<Option<Session>>, Vec<(String, Limits)>);
 
+/// The agent of `pane` as the last snapshot found it, for a read of its session.
+pub(super) fn proc_of(pane: &Pane) -> Option<Proc> {
+    let seen = &pane.seen;
+    Some(Proc {
+        agent: seen.agent.clone()?,
+        pid: seen.pid?,
+        started: seen.started?,
+        cwd: seen.folder.clone(),
+        terminal: pane.term.id().to_string(),
+    })
+}
+
 impl Workspace {
-    /// `command` as typed to start `agent` in a terminal: the Claude Code Templum opens gets
-    /// Templum's status line, which hands Templum the plan's limits, unless the user turned it
-    /// off.
+    /// `command` as typed to start `agent` in a terminal (docs/specs/connections.md, What Templum
+    /// types into each agent): the Claude Code Templum opens gets its settings file (the status
+    /// line of the plan's limits, and the hooks) and its MCP server; Codex gets the server and
+    /// its hooks (those only with `templum` on the terminal's PATH), unless the shell is cmd (they
+    /// go in single quotes) or Windows PowerShell 5.1 (it strips the `"` inside them; pwsh 7
+    /// doesn't). Nothing under WSL, where Templum's paths
+    /// aren't the shell's, nor without a data folder.
     pub(super) fn typed(&self, agent: Option<&AgentEntry>, command: &str) -> String {
-        let claude = agent.is_some_and(|a| a.builtin == Some(Agent::CLAUDE));
-        // Under WSL, Templum's paths aren't the shell's.
-        let wsl = self.config.shell.program.as_deref().is_some_and(|p| {
-            std::path::Path::new(p)
-                .file_stem()
-                .is_some_and(|s| s == "wsl")
-        });
-        let arg = match (&self.data_dir, std::env::current_exe()) {
-            (Some(data), Ok(exe)) if claude && !wsl && self.config.usage.claude_limits => {
-                templum_usage::claude::settings_arg(data, &exe, cfg!(windows))
-            }
-            _ => None,
+        let builtin = agent.and_then(|a| a.builtin);
+        let (Some(data), Some(exe), false) = (&self.data_dir, program(), self.shell_is("wsl"))
+        else {
+            return command.to_string();
         };
-        match arg {
-            Some(arg) => format!("{command} --settings {arg}"),
-            None => command.to_string(),
+        let connected = self.config.connections.enabled && self.bus.is_some();
+        let windows = cfg!(windows);
+        // `terminal_env` puts `<data>/bin`, where `templum` is, first on it.
+        let on_path = self.bus_env.iter().any(|(k, _)| k == "PATH");
+        let mut line = command.to_string();
+        if builtin == Some(Agent::CLAUDE) {
+            let limits = self.config.usage.claude_limits;
+            line.push_str(&claude_flags(data, &exe, windows, limits, connected));
+        } else if builtin == Some(Agent::CODEX)
+            && connected
+            && !self.shell_is("cmd")
+            && !self.shell_is("powershell")
+            && let Some(flags) = templum_mcp::codex_flags(&exe.to_string_lossy(), windows, on_path)
+        {
+            line.push_str(&flags);
         }
+        line
+    }
+
+    /// New terminals run the shell named `name` (its program's file name, in any case:
+    /// `PowerShell.exe` is `powershell`): the configured one, else the system's default.
+    fn shell_is(&self, name: &str) -> bool {
+        let program = self
+            .config
+            .shell
+            .program
+            .clone()
+            .or_else(|| templum_terminal::default_shell().map(|s| s.program));
+        program.is_some_and(|p| {
+            std::path::Path::new(&p)
+                .file_stem()
+                .is_some_and(|s| s.eq_ignore_ascii_case(name))
+        })
     }
 
     /// Reads, in the background, what the agents in every workspace's terminals wrote, from the
@@ -58,18 +97,9 @@ impl Workspace {
         let mut procs = Vec::new();
         for space in self.spaces() {
             for (id, pane) in space.terminals() {
-                let seen = &pane.seen;
-                if let (Some(agent), Some(pid), Some(started)) =
-                    (&seen.agent, seen.pid, seen.started)
-                {
+                if let Some(proc) = proc_of(pane) {
                     keys.push((space.id.clone(), id));
-                    procs.push(Proc {
-                        agent: agent.clone(),
-                        pid,
-                        started,
-                        cwd: seen.folder.clone(),
-                        terminal: pane.term.id().to_string(),
-                    });
+                    procs.push(proc);
                 }
             }
         }
@@ -276,4 +306,116 @@ impl Workspace {
             NotificationDelivery::InApp
         }
     }
+
+    /// Settings ▸ Connections ▸ Gemini CLI: installs Templum's extension (`install`) or removes
+    /// it, in the background; Settings shows what went wrong, if anything did.
+    pub(crate) fn setup_gemini(&mut self, install: bool, cx: &mut Context<Self>) {
+        let Some(data) = self.data_dir.clone() else {
+            return;
+        };
+        if matches!(self.gemini_job, Some(TryIt::Running(_))) {
+            return;
+        }
+        self.gemini_job = Some(TryIt::Running(Arc::default()));
+        cx.notify();
+        cx.spawn(async move |ws, cx| {
+            let done = cx
+                .background_executor()
+                .spawn(
+                    async move { gemini_run(templum_terminal::locate("gemini"), &data, install) },
+                )
+                .await;
+            ws.update(cx, |ws, cx| {
+                ws.gemini_job = done.err().map(TryIt::Failed);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+/// Runs Gemini CLI (`gemini`, where Templum found it, if it did) to link Templum's extension,
+/// written first (`install`), or to uninstall it; what went wrong, whole, if anything did.
+// ponytail: no deadline; a Gemini CLI that hangs keeps the button spinning until Templum quits.
+pub(super) fn gemini_run(
+    gemini: Option<PathBuf>,
+    data: &Path,
+    install: bool,
+) -> Result<(), String> {
+    use templum_usage::gemini;
+    let program = gemini.ok_or("Templum didn't find Gemini CLI (gemini) on this computer.")?;
+    let args: Vec<OsString> = if install {
+        let folder = gemini::extension(data, cfg!(windows)).ok_or(
+            "Templum couldn't write its extension: its folder's path holds a ' or a line break, \
+             or can't be written.",
+        )?;
+        gemini::link_args(&folder)
+    } else {
+        gemini::UNLINK.iter().map(OsString::from).collect()
+    };
+    let mut command = std::process::Command::new(program);
+    command.args(args).stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let out = command
+        .output()
+        .map_err(|e| format!("Couldn't run Gemini CLI: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Err(format!(
+        "Gemini CLI failed ({}):\n{}",
+        out.status,
+        said.trim()
+    ))
+}
+
+/// What the Claude Code Templum opens gets after its command, given Templum's data folder and
+/// program: the settings file (the status line when `limits`, the hooks when `connected`), then
+/// the MCP server, only when that file carries the hooks: without them its dot would never move.
+pub(super) fn claude_flags(
+    data: &Path,
+    exe: &Path,
+    windows: bool,
+    limits: bool,
+    connected: bool,
+) -> String {
+    let mut flags = String::new();
+    let settings = templum_usage::claude::settings_arg(data, exe, windows, limits, connected);
+    if let Some(arg) = &settings {
+        flags.push_str(&format!(" --settings {arg}"));
+    }
+    // Last: it takes every word after it.
+    if connected
+        && settings.is_some()
+        && let Some(arg) = templum_usage::claude::mcp_arg(data, exe, windows)
+    {
+        flags.push_str(&format!(" --mcp-config {arg}"));
+    }
+    flags
+}
+
+/// Templum's program as an agent should run it: the AppImage when it runs from one (its mount
+/// goes away when it quits), else the running executable, without the " (deleted)" Linux adds
+/// to one an upgrade replaced.
+pub(super) fn program() -> Option<PathBuf> {
+    if let Some(image) = std::env::var_os("APPIMAGE") {
+        return Some(image.into());
+    }
+    let exe = std::env::current_exe().ok()?;
+    Some(
+        match exe.to_str().and_then(|e| e.strip_suffix(" (deleted)")) {
+            Some(path) => PathBuf::from(path),
+            None => exe,
+        },
+    )
 }

@@ -323,6 +323,9 @@ pub(crate) struct Saved {
     /// the canvas's still.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grid: Option<SavedTile>,
+    /// The wires between the items, by their `uid`s; an older Templum ignores them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wires: Vec<SavedWire>,
 }
 
 /// Grid mode's tree of tiles: an item, by its index in `items`, or a pair. `split` is "beside"
@@ -337,6 +340,16 @@ pub(crate) enum SavedTile {
         a: Box<SavedTile>,
         b: Box<SavedTile>,
     },
+}
+
+/// A wire between two blocks, by their block ids (docs/specs/connections.md, Files).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SavedWire {
+    pub a: String,
+    pub b: String,
+    /// Its name (Rename wire…), when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 impl SavedTile {
@@ -428,10 +441,35 @@ impl Item {
             Item::Git(g) => &mut g.rect,
         }
     }
+
+    /// The block's id (docs/specs/connections.md); empty in a file from before.
+    pub fn uid(&self) -> &str {
+        match self {
+            Item::Terminal(t) => &t.uid,
+            Item::Kanban(k) => &k.uid,
+            Item::Note(n) => &n.uid,
+            Item::Editor(e) => &e.uid,
+            Item::Git(g) => &g.uid,
+        }
+    }
+
+    pub fn set_uid(&mut self, uid: String) {
+        match self {
+            Item::Terminal(t) => t.uid = uid,
+            Item::Kanban(k) => k.uid = uid,
+            Item::Note(n) => n.uid = uid,
+            Item::Editor(e) => e.uid = uid,
+            Item::Git(g) => g.uid = uid,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct NoteItem {
+    /// The block's id for agents and wires (docs/specs/connections.md); a file from before has
+    /// none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uid: String,
     pub rect: SavedRect,
     /// The notes it shows as tabs, by their ids in `notes.json`, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -455,6 +493,10 @@ pub(crate) struct NoteItem {
 /// An editor block (docs/specs/cockpit.md, section 7).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct EditorItem {
+    /// The block's id for agents and wires (docs/specs/connections.md); a file from before has
+    /// none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uid: String,
     pub rect: SavedRect,
     pub folder: String,
     /// The open files, relative to the folder, in tab order.
@@ -471,6 +513,10 @@ pub(crate) struct EditorItem {
 /// A Git block (docs/specs/cockpit.md, section 8).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct GitItem {
+    /// The block's id for agents and wires (docs/specs/connections.md); a file from before has
+    /// none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uid: String,
     pub rect: SavedRect,
     pub folder: String,
     /// The tab shown: "changes", "history", "branches" or "stashes".
@@ -584,6 +630,10 @@ impl InkItem {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct KanbanItem {
+    /// The block's id for agents and wires (docs/specs/connections.md); a file from before has
+    /// none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uid: String,
     pub rect: SavedRect,
     /// The board it shows; missing while it shows the board list.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -592,6 +642,10 @@ pub(crate) struct KanbanItem {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct TerminalItem {
+    /// The block's id for agents and wires (docs/specs/connections.md); a file from before has
+    /// none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uid: String,
     pub rect: SavedRect,
     /// Missing when the OS wouldn't say, or when the path isn't UTF-8 (JSON can't hold it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -604,6 +658,15 @@ pub(crate) struct TerminalItem {
     /// their own back. Missing when the agent's files don't tell it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    /// The block id of the agent that opened it with `spawn_agent`, which may close it; none for
+    /// one the person opened or pasted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened_by: Option<String>,
+    /// The model and the effort `spawn_agent` gave its agent, typed again when it resumes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -643,11 +706,14 @@ pub(crate) struct Layout {
     pub agents: std::sync::Arc<Vec<templum_terminal::Detect>>,
     pub ink: Vec<InkItem>,
     pub grid: Option<SavedTile>,
+    pub wires: Vec<SavedWire>,
 }
 
 pub(crate) enum LayoutBlock {
-    /// A terminal's rect and its processes, read in the background.
-    Terminal(Rect, Processes),
+    /// A terminal as the UI thread knows it: its id, rect, opener, model and effort, and as its
+    /// agent the one they were typed for (else the one last seen); its folder, agent and session
+    /// come from its processes, read in the background.
+    Terminal(TerminalItem, Processes),
     /// Any other kind: its item, complete, built on the UI thread.
     Saved(Item),
 }
@@ -680,15 +746,20 @@ impl Layout {
                 .blocks
                 .iter()
                 .map(|b| match b {
-                    LayoutBlock::Terminal(rect, _) => {
+                    LayoutBlock::Terminal(item, _) => {
                         // One answer per terminal, in order.
                         let found = found.next().unwrap_or_default();
+                        // The model and the effort are the agent the UI thread knew there: gone,
+                        // or another one found (typed by hand), they aren't its.
+                        let theirs = item.agent.is_none() || item.agent == found.agent;
                         Item::Terminal(TerminalItem {
-                            rect: (*rect).into(),
                             folder: found.folder.and_then(utf8),
-                            agent: found.agent,
                             // The agent's files first: they follow a switch inside it.
                             session: sessions.next().flatten().or(found.session),
+                            agent: found.agent,
+                            model: item.model.clone().filter(|_| theirs),
+                            effort: item.effort.clone().filter(|_| theirs),
+                            ..item.clone()
                         })
                     }
                     LayoutBlock::Saved(item) => item.clone(),
@@ -698,6 +769,7 @@ impl Layout {
             recent: self.recent.into_iter().filter_map(utf8).collect(),
             ink: self.ink,
             grid: self.grid,
+            wires: self.wires,
         };
         (saved, inspections)
     }
@@ -819,6 +891,45 @@ mod tests {
     }
 
     #[test]
+    fn a_terminal_keeps_who_opened_it_its_model_and_effort() {
+        let text = r#"{"kind":"terminal","rect":{"x":0,"y":0,"w":1,"h":1},"agent":"codex",
+                      "opened_by":"b7k2m","model":"gpt-5.6-luna","effort":"high"}"#;
+        let item: Item = serde_json::from_str(text).unwrap();
+        let Item::Terminal(t) = &item else {
+            panic!("{item:?}")
+        };
+        assert_eq!(
+            (
+                t.opened_by.as_deref(),
+                t.model.as_deref(),
+                t.effort.as_deref()
+            ),
+            (Some("b7k2m"), Some("gpt-5.6-luna"), Some("high"))
+        );
+        let back = serde_json::to_string(&item).unwrap();
+        for part in [
+            r#""opened_by":"b7k2m""#,
+            r#""model":"gpt-5.6-luna""#,
+            r#""effort":"high""#,
+        ] {
+            assert!(back.contains(part), "{back}");
+        }
+        // A file from before has none, and none is written.
+        let older: Item =
+            serde_json::from_str(r#"{"kind":"terminal","rect":{"x":0,"y":0,"w":1,"h":1}}"#)
+                .unwrap();
+        let Item::Terminal(o) = &older else {
+            panic!("{older:?}")
+        };
+        assert_eq!((&o.opened_by, &o.model, &o.effort), (&None, &None, &None));
+        let plain = serde_json::to_string(&older).unwrap();
+        assert!(
+            !plain.contains("opened_by") && !plain.contains("model") && !plain.contains("effort"),
+            "{plain}"
+        );
+    }
+
+    #[test]
     fn a_git_item_round_trips_and_its_tab_defaults_to_changes() {
         let text = r#"{"kind":"git","rect":{"x":1,"y":2,"w":800,"h":560},"folder":"/p"}"#;
         let item: Item = serde_json::from_str(text).unwrap();
@@ -864,6 +975,7 @@ mod tests {
             },
             items: vec![
                 Item::Terminal(TerminalItem {
+                    uid: String::new(),
                     rect: SavedRect {
                         x: 0.0,
                         y: 0.0,
@@ -873,8 +985,12 @@ mod tests {
                     folder: Some("/home/u/proj".into()),
                     agent: Some("claude".into()),
                     session: Some("0d5e5f4b-1c2d-4e3f-8a9b-0c1d2e3f4a5b".into()),
+                    opened_by: None,
+                    model: None,
+                    effort: None,
                 }),
                 Item::Terminal(TerminalItem {
+                    uid: String::new(),
                     rect: SavedRect {
                         x: 800.0,
                         y: 10.0,
@@ -884,8 +1000,12 @@ mod tests {
                     folder: None,
                     agent: None,
                     session: None,
+                    opened_by: None,
+                    model: None,
+                    effort: None,
                 }),
                 Item::Kanban(KanbanItem {
+                    uid: String::new(),
                     rect: SavedRect {
                         x: -900.0,
                         y: 0.0,
@@ -899,7 +1019,37 @@ mod tests {
             recent: vec!["/home/u/proj".into(), "/srv/site".into()],
             ink: Vec::new(),
             grid: None,
+            wires: Vec::new(),
         }
+    }
+
+    #[test]
+    fn wires_are_written_by_block_id_with_their_labels_and_left_out_when_there_are_none() {
+        let mut saved = sample();
+        assert!(
+            !serde_json::to_string(&saved).unwrap().contains("wires"),
+            "a file without wires keeps an older Templum's shape"
+        );
+        saved.wires = vec![
+            SavedWire {
+                a: "b7k2m".into(),
+                b: "4qm2a".into(),
+                label: None,
+            },
+            SavedWire {
+                a: "b7k2m".into(),
+                b: "t4q8p".into(),
+                label: Some("dev server".into()),
+            },
+        ];
+        let text = serde_json::to_string(&saved).unwrap();
+        assert!(
+            text.contains(
+                r#""wires":[{"a":"b7k2m","b":"4qm2a"},{"a":"b7k2m","b":"t4q8p","label":"dev server"}]"#
+            ),
+            "{text}"
+        );
+        assert_eq!(serde_json::from_str::<Saved>(&text).unwrap(), saved);
     }
 
     #[test]
@@ -1019,6 +1169,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut saved = sample();
         saved.items.push(Item::Note(NoteItem {
+            uid: String::new(),
             rect: SavedRect {
                 x: 1.0,
                 y: 2.0,
@@ -1452,21 +1603,61 @@ mod tests {
             camera,
             // No processes: their folders are unknown.
             blocks: vec![
-                LayoutBlock::Terminal(Rect::new(0.0, 0.0, 10.0, 10.0), Processes::default()),
+                LayoutBlock::Terminal(
+                    TerminalItem {
+                        uid: "t1".into(),
+                        rect: Rect::new(0.0, 0.0, 10.0, 10.0).into(),
+                        folder: None,
+                        agent: None,
+                        session: None,
+                        opened_by: Some("b7k2m".into()),
+                        model: Some("opus".into()),
+                        effort: Some("high".into()),
+                    },
+                    Processes::default(),
+                ),
                 LayoutBlock::Saved(Item::Kanban(KanbanItem {
+                    uid: String::new(),
                     rect: Rect::new(5.0, 5.0, 10.0, 10.0).into(),
                     board: Some(3),
                 })),
-                LayoutBlock::Terminal(Rect::new(20.0, 0.0, 30.0, 10.0), Processes::default()),
+                LayoutBlock::Terminal(
+                    TerminalItem {
+                        uid: "t2".into(),
+                        rect: Rect::new(20.0, 0.0, 30.0, 10.0).into(),
+                        folder: None,
+                        agent: None,
+                        session: None,
+                        opened_by: None,
+                        model: None,
+                        effort: None,
+                    },
+                    Processes::default(),
+                ),
             ],
             focused: Some(1),
             recent: vec![PathBuf::from("/a"), PathBuf::from("/b")],
             agents: Default::default(),
             ink: Vec::new(),
             grid: None,
+            wires: Vec::new(),
         };
         let (saved, _) = layout.snapshot(None);
         assert_eq!(saved.recent, ["/a", "/b"], "recent folders, newest first");
+        let uids: Vec<&str> = saved.items.iter().map(Item::uid).collect();
+        assert_eq!(uids, ["t1", "", "t2"], "each block keeps its id");
+        let Item::Terminal(first) = &saved.items[0] else {
+            panic!()
+        };
+        assert_eq!(
+            (
+                first.opened_by.as_deref(),
+                first.model.as_deref(),
+                first.effort.as_deref()
+            ),
+            (Some("b7k2m"), Some("opus"), Some("high")),
+            "what the UI thread knows of it, kept"
+        );
         assert_eq!(saved.version, VERSION);
         assert_eq!(
             saved.camera,
@@ -1498,5 +1689,42 @@ mod tests {
             }
         );
         assert_eq!(saved.focused, Some(1));
+    }
+
+    /// The UI thread knew Codex in the terminal, and the snapshot finds it gone (or another agent
+    /// there, `claude` typed by hand): its model and effort aren't written with what is found, so
+    /// a quit right then doesn't resume that agent with Codex's flags.
+    #[test]
+    fn a_snapshot_drops_the_model_of_an_agent_no_longer_there() {
+        let layout = Layout {
+            camera: Camera::at(templum_canvas::Point::new(0.0, 0.0), 1.0),
+            blocks: vec![LayoutBlock::Terminal(
+                TerminalItem {
+                    uid: "t1".into(),
+                    rect: Rect::new(0.0, 0.0, 10.0, 10.0).into(),
+                    folder: None,
+                    agent: Some("codex".into()),
+                    session: None,
+                    opened_by: Some("b7k2m".into()),
+                    model: Some("gpt-5.6-luna".into()),
+                    effort: Some("high".into()),
+                },
+                Processes::default(),
+            )],
+            focused: None,
+            recent: Vec::new(),
+            agents: Default::default(),
+            ink: Vec::new(),
+            grid: None,
+            wires: Vec::new(),
+        };
+        let (saved, _) = layout.snapshot(None);
+        let Item::Terminal(t) = &saved.items[0] else {
+            panic!()
+        };
+        assert_eq!(
+            (t.opened_by.as_deref(), &t.agent, &t.model, &t.effort),
+            (Some("b7k2m"), &None, &None, &None)
+        );
     }
 }

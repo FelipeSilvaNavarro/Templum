@@ -252,6 +252,38 @@ const SPECS: [Spec; 20] = [
     },
 ];
 
+/// How an agent takes a model and a reasoning effort on its command line (`spawn_agent`): the flag
+/// before a model, the one before an effort, and the efforts it takes. Checked on 2026-10-16:
+/// Claude Code 2.1.286 (`claude --help`), Codex 0.154.0 (`codex --help`, `codex debug models`:
+/// a `-c` value that isn't TOML is a string, so no quotes), Gemini CLI 0.63.0 (`gemini --help`).
+struct Launch {
+    id: &'static str,
+    model: &'static str,
+    effort: Option<&'static str>,
+    efforts: &'static [&'static str],
+}
+
+const LAUNCH: [Launch; 3] = [
+    Launch {
+        id: "claude",
+        model: "--model ",
+        effort: Some("--effort "),
+        efforts: &["low", "medium", "high", "xhigh", "max"],
+    },
+    Launch {
+        id: "codex",
+        model: "-m ",
+        effort: Some("-c model_reasoning_effort="),
+        efforts: &["low", "medium", "high", "xhigh", "max", "ultra"],
+    },
+    Launch {
+        id: "gemini",
+        model: "-m ",
+        effort: None,
+        efforts: &[],
+    },
+];
+
 /// How to tell an agent from its processes: one of Templum's, or one the user set up.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Detect {
@@ -346,6 +378,45 @@ impl Agent {
         })
     }
 
+    /// The words that start it on `model` and `effort`, to append to its command, each after a
+    /// space (`" --model opus --effort high"`); empty for neither. Err: why it can't, for the
+    /// agent that asked. They are typed into a shell: a model is letters, digits and `.-_:/`.
+    pub fn launch_args(self, model: Option<&str>, effort: Option<&str>) -> Result<String, String> {
+        if model.is_none() && effort.is_none() {
+            return Ok(String::new());
+        }
+        let title = self.title();
+        let Some(launch) = LAUNCH.iter().find(|l| l.id == self.name()) else {
+            return Err(format!(
+                "Templum doesn't give {title} a model or an effort."
+            ));
+        };
+        let mut args = String::new();
+        if let Some(model) = model {
+            if !model_typable(model) {
+                return Err(format!(
+                    "{model:?} isn't a model Templum types: a model is 1 to 64 letters, digits, ., -, \
+                     _, : and /, beginning with a letter or a digit."
+                ));
+            }
+            args += &format!(" {}{model}", launch.model);
+        }
+        if let Some(effort) = effort {
+            let Some(flag) = launch.effort else {
+                return Err(format!("{title} takes no effort from Templum."));
+            };
+            if !launch.efforts.contains(&effort) {
+                let (last, rest) = launch.efforts.split_last().expect("an agent's efforts");
+                return Err(format!(
+                    "{title}'s effort is {} or {last}.",
+                    rest.join(", ")
+                ));
+            }
+            args += &format!(" {flag}{effort}");
+        }
+        Ok(args)
+    }
+
     /// How to tell it from its processes.
     pub fn detect(self) -> Detect {
         let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();
@@ -360,6 +431,15 @@ impl Agent {
 /// An id typed into a shell: letters, digits and `-` only.
 fn typable(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// A model typed into a shell: no option (a leading `-`) nor shell syntax can hide in it.
+fn model_typable(model: &str) -> bool {
+    (1..=64).contains(&model.len())
+        && model.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && model
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-_:/".contains(c))
 }
 
 /// `8-4-4-4-12` hex digits: not Gemini's `--resume latest` nor an index into its list.
@@ -700,6 +780,60 @@ mod tests {
         // Copilot's resume may reopen another folder's session: a new one instead.
         assert_eq!(by("copilot").resume_command(), "copilot");
         assert_eq!(by("goose").resume_command(), "goose session");
+    }
+
+    #[test]
+    fn a_model_and_an_effort_become_each_agents_flags() {
+        let agent = |id| Agent::from_name(id).unwrap();
+        let (claude, codex, gemini) = (agent("claude"), agent("codex"), agent("gemini"));
+        let ok = |s: &str| -> Result<String, String> { Ok(s.to_string()) };
+        assert_eq!(
+            claude.launch_args(Some("opus"), Some("high")),
+            ok(" --model opus --effort high")
+        );
+        assert_eq!(
+            codex.launch_args(Some("gpt-5.6-luna"), Some("ultra")),
+            ok(" -m gpt-5.6-luna -c model_reasoning_effort=ultra")
+        );
+        assert_eq!(
+            gemini.launch_args(Some("gemini-2.5-pro"), None),
+            ok(" -m gemini-2.5-pro")
+        );
+        assert_eq!(claude.launch_args(None, Some("max")), ok(" --effort max"));
+        assert_eq!(
+            codex.launch_args(Some("openrouter/qwen-3:free"), None),
+            ok(" -m openrouter/qwen-3:free")
+        );
+        assert_eq!(agent("copilot").launch_args(None, None), ok(""));
+        let longest = "a".repeat(64);
+        assert!(claude.launch_args(Some(&longest), None).is_ok());
+        let too_long = "a".repeat(65);
+        for bad in [
+            "opus;rm -rf ~",
+            "$(x)",
+            "a b",
+            "'",
+            "-rf",
+            "",
+            "opus[1m]",
+            "~/m",
+            too_long.as_str(),
+        ] {
+            let err = claude.launch_args(Some(bad), None).unwrap_err();
+            assert!(err.contains("letters, digits"), "{bad:?}: {err}");
+        }
+        let err = claude.launch_args(None, Some("ultra")).unwrap_err();
+        assert!(
+            err.contains("low, medium, high, xhigh or max"),
+            "Codex's, not Claude Code's: {err}"
+        );
+        assert!(codex.launch_args(None, Some("HIGH")).is_err());
+        let err = gemini.launch_args(None, Some("high")).unwrap_err();
+        assert!(err.contains("no effort"), "{err}");
+        let err = agent("copilot")
+            .launch_args(Some("gpt-5"), None)
+            .unwrap_err();
+        assert!(err.contains("a model or an effort"), "{err}");
     }
 
     #[test]

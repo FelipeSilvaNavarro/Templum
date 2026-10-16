@@ -241,6 +241,22 @@ you when a limit nears its end and when one you reached resets (**Settings ▸ U
 to its status line, so the Claude Code Templum opens gets `--settings` naming Templum's: your own status line still
 shows. Templum reads only what the agents write, never their login. See [docs/specs/usage.md](docs/specs/usage.md).
 
+## Agents that talk to the canvas
+
+The Claude Code and Codex you open from **AI agent ▸** get Templum's MCP server, for that session only: your own
+settings files stay as they are. Wire blocks together with the Wire tool (the cable in the toolbar) or a block's
+**Connect to ▸**: an agent reads and types into the terminals wired to it. They can ask which block they are, list
+the workspace's blocks, read and type into their own terminal, and send you a notification. An agent can ask you a
+question, or to be wired to another block, in a balloon on its block; hand a task to an agent wired to it and get its
+answer back (a dot travels along the wire meanwhile); and open another agent beside itself, in a new Git worktree if
+it likes. An agent wired to a kanban reads its cards and creates, moves, comments on and claims them; it reads a
+wired note and adds to it, opens a file at a line in an editor, and reads a Git block's status. The dot before a
+Claude Code terminal's title shows it working (accent) or waiting for you (yellow,
+"Waiting for you: …"). In any Templum terminal, `templum blocks`, `templum whoami`, `templum read <block> -n 50`,
+`templum notify <text>`, `templum ask`, `templum delegate`, `templum spawn`, `templum kanban`, `templum note`,
+`templum open` and `templum git status` do the same from the command line.
+Every block has a short id (`b7k2m`) that lasts through restarts. Turn it off with `[connections] enabled = false`. See [docs/specs/connections.md](docs/specs/connections.md).
+
 ## Shell integration
 
 Templum loads a small script into bash, zsh, fish and PowerShell (Git Bash and Windows PowerShell included), as

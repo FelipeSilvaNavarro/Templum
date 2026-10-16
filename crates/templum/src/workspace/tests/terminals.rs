@@ -947,7 +947,7 @@ fn the_paste_shortcut_pastes_into_the_find_field(cx: &mut TestAppContext) {
 /// `cat` prints back what it reads: written to it, `request` reaches the terminal as its
 /// program's (a TUI turning on the mouse, the kitty keyboard, the full screen).
 #[cfg(unix)]
-fn program_asks(
+pub(super) fn program_asks(
     request: &str,
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
