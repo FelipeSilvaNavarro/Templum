@@ -881,9 +881,11 @@ Left by batch 8 and its review; line numbers are those of `development` at c51be
   (`usage.claude_limits` off) gives no cost, and its transcript-read session no tokens; Gemini CLI's session isn't
   read. A person sees `[task t7 …: done in 31 s, transcript …]` without a figure. Fix: sum the `usage` of the
   assistant lines its transcript (`transcript_path`) gained since the hand-over.
-- [ ] **A notice doesn't count its task's tool calls.** `tell_end` (`delegate.rs`) says time, spending and transcript;
-  Claude Code's subagents also say how many tools they ran. Fix: count `Working` events (each tool's end) on
-  `Handed` from the hand-over.
+- [ ] **A task's end doesn't say how many tools its agent ran.** `tell_end` (`delegate.rs`) gives time, spending and
+  transcript; Claude Code's subagents also say how many tools they ran. A person sees the asker read `[task t7 …: done
+  in 31 s, 60231 tokens, transcript …]` and can't tell, nor can the asker, a task that ran 40 commands from one
+  answered at once without opening its transcript. Fix: count `Working` events (each tool's end) on `Handed` from the
+  hand-over, and say them (`, 40 tools`).
 - [ ] **A task past its timeout that another agent takes over never comes back.** Its notice said "its end comes back
   too", but `delegate` (`delegate.rs`) lets another agent hand that agent a task once the deadline passed, replacing
   `handed`; the first asker never hears. Fix: when replacing a timed-out task of another asker, tell that asker it
@@ -899,3 +901,21 @@ Left by batch 8 and its review; line numbers are those of `development` at c51be
   end's notice only once its own read of what the task spent is done, on the background executor; a slower read (a
   long Codex rollout) queues later, so the asker may get t8's end before t7's. Its header says each one's time. Fix:
   queue the notice at the end and fill in what it spent once read, delivering a notice only once filled.
+- [ ] **A change the agent doesn't take fails its whole task, and its real end is lost.** `delegate`
+  (`crates/templum/src/workspace/delegate.rs`) types a change with `send_task(…, true)`: when its Enter doesn't go (a
+  dialog opened as it was typed, or its screen never showed it), `not_taken` ends the task. A person sees the asker
+  told `[task t7 …: failed …] … didn't take the task` while the agent's block still works on t7, and its answer never
+  comes back. Fix: give `send_task` a mode for a change that, untaken, tells the asker only that the change wasn't
+  taken (a notice, or the `wait` call's answer) and sets `handed.taken` back, keeping the task.
+- [ ] **A task handed with `wait` never tells its asker its id.** `delegate` (`delegate.rs`) answers a `wait` call with
+  the task's end only, and its timeout (`expire`, `crates/templum/src/workspace/waits.rs`) says "No answer from k9x1d
+  within 600 seconds" without it. Claude Code stops waiting on a call past 2 minutes, and the end then comes back typed
+  as `[task t3 …]`: a person sees the asker get a task id it never saw (only the block id ties it to its call). Fix:
+  name the task in `expire`'s `Turn` text when the caller handed it, and say in `delegate`'s description that a `wait`
+  call its client stops waiting on comes back typed as `[task …]` (the timeout text alone doesn't cover that cancel,
+  which comes before a 600 s deadline).
+- [ ] **A notice from an agent that quit goes into the next agent started in its terminal.** `Workspace::notices` and
+  `Handed::by` name a terminal (`tell_end`, `deliver_notices`, `delegate.rs`): when the asker's agent quits and the
+  person starts another there before the task ends, the new session is typed `[task t7 …]`, a task it never handed
+  over, and may act on it. Fix: in `agent_left` (also run on a session's end), drop the notices to that terminal and
+  mark the tasks it handed (`Handed::by` that terminal) so their end isn't told.
