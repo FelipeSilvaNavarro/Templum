@@ -550,6 +550,71 @@ fn a_notice_never_goes_into_a_shell(cx: &mut TestAppContext) {
     );
 }
 
+/// What comes back waits while its asker can't take it: it asks its person, no snapshot found it
+/// yet, or its person is typing into it. Oldest first, and the next only once the last one's Enter
+/// can't be due any more. An agent that quit meanwhile gets nothing: its shell would run it.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_notice_waits_while_its_asker_asks_its_person(cx: &mut TestAppContext) {
+    use crate::workspace::delegate::{CONFIRM, TYPING};
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    asker(&ws, cx, mine);
+    let queued = |cx: &mut TestAppContext| -> Vec<String> {
+        notices(&ws, cx)
+            .iter()
+            .map(|(_, text)| text.lines().last().unwrap().to_string())
+            .collect()
+    };
+    let asks = json!({ "event": "needs_you", "message": "Allow Edit?" });
+    event(handle, &ws, cx, &terminal, asks.clone());
+    done_task(handle, &ws, cx, &terminal, theirs, "One.");
+    done_task(handle, &ws, cx, &terminal, theirs, "Two.");
+    assert_eq!(queued(cx), ["One.", "Two."]);
+    // Answered, and restarted: no snapshot found its agent yet.
+    event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({ "event": "stopped", "message": null }),
+    );
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(mine).unwrap().seen.pid = None
+    });
+    after(cx, 1000);
+    assert_eq!(queued(cx).len(), 2, "starting");
+    // Found; its person types into it.
+    found(&ws, cx, mine);
+    ws.read_with(cx, |ws, _| ws.space.terminal(mine).unwrap().person_typed());
+    after(cx, 1000);
+    assert_eq!(queued(cx).len(), 2, "the person types");
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(mine).unwrap();
+        pane.keyed.set(Instant::now().checked_sub(TYPING));
+    });
+    after(cx, 1000);
+    screen_with(&ws, cx, mine, "[task t1 from ");
+    assert_eq!(queued(cx), ["Two."], "one, the oldest");
+    after(cx, 1000);
+    assert_eq!(queued(cx), ["Two."], "its Enter may still be due");
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(mine).unwrap().noticed = Instant::now().checked_sub(CONFIRM)
+    });
+    after(cx, 1000);
+    screen_with(&ws, cx, mine, "[task t2 from ");
+    assert!(queued(cx).is_empty());
+    // It asks again, and quits while a notice waits: dropped.
+    event(handle, &ws, cx, &terminal, asks);
+    done_task(handle, &ws, cx, &terminal, theirs, "Three.");
+    assert_eq!(queued(cx), ["Three."]);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(mine).unwrap().seen.pid = Some(1)
+    });
+    after(cx, 1000);
+    assert!(queued(cx).is_empty());
+}
+
 /// The turn an agent was on when a task was typed into it ends first, and isn't the task's
 /// answer. Codex says it took the task once a turn takes it in; Claude Code says so at its Enter
 /// (`at_enter`) and queues it behind the turn under way, which a tool's end takes it into.

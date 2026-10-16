@@ -202,12 +202,27 @@ impl Pane {
     }
 
     /// Templum may type a notice into it now (docs/specs/connections.md, Delegating 10). None:
-    /// never, no agent runs there (a shell would run the text); Some(false): not now.
+    /// never, no agent runs there (a shell would run the text). Some(false): not now, while its
+    /// agent is starting (no snapshot found it yet: macOS can't tell its shell is in front before
+    /// one did), waits for its person, its person typed into it in the last TYPING, or another
+    /// notice went into it in the last CONFIRM (that one's Enter, and a second one, may still be
+    /// due).
     pub(super) fn takes_notice(&self) -> Option<bool> {
-        if self.seen.agent.is_none() || self.shell_in_front() {
+        if self.seen.agent.is_none() {
             return None;
         }
-        Some(true)
+        if self.seen.pid.is_none() {
+            return Some(false);
+        }
+        if self.shell_in_front() {
+            return None;
+        }
+        let recent = |at: Option<Instant>, within| at.is_some_and(|at| at.elapsed() < within);
+        Some(
+            !matches!(self.state, Some(AgentState::NeedsYou(_)))
+                && !recent(self.keyed.get(), TYPING)
+                && !recent(self.noticed, CONFIRM),
+        )
     }
 
     /// `takes_typing`, for what another agent hands it (`delegate`, `reply`): only once a snapshot
@@ -759,6 +774,10 @@ impl Workspace {
                 Some(true) => {
                     let notice = self.notices.remove(i);
                     self.send_task(&notice.to, &notice.text, false, cx);
+                    // Its next notice waits, also in this pass: two never share an Enter.
+                    if let Some(pane) = self.pane_mut(&notice.to) {
+                        pane.noticed = Some(Instant::now());
+                    }
                 }
             }
         }

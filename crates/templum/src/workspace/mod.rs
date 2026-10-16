@@ -225,6 +225,9 @@ pub(crate) struct Pane {
     /// The agent `model` and `effort` were typed for, by id: another found there isn't given
     /// them, also when no snapshot found this one (it never started, or quit at once).
     pub flags_for: Option<String>,
+    /// When Templum last typed a notice into it: the next waits CONFIRM, its Enter, and a second
+    /// one, may still be due.
+    pub noticed: Option<Instant>,
 }
 
 impl Pane {
