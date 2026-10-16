@@ -703,3 +703,14 @@ Left by batch 5; line numbers are those of `development` at f48c75c.
   taken off while the window draws (`crates/templum/src/workspace/render.rs:300-309`), so `look` still finds it. A
   person whose `templum wait <block> --for command_finished` watches a terminal that exits while Templum is hidden sees
   it wait until the window shows or the timeout passes. Fix: treat `pane.term.exited()` as closed in `look`.
+- [ ] **Codex's tasks aren't confirmed.** `confirm` (`crates/templum/src/workspace/delegate.rs`) checks that a task
+  typed into an agent was taken only when its hooks say a turn started (Claude Code, Gemini CLI); Codex says only that
+  a turn ended (`hooks::codex`), and the agents without hooks say nothing. A person whose Codex got a task whose Enter
+  joined the paste sees the text sit in its composer, and the agent that handed it over waits until its timeout.
+  Fix: a Codex hook for a turn's start, when Codex has one; meanwhile the screen working (`activity.rs`) could stand
+  for it, with no second Enter (its approval dialog isn't heard).
+- [ ] **A second Enter may send what the person was typing.** `confirm`
+  (`crates/templum/src/workspace/delegate.rs`) presses Enter again 3 s after a task's Enter that no hook confirmed. A
+  person who began typing into that agent in those 3 seconds sees their half-written line sent with the task. Fix:
+  skip the second Enter when the person typed into the terminal since the first (a counter of their keys on the
+  pane, as `typed` is for the screen's looks).

@@ -136,7 +136,16 @@ later starts with none.
    about 2 seconds), and only if Templum still may type into it (5): a dialog that ignores pastes, such as Codex's
    approval, which Templum hears nothing of, or a permission prompt that opened meanwhile, gets no Enter that would
    answer it. The task then ends at once: the delegating agent is told the agent didn't take it, and to look at its
-   block. The person sees it arrive.
+   block. The person sees it arrive. A resize of the agent's block meanwhile redraws it at its new size, which shows
+   nothing of the paste: its Enter waits until its screen stays the same for two looks. An agent whose hooks say
+   when a turn starts (Claude Code, Gemini CLI) then gets it, as one whose dialog would be heard; for another
+   (Codex) that settled screen is the new start, and only a change after it is the paste.
+   **Confirmed:** an agent whose hooks say when a turn starts must say something within 3 seconds of its Enter: its
+   turn started (`UserPromptSubmit`, `BeforeAgent`), a dialog opened, or its turn ended; one at work queued the task.
+   With no word, and while Templum still may type into it, it gets its Enter once more (the first may have joined
+   the paste as a new line); still none, the task ends untaken, as above. Codex, which says only when a turn ends,
+   and the agents without hooks get no confirmation: a second Enter, blind, could answer a dialog Templum doesn't
+   hear.
 3. The wire's dot travels from Claude Code to Codex while Codex works.
 4. When Codex finishes its turn, its last answer becomes the result of Claude Code's `delegate` (when it asked to
    wait), or of a later `wait_for_idle`. If Codex calls `reply` first, that text is the answer instead.
