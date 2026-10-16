@@ -379,21 +379,26 @@ impl Workspace {
                     return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
                 };
                 pane.term.type_in(&text);
-                if enter {
-                    // As a task's: an agent may take keys that come in one burst for a paste,
-                    // where Enter is a new line.
-                    let terminal = pane.term.id().to_string();
-                    cx.spawn(async move |ws, cx| {
-                        cx.background_executor().timer(ENTER_AFTER).await;
-                        let _ = ws.update(cx, |ws, _| {
-                            if let Some(pane) = ws.pane(&terminal) {
-                                pane.term.write(&b"\r"[..]);
-                            }
-                        });
-                    })
-                    .detach();
+                if !enter {
+                    return Outcome::Now(Reply::ok(format!("Typed into {block}.")));
                 }
-                Reply::ok(format!("Typed into {block}."))
+                // As a task's: an agent may take keys that come in one burst for a paste, where
+                // Enter is a new line. Answered after it: a caller that waits for each answer
+                // (a script's `templum send` twice) gets its texts and Enters in order.
+                let terminal = pane.term.id().to_string();
+                return Outcome::Later(cx.spawn(async move |ws, cx| {
+                    cx.background_executor().timer(ENTER_AFTER).await;
+                    let entered = ws.update(cx, |ws, _| {
+                        ws.pane(&terminal)
+                            .map(|pane| pane.term.write(&b"\r"[..]))
+                            .is_some()
+                    });
+                    if entered.unwrap_or(false) {
+                        Reply::ok(format!("Typed into {block}."))
+                    } else {
+                        Reply::err(format!("{block} was closed before its Enter."))
+                    }
+                }));
             }
             Call::Notify { text } => {
                 let (_, title, _) = self.about(&space.blocks[&me], cx);

@@ -266,7 +266,9 @@ Batch 6.
   session the last snapshot found it on (not the folder's latest, the caller's when they share it), with its model.
   Any other: "Only the person closes k9x1d: you didn't open it." One it opened but is no longer wired to is refused
   as any block not connected: connect asks the person again.
-- `send_to_terminal`'s Enter goes 150 ms after its text, as a task's does.
+- `send_to_terminal`'s Enter goes 150 ms after its text, as a task's does, and its answer after its Enter: a caller
+  that waits for each answer (a script's `templum send … --enter` twice) gets its texts and Enters in order. A block
+  closed meanwhile gets no Enter, and the answer says so.
 
 ## Identity
 
@@ -674,10 +676,10 @@ Gemini's question; Gemini CLI's run, its failure and its absence.
 unknown name refused; each agent's model and effort flags and every unsafe model refused; `send_keys` parses 1 to 16
 keys; keys reach a terminal in bracketed-paste mode as keys, never `ESC[200~`; keys into a waiting agent are taken and
 say who answered; the caller's own block and another agent's task are refused; `interrupt` presses Esc and ends the
-caller's task; `send_to_terminal`'s Enter comes after its text; `spawn_agent` types its model and effort first and a bad
-one opens nothing; `close_block` closes only what the caller opened and Ctrl+Z brings it back; `opened_by`, `model`
-and `effort` survive a round trip, and an older file loads; a snapshot that finds another agent drops the model and
-the effort; a model Templum can't type in a hand-edited file isn't typed.
+caller's task; `send_to_terminal`'s Enter comes after its text, and two in a row stay two lines; `spawn_agent` types
+its model and effort first and a bad one opens nothing; `close_block` closes only what the caller opened and Ctrl+Z
+brings it back; `opened_by`, `model` and `effort` survive a round trip, and an older file loads; a snapshot that finds
+another agent drops the model and the effort; a model Templum can't type in a hand-edited file isn't typed.
 
 **Batch 7:** Codex's hook payloads become their events (`compact` and `SessionEnd` none); Codex's hook flags; a turn
 that ends before its task was taken doesn't answer it; only a prompt taken confirms a task (not a `Stopped` event, not

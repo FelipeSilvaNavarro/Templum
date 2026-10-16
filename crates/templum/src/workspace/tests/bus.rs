@@ -274,18 +274,20 @@ fn a_terminal_types_into_itself_and_reads_it_back(cx: &mut TestAppContext) {
     let first = first_id(&ws, cx);
     let (terminal, uid) = me(&ws, cx, first);
     let typed = json!({ "block": uid, "text": "hello there", "enter": true });
-    let (failed, text) = call(handle, &ws, cx, &terminal, "send_to_terminal", typed);
-    assert!(!failed, "{text}");
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "send_to_terminal", typed);
     // The tty shows the text as it is typed; its Enter waits ENTER_AFTER on the test's clock, so
-    // `cat` hasn't printed it again yet.
+    // `cat` hasn't printed it again yet, and the call waits for it.
     screen_with(&ws, cx, first, "hello there");
     std::thread::sleep(Duration::from_millis(300));
     let alone = screen_until(&ws, cx, first, |_| true);
     assert_eq!(alone.matches("hello there").count(), 1, "{alone}");
+    assert!(answers.try_recv().is_err(), "answered before its Enter");
     after(
         cx,
         crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
     );
+    let (failed, text) = answered(&answers);
+    assert!(!failed, "{text}");
     // `cat` prints it again on the next row once Enter sent the line (rows are joined).
     screen_with(&ws, cx, first, "hello therehello there");
     let (failed, text) = call(
@@ -297,6 +299,78 @@ fn a_terminal_types_into_itself_and_reads_it_back(cx: &mut TestAppContext) {
         json!({ "block": uid, "lines": 5 }),
     );
     assert!(!failed && text.contains("hello there"), "{text}");
+}
+
+/// The answer on `answers`, the test's clock running 10 ms at a time: a caller that sends its
+/// next call as soon as it is answered.
+#[cfg(unix)]
+fn answer_then_next(
+    cx: &mut TestAppContext,
+    answers: &std::sync::mpsc::Receiver<String>,
+) -> (bool, String) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        cx.run_until_parked();
+        if let Ok(line) = answers.try_recv() {
+            return result_of(&line);
+        }
+        assert!(Instant::now() < deadline, "no answer");
+        after(cx, 10);
+    }
+}
+
+/// `templum send <block> <text> --enter` twice from a script: the second's text comes after the
+/// first's Enter, so the shell runs two commands, not one made of both.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn two_sends_with_enter_in_a_row_stay_two_lines(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let (terminal, uid) = me(&ws, cx, first);
+    for (conn, text) in [(1, "one"), (2, "two")] {
+        let typed = json!({ "block": uid, "text": text, "enter": true });
+        let answers = call_later(handle, &ws, cx, &terminal, conn, "send_to_terminal", typed);
+        let (failed, said) = answer_then_next(cx, &answers);
+        assert!(!failed && said == format!("Typed into {uid}."), "{said}");
+    }
+    after(
+        cx,
+        crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
+    );
+    screen_until(&ws, cx, first, |shown| shown.matches("two").count() >= 2);
+    // Rows, not joined: `cat` may print "one" back after "two" is shown, on the same row.
+    let (_, rows) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "read_terminal",
+        json!({ "block": uid, "lines": 10 }),
+    );
+    assert!(
+        rows.lines().any(|row| row.trim_end() == "one") && !rows.contains("onetwo"),
+        "{rows}"
+    );
+}
+
+/// A send's block closes before its Enter: the answer says so.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_send_whose_block_closes_before_its_enter_says_so(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let (terminal, uid) = me(&ws, cx, first);
+    let typed = json!({ "block": uid, "text": "hello", "enter": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "send_to_terminal", typed);
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.close_now(&[first], crate::workspace::history::Then::New, window, cx)
+        })
+    })
+    .unwrap();
+    let (failed, said) = answer_then_next(cx, &answers);
+    assert!(failed && said.contains("closed"), "{said}");
 }
 
 #[gpui_kit::test]
