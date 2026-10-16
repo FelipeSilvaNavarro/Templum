@@ -615,6 +615,142 @@ fn a_notice_waits_while_its_asker_asks_its_person(cx: &mut TestAppContext) {
     assert!(queued(cx).is_empty());
 }
 
+/// What a task spent is what its agent's usage chip shows, since it was handed over: its tokens
+/// (Codex), its cost when it gives one (Claude Code). Read again a second after its end; with a
+/// data folder, from the agent's own files. Its transcript is the one its last turn's end named,
+/// on one line. The test's clock stays under 5 s: a snapshot, with a data folder, would look for
+/// real agents.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn the_end_says_what_it_spent_and_its_transcript(cx: &mut TestAppContext) {
+    use templum_usage::Session;
+    let spent_after = crate::workspace::delegate::SPENT_AFTER.as_millis() as u64;
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    asker(&ws, cx, mine);
+    // Mine asks its person: the notices wait, to be read here.
+    event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({ "event": "needs_you", "message": "Allow Edit?" }),
+    );
+    let usage = |cx: &mut TestAppContext, u: Session| {
+        ws.update(cx, |ws, _| {
+            ws.space.terminal_mut(theirs).unwrap().usage = Some(u)
+        })
+    };
+    let send = |cx: &mut TestAppContext, e: serde_json::Value| event(handle, &ws, cx, &worker, e);
+    usage(
+        cx,
+        Session {
+            tokens: Some(1000),
+            ..Default::default()
+        },
+    );
+    call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "delegate",
+        json!({ "block": them, "task": "count" }),
+    );
+    screen_with(&ws, cx, theirs, "count");
+    enter(cx);
+    usage(
+        cx,
+        Session {
+            tokens: Some(61231),
+            ..Default::default()
+        },
+    );
+    send(cx, json!({ "event": "submitted" }));
+    send(
+        cx,
+        json!({ "event": "stopped", "message": "Done.", "transcript": "/x/roll\nout\u{1b}.jsonl" }),
+    );
+    assert!(notices(&ws, cx).is_empty(), "read SPENT_AFTER later");
+    after(cx, spent_after);
+    let told = notices(&ws, cx);
+    assert!(
+        told[0].1.starts_with("[task t1 from ")
+            && told[0].1.ends_with(
+                " s, 60231 tokens, transcript /x/roll out.jsonl] Its answer is in the pasted text.\nDone."
+            ),
+        "{}",
+        told[0].1
+    );
+    // Claude Code with its status line: its cost, which its file has a moment after its end.
+    let data = tempfile::tempdir().unwrap();
+    ws.update(cx, |ws, _| {
+        ws.data_dir = Some(data.path().to_path_buf());
+        let pane = ws.space.terminal_mut(theirs).unwrap();
+        pane.seen.agent = Some("claude".into());
+        pane.seen.started = Some(crate::notes::now());
+    });
+    usage(
+        cx,
+        Session {
+            cost_usd: Some(0.10),
+            tokens: Some(38069),
+            ..Default::default()
+        },
+    );
+    call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "delegate",
+        json!({ "block": them, "task": "again" }),
+    );
+    screen_with(&ws, cx, theirs, "again");
+    enter(cx);
+    send(cx, json!({ "event": "submitted" }));
+    send(cx, json!({ "event": "stopped", "message": "Again." }));
+    let relay = templum_usage::relay_dir(data.path());
+    std::fs::create_dir_all(&relay).unwrap();
+    let status = r#"{"cost":{"total_cost_usd":0.52},"context_window":{"total_input_tokens":38279,"total_output_tokens":40}}"#;
+    std::fs::write(relay.join(format!("{worker}.json")), status).unwrap();
+    after(cx, spent_after);
+    let told = notices_until(&ws, cx, 2);
+    assert!(
+        told[1].1.ends_with(
+            " s, $0.42, transcript /x/roll out.jsonl] Its answer is in the pasted text.\nAgain."
+        ),
+        "{}",
+        told[1].1
+    );
+    ws.update(cx, |ws, _| ws.data_dir = None);
+    // Its next session names its own.
+    send(cx, json!({ "event": "started" }));
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.terminal(theirs).unwrap().transcript.is_none())
+    });
+}
+
+/// The notices once there are `n`: a read on the background executor may come a moment later.
+#[cfg(unix)]
+fn notices_until(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    n: usize,
+) -> Vec<(String, String)> {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        cx.run_until_parked();
+        let told = notices(ws, cx);
+        if told.len() >= n {
+            return told;
+        }
+        assert!(Instant::now() < deadline, "{told:?}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// The turn an agent was on when a task was typed into it ends first, and isn't the task's
 /// answer. Codex says it took the task once a turn takes it in; Claude Code says so at its Enter
 /// (`at_enter`) and queues it behind the turn under way, which a tool's end takes it into.

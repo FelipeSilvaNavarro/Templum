@@ -291,6 +291,15 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
             "{said}"
         );
         let new = spawned(&ws, cx, mine);
+        ws.read_with(cx, |ws, _| {
+            let handed = ws.space.terminal(new).unwrap().handed.as_ref().unwrap();
+            let usage = handed.usage.as_ref().unwrap();
+            assert_eq!(
+                (usage.cost_usd, usage.tokens),
+                (Some(0.0), Some(0)),
+                "its session is its task's"
+            );
+        });
         in_front(&ws, cx, new, true);
         found(&ws, cx, new);
         let (theirs, uid) = me(&ws, cx, new);

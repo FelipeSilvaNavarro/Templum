@@ -439,6 +439,7 @@ impl Workspace {
                         effort: None,
                         flags_for: None,
                         noticed: None,
+                        transcript: None,
                     })),
                 );
                 self.added(id);

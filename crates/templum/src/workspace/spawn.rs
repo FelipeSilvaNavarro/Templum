@@ -186,6 +186,12 @@ impl Workspace {
                 });
                 pane.handed = Some(Handed {
                     id,
+                    // Its session starts with its task: all it spends is the task's.
+                    usage: Some(templum_usage::Session {
+                        cost_usd: Some(0.0),
+                        tokens: Some(0),
+                        ..Default::default()
+                    }),
                     ..Handed::new(from, Duration::from_secs(tools::TASK_WAIT))
                 });
             }

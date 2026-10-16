@@ -7,8 +7,9 @@ use gpui_kit::{App, Context, Task};
 use templum_canvas::BlockId;
 use templum_mcp::{Reply, tools};
 use templum_terminal::{KEY_NAMES, named_key};
+use templum_usage::Session;
 
-use super::bus::{Outcome, target};
+use super::bus::{Outcome, flat, target};
 use super::waits::Waiting;
 use super::{AgentState, Handed, Pane, Space, Workspace};
 
@@ -42,6 +43,22 @@ pub(super) const TASK_LEAD: &str = "Your task is in the pasted text: do it.";
 /// What the first line of a task's end says follows it: its answer, or why it failed.
 pub(super) const DONE_LEAD: &str = "Its answer is in the pasted text.";
 pub(super) const FAILED_LEAD: &str = "What happened is in the pasted text.";
+/// How long after a task's end what it spent is read: Claude Code's status line gives its last
+/// cost about 0.3 s after its `Stop`.
+pub(super) const SPENT_AFTER: Duration = Duration::from_secs(1);
+
+/// What a task spent between its agent's usage `from` (when it was handed over) and `to`, as its
+/// usage chip shows it: its cost when both have one, else its tokens; None when unknown. Cost
+/// first: Claude Code's token totals are its last call's context, not what it used (batch 8's
+/// spike S8-1).
+fn spent(from: Option<&Session>, to: Option<&Session>) -> Option<String> {
+    let (from, to) = (from?, to?);
+    if let (Some(a), Some(b)) = (from.cost_usd, to.cost_usd) {
+        return Some(format!("${:.2}", (b - a).max(0.0)));
+    }
+    let (a, b) = (from.tokens?, to.tokens?);
+    Some(format!("{} tokens", b.saturating_sub(a)))
+}
 /// How long a terminal says which block pressed keys in it ("answered by").
 pub(crate) const ANSWERED_FOR: Duration = Duration::from_secs(10);
 
@@ -578,6 +595,7 @@ impl Workspace {
             )));
         }
         let worker = pane.term.id().to_string();
+        let usage = pane.usage.clone();
         let by = self.signature(space, me, cx);
         self.next_task += 1;
         let id = self.next_task;
@@ -586,6 +604,7 @@ impl Workspace {
         if let Some(pane) = self.pane_mut(&worker) {
             pane.handed = Some(Handed {
                 id,
+                usage,
                 ..Handed::new(from, Duration::from_secs(timeout))
             });
         }
@@ -732,27 +751,67 @@ impl Workspace {
         }
     }
 
-    /// The task `handed` to the agent in `terminal` ended with `reply`: its asker hears so.
+    /// The task `handed` to the agent in `terminal` ended with `reply`: its asker hears so,
+    /// SPENT_AFTER later, with what it spent then (docs/specs/connections.md, Delegating 10). Its
+    /// time and transcript are the end's.
     pub(super) fn tell_end(
-        &mut self,
+        &self,
         terminal: &str,
         handed: &Handed,
         reply: &Reply,
         cx: &mut Context<Self>,
     ) {
+        let pane = self.pane(terminal);
         let (word, lead) = if reply.is_error {
             ("failed", FAILED_LEAD)
         } else {
             ("done", DONE_LEAD)
         };
-        let text = format!(
-            "[task t{} from {}: {word} in {} s] {lead}\n{}",
+        let since = handed.since.elapsed().as_secs();
+        let head = format!(
+            "[task t{} from {}: {word} in {since} s",
             handed.id,
-            self.signature_of(terminal, cx),
-            handed.since.elapsed().as_secs(),
-            reply.text
+            self.signature_of(terminal, cx)
         );
-        self.queue_notice(handed.by.clone(), text, cx);
+        // On one line: a path can't break it, nor end the paste.
+        let transcript = pane
+            .and_then(|p| p.transcript.as_deref())
+            .map(|t| format!(", transcript {}", flat(t)))
+            .unwrap_or_default();
+        let proc = pane.and_then(super::usage::proc_of);
+        let (data, from, to, body) = (
+            self.data_dir.clone(),
+            handed.usage.clone(),
+            handed.by.clone(),
+            reply.text.clone(),
+        );
+        let terminal = terminal.to_string();
+        cx.spawn(async move |ws, cx| {
+            cx.background_executor().timer(SPENT_AFTER).await;
+            let read = match (data, proc) {
+                (Some(data), Some(proc)) => {
+                    cx.background_executor()
+                        .spawn(async move {
+                            let dirs = templum_usage::Dirs::of(&data);
+                            templum_usage::read(&[proc], &dirs, crate::notes::now())
+                                .0
+                                .pop()
+                                .flatten()
+                        })
+                        .await
+                }
+                _ => None,
+            };
+            let _ = ws.update(cx, |ws, cx| {
+                // Its block may be gone (closed): what it spent then is unknown.
+                let now = read.or_else(|| ws.pane(&terminal).and_then(|p| p.usage.clone()));
+                let spent = spent(from.as_ref(), now.as_ref())
+                    .map(|s| format!(", {s}"))
+                    .unwrap_or_default();
+                ws.queue_notice(to, format!("{head}{spent}{transcript}] {lead}\n{body}"), cx);
+            });
+        })
+        .detach();
     }
 
     /// Queues the notice `text` for the agent in the terminal `to`, then types what may go now.
@@ -793,6 +852,32 @@ mod tests {
 
     fn wait() -> EnterWait {
         EnterWait::new("› ".into(), SIZE)
+    }
+
+    #[test]
+    fn what_a_task_spent_is_its_cost_else_its_tokens() {
+        use templum_usage::Session;
+        let s = |cost_usd, tokens| Session {
+            cost_usd,
+            tokens,
+            ..Default::default()
+        };
+        // Claude Code's status line: its cost; its token totals are its last call's context.
+        let (claude, later) = (s(Some(0.10), Some(38069)), s(Some(0.52), Some(38279)));
+        assert_eq!(spent(Some(&claude), Some(&later)).as_deref(), Some("$0.42"));
+        // Codex: its tokens.
+        let (codex, later) = (s(None, Some(1000)), s(None, Some(61231)));
+        assert_eq!(
+            spent(Some(&codex), Some(&later)).as_deref(),
+            Some("60231 tokens")
+        );
+        // Unknown at either end: nothing; never less than nothing.
+        assert_eq!(spent(None, Some(&later)), None);
+        assert_eq!(spent(Some(&s(None, None)), Some(&s(None, None))), None);
+        assert_eq!(
+            spent(Some(&later), Some(&codex)).as_deref(),
+            Some("0 tokens")
+        );
     }
 
     #[test]

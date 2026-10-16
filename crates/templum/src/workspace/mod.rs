@@ -144,6 +144,8 @@ pub(crate) struct Handed {
     /// Claude Code queued it behind the turn under way (`Submitted` at its Enter while it worked):
     /// that turn's end isn't its answer, unless a tool's end takes it into the turn first.
     pub behind: bool,
+    /// Its agent's usage when it was handed over: what its end says it spent counts from it.
+    pub usage: Option<templum_usage::Session>,
 }
 
 impl Handed {
@@ -157,6 +159,7 @@ impl Handed {
             until: since + timeout,
             taken: false,
             behind: false,
+            usage: None,
         }
     }
 }
@@ -228,6 +231,8 @@ pub(crate) struct Pane {
     /// When Templum last typed a notice into it: the next waits CONFIRM, its Enter, and a second
     /// one, may still be due.
     pub noticed: Option<Instant>,
+    /// The transcript its agent's last turn's end named, until its next session starts.
+    pub transcript: Option<String>,
 }
 
 impl Pane {

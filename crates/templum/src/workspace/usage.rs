@@ -13,7 +13,7 @@ use templum_canvas::BlockId;
 use templum_terminal::Agent;
 use templum_usage::{Event, Limits, Proc, Session, Watch};
 
-use super::{TryIt, Workspace, show_notification};
+use super::{Pane, TryIt, Workspace, show_notification};
 use crate::agents::AgentEntry;
 use crate::config::Edit;
 use crate::notes;
@@ -25,6 +25,18 @@ pub(super) const CLAUDE_EVERY: Duration = Duration::from_secs(5 * 60);
 
 /// What a read found: each terminal's session, in the order asked, and each agent's limits.
 pub(crate) type Read = (Vec<Option<Session>>, Vec<(String, Limits)>);
+
+/// The agent of `pane` as the last snapshot found it, for a read of its session.
+pub(super) fn proc_of(pane: &Pane) -> Option<Proc> {
+    let seen = &pane.seen;
+    Some(Proc {
+        agent: seen.agent.clone()?,
+        pid: seen.pid?,
+        started: seen.started?,
+        cwd: seen.folder.clone(),
+        terminal: pane.term.id().to_string(),
+    })
+}
 
 impl Workspace {
     /// `command` as typed to start `agent` in a terminal (docs/specs/connections.md, What Templum
@@ -85,18 +97,9 @@ impl Workspace {
         let mut procs = Vec::new();
         for space in self.spaces() {
             for (id, pane) in space.terminals() {
-                let seen = &pane.seen;
-                if let (Some(agent), Some(pid), Some(started)) =
-                    (&seen.agent, seen.pid, seen.started)
-                {
+                if let Some(proc) = proc_of(pane) {
                     keys.push((space.id.clone(), id));
-                    procs.push(Proc {
-                        agent: agent.clone(),
-                        pid,
-                        started,
-                        cwd: seen.folder.clone(),
-                        terminal: pane.term.id().to_string(),
-                    });
+                    procs.push(proc);
                 }
             }
         }

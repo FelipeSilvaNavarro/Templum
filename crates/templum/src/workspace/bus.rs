@@ -256,8 +256,18 @@ impl Workspace {
                     handed.behind = false;
                 }
             }
-            AgentEvent::Started => pane.state = Some(AgentState::Idle),
-            AgentEvent::Stopped { message, .. } => {
+            AgentEvent::Started => {
+                pane.state = Some(AgentState::Idle);
+                // A new session: the last one's transcript isn't its own.
+                pane.transcript = None;
+            }
+            AgentEvent::Stopped {
+                message,
+                transcript,
+            } => {
+                if transcript.is_some() {
+                    pane.transcript = transcript;
+                }
                 pane.state = Some(AgentState::Idle);
                 if let Some(message) = &message {
                     pane.answer = Some(message.clone());
