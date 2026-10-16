@@ -231,7 +231,9 @@ impl Workspace {
             pane.speaks = true;
         }
         match event {
-            AgentEvent::Working => pane.state = Some(AgentState::Working),
+            AgentEvent::Working | AgentEvent::Submitted { .. } => {
+                pane.state = Some(AgentState::Working)
+            }
             AgentEvent::Started => {
                 pane.state = Some(AgentState::Idle);
                 // A Claude Code spawn_agent opened is ready for its prompt: SessionStart comes after

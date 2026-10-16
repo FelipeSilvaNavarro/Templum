@@ -420,8 +420,7 @@ fn one_call(
     2
 }
 
-/// The event an agent's hook hands over: Claude Code's and Gemini CLI's on stdin, Codex's as an
-/// argument.
+/// The event an agent's hook hands over, on stdin for all three.
 fn hook_event(args: &[String], stdin: &mut dyn Read) -> Option<hooks::AgentEvent> {
     let mut on_stdin = || {
         let mut input = String::new();
@@ -431,7 +430,10 @@ fn hook_event(args: &[String], stdin: &mut dyn Read) -> Option<hooks::AgentEvent
     match args.first()?.as_str() {
         "claude" => hooks::claude(&on_stdin()?),
         "gemini" => hooks::gemini(&on_stdin()?),
-        "codex" => hooks::codex(&serde_json::from_str(args.get(1)?).ok()?),
+        // An older Templum's `notify` (its JSON as an argument): its stdin is Codex's terminal,
+        // which reading would steal the person's keys from.
+        "codex" if args.len() > 1 => None,
+        "codex" => hooks::codex(&on_stdin()?),
         _ => None,
     }
 }
@@ -777,8 +779,18 @@ mod tests {
                 params: json!({ "event": "needs_you", "message": "Allow Bash?" }),
             }
         );
-        let codex = r#"{"type":"agent-turn-complete","last-assistant-message":"Fixed."}"#;
-        assert_eq!(run_with(&["hook", "codex", codex], &env(&bus), "").0, 0);
+        // Codex's, on stdin. An argument is an older Templum's `notify`: its stdin is Codex's
+        // terminal, never read (the next event heard is the stdin one's, not two of them).
+        let codex = r#"{"hook_event_name":"Stop","last_assistant_message":"Fixed."}"#;
+        let notify = r#"{"type":"agent-turn-complete","last-assistant-message":"Old."}"#;
+        assert_eq!(
+            run_with(&["hook", "codex", notify], &env(&bus), codex),
+            (0, String::new(), String::new())
+        );
+        assert_eq!(
+            run_with(&["hook", "codex"], &env(&bus), codex),
+            (0, String::new(), String::new())
+        );
         assert_eq!(
             events.recv_timeout(LIMIT).unwrap().1,
             Incoming::Notification {

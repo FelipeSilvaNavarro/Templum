@@ -179,7 +179,8 @@ pub(crate) struct Pane {
     /// How many hook events its agent sent: a task's Enter is confirmed by one more.
     pub events: u64,
     /// Its agent's hooks say when a turn starts and when it asks its person (Claude Code's,
-    /// Gemini CLI's), not only when a turn ends (Codex's): a dialog of it would be heard.
+    /// Gemini CLI's, and Codex's once its person trusted them), not only when a turn ends: a
+    /// dialog of it would be heard.
     pub speaks: bool,
     /// Who pressed keys in it last (`send_keys`, `interrupt`), as its `[from …]` line names
     /// them, and when.

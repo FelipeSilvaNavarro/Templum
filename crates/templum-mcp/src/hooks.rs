@@ -12,7 +12,14 @@ pub const METHOD: &str = "templum/event";
 pub enum AgentEvent {
     /// A session started: it waits for a prompt.
     Started,
-    /// It works on a prompt: one was sent, or a tool just ran.
+    /// It took a prompt: a turn starts or takes it in. `at_enter`: it says so at its Enter, also
+    /// for a prompt it queues behind the turn under way (Claude Code); the others once a turn
+    /// takes it.
+    Submitted {
+        #[serde(default)]
+        at_enter: bool,
+    },
+    /// It works on: a tool just ran.
     Working,
     /// It finished its turn, with its last answer.
     Stopped { message: Option<String> },
@@ -31,7 +38,8 @@ pub fn claude(input: &Value) -> Option<AgentEvent> {
         // is still working.
         "SessionStart" if input["source"] == "compact" => return None,
         "SessionStart" => AgentEvent::Started,
-        "UserPromptSubmit" | "PostToolUse" => AgentEvent::Working,
+        "UserPromptSubmit" => AgentEvent::Submitted { at_enter: true },
+        "PostToolUse" => AgentEvent::Working,
         // Esc while a tool runs ends the turn: no `Stop` comes.
         "PostToolUseFailure" if input["is_interrupt"] == true => {
             AgentEvent::Stopped { message: None }
@@ -71,10 +79,27 @@ pub fn claude(input: &Value) -> Option<AgentEvent> {
     })
 }
 
-/// Codex's `notify` argument: only `agent-turn-complete` exists.
+/// A Codex hook's input (as of 0.154, docs/plans/2026-10-16-connections-batch-7.md, S1). None
+/// for what Templum doesn't follow: `SessionEnd` also comes after 30 idle minutes.
 pub fn codex(input: &Value) -> Option<AgentEvent> {
-    (input["type"] == "agent-turn-complete").then(|| AgentEvent::Stopped {
-        message: input["last-assistant-message"].as_str().map(str::to_string),
+    Some(match input["hook_event_name"].as_str()? {
+        "SessionStart" if input["source"] == "compact" => return None,
+        "SessionStart" => AgentEvent::Started,
+        // Once a turn takes the prompt in: a new turn, or the one under way at its next tool.
+        "UserPromptSubmit" => AgentEvent::Submitted { at_enter: false },
+        "PostToolUse" => AgentEvent::Working,
+        "PermissionRequest" => AgentEvent::NeedsYou {
+            message: Some(match input["tool_name"].as_str() {
+                Some(tool) => format!("Allow {tool}?"),
+                None => "Allow a tool?".to_string(),
+            }),
+        },
+        "Stop" => AgentEvent::Stopped {
+            message: input["last_assistant_message"].as_str().map(str::to_string),
+        },
+        // Esc or Ctrl+C: the turn ends, no `Stop` comes.
+        "Interrupt" => AgentEvent::Stopped { message: None },
+        _ => return None,
     })
 }
 
@@ -84,8 +109,10 @@ pub fn gemini(input: &Value) -> Option<AgentEvent> {
     let text = |key: &str| input[key].as_str().map(str::to_string);
     Some(match input["hook_event_name"].as_str()? {
         "SessionStart" => AgentEvent::Started,
+        // Assumed once its turn takes the prompt, as Codex's (not checked: no login).
+        "BeforeAgent" => AgentEvent::Submitted { at_enter: false },
         // After a permission the person granted, the tool's end says it works again.
-        "BeforeAgent" | "AfterTool" => AgentEvent::Working,
+        "AfterTool" => AgentEvent::Working,
         "AfterAgent" => AgentEvent::Stopped {
             message: text("prompt_response"),
         },
@@ -119,7 +146,7 @@ mod tests {
         );
         assert_eq!(
             event(json!({ "hook_event_name": "UserPromptSubmit", "prompt": "hi" })),
-            Some(AgentEvent::Working)
+            Some(AgentEvent::Submitted { at_enter: true })
         );
         // After a permission the person granted, the next tool's end says it works again.
         assert_eq!(
@@ -247,15 +274,59 @@ mod tests {
         assert_eq!(event(json!("garbage")), None);
     }
 
+    /// As Codex 0.154 hands them over on stdin (docs/plans/2026-10-16-connections-batch-7.md, S1).
     #[test]
-    fn codexs_notify_is_a_finished_turn() {
+    fn codex_hooks_become_events() {
+        let event = |input: Value| codex(&input);
+        let turn = "01a14375-fd15-7fb2-b94b-e4a7c7102723";
+        let start = json!({ "hook_event_name": "SessionStart", "source": "startup",
+            "session_id": "01a14374", "model": "gpt-5.6-luna", "permission_mode": "default" });
+        assert_eq!(event(start), Some(AgentEvent::Started));
         assert_eq!(
-            codex(&json!({ "type": "agent-turn-complete", "last-assistant-message": "Fixed." })),
-            Some(AgentEvent::Stopped {
-                message: Some("Fixed.".into())
+            event(json!({ "hook_event_name": "SessionStart", "source": "compact" })),
+            None
+        );
+        assert_eq!(
+            event(
+                json!({ "hook_event_name": "UserPromptSubmit", "turn_id": turn, "prompt": "also say B" })
+            ),
+            Some(AgentEvent::Submitted { at_enter: false }),
+            "Codex says so once a turn takes the prompt in"
+        );
+        assert_eq!(
+            event(
+                json!({ "hook_event_name": "PermissionRequest", "turn_id": turn, "tool_name": "Bash",
+                "tool_input": { "command": "touch f.txt", "description": "May I create f.txt?" } })
+            ),
+            Some(AgentEvent::NeedsYou {
+                message: Some("Allow Bash?".into())
             })
         );
-        assert_eq!(codex(&json!({ "type": "something-else" })), None);
+        assert_eq!(
+            event(
+                json!({ "hook_event_name": "PostToolUse", "turn_id": turn, "tool_name": "Bash",
+                "tool_input": { "command": "sleep 12" }, "tool_use_id": "exec-bb2a" })
+            ),
+            Some(AgentEvent::Working)
+        );
+        assert_eq!(
+            event(
+                json!({ "hook_event_name": "Stop", "turn_id": turn, "stop_hook_active": false,
+                "last_assistant_message": "A B" })
+            ),
+            Some(AgentEvent::Stopped {
+                message: Some("A B".into())
+            })
+        );
+        assert_eq!(
+            event(json!({ "hook_event_name": "Interrupt", "turn_id": turn })),
+            Some(AgentEvent::Stopped { message: None }),
+            "Esc or Ctrl+C: no Stop comes"
+        );
+        // Also after 30 idle minutes: a snapshot tells when Codex quits.
+        assert_eq!(event(json!({ "hook_event_name": "SessionEnd" })), None);
+        let notify = json!({ "type": "agent-turn-complete", "last-assistant-message": "x" });
+        assert_eq!(event(notify), None, "notify's argument is no hook");
     }
 
     #[test]
@@ -270,7 +341,7 @@ mod tests {
         }
         assert_eq!(
             event(json!({ "hook_event_name": "BeforeAgent", "prompt": "hi" })),
-            Some(AgentEvent::Working)
+            Some(AgentEvent::Submitted { at_enter: false })
         );
         // After a permission the person granted, the tool's end says it works again.
         assert_eq!(
@@ -335,6 +406,10 @@ mod tests {
             serde_json::from_value::<AgentEvent>(json!({ "event": "needs_you", "message": null }))
                 .unwrap(),
             AgentEvent::NeedsYou { message: None }
+        );
+        assert_eq!(
+            serde_json::from_value::<AgentEvent>(json!({ "event": "submitted" })).unwrap(),
+            AgentEvent::Submitted { at_enter: false }
         );
     }
 }
