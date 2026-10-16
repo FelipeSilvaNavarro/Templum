@@ -6,9 +6,9 @@ use std::time::Instant;
 use serde_json::json;
 use templum_canvas::Wire;
 
-use super::bus::{after, answered, call, call_later, event, me};
 #[cfg(unix)]
-use super::bus::{result_of, screen_with};
+use super::bus::result_of;
+use super::bus::{after, answered, call, call_later, event, me, screen_with};
 use super::*;
 
 /// Two terminals side by side and wired: mine at (40, 100) and theirs at (900, 100), 700 × 300
@@ -265,6 +265,9 @@ fn a_wait_that_times_out_gives_the_last_lines(cx: &mut TestAppContext) {
     let (_, them) = me(&ws, cx, theirs);
     let task = json!({ "block": them, "task": "think", "wait": true, "timeout": 2 });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    // The agent's screen shows the task in real time; the test's clock would otherwise run the
+    // look for it out first, and its Enter would never go.
+    screen_with(&ws, cx, theirs, "think");
     after(cx, 2000);
     let (failed, text) = answered(&answers);
     assert!(
@@ -287,6 +290,9 @@ fn wait_for_idle_waits_for_a_task_whose_wait_timed_out(cx: &mut TestAppContext) 
     event(handle, &ws, cx, &worker, stopped("Old."));
     let task = json!({ "block": them, "task": "think", "wait": true, "timeout": 2 });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    // The agent's screen shows the task in real time; the test's clock would otherwise run the
+    // look for it out first, and its Enter would never go.
+    screen_with(&ws, cx, theirs, "think");
     after(cx, 2000);
     assert!(answered(&answers).0, "timed out");
     // Its deadline passed.

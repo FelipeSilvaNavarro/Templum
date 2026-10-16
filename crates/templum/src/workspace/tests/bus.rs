@@ -170,12 +170,25 @@ pub(super) fn me(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -
 
 /// The terminal's screen once it shows `needle`, its rows joined: a long line wraps at the
 /// terminal's width (macOS's temporary folder is long), and `Snapshot::text` breaks it there.
-#[cfg(unix)]
 pub(super) fn screen_with(
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
     id: BlockId,
     needle: &str,
+) -> String {
+    screen_until(ws, cx, id, &format!("{needle:?}"), |shown| {
+        shown.contains(needle)
+    })
+}
+
+/// The terminal's screen, its rows joined as `screen_with`'s, once `done` holds for it (`what`
+/// names it in a failure): its program's output comes in real time, whatever the test's clock.
+pub(super) fn screen_until(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+    what: &str,
+    done: impl Fn(&str) -> bool,
 ) -> String {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -187,10 +200,10 @@ pub(super) fn screen_with(
             );
             snap.text().replace('\n', "")
         });
-        if shown.contains(needle) {
+        if done(&shown) {
             return shown;
         }
-        assert!(Instant::now() < deadline, "no {needle:?} in {shown:?}");
+        assert!(Instant::now() < deadline, "no {what} in {shown:?}");
         std::thread::sleep(Duration::from_millis(50));
     }
 }

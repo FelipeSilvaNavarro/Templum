@@ -7,10 +7,18 @@ use serde_json::json;
 use templum_canvas::Wire;
 
 use super::bus::{
-    after, answer_soon, answered, call, call_later, event, me, result_of, screen_with,
+    after, answer_soon, answered, call, call_later, event, me, result_of, screen_until, screen_with,
 };
 use super::delegate::snapshot;
 use super::*;
+
+/// The prompt "say hi" went with its Enter: the terminal echoed it and `cat` printed it back,
+/// maybe after its echo of the command typed before it (`cat` may start reading late).
+fn said_twice(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) {
+    screen_until(ws, cx, id, "\"say hi\" twice", |shown| {
+        shown.matches("say hi").count() >= 2
+    });
+}
 
 /// The startup terminal at (40, 100), 400 × 300, the camera at 100% on the origin, and Claude Code
 /// and Codex started as `cat` in front of the new terminals' shells (`agent_cat`).
@@ -143,7 +151,7 @@ fn a_claude_codes_prompt_is_typed_once_it_started(cx: &mut TestAppContext) {
     event(handle, &ws, cx, &theirs, json!({ "event": "started" }));
     screen_with(&ws, cx, new, "say hi");
     enter(cx);
-    screen_with(&ws, cx, new, "say hisay hi");
+    said_twice(&ws, cx, new);
     assert!(waiting.try_recv().is_err(), "it works on it");
     event(
         handle,
@@ -181,7 +189,7 @@ fn a_snapshot_before_the_agent_started_doesnt_stop_its_prompt(cx: &mut TestAppCo
         let pane = ws.space.terminal(new).unwrap();
         assert!(pane.handed.is_some(), "not taken: {:?}", pane.screen());
     });
-    screen_with(&ws, cx, new, "say hisay hi");
+    said_twice(&ws, cx, new);
 }
 
 /// `wait_for_idle` right after a spawn waits for the prompt's answer, though a snapshot taken
@@ -323,7 +331,7 @@ fn another_agents_prompt_waits_for_its_process_and_a_still_screen(cx: &mut TestA
     assert!(looks >= 2, "typed once two looks saw the same screen");
     screen_with(&ws, cx, new, "say hi");
     enter(cx);
-    screen_with(&ws, cx, new, "say hisay hi");
+    said_twice(&ws, cx, new);
 }
 
 /// In grid mode the new agent takes half of the caller's tile, not of the one the person works in,
