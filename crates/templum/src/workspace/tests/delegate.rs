@@ -2332,8 +2332,11 @@ fn resizing_an_idle_agent_isnt_work(cx: &mut TestAppContext) {
 fn a_hooked_agent_gone_still_keeps_its_task_and_says_so(cx: &mut TestAppContext) {
     use crate::workspace::{AgentState, activity::STUCK_TEXT};
     let (handle, ws, mine, theirs) = two_agents(cx);
+    // A third agent waits for it to need its person: its asker hears so as a notice.
+    let third = another_agent(handle, &ws, cx, theirs);
     let (terminal, _) = me(&ws, cx, mine);
     let (worker, them) = me(&ws, cx, theirs);
+    let (other, _) = me(&ws, cx, third);
     // Mine asks its person: the notice waits, to be read here.
     asker(&ws, cx, mine);
     event(
@@ -2352,7 +2355,7 @@ fn a_hooked_agent_gone_still_keeps_its_task_and_says_so(cx: &mut TestAppContext)
     screen_until(&ws, cx, theirs, |s| s.matches("think").count() >= 2);
     event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
     let asks = json!({ "block": them, "event": "needs_you" });
-    let needs_you = call_later(handle, &ws, cx, &terminal, 2, "wait_for", asks);
+    let needs_you = call_later(handle, &ws, cx, &other, 2, "wait_for", asks);
     // The first look sees the echo drawn before the hook: the screen is still from there.
     after(cx, 1000);
     for _ in 0..29 {
