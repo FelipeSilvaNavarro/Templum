@@ -823,6 +823,64 @@ fn send_keys_refuses_its_own_block_an_unknown_key_and_another_agents_task(cx: &m
     assert!(failed && text.contains("closed"), "{text}");
 }
 
+#[cfg(unix)]
+#[gpui_kit::test]
+fn interrupt_presses_esc_and_ends_the_callers_task(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    let stop = json!({ "block": them });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "interrupt", stop.clone());
+    assert!(failed && text.contains("idle"), "{text}");
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "interrupt",
+        json!({ "block": uid }),
+    );
+    assert!(failed && text.contains("yours"), "{text}");
+    let task = json!({ "block": them, "task": "count to a million", "wait": true });
+    let waiting = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    // A spawn's prompt still waiting is that task: it goes with it.
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(theirs).unwrap().prompt = Some(crate::workspace::Prompt {
+            text: "count to a million".into(),
+            screen: None,
+        })
+    });
+    let stopped = call_later(handle, &ws, cx, &terminal, 2, "interrupt", stop.clone());
+    assert_eq!(
+        answered(&waiting),
+        (true, "Interrupted by you.".to_string())
+    );
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(theirs).unwrap();
+        assert!(pane.handed.is_none() && pane.prompt.is_none())
+    });
+    let (failed, text) = heard(cx, &stopped);
+    assert!(
+        !failed
+            && text.starts_with(&format!(
+                "Pressed Esc in {them}, and ended the task you handed it."
+            ))
+            && text.contains("^["),
+        "{text}"
+    );
+    // Another agent's task: only that agent stops it.
+    ws.update(cx, |ws, _| {
+        let now = Instant::now();
+        ws.space.terminal_mut(theirs).unwrap().handed = Some(crate::workspace::Handed {
+            by: "elsewhere".into(),
+            since: now,
+            until: now + std::time::Duration::from_secs(600),
+        });
+    });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "interrupt", stop);
+    assert!(failed && text.contains("another agent"), "{text}");
+}
+
 /// `cat` in block `id` prints `bytes` back, as a program would.
 #[cfg(unix)]
 fn prints(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId, bytes: &'static [u8]) {

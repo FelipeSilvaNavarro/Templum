@@ -227,6 +227,56 @@ impl Workspace {
         Outcome::Later(self.press_keys(worker, by, keys, said, cx))
     }
 
+    /// `interrupt` from the terminal `from`: Esc once in the agent `block` while it works or waits
+    /// for its person. The task the caller handed it ends first, its waits hearing so at once,
+    /// with the prompt a spawn still keeps for it: typed later, it would start work no one awaits.
+    pub(super) fn interrupt(&mut self, from: &str, block: &str, cx: &mut Context<Self>) -> Outcome {
+        let now = Instant::now();
+        let (space_id, me) = self.caller(from).expect("call found the caller");
+        let space = self.space_named(&space_id).expect("the caller's workspace");
+        let to = match target(space, me, block) {
+            Ok(to) => to,
+            Err(refused) => return Outcome::Now(refused),
+        };
+        if to == me {
+            return Outcome::Now(Reply::err(
+                "This block is yours: interrupt stops another agent.",
+            ));
+        }
+        let Some(pane) = space.terminal(to) else {
+            return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
+        };
+        if pane.seen.agent.is_none() || pane.shell_in_front() {
+            return Outcome::Now(Reply::err(format!(
+                "{block} runs no agent: send_keys presses keys in a terminal."
+            )));
+        }
+        // Past its timeout too, as `wait_for_idle` waits for it.
+        let mine = pane.handed.as_ref().is_some_and(|h| h.by == from);
+        if !mine && pane.task(now).is_some() {
+            return Outcome::Now(Reply::err(format!(
+                "{block} is on a task another agent handed it: only that agent interrupts it."
+            )));
+        }
+        if !mine && !pane.busy(now) {
+            return Outcome::Now(Reply::err(format!(
+                "{block} is idle: there's nothing to interrupt."
+            )));
+        }
+        let worker = pane.term.id().to_string();
+        let by = self.signature(space, me, cx);
+        let said = if mine {
+            self.end_turn(&worker, Reply::err("Interrupted by you."), cx);
+            if let Some(pane) = self.pane_mut(&worker) {
+                pane.prompt = None;
+            }
+            format!("Pressed Esc in {block}, and ended the task you handed it.")
+        } else {
+            format!("Pressed Esc in {block}.")
+        };
+        Outcome::Later(self.press_keys(worker, by, vec!["escape".into()], said, cx))
+    }
+
     /// Presses `keys` in the terminal `worker`, KEY_GAP apart, as keys `by` pressed (the person's,
     /// for the screen's looks); then `said` and its screen, KEYS_SETTLE after the last. The
     /// terminal is found again before each key: one closed meanwhile ends the call there.

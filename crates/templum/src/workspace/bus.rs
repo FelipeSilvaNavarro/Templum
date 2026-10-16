@@ -434,9 +434,8 @@ impl Workspace {
             Call::OpenFile { path, line } => self.open_file_for(terminal, &path, line, window, cx),
             Call::GitStatus { block } => return self.git_status(terminal, block.as_deref(), cx),
             Call::SendKeys { block, keys } => return self.send_keys(terminal, &block, keys, cx),
-            Call::Interrupt { .. } | Call::CloseBlock { .. } => {
-                Reply::err("This Templum can't do that yet.")
-            }
+            Call::Interrupt { block } => return self.interrupt(terminal, &block, cx),
+            Call::CloseBlock { .. } => Reply::err("This Templum can't do that yet."),
             Call::AskUser {
                 question,
                 options,
