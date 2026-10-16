@@ -717,10 +717,14 @@ Left by batch 6; line numbers are those of `development` at 476b772.
   (`crates/templum-terminal/src/agent.rs:384`, `model_typable` at `:437`) takes letters, digits, `.-_:/` only, so
   `opus[1m]` (its 1M-token context) is refused: brackets need quoting in each shell. An agent asking for it is
   refused. Fix: quote the model per shell (`'…'` for POSIX shells and pwsh) and allow `[` `]`.
-- [ ] **`close_block` closes a block the person is typing in.** `close_block`
+- [ ] **`close_block` closes a block the person is typing in, or took over.** `close_block`
   (`crates/templum/src/workspace/spawn.rs:193`) asks no one; Ctrl+Z brings the block back with a new shell, without
-  what the person had typed and not sent. Fix: refuse while the person typed into it in the last few seconds (the
-  counter batch 8 adds for its notices).
+  what the person had typed and not sent. `opened_by` also stays after the spawned agent quits: a person who then runs
+  something of their own there (a dev server, an editor, a `git rebase` half done) sees the opener's routine clean-up
+  kill it, and Ctrl+Z brings back the agent, not that program. Fix: refuse while the person typed into it in the last
+  few seconds (the counter batch 8 adds for its notices), and while a program other than the agent is in front
+  (`processes().foreground` neither the shell nor `seen.pid`), or clear `opened_by` once the person types there after
+  its agent quit.
 - [ ] **A wrapper set as Claude Code's or Codex's command gets their model flags.** `AgentEntry::launch_args`
   (`crates/templum/src/agents.rs:80`) gives a model and an effort to Templum's agents whatever their command, where
   `start_command` (`:50`) adds a session id only when the command runs the agent's own program. A person whose
@@ -764,6 +768,15 @@ Left by the review of batch 6; line numbers are those of `development` at dd11ca
   `ESC[89u` where a keyboard sends `ESC[121;2u`. Neither Claude Code nor Codex turns that mode on; a person sees a
   program that does take `Y` for another key. Fix: map an ASCII uppercase letter to its lowercase key with Shift,
   keeping the character.
+- [ ] **A spawned agent closed before a snapshot found its session resumes the folder's latest.** `Space::item_of`
+  (`crates/templum/src/workspace/mod.rs:596-611`) takes the session from `saved`, which a snapshot fills about every
+  5 s; Claude Code and Codex are started without a session id (`new_id` is None for both,
+  `crates/templum-terminal/src/agent.rs:39`, `:50`), so `start_agent` knows none. A person whose agent spawns another
+  in its own folder, of its own kind, and closes it within those seconds (or one whose files give no session) sees
+  Ctrl+Z type `claude --continue` or `codex resume --last` and bring back the caller's own conversation, two agents in
+  one. Fix: start Claude Code with `--session-id {id}` (its `new_id`), keep on the pane the id `start_agent` gave, and
+  use it in `item_of` when `saved` has none; for Codex, which takes none, start it fresh rather than `resume --last`
+  when the block has `opened_by` and no session was found.
 - [ ] **A few refusals and the hidden workspace aren't tested.** No test calls `interrupt` on a block that runs no
   agent or isn't a terminal, `send_keys` on one that isn't a terminal, nor `close_block` from a caller in a workspace
   not shown (`crates/templum/src/workspace/tests/delegate.rs`, `tests/spawn.rs`). A person sees nothing. Fix: add
