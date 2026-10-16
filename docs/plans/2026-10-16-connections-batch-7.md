@@ -1104,7 +1104,7 @@ git push origin development
 2. **A spawned Codex's questions:** Claude Code asks "spawn a codex in /tmp/<new folder> with the prompt 'say hi'":
    nothing is typed while Codex asks to trust the folder and its hooks; Claude Code answers them with `send_keys`
    (`["enter"]`, then `["2"]`), "answered by" shows, then the prompt goes and Claude Code hears "hi". Left
-   unanswered a minute: the task ends showing the question.
+   unanswered a minute: the task ends showing the question; answered two minutes later: nothing is typed.
 3. **A task into a working agent:** Codex at work on a `sleep 20` of the person's: Claude Code delegates "say B" with
    `wait`; the answer is the turn that took it (it says B), never the person's turn's end alone. The same into a
    Claude Code at work.
@@ -1114,7 +1114,8 @@ git push origin development
    shown as typed and the rest as "[Pasted text #2 +10 lines]".
 6. **Seems stuck:** `kill -STOP` a working Codex's process for 35 s: its dot turns yellow "Waiting for you: it seems
    stuck, …", `templum wait <block> --for needs_you` prints it with its screen; `kill -CONT`: Working again. Esc
-   while Claude Code writes: idle within about 5 s, never yellow.
+   while Claude Code writes: idle within about 5 s, never yellow. Dragging an idle Claude Code's block edge for 3 s:
+   it stays idle, and is never yellow 30 s later.
 7. **Dialogs as drawn:** `templum wait <block> --for needs_you` on a Claude Code at a Bash permission prints the
    dialog's options; `delegate` into it is refused with them.
 8. **Benches** pasted in PR #36 (Task 9).

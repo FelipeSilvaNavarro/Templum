@@ -186,6 +186,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   the script (`sh <path> …`) instead of running the file itself.
 - [ ] **`an_agent_past_its_timeout_is_stopped` counts the notifications, not what they say.**
   (`crates/templum/src/workspace/tests/git_message.rs`.) Fix: check it is "didn't answer within".
+- [ ] **`the_shell_page_switches_shell_integration` failed once in a full run.**
+  (`crates/templum/src/workspace/tests/welcome.rs:206`, seen at e04f859: integration still on after the click; it
+  passed alone and on the next full run.) A person sees nothing; a contributor may see CI fail once. Fix: find what
+  the click misses under load (the row after `to_bottom` maybe not laid out yet): render a frame between `to_bottom`
+  and the click, or click by the field's element id once it is in view.
 
 ## Release and benches
 
@@ -447,10 +452,6 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   (`crates/templum/src/workspace/blocks.rs:68`) checks the running workspaces only; a new block may take an id a
   stopped workspace's saved canvas holds (1 in 60 million per pair), and that block gets a new id when the workspace
   starts again. Fix: check `Space::saved`'s items too.
-- [ ] **Codex's dot never turns yellow.** Codex says nothing when its approval dialog opens (`codex`,
-  `crates/templum-mcp/src/hooks.rs`): its dot says Working while its screen moves
-  (`crates/templum/src/workspace/activity.rs`) and nothing once the dialog sits still; a person doesn't see it waits
-  for them, and `delegate` may type into the dialog. Fix: a Codex hook for approvals, when Codex has one.
 - [ ] **The verbs print nothing in a Windows console.** The release program has no console
   (`crates/templum/src/main.rs:3`), so `templum blocks` (`main.rs:56`) prints only into a pipe:
   `templum blocks | more`. Fix: `AttachConsole(ATTACH_PARENT_PROCESS)` before running a verb (needs `unsafe` or a
@@ -463,11 +464,6 @@ Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those
   (`crates/templum-mcp/src/bus.rs`, `listen`), and `remove_stale` only clears `<data>/bus`: a crash leaves that
   folder and its socket file there. Fix: at start, run `remove_stale` on the user's own `templum-*` folders in the
   temporary folder, and remove each one left empty.
-- [ ] **The person's own Codex `notify` doesn't run in a Codex Templum opens.** The `-c notify=[…]` flag
-  `codex_flags` types (`crates/templum-mcp/src/lib.rs:32`, at c0597d1) replaces the `notify` of
-  `~/.codex/config.toml` for that session: Codex keeps one, where Claude Code merges hooks. A person whose `notify`
-  sends a desktop notification or a sound gets nothing from a Codex opened from the canvas. Fix: `templum hook codex`
-  runs the person's own `notify` after sending the event, read from their config.
 - [ ] **Reading a terminal's last command holds the terminal for its whole output.** `SharedTerm::last_command`
   (`crates/templum-terminal/src/terminal.rs:301`, at c0597d1) turns the whole command's output into text under the
   terminal's lock before `read_terminal` keeps its last 256 KB; a command that printed the whole history makes the
@@ -560,19 +556,6 @@ Left by the second review of batch 2; line numbers are those of `development` at
 
 Left by batch 3 (agents together) and its review; line numbers are those of `development` at 6aa33f6.
 
-- [ ] **A spawned Claude Code without Templum's hooks never gets its prompt.** `open_agent`
-  (`crates/templum/src/workspace/spawn.rs:106`) leaves a Claude Code's prompt to its `SessionStart`; with
-  `[connections] enabled = false` or a path Templum can't type, it gets no hooks, so `templum spawn claude --prompt …`
-  opens it and nothing is typed, and `wait_for_idle` on it waits for its timeout. Fix: look at a Claude Code started
-  without hooks as at the others (`typed` knows whether it gave them).
-- [ ] **A task handed to an agent at work is answered by the turn it was on.** `delegate`
-  (`crates/templum/src/workspace/delegate.rs:97`) allows a task to an agent working on its own prompt (the spec's
-  Risks: typed input is queued), and `end_turn` (`delegate.rs:257`) answers it with the next turn's end; Codex runs
-  typed input as its next turn, so that is the turn under way. The same once a task handed without `wait` passed its
-  timeout while its agent still works on it: another agent's task is taken, and the first one's answer goes to it. A
-  person sees the delegating agent get the answer to another prompt. Fix: once Codex says when it starts working,
-  skip the turn that was under way when the task was typed (Claude Code may take queued input into the current
-  turn: check by hand first).
 - [ ] **The balloon covers the find field.** Both sit at the terminal's top right (`render`,
   `crates/templum/src/balloon.rs:18`; `find_bar`, `crates/templum/src/block.rs:682`). A person who opens find while an
   agent asks sees the balloon over the field. Fix: put the balloon under the find field while it is open.
@@ -682,28 +665,11 @@ Left by batch 5; line numbers are those of `development` at f48c75c.
   (`Space::labels`, keyed by block ids, `crates/templum/src/workspace/mod.rs:511`). A person who moves a block to
   another workspace, back again, and wires it to the same block sees the old wire's name come back. Fix: drop the
   labels whose blocks left in `move_blocks`.
-- [ ] **An agent with hooks that works with a still screen ends its delegated task.** `Looks::state`
-  (`crates/templum/src/workspace/activity.rs:69`) turns Working to Idle after `STILL` (5) still looks
-  (`activity.rs:21`), also for an agent whose hooks spoke during the turn, and `look_at_agents` (`activity.rs:122`)
-  then ends the task it was on. A Claude Code or Gemini CLI running a long, silent tool with no spinner shows idle,
-  and the agent that handed it the task gets "Its screen has been still for 5 seconds" before the answer. Fix: watch
-  it in the plan's manual check 4; raise `STILL`, or leave alone agents whose hooks spoke during the turn.
 - [ ] **A watched shell that exits in a hidden window keeps its `wait_for` waiting.** `look`
   (`crates/templum/src/workspace/waits.rs:493`) answers a closed block at once, but a block whose shell exited is only
   taken off while the window draws (`crates/templum/src/workspace/render.rs:300-309`), so `look` still finds it. A
   person whose `templum wait <block> --for command_finished` watches a terminal that exits while Templum is hidden sees
   it wait until the window shows or the timeout passes. Fix: treat `pane.term.exited()` as closed in `look`.
-- [ ] **Codex's tasks aren't confirmed.** `confirm` (`crates/templum/src/workspace/delegate.rs`) checks that a task
-  typed into an agent was taken only when its hooks say a turn started (Claude Code, Gemini CLI); Codex says only that
-  a turn ended (`hooks::codex`), and the agents without hooks say nothing. A person whose Codex got a task whose Enter
-  joined the paste sees the text sit in its composer, and the agent that handed it over waits until its timeout.
-  Fix: a Codex hook for a turn's start, when Codex has one; meanwhile the screen working (`activity.rs`) could stand
-  for it, with no second Enter (its approval dialog isn't heard).
-- [ ] **A second Enter may send what the person was typing.** `confirm`
-  (`crates/templum/src/workspace/delegate.rs`) presses Enter again 3 s after a task's Enter that no hook confirmed. A
-  person who began typing into that agent in those 3 seconds sees their half-written line sent with the task. Fix:
-  skip the second Enter when the person typed into the terminal since the first (a counter of their keys on the
-  pane, as `typed` is for the screen's looks).
 
 Left by batch 6; line numbers are those of `development` at 476b772.
 
@@ -788,3 +754,49 @@ Left by the review of batch 6; line numbers are those of `development` at dd11ca
   agent or isn't a terminal, `send_keys` on one that isn't a terminal, nor `close_block` from a caller in a workspace
   not shown (`crates/templum/src/workspace/tests/delegate.rs`, `tests/spawn.rs`). A person sees nothing. Fix: add
   them.
+
+Left by batch 7 and its review; line numbers are those of `development` at eb39454.
+
+- [ ] **A task typed into a working Codex whose Enter joined the paste waits for its timeout.** `confirm`
+  (`crates/templum/src/workspace/delegate.rs`) takes an agent at work as having queued the task, since Codex says
+  it took it only when a turn does; if its Enter was lost, the text sits in its composer and the agent that handed
+  it waits 600 s. Fix: when the turn it was on ends (`Stopped` with the task not taken, `bus.rs`), give it its
+  3 seconds then.
+- [ ] **The first task into a Codex that took no prompt yet isn't confirmed.** `Pane::speaks` is set by a hook, and a
+  hooked Codex's first one comes with its first prompt (its `SessionStart` too), so `send_task` gives that task no
+  confirmation and no second Enter. Fix: set `speaks` when `typed()` gave Codex its hooks and its person trusted
+  them (none says so before a prompt: keep as is unless it bites).
+- [ ] **A Codex whose person trusted only some of its hooks never answers a task.** Codex's review trusts hook by hook;
+  without `UserPromptSubmit`, `Stopped` (`bus.rs`) never finds the task taken, and the task waits for its timeout.
+  Fix: take a `Stopped` from an agent whose `submitted` is still 0 as the task's.
+- [ ] **Gemini CLI's `BeforeAgent` for a prompt typed while it works is unchecked.** `hooks::gemini`
+  (`crates/templum-mcp/src/hooks.rs`) takes it as Codex's (`at_enter: false`); if Gemini CLI fires it at the Enter
+  and queues the prompt, a turn under way would answer the task. Fix: check by hand once logged in; `at_enter:
+  true` if so.
+- [ ] **On Windows a spawned Claude Code or Codex may get its prompt in its trust question.** `look_ready`
+  (`crates/templum/src/workspace/spawn.rs`) skips the input check there (ConPTY may not pass bracketed paste and the
+  cursor on), so a still trust question takes the prompt and its Enter; Claude Code's highlighted answer there is
+  "No, exit" (most likely the paste changes nothing and the task just ends untaken). Fix: check by hand on Windows
+  whether `Modes::typing` follows; if so, drop the `cfg!(windows)`. Meanwhile a gated Claude Code there could also
+  wait for `Pane::speaks` (its `SessionStart` comes after its trust question; Codex's comes only with a prompt).
+- [ ] **The person's own prompt queued in Claude Code shows idle for a few seconds, and a task typed then gets the
+  wrong answer.** After the turn it was queued behind ends (`Stopped`, `crates/templum/src/workspace/bus.rs`), no hook
+  says the next turn starts; the dot is idle until the screen's looks see it work (about 3 s). A task delegated in
+  those seconds is queued by Claude Code behind the person's turn, but `Submitted` finds the agent Idle and doesn't
+  mark it `behind`: the person's turn's end answers it with their answer. Fix: keep `Working` on a `Stopped` that
+  comes while a prompt Claude Code queued is pending (a pane-level `behind`).
+- [ ] **Esc while Claude Code writes, with a task queued behind its turn, loses the task's answer.** No hook ends the
+  interrupted turn, so the task's `behind` (`Handed`, `crates/templum/src/workspace/mod.rs`) stays set; the queued
+  task then runs as a new turn (no `UserPromptSubmit`) and its `Stop` (`bus.rs`) only clears `behind`. The agent that
+  handed it gets "Its turn ended without an answer" from `idle_prompt` a minute later instead of the answer. Fix:
+  clear `behind` when the person's keys (`Pane::person_typed`) come while the agent works; no hook tells today.
+- [ ] **A Claude Code subagent's tool end may take a queued task into the wrong turn.** The `Working` arm (`bus.rs`)
+  clears `behind` on any `PostToolUse`, as the spikes saw a tool's end take a queued prompt into the turn under way
+  (S2); whether a subagent's tool end does too wasn't checked. If not, the main turn's `Stop` answers the task with
+  its own answer. Fix: check by hand (a task delegated while Claude Code runs a subagent); if a subagent's tool end
+  doesn't take it, leave `behind` alone for a subagent's `PostToolUse`, if its payload tells one apart.
+- [ ] **A dialog's 300 ms wait may answer a `wait_for(needs_you)` that came after the agent stopped asking.**
+  `needs_you` (`crates/templum/src/workspace/waits.rs`) answers, `DRAWN` after the hook, every `needs_you` wait on the
+  terminal then, also one registered meanwhile after the dialog closed (a hook that answered it at once). The agent
+  waiting is told its peer waits for its person when it no longer does. Fix: collect the wait keys when the hook
+  comes, answer only those, and skip when the pane is gone.
