@@ -6773,7 +6773,7 @@ dependencies = [
 
 [[package]]
 name = "templum"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "futures",
@@ -6797,18 +6797,18 @@ dependencies = [
 
 [[package]]
 name = "templum-canvas"
-version = "0.1.1"
+version = "0.1.2"
 
 [[package]]
 name = "templum-git"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "templum-mcp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "futures",
  "serde",
@@ -6819,7 +6819,7 @@ dependencies = [
 
 [[package]]
 name = "templum-terminal"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "alacritty_terminal",
  "polling",
@@ -6830,7 +6830,7 @@ dependencies = [
 
 [[package]]
 name = "templum-update"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "flate2",
  "semver",
@@ -6844,7 +6844,7 @@ dependencies = [
 
 [[package]]
 name = "templum-usage"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "serde",

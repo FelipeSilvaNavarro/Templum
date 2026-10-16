@@ -1,5 +1,298 @@
 # Changelog
 
+## 0.1.2
+
+### Features
+
+- A notice waits until the Enters of anything Templum typed into its agent are past, never sharing one
+- A task handed right after another doesn't count what the one before spent
+- An agent waiting for a dialog in the task it handed over hears it once, not typed too
+- Agents are told a task's end comes back typed, and that it isn't their person writing
+- An agent changes the task it handed over while it runs, instead of being refused
+- A task given no answer within its timeout comes back as failed, and its end later too
+- An agent hears when the task it handed over waits for its person, with the dialog as drawn
+- A task whose agent quit or whose block was closed comes back as failed, saying why
+- A task that comes back says what it cost or its tokens, and its transcript
+- A task handed over without waiting comes back typed into the agent that handed it
+- Each task an agent hands over has an id, said in its first line and in the replies to it
+- Templum hears which transcript an agent's turn was written to
+- A dialog an agent waits on comes back as drawn, for the agent that answers it
+- An agent with hooks whose screen stays still while it works seems stuck, and keeps its task
+- The Codex Templum opens gets its hooks instead of notify, so the person's own notify runs again
+- Templum reads Codex's hooks: a prompt taken, a permission dialog, a turn's end and Esc
+- A terminal says which agent pressed keys in it, for 10 seconds
+- An agent closes the blocks it opened, and Ctrl+Z brings them back
+- Spawn_agent starts its agent on the model and the effort it is given
+- A terminal keeps the agent that opened it and its agent's model and effort through a restart and Ctrl+Z
+- An agent stops the agent it handed a task to with interrupt
+- An agent presses keys in a wired terminal, as a keyboard does, to answer another agent's dialog
+- Describe send_keys, interrupt, close_block and spawn_agent's model and effort, with templum keys, interrupt and close
+- Know how Claude Code, Codex and Gemini CLI take a model and an effort
+- Name the keys an agent may press, sent as the keyboard sends them in the program's mode
+- An agent opened by another fits where nothing is, near the blocks its opener is wired to
+- Settings ▸ Connections turns the agents' connections off, gives other agents the server and installs it in Gemini CLI
+- A wire's name shows in a pill at its middle, readable from far away
+- Name a wire with Rename wire… in its menu; Ctrl+Z takes the name back
+- Templum wire connects two blocks from a terminal, and Ctrl+Z takes it back
+- An agent waits for a wired block to need you, finish a command or ring
+- Write the Gemini CLI extension that gives it Templum's server and hooks
+- Follow a Gemini CLI's turns through its hooks
+- Templum wait --for an event, and templum wire, in a Templum terminal
+- Describe wait_for to agents and take templum wire's call
+- Agents read a wired Git block's status
+- Agents open a file at a line in an editor without taking your keyboard
+- Agents read a wired note and add to its end
+- Show a card's assignee and comments, comment on it and free it
+- Agents read, add, move, comment on and claim cards of a wired kanban
+- Templum kanban, note, open and git status in a Templum terminal
+- Describe the kanban, note, file and Git tools to agents
+- Give cards an assignee and comments in boards.json
+- Let an agent open another agent beside it, in a new worktree if it asks
+- Add a worktree for a new branch under .worktrees, kept out of git status
+- Show a dot travelling along the wire while a task is handed over
+- Hand a task to a wired agent and get its answer back
+- Answer an agent's questions and connect requests in a balloon on its block
+- Let an agent ask you to wire it to another block
+- Let an agent ask you a question and wait for your answer
+- Let an agent read and type into the terminals wired to it
+- Keep wires through a restart
+- Select a wire to delete it, or disconnect it from its menu
+- Wire two blocks with the Wire tool
+- Draw wires under the blocks, following them as they move
+- Connect and disconnect blocks from a block's menu, with Ctrl+Z
+- Run a wire's curve from the edge of one block that faces the other
+- Give the Claude Code and Codex Templum opens its MCP server and hooks
+- Show in its dot whether an agent is working or waiting for you
+- Let agents and the templum command list blocks, read and type into their terminal, and notify
+- Give every block an id that lasts through restarts, undo and moves
+- Write the hooks and the MCP server the Claude Code Templum opens can be given
+- Read a terminal's history and its last command as text
+- Add the templum command: an MCP server for agents, their hooks, and verbs
+- Open a local socket the programs in Templum's terminals can talk to
+- Understand when Claude Code and Codex start, work, wait and finish
+- Describe the tools Templum offers agents over MCP
+- Bring back each Gemini CLI, Grok Build and Pi block's own session
+- Show both light and dark themes in the theme gallery
+- Download themes from alacritty-theme in a gallery that previews them on hover
+- Change a theme's colors with color pickers, saved into its file
+- Make a theme from the one in use, and open its file in an editor block
+- Apply the theme in use again when its file is saved
+- Set the accent, canvas and dot colors in a theme's [templum] table
+- Show the welcome again from the panel's footer
+- Welcome new users with a short setup of their theme, shell and agents
+- Open new terminals in the workspace's folder
+- Move blocks to another workspace while they keep running
+- Stop a workspace to end all of its programs, and start it again by opening it
+- Reorder workspaces by dragging their cards or sidebar tiles
+- See every workspace on one screen, find one by name and open it
+- Give each workspace a color, an icon or an image from its Edit… dialog
+- Read a terminal's whole process tree and kill what ignored the hangup
+- Download new versions by itself and restart into them
+- Put a downloaded version in place
+- Download a release and check its checksum
+- Find the newest release and the file for this system
+- Leave zoom and other shortcuts to programs that take over a terminal
+- Let programs that use the mouse get clicks, drags and the wheel
+- Show every agent's limits in turn in the title bar, Claude Code's always
+- See agents' plan limits in the title bar and each session on its terminal
+- Warn when an agent's plan limit nears its end, and when it resets
+- Claude Code opened by Templum hands it its plan limits
+- Choose when to hear about agents' plan limits
+- Read Claude Code's and Codex's session usage and plan limits
+- Tell each terminal's programs its own TEMPLUM_TERMINAL id
+- Add new blocks from the grid's right-click menus
+- Show what dropping a tile does, and slide the tiles to their places
+- The keyboard follows the pointer between tiles
+- Keep each workspace's grid across restarts
+- Leave the grid, flip a split or add a block from a block's menu
+- Swap two tiles by dropping one's title on the other
+- Move the focus between tiles and swap them with Ctrl+Alt+arrows
+- Go fullscreen from a block's header
+- A block opened in grid mode takes half of the focused tile
+- Fill the workspace with a block or the selection with Ctrl+Shift+Enter, and back
+- Show an open hand over a block's title, a closed one while it moves
+- Keep notes as plain text in tabs, never lost when a block closes
+- The canvas follows a selection rectangle dragged to its edge
+- Undo and redo the blocks' changes with Ctrl+Z and Ctrl+Shift+Z
+- Reopen closed blocks with Ctrl+Z, and move selected blocks together
+- Select blocks with Shift+drag, then delete, copy or paste them
+- Name a far Git block's label "Git · project"
+- Keep block titles and terminal status dots readable at far zoom
+- Pick what goes into a commit from a checklist of changed files
+- Read diffs side by side, removed lines left and added lines right
+- Blame a file and open the commit behind any line
+- Follow a file's history through renames and restore an old version of it
+- Search History by message, author or code, in the whole repository
+- Draw how branches split and join in History, across every branch if asked
+- See a commit's message, files and whole diff from History, and take back the newest one
+- Show a stash's changes in the diff panel, its new files too
+- Choose the agent that writes commit messages, its model and rules, and try it
+- Resolve conflicts part by part, each named after its branch
+- Pick Generate's model and this repository's commit rules from its ⚙
+- Write the commit message with an AI agent: Generate ✨ beside the summary
+- Compare a branch with main, commit by commit, as a pull request shows it
+- Set how each agent writes commit messages, and its models
+- List branches with their age and ask before deleting unmerged commits
+- Say in words when HEAD is detached or a merge is under way, with a way back
+- Switch branches from a searchable list without losing uncommitted work
+- Clone a repository from the Git block
+- Sync with the server in one click, publish to the right remote, and explain each Git word
+- Review, stage, discard and commit from the keyboard
+- Open Git blocks bigger, fold their lists, and filter a long list of files
+- Commit every change at once, commit and push, and undo a commit
+- Stage, unstage, discard or open one hunk from the diff
+- Keep what a discard throws away, with Undo and Recently discarded
+- Commit every change at once, and take the last commit back
+- Keep what a discard throws away, for 7 days
+- Stage, unstage and discard one hunk of a file
+- Select and copy text in the diff, and send it to a terminal
+- Color the diff with the file's language and mark the changed words
+- Show every working change in one diff panel, Changes then Staged
+- Build the diff panel's rows from the files shown
+- Read the whole working diff, untracked files included
+- Find the changed words of a removed line and its added line
+- Parse a diff into files, hunks and lines
+- Open a file by name with Ctrl+P
+- Ask before deleting a card, and undo board changes with Ctrl+Z
+- Continue lists, tick tasks, and bold or italicize with the keyboard
+- Give a note a color
+- Ctrl+click a path or a link in a terminal to open it
+- Find text in a terminal's history
+- Shift+Enter starts a new line in Claude Code and Codex
+- Ask before closing a terminal at work
+- Jump to the terminal waiting for you
+- Open a terminal in a Git block's repository and see the ones there
+- Send a note, a card or an editor's selection to a terminal
+- Keep a Git block's commit message across restarts
+- Change an editor's or a Git block's folder from its menu
+- Resize a block by any edge or corner
+
+### Fixes
+
+- A session's first task says what it spent, and a timeout never says "0 tokens"
+- An agent started where another left doesn't name the old one's transcript
+- What comes back waits while its agent asks its person or is typed into, one at a time
+- Resizing an agent's block no longer reads as its agent at work, nor makes it seem stuck
+- A spawned agent sitting at its trust question keeps its task until the minute ends it, and gets no prompt after
+- A spawned agent's prompt waits for its input box, never answering its trust questions, and any agent gets it without hooks
+- Claude Code does a long task it is handed instead of taking it for pasted data
+- Only a prompt the agent took confirms a task, and no second Enter goes into a dialog or what the person types
+- A task typed into a busy agent is answered by the turn that took it, not the one it was on
+- Two sends with Enter in a row run as two commands, not one made of both
+- A closed agent brought back with Ctrl+Z resumes its own conversation, and close_block ends its agent at once
+- Send_to_terminal's Enter goes a moment after its text, so an agent sends it instead of starting a new line
+- A block Templum opens beside another no longer covers a block or a drawing there
+- A task typed into an agent is sent even when you resize its block, and Claude Code and Gemini CLI confirm it
+- On macOS, an agent's hook no longer loses its event when it exits before Templum reads it
+- Keys typed just before a permission dialog opens no longer count as answering it
+- A wait for a command or an alert in a block that closes ends at once, also in a hidden window
+- Scrolling an agent's screen or clicking in it no longer turns its dot to Working
+- A permission dialog stays yellow until its person answers it, even while a subagent draws under it
+- Typing into an agent in short bursts no longer turns its dot to Working
+- A finished turn or an opened dialog no longer reads as Working from the spinner before it
+- An agent's dot follows its screen where its hooks say nothing, so Codex shows Working
+- Templum spawn --folder reads a relative folder from the folder it runs in
+- An agent opening a linked file, as CLAUDE.md to AGENTS.md, shows the tab open under its name
+- Templum open reads a relative path from the folder it runs in
+- Templum open takes path:line:column as compilers and grep print it
+- Typing goes on working when an agent shows a Markdown preview in your editor
+- An agent opening a file already open shows its tab instead of a second one
+- Tell agents to use Done when a board has no Review column
+- Take a blank prompt, folder or worktree given to spawn_agent as none
+- Pan the canvas with a middle-button drag over an agent's balloon
+- Keep a Claude Code's "Allow …?" when its own permission notification comes
+- Never answer an agent's next request with a press on one it withdrew
+- Keep right and middle clicks on an agent's balloon in the balloon
+- Take an empty prompt, folder or worktree given to spawn_agent as none
+- Turn a Claude Code's dot back from yellow as soon as you allow a Templum tool
+- Wait_for_idle waits for a task still unanswered after its wait timed out
+- Let go of a spawned agent that never started
+- Never hand a task or a reply to an agent that may not have started
+- Keep the selected wire selected when an agent spawns another
+- Never type a task or a reply into a shell an agent just left, on macOS
+- Send a spawned agent its prompt when its shell is slow to start
+- Open a spawned agent's tile beside the agent that asked, in grid mode
+- Answer only one of an agent's requests with a double click
+- Tell the agent at once when the one it handed a task to didn't take it
+- Never type a task or a reply into a shell an agent just left
+- Never press Enter into an agent that started asking its person
+- Never press Enter into an agent whose screen ignored the task
+- End a handed task when its agent quits without a word
+- Wire nothing when the Wire tool is let go off the canvas
+- Give up a wire being drawn when Esc is pressed
+- Keep the keyboard on the focused block when a drag starts on a wire
+- Move the canvas with a drag that starts on a wire
+- Leave soft hyphens, word joiners and tag characters out of the titles agents are told
+- Give a connection to the bus 5 seconds in all to say hello
+- Give Windows terminals a templum command of their own
+- Leave invisible characters out of the block titles agents are told
+- Say that Claude asks a question or has a plan, not "Allow AskUserQuestion?"
+- Close a connection to the bus that doesn't say hello quickly and briefly
+- Put templum on the PATH of Windows terminals
+- Keep the current folder off a terminal's PATH when Templum's PATH is empty
+- Know PowerShell, cmd and WSL whatever the case of their program's name
+- Turn a Claude Code's dot back to Working when an allowed tool fails
+- Clean the block titles agents are told
+- Keep the bus's socket in a private folder when it goes to /tmp
+- Take back a saved block id only when it has five letters and digits
+- Give Claude Code Templum's server only with its hooks
+- Forget a crashed agent's state
+- Open Codex without Templum's flags under Windows PowerShell 5.1
+- Keep an agent's dot on Working while its context is compacted
+- Show at once when an agent waits for a permission
+- Stop showing Working after an API error or an interrupted turn
+- Bring back each block's own Claude Code, Codex and Qwen Code session
+- Check each gallery download against the hash GitHub lists
+- Keep color edits and the theme on screen in step with the file
+- Keep the active workspace's card readable on the workspaces screen
+- Never end another program when stopping a workspace, and close the screen for settings
+- Never replace another app's AppImage, and update when the window closes
+- Make Shift+Enter a new line in Claude Code and Codex
+- Keep Claude Code's status line working after an upgrade
+- Open another commit at the top of its details
+- Keep the commit details', comparison's and stashes' scroll at far zoom
+- Keep History on what you asked for last, and both sides of a split diff in view
+- Say a branch isn't on the server yet when Sync finds it never published
+- Open a clone that ends off screen in its own block, with no click
+- Offer Publish on a branch deleted on the server
+- Clone beside the block's repository, not inside it
+- Offer Open in editor at this line only on the working changes
+- Don't say 0 commits will be lost when deleting a branch
+- Leave an empty folder empty when a clone into it fails or is cancelled
+- Never take a whole file's version when its copy can't be kept
+- Open a finished clone in its own block, never in the one shown elsewhere
+- Answer a question or a menu on the block it was about, in its own workspace
+- Say when Sync finds the branch deleted on the server, and offer to publish it
+- Keep Generate's request private, stoppable, and out of a commit made meanwhile
+- Never read a branch that was deleted meanwhile as a folder to restore
+- Geral fixes
+- The Git block's keys act only on the Changes tab, and c shows the summary
+- A restore never writes over newer edits without keeping a copy
+- Undo commit takes back exactly the commit it names
+- Keep a file's bytes when it isn't UTF-8: stage or discard it whole, not by hunk
+- Read a diff's hunks by their counts and quoted names as they are
+- Keep the diff panel's selection, long lines and new files honest
+- Zoom a note's rendered text, and a Markdown file's, like a photo
+- Keep the file tree still while zooming
+- Bring an opened file's editor fully into view
+
+### Performance
+
+- Draw with gpui-fast, a faster GPUI engine
+- Scroll the theme gallery smoothly
+- Look for an editor's or Git block's folder every 2 s, not every frame
+- Keep a far editor on a minified file from stalling the window
+- Draw far editors as bars of their words
+- Draw far notes as bars of their words
+- Leave rendered Markdown out of notes and files seen from far away
+- Draw far terminals as bars of their text's colors
+- Draw Git blocks seen from far away as their cards
+- Bench the diff panel with a 5,000-line diff, scrolling and zooming
+
+### Other changes
+
+- Update toolbar.rs
+
 ## 0.1.1
 
 ### Fixes
