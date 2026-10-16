@@ -42,6 +42,12 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
             "{}",
             ws.typed(codex.as_ref(), "codex resume 0d5e")
         );
+        #[cfg(unix)]
+        {
+            let line = ws.typed(codex.as_ref(), "codex");
+            let stop = r#"-c 'hooks.Stop=[{hooks=[{type="command",command="templum hook codex",timeout=5}]}]'"#;
+            assert!(line.contains(stop) && !line.contains("notify"), "{line}");
+        }
         assert_eq!(ws.typed(None, "claude"), "claude");
         // Windows PowerShell 5.1 passes `args=["mcp"]` on as `args=[mcp]`; pwsh 7 doesn't.
         let shell = ws.config.shell.program.clone();
