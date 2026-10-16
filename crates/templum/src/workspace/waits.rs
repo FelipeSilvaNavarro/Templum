@@ -449,7 +449,8 @@ impl Workspace {
 
     /// The block of the terminal `terminal` waits for its person (its agent asks for `what`, or
     /// its balloon does): the `wait_for(needs_you)` on it are answered DRAWN later, with its
-    /// screen as drawn by then. `tell`: a new wait, which the agent that handed it a task hears of.
+    /// screen as drawn by then. `tell`: a new wait, which the agent that handed it a task hears of,
+    /// unless a `wait_for(needs_you)` of its was just answered with it.
     pub(super) fn needs_you(
         &mut self,
         terminal: &str,
@@ -463,7 +464,7 @@ impl Workspace {
             cx.background_executor().timer(DRAWN).await;
             let _ = ws.update(cx, |ws, cx| {
                 let screen = ws.pane(&terminal).map(Pane::tail).unwrap_or_default();
-                let waiting: Vec<(u64, String)> = ws
+                let waiting: Vec<(u64, String, String)> = ws
                     .waits
                     .iter()
                     .filter_map(|w| match &w.what {
@@ -472,14 +473,22 @@ impl Workspace {
                             uid,
                             event: Event::NeedsYou,
                             ..
-                        } if *of == terminal => Some((w.key, uid.clone())),
+                        } if *of == terminal => Some((w.key, uid.clone(), w.from.clone())),
                         _ => None,
                     })
                     .collect();
-                for (key, uid) in waiting {
+                // The agent that handed it its task, when a call of its hears the dialog now.
+                let asker = ws
+                    .pane(&terminal)
+                    .and_then(|p| p.handed.as_ref())
+                    .map(|h| h.by.clone());
+                let heard = waiting
+                    .iter()
+                    .any(|(_, _, from)| Some(from) == asker.as_ref());
+                for (key, uid, _) in waiting {
                     ws.answer(key, waiting_for_person(&uid, what.as_deref(), &screen), cx);
                 }
-                if tell {
+                if tell && !heard {
                     ws.tell_waiting(&terminal, what.as_deref(), &screen, cx);
                 }
             });

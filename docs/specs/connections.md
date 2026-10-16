@@ -209,7 +209,7 @@ later starts with none.
     agent starts waiting for its person (a hook says so while it wasn't waiting already, its balloon asks, or it seems
     stuck) sends `[task t7 from Codex · api (k9x1d) waits for its person: Allow Bash?] Its screen is in the pasted
     text.` and the last 20 lines of its screen, as drawn (300 ms after its hook), once per wait; not while a call of
-    the asker waits for the task, which hears its end. A task's timeout is told by the asker's call that waits for it,
+    the asker waits for the task, which hears its end, nor to an asker whose `wait_for(needs_you)` hears it. A task's timeout is told by the asker's call that waits for it,
     else by a notice; a task handed with `wait` gets no notice of its timeout. While the asker waits for its person,
     its agent is starting (no snapshot found it yet), its person typed into it in the last 3 seconds, or another
     notice went into it in the last 3 seconds (that one's Enter, and a second one, may still be due), a notice waits,

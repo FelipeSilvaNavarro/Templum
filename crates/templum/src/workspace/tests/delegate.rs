@@ -951,6 +951,52 @@ fn a_dialog_in_a_task_is_told_once(cx: &mut TestAppContext) {
     assert_eq!(told(cx).len(), 2);
 }
 
+/// The agent that handed a task over waits for its agent to need its person
+/// (`wait_for(needs_you)`): that call tells it the dialog, and nothing is typed.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_dialog_its_asker_waits_for_isnt_typed_too(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    asker(&ws, cx, mine);
+    // Mine asks its person: a notice would wait, to be read here.
+    event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({ "event": "needs_you", "message": "Allow Edit?" }),
+    );
+    call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "delegate",
+        json!({ "block": them, "task": "go" }),
+    );
+    screen_with(&ws, cx, theirs, "go");
+    enter(cx);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let needs_you = json!({ "block": them, "event": "needs_you" });
+    let answers = call_later(handle, &ws, cx, &terminal, 2, "wait_for", needs_you);
+    event(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        json!({ "event": "needs_you", "message": "Allow Bash?" }),
+    );
+    after(cx, 300);
+    let (failed, text) = answered(&answers);
+    assert!(
+        !failed && text.starts_with(&format!("{them} is waiting for its person: Allow Bash?")),
+        "{text}"
+    );
+    assert!(notices(&ws, cx).is_empty(), "{:?}", notices(&ws, cx));
+}
+
 /// A task's agent asks its person through Templum (`ask_user`): its balloon asks, and the agent
 /// that handed it the task hears so, as of a dialog.
 #[cfg(unix)]
