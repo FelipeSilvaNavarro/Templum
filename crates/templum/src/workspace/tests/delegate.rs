@@ -586,7 +586,7 @@ fn a_notice_never_goes_into_a_shell(cx: &mut TestAppContext) {
 #[cfg(unix)]
 #[gpui_kit::test]
 fn a_notice_waits_while_its_asker_asks_its_person(cx: &mut TestAppContext) {
-    use crate::workspace::delegate::{CONFIRM, TYPING};
+    use crate::workspace::delegate::{CONFIRM, NOTICE_GAP, TYPING};
     let (handle, ws, mine, theirs) = two_agents(cx);
     let (terminal, _) = me(&ws, cx, mine);
     asker(&ws, cx, mine);
@@ -628,9 +628,17 @@ fn a_notice_waits_while_its_asker_asks_its_person(cx: &mut TestAppContext) {
     assert_eq!(queued(cx), ["Two."], "one, the oldest");
     after(cx, 1000);
     assert_eq!(queued(cx), ["Two."], "its Enter may still be due");
-    ws.update(cx, |ws, _| {
-        ws.space.terminal_mut(mine).unwrap().noticed = Instant::now().checked_sub(CONFIRM)
-    });
+    // Its first Enter may have come up to ENTER_LOOKS looks after it was typed, its second CONFIRM
+    // after that.
+    let sent = |cx: &mut TestAppContext, ago| {
+        ws.update(cx, |ws, _| {
+            ws.space.terminal_mut(mine).unwrap().sent = Instant::now().checked_sub(ago)
+        })
+    };
+    sent(cx, CONFIRM);
+    after(cx, 1000);
+    assert_eq!(queued(cx), ["Two."], "its second Enter may still be due");
+    sent(cx, NOTICE_GAP);
     after(cx, 1000);
     screen_with(&ws, cx, mine, "[task t2 from ");
     assert!(queued(cx).is_empty());
@@ -643,6 +651,33 @@ fn a_notice_waits_while_its_asker_asks_its_person(cx: &mut TestAppContext) {
     });
     after(cx, 1000);
     assert!(queued(cx).is_empty());
+}
+
+/// A reply typed into the asker a moment ago may still get its Enter, and a second one: a notice
+/// waits as it does after another notice, and never shares that Enter.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_notice_waits_after_a_reply_typed_into_its_asker(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let (worker, _) = me(&ws, cx, theirs);
+    asker(&ws, cx, mine);
+    let reply = json!({ "block": uid, "text": "Hi." });
+    let (failed, text) = call(handle, &ws, cx, &worker, "reply", reply);
+    assert!(!failed, "{text}");
+    ws.update(cx, |ws, cx| {
+        ws.queue_notice(
+            terminal.clone(),
+            "[task t9 from x: done in 1 s] y\nz".into(),
+            cx,
+        )
+    });
+    after(cx, 1000);
+    assert_eq!(
+        notices(&ws, cx).len(),
+        1,
+        "the reply's Enter may still be due"
+    );
 }
 
 /// What a task spent is what its agent's usage chip shows, since it was handed over: its tokens

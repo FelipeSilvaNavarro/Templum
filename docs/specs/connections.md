@@ -209,10 +209,11 @@ later starts with none.
     agent starts waiting for its person (a hook says so while it wasn't waiting already, its balloon asks, or it seems
     stuck) sends `[task t7 from Codex · api (k9x1d) waits for its person: Allow Bash?] Its screen is in the pasted
     text.` and the last 20 lines of its screen, as drawn (300 ms after its hook), once per wait; not while a call of
-    the asker waits for the task, which hears its end, nor to an asker whose `wait_for(needs_you)` hears it. A task's timeout is told by the asker's call that waits for it,
-    else by a notice; a task handed with `wait` gets no notice of its timeout. While the asker waits for its person,
-    its agent is starting (no snapshot found it yet), its person typed into it in the last 3 seconds, or another
-    notice went into it in the last 3 seconds (that one's Enter, and a second one, may still be due), a notice waits,
+    the asker waits for the task, which hears its end, nor to an asker whose `wait_for(needs_you)` hears it. A task's
+    timeout is told by the asker's call that waits for it, else by a notice; a task handed with `wait` gets no notice
+    of its timeout. While the asker waits for its person, its agent is starting (no snapshot found it yet), its person
+    typed into it in the last 3 seconds, or Templum typed into it (a task, a reply, a notice) in the last 5.1 seconds
+    (that text's Enter, up to 2 s after it, and a second one 3 seconds later, may still be due), a notice waits,
     oldest first. Into a terminal whose agent is gone (its shell is in front, as when `templum delegate` ran from a
     script), never: the notice is dropped.
 11. **A change** (batch 8). `delegate` from the agent whose task it is changes that task: typed at once under
@@ -796,7 +797,7 @@ results](../plans/2026-10-16-connections-batch-8.md#spike-results)).
 | A notice typed into an agent the person is typing into | It waits until the person stopped typing for 3 seconds; never into a shell |
 | What a task spent, read before its agent wrote its last figure | Read again a second after its end: Claude Code's status line gives its last cost 0.3 s after its `Stop`, Codex writes its tokens just before its own (batch 8's spikes) |
 | Claude Code's status-line token totals are its last call's context, not what it used (batch 8's spikes) | The notice gives its cost, as its usage chip does |
-| Two notices into one agent in a moment would share an Enter | The next waits 3 seconds after the last |
+| Two notices into one agent in a moment would share an Enter | The next waits 5.1 seconds after the last text Templum typed into it, its Enters past |
 | A spawned agent's prompt typed while it asks a first-run question (trusting a new folder, Codex's hooks) | From batch 7 Claude Code's and Codex's wait until they bracket pastes and show their cursor, which both hide in those questions (checked by hand); on Windows the still screen alone |
 | Claude Code takes a long paste for data it was shown, not for what it is asked (batch 7's spikes) | The first line, `[from …]` and a sentence, goes as a paste of its own, which Claude Code reads as typed |
 | A command an interrupt left running ends later, with Codex's `PostToolUse` | A tool's end never starts a turn (batch 7) |

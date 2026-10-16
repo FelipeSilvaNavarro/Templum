@@ -27,6 +27,11 @@ const SETTLED: u32 = 2;
 /// How long after a task's Enter an agent whose hooks speak must say it took it (`Submitted`), or
 /// open a dialog: only a prompt taken confirms it.
 pub(super) const CONFIRM: Duration = Duration::from_secs(3);
+/// How long after Templum typed into an agent a notice waits: that text's first Enter may come
+/// ENTER_LOOKS looks after it was typed, its second CONFIRM after that, and a notice typed before
+/// then would go with it.
+pub(super) const NOTICE_GAP: Duration =
+    CONFIRM.saturating_add(ENTER_AFTER.saturating_mul(ENTER_LOOKS + 1));
 /// The person typed into an agent this recently: they are still typing, and a second Enter for a
 /// task would send their half-written line.
 pub(super) const TYPING: Duration = Duration::from_secs(3);
@@ -225,9 +230,8 @@ impl Pane {
     /// Templum may type a notice into it now (docs/specs/connections.md, Delegating 10). None:
     /// never, no agent runs there (a shell would run the text). Some(false): not now, while its
     /// agent is starting (no snapshot found it yet: macOS can't tell its shell is in front before
-    /// one did), waits for its person, its person typed into it in the last TYPING, or another
-    /// notice went into it in the last CONFIRM (that one's Enter, and a second one, may still be
-    /// due).
+    /// one did), waits for its person, its person typed into it in the last TYPING, or Templum did
+    /// in the last NOTICE_GAP (that text's Enter, and a second one, may still be due).
     pub(super) fn takes_notice(&self) -> Option<bool> {
         self.seen.agent.as_ref()?;
         if self.seen.pid.is_none() {
@@ -240,7 +244,7 @@ impl Pane {
         Some(
             !matches!(self.state, Some(AgentState::NeedsYou(_)))
                 && !recent(self.keyed.get(), TYPING)
-                && !recent(self.noticed, CONFIRM),
+                && !recent(self.sent, NOTICE_GAP),
         )
     }
 
@@ -422,11 +426,18 @@ impl Workspace {
     /// nothing of), or an agent that started asking its person meanwhile (a working agent's
     /// screen changes all along), gets no Enter: it would pick the dialog's answer for the
     /// person. A `task` (not a reply) then ends at once, untaken. An agent whose hooks speak
-    /// confirms its Enter (`confirm`).
-    pub(super) fn send_task(&self, terminal: &str, text: &str, task: bool, cx: &mut Context<Self>) {
-        let Some(pane) = self.pane(terminal) else {
+    /// confirms its Enter (`confirm`). A notice waits for its Enters (`Pane::sent`).
+    pub(super) fn send_task(
+        &mut self,
+        terminal: &str,
+        text: &str,
+        task: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(pane) = self.pane_mut(terminal) else {
             return;
         };
+        pane.sent = Some(Instant::now());
         // At work, it queues the task: Codex says it took it only once a turn takes it in.
         let queued = pane.state == Some(AgentState::Working);
         let mut wait = EnterWait::new(pane.screen(), pane.term.grid_size());
@@ -962,11 +973,8 @@ impl Workspace {
                 Some(false) => i += 1,
                 Some(true) => {
                     let notice = self.notices.remove(i);
-                    self.send_task(&notice.to, &notice.text, false, cx);
                     // Its next notice waits, also in this pass: two never share an Enter.
-                    if let Some(pane) = self.pane_mut(&notice.to) {
-                        pane.noticed = Some(Instant::now());
-                    }
+                    self.send_task(&notice.to, &notice.text, false, cx);
                 }
             }
         }
