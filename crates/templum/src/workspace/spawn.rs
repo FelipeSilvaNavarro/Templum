@@ -125,13 +125,10 @@ impl Workspace {
         let (model, effort) = (spawn.model.as_deref(), spawn.effort.as_deref());
         let args = entry.launch_args(model, effort).unwrap_or_default();
         // A task the caller hands over, under its `[from …]` line, as `delegate` types one.
-        let prompt = spawn.prompt.as_ref().map(|prompt| {
-            let by = self
-                .space_named(&space_id)
-                .map(|space| self.signature(space, me, cx))
-                .unwrap_or_default();
-            format!("[from {by}] {TASK_LEAD}\n{prompt}")
-        });
+        let by = self
+            .space_named(&space_id)
+            .map(|space| self.signature(space, me, cx))
+            .unwrap_or_default();
         let opened = self
             .in_space(&space_id, |ws| {
                 let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, ws.cell.size);
@@ -176,7 +173,10 @@ impl Workspace {
             entry.title,
             folder.display()
         );
-        if let Some(text) = prompt {
+        if let Some(prompt) = spawn.prompt.as_ref() {
+            self.next_task += 1;
+            let id = self.next_task;
+            let text = format!("[from {by}, task t{id}] {TASK_LEAD}\n{prompt}");
             if let Some(pane) = self.pane_mut(&terminal) {
                 pane.prompt = Some(Prompt {
                     text,
@@ -184,13 +184,18 @@ impl Workspace {
                     gated: entry.builtin == Some(Agent::CLAUDE)
                         || entry.builtin == Some(Agent::CODEX),
                 });
-                pane.handed = Some(Handed::new(from, Duration::from_secs(tools::TASK_WAIT)));
+                pane.handed = Some(Handed {
+                    id,
+                    ..Handed::new(from, Duration::from_secs(tools::TASK_WAIT))
+                });
             }
             // Every agent is looked at, hooks or not: Codex's SessionStart comes only with its
             // first prompt, and Claude Code's while it doesn't take pastes yet, after asking
             // whether to trust the folder (a typed Enter would answer that).
             self.watch_ready(terminal, cx);
-            said.push_str(" Its prompt is typed once it is ready.");
+            said.push_str(&format!(
+                " Its prompt is typed once it is ready, as task t{id}."
+            ));
         }
         cx.notify();
         Reply::ok(said)

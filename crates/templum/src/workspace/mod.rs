@@ -130,6 +130,9 @@ pub(crate) enum AgentState {
 /// A task handed to a terminal's agent (`delegate`, or `spawn_agent`'s prompt), while its answer
 /// is awaited (docs/specs/connections.md, Delegating).
 pub(crate) struct Handed {
+    /// Its id, said `t7`; counts from 1 each time Templum starts (`Workspace::next_task`); 0 for
+    /// one made with `new`.
+    pub id: u64,
     /// The terminal of the agent that handed it over.
     pub by: String,
     pub since: Instant,
@@ -148,6 +151,7 @@ impl Handed {
     pub(crate) fn new(by: &str, timeout: Duration) -> Self {
         let since = Instant::now();
         Self {
+            id: 0,
             by: by.to_string(),
             since,
             until: since + timeout,
@@ -1091,6 +1095,8 @@ pub struct Workspace {
     waits: Vec<waits::Wait>,
     /// The last wait's key.
     next_wait: u64,
+    /// The last task's id.
+    pub(crate) next_task: u64,
     /// Draws the next frame while a dot travels along a wire in view (`wires::DOT_FRAME`).
     _dot_frame: Task<()>,
     _wake: Task<()>,
@@ -1397,6 +1403,7 @@ impl Workspace {
             _bus: bus_task,
             waits: Vec::new(),
             next_wait: 0,
+            next_task: 0,
             _dot_frame: Task::ready(()),
             _wake: wake,
         };

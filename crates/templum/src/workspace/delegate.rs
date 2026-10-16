@@ -538,13 +538,16 @@ impl Workspace {
             )));
         }
         let worker = pane.term.id().to_string();
-        let from_line = format!(
-            "[from {}] {TASK_LEAD}\n{task}",
-            self.signature(space, me, cx)
-        );
+        let by = self.signature(space, me, cx);
+        self.next_task += 1;
+        let id = self.next_task;
+        let from_line = format!("[from {by}, task t{id}] {TASK_LEAD}\n{task}");
         self.send_task(&worker, &from_line, true, cx);
         if let Some(pane) = self.pane_mut(&worker) {
-            pane.handed = Some(Handed::new(from, Duration::from_secs(timeout)));
+            pane.handed = Some(Handed {
+                id,
+                ..Handed::new(from, Duration::from_secs(timeout))
+            });
         }
         cx.notify();
         if wait {
@@ -554,10 +557,7 @@ impl Workspace {
             };
             Outcome::Wait(what, timeout)
         } else {
-            Outcome::Now(Reply::ok(format!(
-                "Handed to {block}. wait_for_idle(\"{block}\") gives its answer once it is done, \
-                 unless it replies sooner."
-            )))
+            Outcome::Now(Reply::ok(format!("Handed to {block} as task t{id}.")))
         }
     }
 
@@ -596,8 +596,15 @@ impl Workspace {
             if let Err(refused) = pane.takes_handing(block) {
                 return refused;
             }
+            // The task this agent handed the replier, if any: the reply is its end.
+            let to = self
+                .pane(from)
+                .and_then(|p| p.handed.as_ref())
+                .filter(|h| h.by == asker)
+                .map(|h| format!(" to task t{}", h.id))
+                .unwrap_or_default();
             let reply = format!(
-                "[reply from {}] Its reply is in the pasted text.\n{text}",
+                "[reply from {}{to}] Its reply is in the pasted text.\n{text}",
                 self.signature(space, me, cx)
             );
             self.send_task(&asker, &reply, false, cx);

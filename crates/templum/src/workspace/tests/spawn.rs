@@ -282,7 +282,14 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
     for (conn, agent) in [(1, "claude"), (2, "codex")] {
         let folder = tempfile::tempdir().unwrap();
         let spawn = json!({ "agent": agent, "folder": folder.path(), "prompt": "say hi" });
-        call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+        let (failed, said) = call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+        assert!(
+            !failed
+                && said.ends_with(&format!(
+                    "Its prompt is typed once it is ready, as task t{conn}."
+                )),
+            "{said}"
+        );
         let new = spawned(&ws, cx, mine);
         in_front(&ws, cx, new, true);
         found(&ws, cx, new);
@@ -312,7 +319,12 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
             looks += 1;
         }
         // A task the caller hands over, under its own first line.
-        screen_with(&ws, cx, new, "] Your task is in the pasted text: do it.");
+        screen_with(
+            &ws,
+            cx,
+            new,
+            &format!(", task t{conn}] Your task is in the pasted text: do it."),
+        );
         screen_with(&ws, cx, new, "say hi");
         enter(cx);
         said_twice(&ws, cx, new);

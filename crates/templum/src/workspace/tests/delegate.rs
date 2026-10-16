@@ -99,9 +99,9 @@ fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
     let (_, them) = me(&ws, cx, theirs);
     let task = json!({ "block": them, "task": "fix the tests\nthen push" });
     let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
-    assert!(
-        !failed && text.starts_with(&format!("Handed to {them}.")),
-        "{text}"
+    assert_eq!(
+        (failed, text),
+        (false, format!("Handed to {them} as task t1."))
     );
     ws.read_with(cx, |ws, _| {
         let handed = ws
@@ -112,17 +112,20 @@ fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
             .as_ref()
             .expect("handed over");
         assert_eq!(handed.by, terminal);
+        assert_eq!(handed.id, 1);
     });
     // `cat` asks for no bracketed paste: the task comes as one line, echoed as it is typed, then
     // printed again once Enter sent it.
     screen_with(&ws, cx, theirs, "then push");
     enter(cx);
+    // The echo's first row ends at "tests": the rows join without the space after it.
     screen_with(
         &ws,
         cx,
         theirs,
-        &format!("({uid})] Your task is in the pasted text: do it. fix the tests then push[from"),
+        &format!("({uid}), task t1] Your task is in the pasted text: do it. fix the tests"),
     );
+    screen_with(&ws, cx, theirs, "then push[from");
 }
 
 /// Claude Code takes a long paste alone for data it was shown, not for what it is asked: the
@@ -143,7 +146,7 @@ fn a_task_goes_as_its_first_line_then_its_text(cx: &mut TestAppContext) {
         &ws,
         cx,
         theirs,
-        &format!("({uid})] Your task is in the pasted text: do it.^[[201~^[[200~"),
+        &format!("({uid}), task t1] Your task is in the pasted text: do it.^[[201~^[[200~"),
     );
 }
 
@@ -253,6 +256,22 @@ fn reply_with_no_one_waiting_types_into_the_agent(cx: &mut TestAppContext) {
         cx,
         mine,
         &format!("({them})] Its reply is in the pasted text. Done.[reply from"),
+    );
+    // The reply to a task the agent it goes to handed: its line names the task.
+    let (terminal, _) = me(&ws, cx, mine);
+    let task = json!({ "block": them, "task": "find the bug" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
+    assert!(!failed, "{text}");
+    let reply = json!({ "block": uid, "text": "Line 42." });
+    let (failed, text) = call(handle, &ws, cx, &worker, "reply", reply);
+    assert_eq!((failed, text), (false, format!("Typed into {uid}.")));
+    screen_with(&ws, cx, mine, "Line 42.");
+    enter(cx);
+    screen_with(
+        &ws,
+        cx,
+        mine,
+        &format!("({them}) to task t1] Its reply is in the pasted text. Line 42.[reply from"),
     );
 }
 
