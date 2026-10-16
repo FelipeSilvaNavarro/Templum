@@ -300,7 +300,8 @@ fn a_claude_codes_prompt_is_typed_once_it_started(cx: &mut TestAppContext) {
         assert!(ws.space.terminal(new).unwrap().prompt.is_some())
     });
     event(handle, &ws, cx, &theirs, json!({ "event": "started" }));
-    screen_with(&ws, cx, new, "say hi");
+    // A task the caller hands over, under its own first line.
+    screen_with(&ws, cx, new, "] Your task is in the pasted text: do it. say hi");
     enter(cx);
     said_twice(&ws, cx, new);
     assert!(waiting.try_recv().is_err(), "it works on it");

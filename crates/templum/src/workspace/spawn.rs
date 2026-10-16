@@ -10,6 +10,7 @@ use templum_mcp::{Reply, tools};
 use templum_terminal::Agent;
 
 use super::bus::{Outcome, target};
+use super::delegate::TASK_LEAD;
 use super::history::Then;
 use super::{AGENT_COLS, AGENT_ROWS, Handed, Prompt, Space, Workspace};
 use crate::agents::AgentEntry;
@@ -123,6 +124,14 @@ impl Workspace {
         };
         let (model, effort) = (spawn.model.as_deref(), spawn.effort.as_deref());
         let args = entry.launch_args(model, effort).unwrap_or_default();
+        // A task the caller hands over, under its `[from …]` line, as `delegate` types one.
+        let prompt = spawn.prompt.as_ref().map(|prompt| {
+            let by = self
+                .space_named(&space_id)
+                .map(|space| self.signature(space, me, cx))
+                .unwrap_or_default();
+            format!("[from {by}] {TASK_LEAD}\n{prompt}")
+        });
         let opened = self
             .in_space(&space_id, |ws| {
                 let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, ws.cell.size);
@@ -167,7 +176,7 @@ impl Workspace {
             entry.title,
             folder.display()
         );
-        if let Some(text) = spawn.prompt.clone() {
+        if let Some(text) = prompt {
             if let Some(pane) = self.pane_mut(&terminal) {
                 pane.prompt = Some(Prompt { text, screen: None });
                 pane.handed = Some(Handed::new(from, Duration::from_secs(tools::TASK_WAIT)));

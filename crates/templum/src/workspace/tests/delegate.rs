@@ -121,7 +121,29 @@ fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
         &ws,
         cx,
         theirs,
-        &format!("({uid})] fix the tests then push[from"),
+        &format!("({uid})] Your task is in the pasted text: do it. fix the tests then push[from"),
+    );
+}
+
+/// Claude Code takes a long paste alone for data it was shown, not for what it is asked: the
+/// first line goes as a paste of its own, which it reads as typed.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_task_goes_as_its_first_line_then_its_text(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    // `cat` prints the sequence back: the terminal now brackets pastes, as Claude Code's does.
+    prints(&ws, cx, theirs, b"\x1b[?2004hon\r");
+    screen_with(&ws, cx, theirs, "2004honon");
+    let task = json!({ "block": them, "task": "line 1\nline 2\nline 3\nline 4" });
+    call(handle, &ws, cx, &terminal, "delegate", task);
+    // The terminal echoes ESC as "^[": two pastes, the first line alone.
+    screen_with(
+        &ws,
+        cx,
+        theirs,
+        &format!("({uid})] Your task is in the pasted text: do it.^[[201~^[[200~"),
     );
 }
 
@@ -226,7 +248,12 @@ fn reply_with_no_one_waiting_types_into_the_agent(cx: &mut TestAppContext) {
     assert_eq!((failed, text), (false, format!("Typed into {uid}.")));
     screen_with(&ws, cx, mine, "Done.");
     enter(cx);
-    screen_with(&ws, cx, mine, &format!("({them})] Done.[reply from"));
+    screen_with(
+        &ws,
+        cx,
+        mine,
+        &format!("({them})] Its reply is in the pasted text. Done.[reply from"),
+    );
 }
 
 #[gpui_kit::test]

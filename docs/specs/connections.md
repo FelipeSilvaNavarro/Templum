@@ -181,8 +181,9 @@ later starts with none.
    with `wait_for_idle`, and hears that it timed out (10); the wire's dot stops, and another agent may hand it a
    task.
 8. `reply` with no call waiting types `[reply from <title> (<id>)]` and the text, then Enter, into the agent named;
-   never into a terminal running no agent, or an agent no snapshot has found yet. From batch 8 the line names the
-   task: `[reply from <title> (<id>) to task t7]`.
+   never into a terminal running no agent, or an agent no snapshot has found yet. From batch 7 the first line goes as
+   a task's does (2): `[reply from <title> (<id>)] Its reply is in the pasted text.`, then the text. From batch 8 the
+   line names the task: `[reply from <title> (<id>) to task t7]`.
 9. A task typed into an agent at work on a prompt of its own is answered by the end of the turn that took it
    (batch 7, once its hooks say when it takes a prompt). Codex takes it into the turn under way once a tool ends or
    its answer is written, and says so then, in that turn. Claude Code says so at its Enter and queues it: a tool's

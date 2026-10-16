@@ -36,6 +36,9 @@ const KEY_GAP: Duration = Duration::from_millis(50);
 const KEYS_SETTLE: Duration = Duration::from_millis(300);
 /// The last lines of a screen Templum answers with (`send_keys`, a task not taken).
 pub(super) const TAIL_LINES: usize = 20;
+/// What a task's first line asks, after who hands it over: Claude Code takes a long paste alone
+/// for data it was shown, and does what typed text with it asks.
+pub(super) const TASK_LEAD: &str = "Your task is in the pasted text: do it.";
 /// How long a terminal says which block pressed keys in it ("answered by").
 pub(crate) const ANSWERED_FOR: Duration = Duration::from_secs(10);
 
@@ -352,7 +355,8 @@ impl Workspace {
         })
     }
 
-    /// Types `text` into the agent in terminal `terminal` as one paste, then Enter a moment later,
+    /// Types `text` into the agent in terminal `terminal`, its first line and the rest as two
+    /// pastes, then Enter a moment later,
     /// once its screen shows the paste (`EnterWait`), if Templum still may type into it. A screen
     /// that doesn't (a dialog that ignores pastes, as Codex's approval does, which Templum hears
     /// nothing of), or an agent that started asking its person meanwhile (a working agent's
@@ -366,7 +370,15 @@ impl Workspace {
         // At work, it queues the task: Codex says it took it only once a turn takes it in.
         let queued = pane.state == Some(AgentState::Working);
         let mut wait = EnterWait::new(pane.screen(), pane.term.grid_size());
-        pane.term.type_in(text);
+        // Claude Code shows a paste of 4 lines or more than 800 characters as "[Pasted text]",
+        // which it takes for data unless typed text comes with it: the first line is that text.
+        match text.find('\n') {
+            Some(at) => {
+                pane.term.type_in(&text[..at]);
+                pane.term.type_in(&text[at..]);
+            }
+            None => pane.term.type_in(text),
+        }
         let terminal = terminal.to_string();
         cx.spawn(async move |ws, cx| {
             // Some(the prompts it had taken at its Enter, when its hooks speak) once done looking.
@@ -516,7 +528,10 @@ impl Workspace {
             )));
         }
         let worker = pane.term.id().to_string();
-        let from_line = format!("[from {}]\n{task}", self.signature(space, me, cx));
+        let from_line = format!(
+            "[from {}] {TASK_LEAD}\n{task}",
+            self.signature(space, me, cx)
+        );
         self.send_task(&worker, &from_line, true, cx);
         if let Some(pane) = self.pane_mut(&worker) {
             pane.handed = Some(Handed::new(from, Duration::from_secs(timeout)));
@@ -571,7 +586,10 @@ impl Workspace {
             if let Err(refused) = pane.takes_handing(block) {
                 return refused;
             }
-            let reply = format!("[reply from {}]\n{text}", self.signature(space, me, cx));
+            let reply = format!(
+                "[reply from {}] Its reply is in the pasted text.\n{text}",
+                self.signature(space, me, cx)
+            );
             self.send_task(&asker, &reply, false, cx);
         }
         if let Some(mine) = self.pane_mut(from) {
