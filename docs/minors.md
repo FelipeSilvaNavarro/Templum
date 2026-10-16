@@ -721,10 +721,12 @@ Left by batch 6; line numbers are those of `development` at 476b772.
   (`crates/templum/src/workspace/spawn.rs:193`) asks no one; Ctrl+Z brings the block back with a new shell, without
   what the person had typed and not sent. `opened_by` also stays after the spawned agent quits: a person who then runs
   something of their own there (a dev server, an editor, a `git rebase` half done) sees the opener's routine clean-up
-  kill it, and Ctrl+Z brings back the agent, not that program. Fix: refuse while the person typed into it in the last
-  few seconds (the counter batch 8 adds for its notices), and while a program other than the agent is in front
-  (`processes().foreground` neither the shell nor `seen.pid`), or clear `opened_by` once the person types there after
-  its agent quit.
+  kill it, and Ctrl+Z bring back only a shell in its folder, not that program: once a snapshot (about every 5 s) has
+  seen the agent gone, `seen.agent` is None and `Space::item_of` (`crates/templum/src/workspace/mod.rs`) saves no
+  agent; only in those first seconds does Ctrl+Z start the agent again. Fix: refuse while the person typed into it in
+  the last few seconds (the counter batch 8 adds for its notices), and while a program other than the agent is in
+  front (`processes().foreground` neither the shell nor `seen.pid`), or clear `opened_by` once the person types there
+  after its agent quit.
 - [ ] **A wrapper set as Claude Code's or Codex's command gets their model flags.** `AgentEntry::launch_args`
   (`crates/templum/src/agents.rs:80`) gives a model and an effort to Templum's agents whatever their command, where
   `start_command` (`:50`) adds a session id only when the command runs the agent's own program. A person whose
@@ -741,7 +743,18 @@ Left by the review of batch 6; line numbers are those of `development` at dd11ca
 - [ ] **An interrupt between a task's paste and its Enter still sends the task.** `send_task`'s loop
   (`crates/templum/src/workspace/delegate.rs:352`) never checks that the task is still handed over. A person whose agent
   interrupts another one right after delegating sees Esc, then the Enter, and the agent start the task no one awaits.
-  Fix: in that loop, when `task` is true, stop once `pane.handed` is None.
+  Fix: not "stop once `pane.handed` is None": the `Stopped` arm (`crates/templum/src/workspace/bus.rs:243`) ends the
+  turn through `end_turn`, which clears `handed`, and `delegate` hands a task to an agent at work, so its previous
+  turn's end landing in the wait would leave the task pasted with no Enter. Instead `interrupt` bumps a counter on the
+  pane, `send_task` notes it when it pastes, and its loop skips the Enter, when `task` is true, only once the counter
+  has changed.
+- [ ] **Two `send_to_terminal … enter: true` in a row join into one command.** The `SendToTerminal` arm
+  (`crates/templum/src/workspace/bus.rs:373`) types the text at once and its Enter `ENTER_AFTER` (150 ms) later; a
+  second call to the same terminal that doesn't wait for the first's answer (an MCP client running tool calls in
+  parallel, or two agents wired to the same shell) types its text in that wait. A person sees `cd /tmp` and `ls` run
+  as `cd /tmpls`, then an empty line. Claude Code runs them one at a time, as no tool says `readOnlyHint`, and it was
+  so before the Enter was answered. Fix: keep the pending send's `Task` on the `Pane` and type the next text once it
+  has finished (a queue per terminal).
 - [ ] **A third agent waiting on the interrupted one hears "Interrupted by you."** `interrupt` ends the turn through
   `end_turn` (`crates/templum/src/workspace/delegate.rs:615`), which answers every `Waiting::Turn` on that terminal. A
   person sees a third agent's `wait_for_idle` say it interrupted, when another did. Fix: give "Interrupted by you."
