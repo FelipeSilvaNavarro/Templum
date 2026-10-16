@@ -169,25 +169,27 @@ pub(super) fn me(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -
 }
 
 /// The terminal's screen once it shows `needle`, its rows joined: a long line wraps at the
-/// terminal's width (macOS's temporary folder is long), and `Snapshot::text` breaks it there.
+/// terminal's width (macOS's temporary folder is long), and `Snapshot::text` breaks it there. A
+/// failure points at the caller's line, which names the needle.
+#[track_caller]
 pub(super) fn screen_with(
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
     id: BlockId,
     needle: &str,
 ) -> String {
-    screen_until(ws, cx, id, &format!("{needle:?}"), |shown| {
-        shown.contains(needle)
-    })
+    screen_until(ws, cx, id, |shown| shown.contains(needle))
 }
 
-/// The terminal's screen, its rows joined as `screen_with`'s, once `done` holds for it (`what`
-/// names it in a failure): its program's output comes in real time, whatever the test's clock.
+/// The terminal's screen, its rows joined as `screen_with`'s, once `done` holds for it: its
+/// program's output comes in real time, whatever the test's clock. A failure points at the
+/// caller's line and shows the screen, never what was looked for (a block id, which CodeQL takes
+/// for a user's).
+#[track_caller]
 pub(super) fn screen_until(
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
     id: BlockId,
-    what: &str,
     done: impl Fn(&str) -> bool,
 ) -> String {
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -203,7 +205,7 @@ pub(super) fn screen_until(
         if done(&shown) {
             return shown;
         }
-        assert!(Instant::now() < deadline, "no {what} in {shown:?}");
+        assert!(Instant::now() < deadline, "not on the screen: {shown:?}");
         std::thread::sleep(Duration::from_millis(50));
     }
 }

@@ -14,10 +14,9 @@ use super::*;
 
 /// The prompt "say hi" went with its Enter: the terminal echoed it and `cat` printed it back,
 /// maybe after its echo of the command typed before it (`cat` may start reading late).
+#[track_caller]
 fn said_twice(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) {
-    screen_until(ws, cx, id, "\"say hi\" twice", |shown| {
-        shown.matches("say hi").count() >= 2
-    });
+    screen_until(ws, cx, id, |shown| shown.matches("say hi").count() >= 2);
 }
 
 /// The startup terminal at (40, 100), 400 × 300, the camera at 100% on the origin, and Claude Code
