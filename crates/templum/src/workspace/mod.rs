@@ -164,6 +164,9 @@ pub(crate) struct Prompt {
     /// The agent's screen at the last look, once its process was seen: the same at the next look,
     /// the agent is ready.
     pub screen: Option<String>,
+    /// Its agent is Claude Code or Codex, whose prompt also waits for its input box
+    /// (`Modes::typing`): their trust questions come first.
+    pub gated: bool,
 }
 
 pub(crate) struct Pane {

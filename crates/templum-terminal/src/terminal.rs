@@ -190,6 +190,9 @@ pub struct Modes {
     pub kitty_keys: bool,
     /// The alternate screen: it runs full screen.
     pub full_screen: bool,
+    /// It reads typed input: it brackets pastes and shows its cursor. Claude Code and Codex hide
+    /// it in their dialogs.
+    pub typing: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -217,6 +220,7 @@ impl SharedTerm {
             mouse: mode.intersects(TermMode::MOUSE_MODE),
             kitty_keys: mode.intersects(TermMode::KITTY_KEYBOARD_PROTOCOL),
             full_screen: mode.contains(TermMode::ALT_SCREEN),
+            typing: mode.contains(TermMode::BRACKETED_PASTE | TermMode::SHOW_CURSOR),
         }
     }
 
@@ -985,9 +989,19 @@ mod tests {
             Modes {
                 mouse: true,
                 kitty_keys: true,
-                full_screen: true
+                full_screen: true,
+                typing: false
             }
         );
+        // Bracketed pastes and a shown cursor: its input box. Claude Code and Codex hide the cursor
+        // in their dialogs.
+        let (term, _) = headless(10, 2);
+        feed(&term, b"\x1b[?2004h");
+        assert!(term.modes().typing);
+        feed(&term, b"\x1b[?25l");
+        assert!(!term.modes().typing, "a dialog");
+        feed(&term, b"\x1b[?25h\x1b[?2004l");
+        assert!(!term.modes().typing, "no bracketed pastes");
     }
 
     #[test]

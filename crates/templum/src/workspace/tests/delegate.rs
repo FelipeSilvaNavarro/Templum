@@ -54,7 +54,7 @@ fn agents_running(
 
 /// A snapshot found the agent of terminal block `id`: in front of its shell (Unix), or below it
 /// (Windows, which has no process in front).
-fn found(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) {
+pub(super) fn found(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) {
     ws.update(cx, |ws, _| {
         let pane = ws.space.terminal_mut(id).unwrap();
         let p = pane.term.processes();
@@ -913,6 +913,7 @@ fn interrupt_presses_esc_and_ends_the_callers_task(cx: &mut TestAppContext) {
         ws.space.terminal_mut(theirs).unwrap().prompt = Some(crate::workspace::Prompt {
             text: "count to a million".into(),
             screen: None,
+            gated: false,
         })
     });
     let stopped = call_later(handle, &ws, cx, &terminal, 2, "interrupt", stop.clone());
@@ -993,7 +994,12 @@ fn keys_name_who_pressed_them_for_ten_seconds(cx: &mut TestAppContext) {
 
 /// `cat` in block `id` prints `bytes` back, as a program would.
 #[cfg(unix)]
-fn prints(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId, bytes: &'static [u8]) {
+pub(super) fn prints(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+    bytes: &'static [u8],
+) {
     ws.read_with(cx, |ws, _| {
         ws.space.terminal(id).unwrap().term.write(bytes.to_vec())
     });

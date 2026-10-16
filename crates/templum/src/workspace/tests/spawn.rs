@@ -9,7 +9,7 @@ use templum_canvas::Wire;
 use super::bus::{
     after, answer_soon, answered, call, call_later, event, me, result_of, screen_until, screen_with,
 };
-use super::delegate::snapshot;
+use super::delegate::{found, prints, snapshot};
 use super::*;
 
 /// The prompt "say hi" went with its Enter: the terminal echoed it and `cat` printed it back,
@@ -25,7 +25,8 @@ fn spawner(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, Bloc
     let (handle, ws) = open(cx);
     let mine = first_id(&ws, cx);
     ws.update(cx, |ws, _| {
-        ws.command = Some(agent_cat());
+        // Its agents' input boxes bracket pastes.
+        ws.command = Some(jobs("printf '\\033[?2004h'; cat; true"));
         ws.space.pristine = false;
         ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 1.0);
         ws.space.canvas.get_mut(mine).unwrap().rect = Rect::new(40.0, 100.0, 400.0, 300.0);
@@ -270,42 +271,56 @@ fn close_block_closes_only_what_the_caller_opened(cx: &mut TestAppContext) {
     assert!(failed && text.contains("isn't connected to you"), "{text}");
 }
 
+/// A spawned Claude Code or Codex first asks whether to trust its folder (Codex also its hooks),
+/// its cursor hidden: its prompt, whose Enter would answer for the person, waits until it brackets
+/// pastes and shows its cursor, as its input box does. No hook speaks here: a Claude Code started
+/// without Templum's hooks gets its prompt too.
 #[gpui_kit::test]
-fn a_claude_codes_prompt_is_typed_once_it_started(cx: &mut TestAppContext) {
+fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
     let (terminal, _) = me(&ws, cx, mine);
     let folder = tempfile::tempdir().unwrap();
     let spawn = json!({ "agent": "claude", "folder": folder.path(), "prompt": "say hi" });
-    let (failed, text) = call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
-    assert!(
-        !failed && text.ends_with("Its prompt is typed once it is ready."),
-        "{text}"
-    );
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
     let new = spawned(&ws, cx, mine);
     in_front(&ws, cx, new, true);
+    found(&ws, cx, new);
     let (theirs, uid) = me(&ws, cx, new);
-    // Handed over by the caller already: wait_for_idle waits for its answer.
-    let waiting = call_later(
+    let idle = json!({ "block": uid });
+    let waiting = call_later(handle, &ws, cx, &terminal, 1, "wait_for_idle", idle);
+    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+    let prompt = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some())
+    };
+    // Its trust question hides the cursor; and an input that doesn't bracket pastes isn't its box.
+    for bytes in [&b"\x1b[?25l\r"[..], b"\x1b[?25h\x1b[?2004l\r"] {
+        prints(&ws, cx, new, bytes);
+        for _ in 0..4 {
+            std::thread::sleep(Duration::from_millis(100));
+            after(cx, look);
+        }
+        assert!(prompt(cx), "typed into a question: {bytes:?}");
+    }
+    prints(&ws, cx, new, b"\x1b[?2004h\r");
+    let mut looks = 0;
+    while prompt(cx) {
+        assert!(looks < 10, "never typed");
+        std::thread::sleep(Duration::from_millis(100));
+        after(cx, look);
+        looks += 1;
+    }
+    // A task the caller hands over, under its own first line.
+    screen_with(&ws, cx, new, "] Your task is in the pasted text: do it.");
+    screen_with(&ws, cx, new, "say hi");
+    enter(cx);
+    said_twice(&ws, cx, new);
+    event(
         handle,
         &ws,
         cx,
-        &terminal,
-        1,
-        "wait_for_idle",
-        json!({ "block": uid }),
+        &theirs,
+        json!({ "event": "submitted", "at_enter": true }),
     );
-    // Not typed before Claude Code says it started: it may be asking whether to trust the folder.
-    after(cx, 5000);
-    ws.read_with(cx, |ws, _| {
-        assert!(ws.space.terminal(new).unwrap().prompt.is_some())
-    });
-    event(handle, &ws, cx, &theirs, json!({ "event": "started" }));
-    // A task the caller hands over, under its own first line.
-    screen_with(&ws, cx, new, "] Your task is in the pasted text: do it. say hi");
-    enter(cx);
-    said_twice(&ws, cx, new);
-    assert!(waiting.try_recv().is_err(), "it works on it");
-    event(handle, &ws, cx, &theirs, json!({ "event": "submitted" }));
     event(
         handle,
         &ws,
@@ -316,8 +331,43 @@ fn a_claude_codes_prompt_is_typed_once_it_started(cx: &mut TestAppContext) {
     assert_eq!(answered(&waiting), (false, "hi".to_string()));
 }
 
+/// A minute after its spawn its person still hasn't answered what its agent asks: the prompt is
+/// dropped, and its task ends showing the question.
+#[gpui_kit::test]
+fn a_prompt_not_typed_within_a_minute_ends_its_task_with_its_screen(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path(), "prompt": "say hi" });
+    call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    let new = spawned(&ws, cx, mine);
+    in_front(&ws, cx, new, true);
+    found(&ws, cx, new);
+    let (_, uid) = me(&ws, cx, new);
+    prints(&ws, cx, new, b"Trust these hooks?\x1b[?25l\r");
+    screen_with(&ws, cx, new, "Trust these hooks?");
+    let idle = json!({ "block": uid });
+    let waiting = call_later(handle, &ws, cx, &terminal, 1, "wait_for_idle", idle);
+    ws.update(cx, |ws, _| {
+        let handed = ws.space.terminal_mut(new).unwrap().handed.as_mut().unwrap();
+        handed.since -= crate::workspace::spawn::STARTS_WITHIN;
+    });
+    after(cx, crate::workspace::spawn::READY_LOOK.as_millis() as u64);
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(new).unwrap();
+        assert!(pane.prompt.is_none() && pane.handed.is_none());
+    });
+    let (failed, text) = answered(&waiting);
+    assert!(
+        failed
+            && text.starts_with(&format!("{uid} never got its prompt"))
+            && text.contains("Trust these hooks?"),
+        "{text}"
+    );
+}
+
 /// A snapshot taken while the new shell still starts (its rc files) finds no agent in it: the
-/// Claude Code Templum typed there stays known, and its prompt is sent once it started.
+/// Claude Code Templum typed there stays known, and its prompt is sent once its input is ready.
 #[gpui_kit::test]
 fn a_snapshot_before_the_agent_started_doesnt_stop_its_prompt(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
@@ -326,7 +376,6 @@ fn a_snapshot_before_the_agent_started_doesnt_stop_its_prompt(cx: &mut TestAppCo
     let spawn = json!({ "agent": "claude", "folder": folder.path(), "prompt": "say hi" });
     call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
     let new = spawned(&ws, cx, mine);
-    let (theirs, _) = me(&ws, cx, new);
     snapshot(
         handle,
         &ws,
@@ -335,7 +384,22 @@ fn a_snapshot_before_the_agent_started_doesnt_stop_its_prompt(cx: &mut TestAppCo
         templum_terminal::Inspection::default(),
     );
     in_front(&ws, cx, new, true);
-    event(handle, &ws, cx, &theirs, json!({ "event": "started" }));
+    // A second snapshot finds it.
+    let p = ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().term.processes());
+    let running = templum_terminal::Inspection {
+        agent: Some("claude".into()),
+        pid: p.foreground,
+        ..Default::default()
+    };
+    snapshot(handle, &ws, cx, new, running);
+    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+    let mut looks = 0;
+    while ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some()) {
+        assert!(looks < 10, "never typed");
+        std::thread::sleep(Duration::from_millis(100));
+        after(cx, look);
+        looks += 1;
+    }
     screen_with(&ws, cx, new, "say hi");
     enter(cx);
     ws.read_with(cx, |ws, _| {
@@ -527,16 +591,19 @@ fn in_grid_mode_a_spawned_agent_takes_half_of_the_callers_tile(cx: &mut TestAppC
 #[gpui_kit::test]
 fn a_prompt_the_agent_didnt_take_ends_at_once(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
-    // Claude Code shows nothing it is typed.
+    // Claude Code shows nothing it is typed: not even the task's first line, which the newline
+    // starting its second paste would have `cat` print.
     ws.update(cx, |ws, _| {
-        ws.command = Some(jobs("stty -echo; echo ready; cat; true"))
+        ws.command = Some(jobs(
+            "stty -echo; printf '\\033[?2004h'; echo ready; cat >/dev/null; true",
+        ))
     });
     let (terminal, _) = me(&ws, cx, mine);
     let folder = tempfile::tempdir().unwrap();
     let spawn = json!({ "agent": "claude", "folder": folder.path(), "prompt": "say hi" });
     call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
     let new = spawned(&ws, cx, mine);
-    let (theirs, uid) = me(&ws, cx, new);
+    let (_, uid) = me(&ws, cx, new);
     screen_with(&ws, cx, new, "ready");
     in_front(&ws, cx, new, true);
     let waiting = call_later(
@@ -548,7 +615,7 @@ fn a_prompt_the_agent_didnt_take_ends_at_once(cx: &mut TestAppContext) {
         "wait_for_idle",
         json!({ "block": uid }),
     );
-    event(handle, &ws, cx, &theirs, json!({ "event": "started" }));
+    found(&ws, cx, new);
     after(cx, 5000);
     let (failed, text) = answered(&waiting);
     assert!(

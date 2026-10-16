@@ -256,14 +256,7 @@ impl Workspace {
                     handed.behind = false;
                 }
             }
-            AgentEvent::Started => {
-                pane.state = Some(AgentState::Idle);
-                // A Claude Code spawn_agent opened is ready for its prompt: SessionStart comes after
-                // its question about trusting the folder, which a typed Enter would answer.
-                if let Some(prompt) = pane.prompt.take() {
-                    self.send_task(terminal, &prompt.text, true, cx);
-                }
-            }
+            AgentEvent::Started => pane.state = Some(AgentState::Idle),
             AgentEvent::Stopped { message } => {
                 pane.state = Some(AgentState::Idle);
                 if let Some(message) = &message {

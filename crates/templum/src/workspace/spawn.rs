@@ -178,14 +178,18 @@ impl Workspace {
         );
         if let Some(text) = prompt {
             if let Some(pane) = self.pane_mut(&terminal) {
-                pane.prompt = Some(Prompt { text, screen: None });
+                pane.prompt = Some(Prompt {
+                    text,
+                    screen: None,
+                    gated: entry.builtin == Some(Agent::CLAUDE)
+                        || entry.builtin == Some(Agent::CODEX),
+                });
                 pane.handed = Some(Handed::new(from, Duration::from_secs(tools::TASK_WAIT)));
             }
-            // Claude Code says when it started, after asking whether to trust the folder (a typed
-            // Enter would answer that); the others are looked at.
-            if entry.builtin != Some(Agent::CLAUDE) {
-                self.watch_ready(terminal, cx);
-            }
+            // Every agent is looked at, hooks or not: Codex's SessionStart comes only with its
+            // first prompt, and Claude Code's while it doesn't take pastes yet, after asking
+            // whether to trust the folder (a typed Enter would answer that).
+            self.watch_ready(terminal, cx);
             said.push_str(" Its prompt is typed once it is ready.");
         }
         cx.notify();
@@ -228,7 +232,7 @@ impl Workspace {
     }
 
     /// Looks, every READY_LOOK, whether the agent in `terminal` is ready for its prompt, until it
-    /// is typed, its block is gone, or a snapshot dropped it (STARTS_WITHIN).
+    /// is typed, its block is gone, a snapshot dropped it, or a minute (STARTS_WITHIN) passed.
     fn watch_ready(&self, terminal: String, cx: &mut Context<Self>) {
         cx.spawn(async move |ws, cx| {
             loop {
@@ -244,19 +248,39 @@ impl Workspace {
         .detach();
     }
 
-    /// One look: once a snapshot saw the agent's process, it is still in front of its shell, and
-    /// its screen is as it was a look ago, its prompt is typed. False once there is nothing more
-    /// to look for.
+    /// One look: once a snapshot saw the agent's process, it is still in front of its shell, its
+    /// screen is as it was a look ago, and (Claude Code, Codex; not on Windows) it takes typing,
+    /// its prompt is typed. A minute (STARTS_WITHIN) after the spawn it is dropped instead, its
+    /// task ending with the screen. False once there is nothing more to look for.
     fn look_ready(&mut self, terminal: &str, cx: &mut Context<Self>) -> bool {
         let Some(pane) = self.pane_mut(terminal) else {
             return false;
         };
+        if pane.prompt.is_none() {
+            return false;
+        }
+        let late = pane.handed.as_ref();
+        if late.is_some_and(|h| h.since.elapsed() >= STARTS_WITHIN) {
+            pane.prompt = None;
+            let lines = pane.tail();
+            let tail = tools::tail(&lines, tools::MAX_TEXT);
+            let uid = self.uid_of(terminal);
+            let why = format!(
+                "{uid} never got its prompt: a minute after it opened, it still asks its person \
+                 something (trusting its folder, Codex's hooks), or its input wasn't ready. Look \
+                 at its block. The last lines of its screen:\n{tail}"
+            );
+            self.end_turn(terminal, Reply::err(why), cx);
+            return false;
+        }
         let seen = pane.seen.pid.is_some() && !pane.shell_in_front();
         let screen = seen.then(|| pane.screen());
+        // Windows' console doesn't pass the cursor's mode on: its still screen alone tells.
+        let typing = cfg!(windows) || pane.term.shared().modes().typing;
         let Some(prompt) = pane.prompt.as_mut() else {
             return false;
         };
-        if screen.is_none() || prompt.screen != screen {
+        if screen.is_none() || prompt.screen != screen || (prompt.gated && !typing) {
             prompt.screen = screen;
             return true;
         }

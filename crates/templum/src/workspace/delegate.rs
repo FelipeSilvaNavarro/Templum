@@ -470,6 +470,13 @@ impl Workspace {
         true
     }
 
+    /// The block id of the terminal `terminal`, as agents name it; empty when it is gone.
+    pub(super) fn uid_of(&self, terminal: &str) -> String {
+        self.caller(terminal)
+            .and_then(|(space, id)| self.space_named(&space)?.uids.get(&id).cloned())
+            .unwrap_or_default()
+    }
+
     /// The agent in the terminal `terminal` didn't take the task typed into it: the task, if it is
     /// still handed over, ends, and the calls waiting on it hear so, with its screen.
     fn not_taken(&mut self, terminal: &str, cx: &mut Context<Self>) {
@@ -480,10 +487,7 @@ impl Workspace {
         else {
             return;
         };
-        let uid = self
-            .caller(terminal)
-            .and_then(|(space, id)| self.space_named(&space)?.uids.get(&id).cloned())
-            .unwrap_or_default();
+        let uid = self.uid_of(terminal);
         let why = format!(
             "{uid} didn't take the task: it may be showing a dialog. Look at its block, then try \
              again. The last lines of its screen:\n{}",
