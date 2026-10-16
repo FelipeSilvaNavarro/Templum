@@ -189,8 +189,9 @@ later starts with none.
 9. A task typed into an agent at work on a prompt of its own is answered by the end of the turn that took it
    (batch 7, once its hooks say when it takes a prompt). Codex takes it into the turn under way once a tool ends or
    its answer is written, and says so then, in that turn. Claude Code says so at its Enter and queues it: a tool's
-   end takes it into the turn under way, whose end answers it; a turn that ends first, or an Esc, leaves it to the
-   next turn, which no hook says starts, and that turn's end answers it.
+   end takes it into the turn under way, whose end answers it; a turn that ends first, or an Esc during a tool,
+   leaves it to the next turn, which no hook says starts, and that turn's end answers it. An Esc while it writes
+   ends its turn with no hook, and the task's answer is lost (deferred: [minors](../minors.md#connections)).
 10. **Its end comes back** (batch 8). When a task ends and no call of the agent that handed it over waits for it
     (`delegate` with `wait`, `wait_for_idle`), Templum types into that agent, as a reply is typed:
     `[task t7 from Codex · api (k9x1d): done in 31 s, 60231 tokens, transcript /…/rollout.jsonl]` and its answer
