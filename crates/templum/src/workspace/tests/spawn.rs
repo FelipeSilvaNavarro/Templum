@@ -455,3 +455,50 @@ fn spawn_agent_makes_its_worktree_first(cx: &mut TestAppContext) {
         "{text}"
     );
 }
+
+/// The new agent overlaps nothing on the canvas, drawings included, and goes the way of the
+/// caller's connections: here its right holds a block, and its connection is far to its left.
+#[gpui_kit::test]
+fn a_spawned_agent_fits_where_nothing_is_toward_the_callers_connections(cx: &mut TestAppContext) {
+    use templum_canvas::{Color, Drawing, ShapeKind};
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open(Rect::new(464.0, 100.0, 400.0, 300.0), window, cx);
+            ws.open(Rect::new(-3000.0, 100.0, 400.0, 300.0), window, cx);
+            let far = ws.space.canvas.top().unwrap();
+            assert!(ws.connect(mine, far, cx));
+            // A line where a block left of the caller would sit.
+            ws.space.ink.push(Drawing::Shape {
+                kind: ShapeKind::Line,
+                from: Point::new(-200.0, 150.0),
+                to: Point::new(-100.0, 150.0),
+                width: 4.0,
+                color: Color::Red,
+            });
+            ws.space.focused = Some(mine);
+        })
+    })
+    .unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path() });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    assert!(!failed, "{text}");
+    let new = spawned(&ws, cx, mine);
+    ws.read_with(cx, |ws, _| {
+        let rect = ws.space.canvas.get(new).unwrap().rect;
+        let others = ws.space.canvas.blocks().iter().filter(|b| b.id != new);
+        for other in others
+            .map(|b| b.rect)
+            .chain(ws.space.ink.iter().map(Drawing::bounds))
+        {
+            assert!(!rect.intersects(&other), "{rect:?} over {other:?}");
+        }
+        let caller = ws.space.canvas.get(mine).unwrap().rect;
+        assert!(
+            rect.x + rect.w / 2.0 < caller.x + caller.w / 2.0,
+            "toward its connection, on its left: {rect:?}"
+        );
+    });
+}

@@ -168,6 +168,10 @@ later starts with none.
 ### Spawning
 
 `spawn_agent` opens a new agent block beside the caller, wired to it, in the caller's folder or the one it names.
+The block goes where it covers no block nor drawing, beside the caller or a block wired to it: of the spots right of,
+below, left of or above them (at their edge, or past what is in the way along that side), the one nearest the caller
+and its connections all together, so they draw it their way. Any block Templum opens beside another (a terminal from
+an editor's tree, a Git block, `open_file`'s editor) covers nothing either.
 With a worktree name, Templum first runs `git worktree add -b <name> <repository>/.worktrees/<name>` from that
 folder's repository (and adds `.worktrees/` to the repository's `.git/info/exclude` once), and the agent starts
 there, so several agents can change one project at once without stepping on each other. A prompt is typed once the

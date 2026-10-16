@@ -5,12 +5,12 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use gpui_kit::{Context, Window};
-use templum_canvas::chrome;
+use templum_canvas::{BlockId, Rect, Size, chrome};
 use templum_mcp::{Reply, tools};
 use templum_terminal::Agent;
 
 use super::bus::Outcome;
-use super::{AGENT_COLS, AGENT_ROWS, Handed, Prompt, Workspace};
+use super::{AGENT_COLS, AGENT_ROWS, Handed, Prompt, Space, Workspace};
 use crate::agents::AgentEntry;
 
 /// How often a spawned agent's readiness for its prompt is looked at.
@@ -104,7 +104,8 @@ impl Workspace {
         }))
     }
 
-    /// Opens `entry` in `folder` beside the caller (terminal `from`), wired to it: one Ctrl+Z
+    /// Opens `entry` in `folder` beside the caller (terminal `from`), where it overlaps nothing,
+    /// toward the blocks wired to the caller (`Space::room_near`), wired to it: one Ctrl+Z
     /// closes both. The keyboard, the selection and the camera stay. `prompt` is typed once the
     /// agent is ready, as a task the caller handed over.
     fn open_agent(
@@ -121,9 +122,8 @@ impl Workspace {
         };
         let opened = self
             .in_space(&space_id, |ws| {
-                let anchor = ws.space.home(ws.space.canvas.get(me)?);
                 let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, ws.cell.size);
-                let rect = ws.space.canvas.place_beside(anchor, size);
+                let rect = ws.space.room_near(me, size)?;
                 let kept = (
                     ws.space.focused,
                     ws.space.selected.clone(),
@@ -208,5 +208,18 @@ impl Workspace {
         let text = pane.prompt.take().map(|p| p.text).unwrap_or_default();
         self.send_task(terminal, &text, true, cx);
         false
+    }
+}
+
+impl Space {
+    /// A spot for a block of `size` beside block `id` that overlaps nothing, drawn toward the
+    /// blocks wired to it (`room_beside`). None when `id` isn't on the canvas.
+    fn room_near(&self, id: BlockId, size: Size) -> Option<Rect> {
+        let home = |id| Some(self.home(self.canvas.get(id)?));
+        let wired = self.wires.iter().filter(|w| w.touches(id));
+        let anchors: Vec<Rect> = std::iter::once(home(id)?)
+            .chain(wired.filter_map(|w| home(if w.a == id { w.b } else { w.a })))
+            .collect();
+        Some(self.room_beside(&anchors, size))
     }
 }
