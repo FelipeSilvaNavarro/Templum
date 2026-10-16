@@ -229,9 +229,7 @@ impl Pane {
     /// notice went into it in the last CONFIRM (that one's Enter, and a second one, may still be
     /// due).
     pub(super) fn takes_notice(&self) -> Option<bool> {
-        if self.seen.agent.is_none() {
-            return None;
-        }
+        self.seen.agent.as_ref()?;
         if self.seen.pid.is_none() {
             return Some(false);
         }
