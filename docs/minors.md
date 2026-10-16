@@ -819,7 +819,11 @@ Left by batch 7 and its review; line numbers are those of `development` at eb394
   `crates/templum/src/workspace/bus.rs`) marks the task taken and not `behind`, the task's own `Submitted` is
   ignored, and the person's turn's `Stop` answers the task with the person's answer. Fix: carry the hook's `prompt`
   in `Submitted` (`hooks::claude`, `crates/templum-mcp/src/hooks.rs`) and count one toward the task only if it comes
-  after the task's Enter and starts with `[from `.
+  after the task's Enter and starts with `[from `. Claude Code's `UserPromptSubmit` also fires for a scheduled task, a
+  `/loop` iteration and a background subagent reporting back: one of those in the second or two before the task's
+  Enter is taken marks the task taken (and satisfies `confirm`, `delegate.rs`, even if its Enter was lost), and that
+  turn's `Stop` answers it with, say, the subagent's summary, while the task runs later for no one. The same fix
+  covers it.
 - [ ] **A hooked agent whose screen moves with no hook seems stuck half a minute later.** `Looks::state`
   (`crates/templum/src/workspace/activity.rs`) turns an Idle agent `Working` when its screen changes in 3 of 4 looks,
   hooks or not; one whose hooks speak, then still for 30 looks, seems stuck: its dot turns yellow and `delegate`
@@ -849,6 +853,15 @@ Left by batch 7 and its review; line numbers are those of `development` at eb394
   ended, and its turn's `Stopped` (`bus.rs`) finds no task handed: the answer goes to no one. Fix: when the caller's
   task is still `!taken || behind`, say so in the result ("it had queued your task and may still run it"); check by
   hand whether Ctrl+C (Codex) or Up and clearing the input (Claude Code) drops the queued task instead, and press that.
+- [ ] **A spawned Gemini CLI may get its prompt in its folder-trust question.** `spawn_agent`
+  (`crates/templum/src/workspace/spawn.rs`) gates only Claude Code's and Codex's prompt on their input box
+  (`Prompt::gated`); Gemini CLI asks to trust a folder the first time it opens it, and after a still second
+  `look_ready` pastes the prompt into that question. If the screen doesn't change, no Enter goes and the caller hears
+  "didn't take the task", Gemini still asking, the pasted text maybe left behind; if the dialog reacts to the paste,
+  it may answer the question for the person. Also, `look_ready` doesn't check `takes_typing` (`delegate.rs`), so an
+  ungated agent at a dialog a hook told of gets the paste too. Fix: check by hand (once logged in) whether Gemini CLI
+  hides its cursor in that question; if so, gate `Agent::GEMINI` too; and have `look_ready` wait while `takes_typing`
+  fails.
 - [ ] **A Claude Code subagent's tool end may take a queued task into the wrong turn.** The `Working` arm (`bus.rs`)
   clears `behind` on any `PostToolUse`, as the spikes saw a tool's end take a queued prompt into the turn under way
   (S2); whether a subagent's tool end does too wasn't checked. If not, the main turn's `Stop` answers the task with
