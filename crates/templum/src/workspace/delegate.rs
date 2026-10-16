@@ -845,6 +845,10 @@ impl Workspace {
                 _ => None,
             };
             let _ = ws.update(cx, |ws, cx| {
+                // The next task handed before a snapshot reads it again starts from this read.
+                if let (Some(read), Some(pane)) = (&read, ws.pane_mut(&terminal)) {
+                    pane.usage = Some(read.clone());
+                }
                 // Its block may be gone (closed): what it spent then is unknown.
                 let now = read.or_else(|| ws.pane(&terminal).and_then(|p| p.usage.clone()));
                 let spent = spent(from.as_ref(), now.as_ref())

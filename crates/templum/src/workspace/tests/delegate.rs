@@ -754,6 +754,27 @@ fn the_end_says_what_it_spent_and_its_transcript(cx: &mut TestAppContext) {
         "{}",
         told[1].1
     );
+    // The next task, handed before a snapshot read its usage again, starts from that read: the
+    // last task's calls aren't its own.
+    call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "delegate",
+        json!({ "block": them, "task": "more" }),
+    );
+    screen_with(&ws, cx, theirs, "more");
+    enter(cx);
+    send(cx, json!({ "event": "submitted" }));
+    send(cx, json!({ "event": "stopped", "message": "More." }));
+    after(cx, spent_after);
+    let told = notices_until(&ws, cx, 3);
+    assert!(
+        told[2].1.contains(" s, $0.00, transcript "),
+        "{}",
+        told[2].1
+    );
     ws.update(cx, |ws, _| ws.data_dir = None);
     // Its next session names its own.
     send(cx, json!({ "event": "started" }));
