@@ -1,7 +1,8 @@
 //! An agent's state from its screen, where its hooks say nothing (docs/specs/connections.md, An
 //! agent's state): a screen that keeps changing (a spinner, a timer) is an agent at work, one
-//! that stays still is not. Codex says only that its turn ended; Claude Code says nothing when
-//! Esc stops it while it writes, nor when a tool the person allowed starts.
+//! that stays still is not. Claude Code says nothing when Esc stops it while it writes, nor when
+//! a tool the person allowed starts. An agent whose hooks speak would have said its turn ended:
+//! still for 30 looks while it works, it seems stuck (a dialog no hook tells of, a hang).
 
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::time::Duration;
@@ -19,24 +20,34 @@ pub(super) const LOOK: Duration = Duration::from_secs(1);
 const CHANGING: u32 = 3;
 /// How many looks in a row saw the screen still for its agent to be at rest.
 const STILL: u32 = 5;
+/// How many looks in a row saw the screen still for an agent whose hooks speak, at work, to
+/// seem stuck: its hooks would have said its turn ended.
+pub(super) const STUCK: u32 = 30;
+/// What an agent that seems stuck waits for its person with.
+pub(crate) const STUCK_TEXT: &str = "it seems stuck, its screen still for 30 seconds";
 
 /// The looks at an agent's screen since its last hook: its content's hash, whether each of the
-/// last 8 saw it change (the newest in the lowest bit), how many there were, and whether the
-/// person typed into it (they answered the dialog it showed).
+/// last 8 saw it change (the newest in the lowest bit), how many in a row saw it still, and
+/// whether the person typed into it (they answered the dialog it showed).
 #[derive(Default)]
 pub(crate) struct Looks {
     hash: u64,
     changes: u8,
-    count: u8,
+    still: u8,
     answered: bool,
 }
 
 impl Looks {
     /// A look that found the screen's content hashing to `hash`.
     fn see(&mut self, hash: u64) {
-        self.changes = (self.changes << 1) | u8::from(hash != self.hash);
+        let changed = hash != self.hash;
+        self.changes = (self.changes << 1) | u8::from(changed);
         self.hash = hash;
-        self.count = self.count.saturating_add(1);
+        self.still = if changed {
+            0
+        } else {
+            self.still.saturating_add(1)
+        };
     }
 
     /// A look right after the person's input, finding `hash`: it tells nothing, and the looks
@@ -59,15 +70,26 @@ impl Looks {
         };
     }
 
-    /// The state these looks give an agent in `state`; None when they say nothing new. A
-    /// changing screen is at work, also after a dialog once the person typed into it (a subagent
-    /// may draw under one still open); a still one ends only work, never a wait for the person.
-    fn state(&self, state: &Option<AgentState>) -> Option<AgentState> {
+    /// The state these looks give an agent in `state` (`speaks`: its hooks say when a turn
+    /// ends); None when they say nothing new. A changing screen is at work, also after a dialog
+    /// once the person typed into it (a subagent may draw under one still open), or after it
+    /// seemed stuck; a still one ends only work, never a wait for the person. An agent whose hooks
+    /// speak, still for STUCK looks with no key of its person's since its last hook, seems stuck:
+    /// their Esc while Claude Code writes says nothing, and rests it after STILL looks as one
+    /// without hooks.
+    fn state(&self, state: &Option<AgentState>, speaks: bool) -> Option<AgentState> {
         let changing = (self.changes & 0b1111).count_ones() >= CHANGING;
-        let still = u32::from(self.count) >= STILL && self.changes & ((1u8 << STILL) - 1) == 0;
+        let still = u32::from(self.still);
+        let heard = speaks && !self.answered;
         match state {
-            Some(AgentState::Working) if still => Some(AgentState::Idle),
+            Some(AgentState::Working) if heard && still >= STUCK => {
+                Some(AgentState::NeedsYou(Some(STUCK_TEXT.into())))
+            }
+            Some(AgentState::Working) if !heard && still >= STILL => Some(AgentState::Idle),
             None | Some(AgentState::Idle) if changing => Some(AgentState::Working),
+            Some(AgentState::NeedsYou(Some(m))) if changing && m == STUCK_TEXT => {
+                Some(AgentState::Working)
+            }
             Some(AgentState::NeedsYou(_)) if changing && self.answered => Some(AgentState::Working),
             _ => None,
         }
@@ -78,10 +100,12 @@ impl Workspace {
     /// A look at every agent's screen, in every workspace: the state it gives, where that is new.
     /// A look after the person typed, clicked or scrolled in it tells nothing (they change it).
     /// An agent at work whose screen went still ends the task it was on, with its last lines: no
-    /// event will.
+    /// event will. One whose hooks speak, still for 30 looks, seems stuck: it keeps its task, and
+    /// waits for its person.
     pub(super) fn look_at_agents(&mut self, cx: &mut Context<Self>) {
         let mut changed = false;
         let mut still = Vec::new();
+        let mut stuck = Vec::new();
         let spaces = std::iter::once(&mut self.space).chain(&mut self.others);
         for pane in spaces
             .flat_map(|s| s.blocks.values_mut())
@@ -100,11 +124,13 @@ impl Workspace {
                 continue;
             }
             pane.looks.see(hash);
-            let Some(state) = pane.looks.state(&pane.state) else {
+            let Some(state) = pane.looks.state(&pane.state, pane.speaks) else {
                 continue;
             };
-            if state == AgentState::Idle {
-                still.push(pane.term.id().to_string());
+            match &state {
+                AgentState::Idle => still.push(pane.term.id().to_string()),
+                AgentState::NeedsYou(_) => stuck.push(pane.term.id().to_string()),
+                AgentState::Working => {}
             }
             pane.state = Some(state);
             changed = true;
@@ -120,6 +146,9 @@ impl Workspace {
                 tools::tail(&lines, tools::MAX_TEXT)
             ));
             self.end_turn(&terminal, reply, cx);
+        }
+        for terminal in stuck {
+            self.needs_you(&terminal, Some(STUCK_TEXT), cx);
         }
         if changed {
             cx.notify();
@@ -150,14 +179,18 @@ mod tests {
     fn a_screen_that_keeps_changing_is_at_work() {
         // Codex's "Working (5s)" changes once a second: a look may fall between two changes.
         let looks = saw(&[true, false, true, true]);
-        assert_eq!(looks.state(&None), Some(AgentState::Working));
+        assert_eq!(looks.state(&None, false), Some(AgentState::Working));
         assert_eq!(
-            looks.state(&Some(AgentState::Idle)),
+            looks.state(&Some(AgentState::Idle), false),
             Some(AgentState::Working)
         );
-        assert_eq!(looks.state(&Some(AgentState::Working)), None, "nothing new");
         assert_eq!(
-            saw(&[true, false, false, true]).state(&None),
+            looks.state(&Some(AgentState::Working), false),
+            None,
+            "nothing new"
+        );
+        assert_eq!(
+            saw(&[true, false, false, true]).state(&None, false),
             None,
             "twice in four looks: a redraw"
         );
@@ -167,21 +200,21 @@ mod tests {
     fn a_screen_still_for_five_looks_is_at_rest() {
         let working = Some(AgentState::Working);
         assert_eq!(
-            saw(&[true, false, false, false, false, false]).state(&working),
+            saw(&[true, false, false, false, false, false]).state(&working, false),
             Some(AgentState::Idle)
         );
         assert_eq!(
-            saw(&[true, false, false, false, false]).state(&working),
+            saw(&[true, false, false, false, false]).state(&working, false),
             None,
             "four"
         );
         assert_eq!(
-            saw(&[false; 6]).state(&Some(AgentState::NeedsYou(None))),
+            saw(&[false; 6]).state(&Some(AgentState::NeedsYou(None)), false),
             None,
             "a dialog waits for its person, still: it stays yellow"
         );
-        assert_eq!(saw(&[false; 6]).state(&None), None);
-        assert_eq!(saw(&[false; 6]).state(&Some(AgentState::Idle)), None);
+        assert_eq!(saw(&[false; 6]).state(&None, false), None);
+        assert_eq!(saw(&[false; 6]).state(&Some(AgentState::Idle), false), None);
     }
 
     #[test]
@@ -191,10 +224,13 @@ mod tests {
         looks.heard();
         more(&mut looks, &[false]);
         assert_eq!(
-            looks.state(&Some(AgentState::NeedsYou(Some("Allow Bash?".into())))),
+            looks.state(
+                &Some(AgentState::NeedsYou(Some("Allow Bash?".into()))),
+                true
+            ),
             None
         );
-        assert_eq!(looks.state(&Some(AgentState::Idle)), None);
+        assert_eq!(looks.state(&Some(AgentState::Idle), true), None);
     }
 
     #[test]
@@ -203,14 +239,14 @@ mod tests {
         let mut looks = saw(&[true, true]);
         looks.skip(looks.hash + 1, true);
         more(&mut looks, &[true]);
-        assert_eq!(looks.state(&None), None);
+        assert_eq!(looks.state(&None, false), None);
     }
 
     #[test]
     fn a_dialog_ends_only_once_its_person_typed() {
         let asking = Some(AgentState::NeedsYou(Some("Allow Bash?".into())));
         assert_eq!(
-            saw(&[true; 4]).state(&asking),
+            saw(&[true; 4]).state(&asking, true),
             None,
             "a subagent draws under the dialog"
         );
@@ -218,10 +254,36 @@ mod tests {
         let mut looks = saw(&[]);
         looks.skip(looks.hash + 1, true);
         more(&mut looks, &[true; 3]);
-        assert_eq!(looks.state(&asking), Some(AgentState::Working));
+        assert_eq!(looks.state(&asking, true), Some(AgentState::Working));
         // Its next dialog waits for its person again.
         looks.heard();
         more(&mut looks, &[true; 3]);
-        assert_eq!(looks.state(&asking), None);
+        assert_eq!(looks.state(&asking, true), None);
+    }
+
+    #[test]
+    fn a_hooked_agent_still_for_thirty_looks_seems_stuck() {
+        let working = Some(AgentState::Working);
+        let stuck = Some(AgentState::NeedsYou(Some(STUCK_TEXT.into())));
+        let mut looks = saw(&[true]);
+        more(&mut looks, &[false; 29]);
+        assert_eq!(
+            looks.state(&working, true),
+            None,
+            "its hooks spoke: at work for 29"
+        );
+        more(&mut looks, &[false]);
+        assert_eq!(looks.state(&working, true), stuck);
+        assert_eq!(
+            saw(&[true, false, false, false, false, false]).state(&working, false),
+            Some(AgentState::Idle)
+        );
+        // The person typed since its last hook (an Esc while Claude Code writes): at rest after 5.
+        let mut looks = saw(&[]);
+        looks.skip(looks.hash + 1, true);
+        more(&mut looks, &[false; 5]);
+        assert_eq!(looks.state(&working, true), Some(AgentState::Idle));
+        // Moving again: at work, without the person's keys.
+        assert_eq!(saw(&[true, true, true]).state(&stuck, true), working);
     }
 }

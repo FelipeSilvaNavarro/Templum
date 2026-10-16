@@ -8,7 +8,7 @@ use templum_canvas::Wire;
 
 #[cfg(unix)]
 use super::bus::result_of;
-use super::bus::{after, answered, call, call_later, event, me, screen_with};
+use super::bus::{after, answered, call, call_later, event, me, screen_until, screen_with};
 use super::*;
 
 /// Two terminals side by side and wired: mine at (40, 100) and theirs at (900, 100), 700 × 300
@@ -1263,6 +1263,45 @@ fn a_dialog_stays_yellow_until_its_person_answers(cx: &mut TestAppContext) {
         ws.space.terminal(theirs).unwrap().typed.set(true)
     });
     ticks(&ws, cx, theirs, 10, 4);
+    assert_eq!(state_of(&ws, cx, theirs), Some(AgentState::Working));
+}
+
+/// Its hooks spoke, and its screen went still while it worked (a dialog no hook tells of, a hang):
+/// it seems stuck, waits for its person, keeps its task, and works again once its screen moves.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_hooked_agent_gone_still_keeps_its_task_and_says_so(cx: &mut TestAppContext) {
+    use crate::workspace::{AgentState, activity::STUCK_TEXT};
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let task = json!({ "block": them, "task": "think", "wait": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    screen_with(&ws, cx, theirs, "think");
+    enter(cx);
+    // Its screen settled before the looks start counting.
+    screen_until(&ws, cx, theirs, |s| s.matches("think").count() >= 2);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let asks = json!({ "block": them, "event": "needs_you" });
+    let needs_you = call_later(handle, &ws, cx, &terminal, 2, "wait_for", asks);
+    // The first look sees the echo drawn before the hook: the screen is still from there.
+    after(cx, 1000);
+    for _ in 0..29 {
+        after(cx, 1000);
+    }
+    assert_eq!(
+        state_of(&ws, cx, theirs),
+        Some(AgentState::Working),
+        "29 still looks"
+    );
+    after(cx, 1000);
+    after(cx, 300);
+    let stuck = Some(AgentState::NeedsYou(Some(STUCK_TEXT.into())));
+    assert_eq!(state_of(&ws, cx, theirs), stuck);
+    assert!(answers.try_recv().is_err(), "its task stays handed over");
+    let (failed, text) = answered(&needs_you);
+    assert!(!failed && text.contains("it seems stuck"), "{text}");
+    ticks(&ws, cx, theirs, 0, 4);
     assert_eq!(state_of(&ws, cx, theirs), Some(AgentState::Working));
 }
 
