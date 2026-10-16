@@ -203,19 +203,20 @@ later starts with none.
     its block closed, or it gave no answer within its timeout (it may still work: a later end comes too). What it
     spent is what its usage chip shows ([usage.md](usage.md)), since the task was handed over: Claude Code's cost
     (`$0.42`, with its status line, whose token totals are its last call's context, not what it used: batch 8's
-    spikes), Codex's tokens; a spawned agent's task counts its whole session; nothing when unknown. Templum reads it
-    again a second after the end (Claude Code's status line gives its last cost about 0.3 s after its `Stop`), and the
-    notice goes then. The transcript is the one its agent's last turn's end named (`transcript_path`). A task whose
-    agent starts waiting for its person (a hook says so while it wasn't waiting already, its balloon asks, or it seems
-    stuck) sends `[task t7 from Codex · api (k9x1d) waits for its person: Allow Bash?] Its screen is in the pasted
-    text.` and the last 20 lines of its screen, as drawn (300 ms after its hook), once per wait; not while a call of
-    the asker waits for the task, which hears its end, nor to an asker whose `wait_for(needs_you)` hears it. A task's
-    timeout is told by the asker's call that waits for it, else by a notice; a task handed with `wait` gets no notice
-    of its timeout. While the asker waits for its person, its agent is starting (no snapshot found it yet), its person
-    typed into it in the last 3 seconds, or Templum typed into it (a task, a reply, a notice) in the last 5.1 seconds
-    (that text's Enter, up to 2 s after it, and a second one 3 seconds later, may still be due), a notice waits,
-    oldest first. Into a terminal whose agent is gone (its shell is in front, as when `templum delegate` ran from a
-    script), never: the notice is dropped.
+    spikes), Codex's tokens; a session's first task (a spawned agent's, or one handed before Templum read any figure of
+    it) counts it whole; nothing when unknown or when nothing new was read (a timeout's notice before its agent wrote a
+    figure), never `0 tokens`. Templum reads it again a second after the end (Claude Code's status line gives its last
+    cost about 0.3 s after its `Stop`), and the notice goes then. The transcript is the one its agent's last turn's end
+    named (`transcript_path`). A task whose agent starts waiting for its person (a hook says so while it wasn't waiting
+    already, its balloon asks, or it seems stuck) sends `[task t7 from Codex · api (k9x1d) waits for its person: Allow
+    Bash?] Its screen is in the pasted text.` and the last 20 lines of its screen, as drawn (300 ms after its hook),
+    once per wait; not while a call of the asker waits for the task, which hears its end, nor to an asker whose
+    `wait_for(needs_you)` hears it. A task's timeout is told by the asker's call that waits for it, else by a notice; a
+    task handed with `wait` gets no notice of its timeout. While the asker waits for its person, its agent is starting
+    (no snapshot found it yet), its person typed into it in the last 3 seconds, or Templum typed into it (a task, a
+    reply, a notice) in the last 5.1 seconds (that text's Enter, up to 2 s after it, and a second one 3 seconds later,
+    may still be due), a notice waits, oldest first. Into a terminal whose agent is gone (its shell is in front, as when
+    `templum delegate` ran from a script), never: the notice is dropped.
 11. **A change** (batch 8). `delegate` from the agent whose task it is changes that task: typed at once under
     `[from Claude Code · api (b7k2m), a change to task t7] The change is in the pasted text: do it.`, even while it
     works, as Claude Code's queued messages are; the task's answer is the end of the turn that took the change, and

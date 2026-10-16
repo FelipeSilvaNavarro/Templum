@@ -876,6 +876,11 @@ Left by batch 7 and its review; line numbers are those of `development` at eb394
 
 Left by batch 8 and its review; line numbers are those of `development` at c51be7e.
 
+- [ ] **A resumed agent handed a task within 5 s of opening counts its earlier turns as the task's.** `spent`
+  (`crates/templum/src/workspace/delegate.rs`) takes nothing read at the hand-over as nothing spent, so that a
+  session's first task counts it whole; usage is read every `session::EVERY` (5 s), so a resumed session (after a
+  restart, or opened by hand) handed a task before that first read comes back with `done in 12 s, 840211 tokens`.
+  Fix: read the agent's usage at the hand-over (as `tell_end` does at the end) when `pane.usage` is none.
 - [ ] **What Claude Code spent comes back only with its status line, and Gemini CLI's never.** `spent`
   (`crates/templum/src/workspace/delegate.rs`) takes the usage chip's figures: a Claude Code without the status line
   (`usage.claude_limits` off) gives no cost, and its transcript-read session no tokens; Gemini CLI's session isn't

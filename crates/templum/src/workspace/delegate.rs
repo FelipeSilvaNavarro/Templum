@@ -57,16 +57,21 @@ pub(super) const SCREEN_LEAD: &str = "Its screen is in the pasted text.";
 pub(super) const SPENT_AFTER: Duration = Duration::from_secs(1);
 
 /// What a task spent between its agent's usage `from` (when it was handed over) and `to`, as its
-/// usage chip shows it: its cost when both have one, else its tokens; None when unknown. Cost
-/// first: Claude Code's token totals are its last call's context, not what it used (batch 8's
-/// spike S8-1).
+/// usage chip shows it: its cost when `to` has one, else its tokens; None when unknown or when
+/// nothing new was read (a timeout's notice before its agent wrote a figure). Cost first: Claude
+/// Code's token totals are its last call's context, not what it used (batch 8's spike S8-1).
+/// Nothing read at the hand-over is nothing spent: a session's first task counts it whole.
+// ponytail: a resumed session handed a task before Templum's first read of it (session::EVERY)
+// counts its earlier turns too; read its usage at the hand-over if that bites.
 fn spent(from: Option<&Session>, to: Option<&Session>) -> Option<String> {
-    let (from, to) = (from?, to?);
-    if let (Some(a), Some(b)) = (from.cost_usd, to.cost_usd) {
-        return Some(format!("${:.2}", (b - a).max(0.0)));
+    let to = to?;
+    if let Some(b) = to.cost_usd {
+        let a = from.and_then(|f| f.cost_usd).unwrap_or(0.0);
+        return (b > a).then(|| format!("${:.2}", b - a));
     }
-    let (a, b) = (from.tokens?, to.tokens?);
-    Some(format!("{} tokens", b.saturating_sub(a)))
+    let b = to.tokens?;
+    let a = from.and_then(|f| f.tokens).unwrap_or(0);
+    (b > a).then(|| format!("{} tokens", b - a))
 }
 /// How long a terminal says which block pressed keys in it ("answered by").
 pub(crate) const ANSWERED_FOR: Duration = Duration::from_secs(10);
@@ -1009,13 +1014,19 @@ mod tests {
             spent(Some(&codex), Some(&later)).as_deref(),
             Some("60231 tokens")
         );
-        // Unknown at either end: nothing; never less than nothing.
-        assert_eq!(spent(None, Some(&later)), None);
-        assert_eq!(spent(Some(&s(None, None)), Some(&s(None, None))), None);
+        // Nothing read at the hand-over (a session's first task): all of it.
+        assert_eq!(spent(None, Some(&later)).as_deref(), Some("61231 tokens"));
         assert_eq!(
-            spent(Some(&later), Some(&codex)).as_deref(),
-            Some("0 tokens")
+            spent(Some(&s(None, None)), Some(&s(Some(0.52), None))).as_deref(),
+            Some("$0.52")
         );
+        // Unknown at the end: nothing.
+        assert_eq!(spent(Some(&codex), None), None);
+        assert_eq!(spent(Some(&s(None, None)), Some(&s(None, None))), None);
+        // Nothing new (a timeout before its agent wrote a figure), or less: nothing, never "0".
+        assert_eq!(spent(Some(&codex), Some(&codex)), None);
+        assert_eq!(spent(Some(&later), Some(&codex)), None);
+        assert_eq!(spent(Some(&claude), Some(&claude)), None);
     }
 
     #[test]
