@@ -184,9 +184,31 @@ pub(crate) struct Pane {
     /// Who pressed keys in it last (`send_keys`, `interrupt`), as its `[from …]` line names
     /// them, and when.
     pub keys_from: Option<(String, Instant)>,
+    /// The block id of the agent that opened it with `spawn_agent`, which may close it; none for
+    /// one the person opened or pasted.
+    pub opened_by: Option<String>,
+    /// The model and the effort `spawn_agent` gave its agent, typed again when it resumes; gone
+    /// with that agent.
+    pub model: Option<String>,
+    pub effort: Option<String>,
 }
 
 impl Pane {
+    /// Its saved item at `rect`, with the block id `uid`: its folder and agent as last seen (a
+    /// snapshot reads them in the background), no session (pasted, it resumes no agent).
+    pub fn item(&self, rect: templum_canvas::Rect, uid: String) -> session::TerminalItem {
+        session::TerminalItem {
+            uid,
+            rect: rect.into(),
+            folder: self.seen.folder.clone().and_then(session::utf8),
+            agent: self.seen.agent.clone(),
+            session: None,
+            opened_by: self.opened_by.clone(),
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+        }
+    }
+
     /// Its folder, as last seen, is `root` or inside it.
     pub fn works_in(&self, root: &std::path::Path) -> bool {
         self.seen
@@ -344,14 +366,7 @@ impl Body {
     /// snapshot reads them in the background).
     pub fn item(&self, rect: templum_canvas::Rect, cx: &App) -> session::Item {
         match self {
-            Body::Terminal(pane) => session::Item::Terminal(session::TerminalItem {
-                uid: String::new(),
-                rect: rect.into(),
-                folder: pane.seen.folder.clone().and_then(session::utf8),
-                agent: pane.seen.agent.clone(),
-                // Pasted, it resumes no agent.
-                session: None,
-            }),
+            Body::Terminal(pane) => session::Item::Terminal(pane.item(rect, String::new())),
             Body::Kanban(k) => session::Item::Kanban(session::KanbanItem {
                 uid: String::new(),
                 rect: rect.into(),
@@ -592,9 +607,11 @@ impl Space {
                 .iter()
                 .map(|b| match &self.blocks[&b.id] {
                     Body::Terminal(pane) => session::LayoutBlock::Terminal(
-                        self.home(b),
+                        pane.item(
+                            self.home(b),
+                            self.uids.get(&b.id).cloned().unwrap_or_default(),
+                        ),
                         pane.term.processes(),
-                        self.uids.get(&b.id).cloned().unwrap_or_default(),
                     ),
                     _ => session::LayoutBlock::Saved(self.item_of(b, cx)),
                 })
@@ -692,6 +709,11 @@ impl Space {
             if let Some(pane) = self.terminal_mut(id) {
                 // A folder the snapshot couldn't read keeps the one known.
                 seen.folder = seen.folder.or(pane.seen.folder.take());
+                // The model and the effort are its agent's, found before: gone with it, or with
+                // another agent there (typed by hand). One still starting keeps them.
+                if pane.seen.pid.is_some() && seen.agent != pane.seen.agent {
+                    (pane.model, pane.effort) = (None, None);
+                }
                 // Its agent is gone (one that crashed says no SessionEnd): what its hooks said
                 // mustn't come back with the next agent started there by hand.
                 if seen.agent.is_none() {

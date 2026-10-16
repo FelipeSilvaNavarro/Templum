@@ -658,6 +658,15 @@ pub(crate) struct TerminalItem {
     /// their own back. Missing when the agent's files don't tell it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+    /// The block id of the agent that opened it with `spawn_agent`, which may close it; none for
+    /// one the person opened or pasted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opened_by: Option<String>,
+    /// The model and the effort `spawn_agent` gave its agent, typed again when it resumes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -701,8 +710,9 @@ pub(crate) struct Layout {
 }
 
 pub(crate) enum LayoutBlock {
-    /// A terminal's rect, its processes, read in the background, and its block id.
-    Terminal(Rect, Processes, String),
+    /// A terminal as the UI thread knows it: its id, rect, opener, model and effort; its folder,
+    /// agent and session come from its processes, read in the background.
+    Terminal(TerminalItem, Processes),
     /// Any other kind: its item, complete, built on the UI thread.
     Saved(Item),
 }
@@ -716,7 +726,7 @@ impl Layout {
             .blocks
             .iter()
             .filter_map(|b| match b {
-                LayoutBlock::Terminal(_, p, _) => Some(p.clone()),
+                LayoutBlock::Terminal(_, p) => Some(p.clone()),
                 LayoutBlock::Saved(_) => None,
             })
             .collect();
@@ -735,16 +745,20 @@ impl Layout {
                 .blocks
                 .iter()
                 .map(|b| match b {
-                    LayoutBlock::Terminal(rect, _, uid) => {
+                    LayoutBlock::Terminal(item, _) => {
                         // One answer per terminal, in order.
                         let found = found.next().unwrap_or_default();
+                        // The model and the effort are the agent the UI thread knew there: gone,
+                        // or another one found (typed by hand), they aren't its.
+                        let theirs = item.agent.is_none() || item.agent == found.agent;
                         Item::Terminal(TerminalItem {
-                            uid: uid.clone(),
-                            rect: (*rect).into(),
                             folder: found.folder.and_then(utf8),
-                            agent: found.agent,
                             // The agent's files first: they follow a switch inside it.
                             session: sessions.next().flatten().or(found.session),
+                            agent: found.agent,
+                            model: item.model.clone().filter(|_| theirs),
+                            effort: item.effort.clone().filter(|_| theirs),
+                            ..item.clone()
                         })
                     }
                     LayoutBlock::Saved(item) => item.clone(),
@@ -876,6 +890,45 @@ mod tests {
     }
 
     #[test]
+    fn a_terminal_keeps_who_opened_it_its_model_and_effort() {
+        let text = r#"{"kind":"terminal","rect":{"x":0,"y":0,"w":1,"h":1},"agent":"codex",
+                      "opened_by":"b7k2m","model":"gpt-5.6-luna","effort":"high"}"#;
+        let item: Item = serde_json::from_str(text).unwrap();
+        let Item::Terminal(t) = &item else {
+            panic!("{item:?}")
+        };
+        assert_eq!(
+            (
+                t.opened_by.as_deref(),
+                t.model.as_deref(),
+                t.effort.as_deref()
+            ),
+            (Some("b7k2m"), Some("gpt-5.6-luna"), Some("high"))
+        );
+        let back = serde_json::to_string(&item).unwrap();
+        for part in [
+            r#""opened_by":"b7k2m""#,
+            r#""model":"gpt-5.6-luna""#,
+            r#""effort":"high""#,
+        ] {
+            assert!(back.contains(part), "{back}");
+        }
+        // A file from before has none, and none is written.
+        let older: Item =
+            serde_json::from_str(r#"{"kind":"terminal","rect":{"x":0,"y":0,"w":1,"h":1}}"#)
+                .unwrap();
+        let Item::Terminal(o) = &older else {
+            panic!("{older:?}")
+        };
+        assert_eq!((&o.opened_by, &o.model, &o.effort), (&None, &None, &None));
+        let plain = serde_json::to_string(&older).unwrap();
+        assert!(
+            !plain.contains("opened_by") && !plain.contains("model") && !plain.contains("effort"),
+            "{plain}"
+        );
+    }
+
+    #[test]
     fn a_git_item_round_trips_and_its_tab_defaults_to_changes() {
         let text = r#"{"kind":"git","rect":{"x":1,"y":2,"w":800,"h":560},"folder":"/p"}"#;
         let item: Item = serde_json::from_str(text).unwrap();
@@ -931,6 +984,9 @@ mod tests {
                     folder: Some("/home/u/proj".into()),
                     agent: Some("claude".into()),
                     session: Some("0d5e5f4b-1c2d-4e3f-8a9b-0c1d2e3f4a5b".into()),
+                    opened_by: None,
+                    model: None,
+                    effort: None,
                 }),
                 Item::Terminal(TerminalItem {
                     uid: String::new(),
@@ -943,6 +999,9 @@ mod tests {
                     folder: None,
                     agent: None,
                     session: None,
+                    opened_by: None,
+                    model: None,
+                    effort: None,
                 }),
                 Item::Kanban(KanbanItem {
                     uid: String::new(),
@@ -1544,9 +1603,17 @@ mod tests {
             // No processes: their folders are unknown.
             blocks: vec![
                 LayoutBlock::Terminal(
-                    Rect::new(0.0, 0.0, 10.0, 10.0),
+                    TerminalItem {
+                        uid: "t1".into(),
+                        rect: Rect::new(0.0, 0.0, 10.0, 10.0).into(),
+                        folder: None,
+                        agent: None,
+                        session: None,
+                        opened_by: Some("b7k2m".into()),
+                        model: Some("opus".into()),
+                        effort: Some("high".into()),
+                    },
                     Processes::default(),
-                    "t1".into(),
                 ),
                 LayoutBlock::Saved(Item::Kanban(KanbanItem {
                     uid: String::new(),
@@ -1554,9 +1621,17 @@ mod tests {
                     board: Some(3),
                 })),
                 LayoutBlock::Terminal(
-                    Rect::new(20.0, 0.0, 30.0, 10.0),
+                    TerminalItem {
+                        uid: "t2".into(),
+                        rect: Rect::new(20.0, 0.0, 30.0, 10.0).into(),
+                        folder: None,
+                        agent: None,
+                        session: None,
+                        opened_by: None,
+                        model: None,
+                        effort: None,
+                    },
                     Processes::default(),
-                    "t2".into(),
                 ),
             ],
             focused: Some(1),
@@ -1570,6 +1645,18 @@ mod tests {
         assert_eq!(saved.recent, ["/a", "/b"], "recent folders, newest first");
         let uids: Vec<&str> = saved.items.iter().map(Item::uid).collect();
         assert_eq!(uids, ["t1", "", "t2"], "each block keeps its id");
+        let Item::Terminal(first) = &saved.items[0] else {
+            panic!()
+        };
+        assert_eq!(
+            (
+                first.opened_by.as_deref(),
+                first.model.as_deref(),
+                first.effort.as_deref()
+            ),
+            (Some("b7k2m"), Some("opus"), Some("high")),
+            "what the UI thread knows of it, kept"
+        );
         assert_eq!(saved.version, VERSION);
         assert_eq!(
             saved.camera,
@@ -1601,5 +1688,42 @@ mod tests {
             }
         );
         assert_eq!(saved.focused, Some(1));
+    }
+
+    /// The UI thread knew Codex in the terminal, and the snapshot finds it gone (or another agent
+    /// there, `claude` typed by hand): its model and effort aren't written with what is found, so
+    /// a quit right then doesn't resume that agent with Codex's flags.
+    #[test]
+    fn a_snapshot_drops_the_model_of_an_agent_no_longer_there() {
+        let layout = Layout {
+            camera: Camera::at(templum_canvas::Point::new(0.0, 0.0), 1.0),
+            blocks: vec![LayoutBlock::Terminal(
+                TerminalItem {
+                    uid: "t1".into(),
+                    rect: Rect::new(0.0, 0.0, 10.0, 10.0).into(),
+                    folder: None,
+                    agent: Some("codex".into()),
+                    session: None,
+                    opened_by: Some("b7k2m".into()),
+                    model: Some("gpt-5.6-luna".into()),
+                    effort: Some("high".into()),
+                },
+                Processes::default(),
+            )],
+            focused: None,
+            recent: Vec::new(),
+            agents: Default::default(),
+            ink: Vec::new(),
+            grid: None,
+            wires: Vec::new(),
+        };
+        let (saved, _) = layout.snapshot(None);
+        let Item::Terminal(t) = &saved.items[0] else {
+            panic!()
+        };
+        assert_eq!(
+            (t.opened_by.as_deref(), &t.agent, &t.model, &t.effort),
+            (Some("b7k2m"), &None, &None, &None)
+        );
     }
 }

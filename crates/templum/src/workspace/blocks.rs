@@ -430,6 +430,9 @@ impl Workspace {
                         events: 0,
                         speaks: false,
                         keys_from: None,
+                        opened_by: None,
+                        model: None,
+                        effort: None,
                     })),
                 );
                 self.added(id);

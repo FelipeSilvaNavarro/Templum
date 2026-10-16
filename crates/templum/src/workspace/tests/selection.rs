@@ -255,16 +255,38 @@ fn a_reopened_terminal_resumes_its_agent_but_a_pasted_one_does_not(cx: &mut Test
             let pane = ws.space.terminal_mut(terminal).unwrap();
             pane.seen.agent = Some("claude".into());
             pane.seen.folder = Some(folder.path().to_path_buf());
+            (pane.opened_by, pane.model, pane.effort) = (
+                Some("b7k2m".into()),
+                Some("opus".into()),
+                Some("high".into()),
+            );
             ws.close_now(&[terminal], Then::New, window, cx);
             assert!(ws.undo_canvas(false, window, cx));
         });
         let back = ws.read(cx).space.selected[0];
         assert_eq!(agent_of(ws.read(cx), back).as_deref(), Some("claude"));
+        let kept = |ws: &Workspace, id: BlockId| {
+            let p = ws.space.terminal(id).unwrap();
+            (p.opened_by.clone(), p.model.clone(), p.effort.clone())
+        };
+        assert_eq!(
+            kept(ws.read(cx), back),
+            (
+                Some("b7k2m".into()),
+                Some("opus".into()),
+                Some("high".into())
+            )
+        );
         window.press(COPY, cx);
         window.press(PASTE, cx);
         let pasted = ws.read(cx).space.selected[0];
         assert_ne!(pasted, back);
         assert_eq!(agent_of(ws.read(cx), pasted), None);
+        assert_eq!(
+            kept(ws.read(cx), pasted).0,
+            None,
+            "a pasted block was opened by the person"
+        );
     })
     .unwrap();
 }

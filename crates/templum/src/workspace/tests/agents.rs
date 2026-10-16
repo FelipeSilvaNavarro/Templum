@@ -84,7 +84,9 @@ fn a_saved_agent_is_resumed_in_its_block(cx: &mut TestAppContext) {
             r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
                   {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{folder}","agent":"claude"}},
                   {{"kind":"terminal","rect":{{"x":800,"y":0,"w":700,"h":450}},"folder":"{folder}","agent":"claude","session":"aaa-1"}},
-                  {{"kind":"terminal","rect":{{"x":1600,"y":0,"w":700,"h":450}},"folder":"{folder}","agent":"claude","session":"bbb-2"}}]}}"#
+                  {{"kind":"terminal","rect":{{"x":1600,"y":0,"w":700,"h":450}},"folder":"{folder}","agent":"claude","session":"bbb-2",
+                    "opened_by":"b7k2m","model":"opus","effort":"high"}},
+                  {{"kind":"terminal","rect":{{"x":2400,"y":0,"w":700,"h":450}},"folder":"{folder}","agent":"claude","session":"ccc-3","model":"a b"}}]}}"#
         ),
     );
     let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
@@ -93,11 +95,12 @@ fn a_saved_agent_is_resumed_in_its_block(cx: &mut TestAppContext) {
     let wanted = [
         "claude --continue",
         "claude --resume aaa-1",
-        "claude --resume bbb-2",
+        "claude --resume bbb-2 --model opus --effort high",
+        "claude --resume ccc-3",
     ];
     // The test shell echoes what it is typed.
     let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
+    let shown = loop {
         let shown: Vec<String> = ids
             .iter()
             .map(|&id| {
@@ -113,11 +116,76 @@ fn a_saved_agent_is_resumed_in_its_block(cx: &mut TestAppContext) {
             .collect();
         let once = |want: &str| shown.iter().filter(|s| s.contains(want)).count() == 1;
         if wanted.iter().all(|w| once(w)) {
-            break;
+            break shown;
         }
         assert!(Instant::now() < deadline, "not typed: {shown:?}");
         std::thread::sleep(Duration::from_millis(50));
-    }
+    };
+    assert!(
+        !shown.iter().any(|s| s.contains("--model a")),
+        "a model it can't type safely isn't typed: {shown:?}"
+    );
+    ws.read_with(cx, |ws, _| {
+        let kept: Vec<_> = ws
+            .space
+            .terminals()
+            .filter(|(_, p)| p.opened_by.is_some() || p.model.is_some() || p.effort.is_some())
+            .map(|(_, p)| (p.opened_by.clone(), p.model.clone(), p.effort.clone()))
+            .collect();
+        assert_eq!(
+            kept,
+            [(
+                Some("b7k2m".into()),
+                Some("opus".into()),
+                Some("high".into())
+            )]
+        );
+    });
+}
+
+/// The model and the effort are its agent's: a snapshot that finds that agent gone, or another
+/// one there (`claude` typed by hand after the spawned Codex quit), drops them.
+#[gpui_kit::test]
+fn an_agent_that_left_takes_its_model_and_effort_with_it(cx: &mut TestAppContext) {
+    use super::delegate::snapshot;
+    use templum_terminal::Inspection;
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let spawned = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.update(cx, |ws, _| {
+            let pane = ws.space.terminal_mut(id).unwrap();
+            (pane.opened_by, pane.model, pane.effort) = (
+                Some("b7k2m".into()),
+                Some("gpt-5.6-luna".into()),
+                Some("high".into()),
+            );
+        })
+    };
+    let kept = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let p = ws.space.terminal(id).unwrap();
+            (p.opened_by.clone(), p.model.clone(), p.effort.clone())
+        })
+    };
+    let found = |agent: Option<&str>, pid: Option<u32>| Inspection {
+        agent: agent.map(str::to_string),
+        pid,
+        ..Default::default()
+    };
+    spawned(&ws, cx);
+    // Not started yet, then running: kept.
+    snapshot(handle, &ws, cx, id, found(None, None));
+    snapshot(handle, &ws, cx, id, found(Some("codex"), Some(1)));
+    assert_eq!(kept(&ws, cx).1.as_deref(), Some("gpt-5.6-luna"));
+    snapshot(handle, &ws, cx, id, found(Some("claude"), Some(2)));
+    assert_eq!(
+        kept(&ws, cx),
+        (Some("b7k2m".into()), None, None),
+        "still opened by it"
+    );
+    spawned(&ws, cx);
+    snapshot(handle, &ws, cx, id, found(None, None));
+    assert_eq!(kept(&ws, cx).1, None, "its agent left");
 }
 
 #[test]
