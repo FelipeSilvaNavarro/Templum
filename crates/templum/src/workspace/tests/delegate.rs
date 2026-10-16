@@ -923,6 +923,48 @@ fn a_dialog_in_a_task_is_told_once(cx: &mut TestAppContext) {
     assert_eq!(told(cx).len(), 2);
 }
 
+/// A task's agent asks its person through Templum (`ask_user`): its balloon asks, and the agent
+/// that handed it the task hears so, as of a dialog.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_balloon_in_a_task_is_told(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    asker(&ws, cx, mine);
+    // Mine asks its person: the notice waits, to be read here.
+    event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({ "event": "needs_you", "message": "Allow Edit?" }),
+    );
+    call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "delegate",
+        json!({ "block": them, "task": "go" }),
+    );
+    screen_with(&ws, cx, theirs, "go");
+    enter(cx);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let asked = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
+    let _asked = call_later(handle, &ws, cx, &worker, 2, "ask_user", asked);
+    after(cx, 300);
+    let told = notices(&ws, cx);
+    assert!(
+        told.len() == 1
+            && told[0].1.starts_with("[task t1 from ")
+            && told[0].1.contains(&format!(
+                "({them}) waits for its person: Ship it?] Its screen is in the pasted text.\n"
+            )),
+        "{told:?}"
+    );
+}
+
 /// A task handed over without `wait` gives no answer within its timeout: its asker hears it
 /// failed, and later its end too. One it waits for hears its timeout from its call.
 #[cfg(unix)]
