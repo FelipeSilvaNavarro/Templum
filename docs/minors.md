@@ -764,8 +764,10 @@ Left by batch 7 and its review; line numbers are those of `development` at eb394
   3 seconds then.
 - [ ] **The first task into a Codex that took no prompt yet isn't confirmed.** `Pane::speaks` is set by a hook, and a
   hooked Codex's first one comes with its first prompt (its `SessionStart` too), so `send_task` gives that task no
-  confirmation and no second Enter. Fix: set `speaks` when `typed()` gave Codex its hooks and its person trusted
-  them (none says so before a prompt: keep as is unless it bites).
+  confirmation and no second Enter. If its Enter joined the paste, the text sits in Codex's input box, its screen
+  still, and the agent that handed it waits for the task's timeout (600 s by default). Fix: set `speaks` when
+  `typed()` gave Codex its hooks and its person trusted them (none says so before a prompt: keep as is unless it
+  bites).
 - [ ] **A Codex whose person trusted only some of its hooks fails its tasks.** Codex's review trusts hook by hook;
   without `UserPromptSubmit`, `Pane::submitted` stays 0. Once any other hook but `Stop` and `Interrupt` spoke
   (`SessionStart`, `PostToolUse`, `PermissionRequest` set `Pane::speaks`), `confirm`
@@ -782,10 +784,17 @@ Left by batch 7 and its review; line numbers are those of `development` at eb394
   true` if so.
 - [ ] **On Windows a spawned Claude Code or Codex may get its prompt in its trust question.** `look_ready`
   (`crates/templum/src/workspace/spawn.rs`) skips the input check there (ConPTY may not pass bracketed paste and the
-  cursor on), so a still trust question takes the prompt and its Enter; Claude Code's highlighted answer there is
-  "No, exit" (most likely the paste changes nothing and the task just ends untaken). Fix: check by hand on Windows
-  whether `Modes::typing` follows; if so, drop the `cfg!(windows)`. Meanwhile a gated Claude Code there could also
-  wait for `Pane::speaks` (its `SessionStart` comes after its trust question; Codex's comes only with a prompt).
+  cursor on), so a still trust question takes the prompt. Without bracketed paste `type_in` sends it as keys,
+  control characters as spaces (`typed_bytes`, `crates/templum-terminal/src/input.rs`): Codex's question ("1. Yes,
+  continue  2. No, quit") takes a `1` or `2` at once, and the caller's 5-character id in `[from … (xxxxx)]` has one
+  about 1 time in 4 (the task's own text may too). A `2` quits Codex; a `1` trusts the folder for the person, and the
+  digits after it may answer its hooks question. Claude Code's question (highlighted "No, exit") may take keys the
+  same way. A question that shows no typed text gets no Enter, and the task ends untaken. Before batch 7 a spawned
+  Claude Code waited for its `SessionStart`, which comes after its trust question, on every platform: on Windows this
+  is a regression for it (Codex was looked at the same way before). Fix: check by hand on Windows whether
+  `Modes::typing` follows; if so, drop the `cfg!(windows)`. Meanwhile, one condition in `look_ready` restores the old
+  wait there: on Windows a gated Claude Code also waits for `Pane::speaks` (Codex's `SessionStart` comes only with a
+  prompt).
 - [ ] **The person's own prompt queued in Claude Code shows idle for a few seconds, and a task typed then gets the
   wrong answer.** After the turn it was queued behind ends (`Stopped`, `crates/templum/src/workspace/bus.rs`), no hook
   says the next turn starts; the dot is idle until the screen's looks see it work (about 3 s). A task delegated in
@@ -816,16 +825,30 @@ Left by batch 7 and its review; line numbers are those of `development` at eb394
   hooks or not; one whose hooks speak, then still for 30 looks, seems stuck: its dot turns yellow and `delegate`
   refuses it as waiting for its person (before batch 7 it rested after 5 still seconds). The person's own slower
   `Stop` or `SessionStart` hooks drawing after Templum's, or a background task's footer, can do it. Claude Code
-  comes back at its `idle_prompt` a minute later; Codex stays so until a hook comes or its screen moves again. Fix:
+  comes back at its `idle_prompt` only when its screen moved within a minute of its last `Stop`: that comes once per
+  idle stretch, 60 s after the `Stop` (S2). Otherwise it stays yellow, as Codex does, until a hook comes or its screen
+  moves again. Fix:
   a bit in `Looks` set when `state()` turns `Working` from None or Idle, cleared by `heard()`: only an agent a hook
   set `Working` seems stuck; one the looks set rests after `STILL` looks.
 - [ ] **An agent that seems stuck never rests from its screen.** In `Looks::state` (`activity.rs`) only a changing
   screen leaves `STUCK_TEXT`. A Claude Code dialog no hook tells of, open mid-turn, seems stuck after 30 s; the
   person declines it or presses Esc, and the agent is back at its prompt with no hook and a still screen: the dot
   stays yellow, `delegate` refuses it as waiting for its person, and its task waits (Claude Code until its
-  `idle_prompt` a minute later ends the task without an answer; Codex until the task's timeout). Fix:
+  `idle_prompt` ends the task without an answer, a minute after it went back to its prompt; one that seemed stuck
+  more than a minute into a rest, as in the entry above, gets none, and its task waits, as Codex's does, for the
+  task's timeout). Fix:
   `Some(NeedsYou(Some(m))) if m == STUCK_TEXT && self.answered && still >= STILL => Some(Idle)`, which ends the
   task with its screen through the `still` list of `look_at_agents`.
+- [ ] **`interrupt` on a task its agent queued and hasn't taken yet starts it, its answer going to no one.**
+  `interrupt` (`crates/templum/src/workspace/delegate.rs`) ends the caller's task, presses Esc, and says "Pressed Esc
+  … and ended the task you handed it", whatever the task's state. Claude Code delegates "say B" with `wait` to a Codex
+  at work on its person's `sleep 60`: Codex holds it as a steer and says nothing until the turn takes it
+  (`Handed::taken` stays false, S3). An `interrupt` 10 s later aborts the person's turn, and Codex's Esc "interrupt[s]
+  and send[s] immediately": it starts "say B" at once. A Claude Code at work queues the task (`behind`), and after an
+  Esc it runs a queued message as its next turn (S2). Either way the agent does the task while the caller was told it
+  ended, and its turn's `Stopped` (`bus.rs`) finds no task handed: the answer goes to no one. Fix: when the caller's
+  task is still `!taken || behind`, say so in the result ("it had queued your task and may still run it"); check by
+  hand whether Ctrl+C (Codex) or Up and clearing the input (Claude Code) drops the queued task instead, and press that.
 - [ ] **A Claude Code subagent's tool end may take a queued task into the wrong turn.** The `Working` arm (`bus.rs`)
   clears `behind` on any `PostToolUse`, as the spikes saw a tool's end take a queued prompt into the turn under way
   (S2); whether a subagent's tool end does too wasn't checked. If not, the main turn's `Stop` answers the task with
