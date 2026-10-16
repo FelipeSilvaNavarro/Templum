@@ -98,7 +98,8 @@ fn a_saved_agent_is_resumed_in_its_block(cx: &mut TestAppContext) {
         "claude --resume bbb-2 --model opus --effort high",
         "claude --resume ccc-3",
     ];
-    // The test shell echoes what it is typed.
+    // The test shell echoes what it is typed, wrapped at its width (cmd's long prompt splits
+    // `--model opus`): its lines joined.
     let deadline = Instant::now() + Duration::from_secs(10);
     let shown = loop {
         let shown: Vec<String> = ids
@@ -110,7 +111,7 @@ fn a_saved_agent_is_resumed_in_its_block(cx: &mut TestAppContext) {
                         ws.space.terminal(id).unwrap().term.shared(),
                         &ws.theme.palette,
                     );
-                    snap.text()
+                    snap.text().replace('\n', "")
                 })
             })
             .collect();
