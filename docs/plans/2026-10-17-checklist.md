@@ -483,7 +483,7 @@ git commit -m "feat(checklist): edit a checklist's name and items in place, Ente
 - Consumes: Task 1's `load`/`save`.
 - Produces: `Workspace::checklists_saved: Option<Checklists>`, `checklists_frozen: bool`, as the boards'.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[gpui_kit::test]
@@ -505,22 +505,22 @@ fn an_unparsable_checklists_json_is_set_aside_and_the_canvas_still_saves(cx: &mu
 }
 ```
 
-- [ ] **Step 2: Run them to see them fail**
+- [x] **Step 2: Run them to see them fail**
 
 Run: `cargo test -p templum checklists::`
 Expected: FAIL (nothing is written).
 
-- [ ] **Step 3: Implement** as `boards.json` throughout: `load_spaces` reads it (`Moved` warns "Couldn't read the
+- [x] **Step 3: Implement** as `boards.json` throughout: `load_spaces` reads it (`Moved` warns "Couldn't read the
   checklists (…); they were kept as …", `Unreadable` freezes them with "…; they won't be saved this session"); the
   snapshot writes it in the background beside the boards when it changed, and `save_canvas_now` on quit; canvases
   never wait on it.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p templum`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A crates/templum

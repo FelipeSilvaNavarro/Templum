@@ -9,6 +9,7 @@ use templum_canvas::{BlockId, Rect, chrome};
 
 use crate::alert;
 use crate::board;
+use crate::checklists;
 use crate::notes;
 use crate::prompt;
 use crate::session;
@@ -58,6 +59,29 @@ impl Workspace {
                 eprintln!("templum: {message}");
                 show_notification(window, cx, Notification::error(message));
                 self.boards_frozen = true;
+            }
+            Some(Loaded::Nothing) | None => {}
+        }
+        match self.data_dir.as_deref().map(checklists::load) {
+            Some(Loaded::Saved(checklists)) => {
+                self.checklists_saved = Some(checklists.clone());
+                self.checklists = checklists;
+            }
+            Some(Loaded::Moved { to, why }) => {
+                let message = format!(
+                    "Couldn't read the checklists ({why}); they were kept as {}",
+                    to.display()
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+            }
+            Some(Loaded::Unreadable(why)) => {
+                let message = format!(
+                    "Couldn't read the checklists ({why}); they won't be saved this session"
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::error(message));
+                self.checklists_frozen = true;
             }
             Some(Loaded::Nothing) | None => {}
         }

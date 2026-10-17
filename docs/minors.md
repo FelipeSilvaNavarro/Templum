@@ -176,7 +176,8 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   private: a test-only accessor, or an element id on the message).
 - [ ] **A test that writes a script and runs it can fail once with "Text file busy".** Another test's thread may
   fork while the script is still open for writing, and Linux then refuses to run it (ETXTBSY):
-  `a_cancelled_command_is_killed_and_says_so` (`crates/templum-git/tests/repo.rs`) did once in a full run, and the
+  `a_cancelled_command_is_killed_and_says_so` and `a_clone_stopped_midway_leaves_no_folder_and_an_empty_one_empty`
+  (`crates/templum-git/tests/repo.rs`) each did once in a full run, and the
   fake agent of `crates/templum/src/workspace/tests/git_message.rs` is written the same way. Fix: have `sh` read
   the script (`sh <path> …`) instead of running the file itself.
 - [ ] **`an_agent_past_its_timeout_is_stopped` counts the notifications, not what they say.**

@@ -923,6 +923,10 @@ pub struct Workspace {
     /// One checklist as it was before each change to it, newest last, at most CHECKLIST_UNDO
     /// (see `edit_checklist`).
     checklists_undo: Vec<List>,
+    /// The checklists as last read or written, to write only what changed.
+    checklists_saved: Option<Checklists>,
+    /// `checklists.json` couldn't be read: it isn't written this session.
+    checklists_frozen: bool,
     /// `boards` before each change, newest last, at most BOARD_UNDO (see `edit_boards`).
     boards_undo: Vec<Boards>,
     /// The boards as last read or written, to write only what changed.
@@ -1339,6 +1343,8 @@ impl Workspace {
             notes_saved: None,
             checklists: Checklists::default(),
             checklists_undo: Vec::new(),
+            checklists_saved: None,
+            checklists_frozen: false,
             notes_frozen: false,
             index_frozen: false,
             sidebar: true,

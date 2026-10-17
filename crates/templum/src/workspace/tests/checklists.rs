@@ -5,6 +5,7 @@ use gpui_kit::ElementId;
 use gpui_kit::component::input::InputState;
 
 use crate::checklist::Field;
+use crate::session::Loaded;
 
 use super::*;
 
@@ -564,4 +565,125 @@ fn a_field_takes_its_texts_place_at_every_zoom(cx: &mut TestAppContext) {
             );
         }
     }
+}
+
+/// One snapshot period, with the background write finished.
+fn tick(cx: &mut TestAppContext) {
+    cx.executor().advance_clock(crate::session::EVERY);
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn checklists_and_their_tabs_come_back_after_a_restart(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
+    let id = new_checklist(handle, &ws, cx);
+    let first = ws.read_with(cx, |ws, _| shown(ws, id));
+    click(handle, cx, ("checklist-tab-new", id.0 as usize));
+    let (second, item) = ws.update(cx, |ws, _| {
+        let second = shown(ws, id);
+        ws.checklists.rename(first, "Groceries", 1);
+        ws.checklists.rename(second, "Deploy", 1);
+        let item = ws
+            .checklists
+            .add_item(second, None, "Build", true, 1)
+            .unwrap();
+        (second, item)
+    });
+    // The snapshot writes them.
+    tick(cx);
+    let Loaded::Saved(written) = crate::checklists::load(dir.path()) else {
+        panic!("checklists.json not written");
+    };
+    assert!(
+        written
+            .get(second)
+            .is_some_and(|l| l.item(item).unwrap().done)
+    );
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    let (_, again) = open_in(cx, None, Some(dir.path().to_path_buf()));
+    again.read_with(cx, |ws, _| {
+        let c = ws
+            .space
+            .blocks
+            .values()
+            .find_map(|b| b.checklist())
+            .unwrap();
+        assert_eq!(c.tabs, [first, second]);
+        assert_eq!(c.active, 1);
+        let deploy = ws.checklists.get(second).unwrap();
+        assert_eq!(deploy.name, "Deploy");
+        assert!(deploy.item(item).unwrap().done);
+    });
+}
+
+#[gpui_kit::test]
+fn a_checklist_named_twice_in_a_canvas_opens_once(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        crate::checklists::path(dir.path()),
+        r#"{"version":1,"next_id":3,"checklists":[{"id":3,"name":"Deploy"}]}"#,
+    )
+    .unwrap();
+    write_canvas(
+        dir.path(),
+        r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[
+            {"kind":"checklist","rect":{"x":0,"y":0,"w":320,"h":360},"checklists":[3,3]},
+            {"kind":"checklist","rect":{"x":400,"y":0,"w":320,"h":360},"checklists":[3]}]}"#,
+    );
+    let (_, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
+    ws.read_with(cx, |ws, _| {
+        let tabs: Vec<u64> = ws
+            .space
+            .blocks
+            .values()
+            .filter_map(|b| b.checklist())
+            .flat_map(|c| c.tabs.clone())
+            .collect();
+        assert_eq!(tabs, [3], "one tab in all");
+    });
+}
+
+#[gpui_kit::test]
+fn an_unparsable_checklists_json_is_set_aside_and_the_canvas_still_saves(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(crate::checklists::path(dir.path()), "{").unwrap();
+    let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
+    assert!(dir.path().join("checklists.json.bak").exists());
+    assert_eq!(notification_count(handle, cx), 1);
+    ws.read_with(cx, |ws, _| assert!(ws.checklists.lists.is_empty()));
+    let terminal = first_id(&ws, cx);
+    ws.update(cx, |ws, cx| {
+        ws.space.canvas.get_mut(terminal).unwrap().rect.x += 100.0;
+        ws.checklists.add(1);
+        ws.save_canvas_now(cx);
+    });
+    assert!(crate::session::path(dir.path(), crate::session::DEFAULT_ID).exists());
+    assert!(crate::checklists::path(dir.path()).exists(), "a new file");
+}
+
+/// A checklists.json Templum can't open isn't written over that session; the canvas is.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_unopenable_checklists_json_is_left_alone(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir().unwrap();
+    let path = crate::checklists::path(dir.path());
+    let text = r#"{"version":1,"checklists":[{"id":1,"name":"Keep"}]}"#;
+    std::fs::write(&path, text).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
+    assert_eq!(notification_count(handle, cx), 1);
+    ws.update(cx, |ws, cx| {
+        ws.checklists.add(1);
+        ws.save_canvas_now(cx);
+    });
+    tick(cx);
+    assert!(crate::session::path(dir.path(), crate::session::DEFAULT_ID).exists());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        text,
+        "never written over"
+    );
 }

@@ -10,6 +10,7 @@ use templum_canvas::{BlockId, Camera, Point, Rect, Size, chrome};
 use crate::agents::AgentEntry;
 use crate::board::{self, Boards};
 use crate::checklist::{self, Checklist};
+use crate::checklists::{self, Checklists};
 use crate::editor::{self, Editor};
 use crate::git_block::{self, Git};
 use crate::kanban::{self, Kanban};
@@ -335,8 +336,11 @@ impl Workspace {
             .then(|| self.boards.clone());
         let notes = (!self.notes_frozen && self.notes_saved.as_ref() != Some(&self.notes))
             .then(|| self.notes.clone());
+        let checklists = (!self.checklists_frozen
+            && self.checklists_saved.as_ref() != Some(&self.checklists))
+        .then(|| self.checklists.clone());
         cx.spawn_in(window, async move |ws, cx| {
-            let (done, boards, notes) = cx
+            let (done, boards, notes, checklists) = cx
                 .background_executor()
                 .spawn(async move {
                     let notes = notes.map(|n| {
@@ -360,11 +364,15 @@ impl Workspace {
                         let written = board::save(&dir, &b, generation);
                         (b, written)
                     });
-                    (done, boards, notes)
+                    let checklists = checklists.map(|c| {
+                        let written = checklists::save(&dir, &c, generation);
+                        (c, written)
+                    });
+                    (done, boards, notes, checklists)
                 })
                 .await;
             ws.update_in(cx, |ws, window, cx| {
-                ws.snapshot_done(done, boards, notes, window, cx)
+                ws.snapshot_done(done, boards, notes, checklists, window, cx)
             })
             .ok();
         })
@@ -376,6 +384,7 @@ impl Workspace {
         done: Vec<SpaceSnapshot>,
         boards: Option<(Boards, std::io::Result<()>)>,
         notes: Option<(notes::Notes, std::io::Result<()>)>,
+        checklists: Option<(Checklists, std::io::Result<()>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -394,6 +403,14 @@ impl Workspace {
             Some((notes, Ok(()))) => {
                 wrote = true;
                 self.notes_saved = Some(notes);
+            }
+            Some((_, Err(err))) => failed = Some(err),
+            None => {}
+        }
+        match checklists {
+            Some((checklists, Ok(()))) => {
+                wrote = true;
+                self.checklists_saved = Some(checklists);
             }
             Some((_, Err(err))) => failed = Some(err),
             None => {}
@@ -449,6 +466,12 @@ impl Workspace {
             match board::save(&dir, &self.boards, generation) {
                 Ok(()) => self.boards_saved = Some(self.boards.clone()),
                 Err(err) => eprintln!("templum: couldn't save the boards: {err}"),
+            }
+        }
+        if !self.checklists_frozen && self.checklists_saved.as_ref() != Some(&self.checklists) {
+            match checklists::save(&dir, &self.checklists, generation) {
+                Ok(()) => self.checklists_saved = Some(self.checklists.clone()),
+                Err(err) => eprintln!("templum: couldn't save the checklists: {err}"),
             }
         }
         if !self.notes_frozen && self.notes_saved.as_ref() != Some(&self.notes) {
