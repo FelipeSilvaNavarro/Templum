@@ -433,3 +433,48 @@ fn closing_a_busy_terminal_asks_first(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+/// The pointer near a block's corner shows a dot on the corner, where a drag resizes it, that
+/// fades in; away from the corner it fades out, and is gone once faded.
+#[gpui_kit::test]
+fn a_corner_under_the_pointer_shows_a_dot_that_fades(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let n = first_id(&ws, cx).0 as usize;
+    let dot = || gpui_kit::ElementId::Name(format!("corner-dot-{n}").into());
+    let zone = || gpui_kit::ElementId::Name(format!("resize-top-left-{n}").into());
+    let near = || gpui_kit::ElementId::Name(format!("near-top-left-{n}").into());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.hover(("block", n), cx);
+        window.render_frame(cx);
+        assert!(window.try_find(dot()).is_none(), "away from its corners");
+        window.hover(near(), cx);
+        window.render_frame(cx);
+        let at = window.find(dot()).bounds().center();
+        assert!(
+            window.find(zone()).bounds().contains(&at),
+            "on the corner a drag resizes from"
+        );
+        let pointer = window.find(near()).bounds().center();
+        assert!(
+            !window.find(zone()).bounds().contains(&pointer),
+            "shown before the pointer is on it"
+        );
+    })
+    .unwrap();
+    // Faded in.
+    super::bus::after(cx, 200);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.hover(("title", n), cx);
+        window.render_frame(cx);
+        assert!(window.try_find(dot()).is_some(), "fading out");
+    })
+    .unwrap();
+    super::bus::after(cx, 200);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(dot()).is_none(), "faded out");
+    })
+    .unwrap();
+}

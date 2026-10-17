@@ -1051,11 +1051,11 @@ fn a_dialog_its_asker_waits_for_isnt_typed_too(cx: &mut TestAppContext) {
     assert!(notices(&ws, cx).is_empty(), "{:?}", notices(&ws, cx));
 }
 
-/// A task's agent asks its person through Templum (`ask_user`): its balloon asks, and the agent
-/// that handed it the task hears so, as of a dialog.
+/// A task's agent asks its person through Templum (`ask_user`): its balloon asks, which the person
+/// sees and the agent that handed it the task can't answer: that agent hears nothing.
 #[cfg(unix)]
 #[gpui_kit::test]
-fn a_balloon_in_a_task_is_told(cx: &mut TestAppContext) {
+fn a_balloon_in_a_task_isnt_told(cx: &mut TestAppContext) {
     let (handle, ws, mine, theirs) = two_agents(cx);
     let (terminal, _) = me(&ws, cx, mine);
     let (worker, them) = me(&ws, cx, theirs);
@@ -1083,21 +1083,16 @@ fn a_balloon_in_a_task_is_told(cx: &mut TestAppContext) {
     let _asked = call_later(handle, &ws, cx, &worker, 2, "ask_user", asked);
     after(cx, 300);
     let told = notices(&ws, cx);
-    assert!(
-        told.len() == 1
-            && told[0].1.starts_with("[task t1 from ")
-            && told[0].1.contains(&format!(
-                "({them}) waits for its person: Ship it?] Its screen is in the pasted text.\n"
-            )),
-        "{told:?}"
-    );
+    assert!(told.is_empty(), "{told:?}");
+    let shown = ws.read_with(cx, |ws, _| ws.balloon(&worker).is_some());
+    assert!(shown, "the person sees it");
 }
 
-/// A task handed over without `wait` gives no answer within its timeout: its asker hears it
-/// failed, and later its end too. One it waits for hears its timeout from its call.
+/// A task handed over without `wait` gives no answer within its timeout: it may still work, so its
+/// asker hears nothing then, only its end later. One it waits for hears its timeout from its call.
 #[cfg(unix)]
 #[gpui_kit::test]
-fn a_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) {
+fn a_task_past_its_timeout_comes_back_only_at_its_end(cx: &mut TestAppContext) {
     let (handle, ws, mine, theirs) = two_agents(cx);
     let (terminal, _) = me(&ws, cx, mine);
     let (worker, them) = me(&ws, cx, theirs);
@@ -1118,17 +1113,7 @@ fn a_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) {
     screen_with(&ws, cx, theirs, "think");
     after(cx, 2000);
     after(cx, 1000);
-    let t = told(cx);
-    assert!(
-        t.len() == 1
-            && t[0].starts_with("[task t1 from ")
-            && t[0].contains(": failed in ")
-            && t[0].contains(&format!(
-                "] What happened is in the pasted text.\nNo answer from {them} within 2 seconds; it may still be \
-                 working, and its end comes back too."
-            )),
-        "{t:?}"
-    );
+    assert!(told(cx).is_empty(), "{:?}", told(cx));
     ws.read_with(cx, |ws, _| {
         assert_eq!(
             ws.space
@@ -1152,7 +1137,7 @@ fn a_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) {
     after(cx, 1000);
     let t = told(cx);
     assert!(
-        t.len() == 2 && t[1].contains(": done in ") && t[1].ends_with("\nLate."),
+        t.len() == 1 && t[0].contains(": done in ") && t[0].ends_with("\nLate."),
         "{t:?}"
     );
     // With `wait`: its call says it timed out, and nothing is typed.
@@ -1164,7 +1149,7 @@ fn a_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) {
     after(cx, 2000);
     assert!(answered(&answers).0, "timed out");
     after(cx, 1000);
-    assert_eq!(told(cx).len(), 2);
+    assert_eq!(told(cx).len(), 1);
 }
 
 /// The agent whose task it is changes it while its agent works: typed at once, under a line naming
@@ -1207,14 +1192,6 @@ fn a_change_from_the_asker_goes_into_its_task(cx: &mut TestAppContext) {
     send(cx, json!({ "event": "stopped", "message": "B" }));
     assert_eq!(answered(&answers), (false, "B".to_string()));
     // Its timeout starts again from the change's.
-    asker(&ws, cx, mine);
-    event(
-        handle,
-        &ws,
-        cx,
-        &terminal,
-        json!({ "event": "needs_you", "message": "Allow Edit?" }),
-    );
     call(
         handle,
         &ws,
@@ -1232,21 +1209,10 @@ fn a_change_from_the_asker_goes_into_its_task(cx: &mut TestAppContext) {
         (failed, text),
         (false, format!("Typed into {them} as a change to task t2."))
     );
-    // Its Enter goes while the test's clock runs: else no Enter, and the task ends untaken.
-    screen_with(&ws, cx, theirs, "count to 9");
-    after(cx, 2000);
-    after(cx, 1000);
-    assert!(
-        notices(&ws, cx).is_empty(),
-        "the first deadline passed quietly"
-    );
-    after(cx, 2000);
-    after(cx, 1000);
-    let told = notices(&ws, cx);
-    assert!(
-        told.len() == 1 && told[0].1.contains("within 5 seconds"),
-        "{told:?}"
-    );
+    ws.read_with(cx, |ws, _| {
+        let handed = ws.space.terminal(theirs).unwrap().handed.as_ref().unwrap();
+        assert!(handed.until >= handed.since + std::time::Duration::from_secs(5));
+    });
     // A spawned agent whose prompt still waits.
     ws.update(cx, |ws, _| {
         let pane = ws.space.terminal_mut(theirs).unwrap();

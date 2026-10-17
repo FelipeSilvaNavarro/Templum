@@ -213,6 +213,7 @@ fn a_question_off_screen_is_a_notification(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (_, _, mine) = three_blocks(handle, &ws, cx);
     let (terminal, _) = me(&ws, cx, mine);
+    super::terminals::set_active(handle, true, cx);
     let before = notification_count(handle, cx);
     let asked = json!({ "question": "Here?", "options": ["Yes"] });
     let _here = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
@@ -228,6 +229,98 @@ fn a_question_off_screen_is_a_notification(cx: &mut TestAppContext) {
     let asked = json!({ "question": "There?", "options": ["Yes"] });
     let _there = call_later(handle, &ws, cx, &terminal, 2, "ask_user", asked);
     assert_eq!(notification_count(handle, cx), before + 1);
+}
+
+/// The person doesn't see a question in view: the window is in the background, or the asking
+/// block is too small on screen for its dialog to be drawn. A notification says what it asks.
+#[gpui_kit::test]
+fn a_question_the_person_cant_see_is_a_notification(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    super::terminals::set_active(handle, true, cx);
+    // Zoomed out: in view, drawn as bars, no dialog.
+    ws.update(cx, |ws, _| {
+        ws.space.focused = None;
+        ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 0.33);
+    });
+    frame(handle, cx);
+    let before = notification_count(handle, cx);
+    let asked = json!({ "question": "Far?", "options": ["Yes"] });
+    let _far = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    assert_eq!(notification_count(handle, cx), before + 1);
+    // Up close again, with the window in the background.
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 1.0)
+    });
+    frame(handle, cx);
+    let asked = json!({ "question": "Near?", "options": ["Yes"] });
+    let _near = call_later(handle, &ws, cx, &terminal, 2, "ask_user", asked);
+    assert_eq!(notification_count(handle, cx), before + 1, "in view");
+    super::terminals::set_active(handle, false, cx);
+    let asked = json!({ "question": "Away?", "options": ["Yes"] });
+    let _away = call_later(handle, &ws, cx, &terminal, 3, "ask_user", asked);
+    assert_eq!(notification_count(handle, cx), before + 2);
+}
+
+/// A question is a dialog centered on the asking terminal, 80% of its width and at most 80% of its
+/// height, that says its agent waits for an answer and shows every option whole, wrapped on its
+/// lines. It scales with the zoom like a photo: the same lines at every zoom.
+#[gpui_kit::test]
+fn a_question_is_a_dialog_over_the_asking_terminal(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let part = crate::balloon::part;
+    let long = "Yes, and rewrite each test of the parser to say what it checks. ".repeat(3);
+    let asked = json!({ "question": "Ship it?", "options": ["No", long] });
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    let at = |cx: &mut TestAppContext, zoom: f32| {
+        ws.update(cx, |ws, _| {
+            ws.space.canvas.camera = Camera::at(Point::new(40.0, 400.0), zoom)
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find(part(n, "waiting")).is_some(), "it says so");
+            let bounds = |id: gpui_kit::ElementId| window.find(id).bounds();
+            (
+                bounds(("block", n).into()),
+                bounds(("balloon", n).into()),
+                bounds(part(n, "option-0")),
+                bounds(part(n, "option-1")),
+            )
+        })
+        .unwrap()
+    };
+    let close =
+        |a: gpui_kit::Pixels, b: gpui_kit::Pixels| (f32::from(a) - f32::from(b)).abs() <= 2.0;
+    let mut shapes = Vec::new();
+    for zoom in [1.0, 1.5] {
+        let (block, dialog, short, long) = at(cx, zoom);
+        let title = px(chrome::TITLE_H * zoom);
+        let body = block.size.height - title;
+        assert!(
+            close(dialog.size.width, block.size.width * 0.8),
+            "{dialog:?}"
+        );
+        assert!(close(dialog.center().x, block.center().x), "{dialog:?}");
+        assert!(
+            close(dialog.center().y, block.top() + title + body / 2.0),
+            "{dialog:?}"
+        );
+        assert!(dialog.size.height <= body * 0.8 + px(1.0), "{dialog:?}");
+        assert!(
+            long.left() >= dialog.left() && long.right() <= dialog.right(),
+            "whole: {long:?} in {dialog:?}"
+        );
+        assert!(
+            long.size.height > short.size.height * 1.5,
+            "wrapped: {long:?}"
+        );
+        shapes.push(f32::from(long.size.height) / f32::from(dialog.size.width));
+    }
+    assert!((shapes[0] - shapes[1]).abs() < 0.02, "{shapes:?}");
 }
 
 /// Claude Code asks its person to allow a Templum tool, then calls it: the person allowed it, and

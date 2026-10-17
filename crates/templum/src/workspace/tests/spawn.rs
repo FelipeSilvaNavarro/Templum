@@ -355,10 +355,11 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
     }
 }
 
-/// A spawned agent's task gives no answer within the time a task gets: its caller hears it failed,
-/// as of a task handed over without `wait`.
+/// A spawned agent's task gives no answer within the time a task gets: it may still work, so its
+/// caller hears nothing of that, as of a task handed over without `wait`; only that it seems stuck,
+/// its screen still for 30 seconds.
 #[gpui_kit::test]
-fn a_spawns_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) {
+fn a_spawns_task_past_its_timeout_isnt_told(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
     let (terminal, _) = me(&ws, cx, mine);
     // Mine runs Claude Code and asks its person: the notice waits, to be read here.
@@ -379,7 +380,7 @@ fn a_spawns_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) 
     let new = spawned(&ws, cx, mine);
     in_front(&ws, cx, new, true);
     found(&ws, cx, new);
-    let (theirs, uid) = me(&ws, cx, new);
+    let (theirs, _) = me(&ws, cx, new);
     let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
     let mut looks = 0;
     while ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some()) {
@@ -395,8 +396,10 @@ fn a_spawns_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) 
     let told: Vec<String> = ws.read_with(cx, |ws, _| {
         ws.notices.iter().map(|n| n.text.clone()).collect()
     });
-    let within = format!("No answer from {uid} within 600 seconds");
-    assert!(told.iter().any(|t| t.contains(&within)), "{told:?}");
+    assert!(
+        told.len() == 1 && told[0].contains("waits for its person: it seems stuck"),
+        "{told:?}"
+    );
 }
 
 /// The person types into a spawned agent before its prompt is (its trust question answered): that

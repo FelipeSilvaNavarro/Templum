@@ -250,6 +250,14 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **The docs don't say all of it.** `docs/specs/agents.md` doesn't list `[agents]`'s `generate` and `models`, and
   the README doesn't say Codex's models come from its `~/.codex/models_cache.json` (else one is typed). Fix: a line
   in each.
+- [ ] **Claude Code's provider set only in its settings isn't used by Generate.** Its preset runs with
+  `--setting-sources=` (`preset`, `crates/templum/src/agents.rs`), so an `env` block in `~/.claude/settings.json`
+  (Bedrock, Vertex, a proxy's `ANTHROPIC_BASE_URL`) isn't read, and Generate fails where Claude Code itself works.
+  Fix: read that `env` and pass it to the command, or say so in the failure's Details when the answer is an auth
+  error.
+- [ ] **A saved Claude Code generate command keeps the old behavior.** Someone who edited the preset before it got
+  `--tools= --setting-sources=` keeps a command that starts a whole session (hooks, tools) and may ask questions
+  instead of answering. Fix: a note in Settings ▸ Agents when a saved command lacks them, or ↺ back to the preset.
 
 ## Far zoom (level of detail)
 
@@ -944,13 +952,10 @@ Left by batch 8 and its review; line numbers are those of `development` at c51be
   in 31 s, 60231 tokens, transcript …]` and can't tell, nor can the asker, a task that ran 40 commands from one
   answered at once without opening its transcript. Fix: count `Working` events (each tool's end) on `Handed` from the
   hand-over, and say them (`, 40 tools`).
-- [ ] **A task past its timeout that another agent takes over never comes back.** Its notice said "its end comes back
-  too", but `delegate` (`delegate.rs`) lets another agent hand that agent a task once the deadline passed, replacing
-  `handed`; the first asker never hears. Fix: when replacing a timed-out task of another asker, tell that asker it
+- [ ] **A task past its timeout that another agent takes over never comes back.** Its asker waits for its end, but
+  `delegate` (`delegate.rs`) lets another agent hand that agent a task once the deadline passed, replacing `handed`;
+  the first asker never hears. Fix: when replacing a timed-out task of another asker, tell that asker it
   failed ("{uid} took another agent's task").
-- [ ] **A waited task whose call its client dropped has its timeout told by no one.** `time_out` runs only for a task
-  handed without `wait`; Claude Code stops waiting on a call past 2 minutes, and a task that then hangs is never
-  said to have timed out (its end still comes). Fix: arm the timer for every task, telling only when no call waits.
 - [ ] **A notice reaches an asker inside another tool call only once that call returns.** Claude Code and Codex queue
   typed text while a tool runs (batch 7's S2, S3): an asker waiting on `delegate` with `wait` to another agent, or
   on `ask_user`, reads a notice of another task late. A person sees the asker answer it minutes after it was typed.
@@ -1020,3 +1025,17 @@ Left by batch 8 and its review; line numbers are those of `development` at c51be
   the task's end, the answer goes to a call nobody reads, and a person sees nothing typed into the asker. Fix: check
   it by hand (`delegate` with `wait` on a `sleep 150` task, the `[task …]` comes back typed); if the cancel never
   comes, drop a wait whose client went away (its MCP connection's request id answered or abandoned).
+
+Left by the ask_user dialog (kanban card 29).
+
+- [ ] **A long question scrolls the dialog's "Waiting for your answer" out of view.** The whole dialog scrolls
+  (`crates/templum/src/balloon.rs`), its first line too: a person who scrolls down a long question or many options
+  no longer sees that the agent waits (the block's dot still says so). Fix: keep the first line out of the scrolled
+  part (a column with the line, then a `min_h_0` part that scrolls), checked by hand that taffy shrinks it.
+
+Left by the corner dot (kanban card 32).
+
+- [ ] **A corner dot fading out vanishes at once when the pointer comes near another block's corner.** `Space::corner`
+  (`crates/templum/src/workspace/mod.rs`) remembers one corner: the pointer going from one block's corner to
+  another's within 120 ms takes the first dot away mid-fade. A person sees it blink off instead of fading. Fix: keep
+  the fading corner apart from the near one (two fields), and draw both.

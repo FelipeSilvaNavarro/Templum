@@ -62,6 +62,47 @@ fn list_cards_shows_the_wired_board_and_a_card_whole(cx: &mut TestAppContext) {
     assert!(whole.contains("you") && whole.contains("Please"), "{whole}");
 }
 
+/// An agent that moves a card to the board's last column, or to a Review one, is asked to say on
+/// it what it did, unless the card's newest comment is its own.
+#[gpui_kit::test]
+fn finishing_a_card_asks_for_a_comment_on_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, _, _, board, card) = wired_board(handle, &ws, cx);
+    let review = ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| {
+            // To do, Doing, Review, Done.
+            let done = b.board(board)?.columns.last()?.id;
+            let id = b.add_column(board)?;
+            b.rename_column(board, id, "Review");
+            b.move_column(board, id, done);
+            Some(id)
+        })
+    });
+    assert!(review.is_some());
+    let to = |cx: &mut TestAppContext, column: &str| {
+        let (failed, text) = call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "move_card",
+            json!({ "card": card, "column": column }),
+        );
+        assert!(!failed, "{text}");
+        text
+    };
+    assert_eq!(to(cx, "Doing"), format!("Moved card {card} to Doing."));
+    let ask = "Say on it what you did and what the next one needs to know: comment_card.";
+    assert_eq!(
+        to(cx, "review"),
+        format!("Moved card {card} to review. {ask}")
+    );
+    assert_eq!(to(cx, "Done"), format!("Moved card {card} to Done. {ask}"));
+    let comment = json!({ "card": card, "text": "Fixed the parser; its docs are left." });
+    assert!(!call(handle, &ws, cx, &me, "comment_card", comment).0);
+    assert_eq!(to(cx, "Done"), format!("Moved card {card} to Done."));
+}
+
 #[gpui_kit::test]
 fn create_move_comment_and_claim_change_the_board(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
@@ -330,10 +371,11 @@ fn the_instructions_say_what_to_do_with_a_kanban_and_a_note(cx: &mut TestAppCont
     // Batch 8's sentence about tasks comes after it.
     assert!(
         text.contains(
-            "When a connected kanban has your task, move its card to Doing when you start and to \
-             Review when you are done (Done when the board has no Review); write what the next agent \
-             needs to know in the connected note, and check the items of a connected checklist as you \
-             finish them."
+            "When a connected kanban has your task, move its card to Doing when you start; when you \
+             are done, comment on it what you did and what the next agent needs to know \
+             (comment_card), then move it to Review (Done when the board has no Review); write what \
+             the next agent needs to know in the connected note too, and check the items of a \
+             connected checklist as you finish them."
         ),
         "{text}"
     );

@@ -666,7 +666,6 @@ impl Workspace {
             };
             Outcome::Wait(what, timeout)
         } else {
-            self.time_out(worker, id, until, timeout, cx);
             Outcome::Now(Reply::ok(match mine {
                 Some(_) => format!("Typed into {block} as a change to task t{id}."),
                 None => format!("Handed to {block} as task t{id}."),
@@ -903,61 +902,6 @@ impl Workspace {
             self.signature_of(terminal, cx)
         );
         self.queue_notice(by, text, cx);
-    }
-
-    /// The task `id` handed to the agent in `terminal`, awaited `until`, is told past its
-    /// `seconds` (`timed_out`).
-    pub(super) fn time_out(
-        &self,
-        terminal: String,
-        id: u64,
-        until: Instant,
-        seconds: u64,
-        cx: &mut Context<Self>,
-    ) {
-        // ponytail: one timer per task, left to run out once it ended (it then finds nothing), as
-        // each wait has one.
-        cx.spawn(async move |ws, cx| {
-            cx.background_executor()
-                .timer(Duration::from_secs(seconds))
-                .await;
-            let _ = ws.update(cx, |ws, cx| ws.timed_out(&terminal, id, until, seconds, cx));
-        })
-        .detach();
-    }
-
-    /// The task `id` handed to the agent in `terminal` gave no answer within its `seconds`: its
-    /// asker hears it failed, unless a call of its waits for it (that call tells), the task ended,
-    /// or a change set it another deadline than `until`. It stays handed over: its end still comes
-    /// (docs/specs/connections.md, Delegating 7, 10).
-    fn timed_out(
-        &mut self,
-        terminal: &str,
-        id: u64,
-        until: Instant,
-        seconds: u64,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(pane) = self.pane(terminal) else {
-            return;
-        };
-        let Some(handed) = pane
-            .handed
-            .as_ref()
-            .filter(|h| h.id == id && h.until == until)
-        else {
-            return;
-        };
-        if self.waits_on(&handed.by, terminal) {
-            return;
-        }
-        let why = format!(
-            "No answer from {} within {seconds} seconds; it may still be working, and its end \
-             comes back too. The last lines of its screen:\n{}",
-            self.uid_of(terminal),
-            tools::tail(&pane.tail(), tools::MAX_TEXT)
-        );
-        self.tell_end(terminal, handed, &Reply::err(why), cx);
     }
 
     /// Queues the notice `text` for the agent in the terminal `to`, then types what may go now.

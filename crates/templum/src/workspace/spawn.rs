@@ -187,7 +187,6 @@ impl Workspace {
                 }),
                 ..Handed::new(from, Duration::from_secs(tools::TASK_WAIT))
             };
-            let until = handed.until;
             if let Some(pane) = self.pane_mut(&terminal) {
                 pane.prompt = Some(Prompt {
                     text,
@@ -197,7 +196,6 @@ impl Workspace {
                 });
                 pane.handed = Some(handed);
             }
-            self.time_out(terminal.clone(), id, until, tools::TASK_WAIT, cx);
             // Every agent is looked at, hooks or not: Codex's SessionStart comes only with its
             // first prompt, and Claude Code's while it doesn't take pastes yet, after asking
             // whether to trust the folder (a typed Enter would answer that).

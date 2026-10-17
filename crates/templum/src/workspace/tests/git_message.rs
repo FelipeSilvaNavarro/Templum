@@ -71,7 +71,7 @@ fn the_agents_dialog_sets_a_commit_message_command(cx: &mut TestAppContext) {
         let claude = &ws.config.agents["claude"];
         assert_eq!(
             claude.generate.as_deref(),
-            Some("claude -p --model {model} --verbose")
+            Some("claude -p --model {model} --tools= --setting-sources= --verbose")
         );
         assert_eq!(claude.models, None, "the models, unchanged, stay Templum's");
         assert_eq!(claude.command, None);
@@ -79,7 +79,9 @@ fn the_agents_dialog_sets_a_commit_message_command(cx: &mut TestAppContext) {
     ws.update(cx, |ws, _| ws.save());
     let text = std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap();
     assert!(
-        text.contains("generate = \"claude -p --model {model} --verbose\""),
+        text.contains(
+            "generate = \"claude -p --model {model} --tools= --setting-sources= --verbose\""
+        ),
         "{text}"
     );
 }

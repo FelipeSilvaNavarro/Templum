@@ -347,7 +347,7 @@ Each agent's dialog (Templum's and the user's) gets a **Commit messages** part:
 
 | Agent | Generate command | Models |
 |---|---|---|
-| Claude Code | `claude -p --model {model}` | `haiku` (recommended), `sonnet`, `opus` |
+| Claude Code | `claude -p --model {model} --tools= --setting-sources=` | `haiku` (recommended), `sonnet`, `opus` |
 | Codex | `codex exec -m {model} --sandbox read-only --ephemeral --skip-git-repo-check -o {output_file} -` | read from `~/.codex/models_cache.json` (entries with `"visibility": "list"`), else the list written |
 
 - A user's agent gets the same fields, empty; once filled, it is offered in Settings ▸ Git.
@@ -356,15 +356,23 @@ Each agent's dialog (Templum's and the user's) gets a **Commit messages** part:
   version managers work; placeholders are replaced by quoted paths. Its own runner, not `Repo::run`: that one
   gives the command no stdin and git's environment.
 - **No credit to the agent:** the command runs with `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1`, so Claude Code
-  leaves out its own commit rules, which end every message with a `Co-Authored-By: Claude` trailer. The
-  Instructions are the only commit rules; someone who wants the trailer asks for it there.
+  leaves out its own commit rules, which end every message with a `Co-Authored-By: Claude` trailer. Templum's
+  rules (the request) and the Instructions are the only commit rules; someone who wants the trailer asks for it
+  there.
+- **A one-shot answer:** Claude Code's preset runs with no tools (`--tools=`) and none of the person's settings
+  (`--setting-sources=`: their hooks, plugins and MCP servers), so it answers the request instead of starting a
+  session in the repository (before, with them, it asked "what do you want me to do with this diff?", reviewed
+  the change in the person's language, or ran the tests and git). `=` and no value, as PowerShell 5.1 drops an
+  empty `""`. A provider set only in Claude Code's settings (its `env`) isn't read then: it goes in the shell's
+  environment, or the command is edited. Codex's preset already runs read-only and ephemeral.
 
 ### In Settings ▸ Git ▸ Commit messages
 
 - **Agent:** the agents with a generate command. **Model:** its list, the recommended one marked; another can be
   typed.
 - **Timeout** (default 60 s) and **Max diff size** (default 60 KB).
-- **Instructions:** the user's commit rules ("Conventional Commits, English, imperative, at most 72 characters").
+- **Instructions:** the user's commit rules ("Prefix the summary with the ticket id", "In Portuguese"), on top of
+  Templum's own, which they win over where they disagree.
 - **Prompt (advanced):** the request's text, editable, with the placeholders `{instructions}`, `{files}`,
   `{diff}`, `{recent_commits}`, `{truncated}`; **Reset to default**.
 - **Try it:** runs the command on a sample diff and shows the answer, or the whole error (exit code, stderr).
@@ -373,10 +381,15 @@ Each agent's dialog (Templum's and the user's) gets a **Commit messages** part:
 
 - Beside the summary, shown when the agent chosen in Settings ▸ Git has a generate command and its program is
   installed.
-- **The request:** the staged diff (with **Commit all changes**, every change), cut at Max diff size with the full
-  file list and `{truncated}` saying so; the 10 last commit subjects, to follow the repository's style; the
-  instructions (the repository's own when set, else the global ones); the format: first line the summary, a blank
-  line, then the description, no code fences.
+- **The request:** Templum's rules for a good commit message first: a one-shot request, not a conversation (ask
+  nothing, run no tools, explain nothing); the summary in Conventional Commits form, `type(scope): summary`, at
+  most 72 characters, imperative, no period; a blank line and a short body wrapped at 72 saying what changed and
+  why, when the summary doesn't say it all; plain text (no Markdown, fences or quotes); no credit to an AI or a
+  tool; the repository's own types, scopes, language and casing, or its own convention if it follows another.
+  Then the 10 last commit subjects, the changed files, and the staged diff (with **Commit all changes**, every
+  change), cut at Max diff size with the full file list and `{truncated}` saying so. Last, after the diff, where an
+  agent heeds them best (in real runs, rules before a long diff were half ignored), the instructions (the
+  repository's own when set, else the global ones), which win over Templum's rules.
 - **Runs in the background;** the button spins and a click on it cancels. The answer fills Summary and
   Description for the user to read; nothing is committed. A failure or a timeout: a notification with Details.
 - **First use:** once, a confirmation says the diff is sent to the agent's provider and uses the user's account;

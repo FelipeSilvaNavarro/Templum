@@ -122,16 +122,21 @@ later starts with none.
 
 - **Notify:** a notification titled with the block's title, the agent's text as its message; clicking it reveals the
   block. In the background it is a system notification, as a terminal's are.
-- **A question** (`ask_user`) and **a request to connect** (`connect`) open a **balloon** on the asking block's top
-  right corner, over its terminal, at the Full level of detail:
-  - a question shows its text and a button per option, or a text field and **Send** when it has none;
+- **A question** (`ask_user`) and **a request to connect** (`connect`) open a **balloon** on the asking block, at the
+  Full level of detail: a dialog centered on its terminal (under the title bar), 80% of its width and at most 80% of
+  its height, its sizes the block's at the zoom, so it scales like a photo; past that height it scrolls, the wheel
+  over it scrolling it and not the terminal (with Ctrl it zooms the canvas). A yellow frame and a first line, a
+  yellow dot and "Waiting for your answer", say the agent waits for the person, in the yellow of the block's dot:
+  - a question shows its text whole and a button per option, each on its own lines and whole, or a text field and
+    **Send** when it has none;
   - a request to connect says "*Claude Code · api* wants to connect to *Dev server*" with **Allow** and **Deny**;
     Allow wires them;
   - a request for a block already wired is answered at once; Allow is a step of Ctrl+Z, as wiring by hand is;
   - several requests from one block wait in turn: the balloon shows the oldest, with "1 of 3";
   - while the balloon's field has the keyboard, no key reaches the terminal;
-  - when the block isn't on screen (another workspace, outside the view, or hidden by grid mode), a notification says
-    what the agent asks; clicking it reveals the block;
+  - when the person doesn't see the balloon (the block is in another workspace, outside the view, hidden by grid mode,
+    or too small on screen for the Full level and not focused, or the window is in the background), a notification
+    says what the agent asks, also the system's in the background; clicking it reveals the block;
   - the block's dot shows it waiting for the person (yellow, "Waiting for you: *the question*"), at every level;
   - a request no one answers is withdrawn after its timeout (30 minutes unless the agent asked for another), and the
     agent is told so; closing the block withdraws its requests, and so does the agent leaving (its connection to
@@ -181,7 +186,7 @@ later starts with none.
 7. A task stays handed over until its answer comes, the agent's session ends (or a snapshot no longer finds the agent
    it found before: Codex says nothing when it quits), its block closes, or its timeout passes (`delegate`'s, 600 s
    unless asked, also without `wait`). Past its timeout the agent that handed it over still waits for its answer
-   with `wait_for_idle`, and hears that it timed out (10); the wire's dot stops, and another agent may hand it a
+   with `wait_for_idle`, and its end still comes back (10); the wire's dot stops, and another agent may hand it a
    task.
 8. `reply` with no call waiting types `[reply from <title> (<id>)]` and the text, then Enter, into the agent named;
    never into a terminal running no agent, or an agent no snapshot has found yet. From batch 7 the first line goes as
@@ -200,19 +205,22 @@ later starts with none.
     `[task t7 from Codex · api (k9x1d): done in 31 s, 60231 tokens, transcript /…/rollout.jsonl] Its answer is in the
     pasted text.` and its answer on the lines after; `failed` instead of `done` and `What happened is in the pasted
     text.`, then why: it didn't take the task, its turn ended without an answer (an error, an Esc), its agent left,
-    its block closed, or it gave no answer within its timeout (it may still work: a later end comes too). What it
+    or its block closed. What it
     spent is what its usage chip shows ([usage.md](usage.md)), since the task was handed over: Claude Code's cost
     (`$0.42`, with its status line, whose token totals are its last call's context, not what it used: batch 8's
     spikes), Codex's tokens; a session's first task (a spawned agent's, or one handed before Templum read any figure of
-    it) counts it whole; nothing when unknown or when nothing new was read (a timeout's notice before its agent wrote a
-    figure), never `0 tokens`. Templum reads it again a second after the end (Claude Code's status line gives its last
-    cost about 0.3 s after its `Stop`), and the notice goes then. The transcript is the one its agent's last turn's end
-    named (`transcript_path`). A task whose agent starts waiting for its person (a hook says so while it wasn't waiting
-    already, its balloon asks, or it seems stuck) sends `[task t7 from Codex · api (k9x1d) waits for its person: Allow
+    it) counts it whole; nothing when unknown or when nothing new was read, never `0 tokens`. Templum reads it again a
+    second after the end (Claude Code's status line gives its last cost about 0.3 s after its `Stop`), and the notice
+    goes then. The transcript is the one its agent's last turn's end
+    named (`transcript_path`). Besides its end, only a task that gets stuck comes back: its agent starts waiting for its
+    person in its terminal (a hook says so, a permission or another dialog, while it wasn't waiting already), or it
+    seems stuck. It sends `[task t7 from Codex · api (k9x1d) waits for its person: Allow
     Bash?] Its screen is in the pasted text.` and the last 20 lines of its screen, as drawn (300 ms after its hook),
     once per wait; not while a call of the asker waits for the task, which hears its end, nor to an asker whose
-    `wait_for(needs_you)` hears it. A task's timeout is told by the asker's call that waits for it, else by a notice; a
-    task handed with `wait` gets no notice of its timeout. While the asker waits for its person, its agent is starting
+    `wait_for(needs_you)` hears it. Nothing else comes back, as noise the asker can't act on: not a question
+    its balloon asks (`ask_user`, `connect`: the person sees the balloon, and the asker can't answer it), nor its
+    timeout, which only the asker's call that waits for it tells (the agent may still work, and its end comes then).
+    While the asker waits for its person, its agent is starting
     (no snapshot found it yet), its person typed into it in the last 3 seconds, or Templum typed into it (a task, a
     reply, a notice) in the last 5.1 seconds (that text's Enter, up to 2 s after it, and a second one 3 seconds later,
     may still be due), a notice waits, oldest first. Into a terminal whose agent is gone (its shell is in front, as when
@@ -363,8 +371,9 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
   > Templum workspace "Main". Connected to you: t4q8p (terminal "dev server"), k9x1d (kanban "Sprint"). In this
   > workspace, not connected (ask with connect): 4qm2a (note "Ideas"). Name blocks by these ids. You may only read or write your own block and those connected to you; connect asks the person
   > for another. list_blocks gives the current list. When a connected kanban has your task, move its card to Doing
-  > when you start and to Review when you are done (Done when the board has no Review); write what the next agent
-  > needs to know in the connected note, and check the items of a connected checklist as you finish them.
+  > when you start; when you are done, comment on it what you did and what the next agent needs to know
+  > (comment_card), then move it to Review (Done when the board has no Review); write what the next agent needs to
+  > know in the connected note too, and check the items of a connected checklist as you finish them.
 
   The first sentence comes first because Claude Code shows its own Agent tool whole and Templum's tools only by name
   until it searches them, so "start an agent" would otherwise open a subagent the person never sees; Codex weighs
@@ -408,8 +417,8 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `ask_user` | `question`, `options`, `timeout` (1800 s) | A question in a balloon ([Requests](#requests-from-agents)); the answer | — | 3 |
 | `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, assignee and comment count; with `card`, that card whole: its description and comments | wired kanban | 4 |
 | `create_card` | `board`, `column`, `title`, `description` | A new card at the column's end (the board's first column when left out); its id | wired kanban | 4 |
-| `move_card` | `card`, `column` | Moves a card to the end of a column | wired kanban | 4 |
-| `comment_card` | `card`, `text` | Adds a comment signed with the caller's id | wired kanban | 4 |
+| `move_card` | `card`, `column` | Moves a card to the end of a column; into the board's last column or one titled Review (either case), unless the card's newest comment is the caller's, its answer asks for one: "Say on it what you did and what the next one needs to know: comment_card." | wired kanban | 4 |
+| `comment_card` | `card`, `text` | Adds a comment signed with the caller's id: what it did on the card, and what the next one needs to know, when it finishes it | wired kanban | 4 |
 | `claim_card` | `card` | Makes the caller the card's assignee; refused when another block holds it | wired kanban | 4 |
 | `read_note` | `block` | The text of the note the note block shows | wired note | 4 |
 | `append_note` | `block`, `text` | Adds the text at the note's end, after a blank line; the note shows it at once and Ctrl+Z takes it back | wired note | 4 |
@@ -748,9 +757,9 @@ answer and no notice, one its client cancelled gets the notice; a notice waits w
 starting or its person types, goes at least 5.1 s after anything Templum typed into the same agent, oldest first, and
 never goes into a shell (also when its agent quit while it waited); a task whose agent left or whose block closed comes
 back as failed, one its asker interrupts or closes doesn't; a dialog in a task is told once per wait, seeming stuck too,
-and not while a call waits for the task; a change from the asker goes into its task and restarts its timeout, none goes
-before a spawn's prompt, and another agent is still refused; a task past its timeout comes back as failed, and its later
-end too; a task handed with `wait` gets no notice of its timeout.
+and not while a call waits for the task, and a balloon isn't told; a change from the asker goes into its task and
+restarts its timeout, none goes before a spawn's prompt, and another agent is still refused; a task past its timeout
+comes back only at its end; a task handed with `wait` gets no notice of its timeout.
 
 **Manual (Hyprland):** Claude Code from the menu: `/mcp` lists `templum` connected, "list the blocks" and "read the
 last 30 lines of the dev server" work, the dot follows its turns and a permission prompt; Codex: `/mcp` lists it;

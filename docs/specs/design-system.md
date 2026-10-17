@@ -74,6 +74,12 @@ Alacritty's format dropped into a folder, all switchable from a picker in the ti
 - **Close button (✕):** right side of the header. **Resize grip:** gpui-kit's resize-corner icon in the bottom-right corner.
   Both are rendered only while the pointer is over the block. They fade in over 120 ms, and fade-out is instant.
   While shown, their hit areas are the same as today: the grip keeps `chrome::HANDLE`.
+- **Corner dot:** while the pointer is near one of a block's corners (inside the block, within 36 world units of it
+  both ways, scaled by zoom), a dot in the `accent` color shows on the square at that corner that resizes it,
+  centered on it: 8 world units across (scaled by zoom), never wider than the square (at most 12 px), so grabbing
+  the dot resizes as the corner does. The area that is near only hears the pointer: presses, the cursor and hovers
+  are still those of what is under it. The dot fades in over 120 ms when the pointer comes near and fades out over
+  120 ms when it goes; only the corner the pointer is near shows one, and frames are drawn only while it fades.
 - **Border:** always 1 px. It uses the `hairline` color, or the `accent` color when the block is focused. Today the
   focused border grows to 2 px and shifts the grid by 1 px; that goes away.
 - **Shadow**, scaled by zoom: unfocused, offset y 4 and blur 12; focused, offset y 10 and blur 30. The color is the

@@ -36,7 +36,6 @@ fn ring(ws: &Entity<Workspace>, id: templum_canvas::BlockId, cx: &mut TestAppCon
     });
 }
 
-#[cfg(unix)]
 pub(super) fn set_active(handle: AnyWindowHandle, active: bool, cx: &mut TestAppContext) {
     if active {
         cx.update_window(handle, |_, window, _| window.activate_window())
