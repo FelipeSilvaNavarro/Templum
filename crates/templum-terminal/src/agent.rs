@@ -2,6 +2,7 @@
 //! to tell from a process that it runs in a terminal, and what brings it back when a canvas is
 //! restored. Facts checked on 2026-10-10 against each agent's docs (see docs/specs/agents.md).
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// One agent's facts.
@@ -504,9 +505,92 @@ pub fn locate(program: &str) -> Option<PathBuf> {
     find_program(program, &program_dirs())
 }
 
-/// PATH, then the usual per-user install folders.
+/// PATH as a shell started now gets it. On Windows an installer writes it to the registry, and
+/// a program started before (Templum, or the Explorer that started it) keeps the old one: it is
+/// read from there, the system's then the user's, as Windows Terminal does, then the folders only
+/// Templum's own PATH has. Elsewhere Templum's own.
+#[cfg(windows)]
+pub fn path_var() -> Option<OsString> {
+    use windows_registry::{CURRENT_USER, Key, LOCAL_MACHINE};
+    let read = |key: &Key, path: &str| key.open(path).and_then(|k| k.get_string("Path")).ok();
+    let values: Vec<String> = [
+        read(
+            LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+        read(CURRENT_USER, "Environment"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let own = std::env::var_os("PATH");
+    let own: Vec<PathBuf> = own.iter().flat_map(std::env::split_paths).collect();
+    let dirs = registry_path(&values, &own, |name| std::env::var(name).ok());
+    std::env::join_paths(dirs)
+        .ok()
+        .or_else(|| std::env::var_os("PATH"))
+}
+
+/// PATH as a shell started now gets it: Templum's own (see the Windows one).
+#[cfg(not(windows))]
+pub fn path_var() -> Option<OsString> {
+    std::env::var_os("PATH")
+}
+
+/// The folders of the registry's PATH values (`;`-separated, each `%NAME%` that `var` knows
+/// expanded), then those of `own` they lack: once each, in any case, with or without a final `\`.
+#[cfg(any(windows, test))]
+fn registry_path(
+    values: &[String],
+    own: &[PathBuf],
+    var: impl Fn(&str) -> Option<String>,
+) -> Vec<PathBuf> {
+    let key = |p: &Path| {
+        p.to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_lowercase()
+    };
+    let listed = values
+        .iter()
+        .flat_map(|v| v.split(';'))
+        .map(|dir| PathBuf::from(expand(dir.trim(), &var)));
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for dir in listed.chain(own.iter().cloned()) {
+        if !dir.as_os_str().is_empty() && !dirs.iter().any(|d| key(d) == key(&dir)) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
+/// `text` with each `%NAME%` that `var` knows replaced by its value; the others stay, as Windows
+/// leaves them.
+#[cfg(any(windows, test))]
+fn expand(text: &str, var: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('%') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('%') else { break };
+        out.push_str(&rest[..start]);
+        match var(&after[..end]) {
+            Some(value) => {
+                out.push_str(&value);
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('%');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// PATH (as [`path_var`] reads it), then the usual per-user install folders.
 fn program_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+    let mut dirs: Vec<PathBuf> = path_var()
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
     if let Some(home) = std::env::home_dir() {
@@ -899,5 +983,33 @@ mod tests {
         let dirs = [d.path().join("missing"), d.path().into()];
         assert_eq!(find_program("fakeagent", &dirs), Some(file));
         assert_eq!(find_program("otheragent", &dirs), None);
+    }
+
+    /// A folder an installer just added to the user's PATH in the registry is found, before
+    /// Templum's own folders; `%NAME%` is expanded and a folder isn't listed twice.
+    #[test]
+    fn registry_path_puts_the_registrys_folders_first() {
+        let var = |name: &str| (name == "USERPROFILE").then(|| r"C:\Users\Ana".to_string());
+        let values = [
+            r"C:\Windows\system32;C:\Windows;".to_string(),
+            r"%USERPROFILE%\AppData\Local\Microsoft\WindowsApps;%MISSING%\bin;C:\NewTool\bin"
+                .to_string(),
+        ];
+        let own = [r"c:\windows\System32\".into(), r"C:\Launcher\bin".into()];
+        let dirs: Vec<String> = registry_path(&values, &own, var)
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect();
+        assert_eq!(
+            dirs,
+            [
+                r"C:\Windows\system32",
+                r"C:\Windows",
+                r"C:\Users\Ana\AppData\Local\Microsoft\WindowsApps",
+                r"%MISSING%\bin",
+                r"C:\NewTool\bin",
+                r"C:\Launcher\bin",
+            ]
+        );
     }
 }

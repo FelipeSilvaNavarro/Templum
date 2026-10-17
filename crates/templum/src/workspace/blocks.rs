@@ -412,7 +412,10 @@ impl Workspace {
                 .integration
                 .clone()
                 .filter(|_| self.config.shell.integration),
-            env: self.bus_env.clone(),
+            env: match (&self.bus, &self.data_dir) {
+                (Some(bus), Some(data)) => super::bus::terminal_env(bus, data),
+                _ => Vec::new(),
+            },
         };
         let start = folder.or_else(std::env::home_dir);
         let id = match Terminal::spawn(opts, self.notify.clone()) {

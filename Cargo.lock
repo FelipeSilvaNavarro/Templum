@@ -6828,6 +6828,7 @@ dependencies = [
  "rustix",
  "sysinfo",
  "tempfile",
+ "windows-registry 0.6.1",
 ]
 
 [[package]]

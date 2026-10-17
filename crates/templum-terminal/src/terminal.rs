@@ -625,6 +625,10 @@ impl Terminal {
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
         env.insert("TEMPLUM_TERMINAL".into(), id.clone());
+        // Read again for each terminal: a program installed since Templum started is found.
+        if let Some(path) = crate::path_var().and_then(|p| p.into_string().ok()) {
+            env.insert("PATH".into(), path);
+        }
         env.extend(opts.env.iter().cloned());
         if let Some(dir) = &opts.integration {
             // Without a command, alacritty runs $SHELL: as a login shell on macOS.

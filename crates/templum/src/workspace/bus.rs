@@ -61,10 +61,10 @@ pub(super) enum Outcome {
 }
 
 /// What every terminal gets while the bus runs: its address and Templum's folder first in
-/// PATH, where `templum` is this Templum.
-fn terminal_env(bus: &Bus, data: &Path) -> Vec<(String, String)> {
+/// PATH, where `templum` is this Templum. Taken for each terminal: PATH may have changed since.
+pub(super) fn terminal_env(bus: &Bus, data: &Path) -> Vec<(String, String)> {
     let mut env = vec![("TEMPLUM_BUS".to_string(), bus.env.clone())];
-    let path = std::env::var_os("PATH").unwrap_or_default();
+    let path = templum_terminal::path_var().unwrap_or_default();
     if let Some(path) = templum_folder(data).and_then(|folder| first_on_path(folder, &path)) {
         env.push(("PATH".to_string(), path));
     }

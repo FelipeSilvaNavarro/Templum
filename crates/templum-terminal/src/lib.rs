@@ -11,7 +11,7 @@ mod snapshot;
 mod tap;
 mod terminal;
 
-pub use agent::{Agent, Detect, agent_of, installed, locate, program_name};
+pub use agent::{Agent, Detect, agent_of, installed, locate, path_var, program_name};
 pub use alacritty_terminal::index::Side;
 pub use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Rgb};
 pub use find::{Find, Toward};
