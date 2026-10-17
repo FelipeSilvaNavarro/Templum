@@ -232,7 +232,7 @@ later starts with none.
 The block goes where it covers no block nor drawing, beside the caller or a block wired to it: of the spots right of,
 below, left of or above them (at their edge, or past what is in the way along that side), the one nearest the caller
 and its connections all together, so they draw it their way. Any block Templum opens beside another (a terminal from
-an editor's tree, a Git block, `open_file`'s editor) covers nothing either.
+an editor's tree, `open_file`'s editor) covers nothing either.
 With a worktree name, Templum first runs `git worktree add -b <name> <repository>/.worktrees/<name>` from that
 folder's repository (and adds `.worktrees/` to the repository's `.git/info/exclude` once), and the agent starts
 there, so several agents can change one project at once without stepping on each other. A prompt is typed once the
@@ -414,7 +414,6 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `read_note` | `block` | The text of the note the note block shows | wired note | 4 |
 | `append_note` | `block`, `text` | Adds the text at the note's end, after a blank line; the note shows it at once and Ctrl+Z takes it back | wired note | 4 |
 | `open_file` | `path`, `line` | Opens the file at the line in the wired editor block whose folder holds it; with none, in a new editor block beside the caller, wired to it. Neither the keyboard nor the camera moves | — | 4 |
-| `git_status` | `block` (may be left out when one Git block is wired) | The wired Git block's branch, ahead and behind, and changed files as `git status --short --branch` prints them | wired Git | 4 |
 | `wait_for` | `block`, `event` (`idle`, `needs_you`, `command_finished`, `attention`), `timeout` | Waits for the event in the block: `idle` as `wait_for_idle`; `needs_you`, its agent or its balloon asking the person (at once when it already does), with what it asks and, from batch 7, the last 20 lines of its screen; `command_finished`, the next command to finish there, with its output (needs [shell integration](shell-integration.md)); `attention`, its next bell or notification | wired | 5 |
 | `send_keys` | `block`, `keys` (1 to 16) | Presses the keys ([Keys](#keys-stopping-and-closing)); the screen after them | wired | 6 |
 | `interrupt` | `block` | Esc in its agent; ends the task the caller handed it | wired, an agent | 6 |
@@ -585,7 +584,6 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum kanban list [<board>] [--card <card>] \| add <title> [--column <c>] [--description <d>] [--board <b>] \| move <card> <column> \| comment <card> <text> \| claim <card>` | the kanban tools | 4 |
 | `templum note read\|append <block> [text]` | `read_note`, `append_note` | 4 |
 | `templum open <path>[:<line>]` | `open_file` | 4 |
-| `templum git status [<block>]` | `git_status` | 4 |
 | `templum keys <block> <key>…` | `send_keys` | 6 |
 | `templum interrupt <block>` | `interrupt` | 6 |
 | `templum close <block>` | `close_block` | 6 |
@@ -652,7 +650,7 @@ the switch, the server's command for other agents with a Copy button, and Gemini
 | `templum-canvas/src/wire.rs` (new) | `Wire`; the curve between two rects, a point on it, hitting it | 2 |
 | `templum/src/workspace/wires.rs` (new), `templum/src/wires.rs` (new) | wiring, unwiring, selecting, undo, labels (`Change::Label`); painting wires, the dot and the labels | 2, 5 |
 | `templum/src/workspace/waits.rs`, `delegate.rs`, `spawn.rs` (new) | the requests that wait and the balloon's answers; tasks handed over, `reply`, `wait_for_idle`; `spawn_agent` | 3 |
-| `templum/src/workspace/content.rs` (new) | the kanban, note, file and Git tools | 4 |
+| `templum/src/workspace/content.rs` (new) | the kanban, note and file tools | 4 |
 | `templum/src/balloon.rs` (new) | the balloon | 3 |
 | `templum-git/src/repo.rs` | `Repo::add_worktree` | 3 |
 | `templum/src/toolbar.rs`, `menu/`, `workspace/history.rs`, `workspace/input.rs`, `workspace/render.rs` | the Wire tool, the menus, the undo steps, the pointer | 2 |
@@ -713,8 +711,8 @@ and Enter, `wait` ends with the `Stopped` message or its timeout, `reply` answer
 Allow wires and Deny refuses, `spawn_agent` opens a wired block beside the caller and types its prompt once it started,
 closing a block answers what waited on it, the dot travels only while a task is handed over; (batch 4) comments and
 assignee survive a round trip and an older file loads, `claim_card` refuses a card another block holds, `append_note`
-shows in the open note, `open_file` lands at the line in the wired editor without taking the keyboard, `git_status`
-matches the repository, and every tool is refused without a wire; (batch 5) `wait_for` answers `needs_you` at once or
+shows in the open note, `open_file` lands at the line in the wired editor without taking the keyboard, and every
+tool is refused without a wire; (batch 5) `wait_for` answers `needs_you` at once or
 when the agent or its balloon asks, a command's end and code, a bell and a notification, its timeout with the last
 lines, a closed block, and shows no balloon; `templum wire` wires a step Ctrl+Z takes back and an MCP client can't
 call it; a changing screen says Working and a still one ends the task, the person's typing not counting; Rename
@@ -776,7 +774,8 @@ One pull request per batch, each with its own plan in `docs/plans/`:
 2. **Wires:** the model, painting, the Wire tool, the menus, selecting and deleting, undo, saving; tools check wires.
 3. **Agents together:** `connect`, `spawn_agent` with worktrees, `delegate`, `reply`, `wait_for_idle`, `ask_user`,
    the balloon, the travelling dot.
-4. **Content:** the kanban tools with comments, assignee and claiming; notes; `open_file`; `git_status`.
+4. **Content:** the kanban tools with comments, assignee and claiming; notes; `open_file`; `git_status` (removed
+   since: agents run `git status` in their own terminal).
 5. **The rest:** `wait_for`, wire labels, Settings ▸ Connections, Gemini CLI, `templum wire`, `--json` everywhere.
 6. **Control:** `send_keys`, `interrupt`, `close_block` and `opened_by`, `spawn_agent`'s `model` and `effort`,
    "answered by", `send_to_terminal`'s later Enter.

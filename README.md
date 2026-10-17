@@ -48,7 +48,7 @@ knowing. **Welcome** in the settings panel's footer shows it again.
 | Click, drag or scroll in a program that uses the mouse (htop, vim, Claude Code full screen) | The program gets it; hold Shift to select text instead |
 | Ctrl+scroll, or pinch | Zoom |
 | Drag in a terminal (double-click: word, triple-click: line) | Select text |
-| Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board, Note, Editor or Git, where you clicked |
+| Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board, Note or Editor, where you clicked |
 | Right-click a block, card, column, board or workspace tile | Its menu (copy, paste, move to another workspace, edit, stop, delete, close…) |
 | With a drawing tool on, drag the canvas | Draw; Shift keeps lines at 45° and makes squares and circles |
 
@@ -58,7 +58,7 @@ knowing. **Welcome** in the settings panel's footer shows it again.
 | Ctrl+Shift+K | Cmd+Shift+K | New kanban board block |
 | Ctrl+Shift+M | Cmd+Shift+M | New note |
 | Ctrl+Shift+E | Cmd+Shift+E | New editor (asks for a folder) |
-| Ctrl+Shift+G | Cmd+Shift+G | New Git block (asks for a folder) |
+| Ctrl+Shift+G | Cmd+Shift+G | Show or hide the Git popup |
 | Ctrl+S | Cmd+S | Save the file (in an editor) |
 | Ctrl+W | Ctrl+W | Close the file's tab (in an editor) |
 | Ctrl+G | Cmd+G | Go to line (in an editor) |
@@ -177,11 +177,15 @@ as the language wants it (a real tab in Makefiles and Go).
 
 ## Git
 
-The toolbar's Git button (or Ctrl+Shift+G) asks for a folder and puts a Git block on its repository, with what
-GitHub Desktop and the editors' Git panels do. **Changes** lists what is staged and what isn't; a row shows its
-diff, and its buttons stage, unstage, discard (after asking) or open the file in an editor beside the block.
+The Git button at the bottom of the sidebar (or Ctrl+Shift+G) opens the workspace's Git in a popup over the
+canvas's bottom-left corner, with what GitHub Desktop and the editors' Git panels do; Esc or its ✕ closes it. Each
+workspace has its own. The first time, it opens on the repository the focused terminal works in (else another
+terminal's, else the workspace's folder, else the newest recent one; with none it asks for a folder). The ▾ beside
+the repository's name switches to another: one a terminal of the workspace works in, a recent folder, or any
+folder. **Changes** lists what is staged and what isn't; a row shows its diff, and its buttons stage, unstage,
+discard (after asking) or open the file in an editor.
 Below, a summary, a description, **Amend** and **Commit** (Ctrl+Enter from either field; with no author set, the
-block asks for `user.name` and `user.email`). **History** lists the commits with their files and diffs, filtered
+popup asks for `user.name` and `user.email`). **History** lists the commits with their files and diffs, filtered
 as you type; right-click one to check it out, make a branch or a tag from it, revert it or copy its hash.
 **Branches** checks out on a click, makes, renames, merges, deletes and publishes them, and offers **Stash and
 switch** when local changes are in the way. **Stashes** stashes, applies, pops and drops. The top bar has the
@@ -190,11 +194,11 @@ branch, ↑↓ against its upstream, **Fetch**, **Pull** (fast-forward only; oth
 offers Abort and, once nothing conflicts, Continue; a conflicted file has Use ours, Use theirs and Mark resolved.
 
 Everything runs through your own `git`, in the background, without ever waiting for input: a command that fails
-shows git's message, with **Details** and **Run in a terminal**, which opens a terminal beside the block with the
-command typed in, for you to read and run, so your credential helper or SSH agent does what it does in any
-terminal. The block refreshes
-every 2 seconds while it is on screen, after each action, and when a terminal of the workspace finishes a command
-in the repository, so `git add` in a terminal shows at once. Settings ▸ Tools names the `git` program.
+shows git's message, with **Details** and **Run in a terminal**, which opens a terminal in the middle of the view
+with the command typed in, for you to read and run, so your credential helper or SSH agent does what it does in any
+terminal. The popup refreshes every 2 seconds while it is open, after each action, and when a terminal of the
+workspace finishes a command in the repository, so `git add` in a terminal shows at once. Settings ▸ Tools names
+the `git` program.
 
 **Generate ✨**, beside the summary, has an AI agent write the commit message: Claude Code (`claude -p`) and
 Codex (`codex exec`) work as they are, any other agent once its generate command is set in Settings ▸ Agents.
@@ -207,7 +211,7 @@ chooses the agent and its model, and **Try it** runs it on a sample change.
 ## The toolbar
 
 The bar at the bottom of the canvas holds the tools: **Select** and **Hand** (move the canvas by dragging anywhere,
-over blocks too; Esc goes back to Select), then a button for each kind of block (terminal, note, kanban board, editor, Git) and
+over blocks too; Esc goes back to Select), then a button for each kind of block (terminal, note, kanban board, editor) and
 the AI agents, then the drawing tools.
 
 ## Drawing
@@ -257,11 +261,11 @@ the workspace's blocks, read and type into their own terminal, and send you a no
 question, or to be wired to another block, in a balloon on its block; hand a task to an agent wired to it and get its
 answer back (a dot travels along the wire meanwhile); and open another agent beside itself, in a new Git worktree if
 it likes. An agent wired to a kanban reads its cards and creates, moves, comments on and claims them; it reads a
-wired note and adds to it, opens a file at a line in an editor, and reads a Git block's status. The dot before a
+wired note and adds to it, and opens a file at a line in an editor. The dot before a
 Claude Code terminal's title shows it working (accent) or waiting for you (yellow,
 "Waiting for you: …"). In any Templum terminal, `templum blocks`, `templum whoami`, `templum read <block> -n 50`,
-`templum notify <text>`, `templum ask`, `templum delegate`, `templum spawn`, `templum kanban`, `templum note`,
-`templum open` and `templum git status` do the same from the command line.
+`templum notify <text>`, `templum ask`, `templum delegate`, `templum spawn`, `templum kanban`, `templum note`
+and `templum open` do the same from the command line.
 Every block has a short id (`b7k2m`) that lasts through restarts. Turn it off with `[connections] enabled = false`. See [docs/specs/connections.md](docs/specs/connections.md).
 
 ## Shell integration
@@ -322,7 +326,7 @@ hide = ["codex"]       # agents whose limits the title bar doesn't show
 check = true   # look for a new version at start and once a day, and download it
 
 [git]
-program = "git"   # the Git block's program: a name on PATH, or a path
+program = "git"   # the Git popup's program: a name on PATH, or a path
 
 [git.commit_message]   # Generate ✨: an AI agent writes the commit message
 agent = "claude"       # an agent with a generate command (Settings ▸ Agents)

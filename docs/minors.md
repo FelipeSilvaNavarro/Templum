@@ -22,7 +22,7 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
   `dragging` on any mouse-up in the workspace.
 - [ ] **The diff keeps its colors after a theme switch.** The highlight cache is cleared only when the diff changes
   (`crates/templum/src/git_block/diff_view/mod.rs:137`); a light/dark switch keeps the old syntax colors until then.
-  Fix: clear every Git block's `panel.colors` where the theme is applied.
+  Fix: clear every workspace's Git's `panel.colors` where the theme is applied.
 - [ ] **Any change re-reads everything: the selection and every hunk's colors go.** `DiffPanel::set`
   (`crates/templum/src/git_block/diff_view/mod.rs:137-138`) clears both whenever any file changed, so while an agent
   is writing, a selection vanishes every 2 seconds. Fix: key the colors by (section, path, hunk header) instead of
@@ -41,9 +41,9 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
 - [ ] **A refused hunk offers a useless Run in a terminal.** `apply_hunk`'s failure goes through `notify_git_failure`
   (`crates/templum/src/workspace/git_changes.rs:603`), whose Run in a terminal types `git apply … /tmp/templum-….patch`,
   a file already deleted. Fix: a plain error notification for a refused patch (as Undo commit's refusal does).
-- [ ] **The block's keys swallow a custom Alt or Shift shortcut.** `git_key` passes on only Ctrl, Cmd and Fn
+- [ ] **The Git's keys swallow a custom Alt or Shift shortcut.** `git_key` passes on only Ctrl, Cmd and Fn
   (`crates/templum/src/workspace/git_keys.rs:42`); a `[keys]` binding like `previous_prompt = "alt-up"` is taken by
-  the block while it has the keyboard. Every default shortcut uses Ctrl/Cmd, so only custom ones collide. Fix: return
+  the Git while it has the keyboard. Every default shortcut uses Ctrl/Cmd, so only custom ones collide. Fix: return
   early when `self.keymap.command(&e.keystroke)` is `Some`.
 - [ ] **Holding `s` repeats the stage of a stale patch.** The keys ignore `e.is_held` and `acting > 0`
   (`crates/templum/src/workspace/git_keys.rs:34`), so a held key queues the same patch again and again, and each
@@ -52,11 +52,6 @@ Line numbers are those of `development` at a5fed2d (2026-10-13).
 - [ ] **With Ignore whitespace on, `s` stages the cursor hunk's whole file without asking.** The hunk can't go alone
   then (`crates/templum/src/workspace/git_keys.rs:184`), and `s` falls back to the file silently (`d` asks). Fix: say
   so in a notification, or ask.
-- [ ] **A focused Git block moved off screen keeps the keyboard until a click.** GPUI sends keys to the window's root
-  when the focused element isn't drawn; `release_focus` runs only when a block is closed, a note's preview toggles or
-  an editor's file changes (`crates/templum/src/workspace/blocks.rs`), not when a pan or zoom takes the block off
-  screen. Editors and notes behave the same. Fix: release the focus of a block that leaves the viewport, for every
-  kind.
 
 ## Commit
 
@@ -82,7 +77,7 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   only on a branch.
 - [ ] **The default branch is read again after every action and tab change.** `refresh_lists_at` queues
   `load_default` each time (`crates/templum/src/workspace/git_ops.rs:254`): a few `rev-parse`s more per action.
-  Fix: read it when the block opens and after a fetch, a sync or a branch change only.
+  Fix: read it when the popup opens and after a fetch, a sync or a branch change only.
 - [ ] **A remote or branch name with an unusual character is read wrong.** `words::local_name`
   (`crates/templum/src/git_block/words.rs:91`) and `Repo::switch` take what follows the first `/` as the local name
   (a remote named `team/x` breaks Back to and Compare with), and `unmerged_count`'s `--exclude`
@@ -102,7 +97,7 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   (`crates/templum/src/git_block/diff_view/paint.rs:515`, at 340439a), which a range doesn't read. Fix: leave the size
   out when `bytes` is None.
 
-- [ ] **Publish is dropped without a word after a workspace switch.** Its remotes read waits in the block's queue;
+- [ ] **Publish is dropped without a word after a workspace switch.** Its remotes read waits in the Git's queue;
   when it comes back with another workspace on screen, `publish`'s early `return`
   (`crates/templum/src/workspace/git_sync.rs:174`, at 150c656) drops it. Fix: let `publish_to` and `git_sync` run by
   `GitAt` off screen, or say it was dropped.
@@ -161,11 +156,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **Recently discarded doesn't name the files.** A row says "Discarded 7 files"
   (`crates/templum/src/git_block/discarded.rs:51`). Fix: the file names under it, folded past a few.
 
-- [ ] **Two answers from batches 1 and 2 act on the bare block id in whichever workspace is shown.** Undo commit's
-  "Revert {short}?" (`crates/templum/src/workspace/git_changes.rs:240`) and Restore's "changed since" question
-  (`crates/templum/src/workspace/git_discard.rs:302`, at 150c656) call `git_action`/`restore_discarded` with
-  `at.block`: answered after a switch, they act on the other workspace's block with that id. Fix: through
-  `show_git_block(&at, …)`, as the batches 3 and 4 questions do.
+- [ ] **Two answers from batches 1 and 2 act on the Git of whichever workspace is shown.** Undo commit's
+  "Revert {short}?" (`crates/templum/src/workspace/git_changes.rs`) and Restore's "changed since" question
+  (`crates/templum/src/workspace/git_discard.rs`) call `git_action`/`restore_discarded`, which take the Git on
+  screen: answered after a switch, they act on the other workspace's repository. Fix: through `show_git(&at, …)`, as
+  the batches 3 and 4 questions do.
 
 ## Tests
 
@@ -204,15 +199,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   as a bitmap (blurry on a 150% display). Check on Windows: Task Manager ▸ Details ▸ the "DPI awareness" column. Fix:
   add `1 RT_MANIFEST "templum.manifest.xml"` to the `.rc`, with gpui-fast's `resources/windows/gpui.manifest.xml`
   (Apache-2.0) beside it.
-- [ ] **`--bench-zoom=git` measures an empty panel.** It runs from `~/Documents/github/DaemonQuest`, whose tree is
-  usually clean, so the Git blocks it zooms show "Nothing changed since the last commit". `--bench-git` covers a full
-  diff; for the zoom, leave a few files changed in that folder before running it, or note the state with the result.
 
 ## Commit messages
 
 - [ ] **An agent installed while Templum runs gets no ✨ until the config changes.** Whether its program is
   installed is read when the config changes (`Workspace::commit_agent`, `crates/templum/src/workspace/mod.rs`),
-  not each frame. Fix: look again when the settings panel opens, or on the Git block's focus.
+  not each frame. Fix: look again when the settings panel opens, or when the Git popup opens.
 - [ ] **On Windows, Details may say "exit code 1" for any failing agent.** PowerShell's `-Command` reports 1, not
   the program's code, and a native program's standard input through it is unchecked (`login_shell`,
   `crates/templum-git/src/message.rs`). Fix: append `; exit $LASTEXITCODE`, and test Claude Code's preset on
@@ -225,9 +217,9 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   `$SHELL -l -c`, and Claude Code's preset answers on the standard output, where a profile's greeting lands too.
   Fix: drop what comes before the answer's first line when it matches the profile's output read once, or ask
   Claude Code for a file (it has no such flag today).
-- [ ] **A Git block closed or pointed elsewhere while Generate runs leaves its agent running to the timeout.** The
-  answer is dropped (`generated`, `crates/templum/src/workspace/git_message.rs`), the agent isn't stopped. Fix:
-  set `generating` when the block closes and in `set_git_folder`.
+- [ ] **The Git pointed at another folder (or its workspace deleted) while Generate runs leaves its agent running to
+  the timeout.** The answer is dropped (`generated`, `crates/templum/src/workspace/git_message.rs`), the agent isn't
+  stopped. Fix: cancel `generating` in `set_git_folder` and when the workspace is deleted.
 - [ ] **Clearing a repository's instructions leaves an empty `[git.repositories."…"]` line.** `remove_key` takes
   the key, not its table (`set_repo_instructions`). Fix: remove a table in `save_edits` when its last key goes.
 - [ ] **A nested table's last key removed may move its comments too far.** `remove_key` looks for the next header
@@ -281,6 +273,10 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **A note block copied in another Templum pastes empty.** The clipboard names notes by their ids
   (`Body::item`, `crates/templum/src/workspace/mod.rs`), which another Templum's notes don't have. Fix: put each
   note's text in the copied item's `text`, and let `paste_blocks` make a note of it when the id isn't known.
+- [ ] **A focused editor or note moved off screen keeps the keyboard until a click.** GPUI sends keys to the window's
+  root when the focused element isn't drawn; `release_focus` runs only when a block is closed, a note's preview
+  toggles or an editor's file changes (`crates/templum/src/workspace/blocks.rs`), not when a pan or zoom takes the
+  block off screen. Fix: release the focus of a block that leaves the viewport, for every kind.
 
 ## Grid mode
 
@@ -289,7 +285,7 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   happens. Fix: skip steps whose blocks are all hidden while in grid mode, keeping them for the canvas.
 - [ ] **A tile smaller than its block's minimum cuts it.** Splitting never stops (`Tile::insert`,
   `crates/templum-canvas/src/tile.rs`), so with many tiles in a small window a terminal stays at its 20 × 4 cells and
-  is cut off, a kanban or Git block's body too. Fix: refuse a split that would make a tile smaller than its block's
+  is cut off, a kanban block's body too. Fix: refuse a split that would make a tile smaller than its block's
   `min_size`, and say so.
 - [ ] **Swapping and flipping tiles aren't Ctrl+Z steps.** `swap_tile`, the title drop and `flip_tile`
   (`crates/templum/src/workspace/tiling.rs`) change the tree without a history step. Fix: a `Change::Tiles` step
@@ -640,7 +636,7 @@ Left by batch 4 (content); line numbers are those of `development` at 9e33f19.
   `Terminal::cwd` → `inspect` (`crates/templum-terminal/src/terminal.rs:717`, `:384`), which on Windows reads every
   process's folder and command line, "slow enough to keep off the UI thread", on the UI thread at every call. A
   person on Windows sees Templum stop for a moment each time an agent opens a file. Fix: read the folder on the
-  background executor (`Outcome::Later`, as `git_status`), or use `seen.folder` (the last snapshot's) on Windows.
+  background executor (`Outcome::Later`), or use `seen.folder` (the last snapshot's) on Windows.
 - [ ] **A file named in another case opens a second tab on Windows and macOS.** `open_file_for`
   (`crates/templum/src/workspace/content.rs:436`, at 6ab2c25) keeps the file name as the agent spelled it, and `open_tab`
   (`crates/templum/src/editor.rs:431`) finds a tab by an exact path. An agent opening `readme.md` while

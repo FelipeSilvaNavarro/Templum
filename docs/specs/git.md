@@ -5,6 +5,11 @@
 - **Replaces:** [cockpit.md](cockpit.md), section 8 (the Git block it describes is what this one starts from)
 - **Builds on:** [context-menus.md](context-menus.md), [agents.md](agents.md), [config.md](config.md)
 
+> **Since 2026-10-17 the Git is a popup, not a block.** Each workspace has one Git (`Space::git`), shown in a
+> popup over the canvas's bottom-left corner from the Git button at the sidebar's foot (see
+> [Layout](#1-layout-and-navigation)). Its content is the one below; where this spec says "the block", read "the
+> workspace's Git". Git blocks, their zoom and their card at far zoom are gone.
+
 ## Goal
 
 The Git block becomes the way to work with Git in Templum: reviewing what an agent changed, committing and
@@ -63,8 +68,20 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
 
 ## 1. Layout and navigation
 
-- **Size:** a new Git block opens 1200 × 760, at least 640 × 420. Blocks saved before keep their size; one smaller
-  than the minimum grows to it when the canvas loads, as every block does (`persist.rs` clamps rects).
+- **Where it shows:** a popup over the canvas's bottom-left corner, beside the sidebar, 760 × 540 (smaller in a
+  small window), drawn at a fixed scale: it never zooms with the canvas. The Git button (GitBranch icon) at the
+  sidebar's foot, apart from the workspaces under a hairline, or Ctrl+Shift+G (Cmd+Shift+G), opens and closes it;
+  so do Esc, while the Git has the keyboard and no field does, and its ✕.
+- **One Git per workspace:** switching workspace shows that workspace's repository. The first time the popup opens
+  in a workspace it picks the focused terminal's folder, else another terminal's, else the workspace's folder, else
+  the newest recent folder; with none, the folder dialog asks. Its status is read every 2 s only while the popup is
+  open, and when a terminal's command ends in the repository while it is open.
+- **Header:** the repository folder's name with ▾. A click opens the **folder menu**: the repositories this
+  workspace's terminals work in, then the workspace's recent folders (each once, the one shown left out), then
+  Choose another folder…, Refresh, Open a terminal here (at the view's center; the popup closes).
+- **Saved** in the workspace's file as an optional `git` object (`session::SavedGit`: folder, tab, summary,
+  description, the left column folded, Split). An older file's Git block item becomes the workspace's Git (its
+  folder, tab and commit message draft) and no block; items of kind `git` are never written again.
 - **Top bar,** left to right:
   - **the current branch** as a pill. A click opens the **branch switcher**: a search field over the local
     branches, then the remote ones; Enter switches (with [the switch flow](#switching-branches)); a last row
@@ -82,10 +99,9 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
 - **Body:** a left column, 300 world units, with the tab's list and, in Changes, the commit area under it; and the
   **diff panel** on the right, the same component in every tab. A button at the column's top folds it, so the diff
   takes the whole width; the block remembers it.
-- **Keyboard,** while the Git block has the focus. The block gets a focus handle of its own (today only its
-  fields have one, and `Body::focus_inner` gives a Git block nothing): a click on the block, or `focus_inner`,
-  focuses it, its key handler takes the keys below and stops them, and the workspace's shortcuts still work, as
-  in an editor block. `copy` copies the diff's selection while the block has the focus.
+- **Keyboard,** while the Git has the focus. It has a focus handle of its own: opening the popup, or a click in
+  it, focuses it, its key handler takes the keys below and stops them, and the workspace's shortcuts still work, as
+  in an editor block. `copy` copies the diff's selection while the Git has the focus.
 
 | Key | Does |
 |---|---|
@@ -93,16 +109,15 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
 | `[` / `]` | previous / next hunk |
 | `s` / `u` | stage / unstage the hunk under the keyboard cursor, or the selected file |
 | `d` | discard (asks first) |
-| Enter | open the file in an editor beside the block, at the hunk's line |
+| Enter | open the file in an editor, at the hunk's line |
 | `c` | focus the commit summary |
 | Ctrl+Enter (Cmd+Enter) | commit |
 | Ctrl+Shift+C (Cmd+C) | copy the diff's selection |
 
-  A line at the diff panel's foot names them. They only act while the block has the focus and no field does.
+  A line at the diff panel's foot names them. They only act while the Git has the focus and no field does.
 - **Empty states** say it in words with a useful button: "Nothing changed since the last commit" (History, switch
   branch), "No stashes", "No other branches" (+ New branch…).
-- **Zoom:** everything scales like a photo. The diff's rows follow the same rule as an editor's (whole pixels; the
-  block's body is drawn at the exact zooms while a zoom glides, see `block::exact_rows`).
+- **Zoom:** none; the popup keeps its scale whatever the canvas's zoom.
 
 ## 2. The diff panel
 
@@ -182,8 +197,8 @@ parent), **a stash**, and **a comparison** of two branches.
   - After a commit: "Committed a1b2c3d" with **Undo commit** ([Undoing a commit](#undoing-a-commit); only while
     that commit isn't on the upstream). The fields clear; the draft is kept across restarts as today. Undo puts
     the undone commit's message back in the fields, to fix and commit again.
-- **Open in editor** on a file row and on a hunk opens the file beside the block at that line (the camera goes
-  there).
+- **Open in editor** on a file row and on a hunk opens the file at that line in an editor of the workspace (one
+  whose folder holds it, else any, else a new one at the view's center; the camera goes there).
 
 ## 4. Safe actions
 
@@ -252,7 +267,7 @@ explains: "Pushed commits can't be removed for others; this adds a new commit th
 destination folder (default: the chosen folder; an empty or missing folder takes the clone itself, one holding files
 gets a folder named after the repository inside it, as `git clone <url>` does), cloned in the background, the button spinning meanwhile and a click on it
 cancelling, as Fetch's does (git writes its progress to stderr, which the block's runner reads only when the
-command ends; a progress bar would need a streaming runner, not worth it for a clone); when done, the block opens
+command ends; a progress bar would need a streaming runner, not worth it for a clone); when done, the Git opens
 on it. A clone that wants credentials fails with **Run in a terminal**, as other commands do.
 
 ## 5. Branches, comparison and conflicts
@@ -427,8 +442,9 @@ headlessly.
 | `git_block/diff_view/` | The diff panel: its rows (file, hunk, lines, folded stretch), unified and split layouts, highlighting with the cache, the selection, the sticky title. |
 | `git_block/*.rs` | The tabs reorganized around the left column and the panel; the block's focus handle and key handler; the branch switcher; the banners; the Generate button, its spinner and the first-use confirmation (what `message.rs` runs). |
 | `config.rs`, `settings/` | `[agents]`'s `generate` and `models`; `[git.commit_message]`; `[git.repositories]` (an owned table name in `Edit`); the Git section and the agents dialog's new part. |
-| `workspace/` | `copy` for a focused Git block's selection; `Body::focus_inner` for a Git block. |
-| `session.rs` | The Git item's `diff` and `lists`. |
+| `workspace/` | `copy` for the focused Git's selection; `git_ops.rs`: opening, closing and pointing the workspace's Git (`toggle_git`, `open_git`, `close_git`, `set_git_folder`, `git_folders`, `poll_git`); `render.rs` places the popup. |
+| `sidebar.rs` | The Git button at the sidebar's foot. |
+| `session.rs` | `SavedGit`: the workspace's Git, with `diff` and `lists`. |
 
 **Data flow:** every git command still goes through the block's queue (`git_job`/`act_job`, one at a time, results
 dropped when the block changed folder); a diff is read in the background, parsed in `templum-git`, and turned into
@@ -478,7 +494,7 @@ date order.
 - History's graph rows, search modes, file history, Restore this version, Blame;
 - Generate with a fake agent command (a script that writes a known answer), its timeout and failure, the
   first-use confirmation written once; the settings' Try it;
-- the keyboard keys; the zoom keeping the diff like a photo (rows across `ZOOM_STEPS`).
+- the keyboard keys.
 
 **Manual (Hyprland):** a real agent session reviewed and committed; Generate with Claude Code and Codex.
 
@@ -487,7 +503,7 @@ date order.
 - The panel is a virtual list: only the rows on screen are built.
 - Reading and parsing a diff, and running an agent, happen off the UI thread.
 - Highlighting is per hunk, on first draw, cached.
-- `--bench-zoom=git` and a new `--bench-git` (a block with a 5,000-line diff, scrolling and zooming) stay at
+- `--bench-git` (the Git popup on a 5,000-line diff, its panel scrolling, Unified then Split) stays at
   p95 ≤ 16.7 ms.
 
 ## Delivery

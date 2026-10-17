@@ -63,11 +63,11 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   last came to rest at (`Space::rest`; `templum-canvas`'s `lod.rs`), so a level never changes mid-glide: Full
   while the text is 5.5 px or more; Silhouette under it, where a terminal paints bars of its text's colors on the
   letters' cells, an editor or a note bars of the words gpui-kit laid out in its last Full frame
-  (`silhouette.rs`), a Git block is its card and a kanban block is drawn in full; Card under 2.5 px. The block worked in (focused, or holding the
+  (`silhouette.rs`), and a kanban block is drawn in full; Card under 2.5 px. The block worked in (focused, or holding the
   keyboard) is always Full, and below Full a title is a fixed-size label (specs/level-of-detail.md).
   A zoom glides to its step over 150 ms through
   zooms snapped to 0.02 (`templum-canvas`'s `CameraFlight`); the camera holds the target, the workspace's `view`
-  is what is drawn. Terminals and kanban blocks glide with the view. Editor, note and Git bodies glide too, but
+  is what is drawn. Terminals and kanban blocks glide with the view. Editor and note bodies glide too, but
   only through the zooms where gpui-kit's editor rows (1.5 × the font, rounded to whole pixels by GPUI) are
   exact, in a box of that zoom's size that their frames clip: elsewhere the rows would grow a pixel at a time
   while the letters grow smoothly, and the text would jump. Their editors' scroll, in pixels, scales with their
@@ -110,28 +110,29 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   (restoring and saving the canvas), `preferences.rs` (config,
   themes, settings panel), `files.rs` and `file_tree.rs` (editor blocks), `git_ops.rs`, `git_changes.rs`,
   `git_branches.rs`, `git_history.rs`, `git_discard.rs` (discards through the trash), `git_keys.rs` (the
-  block's keys), `git_switch.rs` (switching branches without losing work), `git_sync.rs` (Sync, Publish, Clone),
+  Git's keys), `git_switch.rs` (switching branches without losing work), `git_sync.rs` (Sync, Publish, Clone),
   `git_compare.rs` (a branch against the default one), `git_conflicts.rs` (conflicts region by region) and
-  `git_message.rs` (commit messages from an agent) (Git blocks), `usage.rs` (the agents' usage read after each
+  `git_message.rs` (commit messages from an agent) (the workspace's Git popup), `usage.rs` (the agents' usage read after each
   snapshot, the limits' notifications, what the Claude Code and Codex Templum opens are given), `bus.rs` (the bus's
   messages: the caller found by its `TEMPLUM_TERMINAL`, the tools, the agents' hook events), `waits.rs` (tool calls
   that wait: a question, a request to connect, an agent's turn; their deadlines, cancels and the balloon's answers),
   `delegate.rs` (tasks handed between agents: typing them, their answers, `reply`, `wait_for_idle`, `send_keys` and
   `interrupt`), `spawn.rs` (`spawn_agent`: an agent beside the caller, its worktree, its model and effort, its prompt
   once it is ready, `close_block`), `content.rs` (the tools on a
-  wired block's content: a kanban's cards, a note, a file opened in an editor, a Git block's status). Methods a
+  wired block's content: a kanban's cards, a note, a file opened in an editor). Methods a
   sibling or a test calls are `pub(super)`.
   `workspace/tests/` holds its tests, one file per area, with the shared helpers in `tests/mod.rs`.
-- `settings/`, `git_block/` and `menu/`: the panel's sections, the Git block's tabs, and what each menu lists, each
+- `settings/`, `git_block/` and `menu/`: the panel's sections, the Git popup's view and tabs, and what each menu lists, each
   in its own file behind the folder's `mod.rs`, which keeps the paths the rest of the crate uses. `git_block/diff_view/`
   holds the diff panel: its rows model (`rows.rs`, pure; Split's pairs too), the highlight cache, the selection,
   and the rows painted on a canvas in the terminal's font, unified or side by side; it shows the working changes,
   a read-only list of files (a comparison, a commit, a stash) or a blame. Each tab has its own panel (Changes',
   History's, Stashes', a comparison's: `Git::diff()` picks the one on screen), so the 2-second read of the
   working changes never touches another tab's. `git_block/history.rs` draws History's left column: the commits
-  with their graph, or the commit shown. `git_block/words.rs` holds the Git words' tooltips and the sentences the block says;
+  with their graph, or the commit shown. `git_block/words.rs` holds the Git words' tooltips and the sentences the Git says;
   `git_block/switcher.rs` the branch switcher.
-- `sidebar.rs`: the workspaces' tiles and a workspace's face (its image, icon or initials, in its color);
+- `sidebar.rs`: the workspaces' tiles, a workspace's face (its image, icon or initials, in its color) and the Git
+  button at its foot;
   `spaces_screen.rs`: the workspaces screen (cards, search, keys, dragging to reorder); `space_dialog.rs`: a
   workspace's look and its Edit… dialog ([specs/cockpit.md](specs/cockpit.md#6-the-workspaces-screen)).
 - `welcome.rs`: the welcome a first run opens over a frosted canvas (each block a soft shadow of its shape: GPUI has
@@ -182,10 +183,12 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   of plain-text notes in gpui-kit's editor, and the Notes dialog; the notes themselves are app-wide in `notes.rs`, saved
   in `notes.json` with the snapshot, every change written there as it is typed; `workspace/note_tabs.rs` opens, closes
   and deletes them), an editor (`editor.rs`: a lazy folder model behind gpui-base's `Tree`, tabs of
-  gpui-kit `EditorState`s, files read and written on the UI thread) or a Git block (`git_block/`: the repository's
-  state read in the background by `templum-git`, one command at a time per block with the others waiting in turn,
-  the lists, the diff view and the commit form; a failed `git` is a notification that can hand the command to a
-  terminal beside the block). Adding a kind is one `Body` arm, one `session::Item` variant and one
+  gpui-kit `EditorState`s, files read and written on the UI thread). Git is not a block: each workspace has one
+  (`Space::git`), shown in a popup over the canvas's bottom-left corner, at a fixed scale, opened from the sidebar's
+  foot or Ctrl+Shift+G (`git_block/`, `workspace/git_ops.rs`: the repository's state read in the background by
+  `templum-git` every 2 s while the popup is open, one command at a time with the others waiting in turn, the lists,
+  the diff view and the commit form; a failed `git` is a notification that can hand the command to a terminal
+  opened at the view's center). Adding a kind is one `Body` arm, one `session::Item` variant and one
   `menu::Items` arm ([specs/cockpit.md](specs/cockpit.md)). Blocks snap to each other's edges and centers while they
   are moved or resized (`templum-canvas`'s `snap.rs`). The toolbar (`toolbar.rs`) holds the tools;
   `workspace::Tool` is the active one. Kanban boards are app-wide (`Workspace::boards`,
@@ -200,6 +203,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   block's `uid` (`Space::uids`: five letters and digits, what agents name blocks by), kept by a restart, an undo and
   a move to another workspace; a missing, taken or malformed one is replaced; the canvas's `wires` name their blocks
   by it. A terminal's item also keeps the block that opened it (`opened_by`) and its agent's model and effort.
+  The workspace's Git is the file's optional `git` object (`SavedGit`: folder, tab, the commit message draft, the
+  left column folded, Split); an older file's Git block item is read into it, and no block.
 
 ## Distribution
 

@@ -174,7 +174,7 @@ separated by hairlines:
   |---|---|---|---|
   | `new_note` | Ctrl+Shift+M | Cmd+Shift+M | A note at the viewport's center |
   | `new_editor` | Ctrl+Shift+E | Cmd+Shift+E | The editor's folder dialog |
-  | `new_git` | Ctrl+Shift+G | Cmd+Shift+G | The Git block's folder dialog |
+  | `new_git` | Ctrl+Shift+G | Cmd+Shift+G | The workspace's Git popup, or closes it |
   | `new_docker` | Ctrl+Shift+D | Cmd+Shift+D | A Docker block |
   | `workspaces` | Ctrl+Shift+O | Cmd+Shift+O | The workspaces screen |
 
@@ -486,7 +486,8 @@ Architecture: `editor.rs` (new): the block state (`folder`, `tree: Entity<TreeSt
 ## 8. Git
 
 > **Superseded by [git.md](git.md)** (2026-10-13): the second version of the Git block. What follows is the
-> first version, the one that version starts from.
+> first version, the one that version starts from. Since 2026-10-17 Git is no longer a block: each workspace has one
+> Git, shown in a popup from the Git button at the sidebar's foot (git.md, Layout).
 
 A **Git block** shows one repository and does what the Git panels of VS Code, Zed and GitHub Desktop do, with the
 same words. It never runs a command the user didn't ask for, except reads.
