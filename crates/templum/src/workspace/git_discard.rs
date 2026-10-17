@@ -7,7 +7,6 @@ use std::time::SystemTime;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
-use templum_canvas::BlockId;
 use templum_git::GitError;
 use templum_git::trash::{self, Kept, Restored};
 
@@ -54,12 +53,11 @@ impl Workspace {
     /// Discard changes… and Discard all…: the unstaged changes of `paths`, after the question.
     pub(crate) fn discard(
         &mut self,
-        id: BlockId,
         paths: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(git) = self.space.git(id) else {
+        let Some(git) = self.space.git() else {
             return;
         };
         let entries: Vec<templum_git::Entry> = git
@@ -81,21 +79,12 @@ impl Workspace {
             ),
         };
         let paths = entries.iter().map(|e| e.path.clone()).collect();
-        self.ask_discard(
-            id,
-            paths,
-            title,
-            done,
-            Discarding::Files(entries),
-            window,
-            cx,
-        );
+        self.ask_discard(paths, title, done, Discarding::Files(entries), window, cx);
     }
 
     /// A hunk's Discard: `patch` reversed on `path`, after the question.
     pub(crate) fn discard_hunk(
         &mut self,
-        id: BlockId,
         path: String,
         patch: String,
         window: &mut Window,
@@ -103,15 +92,7 @@ impl Workspace {
     ) {
         let title = format!("Discard this change to {path}?");
         let done = format!("Discarded a change to {path}");
-        self.ask_discard(
-            id,
-            vec![path],
-            title,
-            done,
-            Discarding::Hunk(patch),
-            window,
-            cx,
-        );
+        self.ask_discard(vec![path], title, done, Discarding::Hunk(patch), window, cx);
     }
 
     /// Measures what a copy would take (in the background: a build folder is thousands of
@@ -119,7 +100,6 @@ impl Workspace {
     #[allow(clippy::too_many_arguments)]
     fn ask_discard(
         &mut self,
-        id: BlockId,
         paths: Vec<String>,
         title: String,
         done: String,
@@ -129,14 +109,14 @@ impl Workspace {
     ) {
         let Some(root) = self
             .space
-            .git(id)
+            .git()
             .and_then(|g| g.repo().map(|r| r.root.clone()))
         else {
             return;
         };
         let measured = paths.clone();
         self.git_job(
-            self.here(id),
+            self.here(),
             move || trash::measure(&root, &measured),
             move |ws, at, (files, bytes), window, cx| {
                 let keep = ws.trash.is_some() && trash::fits(files, bytes);
@@ -223,7 +203,7 @@ impl Workspace {
                 let entity = cx.entity();
                 match result {
                     Ok(Some(kept)) => {
-                        let (block, entry) = (at.block, kept.id);
+                        let entry = kept.id;
                         let undo: Extra = (
                             "git-undo",
                             "Undo".into(),
@@ -231,7 +211,7 @@ impl Workspace {
                                 move |ws: &mut Workspace,
                                       window: &mut Window,
                                       cx: &mut Context<Workspace>| {
-                                    ws.restore_discarded(block, entry.clone(), false, window, cx)
+                                    ws.restore_discarded(entry.clone(), false, window, cx)
                                 },
                             ),
                         );
@@ -275,7 +255,6 @@ impl Workspace {
     /// the discard asks before it is written over (`force`).
     pub(crate) fn restore_discarded(
         &mut self,
-        id: BlockId,
         entry: String,
         force: bool,
         window: &mut Window,
@@ -286,7 +265,7 @@ impl Workspace {
         };
         let job_entry = entry.clone();
         self.act_job(
-            self.here(id),
+            self.here(),
             move || trash.restore(&job_entry, force),
             move |ws, at, result, window, cx| {
                 match result {
@@ -298,7 +277,7 @@ impl Workspace {
                                 format!("{} files changed since they were discarded", many.len())
                             }
                         };
-                        let (entity, block) = (cx.entity(), at.block);
+                        let entity = cx.entity();
                         prompt::confirm(
                             title,
                             "Restoring puts the discarded version back over the changes.",
@@ -306,7 +285,7 @@ impl Workspace {
                             move |window, cx| {
                                 let entry = entry.clone();
                                 entity.update(cx, |ws, cx| {
-                                    ws.restore_discarded(block, entry, true, window, cx)
+                                    ws.restore_discarded(entry, true, window, cx)
                                 })
                             },
                             window,
@@ -328,22 +307,17 @@ impl Workspace {
 
     /// Recently discarded…: this repository's discards still in the trash, read in the
     /// background, then listed.
-    pub(crate) fn show_discarded(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn show_discarded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(trash), Some(root)) = (
             self.trash.clone(),
             self.space
-                .git(id)
+                .git()
                 .and_then(|g| g.repo().map(|r| r.root.clone())),
         ) else {
             return;
         };
         self.git_job(
-            self.here(id),
+            self.here(),
             move || {
                 trash
                     .list()
@@ -351,9 +325,9 @@ impl Workspace {
                     .filter(|k| k.root == root)
                     .collect::<Vec<Kept>>()
             },
-            |ws, at, kept, window, cx| {
+            |ws, _, kept, window, cx| {
                 let (entity, dim) = (cx.entity(), ws.ui.title_dim);
-                git_block::discarded::open(entity, at.block, kept, dim, window, cx);
+                git_block::discarded::open(entity, kept, dim, window, cx);
             },
             window,
             cx,

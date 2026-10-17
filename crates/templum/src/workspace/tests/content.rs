@@ -292,7 +292,6 @@ fn the_content_tools_are_refused_without_a_wire(cx: &mut TestAppContext) {
         ("create_card", json!({ "title": "x" })),
         ("read_note", json!({ "block": note_uid })),
         ("append_note", json!({ "block": note_uid, "text": "x" })),
-        ("git_status", json!({})),
         ("read_note", json!({ "block": kanban_uid })),
     ] {
         let (failed, text) = call(handle, &ws, cx, &me, tool, args.clone());
@@ -763,34 +762,4 @@ fn an_editor_with_the_keyboard_showing_a_preview_gives_it_to_the_canvas(cx: &mut
         assert!(ws.focus_handle.is_focused(window), "the canvas has them");
     })
     .unwrap();
-}
-
-#[gpui_kit::test]
-fn git_status_matches_the_repository(cx: &mut TestAppContext) {
-    let repo = committed_repo();
-    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
-    std::fs::write(repo.path().join("new.txt"), "x\n").unwrap();
-    let (handle, ws) = open(cx);
-    let terminal = first_id(&ws, cx);
-    let git = open_git(handle, &ws, cx, repo.path());
-    let (me, _) = me(&ws, cx, terminal);
-    let answers = super::bus::call_later(handle, &ws, cx, &me, 1, "git_status", json!({}));
-    let (failed, text) = super::bus::answer_soon(cx, &answers);
-    assert!(
-        failed && text.contains("No Git block is connected to you"),
-        "{text}"
-    );
-    ws.update(cx, |ws, cx| assert!(ws.connect(terminal, git, cx)));
-    let answers = super::bus::call_later(handle, &ws, cx, &me, 2, "git_status", json!({}));
-    let (failed, text) = super::bus::answer_soon(cx, &answers);
-    assert!(!failed, "{text}");
-    let expected = git_run(
-        repo.path(),
-        &["-c", "color.status=false", "status", "--short", "--branch"],
-    );
-    assert_eq!(text, expected.trim_end());
-    assert!(
-        text.starts_with("## main") && text.contains(" M a.txt") && text.contains("?? new.txt"),
-        "{text}"
-    );
 }

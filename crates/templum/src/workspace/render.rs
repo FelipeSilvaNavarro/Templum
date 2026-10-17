@@ -13,6 +13,7 @@ use gpui_kit::{
 use templum_canvas::{BlockId, Camera, Gesture, Guide, Point, Rect, dot_grid, dot_size};
 
 use crate::block;
+use crate::git_block;
 use crate::menu;
 use crate::motion;
 use crate::settings;
@@ -22,6 +23,9 @@ use crate::title_bar;
 use crate::toolbar;
 
 use super::{Drag, SAVE_DELAY, Tool, Workspace, hint_keys};
+
+/// The Git popup's distance from the window's edges and the sidebar, pixels.
+const GIT_GAP: f32 = 8.0;
 
 impl Workspace {
     /// Every BLINK: toggles a blinking cursor, and makes sure a steady one is shown.
@@ -662,6 +666,22 @@ impl Render for Workspace {
             .as_ref()
             .map(|p| theme_picker::render(self, p, cx));
         let usage = self.usage_open.then(|| crate::usage::popover(self, cx));
+        // Over the canvas's bottom-left corner, beside the sidebar's Git button; a small window
+        // gets a smaller popup.
+        let git = self.space.git().filter(|_| self.git_open).map(|g| {
+            let (w, h) = (
+                git_block::SIZE.w.min(vp.w - 2.0 * GIT_GAP),
+                git_block::SIZE.h.min(vp.h - 2.0 * GIT_GAP),
+            );
+            let left = if self.sidebar { sidebar::WIDTH } else { 0.0 } + GIT_GAP;
+            div()
+                .absolute()
+                .left(px(left))
+                .bottom(px(GIT_GAP))
+                .w(px(w))
+                .h(px(h))
+                .child(git_block::popup(self, g, w, h, cx))
+        });
         let screen = self
             .screen
             .as_ref()
@@ -697,6 +717,7 @@ impl Render for Workspace {
                     .when(self.sidebar, |el| el.child(sidebar::render(self, cx)))
                     .child(area),
             )
+            .children(git)
             // Under what the title bar opens: the settings, the theme picker, the screen.
             .children(welcome)
             .children(panel)

@@ -1,6 +1,7 @@
-//! Git blocks: opening a repository, reading it, and running its commands in the background.
+//! A workspace's Git: opening a repository, reading it, and running its commands in the
+//! background.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui_kit::component::Sizable as _;
@@ -8,7 +9,6 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 use gpui_kit::{AnyElement, App, Context, Entity, SharedString, Window, div, px};
-use templum_canvas::{BlockId, Point, Rect};
 use templum_git::{GitError, Repo};
 
 use crate::git_block::{self, Found, Git, Read};
@@ -18,119 +18,141 @@ use crate::prompt;
 use super::{Body, GitAt, Workspace, git_error_message, remember, show_notification};
 
 impl Workspace {
-    /// Asks for a folder, then opens a Git block on its repository at the viewport's center.
-    pub(crate) fn new_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let center = self.space.camera().to_world(self.center(window));
-        let size = git_block::SIZE;
-        let at = self
-            .space
-            .canvas
-            .place_new(
-                size,
-                Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
-            )
-            .origin();
-        self.ask_git_folder(at, window, cx);
-    }
-
-    /// The folder dialog; the block's top-left corner goes to `at` (world units).
-    pub(crate) fn ask_git_folder(&self, at: Point, window: &mut Window, cx: &mut Context<Self>) {
-        let entity = cx.entity();
-        launcher::ask_folder_for(
-            self,
-            "Open a Git block".to_string(),
-            None,
-            Rc::new(move |folder, window, cx| {
-                entity.update(cx, |ws, cx| ws.add_git_at(folder, at, window, cx))
-            }),
-            window,
-            cx,
-        );
-    }
-
-    /// A Git block on `folder`'s repository, its top-left corner at `at`; the folder becomes a
-    /// recent one. The repository is looked up in the background.
-    pub(crate) fn add_git_at(
-        &mut self,
-        folder: &Path,
-        at: Point,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<BlockId> {
-        if !folder.is_dir() {
-            let message = format!("{} isn't a folder", folder.display());
-            eprintln!("templum: {message}");
-            show_notification(window, cx, Notification::warning(message));
-            return None;
+    /// Ctrl+Shift+G and the sidebar's Git button: the Git popup opens on the workspace's Git,
+    /// or closes. A workspace without one yet gets one on the folder it works in; with no folder
+    /// known, the folder dialog asks.
+    pub(crate) fn toggle_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Open in a workspace that has no Git yet (another one opened it): it opens here.
+        if self.git_open && self.space.git.is_some() {
+            self.close_git(window, cx);
+            return;
         }
-        self.space.pristine = false;
-        let rect = Rect::new(at.x, at.y, git_block::SIZE.w, git_block::SIZE.h);
-        let id = self.add_block(
-            rect,
-            Body::Git(Box::new(Git::new(
-                folder.to_path_buf(),
-                git_block::Tab::Changes,
-                window,
-                cx,
-            ))),
-        );
-        remember(&mut self.space.recent, folder.to_path_buf());
-        self.look_up_git(id, window, cx);
+        if self.space.git.is_none() {
+            let Some(folder) = self.git_folder_guess() else {
+                self.choose_git_folder(window, cx);
+                return;
+            };
+            if !self.set_git_folder(&folder, window, cx) {
+                return;
+            }
+        }
+        self.open_git(window, cx);
+    }
+
+    /// Shows the popup on the workspace's Git, with the keyboard, read afresh.
+    pub(crate) fn open_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git() else {
+            return;
+        };
+        self.git_open = true;
+        // A field (the summary, a filter) keeps the keyboard it just took on a click.
+        if !git.focus.contains_focused(window, cx) {
+            git.focus.focus(window, cx);
+        }
+        self.refresh_git(window, cx);
+        cx.notify();
+    }
+
+    pub(crate) fn close_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.git_open = false;
         window.focus(&self.focus_handle, cx);
         cx.notify();
-        Some(id)
     }
 
-    /// The folder dialog, to point a Git block at another folder: from its menu, or when its
-    /// folder is gone or isn't a repository.
-    pub(crate) fn choose_git_folder(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// Where a workspace's first Git looks: the focused terminal's folder, another terminal's,
+    /// the workspace's folder, the newest recent one.
+    fn git_folder_guess(&self) -> Option<PathBuf> {
+        let focused = self
+            .space
+            .focused
+            .and_then(|id| self.space.blocks.get(&id))
+            .and_then(Body::folder);
+        focused
+            .or_else(|| self.space.terminals().find_map(|(_, p)| p.term.cwd()))
+            .or_else(|| self.space.folder.as_ref().map(PathBuf::from))
+            .or_else(|| self.space.recent.first().cloned())
+            .filter(|f| f.is_dir())
+    }
+
+    /// The folders the popup's folder menu offers: the repositories this workspace's terminals
+    /// work in, then the recent folders; each once, the one shown left out.
+    pub(crate) fn git_folders(&self) -> Vec<PathBuf> {
+        let shown = self
+            .space
+            .git()
+            .map(|g| g.repo().map_or(&g.folder, |r| &r.root));
+        let mut folders: Vec<PathBuf> = Vec::new();
+        let terminals = self.space.terminals().filter_map(|(_, p)| {
+            let folder = p.seen.folder.as_deref()?;
+            folder
+                .ancestors()
+                .find(|d| d.join(".git").exists())
+                .map(Path::to_path_buf)
+        });
+        for f in terminals.chain(self.space.recent.iter().cloned()) {
+            if Some(&f) != shown && !folders.contains(&f) {
+                folders.push(f);
+            }
+        }
+        folders
+    }
+
+    /// The folder dialog, to point the workspace's Git at another folder: from its folder menu,
+    /// or when its folder is gone or isn't a repository.
+    pub(crate) fn choose_git_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let entity = cx.entity();
         launcher::ask_folder_for(
             self,
-            "Change the Git block's folder".to_string(),
+            "Open a Git repository".to_string(),
             None,
             Rc::new(move |folder, window, cx| {
-                entity.update(cx, |ws, cx| ws.set_git_folder(id, folder, window, cx))
+                entity.update(cx, |ws, cx| {
+                    if ws.set_git_folder(folder, window, cx) {
+                        ws.open_git(window, cx)
+                    }
+                });
+                None
             }),
             window,
             cx,
         );
     }
 
-    /// Points a Git block at another folder, looked up afresh: nothing of the repository it
+    /// Points the workspace's Git at `folder`, looked up afresh: nothing of the repository it
     /// showed stays (lists, diffs, the commit's fields), and what its commands still running
-    /// return is dropped. A path that isn't a folder changes nothing.
+    /// return is dropped. The folder becomes a recent one. A path that isn't a folder changes
+    /// nothing (false).
     pub(crate) fn set_git_folder(
         &mut self,
-        id: BlockId,
         folder: &Path,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<BlockId> {
-        let (tab, generation) = self.space.git(id).map(|g| (g.tab, g.generation + 1))?;
+    ) -> bool {
         if !folder.is_dir() {
             let message = format!("{} isn't a folder", folder.display());
             eprintln!("templum: {message}");
             show_notification(window, cx, Notification::warning(message));
-            return None;
+            return false;
         }
+        let (tab, generation) = self
+            .space
+            .git()
+            .map_or((git_block::Tab::Changes, 0), |g| (g.tab, g.generation + 1));
         let mut git = Git::new(folder.to_path_buf(), tab, window, cx);
         git.generation = generation;
-        *self.space.git_mut(id)? = git;
+        if self.git_open {
+            git.focus.focus(window, cx);
+        }
+        self.space.git = Some(Box::new(git));
         remember(&mut self.space.recent, folder.to_path_buf());
-        self.look_up_git(id, window, cx);
+        self.look_up_git(window, cx);
         cx.notify();
-        Some(id)
+        true
     }
 
-    /// Points the block `at` names at `folder`, in its own workspace even when another one is on
+    /// Points the Git `at` names at `folder`, in its own workspace even when another one is on
     /// screen (a clone that ended there), and looks it up, as `set_git_folder` does. False when
-    /// the block is gone or changed folder since.
+    /// it changed folder since.
     pub(super) fn set_git_folder_at(
         &mut self,
         at: &GitAt,
@@ -147,10 +169,7 @@ impl Workspace {
             return false;
         };
         remember(&mut space.recent, folder.to_path_buf());
-        let Some(slot) = space.git_mut(at.block) else {
-            return false;
-        };
-        *slot = git;
+        space.git = Some(Box::new(git));
         let now = GitAt {
             generation: at.generation + 1,
             ..at.clone()
@@ -161,8 +180,8 @@ impl Workspace {
     }
 
     /// Finds the repository holding the block's folder, in the background, then reads it.
-    pub(crate) fn look_up_git(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        let at = self.here(id);
+    pub(crate) fn look_up_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let at = self.here();
         self.look_up_at(at, window, cx);
     }
 
@@ -195,12 +214,12 @@ impl Workspace {
     }
 
     /// `git init` in the block's folder, then reads it.
-    pub(crate) fn init_git(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(git) = self.space.git(id) else {
+    pub(crate) fn init_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git() else {
             return;
         };
         let (program, folder) = (self.config.git.program().to_string(), git.folder.clone());
-        let at = self.here(id);
+        let at = self.here();
         self.act_job(
             at,
             move || Repo::init(&program, &folder),
@@ -224,43 +243,48 @@ impl Workspace {
     /// Shows a tab of a Git block, and reads its list.
     pub(crate) fn set_git_tab(
         &mut self,
-        id: BlockId,
         tab: git_block::Tab,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(git) = self.space.git_mut(id) {
+        if let Some(git) = self.space.git_mut() {
             git.tab = tab;
             cx.notify();
         }
-        let at = self.here(id);
+        let at = self.here();
         self.refresh_lists_at(at, window, cx);
     }
 
-    /// The Git block `id` of the workspace on screen (the History list's closure builds it too).
-    pub(crate) fn here(&self, id: BlockId) -> GitAt {
+    /// The Git of the workspace on screen (the History list's closure builds it too).
+    pub(crate) fn here(&self) -> GitAt {
         GitAt {
             space: self.space.id.clone(),
-            block: id,
-            generation: self.space.git(id).map_or(0, |g| g.generation),
+            generation: self.space.git().map_or(0, |g| g.generation),
         }
     }
 
-    /// Shows the Git block `at` names, switching to its workspace; false when it is gone.
-    pub(crate) fn show_git_block(
+    /// Shows the Git `at` names in the popup, switching to its workspace; false when it changed
+    /// folder since.
+    pub(crate) fn show_git(
         &mut self,
         at: &GitAt,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         if self.space.id != at.space {
-            self.reveal(&at.space, at.block, window, cx);
+            let Some(to) = self.order().iter().position(|s| s.id == at.space) else {
+                return false;
+            };
+            self.switch_to(to, window, cx);
         }
-        // A block that changed folder since isn't the one the notification is about.
+        if self.space.id == at.space && !self.git_open {
+            self.open_git(window, cx);
+        }
+        // A Git that changed folder since isn't the one the notification is about.
         self.space.id == at.space
             && self
                 .space
-                .git(at.block)
+                .git()
                 .is_some_and(|g| g.generation == at.generation)
     }
 
@@ -310,8 +334,8 @@ impl Workspace {
     }
 
     /// Reads the block's status in the background: at once, or when the running command ends.
-    pub(crate) fn refresh_git(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        let at = self.here(id);
+    pub(crate) fn refresh_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let at = self.here();
         self.refresh_at(at, window, cx);
     }
 
@@ -345,7 +369,7 @@ impl Workspace {
                 }
                 // The panel follows the status (a file staged in a terminal, a file gone).
                 if at.space == ws.space.id {
-                    ws.reload_git_panel(at.block, window, cx);
+                    ws.reload_git_panel(window, cx);
                 }
             },
             window,
@@ -353,43 +377,29 @@ impl Workspace {
         );
     }
 
-    /// Every git_block::POLL: reads the Git blocks in the viewport again.
+    /// Every git_block::POLL: reads the workspace's Git again while the popup shows it.
     pub(super) fn poll_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let mut changed = false;
-        for body in self.space.blocks.values_mut() {
-            if let Body::Git(git) = body {
-                let gone = !git.folder.is_dir();
-                changed |= gone != git.gone;
-                git.gone = gone;
-            }
+        if !self.git_open {
+            return;
         }
-        if changed {
+        let Some(git) = self.space.git_mut() else {
+            return;
+        };
+        let gone = !git.folder.is_dir();
+        if gone != git.gone {
+            git.gone = gone;
             cx.notify();
         }
-        let vp = self.viewport(window);
-        let due: Vec<BlockId> = self
-            .space
-            .canvas
-            .visible_from(&self.space.view, vp)
-            .map(|b| b.id)
-            .filter(|id| self.space.shown(*id))
-            // A block still reading is skipped: a slow repository never piles reads up.
-            .filter(|id| {
-                self.space
-                    .git(*id)
-                    .is_some_and(|g| g.repo().is_some() && !g.busy)
-            })
-            .collect();
-        for id in due {
-            self.refresh_git(id, window, cx);
+        // Still reading: skipped, so a slow repository never piles reads up.
+        if git.repo().is_some() && !git.busy {
+            self.refresh_git(window, cx);
         }
     }
 
-    /// The Git block `at` names, in whichever workspace it is.
-    /// The Git block `at` names, unless it changed folder since.
+    /// The Git `at` names, in whichever workspace it is, unless it changed folder since.
     pub(super) fn git_at(&mut self, at: &GitAt) -> Option<&mut Git> {
         self.space_by_id_mut(&at.space)?
-            .git_mut(at.block)
+            .git_mut()
             .filter(|g| g.generation == at.generation)
     }
 
@@ -536,7 +546,7 @@ pub(crate) fn notify_git_failure(
                         .on_click(move |_, window, cx| {
                             // The block's own workspace first: block ids repeat across them.
                             ws.update(cx, |ws, cx| {
-                                if ws.show_git_block(&at, window, cx) {
+                                if ws.show_git(&at, window, cx) {
                                     act(ws, window, cx)
                                 }
                             });
@@ -574,18 +584,17 @@ pub(crate) fn notify_git_failure(
                         .on_click(move |_, window, cx| {
                             let command = run.command.clone();
                             ws_run.update(cx, |ws, cx| {
-                                if !ws.show_git_block(&run_at, window, cx) {
+                                if !ws.show_git(&run_at, window, cx) {
                                     return;
                                 }
-                                let block = run_at.block;
                                 // The repository's root, else the block's folder (a failed
                                 // clone or init has no repository).
-                                let folder = ws.space.git(block).map(|g| {
+                                let folder = ws.space.git().map(|g| {
                                     g.repo()
                                         .map_or_else(|| g.folder.clone(), |r| r.root.clone())
                                 });
                                 if let Some(folder) = folder {
-                                    ws.terminal_beside(block, &folder, Some(&command), window, cx);
+                                    ws.terminal_beside(None, &folder, Some(&command), window, cx);
                                 }
                             });
                             run_note.update(cx, |n, cx| n.dismiss(window, cx));
@@ -623,7 +632,7 @@ pub(crate) fn notify_with(
                     .primary()
                     .on_click(move |_, window, cx| {
                         ws.update(cx, |ws, cx| {
-                            if ws.show_git_block(&at, window, cx) {
+                            if ws.show_git(&at, window, cx) {
                                 act(ws, window, cx)
                             }
                         });

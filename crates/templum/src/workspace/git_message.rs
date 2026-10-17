@@ -12,7 +12,6 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, SharedString, Window, div, px};
-use templum_canvas::BlockId;
 use templum_git::message::{self, Failure, Request};
 
 use crate::config::{self, Edit};
@@ -41,13 +40,8 @@ pub(crate) fn repository_key(root: &Path) -> String {
 impl Workspace {
     /// Generate ✨: the first time, asks whether the diff may go to the agent; then writes the
     /// message in the background. A click while it runs stops it.
-    pub(crate) fn generate_message(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(git) = self.space.git(id) else {
+    pub(crate) fn generate_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git() else {
             return;
         };
         if let Some(cancel) = &git.generating {
@@ -63,7 +57,7 @@ impl Workspace {
             return;
         };
         if self.config.git.commit_message.confirmed {
-            self.generate_now(id, window, cx);
+            self.generate_now(window, cx);
             return;
         }
         let entity = cx.entity();
@@ -81,7 +75,7 @@ impl Workspace {
                         |c| c.git.commit_message.confirmed = true,
                         cx,
                     );
-                    ws.generate_now(id, window, cx);
+                    ws.generate_now(window, cx);
                 })
             },
             window,
@@ -91,14 +85,14 @@ impl Workspace {
 
     /// Reads what the commit would take, builds the request and runs the agent, off the UI
     /// thread and beside the block's own commands (it only reads, so they don't wait for it).
-    fn generate_now(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+    fn generate_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(agent) = self.commit_agent.clone() else {
             return;
         };
-        let at = self.here(id);
+        let at = self.here();
         let settings = self.config.git.commit_message.clone();
         let repositories = &self.config.git.repositories;
-        let Some(git) = self.space.git_mut(id) else {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         let Some(repo) = git.repo().cloned() else {
@@ -312,15 +306,10 @@ impl Workspace {
     }
 
     /// The ⚙'s Instructions for this repository…: a field holding them, Save writes them.
-    pub(crate) fn ask_repo_instructions(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn ask_repo_instructions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(root) = self
             .space
-            .git(id)
+            .git()
             .and_then(|g| g.repo())
             .map(|r| r.root.clone())
         else {

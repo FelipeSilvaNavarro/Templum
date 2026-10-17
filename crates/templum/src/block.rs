@@ -60,7 +60,6 @@ pub(crate) fn render(
     let font = match body {
         Body::Editor(_) => editor::FONT,
         Body::Note(_) => note::FONT,
-        Body::Git(_) => git_block::FONT,
         Body::Terminal(_) | Body::Kanban(_) => 0.0,
     };
     let settled = if font == 0.0 || (ws.space.flight.is_none() && look.scale == 1.0) {
@@ -153,10 +152,7 @@ pub(crate) fn render(
         .when(labeled, |el| el.min_w(px(0.0)))
         .text_size(px(TITLE_FONT * if labeled { 1.0 } else { z }))
         .text_color(if focused { ui.title } else { ui.title_dim })
-        .child(match body {
-            Body::Git(g) if labeled => format!("Git · {}", g.title()).into(),
-            body => title(ws, body, cx),
-        })
+        .child(title(ws, body, cx))
         .test_support();
     // A terminal's state: on the left of its header, or in its label.
     let dot = match body {
@@ -545,17 +541,6 @@ pub(crate) fn render(
                     editor::body(ws, id, e, settled, level, cx),
                 ))
             }),
-            // A fading Git block is drawn empty, like a note. Below Full it is its card: its body is
-            // dozens of components whose shape says little from afar, and its diff rows and commit
-            // fields would do their per-frame work for nothing.
-            Body::Git(g) => frame.when(live && level == Level::Full, |el| {
-                el.child(settled_box(
-                    block,
-                    settled,
-                    pull,
-                    git_block::body(ws, id, g, settled, cx),
-                ))
-            }),
         }
         .test_support();
 
@@ -682,7 +667,6 @@ pub(crate) fn title(ws: &Workspace, body: &Body, cx: &App) -> SharedString {
         Body::Kanban(k) => k.title(ws),
         Body::Note(n) => n.title(cx),
         Body::Editor(e) => e.title(),
-        Body::Git(g) => g.title(),
     }
 }
 

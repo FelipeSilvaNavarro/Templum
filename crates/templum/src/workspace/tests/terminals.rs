@@ -448,9 +448,8 @@ fn cwd_of(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> std::
 }
 
 #[gpui_kit::test]
-fn a_new_terminal_starts_in_the_focused_editors_or_git_blocks_folder(cx: &mut TestAppContext) {
+fn a_new_terminal_starts_in_the_focused_editors_folder(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
-    let repo = git_repo();
     let (handle, ws) = open(cx);
     let new_terminal = |cx: &mut TestAppContext| {
         cx.update_window(handle, |_, window, cx| window.press(NEW, cx))
@@ -460,9 +459,6 @@ fn a_new_terminal_starts_in_the_focused_editors_or_git_blocks_folder(cx: &mut Te
     open_editor(handle, &ws, cx, dir.path());
     let id = new_terminal(cx);
     assert_eq!(cwd_of(&ws, cx, id), dir.path().canonicalize().unwrap());
-    open_git(handle, &ws, cx, repo.path());
-    let id = new_terminal(cx);
-    assert_eq!(cwd_of(&ws, cx, id), repo.path().canonicalize().unwrap());
 }
 
 #[gpui_kit::test]

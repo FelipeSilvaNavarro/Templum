@@ -6,7 +6,6 @@ use std::sync::atomic::AtomicBool;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
-use templum_canvas::BlockId;
 use templum_git::Synced;
 
 use crate::git_block::{self, words};
@@ -18,30 +17,18 @@ use super::{Extra, GitAt, Workspace, notify_git_error, notify_with, show_notific
 impl Workspace {
     /// Sync: fetch, fast-forward, push, then "Got 3 commits, sent 2". Both sides new: asks how
     /// to join them.
-    pub(crate) fn sync_git(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        self.run_sync(id, None, window, cx);
+    pub(crate) fn sync_git(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.run_sync(None, window, cx);
     }
 
     /// A diverged Sync, joined by a rebase (`rebase`) or a merge, then pushed.
-    pub(crate) fn sync_join(
-        &mut self,
-        id: BlockId,
-        rebase: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.run_sync(id, Some(rebase), window, cx);
+    pub(crate) fn sync_join(&mut self, rebase: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.run_sync(Some(rebase), window, cx);
     }
 
-    fn run_sync(
-        &mut self,
-        id: BlockId,
-        join: Option<bool>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn run_sync(&mut self, join: Option<bool>, window: &mut Window, cx: &mut Context<Self>) {
         let entity = cx.entity();
-        let Some(git) = self.space.git_mut(id) else {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         let Some(repo) = git.repo().cloned() else {
@@ -52,7 +39,7 @@ impl Workspace {
         git.cancel = Some(cancel.clone());
         let repo = repo.with_cancel(cancel);
         self.act_job(
-            self.here(id),
+            self.here(),
             move || match join {
                 None => repo.sync(),
                 Some(rebase) => repo.sync_join(rebase),
@@ -80,14 +67,13 @@ impl Workspace {
                                 "This branch isn't on the server yet: nothing was sent. Publish branch sends it.",
                             )
                         };
-                        let block = at.block;
                         let publish: Extra = (
                             id,
                             "Publish branch".into(),
                             Rc::new(move |ws, window, cx| {
-                                let branch = ws.space.git(block).and_then(|g| g.status.branch.clone());
+                                let branch = ws.space.git().and_then(|g| g.status.branch.clone());
                                 if let Some(branch) = branch {
-                                    ws.publish(block, branch, window, cx)
+                                    ws.publish(branch, window, cx)
                                 }
                             }),
                         );
@@ -106,8 +92,8 @@ impl Workspace {
                             let (entity, at) = (entity.clone(), at.clone());
                             Rc::new(move |window, cx| {
                                 entity.update(cx, |ws, cx| {
-                                    if ws.show_git_block(&at, window, cx) {
-                                        ws.sync_join(at.block, rebase, window, cx)
+                                    if ws.show_git(&at, window, cx) {
+                                        ws.sync_join(rebase, window, cx)
                                     }
                                 })
                             })
@@ -153,29 +139,22 @@ impl Workspace {
     /// Publish branch: to the repository's only remote at once; with several, a menu of them at
     /// the mouse; with none, "No remote" with Run in a terminal (`git remote add origin `
     /// typed, for the user to finish).
-    pub(crate) fn publish(
-        &mut self,
-        id: BlockId,
-        branch: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
+    pub(crate) fn publish(&mut self, branch: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
             return;
         };
         let at_mouse = window.mouse_position();
         self.git_job(
-            self.here(id),
+            self.here(),
             move || repo.remotes(),
             move |ws, at, remotes, window, cx| {
-                let block = at.block;
                 let entity = cx.entity();
                 // The workspace changed meanwhile: its block with this id isn't the one asked.
                 if ws.space.id != at.space || ws.git_at(&at).is_none() {
                     return;
                 }
                 match remotes {
-                    Ok(r) if r.len() == 1 => ws.publish_to(block, r[0].clone(), branch, window, cx),
+                    Ok(r) if r.len() == 1 => ws.publish_to(r[0].clone(), branch, window, cx),
                     Ok(r) if r.is_empty() => {
                         let run: Extra = (
                             "git-add-remote",
@@ -183,11 +162,11 @@ impl Workspace {
                             Rc::new(move |ws, window, cx| {
                                 let root = ws
                                     .space
-                                    .git(block)
+                                    .git()
                                     .and_then(|g| g.repo().map(|r| r.root.clone()));
                                 if let Some(root) = root {
                                     ws.terminal_beside(
-                                        block,
+                                        None,
                                         &root,
                                         Some("git remote add origin "),
                                         window,
@@ -225,8 +204,8 @@ impl Workspace {
 
     /// Clone a repository…: a URL and where to put it: the block's folder at first, or beside
     /// the block's repository (from its ⋯), never inside it.
-    pub(crate) fn ask_clone(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(folder) = self.space.git(id).map(|g| {
+    pub(crate) fn ask_clone(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(folder) = self.space.git().map(|g| {
             let beside = g
                 .repo()
                 .and_then(|r| r.root.parent().map(|p| p.to_path_buf()));
@@ -237,7 +216,7 @@ impl Workspace {
         }) else {
             return;
         };
-        let (ws, at) = (cx.entity(), self.here(id));
+        let (ws, at) = (cx.entity(), self.here());
         prompt::ask_two(
             "Clone a repository",
             "Clone",
@@ -250,8 +229,8 @@ impl Workspace {
                 }
                 let at = at.clone();
                 ws.update(cx, |ws, cx| {
-                    if ws.show_git_block(&at, window, cx) {
-                        ws.clone_repo(at.block, url, dest, window, cx)
+                    if ws.show_git(&at, window, cx) {
+                        ws.clone_repo(url, dest, window, cx)
                     }
                 });
                 true
@@ -266,14 +245,13 @@ impl Workspace {
     /// the clone.
     pub(crate) fn clone_repo(
         &mut self,
-        id: BlockId,
         url: String,
         dest: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let program = self.config.git.program().to_string();
-        let Some(git) = self.space.git_mut(id) else {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         let into = templum_git::clone_target(&crate::launcher::expand(dest.trim()), &url);
@@ -281,7 +259,7 @@ impl Workspace {
         git.sync = Some(git_block::Sync::Cloning);
         git.cancel = Some(cancel.clone());
         self.act_job(
-            self.here(id),
+            self.here(),
             move || templum_git::Repo::clone_into(&program, &url, &into, Some(cancel)),
             move |ws, at, cloned, window, cx| {
                 if let Some(git) = ws.git_at(&at) {
@@ -330,14 +308,12 @@ impl Workspace {
     /// `git push -u <remote> <branch>`, its button spinning.
     pub(crate) fn publish_to(
         &mut self,
-        id: BlockId,
         remote: String,
         branch: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.git_sync(
-            id,
             git_block::Sync::Push,
             move |repo| repo.publish(&remote, &branch),
             |_, at, e, window, cx| {

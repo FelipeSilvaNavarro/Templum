@@ -4,14 +4,9 @@ use gpui_kit::component::WindowExt as _;
 
 use super::*;
 
-fn branch_row(id: BlockId, remote: bool, i: usize) -> gpui_kit::ElementId {
+fn branch_row(remote: bool, i: usize) -> gpui_kit::ElementId {
     gpui_kit::ElementId::Name(
-        format!(
-            "git-branch-{}-{}-{i}",
-            id.0,
-            if remote { "remote" } else { "local" }
-        )
-        .into(),
+        format!("git-branch-{}-{i}", if remote { "remote" } else { "local" }).into(),
     )
 }
 
@@ -19,11 +14,10 @@ fn on_tab(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
-    id: BlockId,
     tab: crate::git_block::Tab,
 ) {
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.set_git_tab(id, tab, window, cx))
+        ws.update(cx, |ws, cx| ws.set_git_tab(tab, window, cx))
     })
     .unwrap();
     settle(handle, cx);
@@ -48,24 +42,20 @@ fn the_remote_branches_are_folded_until_asked(cx: &mut TestAppContext) {
     let repo = feature_repo(1);
     let _remote = add_remote(repo.path());
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    on_tab(handle, &ws, cx, id, crate::git_block::Tab::Branches);
-    let n = id.0 as usize;
+    open_git(handle, &ws, cx, repo.path());
+    on_tab(handle, &ws, cx, crate::git_block::Tab::Branches);
     cx.update_window(handle, |_, window, cx| {
-        assert!(
-            window.try_find(branch_row(id, false, 0)).is_some(),
-            "feature"
-        );
-        assert!(window.try_find(branch_row(id, true, 0)).is_none(), "folded");
-        window.click(("git-remote-fold", n), cx);
+        assert!(window.try_find(branch_row(false, 0)).is_some(), "feature");
+        assert!(window.try_find(branch_row(true, 0)).is_none(), "folded");
+        window.click("git-remote-fold", cx);
         window.render_frame(cx);
         assert!(
-            window.try_find(branch_row(id, true, 0)).is_some(),
+            window.try_find(branch_row(true, 0)).is_some(),
             "origin/main"
         );
     })
     .unwrap();
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert!(g.branches.iter().all(|b| b.time > 0), "each has its age")
     });
 }
@@ -75,10 +65,10 @@ fn deleting_an_unmerged_branch_asks_again_with_the_count(cx: &mut TestAppContext
     no_motion(cx);
     let repo = feature_repo(3);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
+    open_git(handle, &ws, cx, repo.path());
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.delete_branch(id, "feature".to_string(), false, window, cx)
+            ws.delete_branch("feature".to_string(), false, window, cx)
         });
         window.render_frame(cx);
         window.within("dialog").click("ok", cx);
@@ -106,24 +96,18 @@ fn deleting_an_unmerged_branch_asks_again_with_the_count(cx: &mut TestAppContext
     );
 }
 
-fn compare(
-    handle: AnyWindowHandle,
-    ws: &Entity<Workspace>,
-    cx: &mut TestAppContext,
-    id: BlockId,
-    branch: &str,
-) {
+fn compare(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext, branch: &str) {
     let branch = branch.to_string();
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.compare_branch(id, branch, window, cx));
+        ws.update(cx, |ws, cx| ws.compare_branch(branch, window, cx));
         window.render_frame(cx);
     })
     .unwrap();
     settle(handle, cx);
 }
 
-fn shown_paths(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> Vec<String> {
-    git_of(ws, cx, id, |g| {
+fn shown_paths(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<String> {
+    git_of(ws, cx, |g| {
         g.diff()
             .files
             .iter()
@@ -139,77 +123,69 @@ fn compare_shows_what_a_branch_has_and_narrows_to_one_commit(cx: &mut TestAppCon
     std::fs::write(repo.path().join("a.txt"), "main moved\n").unwrap();
     git_run(repo.path(), &["commit", "-q", "-am", "main moved"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    compare(handle, &ws, cx, id, "feature");
-    git_of(&ws, cx, id, |g| {
+    open_git(handle, &ws, cx, repo.path());
+    compare(handle, &ws, cx, "feature");
+    git_of(&ws, cx, |g| {
         assert_eq!(g.tab, crate::git_block::Tab::Branches);
         let c = g.compare.as_ref().unwrap();
         assert_eq!((c.branch.as_str(), c.base.as_str()), ("feature", "main"));
         assert_eq!(c.commits.len(), 2);
         assert_eq!(g.diff().title(), "feature vs main · 2 commits · 2 files");
     });
-    assert_eq!(shown_paths(&ws, cx, id), ["f0.txt", "f1.txt"]);
+    assert_eq!(shown_paths(&ws, cx), ["f0.txt", "f1.txt"]);
     // The newest commit alone (f1.txt), then all of them again.
     cx.update_window(handle, |_, window, cx| {
-        window.click(
-            gpui_kit::ElementId::Name(format!("git-compare-commit-{n}-0").into()),
-            cx,
-        )
+        window.click(gpui_kit::ElementId::Name("git-compare-commit-0".into()), cx)
     })
     .unwrap();
     settle(handle, cx);
-    assert_eq!(shown_paths(&ws, cx, id), ["f1.txt"]);
-    cx.update_window(handle, |_, window, cx| {
-        window.click(("git-compare-all", n), cx)
-    })
-    .unwrap();
+    assert_eq!(shown_paths(&ws, cx), ["f1.txt"]);
+    cx.update_window(handle, |_, window, cx| window.click("git-compare-all", cx))
+        .unwrap();
     settle(handle, cx);
-    assert_eq!(shown_paths(&ws, cx, id), ["f0.txt", "f1.txt"]);
+    assert_eq!(shown_paths(&ws, cx), ["f0.txt", "f1.txt"]);
     // Read-only: no Stage or Discard on a comparison's file row.
     cx.update_window(handle, |_, window, cx| {
         window.hover(("git-file", 0usize), cx);
         window.render_frame(cx);
         assert!(
             window
-                .try_find(gpui_kit::ElementId::Name(
-                    format!("git-panel-stage-{n}-0").into()
-                ))
+                .try_find(gpui_kit::ElementId::Name("git-panel-stage-0".into()))
                 .is_none()
         );
-        window.click(("git-compare-close", n), cx);
+        window.click("git-compare-close", cx);
         window.render_frame(cx);
     })
     .unwrap();
-    git_of(&ws, cx, id, |g| assert!(g.compare.is_none()));
+    git_of(&ws, cx, |g| assert!(g.compare.is_none()));
 }
 
 #[gpui_kit::test]
 fn the_comparison_survives_the_two_second_read(cx: &mut TestAppContext) {
     let repo = feature_repo(1);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
+    open_git(handle, &ws, cx, repo.path());
     // The Changes panel has a file folded: it must stay so.
     std::fs::write(repo.path().join("w.txt"), "working\n").unwrap();
-    settle_read(handle, &ws, cx, id);
+    settle_read(handle, &ws, cx);
     cx.update_window(handle, |_, _, cx| {
         ws.update(cx, |ws, cx| {
-            ws.toggle_fold(id, (false, "w.txt".to_string()), cx)
+            ws.toggle_fold((false, "w.txt".to_string()), cx)
         })
     })
     .unwrap();
-    compare(handle, &ws, cx, id, "feature");
+    compare(handle, &ws, cx, "feature");
     std::fs::write(repo.path().join("x.txt"), "agent\n").unwrap();
-    settle_read(handle, &ws, cx, id);
+    settle_read(handle, &ws, cx);
     assert_eq!(
-        shown_paths(&ws, cx, id),
+        shown_paths(&ws, cx),
         ["f0.txt"],
         "the read never replaces the comparison"
     );
-    on_tab(handle, &ws, cx, id, crate::git_block::Tab::Changes);
-    let paths = shown_paths(&ws, cx, id);
+    on_tab(handle, &ws, cx, crate::git_block::Tab::Changes);
+    let paths = shown_paths(&ws, cx);
     assert!(paths.contains(&"x.txt".to_string()), "{paths:?}");
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert!(g.panel.folded.contains(&(false, "w.txt".to_string())))
     });
 }
@@ -219,14 +195,11 @@ fn the_top_bar_compares_the_current_branch_with_main(cx: &mut TestAppContext) {
     let repo = feature_repo(1);
     git_run(repo.path(), &["checkout", "-q", "feature"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    cx.update_window(handle, |_, window, cx| {
-        window.click(("git-compare-main", n), cx)
-    })
-    .unwrap();
+    open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| window.click("git-compare-main", cx))
+        .unwrap();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert_eq!(
             g.compare.as_ref().map(|c| c.branch.as_str()),
             Some("feature")
@@ -234,9 +207,9 @@ fn the_top_bar_compares_the_current_branch_with_main(cx: &mut TestAppContext) {
     });
     // On main itself there is nothing to compare: no button.
     git_run(repo.path(), &["checkout", "-q", "main"]);
-    settle_read(handle, &ws, cx, id);
+    settle_read(handle, &ws, cx);
     cx.update_window(handle, |_, window, _| {
-        assert!(window.try_find(("git-compare-main", n)).is_none())
+        assert!(window.try_find("git-compare-main").is_none())
     })
     .unwrap();
 }
@@ -247,12 +220,11 @@ fn the_base_can_be_another_branch(cx: &mut TestAppContext) {
     let repo = feature_repo(2);
     git_run(repo.path(), &["branch", "half", "feature~1"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    on_tab(handle, &ws, cx, id, crate::git_block::Tab::Branches);
-    compare(handle, &ws, cx, id, "feature");
-    let n = id.0 as usize;
+    open_git(handle, &ws, cx, repo.path());
+    on_tab(handle, &ws, cx, crate::git_block::Tab::Branches);
+    compare(handle, &ws, cx, "feature");
     cx.update_window(handle, |_, window, cx| {
-        window.click(("git-compare-base", n), cx);
+        window.click("git-compare-base", cx);
         window.render_frame(cx);
         assert!(window.has_active_dialog(cx));
     })
@@ -265,7 +237,7 @@ fn the_base_can_be_another_branch(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         let c = g.compare.as_ref().unwrap();
         assert_eq!(c.base, "half");
         assert_eq!(c.commits.len(), 1);
@@ -277,9 +249,9 @@ fn the_base_can_be_another_branch(cx: &mut TestAppContext) {
 fn a_comparisons_lines_offer_no_open_at_this_line(cx: &mut TestAppContext) {
     let repo = feature_repo(1);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    compare(handle, &ws, cx, id, "feature");
-    let row = git_of(&ws, cx, id, |g| {
+    open_git(handle, &ws, cx, repo.path());
+    compare(handle, &ws, cx, "feature");
+    let row = git_of(&ws, cx, |g| {
         g.diff()
             .rows
             .iter()
@@ -309,13 +281,13 @@ fn a_branch_gone_from_the_server_offers_publish(cx: &mut TestAppContext) {
     git_run(remote.path(), &["branch", "-q", "-D", "feature"]);
     git_run(repo.path(), &["fetch", "-q", "--prune"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    on_tab(handle, &ws, cx, id, crate::git_block::Tab::Branches);
-    git_of(&ws, cx, id, |g| {
+    open_git(handle, &ws, cx, repo.path());
+    on_tab(handle, &ws, cx, crate::git_block::Tab::Branches);
+    git_of(&ws, cx, |g| {
         assert!(g.branches[0].gone, "{:?}", g.branches[0])
     });
     cx.update_window(handle, |_, window, cx| {
-        window.right_click(branch_row(id, false, 0), cx);
+        window.right_click(branch_row(false, 0), cx);
         window.render_frame(cx);
         // Compare with main, Merge into main…, Rename…, Delete…, Publish, Copy name.
         window.within("popup-menu").click(4usize, cx);

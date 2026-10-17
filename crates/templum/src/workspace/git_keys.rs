@@ -2,7 +2,6 @@
 //! (docs/specs/git.md, section 1, Keyboard).
 
 use gpui_kit::{Context, KeyDownEvent, ScrollStrategy, Window};
-use templum_canvas::BlockId;
 
 use crate::git_block::diff_view::Row;
 use crate::git_block::{List, Tab};
@@ -21,14 +20,18 @@ struct AtCursor {
 impl Workspace {
     pub(crate) fn git_key(
         &mut self,
-        id: BlockId,
         e: &KeyDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(git) = self.space.git(id) else {
+        let Some(git) = self.space.git() else {
             return;
         };
+        if e.keystroke.key == "escape" && git.focus.is_focused(window) {
+            self.close_git(window, cx);
+            cx.stop_propagation();
+            return;
+        }
         // A field has the keyboard: its letters are typing. Another tab shows: the files and
         // hunks the keys act on aren't on screen.
         if !git.focus.is_focused(window) || git.tab != Tab::Changes {
@@ -37,24 +40,24 @@ impl Workspace {
         let k = &e.keystroke;
         let m = &k.modifiers;
         if k.key == "enter" && m.secondary() && !m.shift && !m.alt {
-            self.git_commit(id, false, window, cx);
+            self.git_commit(false, window, cx);
         } else if m.control || m.platform || m.function {
             // The workspace's shortcuts.
             return;
         } else {
             match k.key.as_str() {
-                "up" => self.step_file(id, -1, cx),
-                "down" => self.step_file(id, 1, cx),
-                "[" => self.step_hunk(id, -1, cx),
-                "]" => self.step_hunk(id, 1, cx),
-                "s" => self.key_stage(id, false, window, cx),
-                "u" => self.key_stage(id, true, window, cx),
-                "d" => self.key_discard(id, window, cx),
-                "space" => self.key_check(id, window, cx),
-                "enter" => self.key_open(id, window, cx),
+                "up" => self.step_file(-1, cx),
+                "down" => self.step_file(1, cx),
+                "[" => self.step_hunk(-1, cx),
+                "]" => self.step_hunk(1, cx),
+                "s" => self.key_stage(false, window, cx),
+                "u" => self.key_stage(true, window, cx),
+                "d" => self.key_discard(window, cx),
+                "space" => self.key_check(window, cx),
+                "enter" => self.key_open(window, cx),
                 // The summary is in the left column: shown first, so the keyboard goes to a
                 // field that is drawn.
-                "c" => self.focus_summary(id, window, cx),
+                "c" => self.focus_summary(window, cx),
                 _ => return,
             }
         }
@@ -63,8 +66,8 @@ impl Workspace {
 
     /// ↑ / ↓: the previous or next file of the left column. The panel scrolls to it, and the
     /// hunk cursor goes: `s`, `u` and `d` then act on the file.
-    fn step_file(&mut self, id: BlockId, step: isize, cx: &mut Context<Self>) {
-        let Some(git) = self.space.git(id) else {
+    fn step_file(&mut self, step: isize, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git() else {
             return;
         };
         let (conflicts, changed) = (git.status.conflicts(), git.status.files());
@@ -95,7 +98,7 @@ impl Workspace {
         };
         let (row, list, path) = files[next].clone();
         let staged = git.in_staged(&path);
-        let Some(git) = self.space.git_mut(id) else {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         git.panel.cursor = None;
@@ -109,8 +112,8 @@ impl Workspace {
 
     /// [ / ]: the keyboard's hunk moves to the previous or next hunk of the panel (from the
     /// selected file when there is none yet), selects its file, and the panel scrolls to it.
-    fn step_hunk(&mut self, id: BlockId, step: isize, cx: &mut Context<Self>) {
-        let Some(git) = self.space.git_mut(id) else {
+    fn step_hunk(&mut self, step: isize, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         let target = {
@@ -165,8 +168,8 @@ impl Workspace {
         cx.notify();
     }
 
-    fn at_cursor(&self, id: BlockId) -> Option<AtCursor> {
-        let git = self.space.git(id)?;
+    fn at_cursor(&self) -> Option<AtCursor> {
+        let git = self.space.git()?;
         let p = &git.panel;
         let Row::Hunk { file, hunk } = p.rows[p.cursor_row()?] else {
             return None;
@@ -183,45 +186,39 @@ impl Workspace {
     }
 
     /// `path` is in the Conflicts list.
-    fn conflicted(&self, id: BlockId, path: &str) -> bool {
+    fn conflicted(&self, path: &str) -> bool {
         self.space
-            .git(id)
+            .git()
             .is_some_and(|g| g.status.conflicts().iter().any(|e| e.path == path))
     }
 
     /// s / u: the cursor's hunk (Stage in Changes, Unstage in Staged; one that can't go alone
     /// takes its whole file), else the selected file.
-    fn key_stage(
-        &mut self,
-        id: BlockId,
-        unstage: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let selected = self.space.git(id).and_then(|g| g.selected.clone());
+    fn key_stage(&mut self, unstage: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.space.git().and_then(|g| g.selected.clone());
         // A conflict: s marks it resolved (asking while markers are left); u does nothing.
-        let conflict = match (&selected, self.at_cursor(id)) {
-            (_, Some(c)) if self.conflicted(id, &c.path) => Some(c.path),
+        let conflict = match (&selected, self.at_cursor()) {
+            (_, Some(c)) if self.conflicted(&c.path) => Some(c.path),
             (Some((List::Conflicts, path)), None) => Some(path.clone()),
             _ => None,
         };
         if let Some(path) = conflict {
             if !unstage {
-                self.mark_resolved(id, path, window, cx);
+                self.mark_resolved(path, window, cx);
             }
             return;
         }
-        match self.at_cursor(id) {
+        match self.at_cursor() {
             // s on a staged hunk, u on an unstaged one: nothing to do.
             Some(c) if c.staged != unstage => {}
             Some(AtCursor {
                 patch: Some(patch), ..
-            }) => self.apply_hunk(id, patch, unstage, window, cx),
-            Some(c) if unstage => self.unstage(id, vec![c.path], window, cx),
-            Some(c) => self.stage(id, vec![c.path], window, cx),
+            }) => self.apply_hunk(patch, unstage, window, cx),
+            Some(c) if unstage => self.unstage(vec![c.path], window, cx),
+            Some(c) => self.stage(vec![c.path], window, cx),
             None => match (selected, unstage) {
-                (Some((List::Files, path)), true) => self.unstage(id, vec![path], window, cx),
-                (Some((List::Files, path)), false) => self.stage(id, vec![path], window, cx),
+                (Some((List::Files, path)), true) => self.unstage(vec![path], window, cx),
+                (Some((List::Files, path)), false) => self.stage(vec![path], window, cx),
                 _ => {}
             },
         }
@@ -229,45 +226,42 @@ impl Workspace {
 
     /// d: the cursor's hunk in Changes (one that can't go alone takes its file), else the
     /// selected file's unstaged changes. Both ask first.
-    fn key_discard(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        let selected = self.space.git(id).and_then(|g| g.selected.clone());
+    fn key_discard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.space.git().and_then(|g| g.selected.clone());
         // A conflicted file isn't discarded by key: its choices are its regions'.
-        if self
-            .at_cursor(id)
-            .is_some_and(|c| self.conflicted(id, &c.path))
-        {
+        if self.at_cursor().is_some_and(|c| self.conflicted(&c.path)) {
             return;
         }
-        match self.at_cursor(id) {
+        match self.at_cursor() {
             Some(c) if c.staged => {}
             Some(AtCursor {
                 path,
                 patch: Some(patch),
                 ..
-            }) => self.discard_hunk(id, path, patch, window, cx),
-            Some(c) => self.discard(id, vec![c.path], window, cx),
+            }) => self.discard_hunk(path, patch, window, cx),
+            Some(c) => self.discard(vec![c.path], window, cx),
             None => {
                 if let Some((List::Files, path)) = selected {
-                    self.discard(id, vec![path], window, cx)
+                    self.discard(vec![path], window, cx)
                 }
             }
         }
     }
 
     /// Space: the selected file's box in the Changes checklist is checked, or unchecked.
-    fn key_check(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((List::Files, path)) = self.space.git(id).and_then(|g| g.selected.clone()) {
-            self.toggle_check(id, path, window, cx);
+    fn key_check(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((List::Files, path)) = self.space.git().and_then(|g| g.selected.clone()) {
+            self.toggle_check(path, window, cx);
         }
     }
 
     /// Enter: the file in an editor beside the block, at the cursor's hunk, else at the selected
     /// file's first.
-    fn key_open(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        let selected = self.space.git(id).and_then(|g| g.selected.clone());
-        match (self.at_cursor(id), selected) {
-            (Some(c), _) => self.open_from_git_at(id, &c.path, Some(c.line), window, cx),
-            (None, Some((_, path))) => self.open_from_git(id, &path, window, cx),
+    fn key_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.space.git().and_then(|g| g.selected.clone());
+        match (self.at_cursor(), selected) {
+            (Some(c), _) => self.open_from_git_at(&c.path, Some(c.line), window, cx),
+            (None, Some((_, path))) => self.open_from_git(&path, window, cx),
             (None, None) => {}
         }
     }

@@ -5,7 +5,6 @@ use std::rc::Rc;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
-use templum_canvas::BlockId;
 use templum_git::{Commit, FileDiff, GitError};
 
 use crate::git_block::diff_view::{DiffPanel, Source};
@@ -17,12 +16,11 @@ impl Workspace {
     /// Compare `branch` with the default branch: the Branches tab shows it.
     pub(crate) fn compare_branch(
         &mut self,
-        id: BlockId,
         branch: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(git) = self.space.git_mut(id) else {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         let Some(base) = git.default_branch.clone() else {
@@ -44,7 +42,7 @@ impl Workspace {
         });
         git.tab = Tab::Branches;
         cx.notify();
-        let at = self.here(id);
+        let at = self.here();
         self.refresh_lists_at(at, window, cx);
     }
 
@@ -113,35 +111,29 @@ impl Workspace {
     /// all again.
     pub(crate) fn narrow_compare(
         &mut self,
-        id: BlockId,
         hash: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(c) = self.space.git_mut(id).and_then(|g| g.compare.as_mut()) else {
+        let Some(c) = self.space.git_mut().and_then(|g| g.compare.as_mut()) else {
             return;
         };
         c.narrowed = hash;
-        let at = self.here(id);
+        let at = self.here();
         self.load_compare(at, window, cx);
     }
 
     /// The column's ←: back to the branches.
-    pub(crate) fn close_compare(&mut self, id: BlockId, cx: &mut Context<Self>) {
-        if let Some(git) = self.space.git_mut(id) {
+    pub(crate) fn close_compare(&mut self, cx: &mut Context<Self>) {
+        if let Some(git) = self.space.git_mut() {
             git.compare = None;
             cx.notify();
         }
     }
 
     /// The base button: any other branch, local or remote, from a searchable list.
-    pub(crate) fn choose_compare_base(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(git) = self.space.git(id) else {
+    pub(crate) fn choose_compare_base(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git() else {
             return;
         };
         let Some(branch) = git.compare.as_ref().map(|c| c.branch.clone()) else {
@@ -153,17 +145,17 @@ impl Workspace {
             .map(|b| b.name.clone())
             .filter(|b| *b != branch)
             .collect();
-        let at = self.here(id);
+        let at = self.here();
         git_block::switcher::pick(
             cx.entity(),
             "Compare with",
             names,
             move |ws, base, window, cx| {
                 // Answered later: on its own block, in its own workspace.
-                if !ws.show_git_block(&at, window, cx) {
+                if !ws.show_git(&at, window, cx) {
                     return;
                 }
-                if let Some(c) = ws.space.git_mut(at.block).and_then(|g| g.compare.as_mut()) {
+                if let Some(c) = ws.space.git_mut().and_then(|g| g.compare.as_mut()) {
                     c.base = base;
                     c.narrowed = None;
                 }

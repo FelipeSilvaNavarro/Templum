@@ -312,16 +312,9 @@ impl Workspace {
             ws.quiet = true;
             let mut moved = Vec::new();
             for (r, mut body, uid) in taken {
-                match &mut body {
-                    // Its commands in flight answer the block it was: they never come back to it.
-                    Body::Git(git) => {
-                        git.busy = false;
-                        git.acting = 0;
-                        git.queued.clear();
-                    }
-                    // Its find field searches the block by the id it had.
-                    Body::Terminal(pane) => pane.find = None,
-                    _ => {}
+                // Its find field searches the block by the id it had.
+                if let Body::Terminal(pane) = &mut body {
+                    pane.find = None;
                 }
                 let id = ws.add_block(Rect::new(r.x + dx, r.y + dy, r.w, r.h), body);
                 if let Some(uid) = uid {
@@ -331,11 +324,6 @@ impl Workspace {
             }
             ws.quiet = false;
             ws.space.pristine = false;
-            for id in &moved {
-                if ws.space.git(*id).is_some() {
-                    ws.look_up_git(*id, window, cx);
-                }
-            }
             (ws.space.name.clone(), moved)
         });
         self.write_index(window, cx);

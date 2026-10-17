@@ -14,7 +14,6 @@ use gpui_kit::{
     MouseButton, MouseDownEvent, MouseMoveEvent, Pixels, SharedString, Stateful, TestSupportExt,
     TextAlign, TextRun, Window, canvas, div, fill, point, px, size,
 };
-use templum_canvas::BlockId;
 use templum_git::conflict::Take;
 use templum_git::{Change, FileDiff, Kind};
 
@@ -32,7 +31,6 @@ use crate::workspace::Workspace;
 #[allow(clippy::too_many_arguments)]
 pub(super) fn row(
     ws: &Workspace,
-    id: BlockId,
     files: &Rc<Vec<Shown>>,
     rows: &[Row],
     ix: usize,
@@ -43,10 +41,9 @@ pub(super) fn row(
 ) -> AnyElement {
     match &rows[ix] {
         Row::Section { staged, files: n } => section(*staged, *n, ws.ui, row_h, z),
-        Row::File { file } => file_row(ws, id, &files[*file], ix, row_h, z, cx),
+        Row::File { file } => file_row(ws, &files[*file], ix, row_h, z, cx),
         Row::Hunk { file, hunk } => hunk_row(
             ws,
-            id,
             files,
             *file,
             *hunk,
@@ -56,14 +53,12 @@ pub(super) fn row(
             z,
             cx,
         ),
-        Row::Fold { file, lines } => fold_row(ws, id, &files[*file], ix, *lines, row_h, z, cx),
-        Row::Note { file, note } => note_row(ws, id, &files[*file], ix, *note, row_h, z, cx),
+        Row::Fold { file, lines } => fold_row(ws, &files[*file], ix, *lines, row_h, z, cx),
+        Row::Note { file, note } => note_row(ws, &files[*file], ix, *note, row_h, z, cx),
         Row::Line { file, hunk, line } => {
-            line_row(ws, id, &files[*file], *file, *hunk, *line, ix, row_h, z, cx)
+            line_row(ws, &files[*file], *file, *hunk, *line, ix, row_h, z, cx)
         }
-        Row::Region { file, region } => {
-            region_row(ws, id, &files[*file], *region, ix, row_h, z, cx)
-        }
+        Row::Region { file, region } => region_row(ws, &files[*file], *region, ix, row_h, z, cx),
         Row::Pair {
             file,
             hunk,
@@ -71,7 +66,6 @@ pub(super) fn row(
             new,
         } => pair_row(
             ws,
-            id,
             &files[*file],
             *file,
             *hunk,
@@ -100,7 +94,6 @@ fn sides(s: &Shown, region: usize) -> (Vec<String>, Vec<String>) {
 #[allow(clippy::too_many_arguments)]
 fn region_row(
     ws: &Workspace,
-    id: BlockId,
     s: &Shown,
     region: usize,
     ix: usize,
@@ -109,10 +102,9 @@ fn region_row(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    let n = id.0 as usize;
-    let busy = ws.space.git(id).is_some_and(|g| g.acting > 0);
+    let busy = ws.space.git().is_some_and(|g| g.acting > 0);
     let path = s.diff.path().to_string();
-    let ids = |what: &str| ElementId::Name(format!("git-region-{what}-{n}-{ix}").into());
+    let ids = |what: &str| ElementId::Name(format!("git-region-{what}-{ix}").into());
     // The first part starts on the line after `<<<<<<<`.
     let marker = s
         .diff
@@ -125,15 +117,7 @@ fn region_row(
         buttons.push(
             small(ids("both"), "Use both", ui, z)
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.resolve_region(
-                        id,
-                        both.clone(),
-                        region,
-                        Take::Both,
-                        shown.clone(),
-                        window,
-                        cx,
-                    )
+                    ws.resolve_region(both.clone(), region, Take::Both, shown.clone(), window, cx)
                 }))
                 .test_support()
                 .into_any_element(),
@@ -141,7 +125,7 @@ fn region_row(
         buttons.push(
             small(ids("edit"), "Edit in editor", ui, z)
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.open_from_git_at(id, &path, Some(marker), window, cx)
+                    ws.open_from_git_at(&path, Some(marker), window, cx)
                 }))
                 .test_support()
                 .into_any_element(),
@@ -205,7 +189,6 @@ fn section(staged: bool, n: usize, ui: Ui, row_h: f32, z: f32) -> AnyElement {
 /// counts, and on hover its actions. A click folds it.
 fn file_row(
     ws: &Workspace,
-    id: BlockId,
     s: &Shown,
     ix: usize,
     row_h: f32,
@@ -213,10 +196,9 @@ fn file_row(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    let n = id.0 as usize;
     let d = &s.diff;
     let (key, path) = (s.key(), d.path().to_string());
-    let git = ws.space.git(id);
+    let git = ws.space.git();
     let p = git.map(|g| g.diff());
     let folded = p.is_some_and(|p| p.folded.contains(&key));
     let working = p.is_some_and(|p| p.working());
@@ -229,7 +211,7 @@ fn file_row(
     let change = entry
         .and_then(|e| if s.staged { e.staged } else { e.unstaged })
         .unwrap_or(d.status);
-    let ids = |what: &str| ElementId::Name(format!("git-panel-{what}-{n}-{ix}").into());
+    let ids = |what: &str| ElementId::Name(format!("git-panel-{what}-{ix}").into());
     // Shown while the row is hovered; pressing one never folds the file.
     let hover_button = |what: &str, icon: IconName, tip: SharedString| {
         icon_button(ids(what), icon, ui, z)
@@ -246,7 +228,7 @@ fn file_row(
             buttons.push(
                 hover_button("unstage", IconName::Minus, words::named("Unstage").into())
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.unstage(id, vec![p.clone()], window, cx)
+                        ws.unstage(vec![p.clone()], window, cx)
                     }))
                     .test_support()
                     .into_any_element(),
@@ -256,7 +238,7 @@ fn file_row(
             buttons.push(
                 hover_button("stage", IconName::Plus, words::named("Stage").into())
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.stage(id, vec![p.clone()], window, cx)
+                        ws.stage(vec![p.clone()], window, cx)
                     }))
                     .test_support()
                     .into_any_element(),
@@ -264,7 +246,7 @@ fn file_row(
             buttons.push(
                 hover_button("discard", IconName::Undo2, words::named("Discard").into())
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.discard(id, vec![q.clone()], window, cx)
+                        ws.discard(vec![q.clone()], window, cx)
                     }))
                     .test_support()
                     .into_any_element(),
@@ -276,7 +258,7 @@ fn file_row(
         buttons.push(
             hover_button("open", IconName::FileCode, "Open in editor".into())
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.open_from_git(id, &p, window, cx)
+                    ws.open_from_git(&p, window, cx)
                 }))
                 .test_support()
                 .into_any_element(),
@@ -331,7 +313,7 @@ fn file_row(
         )
         .child(counts(d, ui))
         .children(buttons)
-        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_fold(id, key.clone(), cx)))
+        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_fold(key.clone(), cx)))
         .test_support()
         .into_any_element()
 }
@@ -342,7 +324,6 @@ fn file_row(
 #[allow(clippy::too_many_arguments)]
 fn hunk_row(
     ws: &Workspace,
-    id: BlockId,
     files: &Rc<Vec<Shown>>,
     file: usize,
     hunk: usize,
@@ -353,10 +334,9 @@ fn hunk_row(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    let n = id.0 as usize;
     let s = &files[file];
     let h = &s.diff.hunks[hunk];
-    let git = ws.space.git(id);
+    let git = ws.space.git();
     let busy = git.is_some_and(|g| g.acting > 0);
     let working = git.is_some_and(|g| g.diff().working());
     let by_hunk = working && s.diff.by_hunk() && git.is_some_and(|g| !g.diff().ignore_ws);
@@ -370,7 +350,7 @@ fn hunk_row(
         .clone()
         .filter(|h| !h.is_empty() && !h.bytes().all(|b| b == b'0'));
     let path = s.diff.path().to_string();
-    let ids = |what: &str| ElementId::Name(format!("git-hunk-{what}-{n}-{ix}").into());
+    let ids = |what: &str| ElementId::Name(format!("git-hunk-{what}-{ix}").into());
     // A conflict region's part: named after its marker's label, with Use this.
     let part = s.diff.status == Change::Conflict;
     // Built at the click from the files as drawn: what the user saw is what is applied.
@@ -387,7 +367,7 @@ fn hunk_row(
         buttons.push(
             small(ids("use"), "Use this", ui, z)
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.resolve_region(id, path.clone(), hunk / 2, take, shown.clone(), window, cx)
+                    ws.resolve_region(path.clone(), hunk / 2, take, shown.clone(), window, cx)
                 }))
                 .test_support()
                 .into_any_element(),
@@ -401,7 +381,7 @@ fn hunk_row(
                     .tooltip(|window, cx| Tooltip::new(words::tip("Unstage")).build(window, cx))
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                         if let Some(p) = patch() {
-                            ws.apply_hunk(id, p, true, window, cx)
+                            ws.apply_hunk(p, true, window, cx)
                         }
                     }))
                     .test_support()
@@ -414,7 +394,7 @@ fn hunk_row(
                     .tooltip(|window, cx| Tooltip::new(words::tip("Stage")).build(window, cx))
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                         if let Some(p) = stage() {
-                            ws.apply_hunk(id, p, false, window, cx)
+                            ws.apply_hunk(p, false, window, cx)
                         }
                     }))
                     .test_support()
@@ -426,7 +406,7 @@ fn hunk_row(
                     .tooltip(|window, cx| Tooltip::new(words::tip("Discard")).build(window, cx))
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
                         if let Some(p) = discard() {
-                            ws.discard_hunk(id, path.clone(), p, window, cx)
+                            ws.discard_hunk(path.clone(), p, window, cx)
                         }
                     }))
                     .test_support()
@@ -439,7 +419,7 @@ fn hunk_row(
         buttons.push(
             small(ids("open"), "Open", ui, z)
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.open_from_git_at(id, &path, Some(line), window, cx)
+                    ws.open_from_git_at(&path, Some(line), window, cx)
                 }))
                 .test_support()
                 .into_any_element(),
@@ -473,7 +453,7 @@ fn hunk_row(
         .when_some(opens, |el, hash| {
             el.cursor_pointer()
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.show_commit(id, hash.clone(), window, cx)
+                    ws.show_commit(hash.clone(), window, cx)
                 }))
         })
         .child({
@@ -492,7 +472,6 @@ fn hunk_row(
 #[allow(clippy::too_many_arguments)]
 fn fold_row(
     ws: &Workspace,
-    id: BlockId,
     s: &Shown,
     ix: usize,
     lines: u32,
@@ -504,7 +483,7 @@ fn fold_row(
     let key = s.key();
     // ponytail: a comparison's fold isn't expandable; read the range again with -U if people
     // ask.
-    let working = ws.space.git(id).is_some_and(|g| g.diff().working());
+    let working = ws.space.git().is_some_and(|g| g.diff().working());
     div()
         .id(("git-fold", ix))
         .w_full()
@@ -522,7 +501,7 @@ fn fold_row(
             el.cursor_pointer()
                 .hover(move |st| st.bg(ui.hover))
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.show_whole(id, key.clone(), window, cx)
+                    ws.show_whole(key.clone(), window, cx)
                 }))
         })
         .test_support()
@@ -532,7 +511,6 @@ fn fold_row(
 #[allow(clippy::too_many_arguments)]
 fn note_row(
     ws: &Workspace,
-    id: BlockId,
     s: &Shown,
     ix: usize,
     note: Note,
@@ -543,7 +521,7 @@ fn note_row(
     let ui = ws.ui;
     let d = &s.diff;
     let (key, path) = (s.key(), d.path().to_string());
-    let working = ws.space.git(id).is_some_and(|g| g.diff().working());
+    let working = ws.space.git().is_some_and(|g| g.diff().working());
     let text = match note {
         Note::Binary => format!("Binary file · {}", human(d.bytes.unwrap_or(0))),
         Note::TooLarge => "Too large to show".to_string(),
@@ -568,43 +546,42 @@ fn note_row(
         .text_size(px(FONT * z))
         .text_color(ui.title_dim)
         .child(text);
-    let row =
-        match note {
-            Note::Large => row.child(
-                small(("git-show-diff", ix), "Show diff", ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
-                        ws.show_large(id, key.clone(), cx)
-                    }))
-                    .test_support(),
-            ),
-            Note::TooLarge if working => row.child(
-                small(("git-open-large", ix), "Open in editor", ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.open_from_git(id, &path, window, cx)
-                    }))
-                    .test_support(),
-            ),
-            Note::Unread if working => row.child(
-                small(("git-show-diff", ix), "Show diff", ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.show_whole(id, key.clone(), window, cx)
-                    }))
-                    .test_support(),
-            ),
-            Note::Resolved if working => row.child(
-                small(("git-mark-resolved", ix), "Mark resolved", ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.stage(id, vec![path.clone()], window, cx)
-                    }))
-                    .test_support(),
-            ),
-            Note::TooLarge
-            | Note::Unread
-            | Note::Resolved
-            | Note::Binary
-            | Note::Mode
-            | Note::NoNewline => row,
-        };
+    let row = match note {
+        Note::Large => row.child(
+            small(("git-show-diff", ix), "Show diff", ui, z)
+                .on_click(
+                    cx.listener(move |ws, _: &ClickEvent, _, cx| ws.show_large(key.clone(), cx)),
+                )
+                .test_support(),
+        ),
+        Note::TooLarge if working => row.child(
+            small(("git-open-large", ix), "Open in editor", ui, z)
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.open_from_git(&path, window, cx)
+                }))
+                .test_support(),
+        ),
+        Note::Unread if working => row.child(
+            small(("git-show-diff", ix), "Show diff", ui, z)
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.show_whole(key.clone(), window, cx)
+                }))
+                .test_support(),
+        ),
+        Note::Resolved if working => row.child(
+            small(("git-mark-resolved", ix), "Mark resolved", ui, z)
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.stage(vec![path.clone()], window, cx)
+                }))
+                .test_support(),
+        ),
+        Note::TooLarge
+        | Note::Unread
+        | Note::Resolved
+        | Note::Binary
+        | Note::Mode
+        | Note::NoNewline => row,
+    };
     row.test_support().into_any_element()
 }
 
@@ -638,7 +615,6 @@ pub(super) struct LinePaint {
 #[allow(clippy::too_many_arguments)]
 fn line_paint(
     ws: &Workspace,
-    id: BlockId,
     s: &Shown,
     file: usize,
     hunk: usize,
@@ -660,7 +636,7 @@ fn line_paint(
     let theme = cx.theme().highlight_theme.clone();
     let hunk_colors = ws
         .space
-        .git(id)
+        .git()
         .map(|g| g.diff().colors.borrow_mut().of(file, hunk, s, &theme));
     let (colors, marks) = match &hunk_colors {
         Some(c) => (
@@ -672,7 +648,7 @@ fn line_paint(
     let text: SharedString = display(&l.text).into();
     let selection = ws
         .space
-        .git(id)
+        .git()
         .map(|g| g.diff())
         .filter(|p| !p.split || p.split_right == right)
         .and_then(|p| p.selection)
@@ -698,32 +674,22 @@ fn line_paint(
 }
 
 /// A line row's mouse: press and drag select, right-click opens its menu.
-fn line_mouse(
-    el: Stateful<Div>,
-    id: BlockId,
-    ix: usize,
-    cx: &mut Context<Workspace>,
-) -> Stateful<Div> {
+fn line_mouse(el: Stateful<Div>, ix: usize, cx: &mut Context<Workspace>) -> Stateful<Div> {
     el.on_mouse_down(
         MouseButton::Left,
         cx.listener(move |ws, e: &MouseDownEvent, _, cx| {
-            ws.diff_press(id, ix, e.position.x, e.click_count, cx)
+            ws.diff_press(ix, e.position.x, e.click_count, cx)
         }),
     )
     .on_mouse_move(cx.listener(move |ws, e: &MouseMoveEvent, _, cx| {
         if e.pressed_button == Some(MouseButton::Left) {
-            ws.diff_drag(id, ix, e.position.x, cx)
+            ws.diff_drag(ix, e.position.x, cx)
         }
     }))
     .on_mouse_down(
         MouseButton::Right,
         cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
-            ws.open_menu(
-                Target::GitLine { block: id, row: ix },
-                e.position,
-                window,
-                cx,
-            );
+            ws.open_menu(Target::GitLine { row: ix }, e.position, window, cx);
             cx.stop_propagation();
         }),
     )
@@ -732,7 +698,6 @@ fn line_mouse(
 #[allow(clippy::too_many_arguments)]
 fn line_row(
     ws: &Workspace,
-    id: BlockId,
     s: &Shown,
     file: usize,
     hunk: usize,
@@ -742,12 +707,12 @@ fn line_row(
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
-    let paint = line_paint(ws, id, s, file, hunk, line, ix, false, row_h, z, cx);
+    let paint = line_paint(ws, s, file, hunk, line, ix, false, row_h, z, cx);
     // The whole text, so the list (as wide as its widest row) scrolls to the end of it; the
     // trailing cell keeps the last glyph off the edge.
     let width =
         paint.cw * (super::text_columns(s.digits()) + paint.text.chars().count() + 1) as f32;
-    let shaped = ws.space.git(id).map(|g| g.diff().shaped.clone());
+    let shaped = ws.space.git().map(|g| g.diff().shaped.clone());
     let row = div()
         .id(("git-line", ix))
         .w_full()
@@ -768,9 +733,7 @@ fn line_row(
             )
             .size_full(),
         );
-    line_mouse(row, id, ix, cx)
-        .test_support()
-        .into_any_element()
+    line_mouse(row, ix, cx).test_support().into_any_element()
 }
 
 /// Split: the old line in the left half (its old number), the new one in the right half (its
@@ -778,7 +741,6 @@ fn line_row(
 #[allow(clippy::too_many_arguments)]
 fn pair_row(
     ws: &Workspace,
-    id: BlockId,
     s: &Shown,
     file: usize,
     hunk: usize,
@@ -789,27 +751,23 @@ fn pair_row(
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
-    let git = ws.space.git(id);
+    let git = ws.space.git();
     let half = git.map_or(0, |g| g.diff().half);
     let cw = ws.cell.size.w * FONT / ws.cell.font_size * z;
-    // The panel's width: the block's, less the left column while it shows.
+    // The panel's width: the popup's, less the left column while it shows.
     let lists = if git.is_some_and(|g| g.lists_folded) {
         0.0
     } else {
         LISTS_W
     };
-    let panel_w = ws
-        .space
-        .canvas
-        .get(id)
-        .map_or(f32::INFINITY, |b| (b.rect.w - lists) * z);
+    let panel_w = (crate::git_block::SIZE.w - lists) * z;
     // ponytail: a side is at most half the panel, so the added side is always in view; a line
     // longer than that is cut at its side (Unified shows it whole). Scroll each side alone if
     // people need the end of long lines side by side.
     let half_w = px((cw * half as f32).min((panel_w / 2.0).floor()));
     let mut side = |line: Option<usize>, right: bool| {
         line.map(|l| {
-            let mut p = line_paint(ws, id, s, file, hunk, l, ix, right, row_h, z, cx);
+            let mut p = line_paint(ws, s, file, hunk, l, ix, right, row_h, z, cx);
             if right {
                 p.old_no = None
             } else {
@@ -820,7 +778,7 @@ fn pair_row(
     };
     let (left, right) = (side(old, false), side(new, true));
     let empty = ws.ui.hover;
-    let shaped = ws.space.git(id).map(|g| g.diff().shaped.clone());
+    let shaped = ws.space.git().map(|g| g.diff().shaped.clone());
     let row = div()
         .id(("git-pair", ix))
         .w_full()
@@ -857,9 +815,7 @@ fn pair_row(
             )
             .size_full(),
         );
-    line_mouse(row, id, ix, cx)
-        .test_support()
-        .into_any_element()
+    line_mouse(row, ix, cx).test_support().into_any_element()
 }
 
 /// Paints one line: its background, the changed words, the selection, the numbers, the sign

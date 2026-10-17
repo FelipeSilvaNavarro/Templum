@@ -116,7 +116,7 @@ fn fake_config(agent: &std::path::Path, confirmed: bool) -> String {
 const ANSWER: &str = "printf 'Fix the parser\\n\\nIt read past the end.\\n'";
 
 /// A repository with a.txt's change staged, a config folder with the fake agent running
-/// `then`, and a Git block on the repository.
+/// `then`, and the Git popup on the repository.
 #[cfg(unix)]
 fn staged_with_agent(
     cx: &mut TestAppContext,
@@ -125,7 +125,6 @@ fn staged_with_agent(
 ) -> (
     AnyWindowHandle,
     Entity<Workspace>,
-    BlockId,
     tempfile::TempDir,
     tempfile::TempDir,
 ) {
@@ -136,14 +135,14 @@ fn staged_with_agent(
     let agent = fake_agent(config.path(), then);
     write_config(config.path(), &fake_config(&agent, confirmed));
     let (handle, ws) = open_with(cx, Some(config.path().to_path_buf()));
-    let id = open_git(handle, &ws, cx, repo.path());
-    (handle, ws, id, repo, config)
+    open_git(handle, &ws, cx, repo.path());
+    (handle, ws, repo, config)
 }
 
 /// The summary and the description as they are.
 #[cfg(unix)]
-fn fields(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> (String, String) {
-    let (summary, description) = git_of(ws, cx, id, |g| (g.summary.clone(), g.description.clone()));
+fn fields(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> (String, String) {
+    let (summary, description) = git_of(ws, cx, |g| (g.summary.clone(), g.description.clone()));
     ws.read_with(cx, |_, cx| {
         (
             summary.read(cx).value().to_string(),
@@ -153,10 +152,10 @@ fn fields(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> (Stri
 }
 
 #[cfg(unix)]
-fn click_generate(handle: AnyWindowHandle, cx: &mut TestAppContext, id: BlockId) {
+fn click_generate(handle: AnyWindowHandle, cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        window.click(("git-generate", id.0 as usize), cx);
+        window.click("git-generate", cx);
         window.render_frame(cx);
     })
     .unwrap();
@@ -165,18 +164,18 @@ fn click_generate(handle: AnyWindowHandle, cx: &mut TestAppContext, id: BlockId)
 #[cfg(unix)]
 #[gpui_kit::test]
 fn generate_writes_the_message_from_what_is_staged(cx: &mut TestAppContext) {
-    let (handle, ws, id, repo, config) = staged_with_agent(cx, ANSWER, true);
-    click_generate(handle, cx, id);
-    git_of(&ws, cx, id, |g| assert!(g.generating.is_some(), "spins"));
+    let (handle, ws, repo, config) = staged_with_agent(cx, ANSWER, true);
+    click_generate(handle, cx);
+    git_of(&ws, cx, |g| assert!(g.generating.is_some(), "spins"));
     settle(handle, cx);
     assert_eq!(
-        fields(&ws, cx, id),
+        fields(&ws, cx),
         (
             "Fix the parser".to_string(),
             "It read past the end.".to_string()
         )
     );
-    git_of(&ws, cx, id, |g| assert!(g.generating.is_none()));
+    git_of(&ws, cx, |g| assert!(g.generating.is_none()));
     let request = std::fs::read_to_string(config.path().join("request.txt")).unwrap();
     for part in ["Say why.", "M a.txt", "+two", "First"] {
         assert!(request.contains(part), "{part} in {request}");
@@ -201,23 +200,20 @@ fn generate_shows_only_with_something_to_describe(cx: &mut TestAppContext) {
     let agent = fake_agent(config.path(), ANSWER);
     write_config(config.path(), &fake_config(&agent, true));
     let (handle, ws) = open_with(cx, Some(config.path().to_path_buf()));
-    let id = open_git(handle, &ws, cx, repo.path());
+    open_git(handle, &ws, cx, repo.path());
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        assert!(
-            window.try_find(("git-generate", id.0 as usize)).is_none(),
-            "nothing changed"
-        );
+        assert!(window.try_find("git-generate").is_none(), "nothing changed");
     })
     .unwrap();
     // Nothing staged, a new file: Commit all changes, which Generate describes too.
     std::fs::write(repo.path().join("new.txt"), "brand new\n").unwrap();
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.refresh_git(id, window, cx))
+        ws.update(cx, |ws, cx| ws.refresh_git(window, cx))
     })
     .unwrap();
     settle(handle, cx);
-    click_generate(handle, cx, id);
+    click_generate(handle, cx);
     settle(handle, cx);
     let request = std::fs::read_to_string(config.path().join("request.txt")).unwrap();
     assert!(
@@ -231,8 +227,8 @@ fn generate_shows_only_with_something_to_describe(cx: &mut TestAppContext) {
 fn generate_asks_once_before_sending_the_diff(cx: &mut TestAppContext) {
     use gpui_kit::component::WindowExt as _;
     no_motion(cx);
-    let (handle, ws, id, _repo, config) = staged_with_agent(cx, ANSWER, false);
-    click_generate(handle, cx, id);
+    let (handle, ws, _repo, config) = staged_with_agent(cx, ANSWER, false);
+    click_generate(handle, cx);
     cx.update_window(handle, |_, window, cx| {
         assert!(window.has_active_dialog(cx), "asks first");
         window.within("dialog").click("cancel", cx);
@@ -244,7 +240,7 @@ fn generate_asks_once_before_sending_the_diff(cx: &mut TestAppContext) {
         !config.path().join("request.txt").exists(),
         "declined: nothing sent"
     );
-    click_generate(handle, cx, id);
+    click_generate(handle, cx);
     cx.update_window(handle, |_, window, cx| {
         assert!(window.has_active_dialog(cx), "asked again");
         window.within("dialog").click("ok", cx);
@@ -252,12 +248,12 @@ fn generate_asks_once_before_sending_the_diff(cx: &mut TestAppContext) {
     })
     .unwrap();
     settle(handle, cx);
-    assert_eq!(fields(&ws, cx, id).0, "Fix the parser");
+    assert_eq!(fields(&ws, cx).0, "Fix the parser");
     ws.update(cx, |ws, _| ws.save());
     let text = std::fs::read_to_string(config.path().join(crate::config::FILE)).unwrap();
     assert!(text.contains("confirmed = true"), "{text}");
     std::fs::remove_file(config.path().join("request.txt")).unwrap();
-    click_generate(handle, cx, id);
+    click_generate(handle, cx);
     cx.update_window(handle, |_, window, cx| {
         assert!(!window.has_active_dialog(cx), "asked once")
     })
@@ -269,63 +265,62 @@ fn generate_asks_once_before_sending_the_diff(cx: &mut TestAppContext) {
 #[cfg(unix)]
 #[gpui_kit::test]
 fn a_failing_agent_leaves_the_fields_and_says_why(cx: &mut TestAppContext) {
-    let (handle, ws, id, _repo, _config) = staged_with_agent(cx, "echo oops >&2; exit 3", true);
-    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    let (handle, ws, _repo, _config) = staged_with_agent(cx, "echo oops >&2; exit 3", true);
+    let summary = git_of(&ws, cx, |g| g.summary.clone());
     cx.update_window(handle, |_, window, cx| {
         summary.update(cx, |s, cx| s.set_value("Mine", window, cx));
     })
     .unwrap();
-    click_generate(handle, cx, id);
+    click_generate(handle, cx);
     settle(handle, cx);
     assert_eq!(notification_count(handle, cx), 1, "says why, with Details");
-    assert_eq!(fields(&ws, cx, id).0, "Mine", "left as it was");
-    git_of(&ws, cx, id, |g| assert!(g.generating.is_none()));
+    assert_eq!(fields(&ws, cx).0, "Mine", "left as it was");
+    git_of(&ws, cx, |g| assert!(g.generating.is_none()));
 }
 
 #[cfg(unix)]
 #[gpui_kit::test]
 fn an_agent_past_its_timeout_is_stopped(cx: &mut TestAppContext) {
-    let (handle, ws, id, _repo, _config) = staged_with_agent(cx, "sleep 30", true);
+    let (handle, ws, _repo, _config) = staged_with_agent(cx, "sleep 30", true);
     // Below the settings' 5 s floor, for a quick test.
     ws.update(cx, |ws, _| ws.config.git.commit_message.timeout = 1);
     let started = std::time::Instant::now();
-    click_generate(handle, cx, id);
+    click_generate(handle, cx);
     settle(handle, cx);
     assert!(
         started.elapsed() < std::time::Duration::from_secs(20),
         "stopped, not waited for"
     );
     assert_eq!(notification_count(handle, cx), 1);
-    assert_eq!(fields(&ws, cx, id), (String::new(), String::new()));
-    git_of(&ws, cx, id, |g| assert!(g.generating.is_none()));
+    assert_eq!(fields(&ws, cx), (String::new(), String::new()));
+    git_of(&ws, cx, |g| assert!(g.generating.is_none()));
 }
 
 #[cfg(unix)]
 #[gpui_kit::test]
 fn a_second_click_cancels_and_a_message_changed_meanwhile_is_kept(cx: &mut TestAppContext) {
-    let (handle, ws, id, _repo, _config) = staged_with_agent(cx, ANSWER, true);
-    let n = id.0 as usize;
+    let (handle, ws, _repo, _config) = staged_with_agent(cx, ANSWER, true);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        window.click(("git-generate", n), cx);
+        window.click("git-generate", cx);
         window.render_frame(cx);
-        window.click(("git-generate", n), cx);
+        window.click("git-generate", cx);
     })
     .unwrap();
     settle(handle, cx);
     assert_eq!(notification_count(handle, cx), 0, "a cancel says nothing");
-    assert_eq!(fields(&ws, cx, id), (String::new(), String::new()));
-    git_of(&ws, cx, id, |g| assert!(g.generating.is_none()));
+    assert_eq!(fields(&ws, cx), (String::new(), String::new()));
+    git_of(&ws, cx, |g| assert!(g.generating.is_none()));
     // Typed while the agent writes: what was typed stays.
-    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    let summary = git_of(&ws, cx, |g| g.summary.clone());
     cx.update_window(handle, |_, window, cx| {
-        window.click(("git-generate", n), cx);
+        window.click("git-generate", cx);
         summary.update(cx, |s, cx| s.set_value("Mine", window, cx));
         window.render_frame(cx);
     })
     .unwrap();
     settle(handle, cx);
-    assert_eq!(fields(&ws, cx, id).0, "Mine");
+    assert_eq!(fields(&ws, cx).0, "Mine");
     assert_eq!(notification_count(handle, cx), 1, "Kept your message");
 }
 
@@ -334,12 +329,11 @@ fn a_second_click_cancels_and_a_message_changed_meanwhile_is_kept(cx: &mut TestA
 fn the_generate_menu_sets_the_model_and_this_repositorys_instructions(cx: &mut TestAppContext) {
     // The question opens at once: what is typed reaches its field.
     no_motion(cx);
-    let (handle, ws, id, _repo, config) = staged_with_agent(cx, ANSWER, true);
-    let n = id.0 as usize;
+    let (handle, ws, _repo, config) = staged_with_agent(cx, ANSWER, true);
     let choose = |cx: &mut TestAppContext, item: usize| {
         cx.update_window(handle, |_, window, cx| {
             window.render_frame(cx);
-            window.click(("git-generate-menu", n), cx);
+            window.click("git-generate-menu", cx);
             window.render_frame(cx);
             // fast, smart, —, Instructions for this repository…: a separator counts.
             window.within("popup-menu").click(item, cx);
@@ -360,7 +354,7 @@ fn the_generate_menu_sets_the_model_and_this_repositorys_instructions(cx: &mut T
         window.render_frame(cx);
     })
     .unwrap();
-    let root = git_of(&ws, cx, id, |g| g.repo().unwrap().root.clone());
+    let root = git_of(&ws, cx, |g| g.repo().unwrap().root.clone());
     let key = crate::workspace::git_message::repository_key(&root);
     ws.read_with(cx, |ws, _| {
         assert_eq!(
@@ -370,7 +364,7 @@ fn the_generate_menu_sets_the_model_and_this_repositorys_instructions(cx: &mut T
             Some("Prefix the summary with the ticket id.")
         );
     });
-    click_generate(handle, cx, id);
+    click_generate(handle, cx);
     settle(handle, cx);
     let request = std::fs::read_to_string(config.path().join("request.txt")).unwrap();
     assert!(
@@ -554,20 +548,20 @@ fn the_git_section_writes_the_rules_and_the_prompt_back_at_its_default_goes(
 fn a_commit_made_while_the_agent_writes_leaves_its_answer_out(cx: &mut TestAppContext) {
     // The agent's answer would describe changes already committed (here from a terminal; from
     // the block, the fields were cleared too).
-    let (handle, ws, id, repo, _config) = staged_with_agent(
+    let (handle, ws, repo, _config) = staged_with_agent(
         cx,
         &format!("git commit -q -m 'From a terminal'\n{ANSWER}"),
         true,
     );
-    click_generate(handle, cx, id);
+    click_generate(handle, cx);
     settle(handle, cx);
     assert_eq!(
         git_run(repo.path(), &["log", "-1", "--format=%s"]),
         "From a terminal\n"
     );
-    assert_eq!(fields(&ws, cx, id), (String::new(), String::new()));
+    assert_eq!(fields(&ws, cx), (String::new(), String::new()));
     assert_eq!(notification_count(handle, cx), 1, "says why");
-    git_of(&ws, cx, id, |g| assert!(g.generating.is_none()));
+    git_of(&ws, cx, |g| assert!(g.generating.is_none()));
 }
 
 #[cfg(unix)]
@@ -578,16 +572,16 @@ fn generate_can_be_stopped_once_the_changes_are_committed(cx: &mut TestAppContex
     let agent = fake_agent(config.path(), ANSWER);
     write_config(config.path(), &fake_config(&agent, true));
     let (handle, ws) = open_with(cx, Some(config.path().to_path_buf()));
-    let id = open_git(handle, &ws, cx, repo.path());
+    open_git(handle, &ws, cx, repo.path());
     // Writing, with nothing left to commit (it was committed meanwhile): the spinner stays.
     ws.update(cx, |ws, _| {
-        ws.space.git_mut(id).unwrap().generating = Some(std::sync::Arc::new(
+        ws.space.git_mut().unwrap().generating = Some(std::sync::Arc::new(
             std::sync::atomic::AtomicBool::new(false),
         ));
     });
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.try_find(("git-generate", id.0 as usize)).is_some());
+        assert!(window.try_find("git-generate").is_some());
     })
     .unwrap();
 }

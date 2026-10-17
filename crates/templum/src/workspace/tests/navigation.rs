@@ -425,40 +425,20 @@ fn block_layout(window: &Window, block: BlockId) -> std::collections::BTreeMap<S
         .collect()
 }
 
-// The canvas zoom magnifies the editor and the Git block like a photo: everything inside
-// doubles at zoom 2, nothing keeps a fixed size or moves around (hairline borders stay
-// 1 px, hence the few pixels of slack).
+// The canvas zoom magnifies the editor like a photo: everything inside doubles at zoom 2,
+// nothing keeps a fixed size or moves around (hairline borders stay 1 px, hence the few pixels
+// of slack).
 #[gpui_kit::test]
-fn zooming_scales_the_editor_and_git_blocks_like_a_photo(cx: &mut TestAppContext) {
+fn zooming_scales_the_editor_like_a_photo(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("a.rs"),
         "fn main() {\n    println!(\"hi\");\n}\n",
     )
     .unwrap();
-    let repo = committed_repo();
-    std::fs::write(repo.path().join("a.txt"), "zero\none\n").unwrap();
     let (handle, ws) = open(cx);
     let editor = open_editor(handle, &ws, cx, dir.path());
     click_file(handle, 0, cx);
-    let git = cx
-        .update_window(handle, |_, window, cx| {
-            ws.update(cx, |ws, cx| {
-                let id = ws
-                    .add_git_at(repo.path(), Point::new(40.0, 700.0), window, cx)
-                    .unwrap();
-                ws.space.appearing.clear();
-                ws.select_git_row(
-                    id,
-                    crate::git_block::List::Files,
-                    "a.txt".to_string(),
-                    window,
-                    cx,
-                );
-                id
-            })
-        })
-        .unwrap();
     settle(handle, cx);
     // Each block measured with the camera on it, at zoom 1 and 2.
     let layout = |cx: &mut TestAppContext, block: BlockId, at: Point, zoom: f32| {
@@ -489,24 +469,9 @@ fn zooming_scales_the_editor_and_git_blocks_like_a_photo(cx: &mut TestAppContext
             }
         }
     };
-    let tabs = [
-        crate::git_block::Tab::Changes,
-        crate::git_block::Tab::History,
-        crate::git_block::Tab::Branches,
-    ];
     let one = layout(cx, editor, Point::new(0.0, 0.0), 1.0);
     let two = layout(cx, editor, Point::new(0.0, 0.0), 2.0);
     compare("editor", &one, &two);
-    for tab in tabs {
-        cx.update_window(handle, |_, window, cx| {
-            ws.update(cx, |ws, cx| ws.set_git_tab(git, tab, window, cx))
-        })
-        .unwrap();
-        settle(handle, cx);
-        let one = layout(cx, git, Point::new(0.0, 660.0), 1.0);
-        let two = layout(cx, git, Point::new(0.0, 680.0), 2.0);
-        compare(tab.name(), &one, &two);
-    }
 }
 
 #[gpui_kit::test]

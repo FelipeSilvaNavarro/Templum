@@ -118,20 +118,28 @@ impl Workspace {
         true
     }
 
-    /// A terminal in `folder`, placed to the right of `block`, with `command` typed in (not
-    /// run: Enter is the person's).
+    /// A terminal in `folder`, placed to the right of `beside` (None: at the viewport's center),
+    /// with `command` typed in (not run: Enter is the person's).
     pub(crate) fn terminal_beside(
         &mut self,
-        block: BlockId,
+        beside: Option<BlockId>,
         folder: &Path,
         command: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
-        let anchor = self.space.home(self.space.canvas.get(block)?);
         self.space.pristine = false;
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
-        let rect = self.space.room_beside(&[anchor], size);
+        let rect = match beside.and_then(|b| self.space.canvas.get(b)) {
+            Some(b) => self.space.room_beside(&[self.space.home(b)], size),
+            None => {
+                let center = self.space.camera().to_world(self.center(window));
+                self.space.canvas.place_new(
+                    size,
+                    Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
+                )
+            }
+        };
         let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx);
         if let (Some(id), Some(command)) = (id, command) {
             // Typed, not run: the person reads it and presses Enter (it may delete or push).
@@ -557,7 +565,7 @@ impl Workspace {
             .blocks()
             .iter()
             .filter(|b| ids.contains(&b.id))
-            .map(|b| (b.id, self.space.item_of(b, cx)))
+            .map(|b| (b.id, self.space.item_of(b)))
             .collect();
         // Their wires go with them; undoing the close brings them back.
         let wires: Vec<_> = self
@@ -682,21 +690,14 @@ impl Workspace {
                 }
             }
         }
-        // `git add` in a terminal shows in the block within a frame.
-        let repos: Vec<BlockId> = self
+        // `git add` in a terminal shows in the Git popup within a frame.
+        let in_repo = self
             .space
-            .blocks
-            .iter()
-            .filter_map(|(id, b)| {
-                let root = &b.git()?.repo()?.root;
-                finished_in
-                    .iter()
-                    .any(|f| f.starts_with(root))
-                    .then_some(*id)
-            })
-            .collect();
-        for id in repos {
-            self.refresh_git(id, window, cx);
+            .git()
+            .and_then(|g| g.repo())
+            .is_some_and(|r| finished_in.iter().any(|f| f.starts_with(&r.root)));
+        if self.git_open && in_repo {
+            self.refresh_git(window, cx);
         }
         let delivery = self.delivery(window);
         let ws = cx.entity().downgrade();

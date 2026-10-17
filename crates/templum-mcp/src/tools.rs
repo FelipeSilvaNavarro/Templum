@@ -103,9 +103,6 @@ pub enum Call {
         path: String,
         line: Option<u32>,
     },
-    GitStatus {
-        block: Option<String>,
-    },
     /// Presses keys in a terminal, by name (`templum_terminal::KEY_NAMES`, checked by the app).
     SendKeys {
         block: String,
@@ -473,13 +470,6 @@ pub fn list() -> Value {
             },
         },
         {
-            "name": "git_status",
-            "description": "The branch, how far ahead and behind its upstream, and the changed files of the \
-                            repository a Git block connected to you shows, as git status --short --branch prints \
-                            them. block may be left out when one Git block is connected to you.",
-            "inputSchema": { "type": "object", "properties": { "block": block } },
-        },
-        {
             "name": "send_keys",
             "description": "Presses keys in a terminal connected to you, one at a time, as a keyboard does (never \
                             as a paste): to answer an agent's dialog (a permission, a trust question) or drive a \
@@ -695,9 +685,6 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
                 ),
             },
         },
-        "git_status" => Call::GitStatus {
-            block: optional("block")?,
-        },
         "send_keys" => Call::SendKeys {
             block: text("block")?,
             keys: match &args["keys"] {
@@ -800,7 +787,6 @@ mod tests {
                 json!({ "block": "4qm2a", "text": "Next: the tests." }),
             ),
             ("open_file", json!({ "path": "src/main.rs", "line": 12 })),
-            ("git_status", json!({ "block": "g1t2k" })),
             (
                 "send_keys",
                 json!({ "block": "k9x1d", "keys": ["2", "enter"] }),
@@ -1160,10 +1146,6 @@ mod tests {
                 path: "a.rs".into(),
                 line: None
             })
-        );
-        assert_eq!(
-            parse("git_status", &json!({ "block": "" })),
-            Ok(Call::GitStatus { block: None })
         );
         for (tool, bad) in [
             ("move_card", json!({ "column": "Doing" })),

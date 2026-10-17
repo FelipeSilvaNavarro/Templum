@@ -12,13 +12,13 @@ fn open_kept(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, te
 
 /// Clicks row `i`'s Discard, waits for the question (it comes once what would be kept is
 /// measured), and answers Discard.
-fn discard_row(handle: AnyWindowHandle, cx: &mut TestAppContext, id: BlockId, i: usize) {
+fn discard_row(handle: AnyWindowHandle, cx: &mut TestAppContext, i: usize) {
     use gpui_kit::component::WindowExt as _;
     click_row_button(
         handle,
         cx,
-        row_id(id, "files", i),
-        git_button(id, "discard", "files", i),
+        row_id("files", i),
+        git_button("discard", "files", i),
     );
     cx.update_window(handle, |_, window, cx| {
         assert!(window.has_active_dialog(cx), "asks first");
@@ -42,9 +42,9 @@ fn a_discard_keeps_a_copy_and_undo_puts_it_back(cx: &mut TestAppContext) {
     std::fs::write(repo.path().join("a.txt"), "changed\n").unwrap();
     std::fs::write(repo.path().join("new.txt"), "mine\n").unwrap();
     let (handle, ws, _data) = open_kept(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
+    open_git(handle, &ws, cx, repo.path());
     // a.txt, then new.txt: git lists tracked files first.
-    discard_row(handle, cx, id, 0);
+    discard_row(handle, cx, 0);
     assert_eq!(
         std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
         "one\n"
@@ -69,7 +69,7 @@ fn a_discard_keeps_a_copy_and_undo_puts_it_back(cx: &mut TestAppContext) {
         .advance_clock(std::time::Duration::from_millis(300));
     settle(handle, cx);
     // An untracked file is deleted by a discard, and comes back too.
-    discard_row(handle, cx, id, 1);
+    discard_row(handle, cx, 1);
     assert!(!repo.path().join("new.txt").exists());
     cx.update_window(handle, |_, window, cx| window.click("git-undo", cx))
         .unwrap();
@@ -87,11 +87,11 @@ fn recently_discarded_restores_and_asks_over_a_file_changed_since(cx: &mut TestA
     let repo = committed_repo();
     std::fs::write(repo.path().join("a.txt"), "changed\n").unwrap();
     let (handle, ws, _data) = open_kept(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    discard_row(handle, cx, id, 0);
+    open_git(handle, &ws, cx, repo.path());
+    discard_row(handle, cx, 0);
     std::fs::write(repo.path().join("a.txt"), "edited since then\n").unwrap();
     cx.update_window(handle, |_, window, cx| {
-        window.click(("git-more", id.0 as usize), cx);
+        window.click("git-more", cx);
         window.render_frame(cx);
         // Fetch, Pull, Push, —, Recently discarded….
         window.within("popup-menu").click(4usize, cx);
@@ -128,8 +128,8 @@ fn without_a_data_folder_a_discard_keeps_nothing(cx: &mut TestAppContext) {
     let repo = committed_repo();
     std::fs::write(repo.path().join("a.txt"), "changed\n").unwrap();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    discard_row(handle, cx, id, 0);
+    open_git(handle, &ws, cx, repo.path());
+    discard_row(handle, cx, 0);
     assert_eq!(
         std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
         "one\n"
@@ -152,12 +152,9 @@ fn past_the_cap_a_discard_keeps_nothing(cx: &mut TestAppContext) {
         std::fs::write(repo.path().join(format!("junk{i:03}.txt")), "x").unwrap();
     }
     let (handle, ws, _data) = open_kept(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    cx.update_window(handle, |_, window, cx| {
-        window.click(("git-discard-all", n), cx)
-    })
-    .unwrap();
+    open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| window.click("git-discard-all", cx))
+        .unwrap();
     settle(handle, cx);
     cx.update_window(handle, |_, window, cx| {
         assert!(window.has_active_dialog(cx), "says no copy is kept");

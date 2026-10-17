@@ -33,11 +33,10 @@ fn commit_needs_something_staged_and_a_summary_then_commits(cx: &mut TestAppCont
     let repo = git_repo();
     std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
+    open_git(handle, &ws, cx, repo.path());
     let disabled = |cx: &mut TestAppContext| {
         cx.update_window(handle, |_, window, _| {
-            window.try_find(("git-commit", n)).is_none()
+            window.try_find("git-commit").is_none()
         })
         .unwrap()
     };
@@ -45,21 +44,21 @@ fn commit_needs_something_staged_and_a_summary_then_commits(cx: &mut TestAppCont
     click_row_button(
         handle,
         cx,
-        row_id(id, "files", 0),
-        git_button(id, "check", "files", 0),
+        row_id("files", 0),
+        git_button("check", "files", 0),
     );
     assert!(disabled(cx), "no summary");
-    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    let summary = git_of(&ws, cx, |g| g.summary.clone());
     cx.update_window(handle, |_, window, cx| {
         summary.update(cx, |s, cx| s.focus(window, cx));
         window.input("Add a", cx);
         window.render_frame(cx);
-        assert!(window.try_find(("git-commit", n)).is_some());
-        window.click(("git-commit", n), cx);
+        assert!(window.try_find("git-commit").is_some());
+        window.click("git-commit", cx);
     })
     .unwrap();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert!(g.status.entries.is_empty(), "committed");
         assert!(g.status.oid.is_some());
     });
@@ -79,10 +78,8 @@ fn ctrl_enter_commits_with_the_description_and_amend_fills_the_fields(cx: &mut T
     std::fs::write(repo.path().join("b.txt"), "b\n").unwrap();
     git_run(repo.path(), &["add", "b.txt"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    let (summary, description) =
-        git_of(&ws, cx, id, |g| (g.summary.clone(), g.description.clone()));
+    open_git(handle, &ws, cx, repo.path());
+    let (summary, description) = git_of(&ws, cx, |g| (g.summary.clone(), g.description.clone()));
     cx.update_window(handle, |_, window, cx| {
         summary.update(cx, |s, cx| s.focus(window, cx));
         window.input("Add b", cx);
@@ -99,18 +96,18 @@ fn ctrl_enter_commits_with_the_description_and_amend_fills_the_fields(cx: &mut T
         "Add b\n\nWhy b."
     );
     // Amend: the fields show the last message; off again: they clear.
-    cx.update_window(handle, |_, window, cx| window.click(("git-amend", n), cx))
+    cx.update_window(handle, |_, window, cx| window.click("git-amend", cx))
         .unwrap();
     settle(handle, cx);
     ws.read_with(cx, |ws, cx| {
-        assert!(ws.space.git(id).unwrap().amend);
+        assert!(ws.space.git().unwrap().amend);
         assert_eq!(summary.read(cx).value(), "Add b");
         assert_eq!(description.read(cx).value(), "Why b.");
     });
     cx.update_window(handle, |_, window, cx| {
         summary.update(cx, |s, cx| s.set_value("Add b, amended", window, cx));
         window.render_frame(cx);
-        window.click(("git-commit", n), cx);
+        window.click("git-commit", cx);
     })
     .unwrap();
     settle(handle, cx);
@@ -122,7 +119,7 @@ fn ctrl_enter_commits_with_the_description_and_amend_fills_the_fields(cx: &mut T
         git_run(repo.path(), &["log", "-1", "--format=%s"]),
         "Add b, amended\n"
     );
-    git_of(&ws, cx, id, |g| assert!(!g.amend, "off after the commit"));
+    git_of(&ws, cx, |g| assert!(!g.amend, "off after the commit"));
 }
 
 #[gpui_kit::test]
@@ -171,15 +168,14 @@ fn without_an_author_commit_is_disabled_and_set_asks_for_one(cx: &mut TestAppCon
     std::fs::write(repo.path().join("a.txt"), "one\n").unwrap();
     git_run(repo.path(), &["add", "a.txt"]);
     let (handle, ws) = open_with(cx, Some(config.path().to_path_buf()));
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    git_of(&ws, cx, id, |g| assert_eq!(g.author, None));
-    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    open_git(handle, &ws, cx, repo.path());
+    git_of(&ws, cx, |g| assert_eq!(g.author, None));
+    let summary = git_of(&ws, cx, |g| g.summary.clone());
     cx.update_window(handle, |_, window, cx| {
         summary.update(cx, |s, cx| s.set_value("x", window, cx));
         window.render_frame(cx);
-        assert!(window.try_find(("git-commit", n)).is_none(), "no author");
-        window.click(("git-set-author", n), cx);
+        assert!(window.try_find("git-commit").is_none(), "no author");
+        window.click("git-set-author", cx);
         window.render_frame(cx);
         assert!(window.has_active_dialog(cx));
         window.input("Grace Hopper", cx);
@@ -197,7 +193,7 @@ fn without_an_author_commit_is_disabled_and_set_asks_for_one(cx: &mut TestAppCon
     })
     .unwrap();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert_eq!(
             g.author,
             Some(("Grace Hopper".to_string(), "grace@example.com".to_string()))
@@ -223,30 +219,30 @@ fn fetch_shows_the_counts_and_pull_fast_forwards(cx: &mut TestAppContext) {
     git_run(other.path(), &["commit", "-q", "-m", "b"]);
     git_run(other.path(), &["push", "-q"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    git_of(&ws, cx, id, |g| {
+    open_git(handle, &ws, cx, repo.path());
+    git_of(&ws, cx, |g| {
         assert_eq!((g.status.ahead, g.status.behind), (0, 0))
     });
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.fetch(id, window, cx))
+        ws.update(cx, |ws, cx| ws.fetch(window, cx))
     })
     .unwrap();
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert_eq!(g.sync, Some(crate::git_block::Sync::Fetch), "a spinner");
     });
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert_eq!(g.sync, None);
         assert_eq!(g.status.behind, 1);
     });
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.pull(id, templum_git::Pull::FastForward, window, cx)
+            ws.pull(templum_git::Pull::FastForward, window, cx)
         })
     })
     .unwrap();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| assert_eq!(g.status.behind, 0));
+    git_of(&ws, cx, |g| assert_eq!(g.status.behind, 0));
     assert!(repo.path().join("b.txt").is_file());
 }
 
@@ -258,10 +254,10 @@ fn push_with_no_upstream_publishes_to_the_only_remote(cx: &mut TestAppContext) {
     let _remote = add_remote(repo.path());
     git_run(repo.path(), &["checkout", "-q", "-b", "topic"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    git_of(&ws, cx, id, |g| assert_eq!(g.status.upstream, None));
+    open_git(handle, &ws, cx, repo.path());
+    git_of(&ws, cx, |g| assert_eq!(g.status.upstream, None));
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.push(id, window, cx));
+        ws.update(cx, |ws, cx| ws.push(window, cx));
         window.render_frame(cx);
         assert!(
             !window.has_active_dialog(cx),
@@ -270,7 +266,7 @@ fn push_with_no_upstream_publishes_to_the_only_remote(cx: &mut TestAppContext) {
     })
     .unwrap();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert_eq!(g.status.upstream.as_deref(), Some("origin/topic"));
     });
 }
@@ -296,10 +292,10 @@ fn a_pull_that_cant_fast_forward_offers_merge_and_rebase(cx: &mut TestAppContext
     git_run(repo.path(), &["add", "c.txt"]);
     git_run(repo.path(), &["commit", "-q", "-m", "c"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
+    open_git(handle, &ws, cx, repo.path());
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.pull(id, templum_git::Pull::FastForward, window, cx)
+            ws.pull(templum_git::Pull::FastForward, window, cx)
         })
     })
     .unwrap();
@@ -328,9 +324,9 @@ fn a_failed_command_offers_details_and_a_terminal(cx: &mut TestAppContext) {
     let repo = committed_repo();
     git_run(repo.path(), &["remote", "add", "origin", "/no/such/remote"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
+    open_git(handle, &ws, cx, repo.path());
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.fetch(id, window, cx))
+        ws.update(cx, |ws, cx| ws.fetch(window, cx))
     })
     .unwrap();
     settle(handle, cx);
@@ -345,16 +341,14 @@ fn a_failed_command_offers_details_and_a_terminal(cx: &mut TestAppContext) {
         window.render_frame(cx);
     })
     .unwrap();
-    let (term, rect) = ws.read_with(cx, |ws, _| {
+    let term = ws.read_with(cx, |ws, _| {
         let (tid, _) = ws
             .space
             .terminals()
             .find(|(tid, _)| *tid != first_id_of(ws))
-            .expect("a terminal beside the block");
-        (tid, ws.space.canvas.get(tid).unwrap().rect)
+            .expect("a new terminal");
+        tid
     });
-    let git = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
-    assert_eq!(rect.x, git.x + git.w + templum_canvas::BESIDE);
     // The quiet test shell (`cat`) echoes what was typed.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -397,16 +391,16 @@ fn publish_asked_during_a_read_waits_for_it(cx: &mut TestAppContext) {
     let _remote = add_remote(repo.path());
     git_run(repo.path(), &["checkout", "-q", "-b", "topic"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
+    open_git(handle, &ws, cx, repo.path());
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.refresh_git(id, window, cx);
-            ws.publish_branch(id, "topic".to_string(), window, cx);
+            ws.refresh_git(window, cx);
+            ws.publish_branch("topic".to_string(), window, cx);
         })
     })
     .unwrap();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert_eq!(g.status.upstream.as_deref(), Some("origin/topic"))
     });
 }
@@ -417,21 +411,20 @@ fn the_running_fetch_button_cancels_it(cx: &mut TestAppContext) {
     let repo = committed_repo();
     let _remote = add_remote(repo.path());
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
+    open_git(handle, &ws, cx, repo.path());
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.fetch(id, window, cx));
+        ws.update(cx, |ws, cx| ws.fetch(window, cx));
         window.render_frame(cx);
         // The running command's spinning button.
-        window.click(("git-sync", n), cx);
+        window.click("git-sync", cx);
     })
     .unwrap();
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         let cancel = g.cancel.as_ref().expect("a running fetch can be cancelled");
         assert!(cancel.load(std::sync::atomic::Ordering::Relaxed));
     });
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert_eq!(g.sync, None);
         assert!(g.cancel.is_none());
     });
@@ -457,22 +450,15 @@ fn the_commit_message_being_written_comes_back_after_a_restart(cx: &mut TestAppC
     );
     let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
     settle(handle, cx);
-    let id = first_id(&ws, cx);
-    let item = |cx: &mut TestAppContext| {
-        ws.read_with(cx, |ws, cx| {
-            ws.space
-                .git(id)
-                .unwrap()
-                .item(Rect::new(0.0, 0.0, 1.0, 1.0), cx)
-        })
-    };
+    let item =
+        |cx: &mut TestAppContext| ws.read_with(cx, |ws, cx| ws.space.git().unwrap().saved(cx));
     let saved = item(cx);
     assert_eq!(
         (saved.summary.as_str(), saved.description.as_str()),
         ("Fix the build", "It broke.")
     );
     // With Amend on, the fields hold the last commit's message: not a draft to keep.
-    ws.update(cx, |ws, _| ws.space.git_mut(id).unwrap().amend = true);
+    ws.update(cx, |ws, _| ws.space.git_mut().unwrap().amend = true);
     assert_eq!(item(cx).summary, "");
 }
 
@@ -482,20 +468,19 @@ fn commit_all_changes_takes_every_change_new_files_included(cx: &mut TestAppCont
     std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
     std::fs::write(repo.path().join("new.txt"), "n\n").unwrap();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    git_of(&ws, cx, id, |g| {
+    open_git(handle, &ws, cx, repo.path());
+    git_of(&ws, cx, |g| {
         assert_eq!(g.commit_label(), "Commit all changes (2 files)")
     });
-    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    let summary = git_of(&ws, cx, |g| g.summary.clone());
     cx.update_window(handle, |_, window, cx| {
         summary.update(cx, |s, cx| s.set_value("Everything", window, cx));
         window.render_frame(cx);
-        window.click(("git-commit", n), cx);
+        window.click("git-commit", cx);
     })
     .unwrap();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert!(g.status.entries.is_empty(), "committed")
     });
     assert_eq!(
@@ -511,13 +496,12 @@ fn commit_and_push_from_the_commit_menu(cx: &mut TestAppContext) {
     std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
     git_run(repo.path(), &["add", "a.txt"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    open_git(handle, &ws, cx, repo.path());
+    let summary = git_of(&ws, cx, |g| g.summary.clone());
     cx.update_window(handle, |_, window, cx| {
         summary.update(cx, |s, cx| s.set_value("Sent at once", window, cx));
         window.render_frame(cx);
-        window.click(("git-commit-menu", n), cx);
+        window.click("git-commit-menu", cx);
         window.render_frame(cx);
         // Commit, Commit & Push.
         window.within("popup-menu").click(1usize, cx);
@@ -538,15 +522,13 @@ fn undo_commit_takes_it_back_and_puts_its_message_in_the_fields(cx: &mut TestApp
     std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
     git_run(repo.path(), &["add", "a.txt"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    let (summary, description) =
-        git_of(&ws, cx, id, |g| (g.summary.clone(), g.description.clone()));
+    open_git(handle, &ws, cx, repo.path());
+    let (summary, description) = git_of(&ws, cx, |g| (g.summary.clone(), g.description.clone()));
     cx.update_window(handle, |_, window, cx| {
         summary.update(cx, |s, cx| s.set_value("Fix it", window, cx));
         description.update(cx, |d, cx| d.set_value("Why.", window, cx));
         window.render_frame(cx);
-        window.click(("git-commit", n), cx);
+        window.click("git-commit", cx);
     })
     .unwrap();
     settle(handle, cx);
@@ -562,7 +544,7 @@ fn undo_commit_takes_it_back_and_puts_its_message_in_the_fields(cx: &mut TestApp
         "First\n",
         "taken back"
     );
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert_eq!(g.status.staged().len(), 1, "its change still staged")
     });
     ws.read_with(cx, |_, cx| {
@@ -575,21 +557,20 @@ fn undo_commit_takes_it_back_and_puts_its_message_in_the_fields(cx: &mut TestApp
 fn the_summary_counter_warns_past_72_characters(cx: &mut TestAppContext) {
     let repo = git_repo();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    open_git(handle, &ws, cx, repo.path());
+    let summary = git_of(&ws, cx, |g| g.summary.clone());
     let long = |cx: &mut TestAppContext| {
-        ws.read_with(cx, |ws, cx| ws.space.git(id).unwrap().summary_too_long(cx))
+        ws.read_with(cx, |ws, cx| ws.space.git().unwrap().summary_too_long(cx))
     };
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(
-            window.try_find(("git-summary-count", n)).is_none(),
+            window.try_find("git-summary-count").is_none(),
             "nothing typed"
         );
         summary.update(cx, |s, cx| s.set_value("x".repeat(72), window, cx));
         window.render_frame(cx);
-        assert!(window.try_find(("git-summary-count", n)).is_some());
+        assert!(window.try_find("git-summary-count").is_some());
     })
     .unwrap();
     assert!(!long(cx), "72 fits");
@@ -609,13 +590,12 @@ fn undo_commit_once_pushed_offers_a_revert_instead(cx: &mut TestAppContext) {
     std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
     git_run(repo.path(), &["add", "a.txt"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    open_git(handle, &ws, cx, repo.path());
+    let summary = git_of(&ws, cx, |g| g.summary.clone());
     cx.update_window(handle, |_, window, cx| {
         summary.update(cx, |s, cx| s.set_value("Shared", window, cx));
         window.render_frame(cx);
-        window.click(("git-commit", n), cx);
+        window.click("git-commit", cx);
     })
     .unwrap();
     settle(handle, cx);
@@ -645,13 +625,12 @@ fn undo_commit_after_another_commit_refuses_without_a_command_to_run(cx: &mut Te
     std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
     git_run(repo.path(), &["add", "a.txt"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
+    open_git(handle, &ws, cx, repo.path());
+    let summary = git_of(&ws, cx, |g| g.summary.clone());
     cx.update_window(handle, |_, window, cx| {
         summary.update(cx, |s, cx| s.set_value("Mine", window, cx));
         window.render_frame(cx);
-        window.click(("git-commit", n), cx);
+        window.click("git-commit", cx);
     })
     .unwrap();
     settle(handle, cx);

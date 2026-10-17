@@ -139,7 +139,7 @@ impl Command {
             Command::NewKanban => "New kanban board",
             Command::NewNote => "New note",
             Command::NewEditor => "New editor",
-            Command::NewGit => "New Git block",
+            Command::NewGit => "Git",
             Command::CloseTerminal => "Close terminal",
             Command::CloseTab => "Close the file's tab (in an editor)",
             Command::Save => "Save the file (in an editor)",

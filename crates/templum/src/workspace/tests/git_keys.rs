@@ -10,9 +10,9 @@ const COMMIT: &str = "cmd-enter";
 const COMMIT: &str = "ctrl-enter";
 
 /// The block takes the keyboard, as a click on it does.
-fn focus(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) {
+fn focus(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx));
+        ws.update(cx, |ws, cx| ws.open_git(window, cx));
         window.render_frame(cx);
     })
     .unwrap();
@@ -24,12 +24,8 @@ fn press(handle: AnyWindowHandle, cx: &mut TestAppContext, key: &str) {
     settle(handle, cx);
 }
 
-fn cursor(
-    ws: &Entity<Workspace>,
-    cx: &mut TestAppContext,
-    id: BlockId,
-) -> Option<(bool, String, usize)> {
-    git_of(ws, cx, id, |g| g.panel.cursor.clone())
+fn cursor(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Option<(bool, String, usize)> {
+    git_of(ws, cx, |g| g.panel.cursor.clone())
 }
 
 fn staged(repo: &tempfile::TempDir) -> String {
@@ -40,17 +36,17 @@ fn staged(repo: &tempfile::TempDir) -> String {
 fn brackets_move_the_hunk_cursor_and_s_stages_that_hunk(cx: &mut TestAppContext) {
     let repo = three_hunk_repo();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    focus(handle, &ws, cx, id);
+    open_git(handle, &ws, cx, repo.path());
+    focus(handle, &ws, cx);
     press(handle, cx, "]");
-    assert_eq!(cursor(&ws, cx, id), Some((false, "a.txt".to_string(), 0)));
+    assert_eq!(cursor(&ws, cx), Some((false, "a.txt".to_string(), 0)));
     press(handle, cx, "]");
-    assert_eq!(cursor(&ws, cx, id), Some((false, "a.txt".to_string(), 1)));
+    assert_eq!(cursor(&ws, cx), Some((false, "a.txt".to_string(), 1)));
     press(handle, cx, "[");
     press(handle, cx, "]");
     press(handle, cx, "s");
     assert_eq!(staged(&repo), "1\t1\ta.txt\n", "the middle hunk alone");
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         let row = g.panel.cursor_row().expect("still on a.txt's changes");
         assert!(matches!(
             g.panel.rows[row],
@@ -65,8 +61,8 @@ fn u_unstages_the_cursors_hunk_and_d_asks_before_discarding(cx: &mut TestAppCont
     no_motion(cx);
     let repo = three_hunk_repo();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    focus(handle, &ws, cx, id);
+    open_git(handle, &ws, cx, repo.path());
+    focus(handle, &ws, cx);
     press(handle, cx, "]");
     press(handle, cx, "s");
     assert_eq!(staged(&repo), "1\t1\ta.txt\n");
@@ -74,7 +70,7 @@ fn u_unstages_the_cursors_hunk_and_d_asks_before_discarding(cx: &mut TestAppCont
     // Staged's one: two steps down to it.
     press(handle, cx, "]");
     press(handle, cx, "]");
-    assert_eq!(cursor(&ws, cx, id), Some((true, "a.txt".to_string(), 0)));
+    assert_eq!(cursor(&ws, cx), Some((true, "a.txt".to_string(), 0)));
     press(handle, cx, "s");
     assert_eq!(
         staged(&repo),
@@ -99,9 +95,9 @@ fn arrows_walk_the_files_and_enter_opens_at_the_hunk(cx: &mut TestAppContext) {
     let repo = three_hunk_repo();
     std::fs::write(repo.path().join("b.txt"), "x\n").unwrap();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let selected = |cx: &mut TestAppContext| git_of(&ws, cx, id, |g| g.selected.clone());
-    focus(handle, &ws, cx, id);
+    open_git(handle, &ws, cx, repo.path());
+    let selected = |cx: &mut TestAppContext| git_of(&ws, cx, |g| g.selected.clone());
+    focus(handle, &ws, cx);
     press(handle, cx, "down");
     assert_eq!(selected(cx), Some((List::Files, "a.txt".to_string())));
     press(handle, cx, "down");
@@ -138,9 +134,9 @@ fn c_goes_to_the_summary_and_the_commit_key_commits(cx: &mut TestAppContext) {
     std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
     git_run(repo.path(), &["add", "a.txt"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let (summary, block) = git_of(&ws, cx, id, |g| (g.summary.clone(), g.focus.clone()));
-    focus(handle, &ws, cx, id);
+    open_git(handle, &ws, cx, repo.path());
+    let (summary, block) = git_of(&ws, cx, |g| (g.summary.clone(), g.focus.clone()));
+    focus(handle, &ws, cx);
     press(handle, cx, "c");
     cx.update_window(handle, |_, window, cx| {
         assert!(summary.read(cx).focus_handle(cx).is_focused(window));
@@ -162,9 +158,9 @@ fn a_field_with_the_keyboard_keeps_the_letters(cx: &mut TestAppContext) {
     use gpui_kit::component::WindowExt as _;
     let repo = three_hunk_repo();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
-    focus(handle, &ws, cx, id);
+    open_git(handle, &ws, cx, repo.path());
+    let summary = git_of(&ws, cx, |g| g.summary.clone());
+    focus(handle, &ws, cx);
     press(handle, cx, "]");
     cx.update_window(handle, |_, window, cx| {
         summary.update(cx, |s, cx| s.focus(window, cx));
@@ -177,7 +173,7 @@ fn a_field_with_the_keyboard_keeps_the_letters(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         assert!(!window.has_active_dialog(cx), "d typed, nothing discarded");
         // A click into the block (it focuses the block) keeps the field's keyboard.
-        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx));
+        ws.update(cx, |ws, cx| ws.open_git(window, cx));
         assert!(summary.read(cx).focus_handle(cx).is_focused(window));
     })
     .unwrap();
@@ -187,17 +183,17 @@ fn a_field_with_the_keyboard_keeps_the_letters(cx: &mut TestAppContext) {
 fn on_another_tab_the_keys_leave_the_changes_alone(cx: &mut TestAppContext) {
     let repo = three_hunk_repo();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    focus(handle, &ws, cx, id);
+    open_git(handle, &ws, cx, repo.path());
+    focus(handle, &ws, cx);
     press(handle, cx, "down");
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.set_git_tab(id, crate::git_block::Tab::History, window, cx)
+            ws.set_git_tab(crate::git_block::Tab::History, window, cx)
         })
     })
     .unwrap();
     settle(handle, cx);
-    focus(handle, &ws, cx, id);
+    focus(handle, &ws, cx);
     press(handle, cx, "s");
     assert_eq!(
         staged(&repo),
@@ -210,12 +206,12 @@ fn on_another_tab_the_keys_leave_the_changes_alone(cx: &mut TestAppContext) {
 fn c_with_the_lists_folded_unfolds_them_for_the_summary(cx: &mut TestAppContext) {
     let repo = committed_repo();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let summary = git_of(&ws, cx, id, |g| g.summary.clone());
-    ws.update(cx, |ws, cx| ws.toggle_lists(id, cx));
-    focus(handle, &ws, cx, id);
+    open_git(handle, &ws, cx, repo.path());
+    let summary = git_of(&ws, cx, |g| g.summary.clone());
+    ws.update(cx, |ws, cx| ws.toggle_lists(cx));
+    focus(handle, &ws, cx);
     press(handle, cx, "c");
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert!(!g.lists_folded, "the summary is drawn")
     });
     cx.update_window(handle, |_, window, cx| {
@@ -229,8 +225,8 @@ fn space_checks_the_selected_file_and_unchecks_it(cx: &mut TestAppContext) {
     let repo = committed_repo();
     std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    focus(handle, &ws, cx, id);
+    open_git(handle, &ws, cx, repo.path());
+    focus(handle, &ws, cx);
     press(handle, cx, "down");
     press(handle, cx, "space");
     assert_eq!(staged(&repo), "1\t1\ta.txt\n");

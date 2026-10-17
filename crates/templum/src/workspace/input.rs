@@ -407,12 +407,13 @@ impl Workspace {
         }
     }
 
-    /// Copies the focused terminal's selection, or the focused Git block's diff selection.
-    pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
+    /// Copies the Git popup's diff selection while it has the keyboard, else the focused
+    /// terminal's selection.
+    pub(crate) fn copy_selection(&mut self, window: &Window, cx: &mut Context<Self>) {
         let from_git = self
             .space
-            .focused
-            .and_then(|id| self.space.git(id))
+            .git()
+            .filter(|g| self.git_open && g.focus.contains_focused(window, cx))
             .and_then(|g| g.diff().selected_text());
         let text = from_git.or_else(|| {
             self.space
@@ -493,7 +494,7 @@ impl Workspace {
             Command::GoToLine => self.go_to_line(window, cx),
             Command::Copy => {
                 if !self.copy_blocks(cx) {
-                    self.copy_selection(cx);
+                    self.copy_selection(window, cx);
                 }
             }
             // Blocks on the clipboard are pasted on the canvas, unless a field has the keyboard.
@@ -523,7 +524,7 @@ impl Workspace {
             Command::NewKanban => self.new_kanban(window, cx),
             Command::NewNote => self.new_note(window, cx),
             Command::NewEditor => self.new_editor(window, cx),
-            Command::NewGit => self.new_git(window, cx),
+            Command::NewGit => self.toggle_git(window, cx),
             Command::NextWorkspace => self.cycle_space(1, window, cx),
             Command::PreviousWorkspace => self.cycle_space(-1, window, cx),
             Command::NewWorkspace => self.add_space(window, cx),

@@ -1,17 +1,17 @@
 //! `templum --bench`: 20 terminals, 5 running `yes`, 200 strokes over them, 10 s of animated pan
 //! and zoom. `templum --bench-mixed`: a canvas like an agent cockpit instead — 5 terminals
-//! redrawing a colored screen 10× a second (an agent's TUI), 3 editors, 3 Git blocks, a note and
-//! 2 kanban blocks, each wired to the next, no strokes.
-//! `templum --bench-zoom=<kind>`: 10 blocks of one kind (`terminal`, `editor`, `note`, `kanban`,
-//! `git`) or none (`empty`), on the folder Templum runs from; the zoom glides step by step from
-//! 25% to 200% and back, 4 steps a second, around the view's center. No pan, no output.
-//! `templum --bench-git`: one Git block on a repository made in the temp folder, 5 files with
-//! 1,000 changed lines each (a 5,000-line diff); the panel scrolls 400 rows a second while the
-//! zoom glides between 50% and 200%, Unified for 5 s then Split. Bar: p95 <= 16.7 ms.
-//! `templum --bench-far`: an agent cockpit seen from afar, on the folder Templum runs from: 24
+//! redrawing a colored screen 10× a second (an agent's TUI), 3 editors, a note and 2 kanban
+//! blocks, each wired to the next, no strokes.
+//! `templum --bench-zoom=<kind>`: 10 blocks of one kind (`terminal`, `editor`, `note`, `kanban`)
+//! or none (`empty`), on the folder Templum runs from; the zoom glides step by step from 25% to
+//! 200% and back, 4 steps a second, around the view's center. No pan, no output.
+//! `templum --bench-git`: the Git popup on a repository made in the temp folder, 5 files with
+//! 1,000 changed lines each (a 5,000-line diff); the panel scrolls 400 rows a second, Unified
+//! for 5 s then Split. Bar: p95 <= 16.7 ms.
+//! `templum --bench-far`: an agent cockpit seen from afar, on the folder Templum runs from: 21
 //! blocks, 6 a row (8 terminals, 5 redrawing the mixed scenario's colored screen and 3 showing
-//! its largest file; 6 editors on its 6 largest files; 4 notes holding its README; 3 Git blocks;
-//! 3 kanban blocks), each wired to the next, none focused. The camera rests at 33% for 5 s, then glides to 25% and rests
+//! its largest file; 6 editors on its 6 largest files; 4 notes holding its README; 3 kanban
+//! blocks), each wired to the next, none focused. The camera rests at 33% for 5 s, then glides to 25% and rests
 //! there, while it circles 1,500 world units around the canvas's center.
 //! Prints one JSON line (frame-interval percentiles, memory), then quits. Bar: p95 <= 16.7 ms.
 
@@ -23,7 +23,7 @@ use templum_canvas::{Camera, Color, Drawing, Point, Rect, ZOOM_STEPS, chrome};
 
 use crate::board::Boards;
 use crate::workspace::{DEFAULT_COLS, DEFAULT_ROWS, Workspace};
-use crate::{editor, git_block, kanban, note};
+use crate::{editor, kanban, note};
 
 /// Typed into the terminals of the mixed scenario: 24 colored lines redrawn 10× a second,
 /// each with a number that changes, like an agent's interface.
@@ -34,7 +34,7 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, mixed: bool, c
         ws.update(cx, |ws, cx| {
             let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, ws.cell.size);
             if mixed {
-                // The folder Templum runs from: a real one for the editors and Git blocks.
+                // The folder Templum runs from: a real one for the editors.
                 let repo = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                 let mut slots =
                     (1..).map(|i| Point::new((i % 5) as f32 * 950.0, (i / 5) as f32 * 750.0));
@@ -45,9 +45,6 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, mixed: bool, c
                 }
                 for _ in 0..3 {
                     ws.add_editor_at(&repo, next(), window, cx);
-                }
-                for _ in 0..3 {
-                    ws.add_git_at(&repo, next(), window, cx);
                 }
                 ws.add_note_at(next(), window, cx);
                 for _ in 0..2 {
@@ -143,7 +140,6 @@ pub(crate) fn run_zoom(window: AnyWindowHandle, ws: Entity<Workspace>, kind: Str
                 "editor" => editor::SIZE,
                 "note" => note::SIZE,
                 "kanban" => kanban::SIZE,
-                "git" => git_block::SIZE,
                 _ => chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, ws.cell.size),
             };
             let readme = std::fs::read_to_string(dir.join("README.md")).unwrap_or_default();
@@ -176,9 +172,6 @@ pub(crate) fn run_zoom(window: AnyWindowHandle, ws: Entity<Workspace>, kind: Str
                         if let Some(k) = ws.space.kanban_mut(id) {
                             k.board = board;
                         }
-                    }
-                    "git" => {
-                        ws.add_git_at(&dir, at, window, cx);
                     }
                     _ => {
                         ws.open(Rect::new(at.x, at.y, size.w, size.h), window, cx);
@@ -284,9 +277,6 @@ pub(crate) fn run_far(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut A
                     }
                 }
                 for _ in 0..3 {
-                    ws.add_git_at(&dir, next(), window, cx);
-                }
-                for _ in 0..3 {
                     ws.add_kanban_at(next(), window, cx);
                     let id = ws.space.canvas.top().expect("just added");
                     if let Some(k) = ws.space.kanban_mut(id) {
@@ -371,50 +361,29 @@ pub(crate) fn run_git(window: AnyWindowHandle, ws: Entity<Workspace>, cx: &mut A
             for id in startup {
                 ws.close(id, window, cx);
             }
-            ws.add_git_at(&repo, Point::new(0.0, 0.0), window, cx);
+            if ws.set_git_folder(&repo, window, cx) {
+                ws.open_git(window, cx);
+            }
         })
     });
     cx.spawn(async move |cx| {
-        // Let the block find the repository and read its diff.
+        // Let the popup find the repository and read its diff.
         cx.background_executor().timer(Duration::from_secs(3)).await;
         let idle_rss = rss_mb();
-        let _ = cx.update_window(window, |_, window, cx| {
+        let _ = cx.update_window(window, |_, _, cx| {
             ws.update(cx, |ws, cx| {
-                ws.space.pristine = false;
-                let id = ws.space.canvas.top().expect("the Git block");
-                let rect = ws.space.canvas.get(id).expect("the block").rect;
-                let vp = ws.viewport(window);
-                ws.space.canvas.camera = Camera::at(
-                    Point::new(
-                        rect.x + rect.w / 2.0 - vp.w / 2.0,
-                        rect.y + rect.h / 2.0 - vp.h / 2.0,
-                    ),
-                    1.0,
-                );
-                ws.space.flight = None;
-                let step_of = |z: f32| ZOOM_STEPS.iter().position(|&s| s == z).expect("a step");
-                let (low, high) = (step_of(0.5), step_of(2.0));
-                measure(ws, idle_rss, move |ws, window, cx, t| {
+                measure(ws, idle_rss, move |ws, _, cx, t| {
                     // Unified for 5 s, then Split.
-                    if t >= 5.0 && ws.space.git(id).is_some_and(|g| !g.split) {
-                        ws.set_split(id, true, cx);
+                    if t >= 5.0 && ws.space.git().is_some_and(|g| !g.split) {
+                        ws.set_split(true, cx);
                     }
                     // The panel scrolls 400 rows a second, wrapping around.
-                    if let Some(git) = ws.space.git(id) {
+                    if let Some(git) = ws.space.git() {
                         let rows = git.panel.rows.len().max(1);
                         git.panel.scroll.scroll_to_item(
                             (t * 400.0) as usize % rows,
                             gpui_kit::ScrollStrategy::Top,
                         );
-                    }
-                    // The zoom glides between 50% and 200%, 4 steps a second.
-                    let span = high - low;
-                    let k = (t / 0.25) as usize % (2 * span);
-                    let target = low + if k <= span { k } else { 2 * span - k };
-                    let step = target as i32 - ws.space.canvas.camera.zoom_index() as i32;
-                    if step != 0 {
-                        let pivot = ws.center(window);
-                        ws.zoom_to(step, pivot, cx);
                     }
                 });
                 cx.notify();

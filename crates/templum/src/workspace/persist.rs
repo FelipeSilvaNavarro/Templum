@@ -33,6 +33,9 @@ impl Workspace {
         if c.x.is_finite() && c.y.is_finite() {
             self.space.canvas.camera = Camera::at(Point::new(c.x, c.y), c.zoom);
         }
+        if let Some(git) = &saved.git {
+            self.restore_git(git, window, cx);
+        }
         let mut ids = Vec::new();
         let mut gone = Vec::new();
         let mut failed = false;
@@ -222,26 +225,12 @@ impl Workspace {
                 let active = tabs.iter().position(|t| Some(t.id) == shown).unwrap_or(0);
                 Some(self.add_block(rect, Body::Note(Note { tabs, active })))
             }
+            // An older Templum's Git block: the workspace's Git, unless it has one.
             session::Item::Git(g) => {
-                let id = clamped_rect(g.rect.into(), git_block::MIN).map(|rect| {
-                    let mut git = Git::new(
-                        PathBuf::from(&g.folder),
-                        git_block::Tab::from_name(&g.tab),
-                        window,
-                        cx,
-                    );
-                    git.lists_folded = g.lists == "folded";
-                    git.set_split(g.diff == "split");
-                    git.summary
-                        .update(cx, |s, cx| s.set_value(g.summary.clone(), window, cx));
-                    git.description
-                        .update(cx, |s, cx| s.set_value(g.description.clone(), window, cx));
-                    self.add_block(rect, Body::Git(Box::new(git)))
-                });
-                if let Some(id) = id {
-                    self.look_up_git(id, window, cx);
+                if self.space.git.is_none() {
+                    self.restore_git(&g.git, window, cx);
                 }
-                id
+                None
             }
             session::Item::Editor(e) => clamped_rect(e.rect.into(), editor::MIN).map(|rect| {
                 let folder = PathBuf::from(&e.folder);
@@ -264,6 +253,24 @@ impl Workspace {
                 self.add_block(rect, Body::Editor(Box::new(editor)))
             }),
         }
+    }
+
+    /// The workspace's Git as it was saved, looked up again.
+    fn restore_git(&mut self, g: &session::SavedGit, window: &mut Window, cx: &mut Context<Self>) {
+        let mut git = Git::new(
+            PathBuf::from(&g.folder),
+            git_block::Tab::from_name(&g.tab),
+            window,
+            cx,
+        );
+        git.lists_folded = g.lists == "folded";
+        git.set_split(g.diff == "split");
+        git.summary
+            .update(cx, |s, cx| s.set_value(g.summary.clone(), window, cx));
+        git.description
+            .update(cx, |s, cx| s.set_value(g.description.clone(), window, cx));
+        self.space.git = Some(Box::new(git));
+        self.look_up_git(window, cx);
     }
 
     /// The agents to look for in terminals, for a snapshot's background read.

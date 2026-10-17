@@ -111,28 +111,6 @@ fn a_block_moved_into_a_grid_workspace_joins_its_grid(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn a_git_block_moved_while_busy_reads_again_in_its_new_workspace(cx: &mut TestAppContext) {
-    let repo = committed_repo();
-    let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    second(handle, &ws, cx);
-    // A command in flight: its answer goes to the block it was.
-    ws.update(cx, |ws, _| ws.space.git_mut(id).unwrap().busy = true);
-    move_to(handle, &ws, cx, vec![id], Some("w2"));
-    settle(handle, cx);
-    ws.read_with(cx, |ws, _| {
-        let w2 = &ws.others[0];
-        let (_, git) = w2
-            .blocks
-            .iter()
-            .find_map(|(id, b)| Some((*id, b.git()?)))
-            .expect("in w2");
-        assert!(!git.busy, "not waiting for an answer that never comes");
-        assert!(git.repo().is_some());
-    });
-}
-
-#[gpui_kit::test]
 fn a_stopped_workspace_cant_receive_blocks(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let first = first_id(&ws, cx);

@@ -27,7 +27,6 @@ const VERBS: &[&str] = &[
     "kanban",
     "note",
     "open",
-    "git",
     "wire",
     "keys",
     "interrupt",
@@ -306,8 +305,6 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
             }
             ("open_file", arguments)
         }
-        ("git", ["status"]) => ("git_status", json!({})),
-        ("git", ["status", block]) => ("git_status", json!({ "block": block })),
         ("wire", [a, b]) => ("wire", json!({ "a": a, "b": b })),
         ("keys", [block, keys @ ..]) if !keys.is_empty() => {
             ("send_keys", json!({ "block": block, "keys": keys }))
@@ -326,7 +323,6 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("kanban", _) => return Err(KANBAN),
         ("note", _) => return Err(NOTE),
         ("open", _) => return Err("open <path>[:<line>] [--json]"),
-        ("git", _) => return Err("git status [<block>] [--json]"),
         ("wire", _) => return Err(WIRE),
         ("keys", _) => return Err(KEYS),
         ("interrupt", _) => return Err("interrupt <block> [--json]"),
@@ -849,7 +845,8 @@ mod tests {
         assert!(is_verb("ask"));
         assert!(is_verb("wire"));
         assert!(is_verb("keys") && is_verb("interrupt") && is_verb("close"));
-        assert!(is_verb("kanban") && is_verb("note") && is_verb("open") && is_verb("git"));
+        assert!(is_verb("kanban") && is_verb("note") && is_verb("open"));
+        assert!(!is_verb("git"));
         assert!(!is_verb("--bench") && !is_verb("--claude-statusline") && !is_verb(""));
     }
 
@@ -991,14 +988,6 @@ mod tests {
                 &["open", "src/main.rs:12:5"][..],
                 json!({ "name": "open_file", "arguments": { "path": at("src/main.rs"), "line": 12 } }),
             ),
-            (
-                &["git", "status"][..],
-                json!({ "name": "git_status", "arguments": {} }),
-            ),
-            (
-                &["git", "status", "g1t2k"][..],
-                json!({ "name": "git_status", "arguments": { "block": "g1t2k" } }),
-            ),
         ] {
             assert_eq!(run_with(args, &env(&bus), "").0, 0, "{args:?}");
             assert_eq!(calls.recv_timeout(LIMIT).unwrap(), sent, "{args:?}");
@@ -1013,7 +1002,6 @@ mod tests {
             (&["kanban", "list", "--card"][..], "usage: templum kanban"),
             (&["note", "append", "4qm2a"][..], "usage: templum note"),
             (&["open"][..], "usage: templum open"),
-            (&["git", "log"][..], "usage: templum git"),
         ] {
             let (code, _, err) = run_with(args, &env(&bus), "");
             assert_eq!(code, 2, "{args:?}");

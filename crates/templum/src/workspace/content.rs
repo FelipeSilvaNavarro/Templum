@@ -1,5 +1,5 @@
 //! The content tools (docs/specs/connections.md, Tools, batch 4): the cards of a kanban wired to the
-//! caller, a wired note, a file opened in an editor, a wired Git block's status.
+//! caller, a wired note, a file opened in an editor.
 
 use std::path::Path;
 
@@ -7,7 +7,7 @@ use gpui_kit::component::input::{EditorState, Position, RopeExt as _};
 use gpui_kit::{App, Context, Entity, Window};
 use templum_mcp::{Reply, tools};
 
-use super::bus::{Outcome, flat, target};
+use super::bus::{flat, target};
 use super::{BlockId, Body, Space, Workspace};
 use crate::board::{Card, Comment};
 use crate::editor::{Content, Editor};
@@ -513,67 +513,5 @@ impl Workspace {
             )),
             None => Reply::err(format!("Couldn't open {}.", given.display())),
         }
-    }
-
-    /// `git_status`: the wired Git block named, or the only one; git runs on the background
-    /// executor.
-    pub(super) fn git_status(
-        &self,
-        from: &str,
-        block: Option<&str>,
-        cx: &mut Context<Self>,
-    ) -> Outcome {
-        let (space, me) = self.caller_space(from);
-        let id = match block {
-            Some(uid) => match target(space, me, uid) {
-                Ok(id) => id,
-                Err(refused) => return Outcome::Now(refused),
-            },
-            None => {
-                let wired: Vec<BlockId> = space
-                    .canvas
-                    .blocks()
-                    .iter()
-                    .map(|b| b.id)
-                    .filter(|id| *id != me && space.wired(me, *id) && space.git(*id).is_some())
-                    .collect();
-                match wired.as_slice() {
-                    [one] => *one,
-                    [] => {
-                        return Outcome::Now(Reply::err(
-                            "No Git block is connected to you. Ask the person with connect.",
-                        ));
-                    }
-                    _ => {
-                        let ids: Vec<&str> = wired
-                            .iter()
-                            .filter_map(|id| space.uids.get(id).map(String::as_str))
-                            .collect();
-                        return Outcome::Now(Reply::err(format!(
-                            "Several Git blocks are connected to you: {}. Name one with block.",
-                            ids.join(", ")
-                        )));
-                    }
-                }
-            }
-        };
-        let uid = space.uids.get(&id).cloned().unwrap_or_default();
-        let Some(git) = space.git(id) else {
-            return Outcome::Now(Reply::err(format!("{uid} isn't a Git block.")));
-        };
-        let Some(repo) = git.repo().cloned() else {
-            return Outcome::Now(Reply::err(format!(
-                "{uid} shows no Git repository (yet: try again in a moment if it is still looking)."
-            )));
-        };
-        Outcome::Later(cx.background_executor().spawn(async move {
-            match repo.run(&["-c", "color.status=false", "status", "--short", "--branch"]) {
-                Ok(out) => Reply::ok(tools::tail(
-                    String::from_utf8_lossy(&out).trim_end(),
-                    tools::MAX_TEXT,
-                )),
-                Err(e) => Reply::err(format!("git status failed: {}", e.first_line())),
-            }
-        }))
     }
 }

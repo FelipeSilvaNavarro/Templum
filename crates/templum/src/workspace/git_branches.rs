@@ -4,7 +4,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::{Context, Window};
-use templum_canvas::BlockId;
 use templum_git::{GitError, Repo};
 
 use crate::git_block::{self, words};
@@ -36,7 +35,6 @@ impl Workspace {
 
     pub(crate) fn rename_branch(
         &mut self,
-        id: BlockId,
         name: String,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -54,7 +52,7 @@ impl Workspace {
                 }
                 let from = from.clone();
                 ws.update(cx, |ws, cx| {
-                    ws.git_action(id, move |repo| repo.rename_branch(&from, &to), window, cx)
+                    ws.git_action(move |repo| repo.rename_branch(&from, &to), window, cx)
                 });
                 true
             },
@@ -66,14 +64,13 @@ impl Workspace {
     /// Merges `name` into the current branch, after asking.
     pub(crate) fn merge_branch(
         &mut self,
-        id: BlockId,
         name: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let current = self
             .space
-            .git(id)
+            .git()
             .and_then(|g| g.status.branch.clone())
             .unwrap_or_else(|| "HEAD".to_string());
         let ws = cx.entity();
@@ -84,7 +81,7 @@ impl Workspace {
             move |window, cx| {
                 let name = name.clone();
                 ws.update(cx, |ws, cx| {
-                    ws.git_action(id, move |repo| repo.merge(&name), window, cx)
+                    ws.git_action(move |repo| repo.merge(&name), window, cx)
                 })
             },
             window,
@@ -95,14 +92,13 @@ impl Workspace {
     /// Deletes a local branch after asking; an unmerged one asks again, to force.
     pub(crate) fn delete_branch(
         &mut self,
-        id: BlockId,
         name: String,
         force: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if force {
-            self.delete_now(id, name, true, window, cx);
+            self.delete_now(name, true, window, cx);
             return;
         }
         let ws = cx.entity();
@@ -112,7 +108,7 @@ impl Workspace {
             "Delete",
             move |window, cx| {
                 let name = name.clone();
-                ws.update(cx, |ws, cx| ws.delete_now(id, name, false, window, cx))
+                ws.update(cx, |ws, cx| ws.delete_now(name, false, window, cx))
             },
             window,
             cx,
@@ -121,18 +117,17 @@ impl Workspace {
 
     pub(super) fn delete_now(
         &mut self,
-        id: BlockId,
         name: String,
         force: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
+        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
             return;
         };
         let job_name = name.clone();
         self.act_job(
-            self.here(id),
+            self.here(),
             move || repo.delete_branch(&job_name, force),
             move |ws, at, result, window, cx| {
                 match result {
@@ -153,7 +148,7 @@ impl Workspace {
     }
 
     /// `git branch -d` refused: counts what only that branch has, then asks to force it. The
-    /// answer acts on the block it is about, in its own workspace (`show_git_block`).
+    /// answer acts on the block it is about, in its own workspace (`show_git`).
     pub(super) fn ask_delete_anyway(
         &mut self,
         at: GitAt,
@@ -177,8 +172,8 @@ impl Workspace {
                     move |window, cx| {
                         let (name, at) = (name.clone(), at.clone());
                         entity.update(cx, |ws, cx| {
-                            if ws.show_git_block(&at, window, cx) {
-                                ws.delete_now(at.block, name, true, window, cx)
+                            if ws.show_git(&at, window, cx) {
+                                ws.delete_now(name, true, window, cx)
                             }
                         })
                     },
@@ -192,8 +187,8 @@ impl Workspace {
     }
 
     /// The Branches tab's Remote heading: its rows show or hide.
-    pub(crate) fn toggle_remote_branches(&mut self, id: BlockId, cx: &mut Context<Self>) {
-        if let Some(git) = self.space.git_mut(id) {
+    pub(crate) fn toggle_remote_branches(&mut self, cx: &mut Context<Self>) {
+        if let Some(git) = self.space.git_mut() {
             git.remote_folded = !git.remote_folded;
             cx.notify();
         }
@@ -202,18 +197,17 @@ impl Workspace {
     /// The Branches tab's Publish: `git push -u <remote> <name>`, the remote by Publish's rule.
     pub(crate) fn publish_branch(
         &mut self,
-        id: BlockId,
         name: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.publish(id, name, window, cx);
+        self.publish(name, window, cx);
     }
 
     /// Runs one of fetch, pull and push, its button spinning meanwhile.
     /// The spinning button: kills the running fetch, pull or push.
-    pub(crate) fn cancel_git(&mut self, id: BlockId, cx: &mut Context<Self>) {
-        if let Some(cancel) = self.space.git(id).and_then(|g| g.cancel.as_ref()) {
+    pub(crate) fn cancel_git(&mut self, cx: &mut Context<Self>) {
+        if let Some(cancel) = self.space.git().and_then(|g| g.cancel.as_ref()) {
             cancel.store(true, std::sync::atomic::Ordering::Relaxed);
             cx.notify();
         }
@@ -221,7 +215,6 @@ impl Workspace {
 
     pub(super) fn git_sync(
         &mut self,
-        id: BlockId,
         which: git_block::Sync,
         job: impl FnOnce(&Repo) -> Result<(), GitError> + Send + 'static,
         on_err: impl FnOnce(&mut Workspace, GitAt, &GitError, &mut Window, &mut Context<Workspace>)
@@ -229,7 +222,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(git) = self.space.git_mut(id) else {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         let Some(repo) = git.repo().cloned() else {
@@ -241,7 +234,7 @@ impl Workspace {
         git.sync = Some(which);
         git.cancel = Some(cancel.clone());
         let repo = repo.with_cancel(cancel);
-        let at = self.here(id);
+        let at = self.here();
         self.act_job(
             at,
             move || job(&repo),
@@ -262,9 +255,8 @@ impl Workspace {
         );
     }
 
-    pub(crate) fn fetch(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn fetch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.git_sync(
-            id,
             git_block::Sync::Fetch,
             |repo| repo.fetch(),
             |_, at, e, window, cx| {
@@ -279,30 +271,27 @@ impl Workspace {
     /// `--ff-only`; when that isn't possible, the notification offers Merge and Rebase.
     pub(crate) fn pull(
         &mut self,
-        id: BlockId,
         how: templum_git::Pull,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         use templum_git::Pull;
         self.git_sync(
-            id,
             git_block::Sync::Pull,
             move |repo| repo.pull(how),
             move |_, at, e, window, cx| {
                 let ws = cx.entity();
-                let block = at.block;
                 let mut extra: Vec<Extra> = Vec::new();
                 if how == Pull::FastForward && templum_git::not_fast_forward(&e.stderr) {
                     extra.push((
                         "git-pull-merge",
                         "Merge".into(),
-                        Rc::new(move |ws, window, cx| ws.pull(block, Pull::Merge, window, cx)),
+                        Rc::new(move |ws, window, cx| ws.pull(Pull::Merge, window, cx)),
                     ));
                     extra.push((
                         "git-pull-rebase",
                         "Rebase".into(),
-                        Rc::new(move |ws, window, cx| ws.pull(block, Pull::Rebase, window, cx)),
+                        Rc::new(move |ws, window, cx| ws.pull(Pull::Rebase, window, cx)),
                     ));
                 }
                 notify_git_error(&ws, at, e, extra, window, cx);
@@ -314,23 +303,22 @@ impl Workspace {
 
     /// `git push`; a branch with no upstream (or one gone from the server) is published instead
     /// (the button says Publish branch: no question).
-    pub(crate) fn push(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(git) = self.space.git(id) else {
+    pub(crate) fn push(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git() else {
             return;
         };
         let s = &git.status;
         match &s.branch {
             Some(branch) if s.upstream.is_none() || s.gone => {
                 let branch = branch.clone();
-                self.publish(id, branch, window, cx)
+                self.publish(branch, window, cx)
             }
-            _ => self.push_now(id, window, cx),
+            _ => self.push_now(window, cx),
         }
     }
 
-    pub(super) fn push_now(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn push_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.git_sync(
-            id,
             git_block::Sync::Push,
             |repo| repo.push(),
             |_, at, e, window, cx| {

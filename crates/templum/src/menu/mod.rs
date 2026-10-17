@@ -54,39 +54,36 @@ pub(crate) enum Target {
     Wire(Wire),
     /// A stash in a Git block's Stashes tab, by N in `stash@{N}`.
     GitStash {
-        block: BlockId,
         index: usize,
     },
     /// A branch in a Git block's Branches tab, by its name.
     GitBranch {
-        block: BlockId,
         name: String,
     },
     /// A commit in a Git block's History, by its hash.
     GitCommit {
-        block: BlockId,
         hash: String,
     },
     /// A file of the commit shown in a Git block's History.
     GitCommitFile {
-        block: BlockId,
         hash: String,
         path: String,
     },
     /// The ▾ beside a Git block's Commit button.
-    GitCommitMenu(BlockId),
+    GitCommitMenu,
     /// The ⚙ beside a Git block's Generate ✨.
-    GitGenerateMenu(BlockId),
+    GitGenerateMenu,
     /// A row of a Git block's Changes lists, by its list and its index in it.
     GitRow {
-        block: BlockId,
         list: git_block::List,
         index: usize,
     },
-    /// The terminals working in a Git block's repository (its top bar).
-    GitTerminals(BlockId),
+    /// The terminals working in the Git's repository (its top bar).
+    GitTerminals,
+    /// The Git popup's folder: other folders to show.
+    GitFolders,
     /// The ⋯ of a Git block's top bar.
-    GitMore(BlockId),
+    GitMore,
     /// Publish's remotes, when there are several: for the block `at` names.
     GitRemotes {
         at: crate::workspace::GitAt,
@@ -95,7 +92,6 @@ pub(crate) enum Target {
     },
     /// A line row of a Git block's diff panel, by its row index.
     GitLine {
-        block: BlockId,
         row: usize,
     },
     /// A row of an editor's file tree (a file or a folder), or its empty space (None).
@@ -245,10 +241,6 @@ impl Workspace {
                         wrap: e.wrap,
                         send: self.send_to_menu(e.to_send(cx).unwrap_or_default()),
                     },
-                    Body::Git(_) => Items::Git {
-                        block,
-                        folder: body.folder(),
-                    },
                 };
                 let moving = if group.contains(&block) {
                     group.clone()
@@ -304,52 +296,48 @@ impl Workspace {
             },
             Target::Ink(index) => Items::Ink { index },
             Target::Wire(wire) => Items::Wire { wire },
-            Target::GitCommitMenu(block) => Items::GitCommitMenu {
-                block,
-                label: self.space.git(block)?.commit_label(),
+            Target::GitCommitMenu => Items::GitCommitMenu {
+                label: self.space.git()?.commit_label(),
             },
-            Target::GitGenerateMenu(block) => {
-                self.space.git(block)?.repo()?;
+            Target::GitGenerateMenu => {
+                self.space.git()?.repo()?;
                 let agent = self.commit_agent.as_ref()?;
                 Items::GitGenerateMenu {
-                    block,
                     models: agent.models.clone(),
                     model: agent.model.clone(),
                 }
             }
-            Target::GitRow { block, list, index } => {
-                let git = self.space.git(block)?;
+            Target::GitRow { list, index } => {
+                let git = self.space.git()?;
                 let entries = match list {
                     git_block::List::Conflicts => git.status.conflicts(),
                     git_block::List::Files => git.status.files(),
                 };
                 let entry = (*entries.get(index)?).clone();
                 Items::GitRow {
-                    block,
                     list,
                     labels: git.conflict_labels(&entry.path),
                     entry,
                 }
             }
-            Target::GitStash { block, index } => {
+            Target::GitStash { index } => {
                 self.space
-                    .git(block)?
+                    .git()?
                     .stashes
                     .iter()
                     .find(|s| s.index == index)?;
-                Items::GitStash { block, index }
+                Items::GitStash { index }
             }
-            Target::GitBranch { block, ref name } => {
-                let git = self.space.git(block)?;
+            Target::GitBranch { ref name } => {
+                let git = self.space.git()?;
                 Items::GitBranch {
-                    block,
                     branch: git.branches.iter().find(|b| b.name == *name)?.clone(),
                     current: git.status.branch.clone(),
                     base: git.default_branch.clone(),
                 }
             }
-            Target::GitCommit { block, ref hash } => {
-                let git = self.space.git(block)?;
+            Target::GitCommit { ref hash } => {
+                let git = self.space.git()?;
                 let commit = git.commits.iter().find(|c| c.hash == *hash)?.clone();
                 let s = &git.status;
                 // The newest commit of a branch, not on its upstream: it can be taken back.
@@ -365,24 +353,18 @@ impl Workspace {
                     .filter(|f| f.change != templum_git::Change::Deleted)
                     .map(|f| f.path.clone());
                 Items::GitCommit {
-                    block,
                     commit,
                     undo,
                     restore,
                 }
             }
-            Target::GitCommitFile {
-                block,
-                ref hash,
-                ref path,
-            } => Items::GitCommitFile {
-                block,
+            Target::GitCommitFile { ref hash, ref path } => Items::GitCommitFile {
                 hash: hash.clone(),
                 path: path.clone(),
             },
-            Target::GitLine { block, row } => {
+            Target::GitLine { row } => {
                 use git_block::diff_view::Row;
-                let p = self.space.git(block)?.diff();
+                let p = self.space.git()?.diff();
                 let (file, hunk, line) = match *p.rows.get(row)? {
                     Row::Line { file, hunk, line } => (file, hunk, line),
                     // A pair: the selection's side, else the new line, else the old one.
@@ -418,7 +400,6 @@ impl Workspace {
                     .join("\n");
                 let selection = p.selected_text();
                 Items::GitLine {
-                    block,
                     working: p.working(),
                     path: s.diff.path().to_string(),
                     line: l.new_no.unwrap_or(h.new_start.max(1)),
@@ -428,10 +409,9 @@ impl Workspace {
                     hunk_text,
                 }
             }
-            Target::GitMore(block) => {
-                let git = self.space.git(block)?;
+            Target::GitMore => {
+                let git = self.space.git()?;
                 Items::GitMore {
-                    block,
                     busy: git.acting > 0,
                     trash: self.trash.is_some(),
                 }
@@ -445,8 +425,15 @@ impl Workspace {
                 branch: branch.clone(),
                 remotes: remotes.clone(),
             },
-            Target::GitTerminals(block) => Items::Reveal {
-                terminals: self.terminal_list(Some(&self.space.git(block)?.repo()?.root)),
+            Target::GitFolders => Items::GitFolders {
+                folders: self.git_folders(),
+                folder: self.space.git().map(|g| {
+                    g.repo()
+                        .map_or_else(|| g.folder.clone(), |r| r.root.clone())
+                }),
+            },
+            Target::GitTerminals => Items::Reveal {
+                terminals: self.terminal_list(Some(&self.space.git()?.repo()?.root)),
             },
             Target::Tree { block, ref path } => {
                 let is_dir = path.as_ref().is_some_and(|p| p.is_dir());
@@ -555,13 +542,13 @@ enum Items {
         wrap: bool,
         send: SendTo,
     },
-    Git {
-        block: BlockId,
-        /// Its repository's root (its folder while there is none).
+    /// The Git popup's folder menu: other folders to show, and the one shown (its repository's
+    /// root, its folder while there is none).
+    GitFolders {
+        folders: Vec<PathBuf>,
         folder: Option<PathBuf>,
     },
     GitMore {
-        block: BlockId,
         /// A command runs: Fetch, Pull and Push wait.
         busy: bool,
         /// Discards are kept (a data folder): Recently discarded… is offered.
@@ -573,25 +560,21 @@ enum Items {
         remotes: Vec<String>,
     },
     GitCommitMenu {
-        block: BlockId,
         /// "Commit", or "Commit all changes (5 files)".
         label: String,
     },
     GitGenerateMenu {
-        block: BlockId,
         /// The agent's models, the recommended one first, and the one in use.
         models: Vec<String>,
         model: String,
     },
     GitRow {
-        block: BlockId,
         list: git_block::List,
         entry: Entry,
         /// A conflict's parts, named after its markers' labels (the whole-file choices).
         labels: (String, String),
     },
     GitCommit {
-        block: BlockId,
         commit: Commit,
         /// HEAD's commit, not pushed: Undo this commit.
         undo: bool,
@@ -599,23 +582,19 @@ enum Items {
         restore: Option<String>,
     },
     GitCommitFile {
-        block: BlockId,
         hash: String,
         path: String,
     },
     GitBranch {
-        block: BlockId,
         branch: Branch,
         current: Option<String>,
         /// The default branch: Compare with it.
         base: Option<String>,
     },
     GitStash {
-        block: BlockId,
         index: usize,
     },
     GitLine {
-        block: BlockId,
         /// The working changes' panel: its lines are the file's (a comparison's aren't).
         working: bool,
         path: String,

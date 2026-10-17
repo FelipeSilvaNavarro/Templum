@@ -326,6 +326,9 @@ pub(crate) struct Saved {
     /// The wires between the items, by their `uid`s; an older Templum ignores them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wires: Vec<SavedWire>,
+    /// The workspace's Git; an older Templum ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<SavedGit>,
 }
 
 /// Grid mode's tree of tiles: an item, by its index in `items`, or a pair. `split` is "beside"
@@ -510,14 +513,19 @@ pub(crate) struct EditorItem {
     pub tree: bool,
 }
 
-/// A Git block (docs/specs/cockpit.md, section 8).
+/// A Git block of an older Templum: read, never written. Its Git becomes the workspace's.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct GitItem {
-    /// The block's id for agents and wires (docs/specs/connections.md); a file from before has
-    /// none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub uid: String,
     pub rect: SavedRect,
+    #[serde(flatten)]
+    pub git: SavedGit,
+}
+
+/// A workspace's Git (docs/specs/git.md): the popup's folder and what it was showing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SavedGit {
     pub folder: String,
     /// The tab shown: "changes", "history", "branches" or "stashes".
     #[serde(default = "changes")]
@@ -707,6 +715,7 @@ pub(crate) struct Layout {
     pub ink: Vec<InkItem>,
     pub grid: Option<SavedTile>,
     pub wires: Vec<SavedWire>,
+    pub git: Option<SavedGit>,
 }
 
 pub(crate) enum LayoutBlock {
@@ -770,6 +779,7 @@ impl Layout {
             ink: self.ink,
             grid: self.grid,
             wires: self.wires,
+            git: self.git,
         };
         (saved, inspections)
     }
@@ -930,39 +940,30 @@ mod tests {
     }
 
     #[test]
-    fn a_git_item_round_trips_and_its_tab_defaults_to_changes() {
+    fn an_old_git_block_still_reads_and_a_workspaces_git_round_trips() {
+        // An older Templum's Git block: read, with its tab defaulting to Changes.
         let text = r#"{"kind":"git","rect":{"x":1,"y":2,"w":800,"h":560},"folder":"/p"}"#;
         let item: Item = serde_json::from_str(text).unwrap();
         let Item::Git(g) = &item else {
             panic!("{item:?}")
         };
-        assert_eq!(g.folder, "/p");
-        assert_eq!(g.tab, "changes");
-        let back = serde_json::to_string(&item).unwrap();
-        assert!(back.contains(r#""kind":"git""#), "{back}");
-        assert!(back.contains(r#""tab":"changes""#), "{back}");
-        assert!(!back.contains("summary"), "no message, no key: {back}");
+        assert_eq!(
+            (g.git.folder.as_str(), g.git.tab.as_str()),
+            ("/p", "changes")
+        );
+        // The workspace's Git, with a commit message being written, comes back as it was.
+        let mut saved = sample();
+        let mut git = g.git.clone();
+        git.summary = "Fix the build".into();
+        git.diff = "split".into();
+        saved.git = Some(git.clone());
+        let back = serde_json::to_string(&saved).unwrap();
         assert!(!back.contains("lists"), "not folded, no key: {back}");
-        assert!(!back.contains(r#""diff""#), "unified, no key: {back}");
-        let mut split = g.clone();
-        split.diff = "split".into();
-        let back = serde_json::to_string(&Item::Git(split)).unwrap();
-        assert!(back.contains(r#""diff":"split""#), "{back}");
-        let item: Item =
-            serde_json::from_str(&text.replace(r#""folder""#, r#""tab":"history","folder""#))
-                .unwrap();
-        let Item::Git(g) = item else { unreachable!() };
-        assert_eq!(g.tab, "history");
-        assert_eq!((g.summary.as_str(), g.description.as_str()), ("", ""));
-        // A commit message being written comes back.
-        let mut draft = g.clone();
-        draft.summary = "Fix the build".into();
-        draft.description = "It broke.".into();
-        let back = serde_json::to_string(&Item::Git(draft.clone())).unwrap();
-        let Item::Git(g) = serde_json::from_str(&back).unwrap() else {
-            unreachable!()
-        };
-        assert_eq!(g, draft);
+        let read: Saved = serde_json::from_str(&back).unwrap();
+        assert_eq!(read.git, Some(git));
+        saved.git = None;
+        let back = serde_json::to_string(&saved).unwrap();
+        assert!(!back.contains(r#""git""#), "none, no key: {back}");
     }
 
     fn sample() -> Saved {
@@ -1020,6 +1021,7 @@ mod tests {
             ink: Vec::new(),
             grid: None,
             wires: Vec::new(),
+            git: None,
         }
     }
 
@@ -1641,6 +1643,7 @@ mod tests {
             ink: Vec::new(),
             grid: None,
             wires: Vec::new(),
+            git: None,
         };
         let (saved, _) = layout.snapshot(None);
         assert_eq!(saved.recent, ["/a", "/b"], "recent folders, newest first");
@@ -1717,6 +1720,7 @@ mod tests {
             ink: Vec::new(),
             grid: None,
             wires: Vec::new(),
+            git: None,
         };
         let (saved, _) = layout.snapshot(None);
         let Item::Terminal(t) = &saved.items[0] else {

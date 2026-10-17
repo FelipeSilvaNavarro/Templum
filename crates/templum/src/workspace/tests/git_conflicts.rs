@@ -27,13 +27,8 @@ fn merge_conflict() -> tempfile::TempDir {
 }
 
 /// The panel's row index of the first row matching `want`.
-fn row_of(
-    ws: &Entity<Workspace>,
-    cx: &mut TestAppContext,
-    id: BlockId,
-    want: impl Fn(&Row) -> bool,
-) -> usize {
-    git_of(ws, cx, id, |g| {
+fn row_of(ws: &Entity<Workspace>, cx: &mut TestAppContext, want: impl Fn(&Row) -> bool) -> usize {
+    git_of(ws, cx, |g| {
         g.panel.rows.iter().position(want).expect("the row")
     })
 }
@@ -57,9 +52,8 @@ fn click_in_row(
 fn use_this_keeps_one_part_and_the_merge_continues(cx: &mut TestAppContext) {
     let repo = merge_conflict();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    git_of(&ws, cx, id, |g| {
+    open_git(handle, &ws, cx, repo.path());
+    git_of(&ws, cx, |g| {
         assert_eq!(
             g.conflict_labels("a.txt"),
             ("HEAD".to_string(), "topic".to_string())
@@ -67,19 +61,19 @@ fn use_this_keeps_one_part_and_the_merge_continues(cx: &mut TestAppContext) {
         assert!(g.markers_left("a.txt"));
     });
     // The second part (topic's).
-    let ix = row_of(&ws, cx, id, |r| matches!(r, Row::Hunk { hunk: 1, .. }));
+    let ix = row_of(&ws, cx, |r| matches!(r, Row::Hunk { hunk: 1, .. }));
     click_in_row(
         handle,
         cx,
         ("git-hunk", ix),
-        gpui_kit::ElementId::Name(format!("git-hunk-use-{n}-{ix}").into()),
+        gpui_kit::ElementId::Name(format!("git-hunk-use-{ix}").into()),
     );
     assert_eq!(
         std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
         "one\ntopic\nthree\n"
     );
-    git_of(&ws, cx, id, |g| assert!(!g.markers_left("a.txt")));
-    let ix = row_of(&ws, cx, id, |r| {
+    git_of(&ws, cx, |g| assert!(!g.markers_left("a.txt")));
+    let ix = row_of(&ws, cx, |r| {
         matches!(
             r,
             Row::Note {
@@ -93,27 +87,24 @@ fn use_this_keeps_one_part_and_the_merge_continues(cx: &mut TestAppContext) {
     })
     .unwrap();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| assert!(g.status.conflicts().is_empty()));
-    cx.update_window(handle, |_, window, cx| {
-        window.click(("git-continue", n), cx)
-    })
-    .unwrap();
+    git_of(&ws, cx, |g| assert!(g.status.conflicts().is_empty()));
+    cx.update_window(handle, |_, window, cx| window.click("git-continue", cx))
+        .unwrap();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| assert_eq!(g.operation, None));
+    git_of(&ws, cx, |g| assert_eq!(g.operation, None));
 }
 
 #[gpui_kit::test]
 fn use_both_keeps_the_two_parts_in_order(cx: &mut TestAppContext) {
     let repo = merge_conflict();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    let ix = row_of(&ws, cx, id, |r| matches!(r, Row::Region { region: 0, .. }));
+    open_git(handle, &ws, cx, repo.path());
+    let ix = row_of(&ws, cx, |r| matches!(r, Row::Region { region: 0, .. }));
     click_in_row(
         handle,
         cx,
         ("git-region", ix),
-        gpui_kit::ElementId::Name(format!("git-region-both-{n}-{ix}").into()),
+        gpui_kit::ElementId::Name(format!("git-region-both-{ix}").into()),
     );
     assert_eq!(
         std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
@@ -133,8 +124,8 @@ fn a_rebase_names_the_parts_after_its_markers(cx: &mut TestAppContext) {
         .unwrap();
     assert!(!rebase.status.success());
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    git_of(&ws, cx, id, |g| {
+    open_git(handle, &ws, cx, repo.path());
+    git_of(&ws, cx, |g| {
         let (first, second) = g.conflict_labels("a.txt");
         assert_eq!(first, "HEAD", "main's commit, the one rebased onto");
         assert!(
@@ -148,17 +139,16 @@ fn a_rebase_names_the_parts_after_its_markers(cx: &mut TestAppContext) {
 fn a_region_changed_since_it_was_read_is_refused(cx: &mut TestAppContext) {
     let repo = merge_conflict();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
+    open_git(handle, &ws, cx, repo.path());
     // Someone fixes it in an editor before the click.
     let edited = "one\n<<<<<<< HEAD\nedited\n=======\ntopic\n>>>>>>> topic\nthree\n";
     std::fs::write(repo.path().join("a.txt"), edited).unwrap();
-    let ix = row_of(&ws, cx, id, |r| matches!(r, Row::Hunk { hunk: 0, .. }));
+    let ix = row_of(&ws, cx, |r| matches!(r, Row::Hunk { hunk: 0, .. }));
     click_in_row(
         handle,
         cx,
         ("git-hunk", ix),
-        gpui_kit::ElementId::Name(format!("git-hunk-use-{n}-{ix}").into()),
+        gpui_kit::ElementId::Name(format!("git-hunk-use-{ix}").into()),
     );
     assert_eq!(
         std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
@@ -177,14 +167,13 @@ fn a_choice_keeps_a_copy_in_the_trash(cx: &mut TestAppContext) {
     let repo = merge_conflict();
     let data = tempfile::tempdir().unwrap();
     let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    let ix = row_of(&ws, cx, id, |r| matches!(r, Row::Hunk { hunk: 0, .. }));
+    open_git(handle, &ws, cx, repo.path());
+    let ix = row_of(&ws, cx, |r| matches!(r, Row::Hunk { hunk: 0, .. }));
     click_in_row(
         handle,
         cx,
         ("git-hunk", ix),
-        gpui_kit::ElementId::Name(format!("git-hunk-use-{n}-{ix}").into()),
+        gpui_kit::ElementId::Name(format!("git-hunk-use-{ix}").into()),
     );
     let kept = ws.read_with(cx, |ws, _| ws.trash.as_ref().unwrap().list());
     assert_eq!(kept.len(), 1);
@@ -196,17 +185,16 @@ fn s_on_a_conflict_with_markers_asks_first(cx: &mut TestAppContext) {
     no_motion(cx);
     let repo = merge_conflict();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
+    open_git(handle, &ws, cx, repo.path());
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
             ws.select_git_row(
-                id,
                 crate::git_block::List::Conflicts,
                 "a.txt".to_string(),
                 window,
                 cx,
             );
-            let focus = ws.space.git(id).unwrap().focus.clone();
+            let focus = ws.space.git().unwrap().focus.clone();
             window.focus(&focus, cx);
         });
         window.render_frame(cx);
@@ -218,7 +206,7 @@ fn s_on_a_conflict_with_markers_asks_first(cx: &mut TestAppContext) {
     })
     .unwrap();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert_eq!(g.status.conflicts().len(), 1, "still conflicted")
     });
 }
@@ -227,12 +215,11 @@ fn take_whole_file(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
-    id: BlockId,
     side: templum_git::Side,
 ) {
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.resolve_file(id, "a.txt".to_string(), side, window, cx)
+            ws.resolve_file("a.txt".to_string(), side, window, cx)
         })
     })
     .unwrap();
@@ -245,8 +232,8 @@ fn a_whole_file_choice_keeps_the_file_as_it_was_in_the_trash(cx: &mut TestAppCon
     let before = std::fs::read(repo.path().join("a.txt")).unwrap();
     let data = tempfile::tempdir().unwrap();
     let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
-    let id = open_git(handle, &ws, cx, repo.path());
-    take_whole_file(handle, &ws, cx, id, templum_git::Side::Theirs);
+    open_git(handle, &ws, cx, repo.path());
+    take_whole_file(handle, &ws, cx, templum_git::Side::Theirs);
     assert_eq!(
         std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
         "one\ntopic\nthree\n"
@@ -277,8 +264,8 @@ fn a_whole_file_choice_whose_copy_fails_changes_nothing(cx: &mut TestAppContext)
     // The trash can't be made: a file stands where its folder goes.
     std::fs::write(data.path().join("trash"), "").unwrap();
     let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
-    let id = open_git(handle, &ws, cx, repo.path());
-    take_whole_file(handle, &ws, cx, id, templum_git::Side::Ours);
+    open_git(handle, &ws, cx, repo.path());
+    take_whole_file(handle, &ws, cx, templum_git::Side::Ours);
     assert_eq!(
         std::fs::read_to_string(repo.path().join("a.txt")).unwrap(),
         edited,

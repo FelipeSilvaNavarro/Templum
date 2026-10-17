@@ -326,7 +326,7 @@ fn a_terminal_beside_a_tile_lands_beside_its_place_on_the_canvas(cx: &mut TestAp
     let terminal = cx
         .update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
-                ws.terminal_beside(editor, dir.path(), None, window, cx)
+                ws.terminal_beside(Some(editor), dir.path(), None, window, cx)
             })
         })
         .unwrap()

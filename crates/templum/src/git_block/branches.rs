@@ -12,7 +12,6 @@ use gpui_kit::{
     AnyElement, ClickEvent, Context, ElementId, MouseButton, MouseDownEvent, ScrollHandle,
     TestSupportExt, div, px,
 };
-use templum_canvas::BlockId;
 use templum_git::Branch;
 
 use super::widgets::{centered, field, icon_button, small};
@@ -24,24 +23,19 @@ use crate::workspace::Workspace;
 /// The Branches tab.
 pub(super) fn branches(
     ws: &Workspace,
-    id: BlockId,
     git: &Git,
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
-    let n = id.0 as usize;
     let (column, right) = match &git.compare {
         Some(c) => (
-            compare_column(ws, id, c, &git.compare_scroll, z, cx),
-            diff_view::panel(ws, id, git, z, cx),
+            compare_column(ws, c, &git.compare_scroll, z, cx),
+            diff_view::panel(ws, git, z, cx),
         ),
-        None => (
-            branch_column(ws, id, git, z, cx),
-            no_comparison(ws, id, git, z, cx),
-        ),
+        None => (branch_column(ws, git, z, cx), no_comparison(ws, git, z, cx)),
     };
     div()
-        .id(("git-branches", n))
+        .id("git-branches")
         .flex_1()
         .min_h(px(0.0))
         .flex()
@@ -52,14 +46,8 @@ pub(super) fn branches(
 }
 
 /// The right side before a comparison is asked for, with Compare for the current branch.
-fn no_comparison(
-    ws: &Workspace,
-    id: BlockId,
-    git: &Git,
-    z: f32,
-    cx: &mut Context<Workspace>,
-) -> AnyElement {
-    let (ui, n) = (ws.ui, id.0 as usize);
+fn no_comparison(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
+    let ui = ws.ui;
     let base = git
         .default_branch
         .as_deref()
@@ -77,13 +65,13 @@ fn no_comparison(
             |el, current| {
                 el.child(
                     button(
-                        ("git-compare-current", n),
+                        "git-compare-current",
                         format!("Compare {current} with {base}"),
                         ui,
                         z,
                     )
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.compare_branch(id, current.clone(), window, cx)
+                        ws.compare_branch(current.clone(), window, cx)
                     }))
                     .test_support(),
                 )
@@ -96,14 +84,12 @@ fn no_comparison(
 /// commits newest first (a click narrows the panel to one).
 fn compare_column(
     ws: &Workspace,
-    id: BlockId,
     c: &Compare,
     scroll: &ScrollHandle,
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    let n = id.0 as usize;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
@@ -115,9 +101,7 @@ fn compare_column(
             let hash = commit.hash.clone();
             let selected = c.narrowed.as_deref() == Some(commit.hash.as_str());
             div()
-                .id(ElementId::Name(
-                    format!("git-compare-commit-{n}-{i}").into(),
-                ))
+                .id(ElementId::Name(format!("git-compare-commit-{i}").into()))
                 .flex()
                 .flex_col()
                 .justify_center()
@@ -140,7 +124,7 @@ fn compare_column(
                         )),
                 )
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.narrow_compare(id, Some(hash.clone()), window, cx)
+                    ws.narrow_compare(Some(hash.clone()), window, cx)
                 }))
                 .test_support()
                 .into_any_element()
@@ -170,18 +154,18 @@ fn compare_column(
                 .border_b_1()
                 .border_color(ui.hairline)
                 .child(
-                    icon_button(("git-compare-close", n), IconName::ArrowLeft, ui, z)
+                    icon_button("git-compare-close", IconName::ArrowLeft, ui, z)
                         .tooltip(|window, cx| {
                             Tooltip::new("Back to the branches").build(window, cx)
                         })
                         .on_click(
-                            cx.listener(move |ws, _: &ClickEvent, _, cx| ws.close_compare(id, cx)),
+                            cx.listener(move |ws, _: &ClickEvent, _, cx| ws.close_compare(cx)),
                         )
                         .test_support(),
                 )
                 .child(
                     div()
-                        .id(("git-compare-all", n))
+                        .id("git-compare-all")
                         .flex_1()
                         .min_w(px(0.0))
                         .truncate()
@@ -190,21 +174,21 @@ fn compare_column(
                         .cursor_pointer()
                         .child(format!("{} vs {}", c.branch, c.base))
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.narrow_compare(id, None, window, cx)
+                            ws.narrow_compare(None, window, cx)
                         }))
                         .test_support(),
                 )
                 .child(
-                    small(("git-compare-base", n), "Base ▾", ui, z)
+                    small("git-compare-base", "Base ▾", ui, z)
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.choose_compare_base(id, window, cx)
+                            ws.choose_compare_base(window, cx)
                         }))
                         .test_support(),
                 ),
         )
         .child(
             div()
-                .id(("git-compare-list", n))
+                .id("git-compare-list")
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
@@ -218,15 +202,8 @@ fn compare_column(
 
 /// Local branches, then the remote ones under a heading that folds them. Each row: the current
 /// one checked, the name, ↑↓ against its upstream; under it, the last commit's subject and age.
-fn branch_column(
-    ws: &Workspace,
-    id: BlockId,
-    git: &Git,
-    z: f32,
-    cx: &mut Context<Workspace>,
-) -> AnyElement {
+fn branch_column(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
-    let n = id.0 as usize;
     let query = git.filter.read(cx).value().trim().to_lowercase();
     let busy = git.acting > 0;
     let now = SystemTime::now()
@@ -253,11 +230,8 @@ fn branch_column(
                 };
                 div()
                     .id(ElementId::Name(
-                        format!(
-                            "git-branch-{n}-{}-{i}",
-                            if remote { "remote" } else { "local" }
-                        )
-                        .into(),
+                        format!("git-branch-{}-{i}", if remote { "remote" } else { "local" })
+                            .into(),
                     ))
                     .flex()
                     .flex_col()
@@ -310,17 +284,14 @@ fn branch_column(
                     )
                     .when(!busy, |el| {
                         el.on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.switch_branch(id, click.clone(), remote, window, cx)
+                            ws.switch_branch(click.clone(), remote, window, cx)
                         }))
                     })
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
                             ws.open_menu(
-                                Target::GitBranch {
-                                    block: id,
-                                    name: menu.clone(),
-                                },
+                                Target::GitBranch { name: menu.clone() },
                                 e.position,
                                 window,
                                 cx,
@@ -367,16 +338,16 @@ fn branch_column(
                 .border_color(ui.hairline)
                 .child(field(&git.filter, z).flex_1())
                 .child(
-                    button(("git-new-branch", n), "New branch…", ui, z)
+                    button("git-new-branch", "New branch…", ui, z)
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.branch_from(id, None, window, cx)
+                            ws.branch_from(None, window, cx)
                         }))
                         .test_support(),
                 ),
         )
         .child(
             div()
-                .id(("git-branch-list", n))
+                .id("git-branch-list")
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
@@ -387,7 +358,7 @@ fn branch_column(
                 })
                 .child(
                     div()
-                        .id(("git-remote-fold", n))
+                        .id("git-remote-fold")
                         .flex()
                         .items_center()
                         .gap(px(4.0 * z))
@@ -405,7 +376,7 @@ fn branch_column(
                         )
                         .child(heading(format!("Remote · {remote_count}")).px(px(0.0)))
                         .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
-                            ws.toggle_remote_branches(id, cx)
+                            ws.toggle_remote_branches(cx)
                         }))
                         .test_support(),
                 )

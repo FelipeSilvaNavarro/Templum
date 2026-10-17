@@ -318,6 +318,7 @@ fn a_snapshot_tells_each_terminal_its_folder_and_agent(cx: &mut TestAppContext) 
                 ink: Vec::new(),
                 grid: None,
                 wires: Vec::new(),
+                git: None,
             };
             let space = ws.space.id.clone();
             let found = Inspection {

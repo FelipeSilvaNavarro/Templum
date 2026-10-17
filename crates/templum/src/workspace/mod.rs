@@ -269,14 +269,12 @@ impl Pane {
     }
 }
 
-/// A Git block of any workspace: block ids count from 0 in every one, so a result that comes
-/// back after a switch still finds its block.
+/// The Git of a workspace, by its id: a result that comes back after a switch still finds it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct GitAt {
     pub space: String,
-    pub block: BlockId,
-    /// The block's `Git::generation` when the command started: the result of one started
-    /// before the block changed folder is dropped.
+    /// Its `Git::generation` when the command started: the result of one started before it
+    /// changed folder is dropped.
     pub generation: u64,
 }
 
@@ -289,14 +287,12 @@ pub(crate) struct Ghost {
 
 /// What a block holds. Every block on a canvas is one of these.
 pub(crate) enum Body {
-    /// Boxed, as Git is: what a terminal keeps for its agent outweighs the other kinds.
+    /// Boxed: what a terminal keeps for its agent outweighs the other kinds.
     Terminal(Box<Pane>),
     Kanban(Kanban),
     Note(Note),
     /// Boxed: on Windows, where a path takes more bytes, it is over 200 bytes larger than a note.
     Editor(Box<Editor>),
-    /// Boxed: its fields (the editors of its diff and commit form) outweigh the other kinds.
-    Git(Box<Git>),
 }
 
 impl Body {
@@ -335,7 +331,6 @@ impl Body {
             Body::Kanban(_) => kanban::MIN,
             Body::Note(_) => note::MIN,
             Body::Editor(_) => editor::MIN,
-            Body::Git(_) => git_block::MIN,
         }
     }
 
@@ -367,55 +362,29 @@ impl Body {
         }
     }
 
-    pub fn git(&self) -> Option<&Git> {
-        match self {
-            Body::Git(git) => Some(git),
-            _ => None,
-        }
-    }
-
-    pub fn git_mut(&mut self) -> Option<&mut Git> {
-        match self {
-            Body::Git(git) => Some(git),
-            _ => None,
-        }
-    }
-
     /// Gives the keyboard to what types inside the block: a note's editor, an editor's open
     /// file. False when nothing does.
     pub fn focus_inner(&self, window: &mut Window, cx: &mut App) -> bool {
         match self {
             Body::Note(note) => note.focus(window, cx),
             Body::Editor(e) => e.focus(window, cx),
-            // A field (the summary, a filter) keeps the keyboard it just took on the click;
-            // otherwise the block takes it.
-            Body::Git(g) => {
-                if !g.focus.contains_focused(window, cx) {
-                    g.focus.focus(window, cx);
-                }
-                true
-            }
             _ => false,
         }
     }
 
     /// The folder a terminal opened from this block starts in: a terminal's current one, an
-    /// editor's, a Git block's repository. None for a note or a kanban block.
+    /// editor's. None for a note or a kanban block.
     pub fn folder(&self) -> Option<PathBuf> {
         match self {
             Body::Terminal(pane) => pane.term.cwd(),
             Body::Editor(e) => Some(e.folder.clone()),
-            Body::Git(g) => Some(
-                g.repo()
-                    .map_or_else(|| g.folder.clone(), |r| r.root.clone()),
-            ),
             Body::Kanban(_) | Body::Note(_) => None,
         }
     }
 
     /// The block as a saved item at `rect`. A terminal's folder and agent are those last seen (a
     /// snapshot reads them in the background).
-    pub fn item(&self, rect: templum_canvas::Rect, cx: &App) -> session::Item {
+    pub fn item(&self, rect: templum_canvas::Rect) -> session::Item {
         match self {
             Body::Terminal(pane) => session::Item::Terminal(pane.item(rect, String::new())),
             Body::Kanban(k) => session::Item::Kanban(session::KanbanItem {
@@ -432,7 +401,6 @@ impl Body {
                 color: None,
             }),
             Body::Editor(e) => session::Item::Editor(e.item(rect)),
-            Body::Git(g) => session::Item::Git(g.item(rect, cx)),
         }
     }
 
@@ -446,7 +414,6 @@ impl Body {
                     .contains_focused(window, cx)
             }),
             Body::Editor(e) => e.has_focus(window, cx),
-            Body::Git(g) => g.focus.contains_focused(window, cx),
             Body::Terminal(pane) => pane.find.as_ref().is_some_and(|b| b.has_focus(window, cx)),
             Body::Kanban(_) => false,
         }
@@ -571,6 +538,9 @@ pub(crate) struct Space {
     pub framed: Option<(BlockId, Camera)>,
     /// The folders agents were opened in on this canvas, newest first.
     pub recent: Vec<PathBuf>,
+    /// Its Git (docs/specs/git.md): one repository, shown in the Git popup. None until the
+    /// popup first opens here. Boxed: the editors of its diff and commit form are large.
+    pub git: Option<Box<Git>>,
     /// The drawings, above the blocks.
     pub ink: Vec<Drawing>,
     /// The selected drawing, by its index in `ink`.
@@ -644,9 +614,9 @@ impl Space {
     /// A block as a saved item at its rect on the canvas, with its id. A terminal's agent keeps
     /// the session the last snapshot found it on: closed and brought back, it resumes that one,
     /// not the folder's latest (another agent's there, maybe the one that closed it).
-    fn item_of(&self, block: &Block, cx: &App) -> session::Item {
+    fn item_of(&self, block: &Block) -> session::Item {
         let uid = self.uids.get(&block.id).cloned().unwrap_or_default();
-        let mut item = self.blocks[&block.id].item(self.home(block), cx);
+        let mut item = self.blocks[&block.id].item(self.home(block));
         if let session::Item::Terminal(t) = &mut item {
             t.session = self
                 .saved
@@ -679,7 +649,7 @@ impl Space {
                         item.agent = pane.flags_for.clone().or(item.agent);
                         session::LayoutBlock::Terminal(item, pane.term.processes())
                     }
-                    _ => session::LayoutBlock::Saved(self.item_of(b, cx)),
+                    _ => session::LayoutBlock::Saved(self.item_of(b)),
                 })
                 .collect(),
             focused: self
@@ -702,6 +672,7 @@ impl Space {
                     })
                 })
                 .collect(),
+            git: self.git.as_ref().map(|g| g.saved(cx)),
         }
     }
 
@@ -753,6 +724,7 @@ impl Space {
         self.ink_undo.clear();
         self.ink_redo.clear();
         self.grid = None;
+        self.git = None;
     }
 
     /// The terminal blocks back to front: the order of a snapshot's terminal items.
@@ -840,12 +812,12 @@ impl Space {
         self.blocks.get_mut(&id)?.editor_mut()
     }
 
-    pub fn git(&self, id: BlockId) -> Option<&Git> {
-        self.blocks.get(&id)?.git()
+    pub fn git(&self) -> Option<&Git> {
+        self.git.as_deref()
     }
 
-    pub fn git_mut(&mut self, id: BlockId) -> Option<&mut Git> {
-        self.blocks.get_mut(&id)?.git_mut()
+    pub fn git_mut(&mut self) -> Option<&mut Git> {
+        self.git.as_deref_mut()
     }
 
     /// The changed files' names: of one block, or of every block of this workspace.
@@ -975,6 +947,8 @@ pub struct Workspace {
     watch: templum_usage::Watch,
     /// The title bar's usage popover is open.
     pub(crate) usage_open: bool,
+    /// The Git popup (the sidebar's bottom button) is open, on the workspace shown's Git.
+    pub(crate) git_open: bool,
     /// The plan's limits as Claude Code's `/usage` last told them.
     pub(crate) claude_polled: Option<templum_usage::Limits>,
     /// Asks Claude Code for them every few minutes.
@@ -1084,7 +1058,7 @@ pub struct Workspace {
     _blink: Task<()>,
     /// Checks open files for changes on disk every editor::POLL.
     _files: Task<()>,
-    /// Reads every Git block on screen every git_block::POLL.
+    /// Reads the workspace's Git every git_block::POLL while the popup is open.
     _git: Task<()>,
     /// `git --version` with the configured program, read when the settings panel opens: Ok is
     /// the version, Err why it can't run. None while it is being read.
@@ -1354,6 +1328,7 @@ impl Workspace {
             limits: Vec::new(),
             watch: templum_usage::Watch::new(crate::notes::now()),
             usage_open: false,
+            git_open: false,
             claude_polled: None,
             _claude_poll: claude_poll,
             meter_turn: 0,

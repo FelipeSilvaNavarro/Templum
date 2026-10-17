@@ -484,7 +484,6 @@ impl Workspace {
                 self.append_note(terminal, &block, &text, window, cx)
             }
             Call::OpenFile { path, line } => self.open_file_for(terminal, &path, line, window, cx),
-            Call::GitStatus { block } => return self.git_status(terminal, block.as_deref(), cx),
             Call::SendKeys { block, keys } => return self.send_keys(terminal, &block, keys, cx),
             Call::Interrupt { block } => return self.interrupt(terminal, &block, cx),
             Call::CloseBlock { block } => self.close_block(terminal, &block, window, cx),
@@ -540,7 +539,6 @@ impl Workspace {
             Body::Kanban(_) => ("kanban", title(), None),
             Body::Note(_) => ("note", title(), None),
             Body::Editor(e) => ("editor", title(), Some(e.folder.clone())),
-            Body::Git(_) => ("git", title(), body.folder()),
         };
         (kind, clean_title(&title), folder)
     }
