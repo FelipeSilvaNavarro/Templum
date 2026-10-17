@@ -21,6 +21,9 @@ Thanks for helping! Templum is early, so expect things to move fast.
    cargo run -p templum
    ```
 
+   With Templum also installed, add `-- --dev` (`cargo run -p templum -- --dev`): the build keeps its own
+   workspaces, settings and bus in `templum-dev` folders beside the installed Templum's.
+
 ## Before you open a pull request
 
 Run what CI runs:

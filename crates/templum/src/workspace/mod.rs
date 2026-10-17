@@ -1088,9 +1088,15 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// `data_dir`: where the canvas is kept (None: it isn't, as for `--bench`).
-    pub fn new(data_dir: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::with(None, config::dir(), data_dir, window, cx)
+    /// `config_dir`: where the settings file and themes are; `data_dir`: where the canvas is kept
+    /// (None: it isn't, as for `--bench`).
+    pub fn new(
+        config_dir: Option<PathBuf>,
+        data_dir: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self::with(None, config_dir, data_dir, window, cx)
     }
 
     /// `command`: program for new terminals instead of the login shell (tests).

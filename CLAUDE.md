@@ -9,7 +9,7 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
 
 ## Commands
 
-- Run: `cargo run -p templum`
+- Run: `cargo run -p templum` (`-- --dev` beside an installed Templum: own workspaces and settings in `templum-dev`)
 - Dev builds compile the dependencies optimized (`[profile.dev.package."*"]` in `Cargo.toml`), so `cargo run` is
   usable; performance is judged on `--release`.
 - Everything CI checks:

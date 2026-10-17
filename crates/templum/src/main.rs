@@ -70,6 +70,8 @@ fn main() {
     let zoom = std::env::args().find_map(|a| a.strip_prefix("--bench-zoom=").map(str::to_string));
     let git = std::env::args().any(|a| a == "--bench-git");
     let bench = mixed || far || zoom.is_some() || git || std::env::args().any(|a| a == "--bench");
+    // A build being worked on, beside the installed Templum: its own workspaces, settings and bus.
+    let dev = std::env::args().any(|a| a == "--dev");
     // The agents installed where only .bashrc or .zshrc put them.
     #[cfg(unix)]
     if !bench {
@@ -90,7 +92,7 @@ fn main() {
                     cx,
                 ))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Templum".into()),
+                    title: Some(if dev { "Templum (dev)" } else { "Templum" }.into()),
                     ..TitleBar::title_bar_options()
                 }),
                 window_background: WindowBackgroundAppearance::Opaque,
@@ -105,10 +107,13 @@ fn main() {
                 },
                 ..TitleBar::window_options()
             };
+            let dirs =
+                |dir: Option<std::path::PathBuf>| if dev { dir.map(session::dev) } else { dir };
             // The bench starts from one terminal and must not touch the user's saved canvas.
-            let data_dir = if bench { None } else { session::dir() };
+            let data_dir = if bench { None } else { dirs(session::dir()) };
+            let config_dir = dirs(config::dir());
             let (window, ws) = gpui_kit::open_window(options, cx, |window, cx| {
-                cx.new(|cx| Workspace::new(data_dir, window, cx))
+                cx.new(|cx| Workspace::new(config_dir, data_dir, window, cx))
             })
             .expect("failed to open window");
             if let Some(kind) = zoom {

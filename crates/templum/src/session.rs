@@ -36,6 +36,13 @@ pub(crate) fn dir() -> Option<PathBuf> {
     )
 }
 
+/// `dir` for `--dev`: its sibling `<name>-dev` (`~/.local/share/templum-dev`).
+pub(crate) fn dev(dir: PathBuf) -> PathBuf {
+    let mut name = dir.file_name().unwrap_or_default().to_os_string();
+    name.push("-dev");
+    dir.with_file_name(name)
+}
+
 fn dir_from(
     os: &str,
     appdata: Option<OsString>,
@@ -1104,6 +1111,12 @@ mod tests {
             Some(PathBuf::from("C:/Users/u/AppData/Roaming").join("templum"))
         );
         assert_eq!(dir_from("linux", None, None, None), None);
+    }
+
+    #[test]
+    fn dev_keeps_its_own_folder_beside_the_installed_one() {
+        let base = PathBuf::from("/home/u").join(".config");
+        assert_eq!(dev(base.join("templum")), base.join("templum-dev"));
     }
 
     #[test]
