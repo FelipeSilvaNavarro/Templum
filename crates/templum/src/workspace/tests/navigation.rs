@@ -35,6 +35,26 @@ fn wheel_on_empty_canvas_pans_and_ctrl_wheel_zooms(cx: &mut TestAppContext) {
     ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.1));
 }
 
+#[gpui_kit::test]
+fn with_select_a_mouse_wheel_on_the_canvas_zooms(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let o = ws.read(cx).origin;
+        wheel(
+            window,
+            cx,
+            (f32::from(o.x) + 30.0, f32::from(o.y) + 30.0),
+            ScrollDelta::Lines(point(0.0, 1.0)),
+            false,
+        );
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.canvas.camera.zoom(), 1.1);
+    });
+}
+
 #[cfg(target_os = "macos")]
 const ZOOM_OUT: &str = "cmd--";
 #[cfg(not(target_os = "macos"))]

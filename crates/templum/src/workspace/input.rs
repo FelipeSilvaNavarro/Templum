@@ -847,8 +847,10 @@ impl Workspace {
         }
         self.space.pristine = false;
         let p = self.local(e.position);
-        // The hand (its tool, or Alt held) zooms without Ctrl: dragging moves the canvas.
-        if e.modifiers.control || e.modifiers.alt || self.tool == Tool::Hand {
+        // The hand (its tool, or Alt held) zooms without Ctrl: dragging moves the canvas. So does
+        // a mouse's wheel (steps, not a touchpad's pixels) with the selection tool.
+        let mouse_wheel = self.tool == Tool::Select && !e.delta.precise();
+        if e.modifiers.control || e.modifiers.alt || self.tool == Tool::Hand || mouse_wheel {
             self.zoom_acc += match e.delta {
                 ScrollDelta::Lines(d) => d.y * 50.0,
                 ScrollDelta::Pixels(d) => f32::from(d.y),

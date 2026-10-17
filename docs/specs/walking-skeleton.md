@@ -161,7 +161,8 @@ Painting (in `grid.rs`):
 | Drag empty canvas | Pan |
 | Drag in a terminal body | Select text. Double-click selects a word, triple-click selects a line |
 | Wheel or two-finger scroll over a body | Scroll that terminal (see `Terminal::scroll`) |
-| Wheel or two-finger scroll over empty canvas or a title bar | Pan |
+| Two-finger scroll over empty canvas or a title bar | Pan |
+| A mouse's wheel over empty canvas or a title bar | Zoom one step around the pointer (pans with a drawing tool) |
 | Ctrl+wheel anywhere, or pinch | Zoom one step around the pointer |
 | × button | Close the block, killing its shell |
 
