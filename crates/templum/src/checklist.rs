@@ -4,16 +4,16 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
+use gpui_kit::component::input::{Backspace, Escape, Input, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, ElementId, FontWeight, ScrollWheelEvent, SharedString,
-    TestSupportExt, div, px, relative,
+    AnyElement, App, ClickEvent, Context, ElementId, Entity, Focusable as _, FontWeight,
+    MouseButton, ScrollWheelEvent, SharedString, TestSupportExt, Window, div, px, relative,
 };
 use templum_canvas::{BlockId, Size};
 
 use crate::checklists::{self, List};
 use crate::note;
-use crate::notes;
 use crate::tab_strip::tab_strip;
 use crate::workspace::Workspace;
 
@@ -26,10 +26,28 @@ const NAME_FONT: f32 = 15.0;
 /// A check box's side, world units.
 const BOX: f32 = 14.0;
 
-/// A checklist block: the checklists it shows as tabs, by id, and the one on screen.
+/// A checklist block: the checklists it shows as tabs, by id, the one on screen, and the one
+/// field being edited.
 pub(crate) struct Checklist {
     pub tabs: Vec<u64>,
     pub active: usize,
+    pub editing: Option<Editing>,
+}
+
+/// A name or an item edited in place, every key written to the checklist as it is typed.
+pub(crate) struct Editing {
+    pub list: u64,
+    pub field: Field,
+    pub input: Entity<InputState>,
+    /// Its typing is an undo step already: the first key took it (or the add it came with).
+    pub kept: bool,
+}
+
+/// What a field edits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Field {
+    Name,
+    Item(u64),
 }
 
 impl Checklist {
@@ -44,6 +62,24 @@ impl Checklist {
             Some(list) => list.title().into(),
             None => "Checklists".into(),
         }
+    }
+
+    /// The keyboard is in its field.
+    pub fn has_focus(&self, window: &Window, cx: &App) -> bool {
+        self.editing.as_ref().is_some_and(|e| {
+            e.input
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+        })
+    }
+
+    /// The field editing `field` of checklist `list`, if it is.
+    fn field(&self, list: u64, field: Field) -> Option<&Entity<InputState>> {
+        self.editing
+            .as_ref()
+            .filter(|e| e.list == list && e.field == field)
+            .map(|e| &e.input)
     }
 }
 
@@ -83,7 +119,7 @@ pub(crate) fn body(
         cx,
     );
     let inner = match checklist.shown().and_then(|id| ws.checklists.get(id)) {
-        Some(list) => list_view(ws, block, list, z, cx),
+        Some(list) => list_view(ws, block, checklist, list, z, cx),
         None => empty(ws, block, z, cx),
     };
     div()
@@ -105,6 +141,7 @@ pub(crate) fn body(
 fn list_view(
     ws: &Workspace,
     block: BlockId,
+    checklist: &Checklist,
     list: &List,
     z: f32,
     cx: &mut Context<Workspace>,
@@ -113,7 +150,10 @@ fn list_view(
     let rows: Vec<AnyElement> = list
         .items
         .iter()
-        .map(|item| row(ws, block, id, item, z, cx))
+        .map(|item| {
+            let input = checklist.field(id, Field::Item(item.id));
+            row(ws, block, id, item, input, z, cx)
+        })
         .collect();
     let add = div()
         .id(("checklist-add", n))
@@ -127,9 +167,8 @@ fn list_view(
         .hover(move |s| s.text_color(ui.title))
         .child(Icon::new(IconName::Plus).size(px(BOX * z)))
         .child("Add an item")
-        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
-            ws.edit_checklist(id, |c| c.add_item(id, None, "", false, notes::now()));
-            cx.notify();
+        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+            ws.add_item_after(block, id, None, window, cx)
         }))
         .test_support();
     div()
@@ -143,11 +182,21 @@ fn list_view(
         .child(
             div()
                 .id(("checklist-name", n))
+                .flex()
                 .pb(px(4.0 * z))
                 .text_size(px(NAME_FONT * z))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(ui.title)
-                .child(list.name_shown().to_string())
+                .map(|el| match checklist.field(id, Field::Name) {
+                    Some(input) => el.child(field(ws, block, input, NAME_FONT, z, cx)),
+                    None => el
+                        .line_height(relative(1.5))
+                        .cursor_text()
+                        .child(list.name_shown().to_string())
+                        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                            ws.edit_field(block, Field::Name, window, cx)
+                        })),
+                })
                 .test_support(),
         )
         .children(rows)
@@ -163,6 +212,7 @@ fn row(
     block: BlockId,
     list: u64,
     item: &checklists::Item,
+    input: Option<&Entity<InputState>>,
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
@@ -195,11 +245,21 @@ fn row(
         .id(name("checklist-text", n, id))
         .flex_1()
         .min_w(px(0.0))
+        .flex()
         .text_size(px(FONT * z))
-        .line_height(relative(1.5))
         .text_color(if done { ui.title_dim } else { ui.title })
-        .when(done, |el| el.line_through())
-        .child(item.text.clone())
+        .map(|el| match input {
+            // One line while it is edited: a long item scrolls sideways in its field.
+            Some(input) => el.child(field(ws, block, input, FONT, z, cx)),
+            None => el
+                .line_height(relative(1.5))
+                .when(done, |el| el.line_through())
+                .cursor_text()
+                .child(item.text.clone())
+                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                    ws.edit_field(block, Field::Item(id), window, cx)
+                })),
+        })
         .test_support();
     let delete = div()
         .id(name("checklist-item-delete", n, id))
@@ -232,6 +292,42 @@ fn row(
         .child(text)
         .child(delete)
         .test_support()
+        .into_any_element()
+}
+
+/// The field editing a name or an item, in its text's place: one line of the text's `size` at
+/// zoom `z`, its padding and height set to scale with the zoom. Esc stops editing; Backspace in an
+/// empty item deletes it.
+fn field(
+    ws: &Workspace,
+    block: BlockId,
+    input: &Entity<InputState>,
+    size: f32,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    div()
+        .flex_1()
+        .min_w(px(0.0))
+        // A press in the field is its own: the block would take the keyboard from it.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        // What the field leaves: Esc with nothing of its own to undo, Backspace at its start.
+        .on_action(
+            cx.listener(move |ws, _: &Escape, window, cx| ws.stop_editing(block, window, cx)),
+        )
+        .on_action(cx.listener(move |ws, _: &Backspace, window, cx| {
+            ws.backspace_at_start(block, window, cx)
+        }))
+        .child(
+            // Not `Input::h`: gpui-kit's own, for a multi-line input only.
+            Styled::h(Input::new(input), px(size * 1.5 * z))
+                .appearance(false)
+                .px(px(0.0))
+                .py(px(0.0))
+                .text_size(px(size * z))
+                .line_height(relative(1.5))
+                .text_color(ws.ui.title),
+        )
         .into_any_element()
 }
 

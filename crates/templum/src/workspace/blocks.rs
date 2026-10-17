@@ -635,6 +635,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<(Block, Rect, Body)> {
+        // A checklist's field stops: its text is kept, an item left empty goes.
+        self.stop_editing(id, window, cx);
         self.release_focus(id, window, cx);
         let block = self.space.canvas.get(id).copied();
         let home = block.map(|b| self.space.home(&b));

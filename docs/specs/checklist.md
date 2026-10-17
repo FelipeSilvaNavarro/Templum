@@ -65,7 +65,8 @@ line: a long item's text scrolls sideways in the field, and the rows below move 
 choice over a wrapping field):
 
 - every key is written to the checklist at once, so agents and other blocks see it;
-- **Enter** adds a new item right after it, being edited;
+- **Enter** adds a new item right after it, being edited; **Enter** in an empty item stops editing (the item
+  goes);
 - **Backspace** in an empty item deletes it and edits the one before, its caret at the end;
 - **Esc** or a click elsewhere stops editing;
 - an item left empty when its editing stops is deleted.

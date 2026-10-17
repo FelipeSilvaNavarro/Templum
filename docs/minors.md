@@ -283,6 +283,23 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   toggles or an editor's file changes (`crates/templum/src/workspace/blocks.rs`), not when a pan or zoom takes the
   block off screen. Fix: release the focus of a block that leaves the viewport, for every kind.
 
+## Checklists
+
+- [ ] **A field left editing in a hidden workspace stays drawn without the keyboard.** Switching workspaces while a
+  checklist's name or item is edited hides the field, and GPUI sends no blur for an element it doesn't draw, so
+  `Checklist::editing` stays set (`crates/templum/src/workspace/checklist_tabs.rs`): back there, the field shows with
+  no caret, and an item left empty in it stays until the field is clicked and left. Fix: `stop_editing` on every
+  checklist block of the space being hidden, in `switch_to`.
+- [ ] **Undoing a blank checklist's close brings back an empty block.** As for notes: a blank checklist goes when its
+  block closes (`drop_checklist_if_blank`), so Ctrl+Z after closing it shows "No checklist open here". Fix: in
+  `add_saved`, a checklist item whose checklists are all gone opens a new blank checklist.
+- [ ] **Two canvases naming one checklist both show it after a restart.** As for notes: `checklist_open_at` looks only
+  in the workspaces already loaded (`crates/templum/src/workspace/persist.rs`, `add_saved`), so a hand-edited file
+  that names a checklist in two workspaces opens it in both. Fix: look in `load_spaces`' list too while loading.
+- [ ] **A checklist block copied in another Templum pastes empty.** As for notes: the clipboard names checklists by
+  their ids (`Body::item`), which another Templum's checklists don't have. Fix: put each checklist's name and items
+  in the copied item, and let `paste_blocks` make a checklist of them when the id isn't known.
+
 ## Grid mode
 
 - [ ] **Ctrl+Z in grid mode can take back a hidden block's change.** The canvas's undo steps (`workspace/history.rs`)

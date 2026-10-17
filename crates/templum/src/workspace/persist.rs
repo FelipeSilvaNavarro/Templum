@@ -247,7 +247,12 @@ impl Workspace {
                     }
                 }
                 let active = tabs.iter().position(|t| Some(*t) == shown).unwrap_or(0);
-                Some(self.add_block(rect, Body::Checklist(Checklist { tabs, active })))
+                let checklist = Checklist {
+                    tabs,
+                    active,
+                    editing: None,
+                };
+                Some(self.add_block(rect, Body::Checklist(checklist)))
             }
             // An older Templum's Git block: the workspace's Git, unless it has one.
             session::Item::Git(g) => {

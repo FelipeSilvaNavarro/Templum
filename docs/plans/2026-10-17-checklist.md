@@ -395,7 +395,7 @@ git commit -m "feat(checklist): add checklist blocks: tabs of checklists you tic
   stop_editing(&mut self, block: BlockId, window, cx)` in `checklist_tabs.rs`; a new block and a new tab start with
   `Field::Name` editing; `Checklist::focus`/`has_focus` now use the field.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[gpui_kit::test]
@@ -433,12 +433,12 @@ fn closing_the_tab_while_editing_keeps_the_text(cx: &mut TestAppContext) {
 }
 ```
 
-- [ ] **Step 2: Run them to see them fail**
+- [x] **Step 2: Run them to see them fail**
 
 Run: `cargo test -p templum checklists::`
 Expected: FAIL (no field opens).
 
-- [ ] **Step 3: Implement the field**
+- [x] **Step 3: Implement the field**
 
 - `edit_field` stops any field first, then makes an `InputState` with the name or the item's text, subscribes to
   it: `Change` writes the text (the first change through `edit_checklist`, then `kept = true`, later ones straight
@@ -456,15 +456,15 @@ Expected: FAIL (no field opens).
   stop a field on that list first.
 - Spec, under **Editing an item**: "**Enter** in an empty item stops editing (the item goes)."
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p templum`
 Expected: PASS.
 
-- [ ] **Step 5: Verify by hand** at zoom 0.5, 1 and 2 (`cargo run -p templum`): a one-line item's text stays where
+- [x] **Step 5: Verify by hand** at zoom 0.5, 1 and 2 (`cargo run -p templum`): a one-line item's text stays where
   the row's was while it is edited; a long item's field scrolls sideways.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A crates/templum docs/specs/checklist.md

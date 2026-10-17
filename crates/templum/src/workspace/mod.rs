@@ -445,7 +445,8 @@ impl Body {
             }),
             Body::Editor(e) => e.has_focus(window, cx),
             Body::Terminal(pane) => pane.find.as_ref().is_some_and(|b| b.has_focus(window, cx)),
-            Body::Kanban(_) | Body::Checklist(_) => false,
+            Body::Checklist(c) => c.has_focus(window, cx),
+            Body::Kanban(_) => false,
         }
     }
 }

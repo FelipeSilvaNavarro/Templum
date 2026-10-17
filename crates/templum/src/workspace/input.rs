@@ -713,7 +713,8 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
-        // Ctrl+Z on a checklist block undoes the last change to a checklist.
+        // Ctrl+Z on a checklist block undoes the last change to a checklist (in its field, the
+        // field's own: gpui-kit's input takes the key).
         if undo_key(k, cfg!(target_os = "macos")) == Some(false)
             && self
                 .space
