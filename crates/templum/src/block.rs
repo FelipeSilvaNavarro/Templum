@@ -38,6 +38,11 @@ pub(crate) const BORDER: f32 = 1.0;
 /// How thick the strips along a block's edges that resize it are, screen pixels, at most: thinner
 /// when zoomed out, so the title stays easy to grab.
 const EDGE: f32 = 6.0;
+/// The dot on a corner the pointer is near, world units across: never wider than the corner's
+/// square that resizes, so it shows exactly where a drag resizes from.
+const CORNER_DOT: f32 = 8.0;
+/// How far into a block from a corner the pointer is near it, world units: its dot shows.
+const NEAR_CORNER: f32 = 36.0;
 /// Below Full a title is a label this far in from the card's border, and a terminal's status
 /// dot in it is this wide: screen pixels, never zoomed.
 const LABEL_IN: f32 = 4.0;
@@ -679,6 +684,18 @@ pub(crate) fn render(
         })
         .children(other_zones)
         .when(hovered && !tiled, |el| {
+            el.children(
+                [
+                    Edges::TOP_LEFT,
+                    Edges::TOP_RIGHT,
+                    Edges::BOTTOM_LEFT,
+                    Edges::BOTTOM_RIGHT,
+                ]
+                .map(|edges| near_corner(id, edges, z, cx)),
+            )
+        })
+        .children(corner_dot(ws, id, hovered && !tiled, edge, z, window, cx))
+        .when(hovered && !tiled, |el| {
             el.child(fade_in(handle, ("handle-fade", n)))
         })
         // What its agent asks the person, a dialog centered on the terminal, up close only.
@@ -851,6 +868,84 @@ fn resize_zone(id: BlockId, edges: Edges, edge: f32, cx: &mut Context<Workspace>
     )
     .test_support()
     .into_any_element()
+}
+
+/// Where the pointer is near the corner `edges` of block `id`: a square into the block from that
+/// corner, which only hears the pointer come and go (no press, no cursor of its own: what is
+/// under it still takes them).
+fn near_corner(id: BlockId, edges: Edges, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
+    let name = match (edges.top, edges.left) {
+        (true, true) => "top-left",
+        (true, false) => "top-right",
+        (false, true) => "bottom-left",
+        (false, false) => "bottom-right",
+    };
+    let el = div()
+        .id(ElementId::Name(format!("near-{name}-{}", id.0).into()))
+        .absolute()
+        .size(px(NEAR_CORNER * z));
+    let el = if edges.left {
+        el.left_0()
+    } else {
+        el.right_0()
+    };
+    let el = if edges.top { el.top_0() } else { el.bottom_0() };
+    el.on_hover(
+        cx.listener(move |ws, near: &bool, _, cx| ws.hover_corner(id, near.then_some(edges), cx)),
+    )
+    .test_support()
+    .into_any_element()
+}
+
+/// The dot on the corner of block `id` the pointer is near (`hovered`: the block is, and its
+/// corners resize it), centered on that corner's square that resizes (`edge` × 2 across): it fades
+/// in, and fades out once the pointer leaves the corner. None when it isn't shown; the fade runs,
+/// and frames come, only while it changes.
+fn corner_dot(
+    ws: &Workspace,
+    id: BlockId,
+    hovered: bool,
+    edge: f32,
+    z: f32,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> Option<AnyElement> {
+    let corner = ws.space.corner.filter(|c| c.block == id);
+    // The hovered block's fade starts at 0, so the dot's first frame fades in.
+    if !hovered && corner.is_none() {
+        return None;
+    }
+    let near = hovered && corner.is_some_and(|c| c.near);
+    let n = id.0 as usize;
+    let shown = transition(
+        ElementId::from(("corner", n)),
+        if near { 1.0_f32 } else { 0.0 },
+        Transition::new(motion::HOVER),
+        window,
+        cx,
+    );
+    // Drawn from its first frame in (at 0) to its last frame out.
+    let edges = corner.filter(|_| near || shown > 0.0)?.edges;
+    let across = (CORNER_DOT * z).min(2.0 * edge);
+    let inset = px(edge - across / 2.0);
+    let dot = div()
+        .id(ElementId::Name(format!("corner-dot-{n}").into()))
+        .absolute()
+        .size(px(across))
+        .rounded(px(across / 2.0))
+        .bg(ws.ui.accent)
+        .opacity(shown);
+    let dot = if edges.left {
+        dot.left(inset)
+    } else {
+        dot.right(inset)
+    };
+    let dot = if edges.top {
+        dot.top(inset)
+    } else {
+        dot.bottom(inset)
+    };
+    Some(dot.test_support().into_any_element())
 }
 
 /// The zoom nearest `z` at which gpui-kit's editor rows, 1.5 × their text size of `font × zoom`,

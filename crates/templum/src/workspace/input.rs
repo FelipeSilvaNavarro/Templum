@@ -18,7 +18,7 @@ use crate::keys::{self, Command};
 use crate::menu;
 
 use super::{
-    CLICK_SLOP, Drag, QUIT_AGAIN, Tool, Workspace, effective, option_types_text, secondary,
+    CLICK_SLOP, Corner, Drag, QUIT_AGAIN, Tool, Workspace, effective, option_types_text, secondary,
     show_notification, undo_key, workspace_digit,
 };
 
@@ -80,6 +80,29 @@ impl Workspace {
             cx.notify();
         }
         self.follow_pointer(window, cx);
+    }
+
+    /// The pointer came near the corner `edges` of block `id`, where a drag resizes it (Some), or
+    /// went from the corner of it it was near (None): its dot fades in or out there.
+    pub(crate) fn hover_corner(
+        &mut self,
+        id: BlockId,
+        edges: Option<Edges>,
+        cx: &mut Context<Self>,
+    ) {
+        let next = match (edges, self.space.corner) {
+            (Some(edges), _) => Corner {
+                block: id,
+                edges,
+                near: true,
+            },
+            (None, Some(c)) if c.block == id => Corner { near: false, ..c },
+            (None, _) => return,
+        };
+        if self.space.corner != Some(next) {
+            self.space.corner = Some(next);
+            cx.notify();
+        }
     }
 
     pub(super) fn local(&self, pos: PixelPoint<Pixels>) -> Point {

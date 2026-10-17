@@ -133,6 +133,15 @@ pub(crate) enum AgentState {
     NeedsYou(Option<String>),
 }
 
+/// A block corner, where a drag resizes it (docs/specs/design-system.md, Corner dot): its dot shows
+/// while the pointer is `near` it, and fades out after.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Corner {
+    pub block: BlockId,
+    pub edges: templum_canvas::Edges,
+    pub near: bool,
+}
+
 /// A task handed to a terminal's agent (`delegate`, or `spawn_agent`'s prompt), while its answer
 /// is awaited (docs/specs/connections.md, Delegating).
 pub(crate) struct Handed {
@@ -551,6 +560,8 @@ pub(crate) struct Space {
     pub frozen: bool,
     /// The block under the pointer: it shows its close button and resize grip.
     pub hovered: Option<BlockId>,
+    /// The block corner the pointer is near, or was near last while its dot fades out.
+    pub corner: Option<Corner>,
     /// The snaps in effect during a drag, drawn as lines; empty otherwise.
     pub guides: Vec<Guide>,
     /// The camera drawn this frame: `canvas.camera` (where it is going), or a frame of `flight`.
