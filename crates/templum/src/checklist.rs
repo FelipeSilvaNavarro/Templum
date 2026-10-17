@@ -193,7 +193,6 @@ fn list_view(
         .child(
             div()
                 .id(("checklist-name", n))
-                .flex()
                 .pb(px(4.0 * z))
                 .text_size(px(NAME_FONT * z))
                 .font_weight(FontWeight::SEMIBOLD)
@@ -282,7 +281,6 @@ fn row(
         .id(name("checklist-text", n, id))
         .flex_1()
         .min_w(px(0.0))
-        .flex()
         .text_size(px(FONT * z))
         .text_color(if done { ui.title_dim } else { ui.title })
         .map(|el| match input {
@@ -326,12 +324,11 @@ fn row(
         .gap(px(8.0 * z))
         .py(px(4.0 * z))
         .rounded(px(4.0 * z))
-        .border_1()
-        .border_color(gpui_kit::transparent_black())
         .child(check)
         .child(text)
         .child(delete)
-        .drag_over::<ItemDrag>(move |s, _, _, _| s.border_color(ui.accent))
+        // A tint, not a border: a border's screen pixels would narrow the text at every zoom.
+        .drag_over::<ItemDrag>(move |s, _, _, _| s.bg(ui.accent.opacity(0.18)))
         .on_drag(ItemDrag { list, item: id }, move |_, _, _, cx| {
             let text = preview.clone();
             cx.new(|_| DragPreview { text, width, z, ui })

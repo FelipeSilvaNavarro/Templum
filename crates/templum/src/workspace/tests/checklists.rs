@@ -841,3 +841,72 @@ fn a_click_elsewhere_in_the_block_stops_editing(cx: &mut TestAppContext) {
     assert!(editing(&ws, cx, id).is_none());
     assert!(done(&ws, cx, list, a));
 }
+
+/// Review focus: editing stops when its block closes (an item left empty goes) and when its
+/// checklist is deleted in the dialog (no field is left on a checklist that is gone).
+#[gpui_kit::test]
+fn closing_the_block_or_deleting_the_checklist_stops_editing(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = new_checklist(handle, &ws, cx);
+    let list = ws.update(cx, |ws, _| {
+        let list = shown(ws, id);
+        ws.checklists.rename(list, "Groceries", 1);
+        ws.checklists.add_item(list, None, "milk", false, 1);
+        list
+    });
+    click(handle, cx, ("checklist-add", id.0 as usize));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close(id, window, cx))
+    })
+    .unwrap();
+    assert_eq!(texts(&ws, cx, list), ["milk"], "the empty item went");
+    let other = new_checklist(handle, &ws, cx);
+    let gone = ws.read_with(cx, |ws, _| shown(ws, other));
+    ws.update(cx, |ws, _| ws.checklists.rename(gone, "Gone", 1));
+    click(handle, cx, ("checklist-add", other.0 as usize));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.delete_checklist(gone, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(editing(&ws, cx, other).is_none());
+    ws.read_with(cx, |ws, _| assert!(ws.checklists.get(gone).is_none()));
+}
+
+/// Zoom scales like a photo: a long item wraps at the same words at every zoom.
+#[gpui_kit::test]
+fn a_long_item_wraps_the_same_at_every_zoom(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = new_checklist(handle, &ws, cx);
+    let item = ws.update(cx, |ws, _| {
+        let list = shown(ws, id);
+        let text =
+            "Check that a long item wraps over a few lines at the block's width, and stays so";
+        ws.checklists.add_item(list, None, text, false, 1).unwrap()
+    });
+    press(handle, cx, "escape");
+    let lines: Vec<f32> = [0.5, 1.0, 2.0]
+        .into_iter()
+        .map(|zoom| {
+            cx.update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, _| {
+                    let camera = ws.space.canvas.camera;
+                    ws.space.canvas.camera = Camera::at(camera.origin, zoom);
+                    ws.space.flight = None;
+                });
+                window.render_frame(cx);
+                let h = f32::from(
+                    window
+                        .find(name("checklist-text", id, item))
+                        .bounds()
+                        .size
+                        .height,
+                );
+                (h / (13.0 * 1.5 * zoom)).round()
+            })
+            .unwrap()
+        })
+        .collect();
+    assert!(lines[0] > 1.0, "it wraps: {lines:?}");
+    assert!(lines.iter().all(|l| *l == lines[0]), "{lines:?}");
+}
