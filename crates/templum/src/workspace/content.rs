@@ -1,5 +1,5 @@
 //! The content tools (docs/specs/connections.md, Tools, batch 4): the cards of a kanban wired to the
-//! caller, a wired note, a file opened in an editor.
+//! caller, a wired note, a wired checklist, a file opened in an editor.
 
 use std::path::Path;
 
@@ -10,6 +10,7 @@ use templum_mcp::{Reply, tools};
 use super::bus::{flat, target};
 use super::{BlockId, Body, Space, Workspace};
 use crate::board::{Card, Comment};
+use crate::checklists;
 use crate::editor::{Content, Editor};
 use crate::notes;
 
@@ -386,6 +387,95 @@ impl Workspace {
             e.set_selected_range(kept, cx);
         });
         Reply::ok(format!("Added to the note in {block}."))
+    }
+
+    /// The checklist block `block` wired to the caller, and the checklist it shows.
+    fn wired_checklist(&self, from: &str, block: &str) -> Result<u64, Reply> {
+        let (space, me) = self.caller_space(from);
+        let id = target(space, me, block)?;
+        let Some(checklist) = space.blocks.get(&id).and_then(|b| b.checklist()) else {
+            return Err(Reply::err(format!("{block} isn't a checklist.")));
+        };
+        checklist
+            .shown()
+            .filter(|list| self.checklists.get(*list).is_some())
+            .ok_or_else(|| Reply::err(format!("{block} shows no checklist.")))
+    }
+
+    /// The checklist's name and progress, then a line per item: its id, [x] or [ ], its text.
+    pub(super) fn read_checklist(&self, from: &str, block: &str) -> Reply {
+        let list = match self.wired_checklist(from, block) {
+            Ok(list) => list,
+            Err(refused) => return refused,
+        };
+        let Some(list) = self.checklists.get(list) else {
+            return Reply::err(format!("{block} shows no checklist."));
+        };
+        let (done, all) = list.progress();
+        let mut text = format!("{} ({done}/{all})", list.name_shown());
+        for item in &list.items {
+            let mark = if item.done { 'x' } else { ' ' };
+            text.push_str(&format!("\n{} [{mark}] {}", item.id, item.text));
+        }
+        Reply::ok(tools::tail(&text, tools::MAX_TEXT))
+    }
+
+    /// Checks (or unchecks) an item of the checklist `block` shows: one Ctrl+Z step.
+    pub(super) fn check_item(
+        &mut self,
+        from: &str,
+        block: &str,
+        item: u64,
+        done: bool,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let list = match self.wired_checklist(from, block) {
+            Ok(list) => list,
+            Err(refused) => return refused,
+        };
+        if !self.edit_checklist(list, |c| c.set_done(list, item, done, notes::now())) {
+            let name = self.checklists.get(list).map_or("", |l| l.name_shown());
+            return Reply::err(format!(
+                "There's no item {item} in \"{name}\". read_checklist shows its items."
+            ));
+        }
+        self.agent_changed(list);
+        cx.notify();
+        let state = if done { "checked" } else { "unchecked" };
+        Reply::ok(format!("Item {item} is {state}."))
+    }
+
+    /// Adds an item per line of `text` at the end of the checklist `block` shows: one Ctrl+Z
+    /// step.
+    pub(super) fn add_items(
+        &mut self,
+        from: &str,
+        block: &str,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let list = match self.wired_checklist(from, block) {
+            Ok(list) => list,
+            Err(refused) => return refused,
+        };
+        let items = checklists::parse_items(text);
+        if items.is_empty() {
+            return Reply::err("There's nothing to add.");
+        }
+        let now = notes::now();
+        let ids: Vec<String> = self.edit_checklist(list, |c| {
+            items
+                .iter()
+                .filter_map(|(text, done)| c.add_item(list, None, text, *done, now))
+                .map(|id| id.to_string())
+                .collect()
+        });
+        self.agent_changed(list);
+        cx.notify();
+        match ids.as_slice() {
+            [one] => Reply::ok(format!("Added item {one}.")),
+            many => Reply::ok(format!("Added items {}.", many.join(", "))),
+        }
     }
 
     /// `open_file` from `from`: the front-most wired editor whose folder holds the file, else a

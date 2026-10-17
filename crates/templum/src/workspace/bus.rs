@@ -483,6 +483,11 @@ impl Workspace {
             Call::AppendNote { block, text } => {
                 self.append_note(terminal, &block, &text, window, cx)
             }
+            Call::ReadChecklist { block } => self.read_checklist(terminal, &block),
+            Call::CheckItem { block, item, done } => {
+                self.check_item(terminal, &block, item, done, cx)
+            }
+            Call::AddItems { block, text } => self.add_items(terminal, &block, &text, cx),
             Call::OpenFile { path, line } => self.open_file_for(terminal, &path, line, window, cx),
             Call::SendKeys { block, keys } => return self.send_keys(terminal, &block, keys, cx),
             Call::Interrupt { block } => return self.interrupt(terminal, &block, cx),
@@ -635,7 +640,8 @@ impl Workspace {
              or write your own block and those connected to you; connect asks the person for another. \
              list_blocks gives the current list. When a connected kanban has your task, move its card \
              to Doing when you start and to Review when you are done (Done when the board has no \
-             Review); write what the next agent needs to know in the connected note. A task you \
+             Review); write what the next agent needs to know in the connected note, and check the \
+             items of a connected checklist as you finish them. A task you \
              hand over without wait comes back typed into your terminal as [task …]: it isn't the \
              person writing.",
             space.name,

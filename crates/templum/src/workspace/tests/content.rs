@@ -293,6 +293,9 @@ fn the_content_tools_are_refused_without_a_wire(cx: &mut TestAppContext) {
         ("read_note", json!({ "block": note_uid })),
         ("append_note", json!({ "block": note_uid, "text": "x" })),
         ("read_note", json!({ "block": kanban_uid })),
+        ("read_checklist", json!({ "block": note_uid })),
+        ("check_item", json!({ "block": note_uid, "item": 1 })),
+        ("add_items", json!({ "block": note_uid, "text": "x" })),
     ] {
         let (failed, text) = call(handle, &ws, cx, &me, tool, args.clone());
         assert!(failed, "{tool} {args}: {text}");
@@ -310,7 +313,8 @@ fn the_instructions_say_what_to_do_with_a_kanban_and_a_note(cx: &mut TestAppCont
         text.contains(
             "When a connected kanban has your task, move its card to Doing when you start and to \
              Review when you are done (Done when the board has no Review); write what the next agent \
-             needs to know in the connected note."
+             needs to know in the connected note, and check the items of a connected checklist as you \
+             finish them."
         ),
         "{text}"
     );
@@ -762,4 +766,216 @@ fn an_editor_with_the_keyboard_showing_a_preview_gives_it_to_the_canvas(cx: &mut
         assert!(ws.focus_handle.is_focused(window), "the canvas has them");
     })
     .unwrap();
+}
+
+/// The startup terminal wired to a checklist block showing "Deploy": "Build" (checked) and "Run
+/// the tests": (TEMPLUM_TERMINAL, block, its uid, the checklist, Build, Run the tests).
+fn wired_checklist(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> (String, BlockId, String, u64, u64, u64) {
+    let terminal = first_id(ws, cx);
+    let (block, list, build, tests) = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let list = ws.checklists.add(1);
+                ws.checklists.rename(list, "Deploy", 1);
+                let build = ws
+                    .checklists
+                    .add_item(list, None, "Build", true, 1)
+                    .unwrap();
+                let tests = ws
+                    .checklists
+                    .add_item(list, None, "Run the tests", false, 1);
+                let item = crate::session::Item::Checklist(crate::session::ChecklistItem {
+                    uid: String::new(),
+                    rect: Rect::new(900.0, 40.0, 320.0, 360.0).into(),
+                    checklists: vec![list],
+                    active: 0,
+                });
+                ws.quiet = true;
+                let block = ws.add_saved(&item, window, cx).unwrap();
+                ws.quiet = false;
+                ws.space.appearing.clear();
+                assert!(ws.connect(terminal, block, cx));
+                (block, list, build, tests.unwrap())
+            })
+        })
+        .unwrap();
+    let (me, _) = me(ws, cx, terminal);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&block].clone());
+    (me, block, uid, list, build, tests)
+}
+
+fn items_of(ws: &Entity<Workspace>, cx: &mut TestAppContext, list: u64) -> Vec<(String, bool)> {
+    ws.read_with(cx, |ws, _| {
+        let list = ws.checklists.get(list).unwrap();
+        list.items
+            .iter()
+            .map(|i| (i.text.clone(), i.done))
+            .collect()
+    })
+}
+
+#[gpui_kit::test]
+fn read_checklist_reads_the_checklist_on_screen(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, _, uid, _, build, tests) = wired_checklist(handle, &ws, cx);
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "read_checklist",
+            json!({ "block": uid })
+        ),
+        (
+            false,
+            format!("Deploy (1/2)\n{build} [x] Build\n{tests} [ ] Run the tests")
+        )
+    );
+    let (_, blocks) = call(handle, &ws, cx, &me, "list_blocks", json!({}));
+    assert!(blocks.contains("checklist"), "{blocks}");
+    let terminal = ws.read_with(cx, |ws, _| ws.space.terminals().next().unwrap().0);
+    let (_, mine) = super::bus::me(&ws, cx, terminal);
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "read_checklist",
+        json!({ "block": mine }),
+    );
+    assert!(failed && text.contains("isn't a checklist"), "{text}");
+}
+
+#[gpui_kit::test]
+fn check_item_and_add_items_show_at_once_and_ctrl_z_takes_them_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, block, uid, list, _, tests) = wired_checklist(handle, &ws, cx);
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "check_item",
+            json!({ "block": uid, "item": tests })
+        ),
+        (false, format!("Item {tests} is checked."))
+    );
+    assert!(items_of(&ws, cx, list)[1].1);
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "check_item",
+        json!({ "block": uid, "item": 999 }),
+    );
+    assert!(failed, "{text}");
+    assert_eq!(
+        text,
+        "There's no item 999 in \"Deploy\". read_checklist shows its items."
+    );
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "add_items",
+        json!({ "block": uid, "text": "- [ ] Ship\n[x] Tag" }),
+    );
+    assert!(!failed, "{text}");
+    let ids: Vec<u64> = ws.read_with(cx, |ws, _| {
+        ws.checklists.get(list).unwrap().items[2..]
+            .iter()
+            .map(|i| i.id)
+            .collect()
+    });
+    assert_eq!(text, format!("Added items {}, {}.", ids[0], ids[1]));
+    assert_eq!(
+        items_of(&ws, cx, list)[2..],
+        [("Ship".to_string(), false), ("Tag".to_string(), true)]
+    );
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "add_items",
+        json!({ "block": uid, "text": " \n- " }),
+    );
+    assert!(failed && text == "There's nothing to add.", "{text}");
+    // Each call is one step.
+    let undo = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.focus_block(block, window, cx));
+            window.press(super::UNDO, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    undo(cx);
+    assert_eq!(items_of(&ws, cx, list).len(), 2, "Ship and Tag gone");
+    assert!(items_of(&ws, cx, list)[1].1);
+    undo(cx);
+    assert!(!items_of(&ws, cx, list)[1].1, "unchecked");
+}
+
+/// Review focus: an agent's change while the person edits an item keeps the field (its text and
+/// caret), shows the new items under it, and the person's typing after it is its own step.
+#[gpui_kit::test]
+fn add_items_while_the_person_edits_keeps_their_field(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, block, uid, list, build, _) = wired_checklist(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.edit_field(block, crate::checklist::Field::Item(build), window, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let input = ws.read_with(cx, |ws, _| {
+        let c = ws.space.blocks[&block].checklist().unwrap();
+        c.editing.as_ref().unwrap().input.clone()
+    });
+    cx.simulate_input(handle, "!");
+    input.update(cx, |i, cx| i.set_selected_range(2..2, cx));
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "add_items",
+        json!({ "block": uid, "text": "Ship" }),
+    );
+    assert!(!failed, "{text}");
+    input.read_with(cx, |i, _| {
+        assert_eq!(i.value().as_ref(), "Build!");
+        assert_eq!(i.cursor(), 2);
+    });
+    let texts = |cx: &mut TestAppContext| {
+        items_of(&ws, cx, list)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(texts(cx), ["Build!", "Run the tests", "Ship"]);
+    // Typed after the agent's change: a step of its own, taken back before the agent's.
+    input.update(cx, |i, cx| {
+        let end = i.value().len();
+        i.set_selected_range(end..end, cx)
+    });
+    cx.simulate_input(handle, "?");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        ws.update(cx, |ws, cx| ws.focus_block(block, window, cx));
+        window.press(super::UNDO, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(texts(cx), ["Build!", "Run the tests", "Ship"]);
 }

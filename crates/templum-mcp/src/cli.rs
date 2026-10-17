@@ -26,6 +26,7 @@ const VERBS: &[&str] = &[
     "spawn",
     "kanban",
     "note",
+    "checklist",
     "open",
     "wire",
     "keys",
@@ -44,6 +45,8 @@ const KANBAN: &str = "kanban list [<board>] [--card <card>] | add <title> [--col
                       [--description <text>] [--board <board>] | move <card> <column> | comment <card> <text> \
                       | claim <card> [--json]";
 const NOTE: &str = "note read <block> | note append <block> <text> [--json]";
+const CHECKLIST: &str = "checklist read <block> | add <block> <text> | check <block> <item> \
+                         | uncheck <block> <item> [--json]";
 
 pub fn is_verb(arg: &str) -> bool {
     VERBS.contains(&arg)
@@ -286,6 +289,18 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
             "append_note",
             json!({ "block": block, "text": text.join(" ") }),
         ),
+        ("checklist", ["read", block]) => ("read_checklist", json!({ "block": block })),
+        ("checklist", ["add", block, text @ ..]) if !text.is_empty() => (
+            "add_items",
+            json!({ "block": block, "text": text.join(" ") }),
+        ),
+        ("checklist", ["check", block, item]) => {
+            ("check_item", json!({ "block": block, "item": item }))
+        }
+        ("checklist", ["uncheck", block, item]) => (
+            "check_item",
+            json!({ "block": block, "item": item, "done": false }),
+        ),
         ("open", [target]) => {
             // `path:line`, or `path:line:column` as compilers and grep print it (the column is
             // dropped); a Windows drive's `C:` is part of the path.
@@ -322,6 +337,7 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("wait", _) => return Err(WAIT),
         ("kanban", _) => return Err(KANBAN),
         ("note", _) => return Err(NOTE),
+        ("checklist", _) => return Err(CHECKLIST),
         ("open", _) => return Err("open <path>[:<line>] [--json]"),
         ("wire", _) => return Err(WIRE),
         ("keys", _) => return Err(KEYS),
@@ -846,6 +862,7 @@ mod tests {
         assert!(is_verb("wire"));
         assert!(is_verb("keys") && is_verb("interrupt") && is_verb("close"));
         assert!(is_verb("kanban") && is_verb("note") && is_verb("open"));
+        assert!(is_verb("checklist"));
         assert!(!is_verb("git"));
         assert!(!is_verb("--bench") && !is_verb("--claude-statusline") && !is_verb(""));
     }
@@ -968,6 +985,22 @@ mod tests {
                 json!({ "name": "append_note", "arguments": { "block": "4qm2a", "text": "Next: tests" } }),
             ),
             (
+                &["checklist", "read", "4qm2a"][..],
+                json!({ "name": "read_checklist", "arguments": { "block": "4qm2a" } }),
+            ),
+            (
+                &["checklist", "add", "4qm2a", "Run", "tests"][..],
+                json!({ "name": "add_items", "arguments": { "block": "4qm2a", "text": "Run tests" } }),
+            ),
+            (
+                &["checklist", "check", "4qm2a", "13"][..],
+                json!({ "name": "check_item", "arguments": { "block": "4qm2a", "item": "13" } }),
+            ),
+            (
+                &["checklist", "uncheck", "4qm2a", "13"][..],
+                json!({ "name": "check_item", "arguments": { "block": "4qm2a", "item": "13", "done": false } }),
+            ),
+            (
                 &["open", "src/main.rs:12"][..],
                 json!({ "name": "open_file", "arguments": { "path": at("src/main.rs"), "line": 12 } }),
             ),
@@ -1001,6 +1034,14 @@ mod tests {
             (&["kanban", "move", "12"][..], "usage: templum kanban"),
             (&["kanban", "list", "--card"][..], "usage: templum kanban"),
             (&["note", "append", "4qm2a"][..], "usage: templum note"),
+            (
+                &["checklist", "add", "4qm2a"][..],
+                "usage: templum checklist",
+            ),
+            (
+                &["checklist", "check", "4qm2a"][..],
+                "usage: templum checklist",
+            ),
             (&["open"][..], "usage: templum open"),
         ] {
             let (code, _, err) = run_with(args, &env(&bus), "");

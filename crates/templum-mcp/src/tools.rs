@@ -99,6 +99,18 @@ pub enum Call {
         block: String,
         text: String,
     },
+    ReadChecklist {
+        block: String,
+    },
+    CheckItem {
+        block: String,
+        item: u64,
+        done: bool,
+    },
+    AddItems {
+        block: String,
+        text: String,
+    },
     OpenFile {
         path: String,
         line: Option<u32>,
@@ -456,6 +468,37 @@ pub fn list() -> Value {
             },
         },
         {
+            "name": "read_checklist",
+            "description": "The checklist a checklist block connected to you shows: its name and progress, \
+                            then each item's id, [x] or [ ], and text.",
+            "inputSchema": { "type": "object", "properties": { "block": block }, "required": ["block"] },
+        },
+        {
+            "name": "check_item",
+            "description": "Checks an item of the checklist a checklist block connected to you shows; \
+                            unchecks it with done false.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "block": block,
+                    "item": { "type": "integer", "description": "An item's id, as read_checklist shows it." },
+                    "done": { "type": "boolean", "default": true },
+                },
+                "required": ["block", "item"],
+            },
+        },
+        {
+            "name": "add_items",
+            "description": "Adds items at the end of the checklist a checklist block connected to you shows: \
+                            one per line with text; a leading - or *, then [ ] or [x], is dropped ([x] adds it \
+                            checked). The person sees them at once and can take them back.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "block": block, "text": { "type": "string" } },
+                "required": ["block", "text"],
+            },
+        },
+        {
             "name": "open_file",
             "description": "Shows a file, at a line, in the editor connected to you whose folder holds it; with \
                             none, in a new editor beside your block, connected to you. The person's keyboard and \
@@ -558,8 +601,9 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
         Value::String(s) => Ok(Some(s.trim().to_string()).filter(|s| !s.is_empty())),
         _ => Err(format!("\"{key}\" is a name or an id")),
     };
-    let id = |key: &str| -> Result<Option<u64>, String> {
-        let bad = || format!("\"{key}\" is an id, as list_cards shows it");
+    // `shown_by`: the tool that lists them.
+    let id = |key: &str, shown_by: &str| -> Result<Option<u64>, String> {
+        let bad = || format!("\"{key}\" is an id, as {shown_by} shows it");
         match &args[key] {
             Value::Null => Ok(None),
             Value::Number(n) => n.as_u64().map(Some).ok_or_else(bad),
@@ -567,7 +611,8 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             _ => Err(bad()),
         }
     };
-    let card = || id("card")?.ok_or_else(|| format!("{name} needs \"card\", a card's id"));
+    let card =
+        || id("card", "list_cards")?.ok_or_else(|| format!("{name} needs \"card\", a card's id"));
     Ok(match name {
         "whoami" => Call::Whoami,
         "list_blocks" => Call::ListBlocks,
@@ -647,7 +692,7 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
         }),
         "list_cards" => Call::ListCards {
             board: named("board")?,
-            card: id("card")?,
+            card: id("card", "list_cards")?,
         },
         "create_card" => Call::CreateCard {
             board: named("board")?,
@@ -669,6 +714,24 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             block: text("block")?,
         },
         "append_note" => Call::AppendNote {
+            block: text("block")?,
+            text: text("text")?,
+        },
+        "read_checklist" => Call::ReadChecklist {
+            block: text("block")?,
+        },
+        "check_item" => Call::CheckItem {
+            block: text("block")?,
+            item: id("item", "read_checklist")?
+                .ok_or_else(|| format!("{name} needs \"item\", an item's id"))?,
+            done: match &args["done"] {
+                Value::Null => true,
+                value => value
+                    .as_bool()
+                    .ok_or_else(|| "\"done\" is true or false".to_string())?,
+            },
+        },
+        "add_items" => Call::AddItems {
             block: text("block")?,
             text: text("text")?,
         },
@@ -785,6 +848,15 @@ mod tests {
             (
                 "append_note",
                 json!({ "block": "4qm2a", "text": "Next: the tests." }),
+            ),
+            ("read_checklist", json!({ "block": "4qm2a" })),
+            (
+                "check_item",
+                json!({ "block": "4qm2a", "item": 13, "done": false }),
+            ),
+            (
+                "add_items",
+                json!({ "block": "4qm2a", "text": "- [ ] Build\n- [ ] Test" }),
             ),
             ("open_file", json!({ "path": "src/main.rs", "line": 12 })),
             (
@@ -1162,5 +1234,24 @@ mod tests {
         }
         let err = parse("move_card", &json!({ "column": "Doing" })).unwrap_err();
         assert!(err.contains("\"card\""), "{err}");
+        assert_eq!(
+            parse("check_item", &json!({ "block": "c", "item": "13" })),
+            Ok(Call::CheckItem {
+                block: "c".into(),
+                item: 13,
+                done: true
+            })
+        );
+        for bad in [
+            json!({ "block": "c" }),
+            json!({ "block": "c", "item": "x" }),
+            json!({ "item": 1 }),
+            json!({ "block": "c", "item": 1, "done": "no" }),
+        ] {
+            assert!(parse("check_item", &bad).is_err(), "{bad}");
+        }
+        let err = parse("check_item", &json!({ "block": "c", "item": "x" })).unwrap_err();
+        assert!(err.contains("read_checklist"), "{err}");
+        assert!(parse("add_items", &json!({ "block": "c" })).is_err());
     }
 }

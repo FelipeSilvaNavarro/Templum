@@ -475,6 +475,24 @@ impl Workspace {
         cx.notify();
     }
 
+    /// An agent changed checklist `list`: what the person types next in its field is a step of its
+    /// own, taken back before the agent's change.
+    pub(super) fn agent_changed(&mut self, list: u64) {
+        let Some((space, block)) = self.checklist_open_at(list) else {
+            return;
+        };
+        let space = space.id.clone();
+        if let Some(editing) = self
+            .space_by_id_mut(&space)
+            .and_then(|s| s.blocks.get_mut(&block))
+            .and_then(Body::checklist_mut)
+            .and_then(|c| c.editing.as_mut())
+            .filter(|e| e.list == list)
+        {
+            editing.kept = false;
+        }
+    }
+
     /// The check box: checks item `item` of checklist `list`, or unchecks it.
     pub(crate) fn toggle_item(&mut self, list: u64, item: u64, cx: &mut Context<Self>) {
         self.edit_checklist(list, |c| {

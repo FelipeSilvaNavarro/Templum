@@ -9,7 +9,6 @@ mod bench;
 mod block;
 mod board;
 mod checklist;
-#[allow(dead_code)] // Until the plan docs/plans/2026-10-17-checklist.md uses all of it (Task 7).
 mod checklists;
 mod config;
 mod editor;

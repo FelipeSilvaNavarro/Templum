@@ -640,7 +640,7 @@ git commit -m "feat(checklist): drag checklist items to reorder them"
   `Call::AddItems { block: String, text: String }`; `Workspace::{read_checklist, check_item, add_items}` in
   `content.rs`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 `tools.rs`: in `every_tool_listed_parses_its_example`, after `append_note`: `("read_checklist", json!({ "block":
 "4qm2a" }))`, `("check_item", json!({ "block": "4qm2a", "item": 13, "done": false }))`, `("add_items", json!({
@@ -687,12 +687,12 @@ fn add_items_while_the_person_edits_keeps_their_field(cx: &mut TestAppContext) {
 and `read_checklist`, `check_item`, `add_items` added to `the_content_tools_are_refused_without_a_wire`, and the
 instructions test checking "check the items of a connected checklist as you finish them".
 
-- [ ] **Step 2: Run them to see them fail**
+- [x] **Step 2: Run them to see them fail**
 
 Run: `cargo test -p templum-mcp && cargo test -p templum content::`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 - `tools.rs`: the three entries after `append_note` (`item`: `{ "type": "integer", "description": "An item's id, as
   read_checklist shows it." }`; `done`: boolean, default true); descriptions "The checklist a checklist block connected
@@ -710,12 +710,12 @@ Expected: FAIL.
 - `bus.rs`: dispatch; the instructions' sentence becomes "…write what the next agent needs to know in the connected
   note, and check the items of a connected checklist as you finish them. A task you hand over…".
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test --workspace`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A crates
