@@ -52,6 +52,10 @@ uuid = { version = "1", features = ["v4"] }
 gpui-kit = { version = "=0.7.3", features = ["test-support"] }
 tempfile = "3"
 
+# Already in the tree (GPUI's): the Windows executable's icon (build.rs).
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
+
 [lints]
 workspace = true
 
@@ -60,4 +64,9 @@ workspace = true
 product-name = "Templum"
 identifier = "io.github.kingdaswinx.templum"
 category = "DeveloperTool"
-icons = ["icons/*.png"]
+# PNGs for Linux (hicolor; 16 to 48 are the logo drawn for small sizes), the .icns for macOS, the
+# .ico for the .msi. templum.exe carries it too (build.rs), and so do the shortcuts made to it.
+icons = ["icons/*.png", "icons/templum.icns", "icons/templum.ico"]
+
+[package.metadata.packager.nsis]
+installer-icon = "icons/templum.ico"

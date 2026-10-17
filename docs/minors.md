@@ -198,6 +198,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   the UI of the same feature: 726079b with c7e13c6 (hunks), 1d5bc9a with cb26cfd (the trash), efdd911 with 6362120
   (commit all, undo commit). Fix: edit the generated section at the next release so each feature reads once.
   Batch 6's `fix(git)` commit after its review fixes Generate ✨ before any release: drop it from the section too.
+- [ ] **templum.exe may run without a Windows manifest.** gpui-kit turns on gpui-fast's
+  `windows-manifest-provided-by-host`, so GPUI embeds none, and Templum's resources (`crates/templum/icons/templum.rc`)
+  carry only the icon. Without one Windows may treat Templum as not aware of each monitor's DPI and scale its window
+  as a bitmap (blurry on a 150% display). Check on Windows: Task Manager ▸ Details ▸ the "DPI awareness" column. Fix:
+  add `1 RT_MANIFEST "templum.manifest.xml"` to the `.rc`, with gpui-fast's `resources/windows/gpui.manifest.xml`
+  (Apache-2.0) beside it.
 - [ ] **`--bench-zoom=git` measures an empty panel.** It runs from `~/Documents/github/DaemonQuest`, whose tree is
   usually clean, so the Git blocks it zooms show "Nothing changed since the last commit". `--bench-git` covers a full
   diff; for the zoom, leave a few files changed in that folder before running it, or note the state with the result.

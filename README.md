@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="crates/templum/icons/icon-dark.svg">
+    <img src="crates/templum/icons/icon.svg" width="128" height="128" alt="">
+  </picture>
+</p>
+
 # Templum
 
 An infinite canvas of terminals. Spawn as many terminals as you like, place them anywhere,
