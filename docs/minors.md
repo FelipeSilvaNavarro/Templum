@@ -1017,3 +1017,10 @@ Left by batch 8 and its review; line numbers are those of `development` at c51be
   the task's end, the answer goes to a call nobody reads, and a person sees nothing typed into the asker. Fix: check
   it by hand (`delegate` with `wait` on a `sleep 150` task, the `[task …]` comes back typed); if the cancel never
   comes, drop a wait whose client went away (its MCP connection's request id answered or abandoned).
+
+Left by the ask_user dialog (kanban card 29).
+
+- [ ] **A long question scrolls the dialog's "Waiting for your answer" out of view.** The whole dialog scrolls
+  (`crates/templum/src/balloon.rs`), its first line too: a person who scrolls down a long question or many options
+  no longer sees that the agent waits (the block's dot still says so). Fix: keep the first line out of the scrolled
+  part (a column with the line, then a `min_h_0` part that scrolls), checked by hand that taffy shrinks it.

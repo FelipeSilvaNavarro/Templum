@@ -8,6 +8,7 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Entity, Focusable as _, Subscription, Window};
 use serde_json::Value;
+use templum_canvas::Level;
 use templum_mcp::tools::Event;
 use templum_mcp::{Replier, Reply, tools};
 
@@ -382,15 +383,21 @@ impl Workspace {
             .map(|w| w.from.as_str())
     }
 
-    /// The person isn't looking at the asking block (it is in another workspace, outside the
-    /// view, or hidden by grid mode): a notification says what it asks; clicking it shows the
-    /// block.
+    /// The person doesn't see the asking block's dialog (the block is in another workspace,
+    /// outside the view, hidden by grid mode, or too small on screen for its dialog to be drawn,
+    /// or the window is in the background): a notification says what it asks; clicking it shows
+    /// the block.
     fn tell_asking(&self, wait: &Wait, window: &mut Window, cx: &mut Context<Self>) {
         let Some((space_id, me)) = self.caller(&wait.from) else {
             return;
         };
-        let shown = space_id == self.space.id
+        // As `block::render` draws it: in full, or worked in.
+        let full = self.space.focused == Some(me)
+            || templum_canvas::level(self.cell.font_size, self.space.rest) == Level::Full;
+        let shown = window.is_window_active()
+            && space_id == self.space.id
             && self.space.shown(me)
+            && full
             && self
                 .space
                 .canvas

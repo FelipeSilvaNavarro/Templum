@@ -122,16 +122,21 @@ later starts with none.
 
 - **Notify:** a notification titled with the block's title, the agent's text as its message; clicking it reveals the
   block. In the background it is a system notification, as a terminal's are.
-- **A question** (`ask_user`) and **a request to connect** (`connect`) open a **balloon** on the asking block's top
-  right corner, over its terminal, at the Full level of detail:
-  - a question shows its text and a button per option, or a text field and **Send** when it has none;
+- **A question** (`ask_user`) and **a request to connect** (`connect`) open a **balloon** on the asking block, at the
+  Full level of detail: a dialog centered on its terminal (under the title bar), 80% of its width and at most 80% of
+  its height, its sizes the block's at the zoom, so it scales like a photo; past that height it scrolls, the wheel
+  over it scrolling it and not the terminal (with Ctrl it zooms the canvas). A yellow frame and a first line, a
+  yellow dot and "Waiting for your answer", say the agent waits for the person, in the yellow of the block's dot:
+  - a question shows its text whole and a button per option, each on its own lines and whole, or a text field and
+    **Send** when it has none;
   - a request to connect says "*Claude Code · api* wants to connect to *Dev server*" with **Allow** and **Deny**;
     Allow wires them;
   - a request for a block already wired is answered at once; Allow is a step of Ctrl+Z, as wiring by hand is;
   - several requests from one block wait in turn: the balloon shows the oldest, with "1 of 3";
   - while the balloon's field has the keyboard, no key reaches the terminal;
-  - when the block isn't on screen (another workspace, outside the view, or hidden by grid mode), a notification says
-    what the agent asks; clicking it reveals the block;
+  - when the person doesn't see the balloon (the block is in another workspace, outside the view, hidden by grid mode,
+    or too small on screen for the Full level and not focused, or the window is in the background), a notification
+    says what the agent asks, also the system's in the background; clicking it reveals the block;
   - the block's dot shows it waiting for the person (yellow, "Waiting for you: *the question*"), at every level;
   - a request no one answers is withdrawn after its timeout (30 minutes unless the agent asked for another), and the
     agent is told so; closing the block withdraws its requests, and so does the agent leaving (its connection to

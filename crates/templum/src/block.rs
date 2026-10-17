@@ -681,7 +681,7 @@ pub(crate) fn render(
         .when(hovered && !tiled, |el| {
             el.child(fade_in(handle, ("handle-fade", n)))
         })
-        // What its agent asks the person, over the terminal's top right corner, up close only.
+        // What its agent asks the person, a dialog centered on the terminal, up close only.
         .children(match body {
             Body::Terminal(pane) if live && level == Level::Full => {
                 crate::balloon::render(ws, id, pane.term.id(), z, cx)
