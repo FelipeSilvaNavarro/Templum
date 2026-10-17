@@ -137,8 +137,9 @@ impl Workspace {
             Waiting::Question { .. } | Waiting::Connect { .. }
         ) {
             self.tell_asking(&wait, window, cx);
-            // Its block waits for its person now.
-            self.needs_you(&wait.from, Some(&wait.summary()), true, cx);
+            // Its block waits for its person now. The agent that handed it a task hears nothing:
+            // the person sees the balloon, and that agent can't answer it.
+            self.needs_you(&wait.from, Some(&wait.summary()), false, cx);
         }
         self.waits.push(wait);
         if looks {

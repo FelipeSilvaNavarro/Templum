@@ -944,13 +944,10 @@ Left by batch 8 and its review; line numbers are those of `development` at c51be
   in 31 s, 60231 tokens, transcript …]` and can't tell, nor can the asker, a task that ran 40 commands from one
   answered at once without opening its transcript. Fix: count `Working` events (each tool's end) on `Handed` from the
   hand-over, and say them (`, 40 tools`).
-- [ ] **A task past its timeout that another agent takes over never comes back.** Its notice said "its end comes back
-  too", but `delegate` (`delegate.rs`) lets another agent hand that agent a task once the deadline passed, replacing
-  `handed`; the first asker never hears. Fix: when replacing a timed-out task of another asker, tell that asker it
+- [ ] **A task past its timeout that another agent takes over never comes back.** Its asker waits for its end, but
+  `delegate` (`delegate.rs`) lets another agent hand that agent a task once the deadline passed, replacing `handed`;
+  the first asker never hears. Fix: when replacing a timed-out task of another asker, tell that asker it
   failed ("{uid} took another agent's task").
-- [ ] **A waited task whose call its client dropped has its timeout told by no one.** `time_out` runs only for a task
-  handed without `wait`; Claude Code stops waiting on a call past 2 minutes, and a task that then hangs is never
-  said to have timed out (its end still comes). Fix: arm the timer for every task, telling only when no call waits.
 - [ ] **A notice reaches an asker inside another tool call only once that call returns.** Claude Code and Codex queue
   typed text while a tool runs (batch 7's S2, S3): an asker waiting on `delegate` with `wait` to another agent, or
   on `ask_user`, reads a notice of another task late. A person sees the asker answer it minutes after it was typed.

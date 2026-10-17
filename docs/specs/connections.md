@@ -181,7 +181,7 @@ later starts with none.
 7. A task stays handed over until its answer comes, the agent's session ends (or a snapshot no longer finds the agent
    it found before: Codex says nothing when it quits), its block closes, or its timeout passes (`delegate`'s, 600 s
    unless asked, also without `wait`). Past its timeout the agent that handed it over still waits for its answer
-   with `wait_for_idle`, and hears that it timed out (10); the wire's dot stops, and another agent may hand it a
+   with `wait_for_idle`, and its end still comes back (10); the wire's dot stops, and another agent may hand it a
    task.
 8. `reply` with no call waiting types `[reply from <title> (<id>)]` and the text, then Enter, into the agent named;
    never into a terminal running no agent, or an agent no snapshot has found yet. From batch 7 the first line goes as
@@ -200,19 +200,22 @@ later starts with none.
     `[task t7 from Codex · api (k9x1d): done in 31 s, 60231 tokens, transcript /…/rollout.jsonl] Its answer is in the
     pasted text.` and its answer on the lines after; `failed` instead of `done` and `What happened is in the pasted
     text.`, then why: it didn't take the task, its turn ended without an answer (an error, an Esc), its agent left,
-    its block closed, or it gave no answer within its timeout (it may still work: a later end comes too). What it
+    or its block closed. What it
     spent is what its usage chip shows ([usage.md](usage.md)), since the task was handed over: Claude Code's cost
     (`$0.42`, with its status line, whose token totals are its last call's context, not what it used: batch 8's
     spikes), Codex's tokens; a session's first task (a spawned agent's, or one handed before Templum read any figure of
-    it) counts it whole; nothing when unknown or when nothing new was read (a timeout's notice before its agent wrote a
-    figure), never `0 tokens`. Templum reads it again a second after the end (Claude Code's status line gives its last
-    cost about 0.3 s after its `Stop`), and the notice goes then. The transcript is the one its agent's last turn's end
-    named (`transcript_path`). A task whose agent starts waiting for its person (a hook says so while it wasn't waiting
-    already, its balloon asks, or it seems stuck) sends `[task t7 from Codex · api (k9x1d) waits for its person: Allow
+    it) counts it whole; nothing when unknown or when nothing new was read, never `0 tokens`. Templum reads it again a
+    second after the end (Claude Code's status line gives its last cost about 0.3 s after its `Stop`), and the notice
+    goes then. The transcript is the one its agent's last turn's end
+    named (`transcript_path`). Besides its end, only a task that gets stuck comes back: its agent starts waiting for its
+    person in its terminal (a hook says so, a permission or another dialog, while it wasn't waiting already), or it
+    seems stuck. It sends `[task t7 from Codex · api (k9x1d) waits for its person: Allow
     Bash?] Its screen is in the pasted text.` and the last 20 lines of its screen, as drawn (300 ms after its hook),
     once per wait; not while a call of the asker waits for the task, which hears its end, nor to an asker whose
-    `wait_for(needs_you)` hears it. A task's timeout is told by the asker's call that waits for it, else by a notice; a
-    task handed with `wait` gets no notice of its timeout. While the asker waits for its person, its agent is starting
+    `wait_for(needs_you)` hears it. Nothing else comes back, as noise the asker can't act on: not a question
+    its balloon asks (`ask_user`, `connect`: the person sees the balloon, and the asker can't answer it), nor its
+    timeout, which only the asker's call that waits for it tells (the agent may still work, and its end comes then).
+    While the asker waits for its person, its agent is starting
     (no snapshot found it yet), its person typed into it in the last 3 seconds, or Templum typed into it (a task, a
     reply, a notice) in the last 5.1 seconds (that text's Enter, up to 2 s after it, and a second one 3 seconds later,
     may still be due), a notice waits, oldest first. Into a terminal whose agent is gone (its shell is in front, as when
@@ -748,9 +751,9 @@ answer and no notice, one its client cancelled gets the notice; a notice waits w
 starting or its person types, goes at least 5.1 s after anything Templum typed into the same agent, oldest first, and
 never goes into a shell (also when its agent quit while it waited); a task whose agent left or whose block closed comes
 back as failed, one its asker interrupts or closes doesn't; a dialog in a task is told once per wait, seeming stuck too,
-and not while a call waits for the task; a change from the asker goes into its task and restarts its timeout, none goes
-before a spawn's prompt, and another agent is still refused; a task past its timeout comes back as failed, and its later
-end too; a task handed with `wait` gets no notice of its timeout.
+and not while a call waits for the task, and a balloon isn't told; a change from the asker goes into its task and
+restarts its timeout, none goes before a spawn's prompt, and another agent is still refused; a task past its timeout
+comes back only at its end; a task handed with `wait` gets no notice of its timeout.
 
 **Manual (Hyprland):** Claude Code from the menu: `/mcp` lists `templum` connected, "list the blocks" and "read the
 last 30 lines of the dev server" work, the dot follows its turns and a permission prompt; Codex: `/mcp` lists it;
