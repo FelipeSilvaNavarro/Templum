@@ -479,23 +479,24 @@ impl Workspace {
                 .and_then(|l| l.item(item))
                 .is_some_and(|i| i.text.trim().is_empty())
         };
-        if let Field::Item(item) = editing.field
-            && blank(item, &self.checklists)
-        {
-            self.checklists.remove_item(list, item, notes::now());
-            // Nor in the steps taken while it was edited (an agent's change): undo never brings
-            // back an empty row. A step where it still had text keeps it.
+        if let Field::Item(item) = editing.field {
+            // An item is empty in a step only while it was edited (an agent's change, the key
+            // typed after it): there it goes, so undo never brings back an empty row. A step
+            // where it still had text keeps it.
             for step in self.checklists_undo.iter_mut().filter(|s| s.id == list) {
                 step.items
                     .retain(|i| i.id != item || !i.text.trim().is_empty());
             }
-            // Back as it was before the step: the step was only that item.
-            if let (Some(step), Some(now)) =
-                (self.checklists_undo.last(), self.checklists.get(list))
-                && same(step, now)
-                && let Some(step) = self.checklists_undo.pop()
-            {
-                self.checklists.restore(step);
+            if blank(item, &self.checklists) {
+                self.checklists.remove_item(list, item, notes::now());
+                // Back as it was before the step: the step was only that item.
+                if let (Some(step), Some(now)) =
+                    (self.checklists_undo.last(), self.checklists.get(list))
+                    && same(step, now)
+                    && let Some(step) = self.checklists_undo.pop()
+                {
+                    self.checklists.restore(step);
+                }
             }
         }
         cx.notify();

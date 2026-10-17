@@ -1040,3 +1040,49 @@ fn undoing_an_agents_add_during_a_new_items_edit_brings_back_no_empty_item(
         "the new item's own step changes nothing now: skipped"
     );
 }
+
+/// A new item typed in after an agent's change while it was empty: Ctrl+Z takes back the typing
+/// and the agent's change without an empty row nobody edits.
+#[gpui_kit::test]
+fn undoing_typing_after_an_agents_add_brings_back_no_empty_item(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, block, uid, list, _, _) = wired_checklist(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.add_item_after(block, list, None, window, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "add_items",
+        json!({ "block": uid, "text": "Ship" }),
+    );
+    assert!(!failed, "{text}");
+    cx.simulate_input(handle, "abc");
+    let texts = |cx: &mut TestAppContext| {
+        items_of(&ws, cx, list)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(texts(cx), ["Build", "Run the tests", "abc", "Ship"]);
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        ws.update(cx, |ws, cx| ws.focus_block(block, window, cx));
+        window.press(super::UNDO, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(texts(cx), ["Build", "Run the tests", "Ship"]);
+    cx.update_window(handle, |_, window, cx| {
+        window.press(super::UNDO, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(texts(cx), ["Build", "Run the tests"]);
+}
