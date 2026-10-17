@@ -239,6 +239,14 @@ impl Workspace {
     /// was deleted since is skipped. False: nothing to undo.
     pub(super) fn undo_checklists(&mut self, cx: &mut Context<Self>) -> bool {
         while let Some(before) = self.checklists_undo.pop() {
+            // A step that would change nothing (its item left empty went since) is skipped too.
+            if self
+                .checklists
+                .get(before.id)
+                .is_some_and(|now| same(now, &before))
+            {
+                continue;
+            }
             if self.checklists.restore(before) {
                 cx.notify();
                 return true;
@@ -475,10 +483,13 @@ impl Workspace {
             && blank(item, &self.checklists)
         {
             self.checklists.remove_item(list, item, notes::now());
+            // Nor in the steps taken while it was edited (an agent's change): undo never brings
+            // back an empty row. A step where it still had text keeps it.
+            for step in self.checklists_undo.iter_mut().filter(|s| s.id == list) {
+                step.items
+                    .retain(|i| i.id != item || !i.text.trim().is_empty());
+            }
             // Back as it was before the step: the step was only that item.
-            let same = |a: &crate::checklists::List, b: &crate::checklists::List| {
-                a.id == b.id && a.name == b.name && a.items == b.items
-            };
             if let (Some(step), Some(now)) =
                 (self.checklists_undo.last(), self.checklists.get(list))
                 && same(step, now)
@@ -525,4 +536,9 @@ impl Workspace {
         self.edit_checklist(list, |c| c.remove_item(list, item, notes::now()));
         cx.notify();
     }
+}
+
+/// Lists `a` and `b` are the same but for when they changed.
+fn same(a: &crate::checklists::List, b: &crate::checklists::List) -> bool {
+    a.id == b.id && a.name == b.name && a.items == b.items
 }

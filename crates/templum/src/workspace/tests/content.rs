@@ -998,3 +998,45 @@ fn add_items_while_the_person_edits_keeps_their_field(cx: &mut TestAppContext) {
     .unwrap();
     assert_eq!(texts(cx), ["Build!", "Run the tests", "Ship"]);
 }
+
+/// A new item left empty goes from the undo steps an agent's change took while it was edited:
+/// Ctrl+Z never brings back an empty row nobody edits.
+#[gpui_kit::test]
+fn undoing_an_agents_add_during_a_new_items_edit_brings_back_no_empty_item(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let (me, block, uid, list, _, _) = wired_checklist(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.add_item_after(block, list, None, window, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "add_items",
+        json!({ "block": uid, "text": "Ship" }),
+    );
+    assert!(!failed, "{text}");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        ws.update(cx, |ws, cx| ws.focus_block(block, window, cx));
+        window.press(super::UNDO, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let texts: Vec<_> = items_of(&ws, cx, list)
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+    assert_eq!(texts, ["Build", "Run the tests"]);
+    assert!(
+        !ws.update(cx, |ws, cx| ws.undo_checklists(cx)),
+        "the new item's own step changes nothing now: skipped"
+    );
+}
