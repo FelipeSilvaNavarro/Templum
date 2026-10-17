@@ -70,6 +70,11 @@ fn main() {
     let zoom = std::env::args().find_map(|a| a.strip_prefix("--bench-zoom=").map(str::to_string));
     let git = std::env::args().any(|a| a == "--bench-git");
     let bench = mixed || far || zoom.is_some() || git || std::env::args().any(|a| a == "--bench");
+    // The agents installed where only .bashrc or .zshrc put them.
+    #[cfg(unix)]
+    if !bench {
+        templum_terminal::read_shell_path();
+    }
     gpui_kit::application()
         // Every Lucide icon, by name: the toolbar and the notes use ones outside the default set.
         .with_assets(gpui_kit::assets::AllAssets)

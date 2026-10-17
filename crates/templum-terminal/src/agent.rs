@@ -588,11 +588,66 @@ fn expand(text: &str, var: impl Fn(&str) -> Option<String>) -> String {
     out
 }
 
-/// PATH (as [`path_var`] reads it), then the usual per-user install folders.
+/// The folders of the user's shell's PATH, once [`read_shell_path`] has read them.
+#[cfg(unix)]
+static SHELL_PATH: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+
+/// Reads, on a thread of its own, the PATH the user's shell sets up, for [`installed`]: an app
+/// started from a desktop menu or the Dock gets the session's, without what .bashrc or .zshrc
+/// add. Once, when Templum starts.
+#[cfg(unix)]
+pub fn read_shell_path() {
+    std::thread::spawn(|| {
+        let path = std::env::var("SHELL").ok().and_then(|s| shell_path(&s));
+        let _ = SHELL_PATH.set(path.iter().flat_map(std::env::split_paths).collect());
+    });
+}
+
+/// Printed before the PATH, to find it among what the shell's startup files print.
+#[cfg(unix)]
+const PATH_MARK: &str = "__TEMPLUM_PATH__";
+
+/// The PATH of `shell` started as a terminal starts it (login, interactive). None when it
+/// fails or takes over 5 seconds (a startup file waiting on a terminal).
+#[cfg(unix)]
+fn shell_path(shell: &str) -> Option<String> {
+    use std::io::BufRead as _;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(shell)
+        .args(["-l", "-i", "-c"])
+        .arg(format!("printf '\\n{PATH_MARK}%s\\n' \"$PATH\""))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    // Up to the mark, not to the end: a program the startup files leave running (an agent, a
+    // daemon) keeps the output open.
+    std::thread::spawn(move || {
+        let path = std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+            .find_map(|line| line.strip_prefix(PATH_MARK).map(str::to_string));
+        let _ = tx.send(path);
+    });
+    let path = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .ok()
+        .flatten();
+    let _ = child.kill();
+    let _ = child.wait();
+    path
+}
+
+/// PATH (as [`path_var`] reads it), the shell's, then the usual per-user install folders.
 fn program_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = path_var()
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
+    #[cfg(unix)]
+    dirs.extend(SHELL_PATH.get().into_iter().flatten().cloned());
     if let Some(home) = std::env::home_dir() {
         for sub in [
             ".local/bin",
@@ -1011,5 +1066,24 @@ mod tests {
                 r"C:\Launcher\bin",
             ]
         );
+    }
+
+    /// The PATH the shell's startup files set is read past what they print.
+    #[cfg(unix)]
+    #[test]
+    fn shell_path_reads_past_what_startup_files_print() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let shell = d.path().join("fakesh");
+        // Run as `fakesh -l -i -c <command>`, like a login shell reading its .bashrc.
+        std::fs::write(
+            &shell,
+            "#!/bin/sh\necho Welcome back\nPATH=/from/rc:$PATH\nexport PATH\neval \"$4\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = shell_path(&shell.to_string_lossy()).unwrap();
+        assert!(path.starts_with("/from/rc:"), "{path}");
+        assert_eq!(shell_path("/no/such/shell"), None);
     }
 }
