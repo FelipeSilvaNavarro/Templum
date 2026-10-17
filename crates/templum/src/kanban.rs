@@ -64,12 +64,13 @@ struct ColumnDrag {
     column: u64,
 }
 
-/// What follows the pointer while dragging: the card or column's title, at the canvas's zoom.
-struct DragPreview {
-    text: SharedString,
-    width: f32,
-    z: f32,
-    ui: Ui,
+/// What follows the pointer while dragging: the card or column's title (a checklist's item), at
+/// the canvas's zoom.
+pub(crate) struct DragPreview {
+    pub text: SharedString,
+    pub width: f32,
+    pub z: f32,
+    pub ui: Ui,
 }
 
 impl Render for DragPreview {

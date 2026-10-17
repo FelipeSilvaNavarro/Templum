@@ -768,6 +768,11 @@ impl Workspace {
     }
 
     pub(crate) fn focus_block(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+        // The block that had the keyboard loses it: its checklist field stops. GPUI's blur would
+        // say so too, but only to a field drawn again since it took the keyboard.
+        if let Some(had) = self.space.focused {
+            self.stop_editing(had, window, cx);
+        }
         self.space.pristine = false;
         self.space.canvas.raise(id);
         self.space.focused = Some(id);

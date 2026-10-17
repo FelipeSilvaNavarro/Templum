@@ -11,9 +11,10 @@ use gpui_kit::{
     AnyElement, App, ClickEvent, Context, ElementId, Entity, Focusable as _, FontWeight,
     MouseButton, ScrollWheelEvent, SharedString, TestSupportExt, Window, div, px, relative,
 };
-use templum_canvas::{BlockId, Size};
+use templum_canvas::{BlockId, Size, chrome};
 
 use crate::checklists::{self, List};
+use crate::kanban::DragPreview;
 use crate::list_dialog;
 use crate::note;
 use crate::notes;
@@ -44,6 +45,12 @@ pub(crate) struct Editing {
     pub input: Entity<InputState>,
     /// Its typing is an undo step already: the first key took it (or the add it came with).
     pub kept: bool,
+}
+
+/// An item being dragged, by its checklist and its id.
+struct ItemDrag {
+    list: u64,
+    item: u64,
 }
 
 /// What a field edits.
@@ -170,6 +177,7 @@ fn list_view(
         .hover(move |s| s.text_color(ui.title))
         .child(Icon::new(IconName::Plus).size(px(BOX * z)))
         .child("Add an item")
+        .drag_over::<ItemDrag>(move |s, _, _, _| s.text_color(ui.accent))
         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
             ws.add_item_after(block, id, None, window, cx)
         }))
@@ -204,8 +212,26 @@ fn list_view(
         )
         .children(rows)
         .child(add)
+        // Dropped on the list's empty space or on + Add an item: at the end.
+        .on_drop(cx.listener(move |ws, drag: &ItemDrag, _, cx| move_item(ws, id, drag, None, cx)))
         .test_support()
         .into_any_element()
+}
+
+/// A dropped item goes in the place of item `before` (at the end: None); one of another
+/// checklist stays where it is.
+fn move_item(
+    ws: &mut Workspace,
+    list: u64,
+    drag: &ItemDrag,
+    before: Option<u64>,
+    cx: &mut Context<Workspace>,
+) {
+    if drag.list == list {
+        ws.edit_checklist(list, |c| c.move_item(list, drag.item, before, notes::now()));
+        cx.notify();
+    }
+    cx.stop_propagation();
 }
 
 /// An item's row: its check box, its text (struck through and dimmed once checked), and, under
@@ -220,6 +246,14 @@ fn row(
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let (ui, n, id, done) = (ws.ui, block.0 as usize, item.id, item.done);
+    // Dragged, it follows the pointer as wide as the rows.
+    let preview = SharedString::from(item.text.clone());
+    let width = ws
+        .space
+        .canvas
+        .get(block)
+        .map_or(0.0, |b| chrome::content_rect(b.rect).w - 24.0)
+        * z;
     let group = SharedString::from(format!("checklist-row-{n}-{id}"));
     // The box sits on the text's first line.
     let line = FONT * 1.5;
@@ -291,9 +325,21 @@ fn row(
         .items_start()
         .gap(px(8.0 * z))
         .py(px(4.0 * z))
+        .rounded(px(4.0 * z))
+        .border_1()
+        .border_color(gpui_kit::transparent_black())
         .child(check)
         .child(text)
         .child(delete)
+        .drag_over::<ItemDrag>(move |s, _, _, _| s.border_color(ui.accent))
+        .on_drag(ItemDrag { list, item: id }, move |_, _, _, cx| {
+            let text = preview.clone();
+            cx.new(|_| DragPreview { text, width, z, ui })
+        })
+        // Dropped on a row, an item takes its place; the list doesn't get the drop too.
+        .on_drop(
+            cx.listener(move |ws, drag: &ItemDrag, _, cx| move_item(ws, list, drag, Some(id), cx)),
+        )
         .test_support()
         .into_any_element()
 }

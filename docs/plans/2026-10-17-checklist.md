@@ -604,22 +604,22 @@ git commit -m "feat(checklist): find, open and delete checklists in the Checklis
 - Consumes: Task 1's `move_item`, Task 2's `edit_checklist`.
 - Produces: `struct ItemDrag { list: u64, item: u64 }` in `checklist.rs`.
 
-- [ ] **Step 1: Implement** as `kanban.rs`'s cards: each row `.on_drag(ItemDrag, DragPreview { text, width: (content
+- [x] **Step 1: Implement** as `kanban.rs`'s cards: each row `.on_drag(ItemDrag, DragPreview { text, width: (content
   width − 24) × z, z, ui })`, `.drag_over::<ItemDrag>` (accent border), `.on_drop` moving the dragged item before it
   (stop propagation); the list's column and **+ Add an item** take a drop at the end. A drag from another list is
   ignored. A click still edits (GPUI starts a drag only after the pointer moves).
 
-- [ ] **Step 2: Verify by hand** (`cargo run -p templum`, Hyprland) at zoom 0.5, 1 and 2: drag an item onto another,
+- [x] **Step 2: Verify by hand** (`cargo run -p templum`, Hyprland) at zoom 0.5, 1 and 2: drag an item onto another,
   onto the empty space under the rows, onto + Add an item; the preview follows the pointer at the zoom; Ctrl+Z puts
   it back. The order's logic is Task 1's `move_item` tests; GPUI's drag isn't driven headlessly here (the kanban's
   isn't either).
 
-- [ ] **Step 3: Run the tests**
+- [x] **Step 3: Run the tests**
 
 Run: `cargo test -p templum`
 Expected: PASS.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A crates/templum

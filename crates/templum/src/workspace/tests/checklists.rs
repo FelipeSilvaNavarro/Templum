@@ -800,3 +800,44 @@ fn all_checklists_in_the_blocks_menu_opens_the_dialog(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn dragging_a_row_puts_it_in_another_rows_place_or_at_the_end(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = new_checklist(handle, &ws, cx);
+    let (list, a, c) = ws.update(cx, |ws, _| {
+        let list = shown(ws, id);
+        let a = ws.checklists.add_item(list, None, "a", false, 1).unwrap();
+        ws.checklists.add_item(list, None, "b", false, 1);
+        let c = ws.checklists.add_item(list, None, "c", false, 1).unwrap();
+        (list, a, c)
+    });
+    let drag = |cx: &mut TestAppContext, to: ElementId| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.drag_to(name("checklist-row", id, c), to, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    drag(cx, name("checklist-row", id, a));
+    assert_eq!(texts(&ws, cx, list), ["c", "a", "b"], "in a's place");
+    assert!(editing(&ws, cx, id).is_none(), "a drag edits nothing");
+    drag(cx, ("checklist-add", id.0 as usize).into());
+    assert_eq!(texts(&ws, cx, list), ["a", "b", "c"], "at the end");
+    press_undo(handle, &ws, cx, id);
+    assert_eq!(texts(&ws, cx, list), ["c", "a", "b"], "Ctrl+Z puts it back");
+}
+
+/// A click on a box while the name is edited, before any key: the field stops (GPUI's blur only
+/// reaches a field drawn again since it took the keyboard).
+#[gpui_kit::test]
+fn a_click_elsewhere_in_the_block_stops_editing(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = new_checklist(handle, &ws, cx);
+    let (list, a) = two_items(&ws, cx, id);
+    assert!(matches!(editing(&ws, cx, id), Some((Field::Name, _))));
+    click(handle, cx, name("checklist-box", id, a));
+    assert!(editing(&ws, cx, id).is_none());
+    assert!(done(&ws, cx, list, a));
+}
