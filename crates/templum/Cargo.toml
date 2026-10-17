@@ -68,5 +68,10 @@ category = "DeveloperTool"
 # .ico for the .msi. templum.exe carries it too (build.rs), and so do the shortcuts made to it.
 icons = ["icons/*.png", "icons/templum.icns", "icons/templum.ico"]
 
+# Ad-hoc: a signature with no Apple account. Without one a downloaded .app "is damaged and can't be
+# opened", with no way past it; with one macOS asks once, in Privacy & Security ▸ Open Anyway.
+[package.metadata.packager.macos]
+signing-identity = "-"
+
 [package.metadata.packager.nsis]
 installer-icon = "icons/templum.ico"

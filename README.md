@@ -348,9 +348,12 @@ every file:
 - **Linux** (x86_64 and ARM64): `.deb`, AppImage, or the bare executable in `templum-<target>.tar.gz`; a pacman
   package and its `PKGBUILD` on x86_64.
 
-What changed in each one is in [CHANGELOG.md](CHANGELOG.md). The builds are **unsigned** for now:
+What changed in each one is in [CHANGELOG.md](CHANGELOG.md). The builds aren't signed by an Apple or Microsoft
+account yet, so the system asks once:
 
-- **macOS:** right-click the app → *Open* → *Open* (only needed the first time).
+- **macOS:** drag Templum to Applications and open it; macOS says it can't verify it, choose *Done*. Then open
+  *System Settings* → *Privacy & Security*, scroll to *Security*, click *Open Anyway* beside Templum and confirm.
+  Or, in a terminal: `xattr -dr com.apple.quarantine /Applications/Templum.app`.
 - **Windows:** on the SmartScreen prompt, click *More info* → *Run anyway*.
 
 ### Updates

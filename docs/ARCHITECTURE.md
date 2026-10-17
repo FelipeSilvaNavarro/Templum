@@ -211,8 +211,10 @@ the bare executables (`.tar.gz` on Linux, `.exe` on Windows), a `.sha256` for ea
 notes are the CHANGELOG section (a `-rc.N` tag is a prerelease). The app's icon lives in `crates/templum/icons/`:
 PNGs for Linux (16 to 48 px are the logo drawn for small sizes), `templum.icns` for macOS, and `templum.ico`, which
 the `.msi` and the NSIS installer show and `build.rs` embeds in `templum.exe` (Explorer, the taskbar, its shortcuts and
-its title bar take it from there). Builds are unsigned for now; signing, auto-update
-and package managers (Homebrew, Scoop, Winget) come later.
+its title bar take it from there). The macOS app carries an ad-hoc signature (no Apple account:
+`signing-identity = "-"`), checked after packaging, so a downloaded one opens after *Open Anyway* in Privacy &
+Security instead of being "damaged"; signing with Apple and Microsoft accounts, notarization and package managers
+(Homebrew, Scoop, Winget) come later.
 
 ## Licensing
 
