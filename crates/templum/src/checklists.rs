@@ -284,6 +284,19 @@ pub(crate) fn load(dir: &Path) -> Loaded<Checklists> {
                 .iter()
                 .flat_map(|l| std::iter::once(l.id).chain(l.items.iter().map(|i| i.id)));
             c.next_id = ids.fold(c.next_id, u64::max);
+            // Nor have one twice: an id given twice by hand gets a new one after its first.
+            let mut seen = std::collections::HashSet::new();
+            let mut next = c.next_id;
+            let ids = c.lists.iter_mut().flat_map(|l| {
+                std::iter::once(&mut l.id).chain(l.items.iter_mut().map(|i| &mut i.id))
+            });
+            for id in ids {
+                if !seen.insert(*id) {
+                    next += 1;
+                    *id = next;
+                }
+            }
+            c.next_id = next;
             Loaded::Saved(c)
         }
         other => other,
@@ -447,5 +460,24 @@ mod tests {
         assert_eq!(read.next_id, 9, "missing: the largest id, items' too");
         assert!(!read.lists[0].items[0].done);
         assert!(read.lists[1].items.is_empty() && read.lists[1].name.is_empty());
+        // Ids given twice by hand: each one after the first gets a new id, so deleting a
+        // checklist (or an item) never deletes another.
+        std::fs::write(
+            path(d.path()),
+            r#"{"version":1,"checklists":[{"id":3,"name":"A","items":[{"id":5},{"id":5}]},{"id":3,"name":"B","items":[{"id":3}]}]}"#,
+        )
+        .unwrap();
+        let Loaded::Saved(mut read) = load(d.path()) else {
+            panic!("not read")
+        };
+        let ids: Vec<_> = read
+            .lists
+            .iter()
+            .flat_map(|l| std::iter::once(l.id).chain(l.items.iter().map(|i| i.id)))
+            .collect();
+        assert_eq!(ids, [3, 5, 6, 7, 8]);
+        assert_eq!(read.next_id, 8);
+        read.remove(3);
+        assert_eq!(read.lists.len(), 1, "B stays");
     }
 }
