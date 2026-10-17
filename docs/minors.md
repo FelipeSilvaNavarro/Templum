@@ -187,6 +187,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   passed alone and on the next full run.) A person sees nothing; a contributor may see CI fail once. Fix: find what
   the click misses under load (the row after `to_bottom` maybe not laid out yet): render a frame between `to_bottom`
   and the click, or click by the field's element id once it is in view.
+- [ ] **`a_far_editor_draws_bars_where_its_code_was` fails when the machine is busy.**
+  (`crates/templum/src/workspace/tests/lod.rs`, "mid-glide, step 1: silhouette", seen at f6fa66f; it passed alone and
+  on the next full run.) `glide_40ms_in` sets the glide's start 40 ms before `Instant::now()`, so a frame drawn late
+  on a loaded machine lands past the 150 ms glide. A person sees nothing; a contributor may see CI fail once. Fix:
+  let the test set the glide's clock (a progress it passes in, or a start far enough from both ends that a late frame
+  stays mid-glide), not the real clock.
 
 ## Release and benches
 
@@ -305,6 +311,19 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **A checklist block copied in another Templum pastes empty.** As for notes: the clipboard names checklists by
   their ids (`Body::item`), which another Templum's checklists don't have. Fix: put each checklist's name and items
   in the copied item, and let `paste_blocks` make a checklist of them when the id isn't known.
+- [ ] **Quitting while an empty item is edited keeps it as an empty row.** `on_release` and `on_app_quit` call
+  `save_canvas_now` (`crates/templum/src/workspace/persist.rs`), and the 5-second `snapshot` writes too, without ending
+  an open field: a new, still empty item is written to `checklists.json`, and after a restart nothing edits it, so it
+  stays until its × is clicked. Fix: write (and compare with `checklists_saved`) a copy of `self.checklists` without
+  the blank items an open field edits, in every workspace; the quit hook has no `window` for `stop_editing`.
+- [ ] **Checklist code repeats the note blocks' and does per-row work every frame.** Nothing shows. `new_checklist`
+  and `open_checklist` (`crates/templum/src/workspace/checklist_tabs.rs`) each place a block at the view's center, and
+  `close_checklist_tab` and `delete_checklist` each remove a tab and fix `active`, as `note_tabs.rs` does twice too;
+  `row` (`crates/templum/src/checklist.rs`) looks its block up in the canvas and computes the drag preview's width for
+  every item; `read_checklist` (`crates/templum/src/workspace/content.rs`) looks the list up again after
+  `wired_checklist`, behind an error branch it can't reach. Fix: one helper for a new block's place at the center and
+  one for removing a tab, shared by notes and checklists; the width computed once in `list_view`; `wired_checklist`
+  returning the `&List`.
 
 ## Grid mode
 
