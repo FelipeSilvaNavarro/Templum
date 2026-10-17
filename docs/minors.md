@@ -291,6 +291,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   `Checklist::editing` stays set (`crates/templum/src/workspace/checklist_tabs.rs`): back there, the field shows with
   no caret, and an item left empty in it stays until the field is clicked and left. Fix: `stop_editing` on every
   checklist block of the space being hidden, in `switch_to`.
+- [ ] **A click on the bare canvas right after a field opens can leave it open.** A click on a block stops a
+  checklist's field (`focus_block`), but the canvas relies on GPUI's blur, which reaches the field only once it has been
+  drawn again since it took the keyboard (its caret blinks every 500 ms): a click on the empty canvas in that first
+  half second leaves the field drawn until the next click (`crates/templum/src/workspace/checklist_tabs.rs`). Fix: stop
+  the focused block's field wherever the canvas takes the keyboard (`space.focused = None`).
 - [ ] **Undoing a blank checklist's close brings back an empty block.** As for notes: a blank checklist goes when its
   block closes (`drop_checklist_if_blank`), so Ctrl+Z after closing it shows "No checklist open here". Fix: in
   `add_saved`, a checklist item whose checklists are all gone opens a new blank checklist.

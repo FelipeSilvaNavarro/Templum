@@ -183,6 +183,10 @@ At the Silhouette level a kanban block is **drawn in full** (`kanban.rs:104-124`
 At the Card level it is its card and label. If `--bench-far` shows kanban blocks cost too much, they become Cards at
 the Silhouette level too ([Decisions](#decisions)).
 
+A checklist block ([checklist.md](checklist.md)) is drawn in full the same way, at every level its 13-unit items
+reach with today's zoom steps: a few short rows, no editor; below Full its title is the fixed-size label, as every
+block's.
+
 ### Drawings and the dot grid
 
 They need nothing. Drawings are already culled (`ink.rs:77-87`), drawn through points at least 2 px apart on screen

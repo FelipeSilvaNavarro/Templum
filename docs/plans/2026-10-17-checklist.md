@@ -733,12 +733,12 @@ git commit -m "feat(connections): let agents read a wired checklist, check its i
   `docs/specs/level-of-detail.md` (a checklist block drawn in full, as the kanban), `docs/specs/checklist.md`
   (Status: Implemented), `docs/minors.md` (anything deferred)
 
-- [ ] **Step 1: Update the docs** listed above, each in the file's own style.
-- [ ] **Step 2: Run the benches** on `--release`: `cargo run --release -p templum -- --bench` and `-- --bench-mixed`;
+- [x] **Step 1: Update the docs** listed above, each in the file's own style.
+- [x] **Step 2: Run the benches** on `--release`: `cargo run --release -p templum -- --bench` and `-- --bench-mixed`;
   both `p95_ms` ≤ 16.7. Keep their JSON lines for the report.
-- [ ] **Step 3: Run the full check**: `cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings &&
+- [x] **Step 3: Run the full check**: `cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings &&
   cargo test --workspace`. Expected: clean, all tests pass.
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs

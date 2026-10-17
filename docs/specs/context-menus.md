@@ -24,10 +24,11 @@ would have opened together with the block's. The canvas and the blocks had no me
 
 | Right-click on | Items |
 |---|---|
-| The empty canvas | **AI agent ▸** (the agents), **Add ▸** Terminal, Kanban board, Note, Editor, **Notes…** (the Notes dialog). The block's top-left corner goes where you clicked. |
+| The empty canvas | **AI agent ▸** (the agents), **Add ▸** Terminal, Kanban board, Note, Checklist, Editor, **Notes…** (the Notes dialog), **Checklists…** (the Checklists dialog). The block's top-left corner goes where you clicked. |
 | A terminal block (header or body) | Copy (disabled without a selection), Paste, *the grid's items*, Close terminal |
 | A kanban block (header, or its empty space) | Board list (or Back to the board, while the list shows), *the grid's items*, Close |
 | A note block | All notes… (the Notes dialog), Copy all (the note on screen), Send to ▸ (the workspace's terminals), Color ▸ (None and the six label colors, for the note on screen), *the grid's items*, Close |
+| A checklist block | All checklists… (the Checklists dialog), *the grid's items*, Close |
 | An editor block | Change folder…, Hide (or Show) the file tree, Turn soft wrap on (or off), Send to ▸, *the grid's items*, Close |
 | A file in an editor's tree | Open, Reveal in file manager, File history, Blame (in the Git popup, moved to the file's repository when it shows another), Rename…, Delete… |
 | A folder in an editor's tree | New file…, New folder…, Open a terminal here, Rename…, Delete…, Reveal in file manager |

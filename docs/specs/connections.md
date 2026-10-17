@@ -364,7 +364,7 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
   > workspace, not connected (ask with connect): 4qm2a (note "Ideas"). Name blocks by these ids. You may only read or write your own block and those connected to you; connect asks the person
   > for another. list_blocks gives the current list. When a connected kanban has your task, move its card to Doing
   > when you start and to Review when you are done (Done when the board has no Review); write what the next agent
-  > needs to know in the connected note.
+  > needs to know in the connected note, and check the items of a connected checklist as you finish them.
 
   The first sentence comes first because Claude Code shows its own Agent tool whole and Templum's tools only by name
   until it searches them, so "start an agent" would otherwise open a subagent the person never sees; Codex weighs
@@ -413,6 +413,9 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `claim_card` | `card` | Makes the caller the card's assignee; refused when another block holds it | wired kanban | 4 |
 | `read_note` | `block` | The text of the note the note block shows | wired note | 4 |
 | `append_note` | `block`, `text` | Adds the text at the note's end, after a blank line; the note shows it at once and Ctrl+Z takes it back | wired note | 4 |
+| `read_checklist` | `block` | The checklist the block shows: its name and progress, then one line per item: its id, `[x]` or `[ ]`, its text ([checklist.md](checklist.md#agents)) | wired checklist | — |
+| `check_item` | `block`, `item`, `done` (true) | Checks the item (unchecks it with `done: false`); one Ctrl+Z step | wired checklist | — |
+| `add_items` | `block`, `text` | Each line with text becomes an item at the end; a leading `- ` or `* `, then `[ ]` or `[x]`, is dropped (`[x]` adds it checked); the new items' ids; one Ctrl+Z step | wired checklist | — |
 | `open_file` | `path`, `line` | Opens the file at the line in the wired editor block whose folder holds it; with none, in a new editor block beside the caller, wired to it. Neither the keyboard nor the camera moves | — | 4 |
 | `wait_for` | `block`, `event` (`idle`, `needs_you`, `command_finished`, `attention`), `timeout` | Waits for the event in the block: `idle` as `wait_for_idle`; `needs_you`, its agent or its balloon asking the person (at once when it already does), with what it asks and, from batch 7, the last 20 lines of its screen; `command_finished`, the next command to finish there, with its output (needs [shell integration](shell-integration.md)); `attention`, its next bell or notification | wired | 5 |
 | `send_keys` | `block`, `keys` (1 to 16) | Presses the keys ([Keys](#keys-stopping-and-closing)); the screen after them | wired | 6 |
@@ -583,6 +586,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum ask <question> [--option <o>]…` | `ask_user` | 3 |
 | `templum kanban list [<board>] [--card <card>] \| add <title> [--column <c>] [--description <d>] [--board <b>] \| move <card> <column> \| comment <card> <text> \| claim <card>` | the kanban tools | 4 |
 | `templum note read\|append <block> [text]` | `read_note`, `append_note` | 4 |
+| `templum checklist read <block> \| add <block> <text> \| check\|uncheck <block> <item>` | `read_checklist`, `add_items`, `check_item` | — |
 | `templum open <path>[:<line>]` | `open_file` | 4 |
 | `templum keys <block> <key>…` | `send_keys` | 6 |
 | `templum interrupt <block>` | `interrupt` | 6 |

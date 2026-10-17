@@ -1,7 +1,7 @@
 # Checklists
 
 - **Date:** 2026-10-17
-- **Status:** Approved
+- **Status:** Implemented
 - **Builds on:** [cockpit.md](cockpit.md#5-notes) (note blocks), [kanban.md](kanban.md) and
   [connections.md](connections.md)
 
