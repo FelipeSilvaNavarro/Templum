@@ -9,6 +9,7 @@ use templum_canvas::{BlockId, Camera, Point, Rect, Size, chrome};
 
 use crate::agents::AgentEntry;
 use crate::board::{self, Boards};
+use crate::checklist::{self, Checklist};
 use crate::editor::{self, Editor};
 use crate::git_block::{self, Git};
 use crate::kanban::{self, Kanban};
@@ -231,6 +232,22 @@ impl Workspace {
                     .collect();
                 let active = tabs.iter().position(|t| Some(t.id) == shown).unwrap_or(0);
                 Some(self.add_block(rect, Body::Note(Note { tabs, active })))
+            }
+            session::Item::Checklist(c) => {
+                let rect = clamped_rect(c.rect.into(), checklist::MIN)?;
+                let shown = c.checklists.get(c.active).copied();
+                // A checklist is open in one tab at most, even named twice; a deleted one is gone.
+                let mut tabs: Vec<u64> = Vec::new();
+                for &id in &c.checklists {
+                    if self.checklists.get(id).is_some()
+                        && !tabs.contains(&id)
+                        && self.checklist_open_at(id).is_none()
+                    {
+                        tabs.push(id);
+                    }
+                }
+                let active = tabs.iter().position(|t| Some(*t) == shown).unwrap_or(0);
+                Some(self.add_block(rect, Body::Checklist(Checklist { tabs, active })))
             }
             // An older Templum's Git block: the workspace's Git, unless it has one.
             session::Item::Git(g) => {

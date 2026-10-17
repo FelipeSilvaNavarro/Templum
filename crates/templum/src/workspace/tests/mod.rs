@@ -647,6 +647,7 @@ mod agents;
 mod block_ids;
 mod blocks;
 mod bus;
+mod checklists;
 mod config_reload;
 mod content;
 mod delegate;

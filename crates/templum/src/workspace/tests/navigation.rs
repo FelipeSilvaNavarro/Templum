@@ -679,7 +679,7 @@ fn a_notes_rows_and_letters_glide_together(cx: &mut TestAppContext) {
     );
     // The zoom the text is drawn at, from its box (under the tabs): its rows are 1.5 x its
     // letters, exactly.
-    let tabs = crate::note::TABS_H;
+    let tabs = crate::tab_strip::TABS_H;
     let s = f32::from(text.size.height) / (inner.h - tabs);
     assert!(
         (mid - 1.5 * crate::note::FONT * s).abs() < 0.05,
@@ -786,7 +786,7 @@ fn a_notes_box_fills_its_frame_at_rest(cx: &mut TestAppContext) {
             })
             .unwrap();
         let pad = templum_canvas::chrome::PAD * zoom;
-        let tabs = crate::note::TABS_H * zoom;
+        let tabs = crate::tab_strip::TABS_H * zoom;
         let close = |a: gpui_kit::Pixels, b: f32| (f32::from(a) - b).abs() < 0.01;
         assert!(
             close(inner.origin.x, f32::from(frame.origin.x) + pad)

@@ -101,6 +101,16 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         .test_support()
         .into_any_element(),
         button(
+            "tool-checklist",
+            IconName::ListChecks,
+            "Checklist",
+            false,
+            ui,
+        )
+        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.new_checklist(window, cx)))
+        .test_support()
+        .into_any_element(),
+        button(
             "tool-kanban",
             IconName::LayoutDashboard,
             tip("Kanban board", Command::NewKanban),

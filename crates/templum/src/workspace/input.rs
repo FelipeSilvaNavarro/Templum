@@ -713,6 +713,18 @@ impl Workspace {
             cx.stop_propagation();
             return;
         }
+        // Ctrl+Z on a checklist block undoes the last change to a checklist.
+        if undo_key(k, cfg!(target_os = "macos")) == Some(false)
+            && self
+                .space
+                .focused
+                .and_then(|id| self.space.blocks.get(&id))
+                .is_some_and(|b| b.checklist().is_some())
+            && self.undo_checklists(cx)
+        {
+            cx.stop_propagation();
+            return;
+        }
         // Ctrl+Z and Ctrl+Shift+Z on the canvas, no terminal's, nor a drawing's or a board's:
         // undo and redo the blocks' changes.
         if let Some(redo) = undo_key(k, cfg!(target_os = "macos"))

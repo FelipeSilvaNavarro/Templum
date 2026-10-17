@@ -33,7 +33,7 @@ fn item(
 }
 
 /// Adding blocks, the canvas menu's and a tile's: AI agent ▸ and Add ▸ (Terminal, Kanban board,
-/// Note, Editor, Git), their top-left corner at `at` on the canvas. In grid mode they take half of
+/// Note, Checklist, Editor), their top-left corner at `at` on the canvas. In grid mode they take half of
 /// the focused tile.
 fn adding(
     ws: &Entity<Workspace>,
@@ -75,6 +75,12 @@ fn adding(
                 "Note",
                 Some(IconName::StickyNote),
                 move |ws, window, cx| ws.add_note_at(at, window, cx),
+            ))
+            .item(item(
+                ws,
+                "Checklist",
+                Some(IconName::ListChecks),
+                move |ws, window, cx| ws.add_checklist_at(at, window, cx),
             ))
             .item(item(
                 ws,
@@ -328,6 +334,7 @@ impl Items {
                 );
                 adding(ws, menu, agents, at, window, cx).item(notes)
             }
+            Items::Checklist => menu,
             Items::Terminal { selection } => menu
                 .item(
                     item(ws, "Copy", Some(IconName::Copy), |ws, window, cx| {

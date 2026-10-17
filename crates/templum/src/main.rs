@@ -8,7 +8,8 @@ mod balloon;
 mod bench;
 mod block;
 mod board;
-#[allow(dead_code)] // Used from Task 2 of docs/plans/2026-10-17-checklist.md.
+mod checklist;
+#[allow(dead_code)] // Until the plan docs/plans/2026-10-17-checklist.md uses all of it (Task 7).
 mod checklists;
 mod config;
 mod editor;
@@ -31,6 +32,7 @@ mod sidebar;
 mod silhouette;
 mod space_dialog;
 mod spaces_screen;
+mod tab_strip;
 mod theme;
 mod theme_picker;
 mod title_bar;

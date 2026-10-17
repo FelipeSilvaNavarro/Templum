@@ -197,6 +197,15 @@ impl Workspace {
                         .filter_map(|id| self.notes.duplicate(*id, now))
                         .collect();
                 }
+                // So is a checklist.
+                session::Item::Checklist(c) => {
+                    let now = crate::notes::now();
+                    c.checklists = c
+                        .checklists
+                        .iter()
+                        .filter_map(|id| self.checklists.duplicate(*id, now))
+                        .collect();
+                }
                 _ => {}
             }
         }

@@ -12,7 +12,7 @@ use gpui_kit::component::{Icon, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, ElementId, Entity, FontWeight, MouseButton,
-    MouseDownEvent, ScrollWheelEvent, SharedString, TestSupportExt, Window, div, px, relative,
+    ScrollWheelEvent, SharedString, TestSupportExt, Window, div, px, relative,
 };
 use templum_canvas::{BlockId, Level, Size, chrome};
 
@@ -20,6 +20,7 @@ use crate::block::BORDER;
 use crate::grid::{BAR_OPACITY, hsla};
 use crate::notes;
 use crate::silhouette::{self, Far};
+use crate::tab_strip::{TABS_H, tab_strip};
 use crate::workspace::Workspace;
 
 /// A new note's size, and the smallest one (world units).
@@ -27,8 +28,6 @@ pub(crate) const SIZE: Size = Size { w: 360.0, h: 280.0 };
 pub(crate) const MIN: Size = Size { w: 200.0, h: 140.0 };
 /// The text's size at zoom 1, world units.
 pub(crate) const FONT: f32 = 13.0;
-/// The tab strip's height, world units.
-pub(crate) const TABS_H: f32 = 28.0;
 /// What gpui-kit's code editor keeps at fixed pixel sizes at any zoom: its padding
 /// (gpui-component-0.7.3 src/input/input.rs:591-600 and sizing.rs:147-166, size Medium: 6 left
 /// in a code editor, 10 right, 8 top and bottom) and, inside it, left of the text, the line
@@ -133,7 +132,23 @@ pub(crate) fn body(
     let area = Size::new(content.w, (content.h - TABS_H).max(0.0));
     // Far away the tabs' place stays, empty: the bars stay where the text was.
     let strip = if level == Level::Full {
-        tabs(ws, id, note, z, cx)
+        let titles = note
+            .tabs
+            .iter()
+            .map(|t| notes::title(&t.editor.read(cx).value()).into())
+            .collect();
+        tab_strip(
+            ws,
+            id,
+            "note",
+            titles,
+            note.active,
+            z,
+            Workspace::show_note_tab,
+            Workspace::close_note_tab,
+            Workspace::new_note_tab,
+            cx,
+        )
     } else {
         div().h(px(TABS_H * z)).into_any_element()
     };
@@ -187,107 +202,8 @@ pub(crate) fn body(
         .into_any_element()
 }
 
-fn name(prefix: &str, n: usize, i: usize) -> ElementId {
-    ElementId::Name(format!("{prefix}-{n}-{i}").into())
-}
-
-/// The tabs: a click shows one, its × closes it (the note stays), + opens a new note.
-fn tabs(
-    ws: &Workspace,
-    block: BlockId,
-    note: &Note,
-    z: f32,
-    cx: &mut Context<Workspace>,
-) -> AnyElement {
-    let ui = ws.ui;
-    let n = block.0 as usize;
-    let tabs: Vec<AnyElement> = note
-        .tabs
-        .iter()
-        .enumerate()
-        .map(|(i, tab)| {
-            let on = i == note.active;
-            let title = notes::title(&tab.editor.read(cx).value());
-            let close = div()
-                .id(name("note-tab-close", n, i))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(16.0 * z))
-                .rounded(px(4.0 * z))
-                .hover(move |s| s.bg(ui.hover))
-                .child(Icon::new(IconName::Close).size(px(10.0 * z)))
-                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.close_note_tab(block, i, window, cx)
-                }))
-                .test_support();
-            div()
-                .id(name("note-tab", n, i))
-                .flex_shrink_0()
-                .max_w(px(170.0 * z))
-                .h_full()
-                .flex()
-                .items_center()
-                .gap(px(4.0 * z))
-                .pl(px(10.0 * z))
-                .pr(px(4.0 * z))
-                .border_b_2()
-                .border_color(if on {
-                    ui.accent
-                } else {
-                    gpui_kit::transparent_black()
-                })
-                .text_size(px(12.0 * z))
-                .text_color(if on { ui.title } else { ui.title_dim })
-                .cursor_pointer()
-                .hover(move |s| s.bg(ui.hover))
-                .child(div().truncate().child(title))
-                .child(close)
-                .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.show_note_tab(block, i, window, cx)
-                }))
-                .test_support()
-                .into_any_element()
-        })
-        .collect();
-    let new = div()
-        .id(("note-tab-new", n))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .size(px(22.0 * z))
-        .mx(px(4.0 * z))
-        .rounded(px(5.0 * z))
-        .cursor_pointer()
-        .hover(move |s| s.bg(ui.hover))
-        .child(
-            Icon::new(IconName::Plus)
-                .size(px(12.0 * z))
-                .text_color(ui.title),
-        )
-        .on_click(
-            cx.listener(move |ws, _: &ClickEvent, window, cx| ws.new_note_tab(block, window, cx)),
-        )
-        .test_support();
-    div()
-        .id(("note-tabs", n))
-        .flex_shrink_0()
-        .h(px(TABS_H * z))
-        .flex()
-        .items_center()
-        .border_b_1()
-        .border_color(ui.hairline)
-        .overflow_x_scroll()
-        .children(tabs)
-        .child(new)
-        .test_support()
-        .into_any_element()
-}
-
 /// A button of the empty block and of the Notes dialog: an icon and a label.
-fn button(
+pub(crate) fn button(
     id: impl Into<ElementId>,
     icon: IconName,
     label: &'static str,
@@ -588,43 +504,4 @@ pub(crate) fn open_notes(into: Option<BlockId>, window: &mut Window, cx: &mut Co
     });
     // After opening: the dialog takes the focus when it opens.
     field.update(cx, |input, cx| input.focus(window, cx));
-}
-
-/// A press on the header's notes button: opens the dialog for this block.
-pub(crate) fn notes_button(
-    ws: &Workspace,
-    block: BlockId,
-    z: f32,
-    cx: &mut Context<Workspace>,
-) -> AnyElement {
-    let ui = ws.ui;
-    let n = block.0 as usize;
-    div()
-        .id(("notes", n))
-        .absolute()
-        .top(px(4.0 * z))
-        .left(px(4.0 * z))
-        .flex()
-        .items_center()
-        .justify_center()
-        .size(px(20.0 * z))
-        .rounded(px(5.0 * z))
-        .cursor_pointer()
-        .hover(move |s| s.bg(ui.hover))
-        .child(
-            Icon::new(IconName::NotebookText)
-                .size(px(12.0 * z))
-                .text_color(ui.title),
-        )
-        .tooltip(|window, cx| {
-            gpui_kit::component::tooltip::Tooltip::new("All notes").build(window, cx)
-        })
-        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
-            cx.stop_propagation()
-        })
-        .on_click(
-            cx.listener(move |_, _: &ClickEvent, window, cx| open_notes(Some(block), window, cx)),
-        )
-        .test_support()
-        .into_any_element()
 }

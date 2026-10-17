@@ -615,6 +615,9 @@ impl Workspace {
             for note in body.note().map(Note::ids).unwrap_or_default() {
                 self.drop_if_blank(note);
             }
+            for list in body.checklist().map(|c| c.tabs.clone()).unwrap_or_default() {
+                self.drop_checklist_if_blank(list);
+            }
             self.space.ghosts.push(Ghost {
                 block,
                 body,

@@ -3,6 +3,7 @@
 mod activity;
 mod blocks;
 mod bus;
+mod checklist_tabs;
 mod content;
 mod delegate;
 mod drawing;
@@ -67,6 +68,8 @@ use templum_terminal::{Notify, Snapshot, Terminal};
 use crate::agents::{self, AgentEntry};
 use crate::alert::Alert;
 use crate::board::Boards;
+use crate::checklist::{self, Checklist};
+use crate::checklists::{Checklists, List};
 use crate::config::{self, Config, Edit, ThemeConfig};
 use crate::editor::{self, Editor};
 use crate::git_block::{self, Git};
@@ -101,6 +104,8 @@ pub(crate) const INK_UNDO: usize = 50;
 const CANVAS_UNDO: usize = 100;
 /// Board changes kept for undo, for the whole app (the boards are).
 pub(crate) const BOARD_UNDO: usize = 50;
+/// Checklist changes kept for undo, for the whole app (the checklists are).
+const CHECKLIST_UNDO: usize = 50;
 /// Cursor blink half-period.
 const BLINK: Duration = Duration::from_millis(500);
 /// Quitting takes a second press of its shortcut within this long.
@@ -294,6 +299,7 @@ pub(crate) enum Body {
     Terminal(Box<Pane>),
     Kanban(Kanban),
     Note(Note),
+    Checklist(Checklist),
     /// Boxed: on Windows, where a path takes more bytes, it is over 200 bytes larger than a note.
     Editor(Box<Editor>),
 }
@@ -327,12 +333,27 @@ impl Body {
         }
     }
 
+    pub fn checklist(&self) -> Option<&Checklist> {
+        match self {
+            Body::Checklist(checklist) => Some(checklist),
+            _ => None,
+        }
+    }
+
+    pub fn checklist_mut(&mut self) -> Option<&mut Checklist> {
+        match self {
+            Body::Checklist(checklist) => Some(checklist),
+            _ => None,
+        }
+    }
+
     /// The smallest block of this kind.
     pub fn min_size(&self, cell: Size) -> Size {
         match self {
             Body::Terminal(_) => chrome::min_block_size(cell),
             Body::Kanban(_) => kanban::MIN,
             Body::Note(_) => note::MIN,
+            Body::Checklist(_) => checklist::MIN,
             Body::Editor(_) => editor::MIN,
         }
     }
@@ -381,7 +402,7 @@ impl Body {
         match self {
             Body::Terminal(pane) => pane.term.cwd(),
             Body::Editor(e) => Some(e.folder.clone()),
-            Body::Kanban(_) | Body::Note(_) => None,
+            Body::Kanban(_) | Body::Note(_) | Body::Checklist(_) => None,
         }
     }
 
@@ -403,6 +424,12 @@ impl Body {
                 text: String::new(),
                 color: None,
             }),
+            Body::Checklist(c) => session::Item::Checklist(session::ChecklistItem {
+                uid: String::new(),
+                rect: rect.into(),
+                checklists: c.tabs.clone(),
+                active: c.active,
+            }),
             Body::Editor(e) => session::Item::Editor(e.item(rect)),
         }
     }
@@ -418,7 +445,7 @@ impl Body {
             }),
             Body::Editor(e) => e.has_focus(window, cx),
             Body::Terminal(pane) => pane.find.as_ref().is_some_and(|b| b.has_focus(window, cx)),
-            Body::Kanban(_) => false,
+            Body::Kanban(_) | Body::Checklist(_) => false,
         }
     }
 }
@@ -799,6 +826,10 @@ impl Space {
         self.blocks.get_mut(&id)?.terminal_mut()
     }
 
+    pub fn checklist_mut(&mut self, id: BlockId) -> Option<&mut Checklist> {
+        self.blocks.get_mut(&id)?.checklist_mut()
+    }
+
     pub fn kanban(&self, id: BlockId) -> Option<&Kanban> {
         self.blocks.get(&id)?.kanban()
     }
@@ -886,6 +917,11 @@ pub struct Workspace {
     /// `notes.json` couldn't be read: neither it nor the canvases are written this session (a
     /// canvas from before it holds notes' text that only it would keep).
     notes_frozen: bool,
+    /// Every checklist, shown by checklist blocks in any workspace (`checklists.rs`).
+    pub(crate) checklists: Checklists,
+    /// One checklist as it was before each change to it, newest last, at most CHECKLIST_UNDO
+    /// (see `edit_checklist`).
+    checklists_undo: Vec<List>,
     /// `boards` before each change, newest last, at most BOARD_UNDO (see `edit_boards`).
     boards_undo: Vec<Boards>,
     /// The boards as last read or written, to write only what changed.
@@ -1300,6 +1336,8 @@ impl Workspace {
             boards_frozen: false,
             notes: Default::default(),
             notes_saved: None,
+            checklists: Checklists::default(),
+            checklists_undo: Vec::new(),
             notes_frozen: false,
             index_frozen: false,
             sidebar: true,

@@ -437,6 +437,7 @@ pub(crate) enum Item {
     Terminal(TerminalItem),
     Kanban(KanbanItem),
     Note(NoteItem),
+    Checklist(ChecklistItem),
     Editor(EditorItem),
     Git(GitItem),
 }
@@ -447,6 +448,7 @@ impl Item {
             Item::Terminal(t) => &mut t.rect,
             Item::Kanban(k) => &mut k.rect,
             Item::Note(n) => &mut n.rect,
+            Item::Checklist(c) => &mut c.rect,
             Item::Editor(e) => &mut e.rect,
             Item::Git(g) => &mut g.rect,
         }
@@ -458,6 +460,7 @@ impl Item {
             Item::Terminal(t) => &t.uid,
             Item::Kanban(k) => &k.uid,
             Item::Note(n) => &n.uid,
+            Item::Checklist(c) => &c.uid,
             Item::Editor(e) => &e.uid,
             Item::Git(g) => &g.uid,
         }
@@ -468,6 +471,7 @@ impl Item {
             Item::Terminal(t) => t.uid = uid,
             Item::Kanban(k) => k.uid = uid,
             Item::Note(n) => n.uid = uid,
+            Item::Checklist(c) => c.uid = uid,
             Item::Editor(e) => e.uid = uid,
             Item::Git(g) => g.uid = uid,
         }
@@ -498,6 +502,21 @@ pub(crate) struct NoteItem {
         deserialize_with = "crate::board::known_label"
     )]
     pub color: Option<crate::board::Label>,
+}
+
+/// A checklist block (docs/specs/checklist.md).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ChecklistItem {
+    /// The block's id for agents and wires (docs/specs/connections.md).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uid: String,
+    pub rect: SavedRect,
+    /// The checklists it shows as tabs, by their ids in `checklists.json`, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checklists: Vec<u64>,
+    /// The tab on screen, by its index in `checklists`.
+    #[serde(default)]
+    pub active: usize,
 }
 
 /// An editor block (docs/specs/cockpit.md, section 7).
@@ -905,6 +924,30 @@ mod tests {
         assert!(back.contains(r#""color":"yellow""#), "{back}");
         let plain = serde_json::to_string(&Item::Note(read(&format!("{base}}}")))).unwrap();
         assert!(!plain.contains("color"), "{plain}");
+    }
+
+    #[test]
+    fn a_canvas_with_a_checklist_reads_back_equal() {
+        let item = Item::Checklist(ChecklistItem {
+            uid: "4qm2a".into(),
+            rect: SavedRect {
+                x: 1.0,
+                y: 2.0,
+                w: 320.0,
+                h: 360.0,
+            },
+            checklists: vec![3, 5],
+            active: 1,
+        });
+        let text = serde_json::to_string(&item).unwrap();
+        assert!(text.contains(r#""kind":"checklist""#), "{text}");
+        assert_eq!(serde_json::from_str::<Item>(&text).unwrap(), item);
+        let Item::Checklist(mut none) = item else {
+            unreachable!()
+        };
+        none.checklists.clear();
+        let text = serde_json::to_string(&Item::Checklist(none)).unwrap();
+        assert!(!text.contains("checklists"), "{text}");
     }
 
     #[test]
@@ -1690,6 +1733,7 @@ mod tests {
                 Item::Terminal(t) => t.rect,
                 Item::Kanban(k) => k.rect,
                 Item::Note(n) => n.rect,
+                Item::Checklist(c) => c.rect,
                 Item::Editor(e) => e.rect,
                 Item::Git(g) => g.rect,
             })

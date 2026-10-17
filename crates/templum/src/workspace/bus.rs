@@ -538,6 +538,7 @@ impl Workspace {
             ),
             Body::Kanban(_) => ("kanban", title(), None),
             Body::Note(_) => ("note", title(), None),
+            Body::Checklist(_) => ("checklist", title(), None),
             Body::Editor(e) => ("editor", title(), Some(e.folder.clone())),
         };
         (kind, clean_title(&title), folder)

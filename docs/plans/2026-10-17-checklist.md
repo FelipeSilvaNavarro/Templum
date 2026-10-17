@@ -277,7 +277,7 @@ Ctrl+Z, its menu. No editing yet (Task 3), no saving (Task 4).
     undo_checklists(&mut self, cx: &mut Context<Self>) -> bool`, `pub(crate) fn toggle_item(&mut self, list: u64,
     item: u64, cx)`, `pub(crate) fn delete_item(&mut self, list: u64, item: u64, cx)`.
 
-- [ ] **Step 1: Write the failing tests** in `workspace/tests/checklists.rs` (helpers: `new_checklist(handle, ws, cx)
+- [x] **Step 1: Write the failing tests** in `workspace/tests/checklists.rs` (helpers: `new_checklist(handle, ws, cx)
   -> BlockId` clicking the toolbar's `"tool-checklist"` as `notes.rs`'s `new_note` presses its key; `shown(ws, cx,
   block) -> u64`):
 
@@ -334,16 +334,16 @@ fn a_pasted_checklist_block_shows_copies(cx: &mut TestAppContext) {
 `session.rs`'s tests: `a_canvas_with_a_checklist_reads_back_equal` (an `Item::Checklist` with `checklists: vec![3,
 5], active: 1` written and read; written without `checklists` when empty).
 
-- [ ] **Step 2: Run them to see them fail**
+- [x] **Step 2: Run them to see them fail**
 
 Run: `cargo test -p templum checklist`
 Expected: compile errors (`Body::Checklist`, `new_checklist` missing).
 
-- [ ] **Step 3: Move the note's tab strip to `tab_strip.rs` and its header button to `block.rs::header_button`**,
+- [x] **Step 3: Move the note's tab strip to `tab_strip.rs` and its header button to `block.rs::header_button`**,
   the note calling them with `"note"`, `show_note_tab`, `close_note_tab`, `new_note_tab` and `open_notes`. Run
   `cargo test -p templum notes` — the note tests pass unchanged.
 
-- [ ] **Step 4: Implement the block**
+- [x] **Step 4: Implement the block**
 
 - `checklist.rs::body`: the tab strip (`"checklist"`, titles from each tab's list `title()`); with no tab, "No
   checklist open here" with **New checklist** and **Open a checklist…** (`note::button`, made `pub(crate)`; the second
@@ -369,12 +369,12 @@ Expected: compile errors (`Body::Checklist`, `new_checklist` missing).
   `adding`'s Add ▸ **Checklist** (`ListChecks`, `add_checklist_at`) after Note; the toolbar's `"tool-checklist"`
   button after Note, tooltip "Checklist", calling `new_checklist`.
 
-- [ ] **Step 5: Run the tests**
+- [x] **Step 5: Run the tests**
 
 Run: `cargo test -p templum`
 Expected: PASS, the note, kanban and menu tests included.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A crates/templum

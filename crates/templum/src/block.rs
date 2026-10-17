@@ -18,6 +18,7 @@ use gpui_kit::{
 use templum_canvas::{Block, BlockId, Edges, Level, Point, Rect, chrome};
 
 use crate::alert::{self, Alert};
+use crate::checklist;
 use crate::editor;
 use crate::git_block;
 use crate::grid::{self, hsla};
@@ -61,7 +62,7 @@ pub(crate) fn render(
     let font = match body {
         Body::Editor(_) => editor::FONT,
         Body::Note(_) => note::FONT,
-        Body::Terminal(_) | Body::Kanban(_) => 0.0,
+        Body::Terminal(_) | Body::Kanban(_) | Body::Checklist(_) => 0.0,
     };
     let settled = if font == 0.0 || (ws.space.flight.is_none() && look.scale == 1.0) {
         z
@@ -101,7 +102,7 @@ pub(crate) fn render(
     // keyboard: GPUI drops the focus of what isn't drawn) is always Full, asked only below Full.
     let level = match body {
         // Drawn in full down to the Card level, which its 13 px never reach (3.25 px at 25%).
-        Body::Kanban(_) => Level::Full,
+        Body::Kanban(_) | Body::Checklist(_) => Level::Full,
         Body::Terminal(_) => templum_canvas::level(ws.cell.font_size, ws.space.rest),
         _ => templum_canvas::level(font, ws.space.rest),
     };
@@ -366,7 +367,15 @@ pub(crate) fn render(
     };
     // A note block's button to every note, on the left of its header (over the title: no move).
     let preview = match body {
-        Body::Note(_) if live && !labeled => Some(note::notes_button(ws, id, z, cx)),
+        Body::Note(_) if live && !labeled => Some(header_button(
+            ws,
+            ("notes", n).into(),
+            IconName::NotebookText,
+            "All notes",
+            z,
+            move |_, window, cx| note::open_notes(Some(id), window, cx),
+            cx,
+        )),
         _ => None,
     };
     // An editor's file-tree toggle, on the left of its header (over the title: no move).
@@ -458,9 +467,9 @@ pub(crate) fn render(
         .h(px((r.h - chrome::TITLE_H * z).max(0.0)))
         .p(px(chrome::PAD * z))
         .overflow_hidden();
-    let content =
-        match body {
-            Body::Terminal(pane) => frame
+    let content = match body {
+        Body::Terminal(pane) => {
+            frame
                 // At the Card level nothing is inside: the grid isn't painted, so the terminal isn't
                 // re-armed and its output asks for no frames, as off screen.
                 .when(live && level != Level::Card, |el| {
@@ -525,31 +534,34 @@ pub(crate) fn render(
                         .as_ref()
                         .filter(|_| live && level != Level::Card),
                     |el, s| el.child(starting_cover(ws, n, s.title.clone(), z)),
-                ),
-            // A fading kanban block is drawn empty: its board is still live elsewhere.
-            Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
-            // A fading note is drawn empty, like a kanban block.
-            // Below Full a note shown rendered is its tinted card, empty: gpui-kit's Markdown view
-            // has no layout to draw bars from.
-            Body::Note(n) => frame.when(live, |el| {
-                el.child(settled_box(
-                    block,
-                    settled,
-                    pull,
-                    note::body(ws, id, n, settled, level, cx),
-                ))
-            }),
-            // A fading editor is drawn empty, like a note.
-            Body::Editor(e) => frame.when(live, |el| {
-                el.child(settled_box(
-                    block,
-                    settled,
-                    pull,
-                    editor::body(ws, id, e, settled, level, cx),
-                ))
-            }),
+                )
         }
-        .test_support();
+        // A fading kanban block is drawn empty: its board is still live elsewhere.
+        Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
+        // A fading checklist block is drawn empty too: its checklists are live elsewhere.
+        Body::Checklist(c) => frame.when(live, |el| el.child(checklist::body(ws, id, c, z, cx))),
+        // A fading note is drawn empty, like a kanban block.
+        // Below Full a note shown rendered is its tinted card, empty: gpui-kit's Markdown view
+        // has no layout to draw bars from.
+        Body::Note(n) => frame.when(live, |el| {
+            el.child(settled_box(
+                block,
+                settled,
+                pull,
+                note::body(ws, id, n, settled, level, cx),
+            ))
+        }),
+        // A fading editor is drawn empty, like a note.
+        Body::Editor(e) => frame.when(live, |el| {
+            el.child(settled_box(
+                block,
+                settled,
+                pull,
+                editor::body(ws, id, e, settled, level, cx),
+            ))
+        }),
+    }
+    .test_support();
 
     let handle = div()
         .id(("handle", n))
@@ -695,6 +707,39 @@ fn starting_cover(ws: &Workspace, n: usize, title: SharedString, z: f32) -> impl
         .test_support()
 }
 
+/// A button on the left of a block's header (over the title: no move), `tip` its tooltip.
+pub(crate) fn header_button(
+    ws: &Workspace,
+    id: ElementId,
+    icon: IconName,
+    tip: &'static str,
+    z: f32,
+    click: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let ui = ws.ui;
+    div()
+        .id(id)
+        .absolute()
+        .top(px(4.0 * z))
+        .left(px(4.0 * z))
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(20.0 * z))
+        .rounded(px(5.0 * z))
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .child(Icon::new(icon).size(px(12.0 * z)).text_color(ui.title))
+        .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+            cx.stop_propagation()
+        })
+        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| click(ws, window, cx)))
+        .test_support()
+        .into_any_element()
+}
+
 /// A block's title: a terminal's, a kanban block's board, a note's first line, an editor's file,
 /// a Git block's repository.
 pub(crate) fn title(ws: &Workspace, body: &Body, cx: &App) -> SharedString {
@@ -702,6 +747,7 @@ pub(crate) fn title(ws: &Workspace, body: &Body, cx: &App) -> SharedString {
         Body::Terminal(pane) => SharedString::from(pane.term.title()),
         Body::Kanban(k) => k.title(ws),
         Body::Note(n) => n.title(cx),
+        Body::Checklist(c) => c.title(ws),
         Body::Editor(e) => e.title(),
     }
 }
