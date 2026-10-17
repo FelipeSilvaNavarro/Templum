@@ -8,6 +8,8 @@ mod balloon;
 mod bench;
 mod block;
 mod board;
+#[allow(dead_code)] // Used from Task 2 of docs/plans/2026-10-17-checklist.md.
+mod checklists;
 mod config;
 mod editor;
 mod gallery;

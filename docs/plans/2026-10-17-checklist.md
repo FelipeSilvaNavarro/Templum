@@ -75,7 +75,7 @@ block's tab strip and Notes dialog become shared components (`tab_strip.rs`, `li
     Loaded<Checklists>`, `save(dir: &Path, checklists: &Checklists, generation: u64) -> io::Result<()>`, as
     `notes.rs`'s.
 
-- [ ] **Step 1: Write the failing tests** in `checklists.rs`'s `mod tests`:
+- [x] **Step 1: Write the failing tests** in `checklists.rs`'s `mod tests`:
 
 ```rust
 #[test]
@@ -203,12 +203,12 @@ fn checklists_read_back_equal_and_a_hand_edited_file_is_read() {
 }
 ```
 
-- [ ] **Step 2: Run them to see them fail**
+- [x] **Step 2: Run them to see them fail**
 
 Run: `cargo test -p templum checklists::`
 Expected: compile error (the module doesn't exist).
 
-- [ ] **Step 3: Implement `checklists.rs`**
+- [x] **Step 3: Implement `checklists.rs`**
 
 As `notes.rs`: `#[serde(default)]` on every field but ids; `done` with `skip_serializing_if = "std::ops::Not::not"`.
 A title is `name_shown()` cut at 60 characters with "…" (as `notes::title`), then ` {checked}/{all}` when there are
@@ -216,12 +216,12 @@ items. `parse_items`: each line trimmed, then a leading `- ` or `* ` dropped, th
 dropped (the `x` sets done), trimmed again; empty results skipped. `load` raises `next_id` to the largest id of lists
 and items. Add `mod checklists;` to `main.rs`.
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p templum checklists::`
 Expected: PASS (unused-code warnings are fine until Task 2 uses it; clippy runs at the commit with `#[cfg_attr(not(test), allow(dead_code))]` on the module if needed, removed in Task 2).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/templum/src/checklists.rs crates/templum/src/main.rs
