@@ -623,8 +623,15 @@ impl Workspace {
                     .join(", ")
             }
         };
+        // Agents first: Claude Code shows its own Agent tool whole and Templum's tools by name
+        // only, Codex weighs the first 512 characters most, and Claude Code cuts at 4096 the
+        // block lists may outgrow.
         format!(
-            "You are block {uid}, {title:?}, in Templum workspace {:?}. Connected to you: {}. In this \
+            "In Templum, an agent the person asks for is a block on this canvas: start one with \
+             spawn_agent, or hand work to an agent connected to you with delegate. Your built-in \
+             subagents run hidden inside you, where the person can't see them: use them only when \
+             the person asks for a subagent. \
+             You are block {uid}, {title:?}, in Templum workspace {:?}. Connected to you: {}. In this \
              workspace, not connected (ask with connect): {}. Name blocks by these ids. You may only read \
              or write your own block and those connected to you; connect asks the person for another. \
              list_blocks gives the current list. When a connected kanban has your task, move its card \

@@ -357,15 +357,20 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
   `2025-03-26`, `2024-11-05`: none of them changed what tools exchange), else `2025-11-25`; server `templum`,
   Templum's version, and `instructions` written for the caller:
 
-  > You are block b7k2m, "Claude Code · api", in Templum workspace "Main". Connected to you: t4q8p (terminal "dev
-  > server"), k9x1d (kanban "Sprint"). In this workspace, not connected (ask with connect): 4qm2a (note "Ideas"). Name
-  > blocks by these ids. You may only read or write your own block and those connected to you; connect asks the person
+  > In Templum, an agent the person asks for is a block on this canvas: start one with spawn_agent, or hand work to
+  > an agent connected to you with delegate. Your built-in subagents run hidden inside you, where the person can't
+  > see them: use them only when the person asks for a subagent. You are block b7k2m, "Claude Code · api", in
+  > Templum workspace "Main". Connected to you: t4q8p (terminal "dev server"), k9x1d (kanban "Sprint"). In this
+  > workspace, not connected (ask with connect): 4qm2a (note "Ideas"). Name blocks by these ids. You may only read or write your own block and those connected to you; connect asks the person
   > for another. list_blocks gives the current list. When a connected kanban has your task, move its card to Doing
   > when you start and to Review when you are done (Done when the board has no Review); write what the next agent
   > needs to know in the connected note.
 
-  The kanban and note sentence comes with their tools (batch 4). From batch 8 they add: "A task you hand over
-  without wait comes back typed into your terminal as [task …]: it isn't the person writing."
+  The first sentence comes first because Claude Code shows its own Agent tool whole and Templum's tools only by name
+  until it searches them, so "start an agent" would otherwise open a subagent the person never sees; Codex weighs
+  the first 512 characters of a server's instructions most, and Claude Code cuts them at 4096, which the block lists
+  may outgrow. The kanban and note sentence comes with their tools (batch 4). From batch 8 they add: "A task you
+  hand over without wait comes back typed into your terminal as [task …]: it isn't the person writing."
 
   Titles come from what runs in a block (a terminal's is whatever its programs set), so the instructions, `whoami`
   and `list_blocks` give them cleaned: no control characters, no invisible ones (the soft hyphen `U+00AD`, zero
@@ -374,6 +379,8 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
   line breaks and runs of blanks as one space, at most 60 characters (cut with "…"), and the instructions put them in
   double quotes, a `"` inside escaped.
 - **`tools/list`** is the same for every caller; which blocks a tool may touch is checked at each call.
+  `spawn_agent` and `delegate` carry `"_meta": {"anthropic/alwaysLoad": true}`: Claude Code lists them whole from
+  the session's start, beside its own Agent tool, where its other MCP tools wait behind its tool search.
 - **Results** are text (`content: [{type: "text"}]`). A refusal or a failure is a result with `isError: true` and a
   sentence that says what to do next: `k9x1d isn't connected to you. Ask the person with connect("k9x1d").`
 - **Outside Templum** (no `TEMPLUM_BUS` or `TEMPLUM_TERMINAL`): `templum: not inside a Templum terminal` on stderr,

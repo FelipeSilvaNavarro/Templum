@@ -240,6 +240,15 @@ fn initialize_lists_the_tools_and_says_who_the_agent_is(cx: &mut TestAppContext)
         json!({ "protocolVersion": "2025-06-18" }),
     );
     let instructions = init["result"]["instructions"].as_str().unwrap();
+    // An agent asked for is a block, said first: before the block lists, which may grow past
+    // what Codex weighs most (512 characters) and Claude Code keeps (4096).
+    assert!(
+        instructions.starts_with(
+            "In Templum, an agent the person asks for is a block on this canvas: start one with \
+             spawn_agent"
+        ),
+        "{instructions}"
+    );
     // Titles and names in quotes: a title a program set can't pass for an instruction.
     assert!(
         instructions.contains(&format!("You are block {uid}, \""))

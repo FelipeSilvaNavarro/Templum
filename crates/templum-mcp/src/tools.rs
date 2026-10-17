@@ -202,6 +202,9 @@ pub fn list() -> Value {
     let column =
         json!({ "type": "string", "description": "A column's title (either case) or id." });
     let none = json!({ "type": "object", "properties": {} });
+    // Claude Code shows these whole from the start, beside its own Agent tool, where the others
+    // wait behind its tool search by name only.
+    let always_load = json!({ "anthropic/alwaysLoad": true });
     let seconds = |default: u64| {
         json!({
             "type": "integer",
@@ -303,6 +306,7 @@ pub fn list() -> Value {
                             transcript, as does a dialog it waits on. To the agent on your task, it is a change to \
                             that task, typed at once. Refused while the agent waits for its person or is on \
                             another agent's task.",
+            "_meta": always_load,
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -364,6 +368,7 @@ pub fn list() -> Value {
                             handed it (the result says its id): its end comes back as delegate's does, or \
                             wait_for_idle gets it. Says the new block's id and folder. \
                             With model and effort, its command line starts it on them, and so does every resume.",
+            "_meta": always_load,
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1068,6 +1073,19 @@ mod tests {
         );
         assert!(!known("rm_rf"));
         assert!(parse("rm_rf", &json!({})).is_err());
+    }
+
+    /// Starting and handing work to agents is listed whole in Claude Code, beside its Agent tool.
+    #[test]
+    fn the_agent_tools_alone_load_upfront() {
+        let upfront: Vec<_> = list()["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["_meta"]["anthropic/alwaysLoad"] == true)
+            .map(|t| t["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(upfront, ["delegate", "spawn_agent"]);
     }
 
     #[test]
