@@ -4,6 +4,7 @@
 use gpui_kit::Focusable as _;
 use gpui_kit::component::input::EditorState;
 use serde_json::json;
+use templum_canvas::Wire;
 
 use super::bus::{call, me};
 use super::*;
@@ -293,12 +294,30 @@ fn the_content_tools_are_refused_without_a_wire(cx: &mut TestAppContext) {
         ("read_note", json!({ "block": note_uid })),
         ("append_note", json!({ "block": note_uid, "text": "x" })),
         ("read_note", json!({ "block": kanban_uid })),
-        ("read_checklist", json!({ "block": note_uid })),
-        ("check_item", json!({ "block": note_uid, "item": 1 })),
-        ("add_items", json!({ "block": note_uid, "text": "x" })),
     ] {
         let (failed, text) = call(handle, &ws, cx, &me, tool, args.clone());
         assert!(failed, "{tool} {args}: {text}");
+    }
+}
+
+#[gpui_kit::test]
+fn the_checklist_tools_are_refused_without_a_wire(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let terminal = first_id(&ws, cx);
+    let (me, block, uid, _, build, _) = wired_checklist(handle, &ws, cx);
+    ws.update(cx, |ws, cx| {
+        assert!(ws.disconnect(Wire::new(terminal, block).unwrap(), cx))
+    });
+    for (tool, args) in [
+        ("read_checklist", json!({ "block": uid })),
+        ("check_item", json!({ "block": uid, "item": build })),
+        ("add_items", json!({ "block": uid, "text": "x" })),
+    ] {
+        let (failed, text) = call(handle, &ws, cx, &me, tool, args.clone());
+        assert!(
+            failed && text.contains("isn't connected to you"),
+            "{tool} {args}: {text}"
+        );
     }
 }
 
