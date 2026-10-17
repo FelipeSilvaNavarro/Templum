@@ -355,6 +355,9 @@ Each agent's dialog (Templum's and the user's) gets a **Commit messages** part:
   an app opened from a desktop menu; PowerShell on Windows), as typed in a terminal, so PATH, aliases and
   version managers work; placeholders are replaced by quoted paths. Its own runner, not `Repo::run`: that one
   gives the command no stdin and git's environment.
+- **No credit to the agent:** the command runs with `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1`, so Claude Code
+  leaves out its own commit rules, which end every message with a `Co-Authored-By: Claude` trailer. The
+  Instructions are the only commit rules; someone who wants the trailer asks for it there.
 
 ### In Settings ▸ Git ▸ Commit messages
 

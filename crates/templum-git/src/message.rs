@@ -241,6 +241,9 @@ pub fn run(
         c.args(args)
             .arg(&line)
             .current_dir(folder)
+            // Claude Code's own commit rules end every message with a Co-Authored-By trailer:
+            // the user's instructions are the only rules (they ask for one there if they want it).
+            .env("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS", "1")
             .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -514,6 +517,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(answer.trim(), "it's");
+    }
+
+    #[test]
+    fn claude_code_is_run_without_its_own_commit_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = if cfg!(windows) {
+            "echo $env:CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"
+        } else {
+            "echo $CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"
+        };
+        let answer = run(line, "m", "r", dir.path(), LONG, &never()).unwrap();
+        assert_eq!(answer.trim(), "1");
     }
 
     #[cfg(unix)]
