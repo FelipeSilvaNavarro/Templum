@@ -387,6 +387,38 @@ fn backspace_in_an_empty_item_deletes_it_and_edits_the_one_before(cx: &mut TestA
     );
 }
 
+/// The first item has the name before it: a held Backspace eats the item, then the name, and
+/// never reaches the canvas, where it would close the block.
+#[gpui_kit::test]
+fn backspace_held_in_the_first_item_stops_in_the_name(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = new_checklist(handle, &ws, cx);
+    let list = ws.update(cx, |ws, _| {
+        let list = shown(ws, id);
+        ws.checklists.rename(list, "Go", 1);
+        list
+    });
+    click(handle, cx, ("checklist-add", id.0 as usize));
+    cx.simulate_input(handle, "x");
+    press(handle, cx, "backspace");
+    press(handle, cx, "backspace");
+    assert!(texts(&ws, cx, list).is_empty());
+    let (field, input) = editing(&ws, cx, id).expect("the name is edited");
+    assert_eq!(field, Field::Name);
+    assert_eq!(
+        input.read_with(cx, |i, _| i.cursor()),
+        2,
+        "its caret at the end"
+    );
+    for _ in 0..4 {
+        press(handle, cx, "backspace");
+    }
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.blocks.contains_key(&id), "the block stays");
+        assert_eq!(ws.checklists.get(list).unwrap().name, "");
+    });
+}
+
 #[gpui_kit::test]
 fn an_item_left_empty_goes_and_enter_in_an_empty_item_stops(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);

@@ -403,7 +403,9 @@ impl Workspace {
         }
     }
 
-    /// Backspace at the field's start: an empty item goes, and the one before it is edited.
+    /// Backspace at the field's start: an empty item goes, and the one before it is edited (the
+    /// first item's: the name), its caret at the end. A held Backspace so stops in the name and
+    /// never reaches the canvas, where it closes the block.
     pub(crate) fn backspace_at_start(
         &mut self,
         block: BlockId,
@@ -427,9 +429,22 @@ impl Workspace {
             Some(l.items.get(at.checked_sub(1)?)?.id)
         });
         self.stop_editing(block, window, cx);
-        if let Some(before) = before {
-            self.edit_field(block, Field::Item(before), window, cx);
-        }
+        let Some(before) = before else {
+            self.edit_field(block, Field::Name, window, cx);
+            let input = self
+                .space
+                .blocks
+                .get(&block)
+                .and_then(|b| Some(b.checklist()?.editing.as_ref()?.input.clone()));
+            if let Some(input) = input {
+                input.update(cx, |input, cx| {
+                    let end = input.value().len();
+                    input.set_selected_range(end..end, cx);
+                });
+            }
+            return;
+        };
+        self.edit_field(block, Field::Item(before), window, cx);
     }
 
     /// Stops `block`'s field: its text is kept, but an item left empty goes (and a new one leaves
