@@ -165,8 +165,11 @@ pub(crate) fn effective(
 /// which changes by itself. The others have none until the person sets one.
 pub(crate) fn preset(agent: Agent, codex: &[String]) -> (Option<&'static str>, Vec<String>) {
     match agent.spec().id {
+        // No tools and none of the person's settings (their hooks, plugins, MCP servers, which
+        // turn the request into a session that reads and runs things): a one-shot answer. `=`:
+        // an empty value PowerShell 5.1 would drop as `""`.
         "claude" => (
-            Some("claude -p --model {model}"),
+            Some("claude -p --model {model} --tools= --setting-sources="),
             ["haiku", "sonnet", "opus"].map(String::from).to_vec(),
         ),
         "codex" => (
@@ -609,9 +612,11 @@ mod tests {
         .unwrap();
         let list = effective(&config.agents, &codex_list);
         let claude = by(&list, "claude");
+        // No tools, and none of the person's settings (their hooks, plugins and MCP servers): a
+        // one-shot answer, never a session that reads or runs anything in the repository.
         assert_eq!(
             claude.generate.as_deref(),
-            Some("claude -p --model {model}")
+            Some("claude -p --model {model} --tools= --setting-sources=")
         );
         assert_eq!(claude.models, ["haiku", "sonnet", "opus"]);
         let codex = by(&list, "codex");

@@ -13,17 +13,28 @@ use crate::diff::{new_binary_diff, new_file_diff};
 use crate::parse::{Change, parse_name_status};
 use crate::repo::{DIFF_LIMIT, GitError, Repo, until_cancelled};
 
-/// The request when the user hasn't written their own (Settings ▸ Git ▸ Prompt).
+/// The request when the user hasn't written their own (Settings ▸ Git ▸ Prompt): Templum's rules
+/// for a good commit message first, the person's last, after the diff, where an agent heeds them
+/// best (a long diff between drowns them); theirs win.
 pub const PROMPT: &str = "\
-Write the commit message for the changes below.
+You write git commit messages. This is a one-shot request from Templum's Generate button, not a \
+conversation: ask nothing, run no tools, explain nothing. Answer with the commit message alone.
 
-{instructions}
+The message:
+- Its first line is the summary, at most 72 characters, in Conventional Commits form: \
+type(scope): summary. The type is feat, fix, perf, refactor, docs, test, build, ci, chore or \
+style; the scope is the area changed, left out when there is none; the summary is in the \
+imperative mood (\"add\", not \"added\" or \"adds\"), with no period at the end.
+- Then a blank line and a body of a few short lines, wrapped at 72 characters, saying what \
+changed and why, when the summary alone doesn't say it; none for a change the summary says whole.
+- Plain text: no Markdown, no code fences, no quotes around it, nothing before or after it.
+- No credit to an AI or a tool: no Co-Authored-By or \"Generated with\" line.
+- Take the types, scopes, language and casing from this repository's last commits below; if they \
+follow another convention than Conventional Commits, follow theirs.
+- The person's own rules, if any, are at the end, after the diff: where they disagree with these \
+rules, the summary's form included, follow theirs.
 
-Answer with the message alone, in plain text: the first line is the summary, in at most 72 \
-characters; then a blank line; then what changed and why, in a few short lines. No code fences, \
-no quotes, nothing before or after the message.
-
-The last commits' summaries in this repository, to follow its style:
+The last commits' summaries in this repository, newest first:
 {recent_commits}
 
 The changed files:
@@ -32,6 +43,9 @@ The changed files:
 {truncated}
 The diff:
 {diff}
+
+The person's own rules:
+{instructions}
 ";
 
 /// Settings ▸ Git ▸ Try it's change: a small fix in a file of no repository, so none of the
@@ -421,6 +435,43 @@ mod tests {
             "x{b} and y, {c} {a"
         );
         assert_eq!(fill("{}{{a}}", &[("a", "1")]), "{}{1}");
+    }
+
+    /// Templum's own rules for a good commit come first; the person's come last, after the diff,
+    /// and win.
+    #[test]
+    fn the_default_request_has_templums_rules_then_the_persons() {
+        let files = ["M src/a.rs".to_string()];
+        let recent = ["feat(parser): read numbers".to_string()];
+        let text = request(
+            PROMPT,
+            &Request {
+                instructions: "Write the summary in Portuguese.",
+                files: &files,
+                diff: "+one\n",
+                recent: &recent,
+                max_bytes: 1024,
+            },
+        );
+        let at = |what: &str| {
+            text.find(what)
+                .unwrap_or_else(|| panic!("{what:?} in {text}"))
+        };
+        let rules = [
+            "not a conversation",
+            "Conventional Commits form: type(scope): summary",
+            "at most 72 characters",
+            "imperative mood",
+            "a blank line and a body",
+            "no code fences, no quotes",
+            "No credit to an AI",
+            "this repository's last commits",
+            "follow theirs.\n\n",
+        ];
+        let last_rule = rules.iter().map(|r| at(r)).max().unwrap();
+        let theirs = at("Write the summary in Portuguese.");
+        assert!(last_rule < at("feat(parser): read numbers") && at("+one") < theirs);
+        assert!(text.ends_with("The person's own rules:\nWrite the summary in Portuguese.\n"));
     }
 
     #[test]

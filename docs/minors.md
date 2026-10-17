@@ -250,6 +250,14 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **The docs don't say all of it.** `docs/specs/agents.md` doesn't list `[agents]`'s `generate` and `models`, and
   the README doesn't say Codex's models come from its `~/.codex/models_cache.json` (else one is typed). Fix: a line
   in each.
+- [ ] **Claude Code's provider set only in its settings isn't used by Generate.** Its preset runs with
+  `--setting-sources=` (`preset`, `crates/templum/src/agents.rs`), so an `env` block in `~/.claude/settings.json`
+  (Bedrock, Vertex, a proxy's `ANTHROPIC_BASE_URL`) isn't read, and Generate fails where Claude Code itself works.
+  Fix: read that `env` and pass it to the command, or say so in the failure's Details when the answer is an auth
+  error.
+- [ ] **A saved Claude Code generate command keeps the old behavior.** Someone who edited the preset before it got
+  `--tools= --setting-sources=` keeps a command that starts a whole session (hooks, tools) and may ask questions
+  instead of answering. Fix: a note in Settings ▸ Agents when a saved command lacks them, or ↺ back to the preset.
 
 ## Far zoom (level of detail)
 
