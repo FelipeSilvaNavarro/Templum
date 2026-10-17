@@ -465,9 +465,9 @@ impl Workspace {
             let p = self.local(pos);
             let moved = (p.x - start.x).abs().max((p.y - start.y).abs());
             if moved < CLICK_SLOP {
-                self.unfocused = self.space.focused.take();
+                let unfocused = self.space.focused.take();
                 let had_wire = std::mem::replace(&mut self.space.selected_wire, wire);
-                if self.unfocused.is_some() || !self.space.selected.is_empty() || had_wire != wire {
+                if unfocused.is_some() || !self.space.selected.is_empty() || had_wire != wire {
                     self.space.selected.clear();
                     cx.notify();
                 }
@@ -801,15 +801,14 @@ impl Workspace {
         let p = self.local(e.position);
         // Drawings are hit only here, where no block is (blocks stop the press).
         let world = self.space.canvas.camera.to_world(p);
-        if e.modifiers.shift && e.click_count == 1 {
+        if e.modifiers.shift {
             self.space.selected_ink = None;
             self.space.selected_wire = None;
             self.begin_marquee(p);
             cx.notify();
             return;
         }
-        if e.click_count == 1
-            && self.tool == Tool::Select
+        if self.tool == Tool::Select
             && let Some(index) = self.ink_at(world)
         {
             self.space.selected_ink = Some(index);
@@ -827,22 +826,13 @@ impl Workspace {
         if self.space.selected_ink.take().is_some() {
             cx.notify();
         }
-        if e.click_count == 2 {
-            let at = self.space.canvas.camera.to_world(p);
-            // The first click took the focus: the new terminal still starts in its folder.
-            if self.space.focused.is_none() {
-                self.space.focused = self.unfocused.take();
-            }
-            self.add_terminal_at(at, window, cx);
-        } else {
-            // A wire, under the drawings: a click on it selects it (`release`). Wires run where
-            // people grab the canvas: a drag from one moves it, as from anywhere.
-            let wire = (e.click_count == 1 && self.tool == Tool::Select)
-                .then(|| self.wire_at(world))
-                .flatten();
-            self.drag = Some(Drag::Canvas(Gesture::pan(p)));
-            self.press = Some((p, wire));
-        }
+        // A wire, under the drawings: a click on it selects it (`release`). Wires run where people
+        // grab the canvas: a drag from one moves it, as from anywhere.
+        let wire = (self.tool == Tool::Select)
+            .then(|| self.wire_at(world))
+            .flatten();
+        self.drag = Some(Drag::Canvas(Gesture::pan(p)));
+        self.press = Some((p, wire));
     }
 
     pub(super) fn on_background_scroll(

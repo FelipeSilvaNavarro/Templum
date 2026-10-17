@@ -38,7 +38,6 @@ knowing. **Welcome** in the settings panel's footer shows it again.
 
 | Mouse | Result |
 |---|---|
-| Double-click empty canvas | New terminal there |
 | Drag a title bar / the bottom-right handle | Move / resize the block |
 | Drag a block near another | It snaps to the other's edges or center within 8 px, and a line shows which |
 | Drag empty canvas, or scroll over it | Pan |

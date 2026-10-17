@@ -85,10 +85,6 @@ impl Workspace {
                     .text_size(px(13.0))
                     .child(row(keys(new), "New terminal"))
                     .child(row(
-                        pill("Double-click").into_any_element(),
-                        "Open one where you click",
-                    ))
-                    .child(row(
                         pill(if cfg!(target_os = "macos") {
                             "Hold Option"
                         } else {

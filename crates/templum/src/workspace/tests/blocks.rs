@@ -100,7 +100,7 @@ fn shortcuts_open_and_close_terminals(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn double_click_on_empty_canvas_opens_a_terminal(cx: &mut TestAppContext) {
+fn a_double_click_on_the_empty_canvas_opens_nothing(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
@@ -111,11 +111,7 @@ fn double_click_on_empty_canvas_opens_a_terminal(cx: &mut TestAppContext) {
         click(window, cx, at, 2);
     })
     .unwrap();
-    ws.read_with(cx, |ws, _| {
-        assert_eq!(ws.space.canvas.blocks().len(), 2);
-        let new = ws.space.canvas.get(ws.space.canvas.top().unwrap()).unwrap();
-        assert_eq!((new.rect.x, new.rect.y), (40.0, 40.0));
-    });
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.blocks().len(), 1));
 }
 
 #[gpui_kit::test]
@@ -360,20 +356,25 @@ fn a_closed_block_fades_as_a_ghost_that_ignores_clicks(cx: &mut TestAppContext) 
         // Checked right after the frame that drew it: the ghost lives 0.18 s, and a slow
         // machine may spend longer than that on the clicks below.
         assert_eq!(ws.read(cx).space.ghosts.len(), 1);
-        // A double click where the ghost is reaches the canvas: a terminal opens there.
+        // A drag where the ghost is reaches the canvas: it pans.
         let at = window.find(("ghost", n)).bounds().center();
         let at = (f32::from(at.x), f32::from(at.y));
-        click(window, cx, at, 1);
-        click(window, cx, at, 2);
+        let before = ws.read(cx).space.canvas.camera.origin.x;
+        press_with(
+            window,
+            cx,
+            MouseButton::Left,
+            Modifiers::default(),
+            at,
+            (at.0 + 50.0, at.1),
+        );
+        assert_ne!(
+            ws.read(cx).space.canvas.camera.origin.x,
+            before,
+            "the drag went through the ghost"
+        );
     })
     .unwrap();
-    ws.read_with(cx, |ws, _| {
-        assert_eq!(
-            ws.space.canvas.blocks().len(),
-            1,
-            "the click went through the ghost"
-        );
-    });
     std::thread::sleep(crate::motion::CLOSE + std::time::Duration::from_millis(50));
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();

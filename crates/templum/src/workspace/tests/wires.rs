@@ -555,47 +555,6 @@ fn a_drag_from_a_wire_moves_the_canvas_and_keeps_the_keyboard(cx: &mut TestAppCo
     });
 }
 
-/// A double click on a wire is the canvas's: its terminal starts in the folder of the block
-/// that had the keyboard before the first click.
-#[gpui_kit::test]
-fn a_double_click_on_a_wire_starts_a_terminal_in_the_last_focused_folder(cx: &mut TestAppContext) {
-    let (handle, ws) = open(cx);
-    let (kanban, note, _) = apart(handle, &ws, cx);
-    let folder = tempfile::tempdir().unwrap();
-    ws.update(cx, |ws, cx| {
-        ws.connect(kanban, note, cx);
-    });
-    // Clear of the wire, and focused.
-    let editor = cx
-        .update_window(handle, |_, window, cx| {
-            ws.update(cx, |ws, cx| {
-                ws.add_editor_at(folder.path(), Point::new(900.0, 400.0), window, cx)
-            })
-        })
-        .unwrap();
-    assert_eq!(ws.read_with(cx, |ws, _| ws.space.focused), editor);
-    let on = on_the_wire(&ws, cx);
-    cx.update_window(handle, |_, window, cx| {
-        window.render_frame(cx);
-        click(window, cx, on, 1);
-        assert_eq!(
-            ws.read(cx).space.selected_wire,
-            Some(Wire::new(kanban, note).unwrap()),
-            "the first click selects it"
-        );
-        click(window, cx, on, 2);
-    })
-    .unwrap();
-    ws.read_with(cx, |ws, _| {
-        let new = ws.space.focused.unwrap();
-        assert!(ws.space.terminal(new).is_some(), "a new terminal");
-        assert_eq!(
-            ws.space.terminal(new).unwrap().seen.folder.as_deref(),
-            Some(folder.path())
-        );
-    });
-}
-
 /// Grid mode hides wires: entering it lets a selected one go, so no Delete removes a wire no one
 /// sees.
 #[gpui_kit::test]

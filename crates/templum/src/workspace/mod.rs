@@ -909,9 +909,6 @@ pub struct Workspace {
     /// Where a press on the empty canvas started, and the wire under it: released in place,
     /// it's a click (that selects the wire).
     press: Option<(Point, Option<Wire>)>,
-    /// The block the last click on the empty canvas unfocused: a double-click's terminal starts
-    /// in its folder.
-    unfocused: Option<BlockId>,
     pub(crate) focus_handle: FocusHandle,
     /// Window position of the workspace's top-left: screen coordinates are relative to it.
     origin: PixelPoint<Pixels>,
@@ -1306,7 +1303,6 @@ impl Workspace {
             pointer_moved: false,
             quiet: false,
             press: None,
-            unfocused: None,
             focus_handle,
             origin: PixelPoint::default(),
             notify,

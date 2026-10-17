@@ -461,38 +461,6 @@ fn a_new_terminal_starts_in_the_focused_editors_folder(cx: &mut TestAppContext) 
     assert_eq!(cwd_of(&ws, cx, id), dir.path().canonicalize().unwrap());
 }
 
-#[gpui_kit::test]
-fn a_double_click_on_the_canvas_opens_in_the_folder_of_the_block_it_unfocused(
-    cx: &mut TestAppContext,
-) {
-    let dir = tempfile::tempdir().unwrap();
-    let start = tempfile::tempdir().unwrap();
-    // A TOML literal string: Windows backslashes need no escaping.
-    write_config(
-        dir.path(),
-        &format!(
-            "[shell]\nworking_directory = '{}'\n",
-            start.path().display()
-        ),
-    );
-    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
-    write_config(dir.path(), "[shell]\nworking_directory = \"inherit\"\n");
-    reload(handle, &ws, cx);
-    cx.update_window(handle, |_, window, cx| {
-        window.render_frame(cx);
-        let o = ws.read(cx).origin;
-        let at = (f32::from(o.x) + 40.0, f32::from(o.y) + 40.0);
-        click(window, cx, at, 1);
-        click(window, cx, at, 2);
-    })
-    .unwrap();
-    let new = ws.read_with(cx, |ws, _| {
-        assert_eq!(ws.space.canvas.blocks().len(), 2);
-        ws.space.canvas.top().unwrap()
-    });
-    assert_eq!(cwd_of(&ws, cx, new), start.path().canonicalize().unwrap());
-}
-
 /// Output in a block off screen wakes the UI once and no more until the block is painted; a
 /// painted block is re-armed every frame. Scrolled back on screen, the block shows what it
 /// printed meanwhile; an off-screen terminal that exits still closes its block.
