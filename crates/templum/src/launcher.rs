@@ -1,5 +1,5 @@
 //! Opening an AI agent from the canvas's menu: the dialog that asks where it runs, with the
-//! workspace's own and recent folders, the system's folder picker, and a path to type. See
+//! workspace's own, home and recent folders, the system's folder picker, and a path to type. See
 //! docs/specs/agents.md.
 
 use std::path::{Path, PathBuf};
@@ -40,6 +40,7 @@ fn label(folder: &Path) -> (String, String) {
         |n| n.to_string_lossy().into_owned(),
     );
     let place = match std::env::home_dir().and_then(|h| folder.strip_prefix(h).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
         Some(rest) => format!("~/{}", rest.display()),
         None => folder.display().to_string(),
     };
@@ -81,9 +82,9 @@ pub(crate) fn ask_folder(
     ask_folder_for(ws, format!("Open {}", agent.title), help, open, window, cx);
 }
 
-/// Asks for a folder: this workspace's own and recent ones, the system's picker, or a typed path;
-/// `open` gets the choice. `help`: a note and a command shown above the list (an agent that
-/// isn't installed).
+/// Asks for a folder: this workspace's own, the home one, the recent ones, the system's picker,
+/// or a typed path; `open` gets the choice. `help`: a note and a command shown above the list
+/// (an agent that isn't installed).
 pub(crate) fn ask_folder_for(
     ws: &Workspace,
     title: String,
@@ -96,13 +97,14 @@ pub(crate) fn ask_folder_for(
     let warn = hsla(ws.theme.palette.ansi[3], 1.0);
     // The terminal's font: the install command is to copy into one.
     let mono = ws.cell.font.family.clone();
-    // The workspace's own folder comes first, and not again among the recent ones.
+    // The workspace's own folder comes first, then the home folder, each once.
     let pinned = ws.space.folder.clone().filter(|f| f.is_dir());
+    let home = std::env::home_dir().filter(|h| h.is_dir() && Some(h) != pinned.as_ref());
     let recent: Vec<PathBuf> = ws
         .space
         .recent
         .iter()
-        .filter(|f| f.is_dir() && Some(*f) != pinned.as_ref())
+        .filter(|f| f.is_dir() && Some(*f) != pinned.as_ref() && Some(*f) != home.as_ref())
         .cloned()
         .collect();
     let input =
@@ -121,6 +123,15 @@ pub(crate) fn ask_folder_for(
                 "workspace-folder",
                 f,
                 Some("Workspace folder"),
+                open.clone(),
+                ui,
+            )
+        });
+        let home = home.as_ref().map(|h| {
+            row(
+                "personal-space",
+                h,
+                Some("Personal space"),
                 open.clone(),
                 ui,
             )
@@ -176,6 +187,7 @@ pub(crate) fn ask_folder_for(
                         )
                     })
                     .children(pinned)
+                    .children(home)
                     .when(!recent.is_empty(), |el| {
                         el.child(
                             div()
@@ -291,6 +303,13 @@ pub(crate) fn pick_folder(open: Rc<Open>, window: &mut Window, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rows_show_the_home_folder_as_a_tilde() {
+        let home = std::env::home_dir().unwrap();
+        assert_eq!(label(&home).1, "~");
+        assert_eq!(label(&home.join("code/app")).1, "~/code/app");
+    }
 
     #[test]
     fn typed_paths_expand_the_home_folder() {

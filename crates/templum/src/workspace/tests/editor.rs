@@ -124,6 +124,49 @@ fn the_folder_dialog_offers_the_workspace_folder_first_and_once(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
+fn the_folder_dialog_offers_the_home_folder_once(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let home = std::env::home_dir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        ws.space.folder = Some(project.path().to_path_buf());
+        ws.space.recent = vec![home.clone(), project.path().to_path_buf()];
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(NEW_EDITOR, cx);
+        window.render_frame(cx);
+        assert!(window.try_find("workspace-folder").is_some());
+        assert!(window.try_find("recent-0").is_none(), "neither again");
+        window.click("personal-space", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.update(cx, |ws, _| {
+        let editors: Vec<_> = ws
+            .space
+            .blocks
+            .values()
+            .filter_map(|b| b.editor())
+            .collect();
+        assert_eq!(editors.len(), 1);
+        assert_eq!(editors[0].folder, home);
+        ws.space.folder = Some(home.clone());
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.press(NEW_EDITOR, cx);
+        window.render_frame(cx);
+        assert!(window.try_find("workspace-folder").is_some());
+        assert!(
+            window.try_find("personal-space").is_none(),
+            "home is the workspace's folder: once"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn an_editor_comes_back_and_one_whose_folder_is_gone_says_so(cx: &mut TestAppContext) {
     let data = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();

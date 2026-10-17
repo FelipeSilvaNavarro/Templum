@@ -87,6 +87,8 @@ Interpreter, Qodo Command. Each is one more row in `templum-terminal/src/agent.r
   - when it isn't installed, a note with its install command, in the terminal's font;
   - **The workspace's folder** (chosen in its edit dialog, [cockpit.md](cockpit.md)), when it has one, tagged
     "Workspace folder"; it isn't listed again among the recent ones;
+  - **The home folder**, tagged "Personal space", to open an agent quickly outside any project; not shown when it is
+    the workspace's folder or can't be found, and not listed again among the recent ones;
   - **Recent in this workspace:** up to 8 folders, newest first, each with its name and its path (home as `~`).
     A folder that no longer exists isn't listed. Clicking one opens the agent there.
   - **Choose a folder…:** the system's folder picker (the XDG desktop portal on Linux). If it can't open, a
@@ -188,5 +190,6 @@ Missing means none. Folders that aren't valid UTF-8 are left out. An older Templ
 - an agent opens in its folder, at its point, typed into its shell, and the folder becomes recent;
 - right-click the canvas, **AI agent ▸** an agent, then a recent folder: the agent's terminal opens.
 - the folder dialog offers the workspace's folder first, and not again among the recent ones.
+- the folder dialog offers the home folder under it, once, and not when it is the workspace's folder.
 
 **Manual (Hyprland):** the folder picker through the portal; Claude Code opened from the menu, quit and resumed.
