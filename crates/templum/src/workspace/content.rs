@@ -276,9 +276,28 @@ impl Workspace {
         let Some(to) = self.boards.column_named(board, column) else {
             return self.no_column(board, column);
         };
+        let mine = space.uids.get(&me).cloned().unwrap_or_default();
+        // Its last column, or Review: the card is done, and says so only through a comment.
+        let finished = self.boards.board(board).is_some_and(|b| {
+            b.columns.last().is_some_and(|c| c.id == to)
+                || b.columns
+                    .iter()
+                    .any(|c| c.id == to && c.title.trim().eq_ignore_ascii_case("review"))
+        });
+        let said = self
+            .boards
+            .card(board, card)
+            .and_then(|c| c.comments.last())
+            .is_some_and(|c| c.by == mine);
         self.edit_boards(|b| b.move_card(board, card, to, None));
         cx.notify();
-        Reply::ok(format!("Moved card {card} to {column}."))
+        let mut text = format!("Moved card {card} to {column}.");
+        if finished && !said {
+            text.push_str(
+                " Say on it what you did and what the next one needs to know: comment_card.",
+            );
+        }
+        Reply::ok(text)
     }
 
     pub(super) fn comment_card(

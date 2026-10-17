@@ -371,8 +371,9 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
   > Templum workspace "Main". Connected to you: t4q8p (terminal "dev server"), k9x1d (kanban "Sprint"). In this
   > workspace, not connected (ask with connect): 4qm2a (note "Ideas"). Name blocks by these ids. You may only read or write your own block and those connected to you; connect asks the person
   > for another. list_blocks gives the current list. When a connected kanban has your task, move its card to Doing
-  > when you start and to Review when you are done (Done when the board has no Review); write what the next agent
-  > needs to know in the connected note, and check the items of a connected checklist as you finish them.
+  > when you start; when you are done, comment on it what you did and what the next agent needs to know
+  > (comment_card), then move it to Review (Done when the board has no Review); write what the next agent needs to
+  > know in the connected note too, and check the items of a connected checklist as you finish them.
 
   The first sentence comes first because Claude Code shows its own Agent tool whole and Templum's tools only by name
   until it searches them, so "start an agent" would otherwise open a subagent the person never sees; Codex weighs
@@ -416,8 +417,8 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `ask_user` | `question`, `options`, `timeout` (1800 s) | A question in a balloon ([Requests](#requests-from-agents)); the answer | — | 3 |
 | `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, assignee and comment count; with `card`, that card whole: its description and comments | wired kanban | 4 |
 | `create_card` | `board`, `column`, `title`, `description` | A new card at the column's end (the board's first column when left out); its id | wired kanban | 4 |
-| `move_card` | `card`, `column` | Moves a card to the end of a column | wired kanban | 4 |
-| `comment_card` | `card`, `text` | Adds a comment signed with the caller's id | wired kanban | 4 |
+| `move_card` | `card`, `column` | Moves a card to the end of a column; into the board's last column or one titled Review (either case), unless the card's newest comment is the caller's, its answer asks for one: "Say on it what you did and what the next one needs to know: comment_card." | wired kanban | 4 |
+| `comment_card` | `card`, `text` | Adds a comment signed with the caller's id: what it did on the card, and what the next one needs to know, when it finishes it | wired kanban | 4 |
 | `claim_card` | `card` | Makes the caller the card's assignee; refused when another block holds it | wired kanban | 4 |
 | `read_note` | `block` | The text of the note the note block shows | wired note | 4 |
 | `append_note` | `block`, `text` | Adds the text at the note's end, after a blank line; the note shows it at once and Ctrl+Z takes it back | wired note | 4 |

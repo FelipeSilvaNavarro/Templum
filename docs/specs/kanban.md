@@ -71,7 +71,8 @@ A dialog in the middle of the window, at the window's scale:
 - **Assignee**, when an agent claimed the card (`claim_card`, [connections.md](connections.md#tools)): its block's
   title, and a ✕ that frees the card;
 - **Comments**, oldest first, each with its author (an agent's block title, or "You") and how long ago it was written;
-  a text field under them and **Add comment**, which adds the person's;
+  a text field under them and **Add comment**, which adds the person's. An agent that finishes its card says there
+  what it did and what the next one needs to know (`comment_card`, [connections.md](connections.md#tools));
 - **Delete card**, and **Done** (or Esc) to close.
 
 Every change applies as it is typed or clicked, so every block showing the board updates at once.

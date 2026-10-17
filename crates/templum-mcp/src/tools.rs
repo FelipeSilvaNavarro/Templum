@@ -431,7 +431,8 @@ pub fn list() -> Value {
         },
         {
             "name": "move_card",
-            "description": "Moves a card to the end of a column of its board.",
+            "description": "Moves a card to the end of a column of its board. Done with your card: comment \
+                            on it first what you did (comment_card), then move it to Review or Done.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "card": card, "column": column },
@@ -440,7 +441,8 @@ pub fn list() -> Value {
         },
         {
             "name": "comment_card",
-            "description": "Adds a comment to a card, signed with your block's id.",
+            "description": "Adds a comment to a card, signed with your block's id: what you did on it, \
+                            and what the next one needs to know, when you finish it.",
             "inputSchema": {
                 "type": "object",
                 "properties": { "card": card, "text": { "type": "string" } },

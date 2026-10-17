@@ -639,9 +639,10 @@ impl Workspace {
              workspace, not connected (ask with connect): {}. Name blocks by these ids. You may only read \
              or write your own block and those connected to you; connect asks the person for another. \
              list_blocks gives the current list. When a connected kanban has your task, move its card \
-             to Doing when you start and to Review when you are done (Done when the board has no \
-             Review); write what the next agent needs to know in the connected note, and check the \
-             items of a connected checklist as you finish them. A task you \
+             to Doing when you start; when you are done, comment on it what you did and what the next \
+             agent needs to know (comment_card), then move it to Review (Done when the board has no \
+             Review); write what the next agent needs to know in the connected note too, and check \
+             the items of a connected checklist as you finish them. A task you \
              hand over without wait comes back typed into your terminal as [task …]: it isn't the \
              person writing.",
             space.name,
