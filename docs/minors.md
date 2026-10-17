@@ -282,9 +282,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   loaded (`self.spaces()`), but `load_spaces` keeps the ones it restored in a local list
   (`crates/templum/src/workspace/spaces.rs`), so a hand-edited file that names a note in two workspaces opens it twice,
   and the last tab typed in wins. Fix: look in that list too while loading.
-- [ ] **A note block copied in another Templum pastes empty.** The clipboard names notes by their ids
-  (`Body::item`, `crates/templum/src/workspace/mod.rs`), which another Templum's notes don't have. Fix: put each
-  note's text in the copied item's `text`, and let `paste_blocks` make a note of it when the id isn't known.
+- [ ] **A note block copied in another Templum pastes someone else's notes.** The clipboard names notes only by their
+  ids (`Clip`, `paste_blocks` in `crates/templum/src/workspace/selection.rs`), and ids start at 1 in every data folder:
+  copied in the installed Templum and pasted in `--dev` (or the other way), the block shows copies of whatever notes
+  have those ids there, unrelated ones, or is empty when none has. Nothing is lost: only copies are made. Fix: put each
+  note's text and color in the copied item, and let `paste_blocks` always make the copies from them, never by id.
 - [ ] **A focused editor or note moved off screen keeps the keyboard until a click.** GPUI sends keys to the window's
   root when the focused element isn't drawn; `release_focus` runs only when a block is closed, a note's preview
   toggles or an editor's file changes (`crates/templum/src/workspace/blocks.rs`), not when a pan or zoom takes the
@@ -308,9 +310,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **Two canvases naming one checklist both show it after a restart.** As for notes: `checklist_open_at` looks only
   in the workspaces already loaded (`crates/templum/src/workspace/persist.rs`, `add_saved`), so a hand-edited file
   that names a checklist in two workspaces opens it in both. Fix: look in `load_spaces`' list too while loading.
-- [ ] **A checklist block copied in another Templum pastes empty.** As for notes: the clipboard names checklists by
-  their ids (`Body::item`), which another Templum's checklists don't have. Fix: put each checklist's name and items
-  in the copied item, and let `paste_blocks` make a checklist of them when the id isn't known.
+- [ ] **A checklist block copied in another Templum pastes someone else's checklists.** As for notes: the clipboard
+  names checklists only by their ids (`paste_blocks`, `crates/templum/src/workspace/selection.rs`), which start at 1
+  in every data folder, so a paste in the other Templum (`--dev` beside the installed one) shows copies of unrelated
+  checklists that have those ids there, or is empty when none has. Fix: put each checklist's name and items in the
+  copied item, and let `paste_blocks` always make the copies from them, never by id.
 - [ ] **Quitting while an empty item is edited keeps it as an empty row.** `on_release` and `on_app_quit` call
   `save_canvas_now` (`crates/templum/src/workspace/persist.rs`), and the 5-second `snapshot` writes too, without ending
   an open field: a new, still empty item is written to `checklists.json`, and after a restart nothing edits it, so it
