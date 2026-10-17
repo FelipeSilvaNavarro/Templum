@@ -1,5 +1,5 @@
 //! Opening an AI agent from the canvas's menu: the dialog that asks where it runs, with the
-//! workspace's recent folders, the system's folder picker, and a path to type. See
+//! workspace's own and recent folders, the system's folder picker, and a path to type. See
 //! docs/specs/agents.md.
 
 use std::path::{Path, PathBuf};
@@ -19,6 +19,7 @@ use gpui_kit::{
 use templum_canvas::Point;
 
 use crate::grid::hsla;
+use crate::theme::Ui;
 use crate::workspace::{Workspace, show_notification};
 
 /// A typed path: `~` and `~/…` are the home folder.
@@ -80,7 +81,7 @@ pub(crate) fn ask_folder(
     ask_folder_for(ws, format!("Open {}", agent.title), help, open, window, cx);
 }
 
-/// Asks for a folder: this workspace's recent ones, the system's picker, or a typed path;
+/// Asks for a folder: this workspace's own and recent ones, the system's picker, or a typed path;
 /// `open` gets the choice. `help`: a note and a command shown above the list (an agent that
 /// isn't installed).
 pub(crate) fn ask_folder_for(
@@ -95,11 +96,13 @@ pub(crate) fn ask_folder_for(
     let warn = hsla(ws.theme.palette.ansi[3], 1.0);
     // The terminal's font: the install command is to copy into one.
     let mono = ws.cell.font.family.clone();
+    // The workspace's own folder comes first, and not again among the recent ones.
+    let pinned = ws.space.folder.clone().filter(|f| f.is_dir());
     let recent: Vec<PathBuf> = ws
         .space
         .recent
         .iter()
-        .filter(|f| f.is_dir())
+        .filter(|f| f.is_dir() && Some(*f) != pinned.as_ref())
         .cloned()
         .collect();
     let input =
@@ -113,51 +116,19 @@ pub(crate) fn ask_folder_for(
     };
     let field = input.clone();
     window.open_alert_dialog(cx, move |alert, _, _| {
-        let rows = recent.iter().enumerate().map(|(i, folder)| {
-            let (name, place) = label(folder);
-            let (open, folder) = (open.clone(), folder.clone());
-            div()
-                .id(ElementId::Name(format!("recent-{i}").into()))
-                .flex()
-                .items_center()
-                .gap(px(10.0))
-                .px(px(10.0))
-                .py(px(7.0))
-                .rounded(px(8.0))
-                .cursor_pointer()
-                .hover(move |s| s.bg(ui.hover))
-                .active(move |s| s.bg(ui.pressed))
-                .child(
-                    Icon::new(IconName::Folder)
-                        .size(px(16.0))
-                        .text_color(ui.title_dim),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .min_w(px(0.0))
-                        .child(
-                            div()
-                                .text_size(px(13.0))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child(name),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .text_size(px(12.0))
-                                .text_color(ui.title_dim)
-                                .child(place),
-                        ),
-                )
-                .on_click(move |_: &ClickEvent, window, cx| {
-                    if open(&folder, window, cx).is_some() {
-                        window.close_dialog(cx);
-                    }
-                })
-                .test_support()
+        let pinned = pinned.as_ref().map(|f| {
+            row(
+                "workspace-folder",
+                f,
+                Some("Workspace folder"),
+                open.clone(),
+                ui,
+            )
         });
+        let rows = recent
+            .iter()
+            .enumerate()
+            .map(|(i, folder)| row(format!("recent-{i}"), folder, None, open.clone(), ui));
         let choose = {
             let open = open.clone();
             div()
@@ -204,6 +175,7 @@ pub(crate) fn ask_folder_for(
                                 .child(div().font_family(mono.clone()).child(command)),
                         )
                     })
+                    .children(pinned)
                     .when(!recent.is_empty(), |el| {
                         el.child(
                             div()
@@ -219,6 +191,70 @@ pub(crate) fn ask_folder_for(
             .on_ok(move |_, window, cx| typed(window, cx))
     });
     input.update(cx, |input, cx| input.focus(window, cx));
+}
+
+/// A folder to click: its name and where it is, and `tag` at the right when it says what the
+/// folder is to the workspace. `open` gets it; the dialog closes once it opened.
+fn row(
+    id: impl Into<ElementId>,
+    folder: &Path,
+    tag: Option<&'static str>,
+    open: Rc<Open>,
+    ui: Ui,
+) -> impl IntoElement {
+    let (name, place) = label(folder);
+    let folder = folder.to_path_buf();
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .px(px(10.0))
+        .py(px(7.0))
+        .rounded(px(8.0))
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .active(move |s| s.bg(ui.pressed))
+        .child(
+            Icon::new(IconName::Folder)
+                .size(px(16.0))
+                .text_color(ui.title_dim),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w(px(0.0))
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(name),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_size(px(12.0))
+                        .text_color(ui.title_dim)
+                        .child(place),
+                ),
+        )
+        .when_some(tag, |el, tag| {
+            el.child(
+                div()
+                    .flex_none()
+                    .text_size(px(12.0))
+                    .text_color(ui.title_dim)
+                    .child(tag),
+            )
+        })
+        .on_click(move |_: &ClickEvent, window, cx| {
+            if open(&folder, window, cx).is_some() {
+                window.close_dialog(cx);
+            }
+        })
+        .test_support()
 }
 
 /// The system's folder picker; `open` gets the chosen folder.

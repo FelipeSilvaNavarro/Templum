@@ -93,6 +93,37 @@ fn the_editor_shortcut_asks_for_a_folder_and_a_recent_one_opens_it(cx: &mut Test
 }
 
 #[gpui_kit::test]
+fn the_folder_dialog_offers_the_workspace_folder_first_and_once(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (project, other) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        ws.space.folder = Some(project.path().to_path_buf());
+        ws.space.recent = vec![project.path().to_path_buf(), other.path().to_path_buf()];
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(NEW_EDITOR, cx);
+        window.render_frame(cx);
+        assert!(window.try_find("recent-0").is_some(), "the other folder");
+        assert!(window.try_find("recent-1").is_none(), "not twice");
+        window.click("workspace-folder", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let editors: Vec<_> = ws
+            .space
+            .blocks
+            .values()
+            .filter_map(|b| b.editor())
+            .collect();
+        assert_eq!(editors.len(), 1);
+        assert_eq!(editors[0].folder, project.path());
+    });
+}
+
+#[gpui_kit::test]
 fn an_editor_comes_back_and_one_whose_folder_is_gone_says_so(cx: &mut TestAppContext) {
     let data = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();

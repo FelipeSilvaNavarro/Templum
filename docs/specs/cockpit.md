@@ -354,7 +354,8 @@ Replaces the sidebar's **Rename…**, which becomes **Edit…** everywhere. A di
 Below the image, **Folder**: the folder's path, or "None"; **Choose…** opens the system's folder picker, **Clear**
 removes it. A new terminal starts in the workspace's folder when the focused block gives none
 (`working_directory = "inherit"`), and in place of `"home"` or a configured path: the workspace's choice is the
-nearer one. One workspace per project then opens its terminals in the project.
+nearer one. One workspace per project then opens its terminals in the project. The folder dialogs (an agent's,
+an editor's, Git's) offer it first ([agents.md](agents.md)).
 
 ### Stopping a workspace
 
@@ -416,7 +417,8 @@ An **editor block** is a small editor on one folder: a file tree, tabs of open f
 It is where Git sends files, and where a developer reads or fixes code without leaving the canvas.
 
 - **Opening one:** the toolbar's Editor, **Add ▸ Editor**, or `new_editor`. A dialog asks for the folder, like
-  the agents' ([agents.md](agents.md)): this workspace's recent folders, **Choose a folder…**, or a typed path.
+  the agents' ([agents.md](agents.md)): this workspace's folder and recent folders, **Choose a folder…**, or a
+  typed path.
   The block opens 900 × 600, at least 480 × 320. Its title is the folder's name, and `file name — folder` with a
   file open (`●` before a changed file's name).
 
@@ -492,11 +494,11 @@ Architecture: `editor.rs` (new): the block state (`folder`, `tree: Entity<TreeSt
 A **Git block** shows one repository and does what the Git panels of VS Code, Zed and GitHub Desktop do, with the
 same words. It never runs a command the user didn't ask for, except reads.
 
-- **Opening one:** the toolbar's Git, **Add ▸ Git**, or `new_git`, then the folder dialog (recent folders first:
-  a developer's recent folders are usually repositories). The block opens 800 × 560, at least 480 × 320, on the
-  repository that contains the folder (`git rev-parse --show-toplevel`). A folder in no repository shows
-  "Not a Git repository" with **Initialize** (`git init`) and **Choose another folder…**. No `git` on the computer:
-  the block says so, with how to install it per OS.
+- **Opening one:** the toolbar's Git, **Add ▸ Git**, or `new_git`, then the folder dialog (the workspace's folder and
+  the recent ones first: a developer's recent folders are usually repositories). The block opens 800 × 560, at least
+  480 × 320, on the repository that contains the folder (`git rev-parse --show-toplevel`). A folder in no repository
+  shows "Not a Git repository" with **Initialize** (`git init`) and **Choose another folder…**. No `git` on the
+  computer: the block says so, with how to install it per OS.
 - **Header:** the repository's name; the current branch as a pill (click: the Branches tab), with ↑*n* ↓*m* after
   it when it is ahead or behind its upstream, or "no upstream"; then **Fetch**, **Pull**, **Push** and ↻.
   During merge, rebase, cherry-pick or revert a banner under the header names it, with **Abort** and, once nothing
