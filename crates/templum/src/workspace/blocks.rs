@@ -339,9 +339,14 @@ impl Workspace {
         let line = format!("{}\r", self.typed(entry, &command));
         // Known at once (Shift+Enter, closing), not at the next snapshot.
         let agent = entry.map(|a| a.id.clone());
+        let title = entry.map_or_else(
+            || templum_terminal::program_name(&command),
+            |a| a.title.clone(),
+        );
         let pane = self.space.terminal_mut(id).expect("just spawned");
         pane.term.write(line.into_bytes());
         pane.seen.agent = agent;
+        self.cover_start(id, title, cx);
         remember(&mut self.space.recent, folder.to_path_buf());
         Some(id)
     }
@@ -451,6 +456,7 @@ impl Workspace {
                         flags_for: None,
                         sent: None,
                         transcript: None,
+                        starting: None,
                     })),
                 );
                 self.added(id);

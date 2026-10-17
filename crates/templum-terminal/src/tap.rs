@@ -31,6 +31,9 @@ pub struct Status {
     pub attention: u64,
     /// The last notification's text; None after a bell.
     pub message: Option<String>,
+    /// When it last printed: stamped before each read's sequences, so a command's own output
+    /// comes after its `running`.
+    pub output: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -408,6 +411,7 @@ impl<P: EventedReadWrite> io::Read for Tap<P> {
             // over would wait for the PTY's next output, since the event loop polls the PTY.
             let room = (buf.len() / 4).max(1).min(buf.len());
             let n = self.pty.reader().read(&mut buf[..room])?;
+            self.shared.status.lock().unwrap().output = Some(Instant::now());
             let inserts = self.scanner.scan(&buf[..n], &self.shared);
             if inserts.is_empty() {
                 return Ok(n);

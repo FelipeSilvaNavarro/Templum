@@ -64,7 +64,7 @@ impl Workspace {
             let id = self.spawn_block(rect, folder, window, cx);
             failed |= id.is_none();
             if let Some(id) = id {
-                self.restore_terminal(id, t, in_its_folder);
+                self.restore_terminal(id, t, in_its_folder, cx);
             }
             ids.push(id);
         }
@@ -140,7 +140,13 @@ impl Workspace {
     /// `resume`, its agent (one Templum knows) typed back with its session when it was found, and
     /// its model and effort when it can type them safely (a hand-edited file may hold others).
     /// The shell reads it once it is ready.
-    fn restore_terminal(&mut self, id: BlockId, saved: &session::TerminalItem, resume: bool) {
+    fn restore_terminal(
+        &mut self,
+        id: BlockId,
+        saved: &session::TerminalItem,
+        resume: bool,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(pane) = self.space.terminal_mut(id) {
             pane.opened_by = saved.opened_by.clone();
         }
@@ -169,7 +175,7 @@ impl Workspace {
                 &format!("{command}{}", args.as_deref().unwrap_or(""))
             )
         );
-        let agent = agent.id.clone();
+        let (agent, title) = (agent.id.clone(), agent.title.clone());
         if let Some(pane) = self.space.terminal_mut(id) {
             pane.term.write(line.into_bytes());
             pane.seen.agent = Some(agent);
@@ -177,6 +183,7 @@ impl Workspace {
                 (pane.model, pane.effort) = (saved.model.clone(), saved.effort.clone());
                 pane.flags_for = pane.seen.agent.clone();
             }
+            self.cover_start(id, title, cx);
         }
     }
 
@@ -196,7 +203,7 @@ impl Workspace {
                 // An agent resumes the folder's latest conversation: anywhere else, it's another one.
                 let in_its_folder = folder.is_some();
                 let id = self.spawn_block(rect, folder, window, cx)?;
-                self.restore_terminal(id, t, in_its_folder);
+                self.restore_terminal(id, t, in_its_folder, cx);
                 Some(id)
             }
             session::Item::Kanban(k) => clamped_rect(k.rect.into(), kanban::MIN).map(|rect| {

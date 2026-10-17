@@ -6,8 +6,9 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::base::animation::Lerp as _;
 use gpui_kit::base::motion::{Transition, transition};
-use gpui_kit::component::Icon;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Hsla,
@@ -518,6 +519,12 @@ pub(crate) fn render(
                 .when_some(
                     pane.find.as_ref().filter(|_| live && level == Level::Full),
                     |el, bar| el.child(find_bar(ws, n, bar, z)),
+                )
+                .when_some(
+                    pane.starting
+                        .as_ref()
+                        .filter(|_| live && level != Level::Card),
+                    |el, s| el.child(starting_cover(ws, n, s.title.clone(), z)),
                 ),
             // A fading kanban block is drawn empty: its board is still live elsewhere.
             Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
@@ -657,6 +664,35 @@ pub(crate) fn render(
         })
         .test_support()
         .into_any_element()
+}
+
+/// Over an agent's terminal while it starts (`starting.rs`): its name and a spinner, not its
+/// shell typing the command.
+fn starting_cover(ws: &Workspace, n: usize, title: SharedString, z: f32) -> impl IntoElement {
+    div()
+        .id(("starting", n))
+        .absolute()
+        .inset_0()
+        .bg(ws.ui.surface)
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(12.0 * z))
+        .child(Spinner::new().with_size(UiSize::Size(px(22.0 * z))))
+        .child(
+            div()
+                .text_size(px(15.0 * z))
+                .text_color(ws.ui.title)
+                .child(title),
+        )
+        .child(
+            div()
+                .text_size(px(12.0 * z))
+                .text_color(ws.ui.hint)
+                .child("Starting…"),
+        )
+        .test_support()
 }
 
 /// A block's title: a terminal's, a kanban block's board, a note's first line, an editor's file,

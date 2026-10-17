@@ -29,6 +29,7 @@ mod render;
 mod selection;
 mod spaces;
 mod spawn;
+pub(crate) mod starting;
 mod tiling;
 mod update;
 mod usage;
@@ -233,6 +234,8 @@ pub(crate) struct Pane {
     pub sent: Option<Instant>,
     /// The transcript its agent's last turn's end named, until its next session starts.
     pub transcript: Option<String>,
+    /// Its agent starting, under a cover, until its screen shows (`starting.rs`).
+    pub starting: Option<starting::Starting>,
 }
 
 impl Pane {
