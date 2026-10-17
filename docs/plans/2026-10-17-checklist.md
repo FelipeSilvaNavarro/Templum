@@ -551,7 +551,7 @@ git commit -m "feat(checklist): keep checklists and their blocks across restarts
   - `checklist.rs`: `pub(crate) fn open_checklists(into: Option<BlockId>, window, cx: &mut Context<Workspace>)`;
     `checklist_tabs.rs`: `pub(crate) fn delete_checklist(&mut self, id: u64, window, cx)`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 ```rust
 #[gpui_kit::test]
@@ -569,24 +569,24 @@ fn the_dialog_opens_one_where_it_is_open_and_deletes_one_from_its_blocks(cx: &mu
 
 The note tests of the Notes dialog pass unchanged (`cargo test -p templum notes`).
 
-- [ ] **Step 2: Run them to see them fail**
+- [x] **Step 2: Run them to see them fail**
 
 Run: `cargo test -p templum checklists::`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement** `list_dialog::open` from `open_notes`'s body; `open_notes` becomes a call with the notes'
+- [x] **Step 3: Implement** `list_dialog::open` from `open_notes`'s body; `open_notes` becomes a call with the notes'
   rows (the color dot, "5 min ago · Open in Workspace 2 · its next line"); `open_checklists` with the checklists'
   (`detail`: "2/5 · 5 min ago · Open", the progress left out with no items; dialog title "Checklists", find "Find a
   checklist", none "No checklists yet.", no match "No checklist holds that.", new "New checklist"). Wire **Open a
   checklist…**, the header button, **All checklists…** (`Items::Checklist`, `ListChecks`) and the canvas menu's
   **Checklists…** after Notes….
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `cargo test -p templum`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A crates/templum

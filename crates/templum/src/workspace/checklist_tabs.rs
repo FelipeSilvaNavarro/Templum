@@ -69,7 +69,6 @@ impl Workspace {
 
     /// Opens checklist `id`: where it is open, that tab is shown; otherwise as a new tab of the
     /// checklist block `into`, or in a new checklist block at the view's center without one.
-    #[cfg_attr(not(test), allow(dead_code))] // The Checklists dialog (plan Task 5) opens with it.
     pub(crate) fn open_checklist(
         &mut self,
         id: u64,
@@ -177,6 +176,37 @@ impl Workspace {
         }
         self.drop_checklist_if_blank(id);
         self.focus_block(block, window, cx);
+    }
+
+    /// The Checklists dialog's delete: checklist `id` goes for good, from every block that shows
+    /// it.
+    pub(crate) fn delete_checklist(
+        &mut self,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((space, block)) = self.checklist_open_at(id) {
+            let space = space.id.clone();
+            if space == self.space.id {
+                self.stop_editing(block, window, cx);
+            }
+            if let Some(checklist) = self
+                .space_by_id_mut(&space)
+                .and_then(|s| s.blocks.get_mut(&block))
+                .and_then(Body::checklist_mut)
+                && let Some(index) = checklist.tabs.iter().position(|t| *t == id)
+            {
+                checklist.tabs.remove(index);
+                if checklist.active > index || checklist.active >= checklist.tabs.len() {
+                    checklist.active = checklist.active.saturating_sub(1);
+                }
+                // A field of a hidden workspace's block goes with its checklist.
+                checklist.editing.take_if(|e| e.list == id);
+            }
+        }
+        self.checklists.remove(id);
+        cx.notify();
     }
 
     /// Checklist `id` is no more open: a blank one goes.

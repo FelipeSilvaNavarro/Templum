@@ -687,3 +687,116 @@ fn an_unopenable_checklists_json_is_left_alone(cx: &mut TestAppContext) {
         "never written over"
     );
 }
+
+fn row(id: u64) -> ElementId {
+    ElementId::Name(format!("checklist-row-{id}").into())
+}
+
+fn trash(id: u64) -> ElementId {
+    ElementId::Name(format!("checklist-delete-{id}").into())
+}
+
+#[gpui_kit::test]
+fn the_dialog_lists_checklists_newest_first_and_finds_by_item_text(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (a, b) = ws.update(cx, |ws, _| {
+        let a = ws.checklists.add(1);
+        ws.checklists.rename(a, "Groceries", 1);
+        let b = ws.checklists.add(2);
+        ws.checklists.rename(b, "Deploy", 2);
+        ws.checklists.add_item(b, None, "Buy milk", false, 2);
+        (a, b)
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |_, cx| {
+            crate::checklist::open_checklists(None, window, cx)
+        });
+        window.render_frame(cx);
+        let (ya, yb) = (
+            window.find(row(a)).bounds().origin.y,
+            window.find(row(b)).bounds().origin.y,
+        );
+        assert!(yb < ya, "the most recently changed first");
+    })
+    .unwrap();
+    cx.simulate_input(handle, "MILK");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(row(a)).is_none(),
+            "the search leaves it out"
+        );
+        window.find(row(b));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn the_dialog_opens_one_where_it_is_open_and_deletes_one_from_its_blocks(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let first = new_checklist(handle, &ws, cx);
+    let list = ws.update(cx, |ws, _| {
+        let list = shown(ws, first);
+        ws.checklists.rename(list, "Deploy", 1);
+        list
+    });
+    let second = new_checklist(handle, &ws, cx);
+    // The dialog asked from the second block: the checklist is shown where it is open.
+    click(handle, cx, ("checklists", second.0 as usize));
+    click(handle, cx, row(list));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.focused, Some(first));
+        assert_eq!(ws.space.blocks[&second].checklist().unwrap().tabs.len(), 1);
+    });
+    // Its trash deletes it on the second click, from the block too.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |_, cx| {
+            crate::checklist::open_checklists(None, window, cx)
+        });
+        window.render_frame(cx);
+        window.click(trash(list), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.checklists.get(list).is_some(), "one click asks")
+    });
+    click(handle, cx, trash(list));
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.checklists.get(list).is_none(), "deleted");
+        assert!(ws.space.blocks[&first].checklist().unwrap().tabs.is_empty());
+    });
+}
+
+#[gpui_kit::test]
+fn open_a_checklist_in_an_empty_block_opens_it_there(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let id = new_checklist(handle, &ws, cx);
+    let kept = ws.update(cx, |ws, _| {
+        let kept = ws.checklists.add(1);
+        ws.checklists.rename(kept, "Kept", 1);
+        kept
+    });
+    click(handle, cx, name("checklist-tab-close", id, 0));
+    click(handle, cx, ("checklist-open-here", id.0 as usize));
+    click(handle, cx, row(kept));
+    ws.read_with(cx, |ws, _| assert_eq!(shown(ws, id), kept));
+}
+
+#[gpui_kit::test]
+fn all_checklists_in_the_blocks_menu_opens_the_dialog(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let id = new_checklist(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.right_click(("title", id.0 as usize), cx);
+        window.render_frame(cx);
+        window.within("popup-menu").click(0usize, cx);
+        window.render_frame(cx);
+        window.find("checklists-find");
+    })
+    .unwrap();
+}

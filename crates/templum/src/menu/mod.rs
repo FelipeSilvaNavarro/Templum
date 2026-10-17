@@ -235,7 +235,7 @@ impl Workspace {
                         color: n.tab().map(|t| self.notes.get(t.id).and_then(|e| e.color)),
                         send: self.send_to_menu(n.to_send(cx)),
                     },
-                    Body::Checklist(_) => Items::Checklist,
+                    Body::Checklist(_) => Items::Checklist { block },
                     Body::Editor(e) => Items::Editor {
                         block,
                         tree: e.show_tree,
@@ -537,8 +537,9 @@ enum Items {
         color: Option<Option<crate::board::Label>>,
         send: SendTo,
     },
-    /// A checklist block: the grid's items and Close, as every block's.
-    Checklist,
+    Checklist {
+        block: BlockId,
+    },
     Editor {
         block: BlockId,
         tree: bool,

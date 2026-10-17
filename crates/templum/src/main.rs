@@ -20,6 +20,7 @@ mod ink;
 mod kanban;
 mod keys;
 mod launcher;
+mod list_dialog;
 mod markdown;
 mod menu;
 mod motion;

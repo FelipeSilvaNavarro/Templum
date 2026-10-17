@@ -1,6 +1,7 @@
 //! A checklist block: tabs of checklists (`checklists.rs` keeps them, app-wide), each drawn from
 //! `Workspace::checklists` at the block's zoom: its name, its items with their check boxes, and
-//! + Add an item. With none open, a way to open one. See docs/specs/checklist.md.
+//! "+ Add an item". With none open, a way to open one. And the Checklists dialog, where every
+//! checklist is found, opened and deleted. See docs/specs/checklist.md.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
@@ -13,7 +14,9 @@ use gpui_kit::{
 use templum_canvas::{BlockId, Size};
 
 use crate::checklists::{self, List};
+use crate::list_dialog;
 use crate::note;
+use crate::notes;
 use crate::tab_strip::tab_strip;
 use crate::workspace::Workspace;
 
@@ -361,6 +364,81 @@ fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) ->
             }))
             .test_support(),
         )
+        .child(
+            note::button(
+                ("checklist-open-here", n),
+                IconName::ListChecks,
+                "Open a checklist…",
+                ws,
+                z,
+            )
+            .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
+                open_checklists(Some(block), window, cx)
+            }))
+            .test_support(),
+        )
         .test_support()
         .into_any_element()
+}
+
+/// The Checklists dialog: every checklist, the most recently changed first, and a field that
+/// finds them by their name and their items. A click opens one: in the block `into` it was asked
+/// from, where it is open already, or in a new block. Its trash deletes it on a second click,
+/// from every block too.
+pub(crate) fn open_checklists(
+    into: Option<BlockId>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let kind = list_dialog::Kind {
+        title: "Checklists",
+        prefix: "checklist",
+        find: "Find a checklist",
+        none: "No checklists yet.",
+        no_match: "No checklist holds that.",
+        new: "New checklist",
+    };
+    list_dialog::open(
+        kind,
+        rows,
+        move |ws, id, window, cx| ws.open_checklist(id, into, window, cx),
+        |ws, id, window, cx| ws.delete_checklist(id, window, cx),
+        move |ws, window, cx| match into {
+            Some(block) => ws.new_checklist_tab(block, window, cx),
+            None => ws.new_checklist(window, cx),
+        },
+        window,
+        cx,
+    );
+}
+
+/// The Checklists dialog's rows for `query`: each checklist's name, then its progress, when it
+/// changed and where it is open ("2/5 · 5 min ago · Open").
+fn rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
+    let now = notes::now();
+    ws.checklists
+        .find(query)
+        .into_iter()
+        .map(|list| {
+            let progress = match list.progress() {
+                (_, 0) => None,
+                (done, all) => Some(format!("{done}/{all}")),
+            };
+            let at = ws.checklist_open_at(list.id).map(|(space, _)| space);
+            let detail: Vec<String> = [
+                progress,
+                Some(notes::ago(list.changed, now)),
+                list_dialog::open_at(ws, at),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            list_dialog::Row {
+                id: list.id,
+                title: list.name_shown().to_string(),
+                detail: detail.join(" · "),
+                dot: None,
+            }
+        })
+        .collect()
 }

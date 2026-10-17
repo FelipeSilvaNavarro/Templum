@@ -2,22 +2,21 @@
 //! gpui-kit's editor; with none open, a way to open one. And the Notes dialog, where every note is
 //! found, opened and deleted. See docs/specs/cockpit.md, section 5.
 
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
+use std::cell::RefCell;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::dialog::DialogButtonProps;
-use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
-use gpui_kit::component::{Icon, WindowExt as _};
+use gpui_kit::component::Icon;
+use gpui_kit::component::input::{Editor, EditorState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, ClickEvent, Context, ElementId, Entity, FontWeight, MouseButton,
-    ScrollWheelEvent, SharedString, TestSupportExt, Window, div, px, relative,
+    AnyElement, App, ClickEvent, Context, ElementId, Entity, ScrollWheelEvent, SharedString,
+    TestSupportExt, Window, div, px, relative,
 };
 use templum_canvas::{BlockId, Level, Size, chrome};
 
 use crate::block::BORDER;
 use crate::grid::{BAR_OPACITY, hsla};
+use crate::list_dialog;
 use crate::notes;
 use crate::silhouette::{self, Far};
 use crate::tab_strip::{TABS_H, tab_strip};
@@ -319,189 +318,56 @@ fn editor_box(
 /// their text. A click opens one: in the block `into` it was asked from, where it is open
 /// already, or in a new block. Its trash deletes it on a second click, from every block too.
 pub(crate) fn open_notes(into: Option<BlockId>, window: &mut Window, cx: &mut Context<Workspace>) {
-    let ws = cx.entity();
-    let search = cx.new(|cx| InputState::new(window, cx).placeholder("Find a note"));
-    let field = search.clone();
-    {
-        let ws = ws.clone();
-        App::subscribe(cx, &search, move |_, event: &InputEvent, cx| {
-            if let InputEvent::Change = event {
-                ws.update(cx, |_, cx| cx.notify());
+    let kind = list_dialog::Kind {
+        title: "Notes",
+        prefix: "note",
+        find: "Find a note",
+        none: "No notes yet.",
+        no_match: "No note holds that.",
+        new: "New note",
+    };
+    list_dialog::open(
+        kind,
+        note_rows,
+        move |ws, id, window, cx| ws.open_note(id, into, window, cx),
+        |ws, id, window, cx| ws.delete_note(id, window, cx),
+        move |ws, window, cx| match into {
+            Some(block) => ws.new_note_tab(block, window, cx),
+            None => ws.new_note(window, cx),
+        },
+        window,
+        cx,
+    );
+}
+
+/// The Notes dialog's rows for `query`: each note's title, then when it changed, where it is
+/// open and its next line ("5 min ago · Open in Workspace 2 · milk"), its color's dot.
+fn note_rows(ws: &Workspace, query: &str) -> Vec<list_dialog::Row> {
+    let now = notes::now();
+    ws.notes
+        .find(query)
+        .into_iter()
+        .map(|note| {
+            let at = list_dialog::open_at(ws, ws.note_open_at(note.id).map(|(space, _)| space));
+            let line = note
+                .text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .nth(1)
+                .map(str::to_string);
+            let detail: Vec<String> = [Some(notes::ago(note.changed, now)), at, line]
+                .into_iter()
+                .flatten()
+                .collect();
+            list_dialog::Row {
+                id: note.id,
+                title: notes::title(&note.text),
+                detail: detail.join(" · "),
+                dot: note
+                    .color
+                    .map(|color| hsla(ws.theme.palette.ansi[color.ansi()], 1.0)),
             }
         })
-        .detach();
-    }
-    // The note whose trash was clicked once: the next click deletes it.
-    let armed: Rc<Cell<Option<u64>>> = Rc::default();
-    window.open_alert_dialog(cx, move |alert, _, cx| {
-        let query = search.read(cx).value().to_string();
-        let ws_now = ws.read(cx);
-        let ui = ws_now.ui;
-        let red = hsla(ws_now.theme.palette.ansi[1], 1.0);
-        let now = notes::now();
-        let rows: Vec<AnyElement> = ws_now
-            .notes
-            .find(&query)
-            .into_iter()
-            .map(|note| {
-                let id = note.id;
-                let at = ws_now.note_open_at(id).map(|(space, _)| {
-                    if space.id == ws_now.space.id {
-                        "Open".to_string()
-                    } else {
-                        format!("Open in {}", space.name)
-                    }
-                });
-                let when = notes::ago(note.changed, now);
-                let line = note
-                    .text
-                    .lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .nth(1)
-                    .unwrap_or_default()
-                    .to_string();
-                let is_armed = armed.get() == Some(id);
-                let trash = {
-                    let (ws, armed) = (ws.clone(), armed.clone());
-                    div()
-                        .id(ElementId::Name(format!("note-delete-{id}").into()))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .gap(px(4.0))
-                        .px(px(8.0))
-                        .py(px(4.0))
-                        .rounded(px(6.0))
-                        .text_size(px(12.0))
-                        .text_color(if is_armed { red } else { ui.title_dim })
-                        .cursor_pointer()
-                        .hover(move |s| s.bg(ui.hover).text_color(red))
-                        .child(Icon::new(IconName::Trash).size(px(14.0)))
-                        .when(is_armed, |el| el.child("Delete for good"))
-                        // The row behind opens the note: not on this press.
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(move |_: &ClickEvent, window, cx| {
-                            if armed.get() == Some(id) {
-                                armed.set(None);
-                                ws.update(cx, |ws, cx| ws.delete_note(id, window, cx));
-                            } else {
-                                armed.set(Some(id));
-                                ws.update(cx, |_, cx| cx.notify());
-                            }
-                        })
-                        .test_support()
-                };
-                let open = ws.clone();
-                div()
-                    .id(ElementId::Name(format!("note-row-{id}").into()))
-                    .flex()
-                    .items_center()
-                    .gap(px(10.0))
-                    .px(px(10.0))
-                    .py(px(8.0))
-                    .rounded(px(8.0))
-                    .border_1()
-                    .border_color(ui.hairline)
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(ui.hover).border_color(ui.hover_border))
-                    .when_some(note.color, |el, color| {
-                        el.child(
-                            div()
-                                .flex_shrink_0()
-                                .size(px(10.0))
-                                .rounded_full()
-                                .bg(hsla(ws_now.theme.palette.ansi[color.ansi()], 1.0)),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(0.0))
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(13.0))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(notes::title(&note.text)),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .text_size(px(12.0))
-                                    .text_color(ui.title_dim)
-                                    .child(match at {
-                                        Some(at) => format!("{when} · {at}"),
-                                        None => when,
-                                    })
-                                    .when(!line.is_empty(), |el| el.child(format!(" · {line}"))),
-                            ),
-                    )
-                    .child(trash)
-                    .on_click(move |_: &ClickEvent, window, cx| {
-                        // First: closing gives the keyboard back to what had it before.
-                        window.close_dialog(cx);
-                        open.update(cx, |ws, cx| ws.open_note(id, into, window, cx));
-                    })
-                    .test_support()
-                    .into_any_element()
-            })
-            .collect();
-        let none = rows.is_empty().then(|| {
-            div()
-                .py(px(16.0))
-                .text_size(px(13.0))
-                .text_color(ui.title_dim)
-                .child(if query.trim().is_empty() {
-                    "No notes yet."
-                } else {
-                    "No note holds that."
-                })
-        });
-        let new = {
-            let ws = ws.clone();
-            button("notes-new", IconName::Plus, "New note", ws_now, 1.0).on_click(
-                move |_: &ClickEvent, window, cx| {
-                    window.close_dialog(cx);
-                    ws.update(cx, |ws, cx| match into {
-                        Some(block) => ws.new_note_tab(block, window, cx),
-                        None => ws.new_note(window, cx),
-                    });
-                },
-            )
-        };
-        alert
-            .title("Notes")
-            .w(px(560.0))
-            .button_props(DialogButtonProps::default().ok_text("Done"))
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .id("notes-find")
-                            .child(Input::new(&search))
-                            .test_support(),
-                    )
-                    .child(
-                        div()
-                            .id("notes-list")
-                            .max_h(px(380.0))
-                            .overflow_y_scroll()
-                            .flex()
-                            .flex_col()
-                            .gap(px(6.0))
-                            .children(rows)
-                            .children(none)
-                            .test_support(),
-                    )
-                    .child(div().flex().child(new.test_support())),
-            )
-    });
-    // After opening: the dialog takes the focus when it opens.
-    field.update(cx, |input, cx| input.focus(window, cx));
+        .collect()
 }

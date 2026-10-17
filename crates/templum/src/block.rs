@@ -378,6 +378,19 @@ pub(crate) fn render(
         )),
         _ => None,
     };
+    // A checklist block's button to every checklist, there too.
+    let all_checklists = match body {
+        Body::Checklist(_) if live && !labeled => Some(header_button(
+            ws,
+            ("checklists", n).into(),
+            IconName::ListChecks,
+            "All checklists",
+            z,
+            move |_, window, cx| checklist::open_checklists(Some(id), window, cx),
+            cx,
+        )),
+        _ => None,
+    };
     // An editor's file-tree toggle, on the left of its header (over the title: no move).
     let tree_toggle = match body {
         Body::Editor(e) if live && !labeled => {
@@ -452,6 +465,7 @@ pub(crate) fn render(
         .children(chip)
         .children(boards)
         .children(preview)
+        .children(all_checklists)
         .children(tree_toggle)
         .when(hovered, |el| {
             el.child(fade_in(fullscreen, ("fullscreen-fade", n)))

@@ -332,9 +332,22 @@ impl Items {
                     Some(IconName::NotebookText),
                     |_, window, cx| crate::note::open_notes(None, window, cx),
                 );
-                adding(ws, menu, agents, at, window, cx).item(notes)
+                let checklists = item(
+                    ws,
+                    "Checklists…",
+                    Some(IconName::ListChecks),
+                    |_, window, cx| crate::checklist::open_checklists(None, window, cx),
+                );
+                adding(ws, menu, agents, at, window, cx)
+                    .item(notes)
+                    .item(checklists)
             }
-            Items::Checklist => menu,
+            Items::Checklist { block } => menu.item(item(
+                ws,
+                "All checklists…",
+                Some(IconName::ListChecks),
+                move |_, window, cx| crate::checklist::open_checklists(Some(block), window, cx),
+            )),
             Items::Terminal { selection } => menu
                 .item(
                     item(ws, "Copy", Some(IconName::Copy), |ws, window, cx| {
