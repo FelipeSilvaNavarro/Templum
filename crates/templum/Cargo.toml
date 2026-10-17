@@ -75,3 +75,8 @@ signing-identity = "-"
 
 [package.metadata.packager.nsis]
 installer-icon = "icons/templum.ico"
+
+# The PKGBUILD downloads the package from its GitHub Release (tag and file as release.yml publishes
+# them); without this it names only the file, which makepkg can't find. Only x86_64 builds pacman.
+[package.metadata.packager.pacman]
+source = ['"https://github.com/KingDasWinx/Templum/releases/download/v${pkgver}/templum_${pkgver}_x86_64.tar.gz"']

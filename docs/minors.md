@@ -199,6 +199,11 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   as a bitmap (blurry on a 150% display). Check on Windows: Task Manager ▸ Details ▸ the "DPI awareness" column. Fix:
   add `1 RT_MANIFEST "templum.manifest.xml"` to the `.rc`, with gpui-fast's `resources/windows/gpui.manifest.xml`
   (Apache-2.0) beside it.
+- [ ] **A prerelease's PKGBUILD doesn't build.** cargo-packager writes the version as it is, so a `-rc.N` tag gives
+  `pkgver=1.2.0-rc.1`, and makepkg refuses a `pkgver` with a hyphen. Seen
+  with the PKGBUILD the release attaches (`[package.metadata.packager.pacman]` in `crates/templum/Cargo.toml`). Fix:
+  in release.yml, after `cargo packager`, rewrite a prerelease's `pkgver` with `_` for `-` and set the source URL's
+  version from `$GITHUB_REF_NAME` instead of `${pkgver}`.
 
 ## Commit messages
 
