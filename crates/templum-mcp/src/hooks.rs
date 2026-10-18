@@ -252,14 +252,24 @@ pub fn opencode(input: &Value) -> Option<AgentEvent> {
     })
 }
 
-/// The last answer in a Copilot CLI transcript (`events.jsonl`, or its end): the text of its last
-/// `assistant.message` that has some. A broken line (a write under way) is skipped.
+/// The last prompt's answer in a Copilot CLI transcript (`events.jsonl`, or its end): the text of
+/// its last `assistant.message` that has some, after the last `user.message`. None until Copilot
+/// wrote it: it writes the file in batches, after its `agentStop` hook may have started. A broken
+/// line (a write under way) is skipped.
 pub fn copilot_answer(transcript: &str) -> Option<String> {
-    transcript.lines().rev().find_map(|line| {
-        let event: Value = serde_json::from_str(line).ok()?;
-        let content = event["data"]["content"].as_str()?;
-        (event["type"] == "assistant.message" && !content.is_empty()).then(|| content.to_string())
-    })
+    for line in transcript.lines().rev() {
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        match (event["type"].as_str(), event["data"]["content"].as_str()) {
+            (Some("user.message"), _) => return None,
+            (Some("assistant.message"), Some(text)) if !text.is_empty() => {
+                return Some(text.to_string());
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -681,6 +691,18 @@ mod tests {
             None
         );
         assert_eq!(copilot_answer(""), None);
+        // The last prompt's answer only: one not written yet isn't the last turn's.
+        let next = format!(
+            "{three}\n{}\n{}",
+            line("user.message", json!({ "content": "again" })),
+            line("assistant.turn_start", json!({}))
+        );
+        assert_eq!(copilot_answer(&next), None);
+        let answered = format!(
+            "{next}\n{}",
+            line("assistant.message", json!({ "content": "Again." }))
+        );
+        assert_eq!(copilot_answer(&answered).as_deref(), Some("Again."));
     }
 
     #[test]

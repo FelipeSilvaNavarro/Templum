@@ -453,7 +453,7 @@ fn hook_event(args: &[String], stdin: &mut dyn Read) -> Option<hooks::AgentEvent
                 message: None,
                 transcript: Some(path),
             } => Some(hooks::AgentEvent::Stopped {
-                message: tail(&path, 256 * 1024).and_then(|t| hooks::copilot_answer(&t)),
+                message: copilot_answer(&path),
                 transcript: Some(path),
             }),
             event => Some(event),
@@ -464,6 +464,20 @@ fn hook_event(args: &[String], stdin: &mut dyn Read) -> Option<hooks::AgentEvent
         // Templum's extension in Pi.
         "pi" => hooks::pi(&on_stdin()?),
         _ => None,
+    }
+}
+
+/// The answer in Copilot CLI's transcript at `path` (its last 256 KB): it writes the file in
+/// batches, so it may come a moment after its `agentStop` hook; waited for 3 s at most, under
+/// the hook's 5.
+fn copilot_answer(path: &str) -> Option<String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let answer = tail(path, 256 * 1024).and_then(|t| hooks::copilot_answer(&t));
+        if answer.is_some() || std::time::Instant::now() >= deadline {
+            return answer;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
@@ -881,6 +895,36 @@ mod tests {
             Incoming::Notification {
                 method: "templum/event".into(),
                 params: json!({ "event": "stopped", "message": "Done.", "transcript": transcript }),
+            }
+        );
+        // Copilot writes its transcript in batches: the answer may come a moment after the hook.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .unwrap();
+        writeln!(
+            file,
+            r#"{{"type":"user.message","data":{{"content":"again"}}}}"#
+        )
+        .unwrap();
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            writeln!(
+                file,
+                r#"{{"type":"assistant.message","data":{{"content":"Later."}}}}"#
+            )
+            .unwrap();
+        });
+        assert_eq!(
+            run_with(&["hook", "copilot", "agentStop"], &env(&bus), &ended),
+            (0, String::new(), String::new())
+        );
+        late.join().unwrap();
+        assert_eq!(
+            events.recv_timeout(LIMIT).unwrap().1,
+            Incoming::Notification {
+                method: "templum/event".into(),
+                params: json!({ "event": "stopped", "message": "Later.", "transcript": transcript }),
             }
         );
         // Without its event: nothing.
