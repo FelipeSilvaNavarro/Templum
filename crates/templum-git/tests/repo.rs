@@ -2130,8 +2130,8 @@ fn merging_a_worktree_back_takes_a_clean_commit_and_aborts_a_conflict() {
     );
 }
 
-/// What git ignores in a worktree goes when it is removed: the state names it, but for the folders
-/// a build fills again.
+/// What git ignores in a worktree goes when it is removed: the state names it, but for what a
+/// build or a test run fills again.
 #[test]
 fn a_worktrees_state_names_its_ignored_files_but_build_folders() {
     let (dir, repo) = committed();
@@ -2139,7 +2139,7 @@ fn a_worktrees_state_names_its_ignored_files_but_build_folders() {
         &repo,
         dir.path(),
         ".gitignore",
-        ".env\nnode_modules/\ntarget/\n",
+        ".env\nnode_modules/\ntarget/\n.pytest_cache/\ncoverage/\n*.egg-info/\n*.log\n",
         "Ignore",
     );
     let path = repo.add_worktree("w").unwrap();
@@ -2150,6 +2150,10 @@ fn a_worktrees_state_names_its_ignored_files_but_build_folders() {
     write(&path, ".env", "SECRET=x\n");
     write(&path, "node_modules/x/i.js", "x\n");
     write(&path, "crates/a/target/o", "o\n");
+    write(&path, ".pytest_cache/v/cache/nodeids", "[]\n");
+    write(&path, "web/coverage/lcov.info", "TN:\n");
+    write(&path, "src/pkg.egg-info/PKG-INFO", "Name: pkg\n");
+    write(&path, "web/npm-debug.log", "0 info\n");
     let state = repo.worktree_state("w").unwrap().unwrap();
     assert_eq!(
         (state.ignored.as_slice(), state.changed),

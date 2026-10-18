@@ -84,13 +84,15 @@ pub struct WorktreeState {
     /// The files its HEAD has that a merge would write where it goes back over files git ignores
     /// there, which git does without asking (a `.env` its branch tracks).
     pub overwrites: Vec<String>,
-    /// Its files git ignores, which removing it deletes (a `.env`), but for the folders a build
-    /// makes again (`node_modules`, `target`); a folder an ignore pattern names as `dir/`.
+    /// Its files git ignores, which removing it deletes (a `.env`), but for what a build or a test
+    /// run makes again (`node_modules`, `target`, `.pytest_cache`); a folder an ignore pattern
+    /// names as `dir/`.
     pub ignored: Vec<String>,
 }
 
-/// The folders a build or a package manager fills again: a worktree's ignored files in them aren't
-/// work [`WorktreeState::ignored`] tells of.
+/// The folders a build, a package manager or a test run fills again: a worktree's ignored files in
+/// them aren't work [`WorktreeState::ignored`] tells of; nor a `*.egg-info` folder, nor the files
+/// of [`BUILT_FILES`].
 const BUILT: &[&str] = &[
     "node_modules",
     "target",
@@ -98,11 +100,36 @@ const BUILT: &[&str] = &[
     "dist",
     "out",
     ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".angular",
+    ".turbo",
+    ".parcel-cache",
     ".venv",
     "venv",
     "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".nox",
+    ".hypothesis",
+    "coverage",
+    "htmlcov",
+    ".nyc_output",
     ".gradle",
+    ".dart_tool",
     ".cache",
+];
+
+/// The logs and caches a package manager or a tool leaves.
+const BUILT_FILES: &[&str] = &[
+    "npm-debug.log",
+    "yarn-error.log",
+    "yarn-debug.log",
+    "pnpm-debug.log",
+    ".eslintcache",
+    ".coverage",
 ];
 
 #[derive(Clone, Debug)]
@@ -587,11 +614,12 @@ impl Repo {
             .map(str::to_string)
             .collect();
         // What a build makes again goes without a word.
-        let built = |entry: &String| {
-            entry
-                .strip_suffix('/')
-                .and_then(|dir| dir.rsplit('/').next())
-                .is_some_and(|dir| BUILT.contains(&dir))
+        let built = |entry: &String| match entry.strip_suffix('/') {
+            Some(dir) => {
+                let name = dir.rsplit('/').next().unwrap_or(dir);
+                BUILT.contains(&name) || name.ends_with(".egg-info")
+            }
+            None => BUILT_FILES.contains(&entry.rsplit('/').next().unwrap_or(entry)),
         };
         let mut ignored = tree.ignored()?;
         ignored.retain(|entry| !built(entry));
