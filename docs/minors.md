@@ -1513,11 +1513,9 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   workspace, Stop during a turn, a restart in the middle) wasn't done: the headless tests and a real Claude Code
   run outside Templum (the command line, `--resume`, the stream, the interrupt) are. Windows' `.cmd` launch of
   `claude` (`crates/templum-agent/src/engine.rs`, `command`) is untested.
-- [ ] **`stop_agent` and `wait_for`'s pattern wait for card 35 at the rebase.** Card 35 landed them on `development`
-  (`stop_in` and `watch_add` in `workspace/ops.rs`, `Event::Output` with a pattern in `templum-mcp`'s `tools.rs`); this
-  branch doesn't have them yet, so the control server lists neither. Fix, once rebased: add `stop_agent` to
-  `control::SHARED` with `Rule::AskOwn` (and to `approvals.rs`'s `called_block` and words), call `stop_in` from
-  `control_call` as `interrupt_in` is called, and let `event_wait` take the pattern, as `wait_for` does there.
+- [ ] **The control server's `wait_for` ignores card 35's pattern.** `control_call`'s `WaitFor`
+  (`crates/templum/src/workspace/control.rs`) passes `event_wait` no pattern, so `output` with a pattern never
+  answers for the Templum Agent. Fix: pass its `pattern`, `lines` and `wait`, as the block server's `wait_for` does.
 - [ ] **`touched` and `denied` take the oldest matching action.** `Conversation::touched` and `denied`
   (`crates/templum-agent/src/conversation.rs`) can give an earlier, finished row of the same call a new call's
   target or Denied. Fix: search newest first, among Running rows only.

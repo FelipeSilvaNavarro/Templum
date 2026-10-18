@@ -260,6 +260,11 @@ impl Workspace {
                     ws.interrupt_in(templum_agent::ASKER, "Templum Agent", at, &block, cx)
                 });
             }
+            ControlCall::Block(Call::StopAgent { block }) => {
+                return self.on_task(&block, |ws, at| {
+                    Outcome::Now(ws.stop_agent_in(templum_agent::ASKER, at, &block, cx))
+                });
+            }
             ControlCall::Block(Call::ListCards { board, card }) => {
                 let board = match card {
                     Some(card) => self

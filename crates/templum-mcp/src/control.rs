@@ -10,7 +10,7 @@ use crate::tools::{self, Call, Spawn};
 pub const SERVER: &str = "templum-control";
 
 /// The block server's tools the control server serves as they are, on any block or board.
-pub const SHARED: [&str; 17] = [
+pub const SHARED: [&str; 18] = [
     "read_terminal",
     "list_cards",
     "read_note",
@@ -28,6 +28,7 @@ pub const SHARED: [&str; 17] = [
     "delegate",
     "wait_for",
     "interrupt",
+    "stop_agent",
 ];
 
 /// A block `add_block` opens.
@@ -124,7 +125,7 @@ pub enum Level {
 
 /// What the block server's descriptions say of the caller, said for the Templum Agent: it acts
 /// on any block and any board.
-const SHARED_WORDS: [(&str, &str); 9] = [
+const SHARED_WORDS: [(&str, &str); 11] = [
     (" connected to you", ""),
     (" shown by a kanban", ""),
     ("; may be left out when one kanban shows a board", ""),
@@ -149,6 +150,14 @@ const SHARED_WORDS: [(&str, &str); 9] = [
         " Not your own block, nor an agent on another agent's task unless it waits for its person.",
         "",
     ),
+    (
+        "in a terminal you opened (spawn_agent, create_block)",
+        "in a terminal",
+    ),
+    (
+        "Only the person stops a block you didn't open.",
+        "The person allows it first, unless you opened the block.",
+    ),
 ];
 
 /// `reason`, on every tool that may wait for the person.
@@ -172,7 +181,7 @@ pub fn list() -> Value {
                 text = text.replace(from, to);
             }
             let mut tool: Value = serde_json::from_str(&text).expect("JSON");
-            if ["send_to_terminal", "send_keys", "interrupt"]
+            if ["send_to_terminal", "send_keys", "interrupt", "stop_agent"]
                 .iter()
                 .any(|name| t["name"] == *name)
             {
@@ -437,6 +446,7 @@ pub fn title(name: &str) -> &'static str {
         "delegate" => "Handing a task",
         "wait_for" => "Waiting for an agent",
         "interrupt" => "Interrupting an agent",
+        "stop_agent" => "Stopping a terminal's program",
         _ => "",
     }
 }
@@ -448,7 +458,7 @@ pub fn rule(call: &ControlCall) -> Rule {
         ControlCall::CloseBlock { .. } => Rule::AskOwnWhenLosing,
         // A wire lets each terminal on it type into the other and answer its dialogs: Templum
         // asks when it would reach a terminal that isn't the Templum Agent's own.
-        ControlCall::Block(Call::Interrupt { .. })
+        ControlCall::Block(Call::Interrupt { .. } | Call::StopAgent { .. })
         | ControlCall::Connect { .. }
         | ControlCall::OpenAgent(_) => Rule::AskOwn,
         _ => Rule::Free,
@@ -515,6 +525,7 @@ mod tests {
             ("delegate", json!({"block": "b7k2m", "task": "Take card 4"})),
             ("wait_for", json!({"block": "b7k2m", "event": "idle"})),
             ("interrupt", json!({"block": "b7k2m", "reason": "stuck"})),
+            ("stop_agent", json!({"block": "b7k2m", "reason": "done"})),
         ];
         let listed = list()["tools"].as_array().unwrap().len();
         assert_eq!(listed, examples.len(), "every listed tool has an example");
@@ -619,6 +630,19 @@ mod tests {
             !text.contains("connected to you") && !text.contains("list_blocks"),
             "{text}"
         );
+        let stop = &list()["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "stop_agent")
+            .unwrap()
+            .clone();
+        let words = stop["description"].as_str().unwrap();
+        assert!(
+            words.contains("allows it first") && !words.contains("you opened ("),
+            "{words}"
+        );
+        assert!(stop["inputSchema"]["properties"]["reason"].is_object());
     }
 
     #[test]
@@ -660,6 +684,10 @@ mod tests {
         );
         assert_eq!(
             rule_of("interrupt", json!({"block": "b", "reason": "ok"})),
+            Rule::AskOwn
+        );
+        assert_eq!(
+            rule_of("stop_agent", json!({"block": "b", "reason": "ok"})),
             Rule::AskOwn
         );
         assert_eq!(

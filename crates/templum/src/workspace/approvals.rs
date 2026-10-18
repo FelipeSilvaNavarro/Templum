@@ -189,6 +189,11 @@ impl Workspace {
                 format!("Interrupt {title:?}"),
                 "Esc once: its turn stops where it is.".to_string(),
             ),
+            ControlCall::Block(Call::StopAgent { .. }) => (
+                format!("Stop what runs in {title:?}"),
+                "Its agent or command ends, with every process it started; its shell stays."
+                    .to_string(),
+            ),
             ControlCall::Connect { a, b } => {
                 let titled = |uid: &str| {
                     self.find_block(uid)
@@ -382,7 +387,8 @@ fn called_block(call: &ControlCall) -> Option<&str> {
         | ControlCall::Block(
             Call::SendToTerminal { block, .. }
             | Call::SendKeys { block, .. }
-            | Call::Interrupt { block },
+            | Call::Interrupt { block }
+            | Call::StopAgent { block },
         ) => Some(block),
         _ => None,
     }

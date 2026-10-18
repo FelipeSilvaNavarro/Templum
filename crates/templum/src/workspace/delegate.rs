@@ -389,10 +389,7 @@ impl Workspace {
     }
 
     /// `stop_agent` from the terminal `from`: ends what runs in the terminal `block`, which the
-    /// caller opened, and what it left running (docs/specs/agent-tools.md#stop_agent). The task the
-    /// caller handed it ends, its waits hearing so at once, with the prompt a spawn still keeps for
-    /// it; the caller isn't told of that end: it knows. Another agent's task there ends as when its
-    /// agent leaves, once a snapshot no longer finds it.
+    /// caller opened, and what it left running (docs/specs/agent-tools.md#stop_agent).
     pub(super) fn stop_agent(&mut self, from: &str, block: &str, cx: &mut Context<Self>) -> Reply {
         let (space_id, me) = self.caller(from).expect("call found the caller");
         let space = self.space_named(&space_id).expect("the caller's workspace");
@@ -411,8 +408,27 @@ impl Workspace {
                 "Only the person stops {block}: you didn't open it. interrupt presses Esc in it."
             ));
         }
+        self.stop_agent_in(from, (&space_id, to), block, cx)
+    }
+
+    /// The body of `stop_agent`, for any asker (a terminal's `TEMPLUM_TERMINAL`, or the Templum
+    /// Agent's word): ends what runs in the terminal block `to` of `space`. The task `asker` handed
+    /// it ends, its waits hearing so at once, with the prompt a spawn still keeps for it; the asker
+    /// isn't told of that end: it knows. Another agent's task there ends as when its agent leaves,
+    /// once a snapshot no longer finds it.
+    pub(super) fn stop_agent_in(
+        &mut self,
+        asker: &str,
+        (space_id, to): (&str, BlockId),
+        block: &str,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let from = asker;
+        let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
+            return Reply::err(format!("{block} isn't a terminal."));
+        };
         let worker = pane.term.id().to_string();
-        let stopped = match self.stop_in(&space_id, to, cx) {
+        let stopped = match self.stop_in(space_id, to, cx) {
             Ok(stopped) => stopped,
             Err(refused) => return Reply::err(refused),
         };

@@ -2421,6 +2421,52 @@ fn interrupting_the_persons_agent_asks_its_own_doesnt(cx: &mut TestAppContext) {
     );
 }
 
+/// `stop_agent` on the person's terminal asks first; on the Templum Agent's own it ends what runs
+/// there at once, and the shell stays at its prompt.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn stopping_the_persons_terminal_asks_its_own_stops_at_once(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        ws.command = Some(jobs("cat; while read -r x; do :; done"))
+    });
+    let (theirs, their_uid) = busy_terminal(handle, &ws, cx);
+    in_front(&ws, cx, theirs, true);
+    let _answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "stop_agent",
+        json!({"block": their_uid, "reason": "done"}),
+    );
+    ws.read_with(cx, |ws, _| {
+        let approvals = &ws.templum_agent.approvals;
+        assert_eq!(approvals.len(), 1, "the person's terminal: it asks");
+        assert_eq!(approvals[0].said, "Stop what runs in \"Claude Code\"");
+    });
+    let (own, own_uid) = busy_terminal(handle, &ws, cx);
+    in_front(&ws, cx, own, true);
+    super::delegate::found(&ws, cx, own);
+    ws.update(cx, |ws, _| {
+        let own = &mut ws.templum_agent.conversation.own;
+        own.blocks.push(own_uid.clone());
+    });
+    let (failed, text) = control(handle, &ws, cx, "stop_agent", json!({"block": own_uid}));
+    assert!(
+        !failed && text.starts_with(&format!("Stopped {own_uid}: ended ")),
+        "{text}"
+    );
+    in_front(&ws, cx, own, false);
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            !ws.space.terminal(own).unwrap().term.exited(),
+            "the shell stays"
+        );
+        assert_eq!(ws.templum_agent.approvals.len(), 1, "its own: no approval");
+    });
+}
+
 /// The refusal while `n` of its tasks are under way.
 fn too_many(n: u32) -> String {
     format!(
