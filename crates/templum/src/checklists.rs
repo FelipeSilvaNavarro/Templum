@@ -38,6 +38,8 @@ pub(crate) struct List {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Item {
+    /// 0 when an edited file gives none: loading gives it a new one.
+    #[serde(default)]
     pub id: u64,
     #[serde(default)]
     pub text: String,
@@ -464,5 +466,15 @@ mod tests {
         assert_eq!(read.next_id, 8);
         read.remove(3);
         assert_eq!(read.lists.len(), 1, "B stays");
+        // An item with no id, written by hand, gets a new one.
+        std::fs::write(
+            path(d.path()),
+            r#"{"version":1,"next_id":4,"checklists":[{"id":4,"items":[{"text":"x"}]}]}"#,
+        )
+        .unwrap();
+        let Loaded::Saved(read) = load(d.path()) else {
+            panic!("not read")
+        };
+        assert_eq!((read.lists[0].items[0].id, read.next_id), (5, 5));
     }
 }

@@ -274,7 +274,9 @@ the prompt).
   boards' `next_id` (unique across boards, columns, cards and items, never reused). A checklist block can't show a
   card's checklist, nor a card a checklist block's: two places for one list would have to be kept in step.
 - **Saved** as `"checklist": [{ "id": 41, "text": "Build" }, { "id": 42, "text": "Test", "done": true }]`; missing is
-  none; an unchecked item writes no `done`.
+  none; an unchecked item writes no `done`. A hand edit mustn't lose the file: a `checklist` that isn't a list is none,
+  an item that doesn't read (`"done": "yes"`) is dropped, and one with no id gets a new one. `labels` that aren't a
+  list are none too.
 - **On the card:** its progress, "2/5", in the meta row, in the accent color once every item is done; nothing without
   items.
 - **In the open card:** its section ([layout](#the-open-card)): a progress bar, one row per item (a check box, its

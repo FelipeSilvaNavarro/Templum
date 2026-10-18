@@ -4,6 +4,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::checklists::Item;
@@ -47,7 +48,7 @@ pub(crate) struct Card {
     pub description: String,
     #[serde(
         default,
-        deserialize_with = "known_labels",
+        deserialize_with = "known",
         skip_serializing_if = "Vec::is_empty"
     )]
     pub labels: Vec<Label>,
@@ -60,7 +61,11 @@ pub(crate) struct Card {
     /// Who does it: none is anyone; `claim_card` makes it the claiming block.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignee: Option<Assignee>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        default,
+        deserialize_with = "known",
+        skip_serializing_if = "Vec::is_empty"
+    )]
     pub checklist: Vec<Item>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<Comment>,
@@ -209,19 +214,22 @@ impl Label {
     }
 }
 
-/// Labels this Templum knows; others (from an edited file) are dropped.
 /// A label by its name; one Templum doesn't know is none (a typo mustn't lose the file).
 pub(crate) fn known_label<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Label>, D::Error> {
     let name = Option::<String>::deserialize(d)?;
     Ok(name.and_then(|n| Label::ALL.into_iter().find(|l| l.name() == n)))
 }
 
-fn known_labels<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Label>, D::Error> {
-    let names = Vec::<String>::deserialize(d)?;
-    Ok(names
-        .iter()
-        .filter_map(|n| Label::ALL.into_iter().find(|l| l.name() == n))
-        .collect())
+/// A list's entries that read (labels this Templum knows, checklist items); others, from an
+/// edited file, are dropped, and what isn't a list is none: a typo mustn't lose the file.
+fn known<'de, D: Deserializer<'de>, T: DeserializeOwned>(d: D) -> Result<Vec<T>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Array(entries) => entries
+            .into_iter()
+            .filter_map(|e| serde_json::from_value(e).ok())
+            .collect(),
+        _ => Vec::new(),
+    })
 }
 
 impl Default for Boards {
@@ -811,6 +819,34 @@ mod tests {
             panic!("not read")
         };
         assert_eq!(read.next_id, 50);
+    }
+
+    #[test]
+    fn a_hand_edited_checklist_never_sets_the_file_aside() {
+        // No list, labels that aren't words or a list, an item with no id, a `done` that isn't true
+        // or false:
+        // the file loads with the items that read, an item with no id gets a new one.
+        let d = tempfile::tempdir().unwrap();
+        let text = r#"{"version":1,"next_id":9,"boards":[{"id":1,"name":"B","columns":[{"id":2,"title":"T",
+            "cards":[{"id":3,"title":"a","checklist":null,"labels":[2,"red"]},
+            {"id":4,"title":"b","checklist":[{"text":"Build"},{"id":5,"text":"Test","done":"yes"},
+                {"id":6,"text":"Ship","done":true}]},
+            {"id":7,"title":"c","checklist":"Build","labels":null}]}]}]}"#;
+        std::fs::write(path(d.path()), text).unwrap();
+        let Loaded::Saved(read) = load(d.path()) else {
+            panic!("a bad checklist set the file aside")
+        };
+        let cards = &read.boards[0].columns[0].cards;
+        assert_eq!(cards.len(), 3);
+        assert!(cards[0].checklist.is_empty() && cards[2].checklist.is_empty());
+        assert_eq!(cards[0].labels, [Label::Red]);
+        let items: Vec<_> = cards[1]
+            .checklist
+            .iter()
+            .map(|i| (i.id, i.text.as_str(), i.done))
+            .collect();
+        assert_eq!(items, [(10, "Build", false), (6, "Ship", true)]);
+        assert_eq!(read.next_id, 10);
     }
 
     #[test]

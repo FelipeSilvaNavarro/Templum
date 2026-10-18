@@ -516,9 +516,6 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   `parse_items` finds no item and nothing else was asked, so the answer lists nothing (`edit_card`,
   `crates/templum/src/workspace/content.rs`). Fix: refuse with the "needs something to change" sentence when nothing
   is left to do.
-- [ ] **A label that isn't a word sets `boards.json` aside.** `known_labels` (`crates/templum/src/board.rs`) reads
-  strings, so `"labels": [2]` in a hand-edited file fails the whole file, which is set aside with every board (a
-  priority reads any value since card 40). Fix: read `serde_json::Value`s and keep the known strings.
 - [ ] **A drag move over a board asks for a redraw GPUI already makes.** `on_edge` calls `window.refresh()`, and GPUI
   refreshes on every mouse move during a drag (`crates/templum/src/kanban.rs`); nobody sees a difference. Fix: delete
   the call.

@@ -145,7 +145,8 @@ checklist is the block's; an item is named by its id, as `read_checklist` shows 
   ```
 
   - Ids are unique across checklists and items, and never reused (`next_id`; a file whose `next_id` lags behind its
-    ids is read with the largest, and an id a hand-edited file gives twice gets a new one after its first).
+    ids is read with the largest, and an id a hand-edited file gives twice gets a new one after its first, as does an
+    item it gives none).
   - A missing `items` means none, a missing `done` false; an unchecked item writes no `done`. `changed` is in Unix
     seconds, moved by any change to the checklist.
 - **A canvas file** gets a new item: `{ "kind": "checklist", "rect": {…}, "checklist": 11 }` (no `checklist`: it
