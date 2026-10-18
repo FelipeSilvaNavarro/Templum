@@ -1716,7 +1716,8 @@ mod tests {
         let second = lock(d.path(), Duration::from_millis(100)).unwrap_err();
         assert_eq!(second.kind(), io::ErrorKind::WouldBlock);
         drop(first);
-        lock(d.path(), Duration::ZERO).expect("free once the first Templum ends");
+        // A shell another test is starting holds the file until its exec (fork): a moment.
+        lock(d.path(), Duration::from_secs(1)).expect("free once the first Templum ends");
     }
 
     /// Reopened right after quitting: the first Templum, still saving, lets go in a moment.
