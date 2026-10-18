@@ -815,8 +815,11 @@ impl Terminal {
     }
 
     /// `write`, for input someone gave: a key, a paste, typed text ([`Terminal::had_input`]).
+    /// Once the shell ended, input reaches nothing and ends nothing: it doesn't count.
     fn input(&self, bytes: impl Into<Cow<'static, [u8]>>) {
-        self.input.store(true, Ordering::Relaxed);
+        if !self.exited() {
+            self.input.store(true, Ordering::Relaxed);
+        }
         self.write(bytes);
     }
 

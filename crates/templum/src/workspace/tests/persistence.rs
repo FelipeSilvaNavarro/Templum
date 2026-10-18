@@ -356,6 +356,45 @@ fn a_restored_shell_that_ends_at_once_leaves_the_saved_canvas_alone(cx: &mut Tes
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "kept");
 }
 
+/// A key pressed into the block of a restored shell that ended as it started (Enter, an arrow,
+/// an agent's send_keys) didn't end it: the block keeps showing why, and the canvas stays kept.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_key_pressed_after_a_restored_shell_ended_at_once_keeps_its_block(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    write_canvas(
+        data.path(),
+        r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[
+              {"kind":"terminal","rect":{"x":0,"y":0,"w":700,"h":450}}]}"#,
+    );
+    let ends = Some(("sh".to_string(), vec!["-c".into(), "exit 1".into()]));
+    let (handle, ws) = open_as(cx, ends, None, Some(data.path().to_path_buf()));
+    let id = first_id(&ws, cx);
+    super::terminals::until("the shell to end", handle, &ws, cx, |ws| {
+        ws.space.terminal(id).is_none_or(|p| p.term.exited())
+    });
+    ws.update(cx, |ws, cx| {
+        ws.space
+            .terminal(id)
+            .unwrap()
+            .term
+            .press(&templum_terminal::KeyInput {
+                key: "enter",
+                key_char: None,
+                ctrl: false,
+                alt: false,
+                shift: false,
+            });
+        cx.notify();
+    });
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.terminal(id).is_some(), "its block stays");
+        assert!(ws.space.frozen, "its canvas won't be saved");
+    });
+}
+
 /// A restored shell that ends as it starts keeps the saved canvas also before any frame (the
 /// window minimized at start): neither a snapshot nor quitting writes over it.
 #[cfg(unix)]
