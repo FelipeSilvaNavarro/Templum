@@ -36,6 +36,7 @@ pub(crate) fn render(
     if approval.shown.get().is_none() {
         approval.shown.set(Some(cx.background_executor().now()));
     }
+    let read = approval.seen();
     let each = approval.level == Level::AskEach;
     let button =
         |id: &'static str, label: String, key: &'static str, strong: Option<gpui_kit::Hsla>| {
@@ -57,6 +58,7 @@ pub(crate) fn render(
                 .child(label)
                 .child(div().text_color(ui.title_dim).child(key))
         };
+    let allow = |el: gpui_kit::Stateful<gpui_kit::Div>| el.when(!read, |el| el.opacity(0.4));
     let first = div()
         .flex()
         .items_center()
@@ -77,11 +79,20 @@ pub(crate) fn render(
                     .child(format!("{n} of {of}")),
             )
         });
+    let more = (!read).then(|| {
+        div()
+            .id("approval-more")
+            .text_size(px(12.0))
+            .text_color(yellow)
+            .child("Scroll to its end to allow it.")
+            .test_support()
+    });
     let details = (!approval.details.is_empty()).then(|| {
         div()
             .id("approval-details")
             .max_h(px(DETAILS_MAX))
             .overflow_y_scroll()
+            .track_scroll(&approval.scroll)
             .p(px(8.0))
             .rounded(px(6.0))
             .bg(ui.card)
@@ -89,6 +100,7 @@ pub(crate) fn render(
             .text_size(px(12.0))
             .text_color(ui.title)
             .child(approval.details.clone())
+            .test_support()
     });
     let reason = approval.parsed.reason.clone().map(|reason| {
         div()
@@ -104,12 +116,12 @@ pub(crate) fn render(
         .flex_wrap()
         .gap(px(6.0))
         .child(
-            button(
+            allow(button(
                 "approval-once",
                 "Allow once".into(),
                 "1",
                 each.then_some(red),
-            )
+            ))
             .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
                 ws.answer_front(Answer::Once, window, cx)
             }))
@@ -117,12 +129,12 @@ pub(crate) fn render(
         )
         .when(!each, |el| {
             el.child(
-                button(
+                allow(button(
                     "approval-conversation",
                     "Allow for this conversation".into(),
                     "2",
                     None,
-                )
+                ))
                 .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
                     ws.answer_front(Answer::Conversation, window, cx)
                 }))
@@ -182,6 +194,7 @@ pub(crate) fn render(
             .child(SharedString::from(approval.said.clone())),
     )
     .children(details)
+    .children(more)
     .children(reason)
     .child(buttons)
     .children(words)

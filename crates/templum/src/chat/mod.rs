@@ -9,7 +9,7 @@ use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Context, Entity, FocusHandle, Focusable as _, FollowMode, KeyDownEvent, ListAlignment,
-    ListState, Subscription, Task, Window, px,
+    ListState, ScrollHandle, Subscription, Task, Window, px,
 };
 use serde_json::Value;
 use templum_agent::{Conversation, Engine};
@@ -157,6 +157,24 @@ pub(crate) struct Approval {
     pub said: String,
     /// Exactly what will happen: the text to type, the keys, what stops.
     pub details: String,
+    /// Its box of details, and whether it was seen to its end: until then, nothing allows it.
+    pub scroll: ScrollHandle,
+    pub read: Cell<bool>,
+}
+
+impl Approval {
+    /// Its box of details was seen to its end (laid out, scrolled to its end), or it has none:
+    /// until then nothing allows it.
+    pub fn seen(&self) -> bool {
+        let scroll = &self.scroll;
+        let laid_out = scroll.bounds().size.height > px(0.0);
+        if self.details.is_empty()
+            || laid_out && -scroll.offset().y >= scroll.max_offset().y - px(1.0)
+        {
+            self.read.set(true);
+        }
+        self.read.get()
+    }
 }
 
 /// The person's answer to an approval.
@@ -341,6 +359,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         if self.approval_too_soon(false, cx) {
+            return;
+        }
+        let Some(front) = self.templum_agent.approvals.first() else {
+            return;
+        };
+        if answer != Answer::Deny(None) && !front.seen() {
             return;
         }
         if let Some(id) = self.templum_agent.approvals.first().map(|a| a.id) {

