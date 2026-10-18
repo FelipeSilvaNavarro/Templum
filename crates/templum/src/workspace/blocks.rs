@@ -457,6 +457,7 @@ impl Workspace {
                         sent: None,
                         transcript: None,
                         starting: None,
+                        restored: false,
                     })),
                 );
                 self.added(id);
@@ -492,7 +493,8 @@ impl Workspace {
         let busy: Vec<String> = ids
             .iter()
             .filter_map(|id| {
-                let pane = self.space.terminal(*id)?;
+                // A shell that ended has nothing left to lose.
+                let pane = self.space.terminal(*id).filter(|p| !p.term.exited())?;
                 let why = alert::busy(&pane.term.status(), self.agent_name(pane))?;
                 Some(if one {
                     why

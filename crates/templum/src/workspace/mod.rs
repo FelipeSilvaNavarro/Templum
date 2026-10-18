@@ -242,6 +242,9 @@ pub(crate) struct Pane {
     pub transcript: Option<String>,
     /// Its agent starting, under a cover, until its screen shows (`starting.rs`).
     pub starting: Option<starting::Starting>,
+    /// It came back with its saved canvas: a shell that ends as it starts couldn't start
+    /// (`Pane::died_starting`).
+    pub restored: bool,
 }
 
 impl Pane {

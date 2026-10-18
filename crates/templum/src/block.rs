@@ -758,6 +758,7 @@ pub(crate) fn header_button(
 /// a Git block's repository.
 pub(crate) fn title(ws: &Workspace, body: &Body, cx: &App) -> SharedString {
     match body {
+        Body::Terminal(pane) if pane.died_starting() => "The shell ended".into(),
         Body::Terminal(pane) => SharedString::from(pane.term.title()),
         Body::Kanban(k) => k.title(ws),
         Body::Note(n) => n.title(cx),

@@ -297,10 +297,11 @@ impl Render for Workspace {
         };
         // The focused terminal's painting sets it again this frame, if its cursor blinks.
         self.cursor_blinks = false;
+        self.keep_dead_starts(window, cx);
         let exited: Vec<BlockId> = self
             .space
             .terminals()
-            .filter(|(_, pane)| pane.term.exited())
+            .filter(|(_, pane)| pane.term.exited() && !pane.died_starting())
             .map(|(id, _)| id)
             .collect();
         // Nothing left to lose: no question.

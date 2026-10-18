@@ -295,6 +295,49 @@ fn shells_that_cant_start_leave_the_saved_canvas_alone(cx: &mut TestAppContext) 
     );
 }
 
+/// A restored shell that ends as it starts couldn't start, as one whose spawn fails: its block
+/// stays, marked, the saved canvas is kept for the next start, and closing the block asks
+/// nothing.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_restored_shell_that_ends_at_once_leaves_the_saved_canvas_alone(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let folder = data.path().display().to_string().replace('\\', "\\\\");
+    let text = format!(
+        r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+              {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{folder}",
+                "agent":"claude","session":"abc-1"}}]}}"#
+    );
+    write_canvas(data.path(), &text);
+    // A shell whose profile ends it.
+    let ends = Some(("sh".to_string(), vec!["-c".into(), "exit 1".into()]));
+    let (handle, ws) = open_as(cx, ends, None, Some(data.path().to_path_buf()));
+    let id = first_id(&ws, cx);
+    super::terminals::until("the shell to end", handle, &ws, cx, |ws| {
+        ws.space.terminal(id).is_none_or(|p| p.term.exited())
+    });
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    ws.read_with(cx, |ws, cx| {
+        assert!(ws.space.terminal(id).is_some(), "its block stays");
+        assert_eq!(
+            crate::block::title(ws, &ws.space.blocks[&id], cx),
+            "The shell ended"
+        );
+        assert!(ws.space.frozen, "its canvas won't be saved");
+    });
+    assert_eq!(notification_count(handle, cx), 1);
+    // Its agent, typed before the shell ended, isn't running: no question.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close(id, window, cx))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| assert!(ws.space.terminal(id).is_none()));
+    tick(cx);
+    let path = crate::session::path(data.path(), crate::session::DEFAULT_ID);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "kept");
+}
+
 /// A snapshot's read of the processes tells each terminal its folder and its agent, with the
 /// agent's process: what the menus, the Git block and the usage read.
 #[gpui_kit::test]

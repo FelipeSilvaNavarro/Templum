@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, Window};
@@ -18,7 +19,7 @@ use crate::note::{self, Note};
 use crate::notes;
 use crate::session;
 
-use super::{Body, MAX_COLS, MAX_ROWS, Workspace, show_notification};
+use super::{Body, MAX_COLS, MAX_ROWS, Pane, Workspace, show_notification};
 
 impl Workspace {
     /// Puts a saved canvas back: the camera, then each block back to front, each in its folder.
@@ -67,6 +68,9 @@ impl Workspace {
             failed |= id.is_none();
             if let Some(id) = id {
                 self.restore_terminal(id, t, in_its_folder, cx);
+                if let Some(pane) = self.space.terminal_mut(id) {
+                    pane.restored = true;
+                }
             }
             ids.push(id);
         }
@@ -114,12 +118,7 @@ impl Workspace {
             // A shell setting with a typo: fixing it must bring the canvas back, so it isn't
             // written over with the blocks that couldn't start.
             self.space.frozen = true;
-            let message =
-                "Some terminals couldn't start, so this session won't save their canvas: \
-                           the saved one stays for the next start"
-                    .to_string();
-            eprintln!("templum: {message}");
-            show_notification(window, cx, Notification::warning(message));
+            say_unstarted(window, cx);
         }
         if !gone.is_empty() {
             let message = format!(
@@ -136,6 +135,22 @@ impl Workspace {
             .collect();
         self.space.recent = saved.recent.iter().map(PathBuf::from).collect();
         self.space.saved = Some(saved);
+    }
+
+    /// Keeps the file of each workspace where a restored shell ended as it started
+    /// (`Pane::died_starting`), as when one can't start at all: its block stays, and its saved
+    /// canvas is the next start's.
+    pub(super) fn keep_dead_starts(&mut self, window: &mut Window, cx: &mut App) {
+        let mut died = false;
+        for space in std::iter::once(&mut self.space).chain(&mut self.others) {
+            if !space.frozen && space.terminals().any(|(_, pane)| pane.died_starting()) {
+                space.frozen = true;
+                died = true;
+            }
+        }
+        if died {
+            say_unstarted(window, cx);
+        }
     }
 
     /// A saved terminal `saved`, just started as the terminal `id`: who opened it, and, when
@@ -519,6 +534,36 @@ impl Workspace {
     }
 }
 
+/// How soon a restored shell that ends, having run nothing, couldn't start.
+const DIES_STARTING: Duration = Duration::from_secs(10);
+
+impl Pane {
+    /// Restored with its canvas, its shell ended as it started: it couldn't start
+    /// (docs/specs/persistence.md, Errors).
+    pub(crate) fn died_starting(&self) -> bool {
+        self.restored
+            && self
+                .term
+                .lived()
+                .is_some_and(|lived| ended_starting(lived, &self.term.status()))
+    }
+}
+
+/// A shell that lived `lived` ended as it started: within DIES_STARTING, before running a
+/// command (with shell integration, `exit` typed is one).
+fn ended_starting(lived: Duration, status: &templum_terminal::Status) -> bool {
+    lived < DIES_STARTING && status.running.is_none() && status.finished == 0
+}
+
+/// Terminals of a saved canvas couldn't start: their workspace's file is kept (`frozen`).
+fn say_unstarted(window: &mut Window, cx: &mut App) {
+    let message = "Some terminals couldn't start, so this session won't save their canvas: \
+                   the saved one stays for the next start"
+        .to_string();
+    eprintln!("templum: {message}");
+    show_notification(window, cx, Notification::warning(message));
+}
+
 /// A saved rect made safe: None with a number that isn't finite; at least `min`.
 fn clamped_rect(r: Rect, min: Size) -> Option<Rect> {
     [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()).then(|| {
@@ -539,3 +584,27 @@ pub(super) type SpaceSnapshot = (
     session::Saved,
     Option<std::io::Result<()>>,
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use templum_terminal::Status;
+
+    #[test]
+    fn a_shell_couldnt_start_when_it_ended_soon_having_run_nothing() {
+        let soon = Duration::from_secs(1);
+        assert!(ended_starting(soon, &Status::default()));
+        // The person's `exit`, later; or at once, which shell integration tells.
+        assert!(!ended_starting(DIES_STARTING, &Status::default()));
+        let running = Status {
+            running: Some(std::time::Instant::now()),
+            ..Status::default()
+        };
+        assert!(!ended_starting(soon, &running));
+        let finished = Status {
+            finished: 1,
+            ..Status::default()
+        };
+        assert!(!ended_starting(soon, &finished));
+    }
+}

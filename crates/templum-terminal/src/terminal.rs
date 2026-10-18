@@ -6,6 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
@@ -36,7 +37,9 @@ pub(crate) struct Shared {
     /// the lock.
     pub(crate) dirty: AtomicBool,
     title: Mutex<Option<String>>,
-    exited: AtomicBool,
+    /// When the terminal was made, and when its shell ended: how long the shell lived.
+    born: Instant,
+    exited: OnceLock<Instant>,
     /// Reported to CSI 14 t (text area size) queries.
     size: Mutex<WindowSize>,
     /// PTY input: set right after the event loop exists, since the Term needs the listener first.
@@ -58,7 +61,8 @@ impl Shared {
             pending: AtomicBool::new(false),
             dirty: AtomicBool::new(true),
             title: Mutex::new(None),
-            exited: AtomicBool::new(false),
+            born: Instant::now(),
+            exited: OnceLock::new(),
             size: Mutex::new(size),
             pty: OnceLock::new(),
             palette: Mutex::new(palette),
@@ -133,7 +137,7 @@ impl EventListener for Listener {
             // Exit comes after the child's last output has been read (ChildExit comes before).
             // Uncoalesced: a block off screen is never re-armed, and must still close.
             Event::Exit => {
-                s.exited.store(true, Ordering::Release);
+                let _ = s.exited.set(Instant::now());
                 s.wake_now();
             }
             Event::Wakeup => s.wake(),
@@ -738,7 +742,13 @@ impl Terminal {
     }
 
     pub fn exited(&self) -> bool {
-        self.shared.exited.load(Ordering::Acquire)
+        self.shared.exited.get().is_some()
+    }
+
+    /// How long its shell lived, once it ended.
+    pub fn lived(&self) -> Option<Duration> {
+        let ended = self.shared.exited.get()?;
+        Some(ended.duration_since(self.shared.born))
     }
 
     /// The current folder of the program in the terminal's foreground: the shell the user types
@@ -1143,12 +1153,9 @@ mod tests {
         let (_, shared) = headless(10, 2);
         let listener = Listener(shared.clone());
         listener.send_event(Event::ChildExit(std::process::ExitStatus::default()));
-        assert!(
-            !shared.exited.load(Ordering::Acquire),
-            "output may still be unread"
-        );
+        assert!(shared.exited.get().is_none(), "output may still be unread");
         listener.send_event(Event::Exit);
-        assert!(shared.exited.load(Ordering::Acquire));
+        assert!(shared.exited.get().is_some());
     }
 
     #[test]
@@ -1196,7 +1203,7 @@ mod tests {
             2,
             "not held back by the coalescing"
         );
-        assert!(shared.exited.load(Ordering::Acquire));
+        assert!(shared.exited.get().is_some());
     }
 
     #[test]
