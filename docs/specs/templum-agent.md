@@ -259,10 +259,27 @@ claude -p --verbose --input-format stream-json --output-format stream-json --inc
 Batch 2 adds: "A task you hand over comes back into this chat as a message starting with [task …] when it ends: it
 isn't the person writing. Hand tasks without waiting, end your turn, and go on when their ends come back."
 
-**Checked** (batch 1's first task records here what Claude Code 2.1.286 does by hand: the flags above, the lines of
-one turn, whether a message written during a turn is taken into it or queued, whether the stdio server inherits
-`TEMPLUM_CONTROL`, and whether `--allowedTools mcp__templum-control` covers every tool of the server. Where it differs,
-the task changes the words above and says so here.)
+**Checked** with Claude Code 2.1.286 on Linux (the lines are in `crates/templum-agent/tests/fixtures/claude-*.jsonl`):
+
+- Every flag of the command line above is taken. `--tools Read,Glob,Grep` leaves `Glob`, `Grep` and `Read`; with
+  `--strict-mcp-config --mcp-config` the `init` line lists the control server `connected` and its tools as
+  `mcp__templum-control__<tool>`; the `timeout` of seven days is taken.
+- The stdio server inherits the engine's environment: `TEMPLUM_CONTROL` and `TEMPLUM_BUS` reach `templum control`.
+- `--allowedTools mcp__templum-control` covers every tool of the server: with `--permission-prompts none` each one
+  ran without a question and none was denied.
+- A turn's lines: `system` `init` (at the start of **every** turn, not only the first), `system` `status`, the replayed
+  `user` line of the message the turn answers, `stream_event`s (`message_start`, `content_block_start` of `thinking`,
+  `text` or `tool_use` with its `id` and `name`, the deltas, `content_block_stop`, `message_delta`, `message_stop`), one
+  `assistant` line per content block holding just that block (it comes before that block's `content_block_stop`), a
+  `user` line with the `tool_result` (its `content` a string for a built-in tool, a list of `{"type":"text"}` for an
+  MCP tool; `is_error` absent when false), `rate_limit_event`, and the `result` (`subtype` `success`, `duration_ms`,
+  `total_cost_usd`, `result`). Other `system` subtypes (`commands_changed`, `thinking_tokens`) come and are skipped.
+- Every message is replayed, the first too. A message written during a turn isn't taken into it: it waits, and once
+  the turn's `result` is out a new turn starts with its `init` and its replayed `user` line.
+- The interrupt request, `{"type":"control_request","request_id":"<id>","request":{"subtype":"interrupt"}}` on stdin,
+  stops the turn and keeps the process: a `control_response` `success`, a `user` line "[Request interrupted by
+  user]", then a `result` with `subtype` `error_during_execution`, `is_error` true and no `result`; the next message
+  is answered in the same session. So **Stop sends the interrupt** ([A conversation's life](#a-conversations-life)).
 
 ### The stream
 
@@ -291,10 +308,10 @@ Each stdout line is one JSON object. Templum reads these and ignores every other
   `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"…"}]}}` and a newline.
 - **Between turns** the process stays up; each message is one such line. **The next start** (after Stop, a crash, a
   settings change or a restart of Templum) uses `--resume <uuid>`.
-- **Stop** ends the process (on Unix SIGTERM, then a kill after 2 s; on Windows a kill), which closes the control
-  server's bridge; the turn ends with "Stopped by you."; what waits for approval is denied. The next message resumes.
-  (Batch 1's first task tries Claude Code's stream-json interrupt request first; if it stops a turn and keeps the
-  process, Stop sends it instead and the process stays.)
+- **Stop** sends Claude Code's interrupt request ([Checked](#claude-code-batch-1)): the turn ends, the process stays,
+  and the turn's end is "Stopped by you." rather than a failure; what waits for approval is denied. When the process
+  doesn't end the turn within 2 s, Templum ends the process (on Unix SIGTERM, then a kill after 2 s; on Windows a kill),
+  which closes the control server's bridge; the next message resumes.
 - **The process ends by itself** while a turn runs: a failure row with its last error line; the next message resumes.
 - **New chat** stops it and forgets the session, the rows, its own things and its grants. The blocks it opened keep
   their mark; they are no longer its own to close without asking.
