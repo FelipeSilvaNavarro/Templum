@@ -1113,6 +1113,25 @@ fn is_link(path: &std::path::Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
 }
 
+/// A new account's id isn't one written by hand in other case: one folder on macOS and Windows.
+#[gpui_kit::test]
+fn a_new_accounts_id_differs_more_than_by_case(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    super::agents::with_agents(&ws, cx, "[agents.Claude2]\nof = \"claude\"\n");
+    let draft = crate::agents::AccountDraft {
+        of: "claude".to_string(),
+        show: true,
+        ..Default::default()
+    };
+    let saved = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.save_account(None, &draft, window, cx))
+        })
+        .unwrap();
+    assert_eq!(saved, Ok("claude3".to_string()));
+}
+
 /// The row's Log in opens a block of the account; its dialog's Delete asks, then deletes it.
 #[gpui_kit::test]
 fn an_accounts_row_logs_in_and_its_dialog_deletes_it(cx: &mut TestAppContext) {

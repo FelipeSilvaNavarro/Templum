@@ -271,7 +271,7 @@ impl Form {
         }
         let kind = self.kind?;
         Some(new_account_id(kind.agent, self.data.as_deref(), |x| {
-            self.agents.iter().any(|a| a.id == x)
+            self.agents.iter().any(|a| a.id.eq_ignore_ascii_case(x))
         }))
     }
 

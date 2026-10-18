@@ -73,7 +73,8 @@ impl Workspace {
         let id = match id {
             Some(id) => id.to_string(),
             None => agents::new_account_id(&draft.of, self.data_dir.as_deref(), |x| {
-                pending.agents.contains_key(x) || self.agents.iter().any(|a| a.id == x)
+                pending.agents.keys().any(|k| k.eq_ignore_ascii_case(x))
+                    || self.agents.iter().any(|a| a.id.eq_ignore_ascii_case(x))
             }),
         };
         if let Some(problem) = draft.problem(&id, &pending.agents, self.data_dir.as_deref()) {

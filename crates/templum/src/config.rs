@@ -517,12 +517,12 @@ pub(crate) fn parse_in(text: &str, data: Option<&Path>) -> Result<Config, String
     Ok(config)
 }
 
-/// The account `id` of `agents` (an entry with `of`), checked: its agent has accounts, it takes
-/// nothing its agent has, each share names an item and one of its agent's folders without coming
-/// back to it, and its folder is no agent's own, not the home folder, apart from every other
-/// account's, and neither in nor around Templum's folder for accounts (`<data>/accounts`, whose
-/// folders are deleted with their account). Folders are compared with their links followed
-/// (`resolved`).
+/// The account `id` of `agents` (an entry with `of`), checked: its agent has accounts, no other
+/// account's id is its own but for case, it takes nothing its agent has, each share names an item
+/// and one of its agent's folders without coming back to it, and its folder is no agent's own,
+/// not the home folder, apart from every other account's, and neither in nor around Templum's
+/// folder for accounts (`<data>/accounts`, whose folders are deleted with their account). Folders
+/// are compared with their links followed (`resolved`).
 pub(crate) fn check_account(
     id: &str,
     agents: &BTreeMap<String, AgentConfig>,
@@ -542,6 +542,15 @@ pub(crate) fn check_account(
             ids.join(", ")
         ));
     };
+    // One folder on macOS and Windows: deleting one would delete the other's login.
+    let twin = agents
+        .iter()
+        .find(|(other, a)| *other != id && other.eq_ignore_ascii_case(id) && a.of.is_some());
+    if let Some((other, _)) = twin {
+        return Err(format!(
+            "{FILE}: agents.{id}: {other} is the same id but for case, one folder on macOS and Windows: rename one"
+        ));
+    }
     for (key, set) in [
         ("command", account.command.is_some()),
         ("resume", account.resume.is_some()),
@@ -1898,6 +1907,15 @@ scrollback = 500
         assert!(err.contains("holds Templum's folder for accounts"), "{err}");
         one(&w.join("skills")).unwrap();
         one(&dir.path().join("apart")).unwrap();
+    }
+
+    /// `claude2` and `Claude2` would be one folder on macOS and Windows.
+    #[test]
+    fn account_ids_differ_more_than_by_case() {
+        let err = parse("[agents.Claude2]\nof = \"claude\"\n[agents.claude2]\nof = \"claude\"\n")
+            .unwrap_err();
+        assert!(err.contains("is the same id but for case"), "{err}");
+        parse("[agents.Claude2]\nof = \"claude\"\n[agents.claude3]\nof = \"claude\"\n").unwrap();
     }
 
     #[test]
