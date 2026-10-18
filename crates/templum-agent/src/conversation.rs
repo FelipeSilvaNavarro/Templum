@@ -1,0 +1,594 @@
+//! The conversation (docs/specs/templum-agent.md#rows): the rows the chat shows, folded from the
+//! engine's events, what the Templum Agent made in it, and its file.
+
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::ChatEvent;
+use crate::claude::tool_name;
+
+/// The conversation file's version this Templum writes and reads.
+const VERSION: u32 = 1;
+
+/// One row of the chat.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Row {
+    /// The person's message; queued until the engine takes it.
+    Person {
+        text: String,
+        #[serde(default)]
+        queued: bool,
+    },
+    /// The agent's text, Markdown.
+    Text { text: String },
+    /// The engine thinks; never saved.
+    Thinking,
+    /// A control tool's call: its tool (without the prefix), its call, its state, the first line
+    /// of its answer, and what it touched.
+    Action {
+        id: String,
+        tool: String,
+        #[serde(default)]
+        input: Value,
+        state: ActionState,
+        #[serde(default)]
+        said: String,
+        #[serde(default)]
+        target: Option<Target>,
+    },
+    /// Consecutive reads, folded.
+    Reads { count: u32 },
+    /// An approval, once answered: its sentence and the answer.
+    Approval { said: String, answer: String },
+    /// A turn's end: its time and cost when the engine says them.
+    End {
+        #[serde(default)]
+        ms: Option<u64>,
+        #[serde(default)]
+        cost_usd: Option<f64>,
+    },
+    /// A failed turn or an engine that stopped.
+    Failure { text: String },
+    /// "Stopped by you.", "New conversation."
+    Note { text: String },
+}
+
+/// Where an action is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionState {
+    Running,
+    Done,
+    Failed,
+    Denied,
+}
+
+/// What an action touched: a click on its row shows it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Target {
+    #[serde(default)]
+    pub workspace: Option<String>,
+    #[serde(default)]
+    pub block: Option<String>,
+}
+
+/// What the Templum Agent made in this conversation: its own, closed and deleted without asking.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Own {
+    pub workspaces: Vec<String>,
+    pub blocks: Vec<String>,
+    pub boards: Vec<u64>,
+    pub cards: Vec<u64>,
+    pub notes: Vec<u64>,
+    pub checklists: Vec<u64>,
+}
+
+/// One chat with the engine.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Conversation {
+    pub version: u32,
+    pub engine: String,
+    #[serde(default)]
+    pub session: Option<String>,
+    #[serde(default)]
+    pub rows: Vec<Row>,
+    #[serde(default)]
+    pub own: Own,
+    /// A turn runs, or a message waits for one.
+    #[serde(skip)]
+    pub working: bool,
+    /// The last row is the text the engine is writing: its next delta grows it.
+    #[serde(skip)]
+    open_text: bool,
+}
+
+/// What reading the conversation file found.
+#[derive(Debug)]
+pub enum Load {
+    /// No file.
+    None,
+    Some(Box<Conversation>),
+    /// A file that doesn't read (half-written, or from a newer Templum), now set aside as
+    /// `conversation.json.bak`.
+    Unreadable,
+}
+
+/// Whether a tool only reads: its rows fold into one.
+pub fn is_read(tool: &str) -> bool {
+    matches!(
+        tool_name(tool),
+        "overview"
+            | "list_agents"
+            | "read_terminal"
+            | "list_cards"
+            | "read_note"
+            | "read_checklist"
+            | "Read"
+            | "Glob"
+            | "Grep"
+    )
+}
+
+impl Conversation {
+    pub fn new(engine: &str) -> Self {
+        Self {
+            version: VERSION,
+            engine: engine.to_owned(),
+            session: None,
+            rows: Vec::new(),
+            own: Own::default(),
+            working: false,
+            open_text: false,
+        }
+    }
+
+    /// The person sent a message: queued when a turn runs.
+    pub fn person(&mut self, text: &str) {
+        self.open_text = false;
+        self.rows.push(Row::Person {
+            text: text.to_owned(),
+            queued: self.working,
+        });
+        self.working = true;
+    }
+
+    /// Folds one of the engine's events into the rows.
+    pub fn apply(&mut self, e: ChatEvent) {
+        if e != ChatEvent::Thinking && self.rows.last() == Some(&Row::Thinking) {
+            self.rows.pop();
+        }
+        // Only a delta keeps the turn's text open; `Text` ends the block that streamed.
+        let open_text = std::mem::take(&mut self.open_text);
+        match e {
+            ChatEvent::Started { session, .. } => self.session = Some(session),
+            ChatEvent::Thinking => {
+                if self.rows.last() != Some(&Row::Thinking) {
+                    self.rows.push(Row::Thinking);
+                }
+            }
+            ChatEvent::TextDelta(delta) => {
+                match self.rows.last_mut() {
+                    Some(Row::Text { text }) if open_text => text.push_str(&delta),
+                    _ => self.rows.push(Row::Text { text: delta }),
+                }
+                self.open_text = true;
+            }
+            ChatEvent::Text(whole) => match self.rows.last_mut() {
+                Some(Row::Text { text }) if open_text => *text = whole,
+                _ => self.rows.push(Row::Text { text: whole }),
+            },
+            ChatEvent::ToolStarted { id, name } => {
+                if is_read(&name) {
+                    match self.rows.last_mut() {
+                        Some(Row::Reads { count }) => *count += 1,
+                        _ => self.rows.push(Row::Reads { count: 1 }),
+                    }
+                } else {
+                    self.rows.push(Row::Action {
+                        id,
+                        tool: tool_name(&name).to_owned(),
+                        input: Value::Null,
+                        state: ActionState::Running,
+                        said: String::new(),
+                        target: None,
+                    });
+                }
+            }
+            ChatEvent::ToolCall {
+                id, input: call, ..
+            } => {
+                if let Some(Row::Action { input, .. }) = self.action(&id) {
+                    *input = call;
+                }
+            }
+            ChatEvent::ToolResult { id, text, is_error } => {
+                if let Some(Row::Action { state, said, .. }) = self.action(&id) {
+                    *state = if is_error {
+                        ActionState::Failed
+                    } else {
+                        ActionState::Done
+                    };
+                    *said = text.lines().next().unwrap_or_default().to_owned();
+                }
+            }
+            ChatEvent::Taken(taken) => {
+                if let Some(Row::Person { queued, .. }) = self
+                    .rows
+                    .iter_mut()
+                    .find(|r| matches!(r, Row::Person { text, queued: true } if *text == taken))
+                {
+                    *queued = false;
+                }
+            }
+            ChatEvent::TurnEnded {
+                ms,
+                cost_usd,
+                error,
+            } => {
+                self.rows.push(Row::End { ms, cost_usd });
+                if let Some(error) = error {
+                    self.rows.push(Row::Failure {
+                        text: format!("The turn failed: {error}"),
+                    });
+                }
+                self.working = self
+                    .rows
+                    .iter()
+                    .any(|r| matches!(r, Row::Person { queued: true, .. }));
+            }
+        }
+    }
+
+    /// The action row of a tool call.
+    fn action(&mut self, call: &str) -> Option<&mut Row> {
+        self.rows
+            .iter_mut()
+            .rev()
+            .find(|r| matches!(r, Row::Action { id, .. } if id == call))
+    }
+
+    /// Templum says what an action touched: the oldest action of that tool and call without a
+    /// target gets it (one whose call the stream hasn't given yet counts).
+    pub fn touched(&mut self, tool: &str, input: &Value, target: Target) {
+        if let Some(Row::Action { target: t, .. }) = self.rows.iter_mut().find(|r| {
+            matches!(r, Row::Action { tool: t, input: i, target: None, .. }
+                if t == tool && (i == input || i.is_null()))
+        }) {
+            *t = Some(target);
+        }
+    }
+
+    /// The engine is gone: what runs failed, and a failure row says why.
+    pub fn ended(&mut self, why: &str) {
+        if self.rows.last() == Some(&Row::Thinking) {
+            self.rows.pop();
+        }
+        for row in &mut self.rows {
+            if let Row::Action {
+                state: state @ ActionState::Running,
+                ..
+            } = row
+            {
+                *state = ActionState::Failed;
+            }
+        }
+        self.rows.push(Row::Failure {
+            text: why.to_owned(),
+        });
+        self.open_text = false;
+        self.working = false;
+    }
+
+    pub fn note(&mut self, text: &str) {
+        self.open_text = false;
+        self.rows.push(Row::Note {
+            text: text.to_owned(),
+        });
+    }
+
+    /// What its turns cost, in US dollars.
+    pub fn cost(&self) -> f64 {
+        self.rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::End { cost_usd, .. } => *cost_usd,
+                _ => None,
+            })
+            .sum()
+    }
+
+    pub fn load(path: &Path) -> Load {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Load::None,
+            Err(_) => String::new(),
+        };
+        match serde_json::from_str::<Conversation>(&text) {
+            Ok(c) if c.version == VERSION => Load::Some(Box::new(c)),
+            _ => {
+                let _ = std::fs::rename(path, path.with_extension("json.bak"));
+                Load::Unreadable
+            }
+        }
+    }
+
+    /// Writes the file as the chat shows it: no Thinking, and an action still running failed
+    /// with "Templum quit.".
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        let mut c = self.clone();
+        c.version = VERSION;
+        c.rows.retain(|r| *r != Row::Thinking);
+        for row in &mut c.rows {
+            if let Row::Action {
+                state: state @ ActionState::Running,
+                said,
+                ..
+            } = row
+            {
+                *state = ActionState::Failed;
+                *said = "Templum quit.".into();
+            }
+        }
+        crate::write_atomic(path, &serde_json::to_vec_pretty(&c).expect("JSON"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn turn(lines: &str) -> Conversation {
+        let mut c = Conversation::new("claude");
+        c.person("hi");
+        for e in lines.lines().flat_map(crate::claude::parse) {
+            c.apply(e);
+        }
+        c
+    }
+
+    fn started(id: &str, name: &str) -> ChatEvent {
+        ChatEvent::ToolStarted {
+            id: id.into(),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn deltas_then_the_whole_text_make_one_text_row() {
+        let mut c = Conversation::new("claude");
+        c.person("hi");
+        assert!(c.working);
+        for e in [
+            ChatEvent::Thinking,
+            ChatEvent::TextDelta("Hel".into()),
+            ChatEvent::TextDelta("lo".into()),
+            ChatEvent::Text("Hello!".into()),
+            ChatEvent::TurnEnded {
+                ms: Some(1200),
+                cost_usd: Some(0.04),
+                error: None,
+            },
+        ] {
+            c.apply(e);
+        }
+        assert_eq!(
+            c.rows,
+            vec![
+                Row::Person {
+                    text: "hi".into(),
+                    queued: false
+                },
+                Row::Text {
+                    text: "Hello!".into()
+                },
+                Row::End {
+                    ms: Some(1200),
+                    cost_usd: Some(0.04)
+                },
+            ]
+        );
+        assert!(!c.working);
+        assert_eq!(c.cost(), 0.04);
+    }
+
+    #[test]
+    fn a_recorded_turn_folds_into_its_rows() {
+        let c = turn(include_str!("../tests/fixtures/claude-tools.jsonl"));
+        assert!(
+            matches!(
+                &c.rows[..],
+                [Row::Person { .. }, Row::Reads { count: 1 }, Row::Text { text }, Row::End { cost_usd: Some(_), .. }]
+                    if text.contains("hello-fixture")
+            ),
+            "{:?}",
+            c.rows
+        );
+        assert!(c.session.is_some());
+    }
+
+    #[test]
+    fn an_action_runs_then_says_the_first_line_of_its_answer() {
+        let mut c = Conversation::new("claude");
+        c.person("make it");
+        c.apply(started("t1", "mcp__templum-control__create_workspace"));
+        c.apply(ChatEvent::ToolCall {
+            id: "t1".into(),
+            name: "mcp__templum-control__create_workspace".into(),
+            input: json!({"name": "API"}),
+        });
+        assert!(
+            matches!(&c.rows[1], Row::Action { state: ActionState::Running, tool, input, .. }
+                if tool == "create_workspace" && input["name"] == "API")
+        );
+        c.touched(
+            "create_workspace",
+            &json!({"name": "API"}),
+            Target {
+                workspace: Some("w3".into()),
+                block: None,
+            },
+        );
+        c.apply(ChatEvent::ToolResult {
+            id: "t1".into(),
+            text: "Created workspace API (w3).\nmore".into(),
+            is_error: false,
+        });
+        assert!(
+            matches!(&c.rows[1], Row::Action { state: ActionState::Done, said, target: Some(t), .. }
+            if said == "Created workspace API (w3)." && t.workspace.as_deref() == Some("w3"))
+        );
+        c.apply(started("t2", "mcp__templum-control__close_block"));
+        c.apply(ChatEvent::ToolResult {
+            id: "t2".into(),
+            text: "No block x.".into(),
+            is_error: true,
+        });
+        assert!(
+            matches!(&c.rows[2], Row::Action { state: ActionState::Failed, said, .. } if said == "No block x.")
+        );
+    }
+
+    #[test]
+    fn reads_in_a_row_fold_into_one() {
+        let mut c = Conversation::new("claude");
+        c.person("look");
+        for e in [
+            started("a", "Read"),
+            started("b", "mcp__templum-control__overview"),
+            started("c", "Glob"),
+        ] {
+            c.apply(e);
+        }
+        assert_eq!(c.rows[1..], [Row::Reads { count: 3 }]);
+        c.apply(ChatEvent::TextDelta("So.".into()));
+        c.apply(started("d", "Read"));
+        assert_eq!(
+            c.rows[1..],
+            [
+                Row::Reads { count: 3 },
+                Row::Text { text: "So.".into() },
+                Row::Reads { count: 1 }
+            ]
+        );
+    }
+
+    #[test]
+    fn a_message_while_it_works_is_queued_until_taken() {
+        let mut c = Conversation::new("claude");
+        c.person("first");
+        c.apply(ChatEvent::Taken("first".into()));
+        c.person("second");
+        assert_eq!(
+            c.rows[1],
+            Row::Person {
+                text: "second".into(),
+                queued: true
+            }
+        );
+        c.apply(ChatEvent::TurnEnded {
+            ms: None,
+            cost_usd: None,
+            error: None,
+        });
+        assert!(c.working, "the queued message's turn comes next");
+        c.apply(ChatEvent::Taken("second".into()));
+        assert_eq!(
+            c.rows[1],
+            Row::Person {
+                text: "second".into(),
+                queued: false
+            }
+        );
+    }
+
+    #[test]
+    fn a_failed_turn_says_why() {
+        let mut c = Conversation::new("claude");
+        c.person("hi");
+        c.apply(ChatEvent::TurnEnded {
+            ms: Some(5),
+            cost_usd: None,
+            error: Some("Overloaded".into()),
+        });
+        assert_eq!(
+            c.rows[1..],
+            [
+                Row::End {
+                    ms: Some(5),
+                    cost_usd: None
+                },
+                Row::Failure {
+                    text: "The turn failed: Overloaded".into()
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn the_engine_ending_fails_what_runs() {
+        let mut c = Conversation::new("claude");
+        c.person("go");
+        c.apply(started("t1", "mcp__templum-control__add_block"));
+        c.apply(ChatEvent::Thinking);
+        let why = "Claude Code stopped: x. Your next message starts it again.";
+        c.ended(why);
+        assert!(matches!(
+            &c.rows[1],
+            Row::Action {
+                state: ActionState::Failed,
+                ..
+            }
+        ));
+        assert_eq!(c.rows.last(), Some(&Row::Failure { text: why.into() }));
+        assert!(!c.rows.contains(&Row::Thinking));
+        assert!(!c.working);
+    }
+
+    #[test]
+    fn the_file_round_trips_without_thinking_and_with_running_actions_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conversation.json");
+        let mut c = turn(include_str!("../tests/fixtures/claude-tools.jsonl"));
+        c.own.blocks.push("b7k2m".into());
+        c.session = Some("u1".into());
+        c.person("more");
+        c.apply(started("t9", "mcp__templum-control__add_block"));
+        c.apply(ChatEvent::Thinking);
+        c.save(&path).unwrap();
+        let Load::Some(back) = Conversation::load(&path) else {
+            panic!()
+        };
+        assert_eq!(
+            (back.session.as_deref(), back.own.blocks.clone()),
+            (Some("u1"), vec!["b7k2m".to_string()])
+        );
+        assert!(!back.rows.contains(&Row::Thinking));
+        assert!(
+            matches!(back.rows.last(), Some(Row::Action { state: ActionState::Failed, said, .. })
+            if said == "Templum quit.")
+        );
+        assert_eq!(back.rows[..4], c.rows[..4]);
+        assert!(!back.working);
+    }
+
+    #[test]
+    fn an_unreadable_or_newer_file_is_set_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("conversation.json");
+        for text in [
+            "{\"version\":1,\"rows\":[",
+            "{\"version\":2,\"engine\":\"claude\",\"rows\":[]}",
+        ] {
+            std::fs::write(&path, text).unwrap();
+            assert!(matches!(Conversation::load(&path), Load::Unreadable));
+            assert!(path.with_extension("json.bak").exists() && !path.exists());
+        }
+        assert!(matches!(Conversation::load(&path), Load::None));
+    }
+}

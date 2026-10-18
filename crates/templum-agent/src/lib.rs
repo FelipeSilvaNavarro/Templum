@@ -4,6 +4,9 @@
 use std::path::Path;
 
 pub mod claude;
+pub mod conversation;
+
+pub use conversation::{ActionState, Conversation, Load, Own, Row, Target};
 
 /// The Templum Agent's word where a terminal's id would be: the asker of the tasks it hands and
 /// the `opened_by` of the blocks it opens. No terminal's id is one (theirs are `<pid>-<n>`).
