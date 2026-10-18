@@ -34,15 +34,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<(Value, Replier, Parsed, Value)> {
-        let target = called_block(&parsed.call).and_then(|uid| self.find_block(uid));
-        let uid = called_block(&parsed.call).unwrap_or_default();
-        let own = self
-            .templum_agent
-            .conversation
-            .own
-            .blocks
-            .iter()
-            .any(|o| o == uid);
+        // A wire's danger is the terminal of the person's it would reach.
+        let uid = match &parsed.call {
+            ControlCall::Connect { .. } | ControlCall::OpenAgent(_) => {
+                self.wired_terminals(&parsed.call).into_iter().next()
+            }
+            call => called_block(call).map(str::to_owned),
+        };
+        let target = uid.as_deref().and_then(|uid| self.find_block(uid));
+        let own = uid.as_deref().is_some_and(|uid| self.own_block(uid));
         let losing = target
             .as_ref()
             .and_then(|(space, id)| self.would_lose((space, *id)));
@@ -114,6 +114,34 @@ impl Workspace {
         self.chime(cx);
     }
 
+    /// The block `uid` is the Templum Agent's own, made in this conversation.
+    fn own_block(&self, uid: &str) -> bool {
+        let own = &self.templum_agent.conversation.own.blocks;
+        own.iter().any(|o| o == uid)
+    }
+
+    /// The terminals of `connect` or `open_agent` that a wire would give another terminal (the
+    /// other end, or the agent it opens) to type into and answer the dialogs of, and that aren't
+    /// the Templum Agent's own. A wire to a kanban, a note or a checklist reaches none.
+    fn wired_terminals(&self, call: &ControlCall) -> Vec<String> {
+        let terminal = |uid: &str| {
+            self.find_block(uid).is_some_and(|(space, id)| {
+                self.space_named(&space)
+                    .is_some_and(|s| s.terminal(id).is_some())
+            })
+        };
+        let foreign = |uid: &&String| terminal(uid) && !self.own_block(uid);
+        match call {
+            ControlCall::Connect { a, b } if terminal(a) && terminal(b) => {
+                [a, b].into_iter().filter(foreign).cloned().collect()
+            }
+            ControlCall::OpenAgent(opening) => {
+                opening.connect.iter().filter(foreign).cloned().collect()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// What the approval says of a call, from the call and its target: the action, and exactly
     /// what will happen.
     fn approval_words(
@@ -161,6 +189,46 @@ impl Workspace {
                 format!("Interrupt {title:?}"),
                 "Esc once: its turn stops where it is.".to_string(),
             ),
+            ControlCall::Connect { a, b } => {
+                let titled = |uid: &str| {
+                    self.find_block(uid)
+                        .and_then(|(space, id)| self.space_named(&space)?.blocks.get(&id))
+                        .map(|b| self.about(b, cx).1)
+                        .unwrap_or_default()
+                };
+                let (x, y) = (titled(a), titled(b));
+                let details = match self.wired_terminals(call).as_slice() {
+                    [reached] => {
+                        let other = if reached == a { &y } else { &x };
+                        format!("{other:?} can type into {title:?} and answer its dialogs.")
+                    }
+                    _ => format!(
+                        "{x:?} and {y:?} can type into each other and answer each other's dialogs."
+                    ),
+                };
+                (format!("Wire {x:?} to {y:?}"), details)
+            }
+            ControlCall::OpenAgent(opening) => {
+                let agent = opening.spawn.agent.clone().unwrap_or_default();
+                let agent =
+                    (self.agents.iter().find(|a| a.id == agent)).map_or(agent, |a| a.title.clone());
+                let reached: Vec<String> = self
+                    .wired_terminals(call)
+                    .iter()
+                    .filter_map(|uid| {
+                        let (space, id) = self.find_block(uid)?;
+                        let block = self.space_named(&space)?.blocks.get(&id)?;
+                        Some(format!(
+                            "It can type into {:?} and answer its dialogs.",
+                            self.about(block, cx).1
+                        ))
+                    })
+                    .collect();
+                (
+                    format!("Open {agent} wired to {title:?}"),
+                    reached.join("\n"),
+                )
+            }
             _ => (String::new(), String::new()),
         }
     }

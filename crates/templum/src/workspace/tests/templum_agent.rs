@@ -599,6 +599,68 @@ fn connect_wires_two_blocks_and_ctrl_z_takes_it_back(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui_kit::test]
+fn a_wire_that_reaches_your_terminal_asks(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, mine) = three_blocks(handle, &ws, cx);
+    let (_, other) = busy_terminal(handle, &ws, cx);
+    let (_, own) = busy_terminal(handle, &ws, cx);
+    let (_, own2) = busy_terminal(handle, &ws, cx);
+    let (mine, kanban, space) = ws.update(cx, |ws, _| {
+        let own_blocks = &mut ws.templum_agent.conversation.own.blocks;
+        own_blocks.extend([own.clone(), own2.clone()]);
+        let uid = |id| ws.space.uids[&id].clone();
+        (uid(mine), uid(kanban), ws.space.id.clone())
+    });
+    // Its own agents, and boards: at once.
+    let (failed, text) = control(handle, &ws, cx, "connect", json!({"a": own, "b": own2}));
+    assert!(!failed, "{text}");
+    let (failed, text) = control(handle, &ws, cx, "connect", json!({"a": own, "b": kanban}));
+    assert!(!failed, "{text}");
+    // Its agent to the person's terminal, or two of theirs: the person says.
+    let waiting = control_later(handle, &ws, cx, 7, "connect", json!({"a": own, "b": mine}));
+    assert!(waiting.try_recv().is_err(), "it waits");
+    ws.read_with(cx, |ws, _| {
+        let front = &ws.templum_agent.approvals[0];
+        assert!(front.said.starts_with("Wire "), "{}", front.said);
+        assert!(
+            front.details.ends_with("and answer its dialogs."),
+            "{}",
+            front.details
+        );
+    });
+    answer(handle, &ws, cx, crate::chat::Answer::Deny(None));
+    let (failed, _) = super::bus::result_of(&waiting.try_recv().unwrap());
+    assert!(failed);
+    let both = control_later(
+        handle,
+        &ws,
+        cx,
+        8,
+        "connect",
+        json!({"a": mine, "b": other}),
+    );
+    assert!(both.try_recv().is_err());
+    ws.read_with(cx, |ws, _| {
+        let details = &ws.templum_agent.approvals[0].details;
+        assert!(details.contains("can type into each other"), "{details}");
+    });
+    answer(handle, &ws, cx, crate::chat::Answer::Deny(None));
+    // An agent it opens wired to the person's terminal, too.
+    let opening = json!({"agent": "claude", "workspace": space, "connect": [kanban, mine]});
+    let opened = control_later(handle, &ws, cx, 9, "open_agent", opening);
+    assert!(opened.try_recv().is_err());
+    ws.read_with(cx, |ws, _| {
+        let front = &ws.templum_agent.approvals[0];
+        assert!(front.said.starts_with("Open "), "{}", front.said);
+        assert!(
+            front.details.starts_with("It can type into"),
+            "{}",
+            front.details
+        );
+    });
+}
+
 /// Claude Code and Codex started as `cat` in front of new terminals' shells, their input boxes
 /// bracketing pastes (as the spawn tests' `spawner`).
 #[cfg(unix)]

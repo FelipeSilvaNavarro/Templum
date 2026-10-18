@@ -393,8 +393,8 @@ conversation". `reason` is an optional string on every Ask tool, shown in the ap
 | `create_card`, `edit_card`, `move_card`, `comment_card` | as the block server's | As the block server's on any board; comments are signed "Templum Agent"; `move_card` asks for no comment | – | 1 |
 | `append_note` | `block`, `text` | As the block server's | – | 1 |
 | `add_items`, `check_item` | as the block server's | As the block server's | – | 1 |
-| `open_agent` | `agent` (an id of `list_agents`), `workspace`, `folder`, `worktree`, `model`, `effort`, `prompt`, `connect` (blocks to wire it to), `near` | Opens the agent as `spawn_agent` does ([connections.md](connections.md#spawning)), in that workspace, beside `near` or at its free spot, wired to `connect`, its `opened_by` `templum-agent`; its prompt typed once it is ready; its id | – | 1 |
-| `connect`, `disconnect` | `a`, `b` | Wires or unwires two blocks of one workspace (a step of Ctrl+Z) | – | 1 |
+| `open_agent` | `agent` (an id of `list_agents`), `workspace`, `folder`, `worktree`, `model`, `effort`, `prompt`, `connect` (blocks to wire it to), `near` | Opens the agent as `spawn_agent` does ([connections.md](connections.md#spawning)), in that workspace, beside `near` or at its free spot, wired to `connect`, its `opened_by` `templum-agent`; its prompt typed once it is ready; its id | Asks when `connect` names a terminal not its own | 1 |
+| `connect`, `disconnect` | `a`, `b` | Wires or unwires two blocks of one workspace (a step of Ctrl+Z) | `connect` asks when both are terminals and one isn't its own | 1 |
 | `close_block` | `block`, `reason` | Closes the block, a step of Ctrl+Z | Ask own when a program runs in it (an agent, a command); – otherwise | 1 |
 | `send_to_terminal` | `block`, `text`, `enter`, `reason` | As the block server's | Ask | 1 |
 | `send_keys` | `block`, `keys`, `reason` | As the block server's: answering an agent's dialog is approving its tool for the person | Ask | 1 |
@@ -426,10 +426,13 @@ conversation". `reason` is an optional string on every Ask tool, shown in the ap
 Danger is decided by Templum, from the tool and its target, in one table (`templum_mcp::control::rule`); the model's
 arguments can't lower it.
 
-- **Runs at once:** reading; making something; changes Ctrl+Z takes back (cards, wires, items, placement); showing.
-  Opening an agent and handing it a task run at once: that agent's own permission dialogs still guard what it does, and
+- **Runs at once:** reading; making something; changes Ctrl+Z takes back (cards, wires to anything but the person's
+  terminals, items, placement); showing. Opening an agent and handing it a task run at once: that agent's own permission dialogs still guard what it does, and
   it is a block the person sees.
-- **Asks:** what types or runs something in a terminal (`send_to_terminal`, `send_keys`, `run`); what ends a program
+- **Asks:** what types or runs something in a terminal (`send_to_terminal`, `send_keys`, `run`); a wire (`connect`,
+  `open_agent`'s `connect`) between two terminals when one isn't its own, since the wire is the person's consent that
+  each agent on it types into the other and answers its dialogs (the approval: "Wire *A* to *B*", "*A* can type into
+  *B* and answer its dialogs."); wires to a kanban, a note or a checklist run at once; what ends a program
   the person started (closing, interrupting or stopping a block or workspace that isn't its own while something runs
   there); what removes something the person made; settings and `[agents]` entries (a command an agent entry names is
   run later).

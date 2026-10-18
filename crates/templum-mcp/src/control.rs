@@ -446,7 +446,11 @@ pub fn rule(call: &ControlCall) -> Rule {
     match call {
         ControlCall::Block(Call::SendToTerminal { .. } | Call::SendKeys { .. }) => Rule::Ask,
         ControlCall::CloseBlock { .. } => Rule::AskOwnWhenLosing,
-        ControlCall::Block(Call::Interrupt { .. }) => Rule::AskOwn,
+        // A wire lets each terminal on it type into the other and answer its dialogs: Templum
+        // asks when it would reach a terminal that isn't the Templum Agent's own.
+        ControlCall::Block(Call::Interrupt { .. })
+        | ControlCall::Connect { .. }
+        | ControlCall::OpenAgent(_) => Rule::AskOwn,
         _ => Rule::Free,
     }
 }
@@ -640,6 +644,14 @@ mod tests {
                 "open_agent",
                 json!({"agent": "codex", "workspace": "w3", "prompt": "go"})
             ),
+            Rule::AskOwn
+        );
+        assert_eq!(
+            rule_of("connect", json!({"a": "x", "b": "y"})),
+            Rule::AskOwn
+        );
+        assert_eq!(
+            rule_of("disconnect", json!({"a": "x", "b": "y"})),
             Rule::Free
         );
         assert_eq!(
