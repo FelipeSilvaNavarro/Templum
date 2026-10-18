@@ -1,8 +1,7 @@
 # Templum Agent: the canvas you talk to
 
 - **Date:** 2026-10-18
-- **Status:** Batches 1 and 2 implemented (kanban card 43), but batch 2's `wait_for` pattern (card 35's);
-  batches 3 and 4 planned:
+- **Status:** Batches 1 and 2 implemented (kanban card 43); batches 3 and 4 planned:
   [docs/plans/2026-10-18-templum-agent.md](../plans/2026-10-18-templum-agent.md)
 - **Builds on:** [connections.md](connections.md) (the bus, the MCP server, tasks handed over, spawning, the
   balloon's rules), [agents.md](agents.md) (the agents and `[agents]`), [kanban.md](kanban.md),
@@ -331,8 +330,9 @@ Each stdout line is one JSON object. Templum reads these and ignores every other
   doesn't end the turn within 2 s, Templum ends the process (on Unix SIGTERM, then a kill after 2 s; on Windows a kill),
   which closes the control server's bridge; the next message resumes.
 - **The process ends by itself** while a turn runs: a failure row with its last error line; the next message resumes.
-- **New chat** stops it and forgets the session, the rows, its own things and its grants. The blocks it opened keep
-  their mark; they are no longer its own to close without asking.
+- **New chat** stops it and forgets the session, the rows, its own things and its grants; the ends of its tasks and
+  its watches (`wait_for` with `wait` false) no longer come back. The blocks it opened keep their mark; they are no
+  longer its own to close without asking.
 - **Quitting** Templum ends the process; the conversation file is written first.
 - **Not installed**, or the engine refuses to start: the pill says so; nothing else changes.
 
@@ -400,7 +400,7 @@ conversation". `reason` is an optional string on every Ask tool, shown in the ap
 | `send_keys` | `block`, `keys`, `reason` | As the block server's: answering an agent's dialog is approving its tool for the person | Ask | 1 |
 | `notify` | `text` | A notification from the Templum Agent; a click opens the chat | – | 1 |
 | `delegate` | `block`, `task`, `wait` | Hands an agent block a task ([Orchestration](#orchestration)) | – | 2 |
-| `wait_for` | `block`, `event`, and card 35's `pattern` | As the block server's | – | 2 |
+| `wait_for` | `block`, `event`, and card 35's `pattern`, `lines` and `wait` | As the block server's; with `wait` false, the match (or the watch's end) comes back into the chat as a notice | – | 2 |
 | `interrupt`, `stop_agent` | `block`, `reason` | As the block server's (`stop_agent` is card 35's) | Ask own | 2 |
 | `edit_workspace` | `workspace`, `name`, `folder`, `color`, `icon` | Its name, folder and look | – | 3 |
 | `stop_workspace` | `workspace`, `reason` | Stops it ([cockpit.md](cockpit.md#stopping-a-workspace)) | Ask own | 3 |

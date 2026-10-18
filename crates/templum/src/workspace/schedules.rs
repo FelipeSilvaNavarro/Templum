@@ -9,6 +9,8 @@ use chrono::{Local, TimeZone as _};
 use gpui_kit::Context;
 use templum_mcp::{Reply, tools};
 
+use templum_agent::NoticeLevel;
+
 use super::Workspace;
 use super::bus::{Outcome, target};
 use super::waits::{EVENT_LOOK, PRINTED_LINES};
@@ -349,19 +351,20 @@ impl Workspace {
     }
 
     /// Each watch whose line came, whose time ran out, or whose block closed ends, telling its
-    /// asker once; one whose asker's block is gone ends silently. False once none is left.
+    /// asker once (the Templum Agent in its chat); one whose asker's block is gone ends silently.
+    /// False once none is left.
     fn look_watches(&mut self, cx: &mut Context<Self>) -> bool {
         let now = cx.background_executor().now();
         let mut kept = Vec::new();
         for w in std::mem::take(&mut self.watches) {
             let pane = self.pane(&w.of);
-            let told = if self.pane(&w.by).is_none() {
+            let told = if w.by != templum_agent::ASKER && self.pane(&w.by).is_none() {
                 None
             } else if let Some(pane) = pane {
                 match pane.term.hit(w.watch) {
                     Some(line) => {
                         let last = pane.term.shared().lines(PRINTED_LINES).join("\n");
-                        Some(format!(
+                        let text = format!(
                             "[watch w{} on {}: a line matches \"{}\"] The line is in the pasted \
                              text.\n{}\nIts last lines:\n{}",
                             w.id,
@@ -369,28 +372,30 @@ impl Workspace {
                             w.pattern,
                             tools::tail(&line, tools::MAX_TEXT),
                             tools::tail(&last, tools::MAX_TEXT)
-                        ))
+                        );
+                        Some((text, NoticeLevel::Done))
                     }
-                    None if now >= w.until => Some(format!(
-                        "[watch w{} on {} ended: no line matched \"{}\" in {} s]",
-                        w.id, w.uid, w.pattern, w.timeout
-                    )),
+                    None if now >= w.until => {
+                        let text = format!(
+                            "[watch w{} on {} ended: no line matched \"{}\" in {} s]",
+                            w.id, w.uid, w.pattern, w.timeout
+                        );
+                        Some((text, NoticeLevel::Failed))
+                    }
                     None => {
                         kept.push(w);
                         continue;
                     }
                 }
             } else {
-                Some(format!(
-                    "[watch w{} on {} ended: {} was closed]",
-                    w.id, w.uid, w.uid
-                ))
+                let text = format!("[watch w{} on {} ended: {} was closed]", w.id, w.uid, w.uid);
+                Some((text, NoticeLevel::Failed))
             };
             if let Some(pane) = self.pane(&w.of) {
                 pane.term.unwatch(w.watch);
             }
-            if let Some(told) = told {
-                self.queue_notice(w.by, told, cx);
+            if let Some((told, level)) = told {
+                self.notice_to(w.by, told, &w.of, level, cx);
             }
         }
         self.watches = kept;

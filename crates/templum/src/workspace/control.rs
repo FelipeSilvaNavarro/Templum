@@ -243,7 +243,9 @@ impl Workspace {
                 block,
                 event,
                 timeout,
-                ..
+                pattern,
+                lines,
+                wait,
             }) => {
                 return self.on_task(&block, |ws, at| match event {
                     templum_mcp::tools::Event::Idle => {
@@ -251,7 +253,7 @@ impl Workspace {
                     }
                     event => {
                         let by = templum_agent::ASKER;
-                        ws.event_wait(by, at, &block, event, timeout, None, 0, true, cx)
+                        ws.event_wait(by, at, &block, event, timeout, pattern, lines, wait, cx)
                     }
                 });
             }

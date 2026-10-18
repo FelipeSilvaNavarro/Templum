@@ -720,8 +720,13 @@ impl Workspace {
                 until,
             };
             let id = self.watch_keep(watch, cx);
+            let back = if by == templum_agent::ASKER {
+                "comes back into this chat"
+            } else {
+                "is typed into your terminal"
+            };
             return Outcome::Now(Reply::ok(format!(
-                "Watching {block} for \"{pattern}\" as w{id}: a match is typed into your terminal."
+                "Watching {block} for \"{pattern}\" as w{id}: a match {back}."
             )));
         }
         let status = pane.term.status();

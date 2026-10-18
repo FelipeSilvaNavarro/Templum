@@ -2015,7 +2015,10 @@ pub(super) fn prints(
 /// The answer on `answers`, the test's clock running a look at a time: the terminal's own thread
 /// reads what `cat` prints back.
 #[cfg(unix)]
-fn heard(cx: &mut TestAppContext, answers: &std::sync::mpsc::Receiver<String>) -> (bool, String) {
+pub(super) fn heard(
+    cx: &mut TestAppContext,
+    answers: &std::sync::mpsc::Receiver<String>,
+) -> (bool, String) {
     let deadline = Instant::now() + std::time::Duration::from_secs(10);
     loop {
         after(cx, 250);

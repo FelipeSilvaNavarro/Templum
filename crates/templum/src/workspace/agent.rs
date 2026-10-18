@@ -400,6 +400,16 @@ impl Workspace {
                 }
             }
         }
+        // So were its watches.
+        let (gone, kept) = std::mem::take(&mut self.watches)
+            .into_iter()
+            .partition(|w| w.by == templum_agent::ASKER);
+        self.watches = kept;
+        for w in gone {
+            if let Some(pane) = self.pane(&w.of) {
+                pane.term.unwatch(w.watch);
+            }
+        }
         let agent = &mut self.templum_agent;
         agent.conversation = Conversation::new(&self.config.templum_agent.agent);
         agent.conversation.note("New conversation.");

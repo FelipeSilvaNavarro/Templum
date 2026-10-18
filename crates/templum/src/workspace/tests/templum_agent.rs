@@ -2467,6 +2467,63 @@ fn stopping_the_persons_terminal_asks_its_own_stops_at_once(cx: &mut TestAppCont
     });
 }
 
+/// `wait_for` with card 35's pattern: the Templum Agent waits for the printed line, or with `wait`
+/// false hears of it in its chat while it works; New chat drops the watches it left.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn wait_for_a_pattern_answers_on_the_line_or_tells_the_chat(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
+    ws.update(cx, |ws, _| ws.command = Some(agent_cat()));
+    let (block, uid) = busy_terminal(handle, &ws, cx);
+    in_front(&ws, cx, block, true);
+    let watching = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space.terminal(block).unwrap().term.watching()
+        })
+    };
+    let pattern = json!({"block": uid, "pattern": "Ready in \\d+"});
+    let answers = control_later(handle, &ws, cx, 7, "wait_for", pattern);
+    super::bus::after(cx, 250);
+    assert!(answers.try_recv().is_err(), "nothing printed yet");
+    super::delegate::prints(&ws, cx, block, b"starting\r  Ready in 312 ms\r");
+    let (failed, text) = super::delegate::heard(cx, &answers);
+    assert!(
+        !failed && text.starts_with(&format!("{uid} printed a line matching")),
+        "{text}"
+    );
+    assert!(text.contains("Ready in 312 ms"), "{text}");
+    let watch = |pattern: &str| json!({"block": uid, "pattern": pattern, "wait": false});
+    assert_eq!(
+        control(handle, &ws, cx, "wait_for", watch("ERROR")),
+        (
+            false,
+            format!("Watching {uid} for \"ERROR\" as w1: a match comes back into this chat.")
+        )
+    );
+    super::delegate::prints(&ws, cx, block, b"ERROR one\r");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while notices(&ws, cx).is_empty() {
+        assert!(std::time::Instant::now() < deadline, "no notice");
+        super::bus::after(cx, 250);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        notices(&ws, cx),
+        [(::templum_agent::NoticeLevel::Done, Some(uid.clone()))]
+    );
+    let sent = ws.read_with(cx, |ws, _| ws.templum_agent.sent.clone());
+    let heading = format!("[watch w1 on {uid}: a line matches \"ERROR\"]");
+    assert!(sent.iter().any(|m| m.contains(&heading)), "{sent:?}");
+    assert_eq!(watching(&ws, cx), 0, "told once, its watch goes");
+    rows_until(&ws, cx, ended);
+    assert!(!control(handle, &ws, cx, "wait_for", watch("never")).0);
+    assert_eq!(watching(&ws, cx), 1);
+    ws.update(cx, |ws, cx| ws.new_chat(cx));
+    assert_eq!(watching(&ws, cx), 0, "the old conversation's watch goes");
+    assert!(ws.read_with(cx, |ws, _| ws.watches.is_empty()));
+}
+
 /// The refusal while `n` of its tasks are under way.
 fn too_many(n: u32) -> String {
     format!(
