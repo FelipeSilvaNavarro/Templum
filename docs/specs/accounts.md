@@ -55,7 +55,8 @@ items are links to another account's. Its login is never one of them.
 - **Its folder:** the folder its agent's variable names while it runs, `<data>/accounts/<id>` unless the person
   chose one.
 - **The agent's own folder:** where the agent keeps everything without Templum's account (its variable as Templum's
-  environment has it, else its default, `~/.claude`). It is the agent's default account, whose id is the agent's
+  environment has it, else its default, `~/.claude`; a variable naming one of its accounts' folders is a Templum
+  started in that account's block, and the default is the agent's own). It is the agent's default account, whose id is the agent's
   (`claude`).
 - **An item:** one file or folder of an agent's folder that an account may share, from [the table](#which-agents)
   (Claude Code's `skills/`).

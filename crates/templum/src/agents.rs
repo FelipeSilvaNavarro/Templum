@@ -51,15 +51,38 @@ pub(crate) struct Account {
     pub share: BTreeMap<String, String>,
 }
 
-/// The state folder of `kind`'s own folder, as Templum's environment names it.
-pub(crate) fn own_state(kind: &Kind) -> Option<PathBuf> {
+/// The state folder of `kind`'s own folder, as Templum's environment names it among `agents`.
+pub(crate) fn own_state(kind: &Kind, agents: &[AgentEntry]) -> Option<PathBuf> {
     // Tests never reach the person's own agent folders (~/.claude…): `<OWN_FOLDERS>/<agent>`.
+    #[cfg(test)]
+    let _ = agents;
     #[cfg(test)]
     return OWN_FOLDERS
         .with_borrow(|dir| dir.as_ref().map(|d| kind.state_dir(&d.join(kind.agent))));
     #[cfg(not(test))]
-    kind.own_folder(std::env::var_os(kind.var), std::env::home_dir().as_deref())
-        .map(|f| kind.state_dir(&f))
+    own_state_in(
+        kind,
+        std::env::var_os(kind.var),
+        std::env::home_dir().as_deref(),
+        agents,
+    )
+}
+
+/// `own_state` with its variable `var` and the home folder `home`. A variable that names one of
+/// `agents`' accounts' folders is Templum's started from that account's block, not the agent's.
+fn own_state_in(
+    kind: &Kind,
+    var: Option<std::ffi::OsString>,
+    home: Option<&Path>,
+    agents: &[AgentEntry],
+) -> Option<PathBuf> {
+    let var = var.filter(|v| {
+        !agents
+            .iter()
+            .filter_map(|a| a.account.as_ref())
+            .any(|a| a.folder == Path::new(v))
+    });
+    kind.own_folder(var, home).map(|f| kind.state_dir(&f))
 }
 
 #[cfg(test)]
@@ -92,7 +115,7 @@ impl AgentEntry {
                 key: item.key,
                 from: account.share.get(item.key).and_then(|target| {
                     if target == of {
-                        own_state(account.kind)
+                        own_state(account.kind, agents)
                     } else {
                         let other = agents.iter().find(|a| a.id == *target)?.account.as_ref()?;
                         Some(other.kind.state_dir(&other.folder))
@@ -112,7 +135,10 @@ impl AgentEntry {
             let other = a.account.as_ref()?;
             (other.kind.agent == account.kind.agent).then(|| other.kind.state_dir(&other.folder))
         });
-        own_state(account.kind).into_iter().chain(others).collect()
+        own_state(account.kind, agents)
+            .into_iter()
+            .chain(others)
+            .collect()
     }
 
     /// The program its command runs, to look for on this computer.
@@ -323,7 +349,7 @@ pub(crate) fn usage_homes(agents: &[AgentEntry]) -> Vec<templum_usage::AgentHome
         Some(templum_usage::AgentHome {
             id: agent.to_string(),
             agent: agent.to_string(),
-            dir: own_state(kind)?,
+            dir: own_state(kind, agents)?,
             sessions_shared: shares_sessions(agent),
         })
     });
@@ -917,6 +943,24 @@ mod tests {
             ..draft
         };
         assert_eq!(fine.problem("claude4", &agents, None), None);
+    }
+
+    #[test]
+    fn a_variable_naming_an_accounts_folder_isnt_the_agents_own() {
+        let list = agents("[agents]\nclaude2 = { of = \"claude\" }\n");
+        let claude = templum_usage::accounts::kind("claude").unwrap();
+        let home = Path::new("/home/me");
+        // Templum started in claude2's block has its variable.
+        let var = Some("/data/accounts/claude2/".into());
+        assert_eq!(
+            own_state_in(claude, var, Some(home), &list),
+            Some(home.join(".claude"))
+        );
+        let var = Some("/elsewhere".into());
+        assert_eq!(
+            own_state_in(claude, var, Some(home), &list),
+            Some(PathBuf::from("/elsewhere"))
+        );
     }
 
     #[test]

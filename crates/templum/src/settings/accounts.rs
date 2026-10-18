@@ -296,7 +296,7 @@ impl Form {
             (account.kind.agent == kind.agent && Some(&a.id) != me.as_ref())
                 .then(|| (a.id.clone(), Some(account.kind.state_dir(&account.folder))))
         });
-        std::iter::once((kind.agent.to_string(), own_state(kind)))
+        std::iter::once((kind.agent.to_string(), own_state(kind, &self.agents)))
             .chain(accounts)
             .collect()
     }
