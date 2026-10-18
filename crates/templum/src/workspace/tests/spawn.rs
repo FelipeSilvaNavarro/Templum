@@ -1123,3 +1123,93 @@ fn a_fork_refuses_another_agent_and_a_session_not_found(cx: &mut TestAppContext)
         )
     );
 }
+
+/// A role opens its agent on its model and effort with its words, and its instructions go with
+/// the prompt (docs/specs/agent-tools.md, Roles).
+#[gpui_kit::test]
+fn a_role_opens_its_agent_with_its_words_and_its_instructions_go_with_the_prompt(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    ws.update(cx, |ws, _| {
+        ws.config.roles.insert(
+            "reviewer".into(),
+            crate::config::Role {
+                agent: "codex".into(),
+                model: Some("gpt-5.6-luna".into()),
+                effort: Some("high".into()),
+                args: Some("-s read-only".into()),
+                instructions: Some("Never edit files.".into()),
+            },
+        );
+    });
+    let told = ws.read_with(cx, |ws, cx| ws.instructions(&terminal, cx));
+    assert!(
+        told.contains(
+            "list_blocks gives the current list. Roles for spawn_agent: reviewer (codex). When"
+        ),
+        "{told}"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "spawn_agent",
+        json!({ "role": "reviewer", "folder": dir.path(), "prompt": "review HEAD" }),
+    );
+    assert!(!failed, "{text}");
+    let new = spawned(&ws, cx, mine);
+    screen_with(
+        &ws,
+        cx,
+        new,
+        "-m gpt-5.6-luna -c model_reasoning_effort=high -s read-only",
+    );
+    in_front(&ws, cx, new, true);
+    found(&ws, cx, new);
+    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+    let mut looks = 0;
+    while ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some()) {
+        assert!(looks < 20, "its prompt was never typed");
+        std::thread::sleep(Duration::from_millis(100));
+        after(cx, look);
+        looks += 1;
+    }
+    enter(cx);
+    screen_with(&ws, cx, new, "as reviewer]");
+    screen_with(&ws, cx, new, "Your role, reviewer:");
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.space.terminal(new).unwrap().role.as_deref(),
+            Some("reviewer")
+        )
+    });
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "spawn_agent",
+            json!({ "role": "reviewer" })
+        ),
+        (
+            true,
+            "The role reviewer's instructions go with a prompt: give one.".into()
+        )
+    );
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "spawn_agent",
+            json!({ "role": "tester", "prompt": "x" })
+        ),
+        (true, "There's no role tester. Roles: reviewer.".into())
+    );
+}

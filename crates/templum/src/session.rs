@@ -735,6 +735,9 @@ pub(crate) struct TerminalItem {
     /// is that account. One Templum doesn't know gives a plain terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// The role `spawn_agent` opened it as: its words typed again on resume, while it exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -1122,6 +1125,27 @@ mod tests {
     }
 
     #[test]
+    fn a_terminal_keeps_its_role() {
+        let text = r#"{"kind":"terminal","rect":{"x":0,"y":0,"w":1,"h":1},"agent":"codex",
+                      "role":"reviewer"}"#;
+        let item: Item = serde_json::from_str(text).unwrap();
+        let Item::Terminal(t) = &item else {
+            panic!("{item:?}")
+        };
+        assert_eq!(t.role.as_deref(), Some("reviewer"));
+        let back = serde_json::to_string(&item).unwrap();
+        assert!(back.contains(r#""role":"reviewer""#), "{back}");
+        let older: Item =
+            serde_json::from_str(r#"{"kind":"terminal","rect":{"x":0,"y":0,"w":1,"h":1}}"#)
+                .unwrap();
+        let Item::Terminal(o) = &older else {
+            panic!("{older:?}")
+        };
+        assert_eq!(o.role, None);
+        assert!(!serde_json::to_string(&older).unwrap().contains("role"));
+    }
+
+    #[test]
     fn an_items_account_is_kept() {
         let text = r#"{"kind":"terminal","rect":{"x":0,"y":0,"w":1,"h":1},"agent":"claude2",
                       "account":"claude2"}"#;
@@ -1226,6 +1250,7 @@ mod tests {
                     model: None,
                     effort: None,
                     account: None,
+                    role: None,
                 }),
                 Item::Terminal(TerminalItem {
                     uid: String::new(),
@@ -1242,6 +1267,7 @@ mod tests {
                     model: None,
                     effort: None,
                     account: None,
+                    role: None,
                 }),
                 Item::Kanban(KanbanItem {
                     uid: String::new(),
@@ -1884,6 +1910,7 @@ mod tests {
                         model: Some("opus".into()),
                         effort: Some("high".into()),
                         account: None,
+                        role: None,
                     },
                     Processes::default(),
                     None,
@@ -1904,6 +1931,7 @@ mod tests {
                         model: None,
                         effort: None,
                         account: None,
+                        role: None,
                     },
                     Processes::default(),
                     None,
@@ -1986,6 +2014,7 @@ mod tests {
                     model: Some("gpt-5.6-luna".into()),
                     effort: Some("high".into()),
                     account: None,
+                    role: None,
                 },
                 Processes::default(),
                 None,

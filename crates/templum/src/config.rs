@@ -44,6 +44,50 @@ pub(crate) struct Config {
     /// `[agents.<id>]`: changes to one of Templum's AI agents (only what differs), or an agent of
     /// the user's own.
     pub agents: BTreeMap<String, AgentConfig>,
+    /// `[roles.<id>]`: ways to open an agent `spawn_agent` takes by name.
+    pub roles: BTreeMap<String, Role>,
+}
+
+/// A saved way to open an agent (docs/specs/agent-tools.md, Roles): which agent, its model and
+/// effort, words for its command line (its own flags: the tools it may use), and instructions
+/// typed with its prompt.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct Role {
+    /// An id of Settings ▸ Agents, an account too.
+    pub agent: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// One line, typed after its model and effort, as an `[agents]` command is.
+    pub args: Option<String>,
+    pub instructions: Option<String>,
+}
+
+impl Role {
+    /// `spawn` opened as the role `id`: the call's own agent, model and effort win over the
+    /// role's; its instructions go with the prompt, which they need; its words ride along.
+    pub fn spawn(
+        &self,
+        id: &str,
+        mut spawn: templum_mcp::tools::Spawn,
+    ) -> Result<templum_mcp::tools::Spawn, String> {
+        spawn.agent = spawn.agent.or_else(|| Some(self.agent.clone()));
+        spawn.model = spawn.model.or_else(|| self.model.clone());
+        spawn.effort = spawn.effort.or_else(|| self.effort.clone());
+        let instructions = self.instructions.as_deref().map(str::trim);
+        if let Some(instructions) = instructions.filter(|i| !i.is_empty()) {
+            let Some(prompt) = spawn.prompt.as_deref() else {
+                return Err(format!(
+                    "The role {id}'s instructions go with a prompt: give one."
+                ));
+            };
+            spawn.prompt = Some(format!(
+                "Your role, {id}:\n{instructions}\n\nYour task:\n{prompt}"
+            ));
+        }
+        spawn.args = self.args.clone().filter(|a| !a.trim().is_empty());
+        Ok(spawn)
+    }
 }
 
 /// One AI agent's settings. For Templum's own, each missing key keeps its default; one of the
@@ -479,6 +523,25 @@ pub(crate) fn parse_in(text: &str, data: Option<&Path>) -> Result<Config, String
         return Err(format!(
             "{FILE}: usage.warn must be 0, 80, 90 or 95 (it is {warn})"
         ));
+    }
+    for (id, role) in &config.roles {
+        if !valid_agent_id(id) {
+            return Err(format!(
+                "{FILE}: roles.{id:?}: a role's id is letters, digits, - and _"
+            ));
+        }
+        if role.agent.trim().is_empty() {
+            return Err(format!(
+                "{FILE}: roles.{id}.agent is needed (the agent it opens)"
+            ));
+        }
+        if role
+            .args
+            .as_deref()
+            .is_some_and(|a| a.contains(['\n', '\r']))
+        {
+            return Err(format!("{FILE}: roles.{id}.args is one line"));
+        }
     }
     // Shortcuts are part of the file's validity: an invalid one keeps the last valid config.
     Keymap::new(&config.keys, cfg!(target_os = "macos"))?;
@@ -1071,6 +1134,10 @@ pub(crate) fn template(macos: bool) -> String {
         "# question_timeout = 0\n",
         "## A short sound when an agent asks you something.\n",
         "# sound = true\n\n",
+        "[roles]\n",
+        "## Ways spawn_agent opens an agent by name (docs/specs/agent-tools.md#roles): its agent, and\n",
+        "## optionally its model, effort, args (the agent's own flags) and instructions. For example:\n",
+        "## reviewer = { agent = \"claude\", model = \"opus\", effort = \"high\", args = \"--tools Read,Grep,Glob,Bash\", instructions = \"You review code and report each finding as a card. Never edit files.\" }\n\n",
         "[git]\n",
         "# program = \"git\"   # a name on PATH, or a path\n\n",
         "[keys]\n",
@@ -1624,6 +1691,42 @@ scrollback = 500
         assert!(!c.canvas.focus_follows_pointer);
     }
 
+    /// `[roles.<id>]`: a way to open an agent, read whole; a role breaking the rules is a config
+    /// error naming it (docs/specs/agent-tools.md, Roles).
+    #[test]
+    fn a_role_reads_back_and_a_bad_one_is_named() {
+        let c = parse(
+            "[roles.reviewer]\nagent = \"claude\"\nmodel = \"opus\"\neffort = \"high\"\n\
+             args = \"--tools Read,Grep\"\ninstructions = \"\"\"\nNever edit files.\n\"\"\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            c.roles["reviewer"],
+            Role {
+                agent: "claude".into(),
+                model: Some("opus".into()),
+                effort: Some("high".into()),
+                args: Some("--tools Read,Grep".into()),
+                instructions: Some("Never edit files.\n".into()),
+            }
+        );
+        for (text, names) in [
+            ("[roles.reviewer]\nmodel = \"opus\"\n", "roles.reviewer"),
+            ("[roles.reviewer]\nagent = \" \"\n", "roles.reviewer"),
+            (
+                "[roles.reviewer]\nagent = \"claude\"\nargs = \"a\\nb\"\n",
+                "roles.reviewer",
+            ),
+            (
+                "[roles.\"re view\"]\nagent = \"claude\"\n",
+                "roles.\"re view\"",
+            ),
+        ] {
+            let err = parse(text).unwrap_err();
+            assert!(err.contains(names), "{text}: {err}");
+        }
+    }
+
     #[test]
     fn the_templates_example_lines_work_once_uncommented() {
         // "## key = value" example lines (font family, shell) become settings without "## ".
@@ -1643,6 +1746,7 @@ scrollback = 500
         assert_eq!(c.font.family.as_deref(), Some("JetBrains Mono"));
         assert_eq!(c.shell.program.as_deref(), Some("fish"));
         assert_eq!(c.shell.args, ["--login"]);
+        assert_eq!(c.roles["reviewer"].agent, "claude");
     }
 
     #[test]

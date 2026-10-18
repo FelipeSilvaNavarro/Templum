@@ -1,7 +1,7 @@
 # Agent tools: what Claude Code does that Templum's agents couldn't
 
 - **Date:** 2026-10-18
-- **Status:** Batch 1 implemented (kanban card 35, "Aprimorando ferramentas do Templum"):
+- **Status:** Batches 1 and 2 implemented (kanban card 35, "Aprimorando ferramentas do Templum"):
   [docs/plans/2026-10-18-agent-tools.md](../plans/2026-10-18-agent-tools.md)
 - **Builds on:** [connections.md](connections.md) (the bus, the tools, tasks, the notices typed back, spawning, the
   balloon), [ask-user.md](ask-user.md) (the dialog `propose_plan` reuses), [agents.md](agents.md) (the agents, their
@@ -498,14 +498,15 @@ New verbs, each one tool call ([connections.md](connections.md#the-templum-comma
 ## Config
 
 ```toml
-## Roles spawn_agent can open by name (docs/specs/agent-tools.md#roles).
-# [roles.reviewer]
-# agent = "claude"
-# model = "opus"
-# effort = "high"
-# args = "--tools Read,Grep,Glob,Bash"
-# instructions = "You review code and report each finding as a card. Never edit files."
+[roles]
+## Ways spawn_agent opens an agent by name (docs/specs/agent-tools.md#roles): its agent, and
+## optionally its model, effort, args (the agent's own flags) and instructions. For example:
+## reviewer = { agent = "claude", model = "opus", effort = "high", args = "--tools Read,Grep,Glob,Bash", instructions = "You review code and report each finding as a card. Never edit files." }
 ```
+
+The table stays uncommented and empty, and the example is one inline table: the template's rule is that its `# `
+lines are the defaults and its `## key = value` lines examples that work once uncommented, which a commented
+`[roles.reviewer]` table can't keep (its keys would fall into the table above it).
 
 A change applies to the next `spawn_agent`, as every config change does to what comes after it.
 

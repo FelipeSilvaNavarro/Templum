@@ -755,3 +755,47 @@ fn a_deleted_accounts_block_comes_back_plain(cx: &mut TestAppContext) {
         assert_eq!(ws.space.terminal(id).unwrap().account, None);
     });
 }
+
+/// A block opened as a role types the role's words again on restore, with its model and effort;
+/// not once the role is gone from the config (docs/specs/agent-tools.md, Roles).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_roles_words_are_typed_again_on_restore_while_it_exists(cx: &mut TestAppContext) {
+    use super::bus::screen_with;
+    let folder = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_as(cx, Some(quiet()), None, None);
+    ws.update(cx, |ws, _| {
+        ws.config.roles.insert(
+            "reviewer".into(),
+            crate::config::Role {
+                agent: "codex".into(),
+                model: None,
+                effort: None,
+                args: Some("-s read-only".into()),
+                instructions: Some("Never edit files.".into()),
+            },
+        )
+    });
+    let item = |id: &str| -> crate::session::Item {
+        serde_json::from_value(serde_json::json!({
+            "kind": "terminal", "uid": id,
+            "rect": { "x": 0.0, "y": 900.0, "w": 700.0, "h": 450.0 },
+            "folder": folder.path(), "agent": "codex", "role": "reviewer",
+            "model": "gpt-5.6-luna",
+        }))
+        .unwrap()
+    };
+    let back = restore(handle, &ws, cx, &item("rol01"));
+    let shown = screen_with(&ws, cx, back, "-m gpt-5.6-luna -s read-only");
+    assert!(!shown.contains("Never edit"), "{shown}");
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.space.terminal(back).unwrap().role.as_deref(),
+            Some("reviewer")
+        )
+    });
+    ws.update(cx, |ws, _| ws.config.roles.clear());
+    let plain = restore(handle, &ws, cx, &item("rol02"));
+    let shown = screen_with(&ws, cx, plain, "-m gpt-5.6-luna");
+    assert!(!shown.contains("read-only"), "{shown}");
+}

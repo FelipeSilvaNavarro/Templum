@@ -40,7 +40,7 @@ const ASK: &str = "ask <question> [--option <answer>]… [--json]";
 const WAIT: &str = "wait <block> [--for idle|needs_you|command_finished|attention] \
                     [--match <pattern>] [--lines <n>] [--timeout <seconds>] [--json]";
 const WIRE: &str = "wire <a> <b> [--json]";
-const SPAWN: &str = "spawn [<agent>] [--fork] [--folder <folder>] [--worktree <name>] \
+const SPAWN: &str = "spawn [<agent>] [--fork] [--role <role>] [--folder <folder>] [--worktree <name>] \
                      [--prompt <text>] [--model <model>] [--effort <effort>] [--json]";
 const KEYS: &str = "keys <block> <key>… [--json]";
 const KANBAN: &str = "kanban list [<board>] [--card <card>] | add <title> [--column <column>] \
@@ -245,6 +245,7 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
                     continue;
                 }
                 let key = match *flag {
+                    "--role" => "role",
                     "--folder" => "folder",
                     "--worktree" => "worktree",
                     "--prompt" => "prompt",
@@ -888,6 +889,10 @@ mod tests {
             (
                 &["checklist", "delete", "4qm2a", "41"][..],
                 json!({ "name": "delete_item", "arguments": { "block": "4qm2a", "item": "41" } }),
+            ),
+            (
+                &["spawn", "--role", "reviewer", "--prompt", "review it"][..],
+                json!({ "name": "spawn_agent", "arguments": { "role": "reviewer", "prompt": "review it" } }),
             ),
             (
                 &["spawn", "--fork", "--prompt", "review it"][..],

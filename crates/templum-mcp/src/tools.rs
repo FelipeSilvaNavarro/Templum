@@ -186,6 +186,11 @@ pub struct Spawn {
     pub effort: Option<String>,
     /// A copy of the caller's own agent, started on its conversation so far.
     pub fork: bool,
+    /// A role of `[roles]` in config.toml: its agent, model, effort, words and instructions.
+    pub role: Option<String>,
+    /// The role's words for its agent's command line; set by the app from the role, never by a
+    /// call.
+    pub args: Option<String>,
 }
 
 /// The kinds of block `create_block` opens.
@@ -544,6 +549,10 @@ pub fn list() -> Value {
                     "agent": {
                         "type": "string",
                         "description": "Which agent: claude, codex, gemini, … or an account, like claude2 (an id of Settings ▸ Agents). Left out with fork.",
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "A role saved in config.toml ([roles]): its agent, model, effort, flags and instructions; your agent, model and effort win.",
                     },
                     "fork": {
                         "type": "boolean",
@@ -989,8 +998,9 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
         "spawn_agent" => {
             let fork = flag("fork")?;
             let agent = optional("agent")?;
-            if agent.is_none() && !fork {
-                return Err(format!("{name} needs \"agent\", or fork"));
+            let role = optional("role")?;
+            if agent.is_none() && role.is_none() && !fork {
+                return Err(format!("{name} needs \"agent\", a role, or fork"));
             }
             let prompt = optional("prompt")?;
             if fork && prompt.is_none() {
@@ -1004,6 +1014,8 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
                 model: optional("model")?,
                 effort: optional("effort")?,
                 fork,
+                role,
+                args: None,
             })
         }
         "list_cards" => Call::ListCards {
@@ -1433,7 +1445,9 @@ mod tests {
                 worktree: None,
                 model: None,
                 effort: None,
-                fork: false
+                fork: false,
+                role: None,
+                args: None
             }))
         );
         assert_eq!(
@@ -1445,12 +1459,23 @@ mod tests {
                 worktree: None,
                 model: None,
                 effort: None,
-                fork: true
+                fork: true,
+                role: None,
+                args: None
             }))
         );
         assert_eq!(
             parse("spawn_agent", &json!({})),
-            Err("spawn_agent needs \"agent\", or fork".into())
+            Err("spawn_agent needs \"agent\", a role, or fork".into())
+        );
+        let Ok(Call::SpawnAgent(by_role)) =
+            parse("spawn_agent", &json!({ "role": "reviewer", "prompt": "x" }))
+        else {
+            panic!("a role is enough")
+        };
+        assert_eq!(
+            (by_role.agent, by_role.role.as_deref(), by_role.args),
+            (None, Some("reviewer"), None)
         );
         assert_eq!(
             parse("spawn_agent", &json!({ "fork": true })),

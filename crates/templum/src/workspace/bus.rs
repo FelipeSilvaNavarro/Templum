@@ -647,6 +647,21 @@ impl Workspace {
                     .join(", ")
             }
         };
+        // The person's roles, by id and agent: at most ROLES_TOLD.
+        let mut roles: Vec<String> = self
+            .config
+            .roles
+            .iter()
+            .take(ROLES_TOLD)
+            .map(|(id, role)| format!("{id} ({})", flat(&role.agent)))
+            .collect();
+        if self.config.roles.len() > ROLES_TOLD {
+            roles.push("…".into());
+        }
+        let roles = match roles.is_empty() {
+            true => String::new(),
+            false => format!(" Roles for spawn_agent: {}.", roles.join(", ")),
+        };
         // Agents first: Claude Code shows its own Agent tool whole and Templum's tools by name
         // only, Codex weighs the first 512 characters most, and Claude Code cuts at 4096 the
         // block lists may outgrow.
@@ -658,7 +673,7 @@ impl Workspace {
              You are block {uid}, {title:?}, in Templum workspace {:?}. Connected to you: {}. In this \
              workspace, not connected (ask with connect): {}. Name blocks by these ids. You may only read \
              or write your own block and those connected to you; connect asks the person for another. \
-             list_blocks gives the current list. When a connected kanban has your task, claim its \
+             list_blocks gives the current list.{roles} When a connected kanban has your task, claim its \
              card (claim_card: a card for another agent isn't yours) and move it to Doing when you \
              start; check its checklist's items as you finish them (edit_card); when you are done, \
              comment on it what you did and what the next agent needs to know (comment_card), then \
@@ -677,6 +692,8 @@ impl Workspace {
 
 /// The most characters of a title an agent is told.
 const TITLE_CHARS: usize = 60;
+/// The most roles the instructions name.
+const ROLES_TOLD: usize = 10;
 
 /// Text as agents are told it, on one line: no control characters, no invisible ones (zero
 /// widths, direction overrides, soft hyphens, tags, which can carry hidden text), its line breaks

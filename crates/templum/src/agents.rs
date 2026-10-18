@@ -224,16 +224,25 @@ impl AgentEntry {
     }
 
     /// The words that start it on `model` and `effort` (`spawn_agent`), after its command: its
-    /// builtin's; the person's own agents take neither.
-    pub fn launch_args(&self, model: Option<&str>, effort: Option<&str>) -> Result<String, String> {
-        match self.builtin {
-            Some(agent) => agent.launch_args(model, effort),
-            None if model.is_none() && effort.is_none() => Ok(String::new()),
-            None => Err(format!(
-                "Templum doesn't give {} a model or an effort: it is one of your own agents.",
-                self.title
-            )),
-        }
+    /// builtin's, the person's own agents taking neither; then a role's `args`, the person's words
+    /// for its command line, typed as they wrote them, as an `[agents]` command is.
+    pub fn launch_args_with(
+        &self,
+        model: Option<&str>,
+        effort: Option<&str>,
+        args: Option<&str>,
+    ) -> Result<String, String> {
+        let flags = match self.builtin {
+            Some(agent) => agent.launch_args(model, effort)?,
+            None if model.is_none() && effort.is_none() => String::new(),
+            None => {
+                return Err(format!(
+                    "Templum doesn't give {} a model or an effort: it is one of your own agents.",
+                    self.title
+                ));
+            }
+        };
+        Ok(flags + &args.map_or(String::new(), |a| format!(" {}", a.trim())))
     }
 
     /// How to tell it from a terminal's processes: Templum's names for its own, and the program
@@ -1177,11 +1186,16 @@ mod tests {
     fn only_ours_take_a_model_and_an_effort() {
         let list = agents("[agents]\nmine = { name = \"Mine\", command = \"mine\" }\n");
         assert_eq!(
-            by(&list, "claude").launch_args(Some("opus"), None),
+            by(&list, "claude").launch_args_with(Some("opus"), None, None),
             Ok(" --model opus".to_string())
         );
-        assert_eq!(by(&list, "mine").launch_args(None, None), Ok(String::new()));
-        let err = by(&list, "mine").launch_args(Some("m"), None).unwrap_err();
+        assert_eq!(
+            by(&list, "mine").launch_args_with(None, None, None),
+            Ok(String::new())
+        );
+        let err = by(&list, "mine")
+            .launch_args_with(Some("m"), None, None)
+            .unwrap_err();
         assert!(err.contains("Mine"), "{err}");
     }
 

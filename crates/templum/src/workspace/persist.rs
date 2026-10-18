@@ -176,6 +176,7 @@ impl Workspace {
         if let Some(pane) = self.space.terminal_mut(id) {
             pane.opened_by = saved.opened_by.clone();
             pane.account = account;
+            pane.role = saved.role.clone();
         }
         let Some(agent) = saved
             .agent
@@ -199,7 +200,12 @@ impl Workspace {
         };
         let command = agent.resume_command_for(session, kept);
         let (model, effort) = (saved.model.as_deref(), saved.effort.as_deref());
-        let args = agent.launch_args(model, effort);
+        // Its role's words again, while the role exists; its instructions are in the conversation.
+        let words = saved
+            .role
+            .as_ref()
+            .and_then(|r| self.config.roles.get(r)?.args.clone());
+        let args = agent.launch_args_with(model, effort, words.as_deref());
         let line = format!(
             "{}\r",
             self.typed(

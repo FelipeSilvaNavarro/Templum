@@ -252,6 +252,8 @@ pub(crate) struct Pane {
     /// The account whose variable its shell has, by id (docs/specs/accounts.md, Its block): its
     /// agent found there is that account.
     pub account: Option<String>,
+    /// The role `spawn_agent` opened it as (docs/specs/agent-tools.md, Roles), kept with it.
+    pub role: Option<String>,
 }
 
 impl Pane {
@@ -274,6 +276,7 @@ impl Pane {
             model: self.model.clone(),
             effort: self.effort.clone(),
             account: self.account.clone(),
+            role: self.role.clone(),
         }
     }
 

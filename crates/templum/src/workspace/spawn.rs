@@ -32,6 +32,30 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Outcome {
+        let spawn = match spawn.role.clone() {
+            None => spawn,
+            Some(id) => match self
+                .config
+                .roles
+                .get(&id)
+                .map(|role| role.spawn(&id, spawn))
+            {
+                Some(Ok(spawn)) => spawn,
+                Some(Err(refused)) => return Outcome::Now(Reply::err(refused)),
+                None if self.config.roles.is_empty() => {
+                    return Outcome::Now(Reply::err(
+                        "No roles are saved: [roles] in config.toml holds them.",
+                    ));
+                }
+                None => {
+                    let ids: Vec<&str> = self.config.roles.keys().map(String::as_str).collect();
+                    return Outcome::Now(Reply::err(format!(
+                        "There's no role {id}. Roles: {}.",
+                        ids.join(", ")
+                    )));
+                }
+            },
+        };
         let (entry, fork) = if spawn.fork {
             match self.fork_of(from, spawn.agent.as_deref()) {
                 Ok((entry, command)) => (entry, Some(command)),
@@ -49,7 +73,8 @@ impl Workspace {
             (entry, None)
         };
         // Typed into a shell: anything it can't type safely opens nothing, a worktree included.
-        if let Err(why) = entry.launch_args(spawn.model.as_deref(), spawn.effort.as_deref()) {
+        let (model, effort) = (spawn.model.as_deref(), spawn.effort.as_deref());
+        if let Err(why) = entry.launch_args_with(model, effort, spawn.args.as_deref()) {
             return Outcome::Now(Reply::err(why));
         }
         if !templum_terminal::installed(entry.program()) {
@@ -158,7 +183,9 @@ impl Workspace {
             return Reply::err("Your block was closed before the agent could open.");
         };
         let (model, effort) = (spawn.model.as_deref(), spawn.effort.as_deref());
-        let args = entry.launch_args(model, effort).unwrap_or_default();
+        let args = entry
+            .launch_args_with(model, effort, spawn.args.as_deref())
+            .unwrap_or_default();
         // A task the caller hands over, under its `[from …]` line, as `delegate` types one.
         let by = self
             .space_named(&space_id)
@@ -184,6 +211,7 @@ impl Workspace {
                 let pane = ws.space.terminal_mut(id)?;
                 pane.opened_by = opener;
                 (pane.model, pane.effort) = (spawn.model.clone(), spawn.effort.clone());
+                pane.role = spawn.role.clone();
                 pane.flags_for = Some(entry.id.clone());
                 let terminal = ws.space.terminal(id)?.term.id().to_string();
                 Some((ws.space.uids.get(&id)?.clone(), terminal))
@@ -222,7 +250,11 @@ impl Workspace {
                 ),
                 _ => String::new(),
             };
-            let text = format!("[from {by}, task t{id}] {TASK_LEAD}\n{copy}{prompt}");
+            let role = spawn
+                .role
+                .as_ref()
+                .map_or(String::new(), |r| format!(", as {r}"));
+            let text = format!("[from {by}, task t{id}{role}] {TASK_LEAD}\n{copy}{prompt}");
             let handed = Handed {
                 id,
                 // Its session starts with its task: all it spends is the task's.
