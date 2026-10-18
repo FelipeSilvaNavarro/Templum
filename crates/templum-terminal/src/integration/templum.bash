@@ -110,10 +110,15 @@ if [[ -z "${__templum_installed-}" ]]; then
         }
     fi
     # Qwen Code: its server as a word, its hooks in the settings file its variable moves. It takes
-    # one --mcp-config: a person's own means none of Templum's.
+    # one --mcp-config: a person's own means none of Templum's. None before one of its commands,
+    # which refuse it (`qwen mcp list`); a plain word that isn't one is a prompt.
     if [[ -n "${TEMPLUM_QWEN_ARGS-}" ]] && ! builtin declare -F qwen > /dev/null; then
         function qwen {
             builtin local w="${TEMPLUM_QWEN_ARGS-}" a
+            case "${1-}" in
+                agents | auth | batch | board | channel | extensions | hooks | mcp | review | sandbox | \
+                    serve | sessions | update) w= ;;
+            esac
             for a in "$@"; do
                 case "$a" in --mcp-config | --mcp-config=*) w= ;; esac
             done

@@ -611,13 +611,16 @@ mod tests {
         }
 
         /// A `qwen` typed at the prompt of a shell started `with_agents`: its word first, none
-        /// when the person gives their own `--mcp-config` (it takes one), and its settings
-        /// variable, never over the shell's own.
+        /// when the person gives their own `--mcp-config` (it takes one) or starts with one of
+        /// its commands (which refuse it), and its settings variable, never over the shell's own.
         fn typed_qwen(term: &Terminal, home: &Home, syntax: &Syntax) {
             let var = "QWEN_CODE_SYSTEM_SETTINGS_PATH";
             let lines = [
                 ("qwen", vec![QWEN_WORDS]),
                 ("qwen -p 'hi there'", vec![QWEN_WORDS, "-p", "hi there"]),
+                // A prompt is a plain word too.
+                ("qwen hi", vec![QWEN_WORDS, "hi"]),
+                ("qwen mcp list", vec!["mcp", "list"]),
                 (
                     "qwen --mcp-config=mine.json",
                     vec!["--mcp-config=mine.json"],

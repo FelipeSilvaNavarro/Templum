@@ -90,10 +90,16 @@ if status is-interactive; and not set -q __templum_installed
         end
     end
     # Qwen Code: its server as a word, its hooks in the settings file its variable moves. It takes
-    # one --mcp-config: a person's own means none of Templum's.
+    # one --mcp-config: a person's own means none of Templum's. None before one of its commands,
+    # which refuse it (`qwen mcp list`); a plain word that isn't one is a prompt.
     if test -n "$TEMPLUM_QWEN_ARGS"; and not functions -q qwen
         function qwen
             set -l w "$TEMPLUM_QWEN_ARGS"
+            set -l commands agents auth batch board channel extensions hooks mcp review sandbox serve \
+                sessions update
+            if set -q argv[1]; and contains -- $argv[1] $commands
+                set w ''
+            end
             for a in $argv
                 switch $a
                     case --mcp-config '--mcp-config=*'

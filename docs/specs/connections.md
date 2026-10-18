@@ -959,6 +959,10 @@ the exit status kept, what is piped in passed on), with one helper per shell for
   adds to Templum's: Copilot CLI and Pi take several. Qwen Code takes one `--mcp-config` (a second is a fatal error),
   so a person's own `--mcp-config`, alone or with `=…`, means no words for it, as Claude Code's rule is.
 - **Pi never before one of its commands** (`pi list`, `pi install …`): [above](#pi).
+- **Qwen Code never before one of its commands:** no words when the person's first word is one (`agents`, `auth`,
+  `batch`, `board`, `channel`, `extensions`, `hooks`, `mcp`, `review`, `sandbox`, `serve`, `sessions`, `update`,
+  from `qwen --help` 0.25.2), which refuse `--mcp-config` (`qwen mcp list` printed `Unknown arguments: mcp-config,
+  mcpConfig` and exited 1). Any other plain word is a prompt (`qwen [query..]`), so `qwen hi` gets it.
 - **Copilot CLI only when it starts a session:** its words go only when the person's first word is none or an
   option (`copilot`, `copilot -p …`, `copilot --model …`), never before a subcommand (`copilot plugin list`, `copilot
   login`), which needs none: AWS's Copilot CLI is also `copilot`, and every use of it starts with a subcommand

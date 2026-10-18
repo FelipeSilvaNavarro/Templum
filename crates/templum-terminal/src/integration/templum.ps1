@@ -132,10 +132,14 @@ if ($null -eq $Global:__TemplumPrompt) {
         }
     }
     # Qwen Code: its server as a word, its hooks in the settings file its variable moves. It takes
-    # one --mcp-config: a person's own means none of Templum's.
+    # one --mcp-config: a person's own means none of Templum's. None before one of its commands,
+    # which refuse it (`qwen mcp list`); a plain word that isn't one is a prompt.
     if ($env:TEMPLUM_QWEN_ARGS -and -not (Test-Path Function:\qwen)) {
         function Global:qwen {
             $words = $env:TEMPLUM_QWEN_ARGS
+            $commands = 'agents', 'auth', 'batch', 'board', 'channel', 'extensions', 'hooks', 'mcp', 'review',
+                'sandbox', 'serve', 'sessions', 'update'
+            if ($args.Count -and "$($args[0])" -in $commands) { $words = '' }
             foreach ($a in $args) {
                 if ("$a" -eq '--mcp-config' -or "$a" -like '--mcp-config=*') { $words = '' }
             }
