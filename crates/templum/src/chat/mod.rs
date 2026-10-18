@@ -160,6 +160,8 @@ pub(crate) struct Approval {
     /// What the person saw of its block, written with its words: an Allow after it changed is
     /// asked again.
     pub facts: String,
+    /// It was asked again: what it is about changed since the person looked.
+    pub changed: bool,
     /// Its box of details, and whether it was seen to its end: until then, nothing allows it.
     pub scroll: ScrollHandle,
     pub read: Cell<bool>,

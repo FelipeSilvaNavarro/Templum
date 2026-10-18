@@ -66,6 +66,7 @@ impl Workspace {
             said,
             details,
             facts,
+            changed: false,
             scroll: Default::default(),
             read: Default::default(),
         });
@@ -169,6 +170,7 @@ impl Workspace {
         approval.said = said;
         approval.details = details;
         approval.facts = facts;
+        approval.changed = true;
         approval.shown.set(None);
         approval.keys.set(None);
         approval.read.set(false);

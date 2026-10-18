@@ -1226,6 +1226,7 @@ fn an_allow_after_the_dialog_changed_asks_again(cx: &mut TestAppContext) {
         let approval = &agent.approvals[0];
         assert_eq!(approval.details, "It asks: Allow Bash(rm -rf build)?\n1");
         assert_ne!(approval.shown.get(), Some(long_ago), "shown anew");
+        assert!(approval.changed);
         assert!(
             !agent
                 .conversation
@@ -1234,6 +1235,12 @@ fn an_allow_after_the_dialog_changed_asks_again(cx: &mut TestAppContext) {
                 .any(|r| matches!(r, ::templum_agent::Row::Approval { .. }))
         );
     });
+    // Its words may read the same: it says why it asks again.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("approval-changed").is_some());
+    })
+    .unwrap();
     // Unchanged since, the next Allow presses it.
     answer(handle, &ws, cx, crate::chat::Answer::Once);
     super::bus::after(cx, 1_000);

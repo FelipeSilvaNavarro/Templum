@@ -87,6 +87,15 @@ pub(crate) fn render(
             .child("Scroll to its end to allow it.")
             .test_support()
     });
+    // Asked again with words that may read the same: the click wasn't lost.
+    let changed = approval.changed.then(|| {
+        div()
+            .id("approval-changed")
+            .text_size(px(12.0))
+            .text_color(yellow)
+            .child("It changed since you looked.")
+            .test_support()
+    });
     let details = (!approval.details.is_empty()).then(|| {
         div()
             .id("approval-details")
@@ -193,6 +202,7 @@ pub(crate) fn render(
             .text_color(ui.title)
             .child(SharedString::from(approval.said.clone())),
     )
+    .children(changed)
     .children(details)
     .children(more)
     .children(reason)
