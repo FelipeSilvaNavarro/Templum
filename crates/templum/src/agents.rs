@@ -279,6 +279,7 @@ impl Draft {
                     generate: (!generate.is_empty() && Some(generate) != default_generate)
                         .then(|| generate.to_string()),
                     models: (!models.is_empty() && models != default_models).then_some(models),
+                    ..AgentConfig::default()
                 }
             }
             None => AgentConfig {
@@ -288,6 +289,7 @@ impl Draft {
                 show: (!self.show).then_some(false),
                 generate: (!generate.is_empty()).then(|| generate.to_string()),
                 models: (!models.is_empty()).then_some(models),
+                ..AgentConfig::default()
             },
         };
         (config != AgentConfig::default()).then_some(config)

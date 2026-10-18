@@ -64,6 +64,12 @@ pub(crate) struct AgentConfig {
     pub generate: Option<String>,
     /// Its models for commit messages, the recommended one first.
     pub models: Option<Vec<String>>,
+    /// An account: the agent it is another folder of (docs/specs/accounts.md).
+    pub of: Option<String>,
+    /// An account's folder; missing: `<data>/accounts/<id>`.
+    pub folder: Option<String>,
+    /// An account's items shared, by key: the agent's id or another account of it.
+    pub share: Option<BTreeMap<String, String>>,
 }
 
 /// Letters, digits, `-` and `_`: an agent's id is a key in the saved canvas and in this file.
@@ -476,6 +482,10 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
             ));
         }
         let ours = templum_terminal::Agent::from_name(id).is_some();
+        if agent.of.is_some() || agent.folder.is_some() || agent.share.is_some() {
+            check_account(id, &config.agents)?;
+            continue;
+        }
         let blank = |v: &Option<String>| v.as_deref().is_none_or(|v| v.trim().is_empty());
         if (!ours || agent.command.is_some()) && blank(&agent.command) {
             return Err(format!(
@@ -498,6 +508,97 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
         }
     }
     Ok(config)
+}
+
+/// The account `id` of `agents` (an entry with `of`), checked: its agent has accounts, it takes
+/// nothing its agent has, each share names an item and one of its agent's folders without coming
+/// back to it, and its folder is no other's.
+pub(crate) fn check_account(
+    id: &str,
+    agents: &BTreeMap<String, AgentConfig>,
+) -> Result<(), String> {
+    let account = &agents[id];
+    let of = account.of.as_deref().unwrap_or_default();
+    let kind = templum_usage::accounts::kind(of)
+        .filter(|_| templum_terminal::Agent::from_name(id).is_none());
+    let Some(kind) = kind else {
+        let ids: Vec<&str> = templum_usage::accounts::kinds()
+            .iter()
+            .map(|k| k.agent)
+            .collect();
+        return Err(format!(
+            "{FILE}: agents.{id}.of is an agent with accounts ({}), and an account's id isn't one of Templum's agents",
+            ids.join(", ")
+        ));
+    };
+    for (key, set) in [
+        ("command", account.command.is_some()),
+        ("resume", account.resume.is_some()),
+        ("generate", account.generate.is_some()),
+        ("models", account.models.is_some()),
+    ] {
+        if set {
+            return Err(format!(
+                "{FILE}: agents.{id}.{key}: an account runs its agent's command"
+            ));
+        }
+    }
+    let of_same = |other: &str| {
+        agents
+            .get(other)
+            .is_some_and(|a| a.of.as_deref() == Some(of))
+    };
+    for (key, target) in account.share.iter().flatten() {
+        if kind.item(key).is_none() {
+            let keys: Vec<&str> = kind.items.iter().map(|i| i.key).collect();
+            return Err(format!(
+                "{FILE}: agents.{id}.share.{key}: not one of {of}'s items ({})",
+                keys.join(", ")
+            ));
+        }
+        if target != of && !of_same(target) {
+            return Err(format!(
+                "{FILE}: agents.{id}.share.{key}: {target} is neither {of} nor one of its accounts"
+            ));
+        }
+        // Following the key from account to account ends at the agent's own folder.
+        let mut seen = vec![id];
+        let mut at = target.as_str();
+        while at != of {
+            if seen.contains(&at) {
+                return Err(format!(
+                    "{FILE}: agents.{id}.share.{key}: {target} shares it back"
+                ));
+            }
+            seen.push(at);
+            match agents[at].share.as_ref().and_then(|s| s.get(key)) {
+                Some(next) if next == of || of_same(next) => at = next,
+                _ => break,
+            }
+        }
+    }
+    if let Some(folder) = &account.folder {
+        let path = crate::launcher::expand(folder);
+        let own = kind.own_folder(std::env::var_os(kind.var), std::env::home_dir().as_deref());
+        if own.is_some_and(|own| own == path) {
+            return Err(format!(
+                "{FILE}: agents.{id}.folder: {folder} is {of}'s own folder"
+            ));
+        }
+        let taken = agents.iter().find(|(other, a)| {
+            *other != id
+                && a.of.is_some()
+                && a.folder
+                    .as_deref()
+                    .is_some_and(|f| crate::launcher::expand(f) == path)
+        });
+        if let Some((other, _)) = taken {
+            return Err(format!(
+                "{FILE}: agents.{id}.folder: {folder} is {other}'s folder"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `<dir>/config.toml`. No folder or no file: the defaults.
@@ -1545,6 +1646,106 @@ scrollback = 500
         assert!(err.contains("my agent"), "{err}");
         let err = parse("[agents.claude]\nmodel = \"x\"\n").unwrap_err();
         assert!(err.contains("model"), "unknown keys still fail: {err}");
+    }
+
+    const ACCOUNTS: &str = concat!(
+        "[agents.claude2]\n",
+        "of = \"claude\"\n",
+        "name = \"Claude Code 2\"\n",
+        "show = true\n",
+        "share = { settings = \"claude\", instructions = \"claude\", skills = \"claude\", plugins = \"claude\", sessions = \"claude\" }\n",
+        "[agents.claude3]\n",
+        "of = \"claude\"\n",
+        "[agents.claude4]\n",
+        "of = \"claude\"\n",
+        "share = { settings = \"claude3\", skills = \"claude3\", output-styles = \"claude3\", history = \"claude3\" }\n",
+    );
+
+    #[test]
+    fn accounts_parse_with_their_shares() {
+        let c = parse(ACCOUNTS).unwrap();
+        let claude2 = &c.agents["claude2"];
+        assert_eq!(claude2.of.as_deref(), Some("claude"));
+        assert_eq!(claude2.share.as_ref().unwrap()["skills"], "claude");
+        assert_eq!(c.agents["claude3"].share, None, "everything its own");
+        assert_eq!(
+            c.agents["claude4"].share.as_ref().unwrap()["skills"],
+            "claude3"
+        );
+    }
+
+    #[test]
+    fn an_account_is_refused_what_it_inherits() {
+        for key in [
+            "command = \"x\"",
+            "resume = \"\"",
+            "generate = \"x\"",
+            "models = [\"a\"]",
+        ] {
+            let err = parse(&format!("[agents.claude2]\nof = \"claude\"\n{key}\n")).unwrap_err();
+            let name = key.split(' ').next().unwrap();
+            assert!(
+                err.contains(&format!(
+                    "agents.claude2.{name}: an account runs its agent's command"
+                )),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_accounts_shares_are_checked() {
+        let cases = [
+            (
+                "[agents.claude2]\nof = \"claude\"\nshare = { nope = \"claude\" }\n",
+                "agents.claude2.share.nope",
+            ),
+            (
+                "[agents.claude2]\nof = \"claude\"\nshare = { skills = \"codex\" }\n",
+                "agents.claude2.share.skills",
+            ),
+            (
+                "[agents.codex2]\nof = \"codex\"\n[agents.claude2]\nof = \"claude\"\nshare = { skills = \"codex2\" }\n",
+                "agents.claude2.share.skills",
+            ),
+            (
+                "[agents.claude3]\nof = \"claude\"\nshare = { skills = \"claude4\" }\n[agents.claude4]\nof = \"claude\"\nshare = { skills = \"claude3\" }\n",
+                "share.skills: claude",
+            ),
+            (
+                "[agents.claude2]\nof = \"claude\"\nshare = { skills = \"claude2\" }\n",
+                "agents.claude2.share.skills",
+            ),
+        ];
+        for (text, needle) in cases {
+            let err = parse(text).unwrap_err();
+            assert!(err.contains(needle), "{text}\n{err}");
+        }
+        let err = parse(cases[3].0).unwrap_err();
+        assert!(err.contains("shares it back"), "{err}");
+    }
+
+    #[test]
+    fn two_accounts_cant_share_a_folder() {
+        let err = parse(concat!(
+            "[agents.claude2]\nof = \"claude\"\nfolder = \"/srv/work\"\n",
+            "[agents.claude3]\nof = \"claude\"\nfolder = \"/srv/work/\"\n",
+        ))
+        .unwrap_err();
+        assert!(err.contains(".folder: /srv/work"), "{err}");
+        parse("[agents.claude2]\nof = \"claude\"\nfolder = \"/srv/work\"\n").unwrap();
+    }
+
+    #[test]
+    fn of_must_have_accounts() {
+        let err = parse("[agents.aider2]\nof = \"aider\"\n").unwrap_err();
+        assert!(err.contains("agents.aider2.of"), "{err}");
+        assert!(err.contains("claude, codex"), "{err}");
+        let err = parse("[agents.codex]\nof = \"claude\"\n").unwrap_err();
+        assert!(
+            err.contains("agents.codex.of"),
+            "one of Templum's agents isn't an account: {err}"
+        );
     }
 
     #[test]
