@@ -228,16 +228,15 @@ conversation.
   | Agent | Fork command |
   |---|---|
   | Claude Code | `claude --resume <id> --fork-session` |
-  | Codex | `codex fork <id>` |
+  | Codex | `codex fork -C . <id>` |
 
   A field `fork_id` of `templum-terminal`'s agent table holds each, as `resume_id` does; an agent without one can't
   fork: "Gemini CLI can't fork a session: forks are for Claude Code and Codex." ([Every agent](#every-agent)). The
   fork's command replaces the agent's start command in `start_agent`, which otherwise ignores the command it is given
   for one of Templum's agents.
-- **Another folder:** Codex's sessions are found from any folder; Claude Code keeps a session under its folder's
-  project. Batch 2's first task checks by hand whether `claude --resume <id> --fork-session` finds it from a worktree;
-  if it doesn't, a Claude Code fork with `folder` or `worktree` is refused ("Claude Code finds a session only in its
-  own folder: fork without folder or worktree.") and that is written here.
+- **Another folder:** both find the session from any folder, so `folder` and `worktree` work for a fork as for any
+  spawn (spike results below). Codex asks which folder a fork works in when it isn't the session's, Enter keeping the
+  session's; `-C .` names the shell's, where Templum opened it, and Codex then asks nothing.
 - **Its prompt** goes as a spawn's ([connections.md](connections.md#spawning)), its pasted text starting with "You are
   a copy of the agent in b7k2m, started from its conversation so far, in a block of your own." so the copy doesn't take
   itself for the original.
@@ -247,6 +246,16 @@ conversation.
   files (`sessions/<pid>.json`, the rollouts), not from the arguments, so the snapshot finds the fork's new id. Batch
   2's first task checks it by hand.
 - The command line: `templum spawn [<agent>] --fork …`.
+- **Spike results** (by hand, 2026-10-18, Claude Code 2.1.286 and Codex 0.154, in scratch folders):
+  1. `claude --resume <id> --fork-session` opens the conversation from a worktree of the session's repository and
+     from a folder outside it: the fork answered a word told to the original.
+  2. Forking while the original is mid-turn wasn't checked.
+  3. `codex fork <id>` from another folder shows "Choose working directory to fork this session" (the session's or the
+     current one; Enter keeps the session's); `codex fork -C . <id>` opens the conversation in the current folder at
+     once. Templum types the second.
+  4. The fork has its own session: Claude Code's `sessions/<pid>.json` names a new id (not the one after `--resume`),
+     and Codex's process holds a new rollout file. The snapshot reads those first, so a restore resumes the fork.
+     Claude Code writes the fork's transcript with its first message (the prompt Templum types).
 
 ### Roles
 
