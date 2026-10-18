@@ -115,12 +115,11 @@ pub(crate) fn render(
                     // program there that asked for the mouse hears none, the block's menu doesn't
                     // open. The middle button still pans, as anywhere. Not
                     // `block_mouse_except_scroll`: the block would lose its hover.
-                    .on_any_mouse_down(cx.listener(move |ws, e: &MouseDownEvent, _, cx| {
+                    .on_any_mouse_down(cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
                         if e.button == MouseButton::Middle {
                             ws.begin_pan(e.position);
                         } else {
-                            // It takes the keyboard back from the terminal after Esc.
-                            ws.press_on_question(key, cx);
+                            ws.press_on_balloon(key, id, window, cx);
                         }
                         cx.stop_propagation();
                     }))

@@ -4,6 +4,7 @@
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Focusable as _, Keystroke, Window};
+use templum_canvas::BlockId;
 use templum_mcp::Reply;
 use templum_mcp::ask::{Ask, Form, Row};
 
@@ -331,8 +332,24 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A press on the dialog of the question `key`: it takes the keyboard again after Esc.
-    pub(crate) fn press_on_question(&mut self, key: u64, cx: &mut Context<Self>) {
+    /// A press on the balloon of the request `key`, over block `id`: the block takes the keyboard,
+    /// as a press on it does, unless the press put it in one of the dialog's fields (its block
+    /// comes with it, `question_field_focused`); a question takes it again after Esc.
+    pub(crate) fn press_on_balloon(
+        &mut self,
+        key: u64,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .waits
+            .iter()
+            .find(|w| w.key == key)
+            .is_some_and(|w| !field_focused(w, window, cx))
+        {
+            self.focus_block(id, window, cx);
+        }
         if let Some(Waiting::Question { away, .. }) = self
             .waits
             .iter_mut()

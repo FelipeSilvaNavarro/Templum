@@ -1831,3 +1831,42 @@ fn a_field_that_takes_the_keyboard_brings_its_block(cx: &mut TestAppContext) {
         json!({ "answers": { "Q0": "B" } })
     );
 }
+
+/// A click on the dialog of a block that hadn't the keyboard gives it to that block, as a press
+/// on the block does: the keys are the dialog's, not the block focused before.
+#[gpui_kit::test]
+fn a_click_on_the_dialog_brings_its_block(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    ws.update(cx, |ws, _| ws.config.canvas.focus_follows_pointer = false);
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", singles(2));
+    focus_dialog(handle, &ws, cx, kanban);
+    click_part(handle, cx, mine.0 as usize, "q0-option-1");
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(mine)));
+    press(handle, cx, &["enter"]);
+    assert_eq!(
+        highlight(&ws, cx),
+        Some(templum_mcp::ask::Row::Option(1, 0))
+    );
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "it waits");
+}
+
+/// A click in the dialog's field of a block that hadn't the keyboard leaves it in the field.
+#[gpui_kit::test]
+fn a_click_in_the_dialogs_field_keeps_the_keyboard_there(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    super::terminals::set_active(handle, true, cx);
+    ws.update(cx, |ws, _| ws.config.canvas.focus_follows_pointer = false);
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", singles(1));
+    let key = last_wait(&ws, cx);
+    focus_dialog(handle, &ws, cx, kanban);
+    click_part(handle, cx, mine.0 as usize, "note");
+    cx.update_window(handle, |_, window, cx| {
+        let note = field_of(ws.read(cx), key, None);
+        assert!(note.read(cx).focus_handle(cx).is_focused(window));
+    })
+    .unwrap();
+}
