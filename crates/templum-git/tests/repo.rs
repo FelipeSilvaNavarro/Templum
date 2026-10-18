@@ -2130,6 +2130,20 @@ fn merging_a_worktree_back_takes_a_clean_commit_and_aborts_a_conflict() {
     );
 }
 
+/// A tag named as the worktree's branch, on an older commit, isn't what is merged.
+#[test]
+fn merging_a_worktree_back_merges_its_branch_not_a_tag_of_its_name() {
+    let (dir, repo) = committed();
+    let path = repo.add_worktree("w").unwrap();
+    let w = Repo::discover("git", &path).unwrap().unwrap();
+    repo.run(&["tag", "w"]).unwrap();
+    commit_in(&w, &path, "c.txt", "c\n", "C");
+    commit_in(&repo, dir.path(), "b.txt", "b\n", "Main's");
+    assert_eq!(repo.merge_from("w").unwrap(), Ok(()));
+    assert_eq!(repo.worktree_state("w").unwrap().unwrap().unmerged, 0);
+    assert_eq!(repo.last_message().unwrap(), "Merge branch 'w'");
+}
+
 /// A file the worktree's branch tracks that git ignores where it goes back (a `.env` added with
 /// `git add -f`) would be written over by a merge without a word: the state names it.
 #[test]

@@ -405,7 +405,8 @@ conversation.
 - **`merge_worktree`** (`worktree`, `folder`): the person is asked first, always: "*Claude Code · api* wants to merge
   feature-x (3 commits) into development." **Merge** and **Cancel**. Allowed, and still the commits and the branch the
   person was told of ("/home/u/app is on main now, not on development as the person was told: ask again."), Templum
-  runs `git merge --no-edit <branch>` in `folder`'s working tree. Refused before asking: changes not committed in the worktree ("Commit them
+  runs `git merge --no-edit <branch>` in `folder`'s working tree (the branch's full name, `refs/heads/<branch>`, when a
+  tag has its name). Refused before asking: changes not committed in the worktree ("Commit them
   first: a merge takes commits."); changes not committed to tracked files where it merges into, which a merge would mix
   with and an aborted one may not give back ("development has changes not committed in /home/u/app: commit or stash
   them first."); nothing to merge ("feature-x has nothing development doesn't."); a merge, rebase or cherry-pick

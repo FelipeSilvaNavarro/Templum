@@ -608,10 +608,21 @@ impl Repo {
         self.delete_branch(name, force)
     }
 
-    /// Merges `branch` into this working tree's branch: Ok(Err(files)) when it would conflict
-    /// in `files`, the merge then aborted, so nothing is left half done.
+    /// Merges the branch `branch` (never a tag of that name) into this working tree's branch:
+    /// Ok(Err(files)) when it would conflict in `files`, the merge then aborted, so nothing is left
+    /// half done.
     pub fn merge_from(&self, branch: &str) -> Result<Result<(), Vec<String>>, GitError> {
-        let Err(failed) = self.run(&["merge", "--no-edit", branch]) else {
+        // A tag of that name would be taken for it: then its full name, with git's words for it.
+        let tag = format!("refs/tags/{branch}");
+        let (full, words) = (
+            format!("refs/heads/{branch}"),
+            format!("Merge branch '{branch}'"),
+        );
+        let args = match self.run(&["show-ref", "--verify", "--quiet", &tag]) {
+            Ok(_) => vec!["merge", "--no-edit", "-m", &words, &full],
+            Err(_) => vec!["merge", "--no-edit", branch],
+        };
+        let Err(failed) = self.run(&args) else {
             return Ok(Ok(()));
         };
         let conflicted = self.text(&["diff", "--name-only", "--diff-filter=U"])?;
