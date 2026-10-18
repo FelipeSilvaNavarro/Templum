@@ -35,6 +35,15 @@ impl Workspace {
         if merging && let Some(refused) = merge_refusal(name, &repo, &state) {
             return Err(Reply::err(refused));
         }
+        if let Approved::MergeWorktree { into, .. } = then
+            && state.into != *into
+        {
+            return Err(Reply::err(format!(
+                "{} is on {} now, not on {into} as the person was told: ask again.",
+                repo.root.display(),
+                state.into
+            )));
+        }
         let more = state.changed > changed || state.unmerged > unmerged;
         if more || (merging && state.unmerged != unmerged) {
             return Err(Reply::err(format!(

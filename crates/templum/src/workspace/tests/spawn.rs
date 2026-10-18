@@ -1618,3 +1618,45 @@ fn a_worktree_changed_since_the_question_isnt_deleted(cx: &mut TestAppContext) {
     );
     assert!(wt.join("c.txt").exists(), "kept");
 }
+
+/// A merge the person allowed into one branch doesn't go into another checked out there since.
+#[gpui_kit::test]
+fn a_merge_allowed_into_a_branch_isnt_made_into_another(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "m"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::write(wt.join("a.txt"), "new\n").unwrap();
+    git_run(&wt, &["commit", "-qam", "change"]);
+    let merge = json!({ "worktree": "m", "folder": root });
+    let answers = call_later(handle, &ws, cx, &terminal, 5, "merge_worktree", merge);
+    // The person checks out another branch while they read the question.
+    git_run(&root, &["checkout", "-q", "-b", "other"]);
+    press_balloon(handle, cx, mine, "allow");
+    assert_eq!(
+        answer_soon(cx, &answers),
+        (
+            true,
+            format!(
+                "{} is on other now, not on main as the person was told: ask again.",
+                root.display()
+            )
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("a.txt")).unwrap(),
+        "one\n"
+    );
+}
