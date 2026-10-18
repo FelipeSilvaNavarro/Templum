@@ -1113,6 +1113,12 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   moves the rest of a suspended function into a subshell, which doesn't keep it. connections.md says so. Fix: a
   program named `claude` on PATH instead of a function keeps it, at the cost connections.md's "Considered and left
   out" gives; nothing within a function was found.
+- [ ] **Bytes piped into an agent typed in PowerShell 7.4+ reach it as text.** Left by the fix for piped input
+  (`claude`, `codex` and `__TemplumAgent`, `crates/templum-terminal/src/integration/templum.ps1`): PowerShell passes
+  a program's bytes straight to the next only when no function stands between them, so `cat a.png | claude -p
+  describe` gives the agent the bytes decoded as text (a byte that isn't UTF-8 becomes `U+FFFD`) and a newline at
+  the end; text such as `git diff` arrives whole. Fix: a program named `claude` on PATH instead of a function, at the
+  cost connections.md's "Considered and left out" gives.
 
 ## Keeping the canvas
 
