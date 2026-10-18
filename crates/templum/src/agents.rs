@@ -489,6 +489,10 @@ mod tests {
             format!("gemini --session-id {id}")
         );
         assert_eq!(by(&list, "claude").start_command(id), "claude");
+        assert_eq!(
+            by(&list, "copilot").start_command(id),
+            format!("copilot --session-id {id}")
+        );
         let list = agents(concat!(
             "[agents]\n",
             "pi = { command = \"pi --model m\" }\n",

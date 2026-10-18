@@ -38,7 +38,7 @@ conversation, so those agents start a new session on restore.
 - Claude Code, Codex and Qwen Code: the id is read from their files while saving
   ([persistence.md](persistence.md#agents); Qwen keeps `~/.qwen/sessions/<pid>.json` as Claude Code does), and
   restored with `claude --resume <id>`, `codex resume <id>`, `qwen --resume <id>`.
-- Gemini CLI, Grok Build, Pi and GitHub Copilot CLI (card 44): opened from the menu, they get `--session-id <a new
+- Gemini CLI, Grok Build, Pi and GitHub Copilot CLI (since card 44): opened from the menu, they get `--session-id <a new
   UUID>`, and the id is read back from the process's arguments (`--session-id` or the resume flag). Restored with
   `gemini --resume <id>`, `grok --resume <id>`, `pi --session-id <id>`, `copilot --session-id <id>` (Pi's and
   Copilot's open it, or start it when it has no message yet). Gemini deletes a
@@ -52,8 +52,8 @@ or when the user changed the resume command.
 | Claude Code | `claude` | `claude --continue` | `curl -fsSL https://claude.ai/install.sh \| bash` | `claude`; `@anthropic-ai/claude-code` |
 | Codex | `codex` | `codex resume --last` | `npm install -g @openai/codex` | `codex`; `@openai/codex` |
 | Gemini CLI | `gemini` | `gemini --resume` | `npm install -g @google/gemini-cli` | `gemini`; `@google/gemini-cli` |
-| GitHub Copilot CLI | `copilot` | new session; by its id from card 44 (its `--continue` falls back to any folder's latest) | `curl -fsSL https://gh.io/copilot-install \| bash` | `copilot`; `@github/copilot` |
-| Cursor CLI | `cursor-agent` | `cursor-agent --continue` from card 44 (its chats are kept per folder) | `curl https://cursor.com/install -fsS \| bash` | `cursor-agent` (its `agent` alias is too common a name) |
+| GitHub Copilot CLI | `copilot` | new session; by its id since card 44 (its `--continue` falls back to any folder's latest) | `curl -fsSL https://gh.io/copilot-install \| bash` | `copilot`; `@github/copilot` |
+| Cursor CLI | `cursor-agent` | `cursor-agent --continue` since card 44 (its chats are kept per folder) | `curl https://cursor.com/install -fsS \| bash` | `cursor-agent` (its `agent` alias is too common a name) |
 | OpenCode | `opencode` | `opencode --continue` | `curl -fsSL https://opencode.ai/install \| bash` | `opencode`; `opencode-ai` |
 | Amp | `amp` | `amp threads continue --last` | `curl -fsSL https://ampcode.com/install.sh \| bash` | `amp`; `@sourcegraph/amp` |
 | Kiro CLI | `kiro-cli chat` | `kiro-cli chat --resume` | `curl -fsSL https://cli.kiro.dev/install \| bash` | `kiro-cli` |
@@ -63,7 +63,7 @@ or when the user changed the resume command.
 | Mistral Vibe | `vibe` | `vibe --continue` | `curl -LsSf https://mistral.ai/vibe/install.sh \| bash` | `vibe` (a Python script) |
 | Aider | `aider` | `aider --restore-chat-history` | `curl -LsSf https://aider.chat/install.sh \| sh` | `aider` (a Python script) |
 | Goose | `goose session` | new session | `download_cli.sh` from the goose releases | `goose` |
-| Crush | `crush` | `crush --continue` from card 44 (the project's own `.crush` database) | `npm install -g @charmland/crush` | `crush`; `@charmland/crush` |
+| Crush | `crush` | `crush --continue` since card 44 (the project's own `.crush` database) | `npm install -g @charmland/crush` | `crush`; `@charmland/crush` |
 | Droid | `droid` | new session | `curl -fsSL https://app.factory.ai/cli \| sh` | `droid` |
 | Auggie | `auggie` | new session | `npm install -g @augmentcode/auggie` | `auggie`; `@augmentcode/auggie` |
 | Kilo Code | `kilo` | `kilo --continue` | `npm install -g @kilocode/cli` | `kilo`, `kilocode`, `.kilo`; `@kilocode/cli` |

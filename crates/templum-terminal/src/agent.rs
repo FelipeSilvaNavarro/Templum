@@ -69,8 +69,8 @@ const SPECS: [Spec; 20] = [
         title: "GitHub Copilot CLI",
         command: "copilot",
         resume: None,
-        resume_id: None,
-        new_id: None,
+        resume_id: Some("copilot --session-id {id}"),
+        new_id: Some("--session-id {id}"),
         install: "curl -fsSL https://gh.io/copilot-install | bash",
         names: &["copilot"],
         packages: &["@github/copilot"],
@@ -79,7 +79,7 @@ const SPECS: [Spec; 20] = [
         id: "cursor",
         title: "Cursor CLI",
         command: "cursor-agent",
-        resume: None,
+        resume: Some("cursor-agent --continue"),
         resume_id: None,
         new_id: None,
         install: "curl https://cursor.com/install -fsS | bash",
@@ -189,7 +189,7 @@ const SPECS: [Spec; 20] = [
         id: "crush",
         title: "Crush",
         command: "crush",
-        resume: None,
+        resume: Some("crush --continue"),
         resume_id: None,
         new_id: None,
         install: "npm install -g @charmland/crush",
@@ -1005,8 +1005,15 @@ mod tests {
         // An id is typed into a shell: anything but letters, digits and `-` isn't one.
         assert_eq!(Agent::CLAUDE.resume_session("x; rm -rf ~"), None);
         assert_eq!(Agent::CLAUDE.resume_session(""), None);
-        // Copilot's resume may reopen another folder's session: a new one instead.
+        // Copilot's `--continue` may reopen another folder's session: a new one, or its own by id.
         assert_eq!(by("copilot").resume_command(), "copilot");
+        let uuid = "019a1f2e-7b3c-7d4e-8f5a-6b7c8d9e0f1a";
+        assert_eq!(
+            by("copilot").resume_session(uuid),
+            Some(format!("copilot --session-id {uuid}"))
+        );
+        assert_eq!(by("cursor").resume_command(), "cursor-agent --continue");
+        assert_eq!(by("crush").resume_command(), "crush --continue");
         assert_eq!(by("goose").resume_command(), "goose session");
     }
 
@@ -1197,6 +1204,12 @@ mod tests {
             ("claude", &["claude", "--resume", id], Some(id)),
             ("claude", &["claude", "--continue"], None),
             ("copilot", &["copilot", "--resume", id], None),
+            ("copilot", &["copilot", "--session-id", id], Some(id)),
+            (
+                "copilot",
+                &["copilot", &format!("--session-id={id}")],
+                Some(id),
+            ),
         ];
         for (agent, args, want) in cases {
             assert_eq!(
