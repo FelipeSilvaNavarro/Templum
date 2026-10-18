@@ -1303,6 +1303,17 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   refused as "leave agent out". Fix: apply a role's model, effort and args only to its own agent.
 - [ ] **`stop_agent`'s count includes processes it couldn't end.** Left by the final review of card 35 (`stop_in`):
   a root child under `sudo` or a zombie counts as "ended". Fix: count what `terminate` signalled.
+- [ ] **A repeating schedule to a busy agent says it didn't go every time.** Left by the review of card 35's fixes
+  (`look_schedules`, `crates/templum/src/workspace/schedules.rs`): an `every: 1` to an agent on a long task types
+  `[schedule s3 to k9x1d didn't go: k9x1d is on a task (t7): …]` into the caller every minute until the task ends.
+  Fix: keep the last refusal told on the `Schedule`; tell one only when it differs from that one, and forget it once
+  the schedule goes.
+- [ ] **`remove_worktree` says it couldn't remove a worktree it removed.** Left by the review of card 35's fixes
+  (`Repo::remove_worktree`, `crates/templum-git/src/repo.rs`, and `worktree_remove` in
+  `crates/templum/src/workspace/ops.rs`): on a branch merged into the person's but behind its upstream, `git worktree
+  remove` goes, then `git branch -d` refuses ("not fully merged"), and the agent hears "Couldn't remove x: …" while
+  the worktree is gone and only its branch stays. Fix: when the branch alone stays, answer "Removed the worktree x;
+  its branch stays: <git's line>".
 - [ ] **Pi and Grok Build can't be forked.** Left by card 35 (`fork_id` in `crates/templum-terminal/src/agent.rs`):
   `spawn_agent` with `fork` from one of them says it can't, though `pi --fork <id>` and `grok --resume <id>
   --fork-session` exist, since Templum couldn't find the fork's own session to resume it after a restart. Fix: give a
