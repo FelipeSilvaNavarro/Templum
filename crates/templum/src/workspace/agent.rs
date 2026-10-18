@@ -387,7 +387,8 @@ impl Workspace {
     pub(crate) fn new_chat(&mut self, cx: &mut Context<Self>) {
         self.deny_waiting(STOPPED, cx);
         self.kill_engine();
-        // Its tasks were the old conversation's: their ends go nowhere now.
+        // Its tasks were the old conversation's: their ends go nowhere now, and a prompt not yet
+        // typed would start work no one awaits.
         for space in std::iter::once(&mut self.space).chain(&mut self.others) {
             for body in space.blocks.values_mut() {
                 if let Some(pane) = body.terminal_mut()
@@ -397,6 +398,7 @@ impl Workspace {
                         .is_some_and(|h| h.by == templum_agent::ASKER)
                 {
                     pane.handed = None;
+                    pane.prompt = None;
                 }
             }
         }

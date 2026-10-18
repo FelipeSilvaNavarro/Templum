@@ -2774,6 +2774,14 @@ fn new_chat_lets_go_of_the_old_conversations_tasks(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
     let (block, _, terminal) = handed_by_the_templum_agent(handle, &ws, cx);
+    // An agent it opened with a prompt, not yet ready for it.
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(block).unwrap().prompt = Some(crate::workspace::Prompt {
+            text: "Take card 4".into(),
+            screen: None,
+            gated: true,
+        })
+    });
     ws.update(cx, |ws, cx| ws.new_chat(cx));
     assert_eq!(
         ws.read_with(cx, |ws, _| ws.agent_tasks()),
@@ -2781,7 +2789,8 @@ fn new_chat_lets_go_of_the_old_conversations_tasks(cx: &mut TestAppContext) {
         "the new chat counts none"
     );
     assert!(ws.read_with(cx, |ws, _| {
-        ws.space.terminal(block).unwrap().handed.is_none()
+        let pane = ws.space.terminal(block).unwrap();
+        pane.handed.is_none() && pane.prompt.is_none()
     }));
     ws.update(cx, |ws, cx| {
         ws.end_turn(&terminal, templum_mcp::Reply::ok("Done."), cx)
