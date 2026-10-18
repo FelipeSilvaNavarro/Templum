@@ -28,6 +28,10 @@ const SMALL: f32 = 12.0;
 /// A preview's line height, world units, and the most lines it shows (it scrolls past them).
 const PREVIEW_LINE: f32 = 16.0;
 const PREVIEW_LINES: f32 = 18.0;
+/// The most of the balloon's height a plan's frame takes; it scrolls past that.
+const PLAN_SHARE: f32 = 0.6;
+/// The most characters of a plan's title shown.
+const PLAN_TITLE: usize = 60;
 
 /// The balloon of the terminal block `id`, whose terminal is `terminal`, at zoom `z`, centered on
 /// the terminal: None when its agent asks nothing.
@@ -49,6 +53,9 @@ pub(crate) fn render(
     // The yellow of the dot of a block waiting for its person.
     let waiting = hsla(ws.theme.palette.ansi[3], 1.0);
     let body = match &wait.what {
+        Waiting::Question {
+            ask, form, scroll, ..
+        } if ask.plan.is_some() => plan(ws, wait, ask, form, scroll, id, z, cx),
         Waiting::Question { ask, form, .. } => question(ws, wait, ask, form, n, z, cx),
         Waiting::Connect { .. } => connect(ws, wait, n, z, cx),
         Waiting::Turn { .. } | Waiting::Event { .. } => return None,
@@ -325,6 +332,110 @@ fn question(
         .child(dismiss)
         .when(ask.json, |el| el.children(send.take()));
     body.child(foot).into_any_element()
+}
+
+/// A plan's dialog (docs/specs/agent-tools.md, propose_plan): the chip "Plan" and its title, its
+/// Markdown in a frame on the canvas color that scrolls on its own, at most PLAN_SHARE of the
+/// balloon's height, the comment, then Reject on the left and Approve on the right.
+#[allow(clippy::too_many_arguments)]
+fn plan(
+    ws: &Workspace,
+    wait: &Wait,
+    ask: &Ask,
+    form: &Form,
+    scroll: &crate::markdown::PreviewScroll,
+    id: BlockId,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let (key, ui, n) = (wait.key, ws.ui, id.0 as usize);
+    let Some(shown) = &ask.plan else {
+        return div().into_any_element();
+    };
+    let title: String = ask.summary().chars().take(PLAN_TITLE).collect();
+    // The balloon's size, world units: SHARE of the terminal's area, less its padding.
+    let rect = ws.space.canvas.get(id).map(|b| b.rect).unwrap_or_default();
+    let (w, h) = (rect.w * SHARE - 30.0, (rect.h - chrome::TITLE_H) * SHARE);
+    let head = div()
+        .id(part(n, "plan-title"))
+        .flex()
+        .items_center()
+        .gap(px(8.0 * z))
+        .child(
+            div()
+                .flex_shrink_0()
+                .px(px(6.0 * z))
+                .rounded(px(4.0 * z))
+                .border_1()
+                .border_color(ui.title_dim)
+                .text_color(ui.title_dim)
+                .text_size(px(SMALL * z))
+                .child("Plan"),
+        )
+        .child(div().flex_1().child(title))
+        .test_support();
+    let body = div()
+        .flex()
+        .flex_col()
+        .max_h(px(h * PLAN_SHARE * z))
+        .overflow_hidden()
+        .rounded(px(6.0 * z))
+        .border_1()
+        .border_color(ui.hairline)
+        .bg(ui.canvas)
+        .child(crate::markdown::preview(
+            part(n, "plan-body"),
+            ("plan-markdown", key).into(),
+            shown.text.clone().into(),
+            scroll,
+            w,
+            TEXT,
+            z,
+        ));
+    let Waiting::Question { note, .. } = &wait.what else {
+        return div().into_any_element();
+    };
+    let mut answer = |i: usize, what: &str, label: &'static str| {
+        let row = Row::Option(0, i);
+        button(part(n, what), label, ui, z)
+            .when(form.highlight == Some(row), |el| el.bg(ui.hover))
+            .on_hover(hover(key, row, cx))
+            .on_click(cx.listener(once(move |ws, window, cx| {
+                ws.pick_option(key, 0, i, window, cx)
+            })))
+            .test_support()
+    };
+    let foot = div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .child(answer(1, "plan-reject", "Reject"))
+        .child(
+            answer(0, "plan-approve", "Approve")
+                .border_color(ui.accent)
+                .text_color(ui.accent),
+        );
+    div()
+        .id(("balloon-wait", key))
+        .flex()
+        .flex_col()
+        .gap(px(10.0 * z))
+        .child(head)
+        .child(body)
+        .when_some(note.as_ref(), |el, (input, _)| {
+            el.child(
+                div()
+                    .id(part(n, "note"))
+                    .w_full()
+                    .rounded(px(6.0 * z))
+                    .when(form.highlight == Some(Row::Note), |el| el.bg(ui.hover))
+                    .child(git_block::field(input, z).w_full())
+                    .on_hover(hover(key, Row::Note, cx))
+                    .test_support(),
+            )
+        })
+        .child(foot)
+        .into_any_element()
 }
 
 /// Hovering a row of the question `key` highlights it.

@@ -63,6 +63,8 @@ pub(crate) enum Waiting {
         note: Option<Field>,
         away: bool,
         stopped: bool,
+        /// A plan's Markdown frame's scroll (`propose_plan`).
+        scroll: crate::markdown::PreviewScroll,
     },
     /// `connect`: the person's Allow or Deny to wiring the asking block to block `to` (its block
     /// id).
@@ -482,6 +484,9 @@ impl Workspace {
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let (_, title, _) = self.about(&space.blocks[&me], cx);
         let text = match &wait.what {
+            Waiting::Question { ask, .. } if ask.plan.is_some() => {
+                format!("Asks you to approve a plan: {}", ask.summary())
+            }
             Waiting::Question { ask, .. } => match ask.questions.len() - 1 {
                 0 => format!("Asks you: {}", ask.summary()),
                 more => format!("Asks you: {} (and {more} more)", ask.summary()),

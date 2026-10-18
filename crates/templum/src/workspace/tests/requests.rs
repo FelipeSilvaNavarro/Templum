@@ -1871,3 +1871,190 @@ fn a_click_in_the_dialogs_field_keeps_the_keyboard_there(cx: &mut TestAppContext
     })
     .unwrap();
 }
+
+/// A plan is drawn rendered in its balloon; Reject with a comment, or the keys onto Approve,
+/// answer it (docs/specs/agent-tools.md, propose_plan).
+#[gpui_kit::test]
+fn a_plan_is_approved_or_rejected_with_a_comment_from_its_dialog(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let answers = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        3,
+        "propose_plan",
+        json!({ "plan": "ok" }),
+    );
+    focus_dialog(handle, &ws, cx, mine);
+    // Comment, Reject, Approve.
+    press(handle, cx, &["down", "down", "down", "enter"]);
+    assert_eq!(answered(&answers), (false, "Approved.".into()));
+    let plan = json!({ "plan": "## Steps\n1. Replace the reader threads\n2. Test", "title": "Move the bus" });
+    let answers = call_later(handle, &ws, cx, &terminal, 4, "propose_plan", plan);
+    assert!(drawn(handle, cx, n, "plan-body"), "the plan is drawn");
+    assert!(drawn(handle, cx, n, "plan-title"));
+    assert!(!drawn(handle, cx, n, "dismiss"), "Reject, not Dismiss");
+    let key = last_wait(&ws, cx);
+    type_into(handle, &ws, cx, key, None, "do 2 first");
+    click_part(handle, cx, n, "plan-reject");
+    assert_eq!(
+        answered(&answers),
+        (true, "Rejected.\nThe person's comment: do 2 first".into())
+    );
+}
+
+#[gpui_kit::test]
+fn a_cancelled_plan_is_typed_back_once_answered(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    agent_without_notices(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let _first = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        3,
+        "propose_plan",
+        json!({ "plan": "## Steps" }),
+    );
+    bus_note(
+        handle,
+        &ws,
+        cx,
+        3,
+        "notifications/cancelled",
+        json!({ "requestId": 3 }),
+    );
+    assert!(stopped(&ws, cx));
+    click_part(handle, cx, n, "plan-approve");
+    assert_eq!(
+        notices(&ws, cx),
+        [(
+            terminal.clone(),
+            "[answer to your plan \"A plan\"] The answer is in the pasted text.\nApproved."
+                .to_string()
+        )]
+    );
+}
+
+/// A plan, a question and a request to connect on one block wait in turn, "1 of 3", each
+/// answered by its own buttons (Review Focus 5).
+#[gpui_kit::test]
+fn a_plan_a_question_and_a_request_wait_in_turn(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let k = ws.read_with(cx, |ws, _| ws.space.uids[&kanban].clone());
+    let n = mine.0 as usize;
+    let part = crate::balloon::part;
+    let plan = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        1,
+        "propose_plan",
+        json!({ "plan": "## Steps" }),
+    );
+    let asked = json!({ "question": "Ship it?", "options": ["Yes", "Not yet"] });
+    let question = call_later(handle, &ws, cx, &terminal, 2, "ask_user", asked);
+    let request = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        3,
+        "connect",
+        json!({ "block": k }),
+    );
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.balloon(&terminal).map(|(_, count)| count)),
+        Some(3)
+    );
+    shown(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(part(n, "count")).is_some(), "1 of 3");
+        window.click(part(n, "plan-approve"), cx);
+    })
+    .unwrap();
+    assert_eq!(answered(&plan), (false, "Approved.".to_string()));
+    shown(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(part(n, "plan-approve")).is_none());
+        window.click(part(n, "q0-option-1"), cx);
+    })
+    .unwrap();
+    assert_eq!(answered(&question), (false, "Not yet".to_string()));
+    shown(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(part(n, "allow"), cx);
+    })
+    .unwrap();
+    assert_eq!(answered(&request), (false, format!("Connected to {k}.")));
+}
+
+/// A long plan scrolls in its frame, which takes at most 60% of the balloon's height.
+#[gpui_kit::test]
+fn a_long_plan_scrolls_in_its_frame(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let long: String = (1..=150).map(|i| format!("{i}. Step {i}\n")).collect();
+    let _answers = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        3,
+        "propose_plan",
+        json!({ "plan": long }),
+    );
+    shown(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let frame = window.find(crate::balloon::part(n, "plan-body")).bounds();
+        let balloon = window.find(("balloon", n)).bounds();
+        assert!(
+            frame.size.height <= balloon.size.height * 0.6 + px(1.0),
+            "{frame:?} in {balloon:?}"
+        );
+        assert!(
+            window
+                .try_find(crate::balloon::part(n, "plan-approve"))
+                .is_some(),
+            "its buttons stay in the balloon"
+        );
+    })
+    .unwrap();
+}
+
+/// A plan off screen is a notification that says so: "Asks you to approve a plan: …".
+#[gpui_kit::test]
+fn a_plan_off_screen_says_it_asks_for_an_approval(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    super::terminals::set_active(handle, true, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(mine).unwrap().rect.x += 100_000.0;
+        ws.space.focused = None;
+    });
+    let plan = json!({ "plan": "## Steps", "title": "Move the bus" });
+    let _plan = call_later(handle, &ws, cx, &terminal, 1, "propose_plan", plan);
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.terminal(mine).unwrap().alert.clone()),
+        Some(crate::alert::Alert::Attention(Some(
+            "Asks you to approve a plan: Move the bus".into()
+        )))
+    );
+}

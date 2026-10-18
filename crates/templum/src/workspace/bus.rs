@@ -525,6 +525,7 @@ impl Workspace {
                     note: None,
                     away: false,
                     stopped: false,
+                    scroll: Default::default(),
                 };
                 let seconds = deadline(timeout, self.config.connections.question_timeout);
                 return Outcome::Wait(Box::new(what), seconds);
@@ -537,6 +538,7 @@ impl Workspace {
                     note: None,
                     away: false,
                     stopped: false,
+                    scroll: Default::default(),
                 };
                 let seconds = deadline(timeout, self.config.connections.question_timeout);
                 return Outcome::Wait(Box::new(what), seconds);
