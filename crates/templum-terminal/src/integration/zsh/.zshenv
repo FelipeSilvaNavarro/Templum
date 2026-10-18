@@ -34,7 +34,12 @@ if [[ -o interactive && -z ${__templum_installed-} ]]; then
     # alias of that name from breaking this.
     __templum_agent() {
         builtin local name="$1" w="$2"
-        builtin shift 2
+        # A variable for this command only, unless the shell has one (the block Templum opened,
+        # the person's own).
+        if [[ -n "$4" ]]; then
+            [[ -n "${(P)3-}" ]] || builtin local -x "$3=$4"
+        fi
+        builtin shift 4
         # As zsh says it, not from inside this function. A path search, as `command` does it:
         # $commands misses an agent installed after zsh read its folder.
         if ! builtin whence -p -- "$name" > /dev/null; then
@@ -53,7 +58,7 @@ if [[ -o interactive && -z ${__templum_installed-} ]]; then
             for a in "$@"; do
                 case "$a" in (--settings | --settings=* | --mcp-config | --mcp-config=*) w= ;; esac
             done
-            __templum_agent claude "$w" "$@"
+            __templum_agent claude "$w" "" "" "$@"
         }
     fi
     if [[ -n "${TEMPLUM_CODEX_ARGS-}" ]] && (( ! $+functions[codex] )); then
@@ -62,7 +67,7 @@ if [[ -o interactive && -z ${__templum_installed-} ]]; then
             for a in "$@"; do
                 case "$a" in (mcp_servers.templum.*) w= ;; esac
             done
-            __templum_agent codex "$w" "$@"
+            __templum_agent codex "$w" "" "" "$@"
         }
     fi
     # The others' words end with a path in Templum's folder, which only Templum types: none when
@@ -76,7 +81,18 @@ if [[ -o interactive && -z ${__templum_installed-} ]]; then
             for a in "$@"; do
                 case "$a" in ("$last") w= ;; esac
             done
-            __templum_agent copilot "$w" "$@"
+            __templum_agent copilot "$w" "" "" "$@"
+        }
+    fi
+    # OpenCode and Kilo Code take Templum's server and plugin from a variable.
+    if [[ -n "${TEMPLUM_OPENCODE_CONFIG-}" ]] && (( ! $+functions[opencode] )); then
+        function opencode {
+            __templum_agent opencode "" OPENCODE_CONFIG_CONTENT "${TEMPLUM_OPENCODE_CONFIG-}" "$@"
+        }
+    fi
+    if [[ -n "${TEMPLUM_KILO_CONFIG-}" ]] && (( ! $+functions[kilo] )); then
+        function kilo {
+            __templum_agent kilo "" KILO_CONFIG_CONTENT "${TEMPLUM_KILO_CONFIG-}" "$@"
         }
     fi
 fi

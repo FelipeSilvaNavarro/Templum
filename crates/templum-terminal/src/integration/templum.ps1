@@ -55,7 +55,7 @@ if ($null -eq $Global:__TemplumPrompt) {
     # program is the first application or script of that name (npm's claude.ps1 included):
     # several on PATH make an array `&` can't run. What is piped in is passed on (`git diff |
     # claude -p review`), and only then: an `$input` always given takes the console from claude.
-    function Global:__TemplumAgent($name, $words, $given) {
+    function Global:__TemplumAgent($name, $words, $var, $value, $given) {
         $program = Get-Command $name -CommandType Application, ExternalScript -ErrorAction Ignore |
             Select-Object -First 1
         if (-not $program) {
@@ -68,8 +68,16 @@ if ($null -eq $Global:__TemplumPrompt) {
         $words = @($words -split "`n" | Where-Object { $_ })
         # PowerShell makes an array of an unquoted a,b: a program gets it as one word, a,b.
         $given = @(foreach ($a in $given) { if ($a -is [array]) { $a -join ',' } else { $a } })
-        if ($MyInvocation.ExpectingInput) { $input | & $program @words @given }
-        else { & $program @words @given }
+        # A variable for this command only, unless the shell has one (the block Templum opened,
+        # the person's own); put back as it was after.
+        $set = $value -and -not (Get-Item "Env:$var" -ErrorAction Ignore).Value
+        if ($set) { Set-Item "Env:$var" $value }
+        try {
+            if ($MyInvocation.ExpectingInput) { $input | & $program @words @given }
+            else { & $program @words @given }
+        } finally {
+            if ($set) { Remove-Item "Env:$var" -ErrorAction Ignore }
+        }
         $Global:__TemplumAgentExit = $LASTEXITCODE
     }
     if ($env:TEMPLUM_CLAUDE_ARGS -and -not (Test-Path Function:\claude)) {
@@ -79,8 +87,8 @@ if ($null -eq $Global:__TemplumPrompt) {
                 if ("$a" -in '--settings', '--mcp-config' -or "$a" -like '--settings=*' -or
                     "$a" -like '--mcp-config=*') { $words = '' }
             }
-            if ($MyInvocation.ExpectingInput) { $input | __TemplumAgent claude $words $args }
-            else { __TemplumAgent claude $words $args }
+            if ($MyInvocation.ExpectingInput) { $input | __TemplumAgent claude $words '' '' $args }
+            else { __TemplumAgent claude $words '' '' $args }
         }
     }
     if ($env:TEMPLUM_CODEX_ARGS -and -not (Test-Path Function:\codex)) {
@@ -89,8 +97,8 @@ if ($null -eq $Global:__TemplumPrompt) {
             foreach ($a in $args) {
                 if ("$a" -like 'mcp_servers.templum.*') { $words = '' }
             }
-            if ($MyInvocation.ExpectingInput) { $input | __TemplumAgent codex $words $args }
-            else { __TemplumAgent codex $words $args }
+            if ($MyInvocation.ExpectingInput) { $input | __TemplumAgent codex $words '' '' $args }
+            else { __TemplumAgent codex $words '' '' $args }
         }
     }
     # The others' words end with a path in Templum's folder, which only Templum types: none when
@@ -102,8 +110,25 @@ if ($null -eq $Global:__TemplumPrompt) {
             if ($args.Count -and -not "$($args[0])".StartsWith('-')) { $words = '' }
             $last = ($words -split "`n")[-1]
             foreach ($a in $args) { if ("$a" -eq $last) { $words = '' } }
-            if ($MyInvocation.ExpectingInput) { $input | __TemplumAgent copilot $words $args }
-            else { __TemplumAgent copilot $words $args }
+            if ($MyInvocation.ExpectingInput) { $input | __TemplumAgent copilot $words '' '' $args }
+            else { __TemplumAgent copilot $words '' '' $args }
+        }
+    }
+    # OpenCode and Kilo Code take Templum's server and plugin from a variable.
+    if ($env:TEMPLUM_OPENCODE_CONFIG -and -not (Test-Path Function:\opencode)) {
+        function Global:opencode {
+            $config = $env:TEMPLUM_OPENCODE_CONFIG
+            if ($MyInvocation.ExpectingInput) {
+                $input | __TemplumAgent opencode '' OPENCODE_CONFIG_CONTENT $config $args
+            } else { __TemplumAgent opencode '' OPENCODE_CONFIG_CONTENT $config $args }
+        }
+    }
+    if ($env:TEMPLUM_KILO_CONFIG -and -not (Test-Path Function:\kilo)) {
+        function Global:kilo {
+            $config = $env:TEMPLUM_KILO_CONFIG
+            if ($MyInvocation.ExpectingInput) {
+                $input | __TemplumAgent kilo '' KILO_CONFIG_CONTENT $config $args
+            } else { __TemplumAgent kilo '' KILO_CONFIG_CONTENT $config $args }
         }
     }
 }

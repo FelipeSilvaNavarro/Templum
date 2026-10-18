@@ -950,8 +950,9 @@ the exit status kept, what is piped in passed on), with one helper per shell for
   login`), which needs none: AWS's Copilot CLI is also `copilot`, and every use of it starts with a subcommand
   (`copilot app deploy` runs as it is).
 - **A variable for that one command:** `OPENCODE_CONFIG_CONTENT`, `KILO_CONFIG_CONTENT` or
-  `QWEN_CODE_SYSTEM_SETTINGS_PATH` is set for the agent only (bash and zsh `local -x`, fish `set -lx`, PowerShell
-  set and put back), unless the shell's environment already has it (the block Templum opened, or the person's own).
+  `QWEN_CODE_SYSTEM_SETTINGS_PATH` is set for the agent only (bash and zsh `local -x`, fish `set -lx` outside any
+  block, PowerShell set and removed after), unless the shell's environment already has a non-empty one (the block
+  Templum opened, or the person's own). The shell itself never gets it.
 
 ### The switch reaches every agent
 

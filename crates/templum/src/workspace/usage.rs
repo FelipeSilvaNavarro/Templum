@@ -104,7 +104,7 @@ impl Workspace {
     /// one's on.
     pub(super) fn agent_env(&self) -> Vec<(String, String)> {
         let windows = cfg!(windows);
-        let (claude, codex, copilot) = match self.gives() {
+        let (claude, codex, copilot, opencode) = match self.gives() {
             Some(gives) => {
                 let limits = self.config.usage.claude_limits;
                 let claude = claude_args(&gives.data, &gives.exe, windows, limits, gives.connected);
@@ -119,12 +119,22 @@ impl Workspace {
                     })
                     .flatten()
                     .unwrap_or_default();
-                // Its files run `<data>/bin/templum`: only where that is on the PATH.
-                let copilot = (gives.connected && gives.on_path)
+                // Their files run `<data>/bin/templum`: only where that is on the PATH.
+                let on_path = gives.connected && gives.on_path;
+                let copilot = on_path
                     .then(|| templum_usage::copilot::args(&gives.data, windows))
                     .flatten()
                     .unwrap_or_default();
-                (claude.join("\n"), codex.join("\n"), copilot.join("\n"))
+                let opencode = on_path
+                    .then(|| templum_usage::opencode::config(&gives.data, windows))
+                    .flatten()
+                    .unwrap_or_default();
+                (
+                    claude.join("\n"),
+                    codex.join("\n"),
+                    copilot.join("\n"),
+                    opencode,
+                )
             }
             None => Default::default(),
         };
@@ -132,6 +142,9 @@ impl Workspace {
             ("TEMPLUM_CLAUDE_ARGS".to_string(), claude),
             ("TEMPLUM_CODEX_ARGS".to_string(), codex),
             ("TEMPLUM_COPILOT_ARGS".to_string(), copilot),
+            // The JSON `OPENCODE_CONFIG_CONTENT` and `KILO_CONFIG_CONTENT` take.
+            ("TEMPLUM_OPENCODE_CONFIG".to_string(), opencode.clone()),
+            ("TEMPLUM_KILO_CONFIG".to_string(), opencode),
             // An OpenCode or a Pi run here reports for its block, and sets it for what it starts.
             ("TEMPLUM_HOOKED".to_string(), String::new()),
         ]

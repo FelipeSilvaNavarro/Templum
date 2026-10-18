@@ -161,9 +161,14 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
             .join("\n");
         assert!(copilot.ends_with(&p("copilot/plugin")), "{copilot}");
         assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), copilot);
+        let opencode = templum_usage::opencode::config(&data, cfg!(windows)).unwrap();
+        assert_eq!(word(ws, "TEMPLUM_OPENCODE_CONFIG"), opencode);
+        assert_eq!(word(ws, "TEMPLUM_KILO_CONFIG"), opencode);
         ws.config.connections.enabled = false;
         assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), "");
         assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), "");
+        assert_eq!(word(ws, "TEMPLUM_OPENCODE_CONFIG"), "");
+        assert_eq!(word(ws, "TEMPLUM_KILO_CONFIG"), "");
         assert_eq!(
             word(ws, "TEMPLUM_CLAUDE_ARGS"),
             format!("--settings\n{}", p("claude-statusline.json"))
@@ -187,6 +192,7 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
         // Without `<data>/bin` on the terminal's PATH, the files' program can't be found.
         ws.bus_env.retain(|(k, _)| k != "PATH");
         assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), "");
+        assert_eq!(word(ws, "TEMPLUM_OPENCODE_CONFIG"), "");
     });
     // Without a data folder: both, empty, so none comes from a Templum this one was started from.
     let (_, bare) = open_in(cx, None, None);
@@ -197,6 +203,8 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
                 ("TEMPLUM_CLAUDE_ARGS".to_string(), String::new()),
                 ("TEMPLUM_CODEX_ARGS".to_string(), String::new()),
                 ("TEMPLUM_COPILOT_ARGS".to_string(), String::new()),
+                ("TEMPLUM_OPENCODE_CONFIG".to_string(), String::new()),
+                ("TEMPLUM_KILO_CONFIG".to_string(), String::new()),
                 ("TEMPLUM_HOOKED".to_string(), String::new()),
             ]
         );

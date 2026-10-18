@@ -421,10 +421,16 @@ mod tests {
                     "TEMPLUM_CLAUDE_ARGS",
                     "TEMPLUM_CODEX_ARGS",
                     "TEMPLUM_COPILOT_ARGS",
+                    "TEMPLUM_OPENCODE_CONFIG",
+                    "TEMPLUM_KILO_CONFIG",
                 ] {
                     if !env.iter().any(|(k, _)| *k == key) {
                         command.push(format!("{key}="));
                     }
+                }
+                // The person's own variables for the agents: none, as outside Templum.
+                for (_, var) in AGENT_VARS {
+                    command.splice(0..0, ["-u".to_string(), var.to_string()]);
                 }
                 command.extend(env.iter().map(|(k, v)| format!("{k}={v}")));
                 command.extend(injection.env.iter().map(|(k, v)| format!("{k}={v}")));
@@ -448,19 +454,27 @@ mod tests {
                 Some(term)
             }
 
-            /// A `claude`, a `codex` and a `copilot` in `<home>/bin` that write their arguments, one per
-            /// line, to `<home>/<name>.args` (at once: moved there), and exit 3 (`$FAKE_EXIT` when
-            /// set). What is piped into them, not typed, goes to `<home>/<name>.in` first. Returns
-            /// a PATH with them first.
+            /// Agents in `<home>/bin` (`claude`, `codex`, `copilot`, `opencode`, `kilo`) that write
+            /// their arguments, one per line, to `<home>/<name>.args` (at once: moved there), and
+            /// exit 3 (`$FAKE_EXIT` when set). What is piped into them, not typed, goes to
+            /// `<home>/<name>.in` first; the variable an agent takes from its environment (`AGENT_VARS`)
+            /// to `<home>/<name>.env`, `unset` when it has none. Returns a PATH with them first.
             fn fake_agents(&self) -> String {
                 use std::os::unix::fs::PermissionsExt as _;
                 let bin = self.dir.path().join("bin");
-                for name in ["claude", "codex", "copilot"] {
+                for name in ["claude", "codex", "copilot", "opencode", "kilo"] {
                     let args = self.dir.path().join(format!("{name}.args"));
+                    let env = match AGENT_VARS.iter().find(|(n, _)| *n == name) {
+                        Some((_, var)) => format!(
+                            "printf '%s' \"${{{var}-unset}}\" > '{}'\n",
+                            args.with_extension("env").display()
+                        ),
+                        None => String::new(),
+                    };
                     self.write(
                         &format!("bin/{name}"),
                         format!(
-                            "#!/bin/sh\n[ -t 0 ] || cat > '{1}'\n\
+                            "#!/bin/sh\n[ -t 0 ] || cat > '{1}'\n{env}\
                              for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{0}.part'\n\
                              mv '{0}.part' '{0}'\nexit \"${{FAKE_EXIT:-3}}\"\n",
                             args.display(),
@@ -486,15 +500,98 @@ mod tests {
         /// Templum's folder.
         const COPILOT_WORDS: &str = "--allow-all-mcp-server-instructions\n--additional-mcp-config=@/tmp/Templum Data/copilot/mcp.json\n--plugin-dir=/tmp/Templum Data/copilot/plugin";
 
+        /// What Templum gives a terminal for an `opencode` or a `kilo` typed in it (a shorter
+        /// one: quotes, a space and a `%`).
+        const OPENCODE_CONFIG: &str =
+            r#"{"plugin":["file:///tmp/Templum%20Data/opencode/templum.js"],"x":"a b"}"#;
+
+        /// The agents that take Templum's server from a variable of their environment.
+        const AGENT_VARS: [(&str, &str); 2] = [
+            ("opencode", "OPENCODE_CONFIG_CONTENT"),
+            ("kilo", "KILO_CONFIG_CONTENT"),
+        ];
+
         /// The environment of a shell whose agents are `fake_agents`' on `path`, with Templum's
         /// words for each.
-        fn with_agents(path: &str) -> [(&str, &str); 4] {
+        fn with_agents(path: &str) -> [(&str, &str); 6] {
             [
                 ("PATH", path),
                 ("TEMPLUM_CLAUDE_ARGS", CLAUDE_WORDS),
                 ("TEMPLUM_CODEX_ARGS", CODEX_WORDS),
                 ("TEMPLUM_COPILOT_ARGS", COPILOT_WORDS),
+                ("TEMPLUM_OPENCODE_CONFIG", OPENCODE_CONFIG),
+                ("TEMPLUM_KILO_CONFIG", OPENCODE_CONFIG),
             ]
+        }
+
+        /// How a shell sets and unsets a variable of its environment, and runs a program without
+        /// its functions: `{var}`, `{value}` and `{name}` stand for them.
+        struct Syntax {
+            set: &'static str,
+            unset: &'static str,
+            bare: &'static str,
+        }
+
+        const POSIX: Syntax = Syntax {
+            set: "export {var}={value}",
+            unset: "unset {var}",
+            bare: "command {name}",
+        };
+        const FISH: Syntax = Syntax {
+            set: "set -gx {var} {value}",
+            unset: "set -e {var}",
+            bare: "command {name}",
+        };
+        const PWSH: Syntax = Syntax {
+            set: "$env:{var}='{value}'",
+            unset: "Remove-Item Env:{var}",
+            bare: "& (Get-Command {name} -CommandType Application | Select-Object -First 1)",
+        };
+
+        /// Waits until the fake `name` ran, and checks the variable it takes was `want` and its
+        /// arguments `args`.
+        fn wait_var(term: &Terminal, home: &Home, name: &str, want: &str, args: &[&str]) {
+            wait_args(term, home, name, args);
+            let file = home.dir.path().join(format!("{name}.env"));
+            assert_eq!(
+                std::fs::read_to_string(&file).unwrap(),
+                want,
+                "{name}'s variable"
+            );
+            std::fs::remove_file(&file).unwrap();
+        }
+
+        /// An `opencode` and a `kilo` typed at the prompt of a shell started `with_agents`: each
+        /// gets its variable for that command only, never over the shell's own, its words as the
+        /// person typed them, and its exit code is the command's (docs/specs/connections.md, Typed
+        /// by hand: the shells).
+        fn typed_with_variable(term: &Terminal, home: &Home, syntax: &Syntax) {
+            for (name, var) in AGENT_VARS {
+                let fill = |template: &str, value: &str| {
+                    template
+                        .replace("{var}", var)
+                        .replace("{value}", value)
+                        .replace("{name}", name)
+                };
+                let finished = term.status().finished;
+                term.write(&b"echo ready\r"[..]);
+                wait(term, "echo to end", |t| {
+                    t.status().finished > finished
+                        && t.status().last.map(|o| o.code) == Some(Some(0))
+                });
+                term.write(format!("{name} run 'a b'\r").into_bytes());
+                wait_var(term, home, name, OPENCODE_CONFIG, &["run", "a b"]);
+                wait(term, &format!("{name}'s exit code"), |t| {
+                    t.status().last.map(|o| o.code) == Some(Some(3))
+                });
+                // The shell itself never had it.
+                term.write(format!("{}\r", fill(syntax.bare, "")).into_bytes());
+                wait_var(term, home, name, "unset", &[]);
+                // The person's own wins.
+                term.write(format!("{}\r{name} x\r", fill(syntax.set, "mine")).into_bytes());
+                wait_var(term, home, name, "mine", &["x"]);
+                term.write(format!("{}\r", fill(syntax.unset, "")).into_bytes());
+            }
         }
 
         /// Waits until the fake `name` ran, and checks it got `want`, then deletes what it wrote.
@@ -784,6 +881,9 @@ mod tests {
             if let Some(term) = home.spawn_with("bash", &[], &with_agents(&path)) {
                 typed_agents(&term, &home, "unset TEMPLUM_CLAUDE_ARGS", bash_has_ps0());
                 typed_copilot(&term, &home, "unset TEMPLUM_COPILOT_ARGS", bash_has_ps0());
+                if bash_has_ps0() {
+                    typed_with_variable(&term, &home, &POSIX);
+                }
             }
         }
 
@@ -810,6 +910,7 @@ mod tests {
             home.fake_agents();
             typed_agents(&term, &home, "unset TEMPLUM_CLAUDE_ARGS", true);
             typed_copilot(&term, &home, "unset TEMPLUM_COPILOT_ARGS", true);
+            typed_with_variable(&term, &home, &POSIX);
         }
 
         /// The person's alias and function, read before Templum defines its own (bash) or after
@@ -982,6 +1083,7 @@ mod tests {
             if let Some(term) = home.spawn_with("fish", &[], &with_agents(&path)) {
                 typed_agents(&term, &home, "set -e TEMPLUM_CLAUDE_ARGS", true);
                 typed_copilot(&term, &home, "set -e TEMPLUM_COPILOT_ARGS", true);
+                typed_with_variable(&term, &home, &FISH);
             }
         }
 
@@ -1023,6 +1125,7 @@ mod tests {
             };
             typed_agents(&term, &home, "Remove-Item Env:TEMPLUM_CLAUDE_ARGS", true);
             typed_copilot(&term, &home, "Remove-Item Env:TEMPLUM_COPILOT_ARGS", true);
+            typed_with_variable(&term, &home, &PWSH);
             // What is piped into an agent reaches it, as `git diff | claude -p review`; one not
             // piped into keeps the terminal.
             let piped = |name: &str| {

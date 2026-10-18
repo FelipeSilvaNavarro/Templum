@@ -19,7 +19,7 @@ if status is-interactive; and not set -q __templum_installed
     # person's, unless they name Templum's already (docs/specs/connections.md, "Agents typed in a
     # terminal"). Not over the person's own function (an alias, an autoloaded one): fish read
     # their config before this.
-    function __templum_agent --argument-names name words
+    function __templum_agent --argument-names name words var value
         # As fish says it, not from inside this function (before 3.2, without its handler).
         if not command -q $name
             if functions -q fish_command_not_found
@@ -29,7 +29,10 @@ if status is-interactive; and not set -q __templum_installed
             end
             return 127
         end
-        command $name (string split --no-empty \n -- $words) $argv[3..]
+        # A variable for this command only, unless the shell has one (the block Templum opened,
+        # the person's own). Not in a block: `set -l` there would end with it.
+        test -n "$value"; and test -z "$$var"; and set -lx $var $value
+        command $name (string split --no-empty \n -- $words) $argv[5..]
     end
     if test -n "$TEMPLUM_CLAUDE_ARGS"; and not functions -q claude
         function claude
@@ -40,7 +43,7 @@ if status is-interactive; and not set -q __templum_installed
                         set w ''
                 end
             end
-            __templum_agent claude "$w" $argv
+            __templum_agent claude "$w" '' '' $argv
         end
     end
     if test -n "$TEMPLUM_CODEX_ARGS"; and not functions -q codex
@@ -52,7 +55,7 @@ if status is-interactive; and not set -q __templum_installed
                         set w ''
                 end
             end
-            __templum_agent codex "$w" $argv
+            __templum_agent codex "$w" '' '' $argv
         end
     end
     # The others' words end with a path in Templum's folder, which only Templum types: none when
@@ -70,7 +73,18 @@ if status is-interactive; and not set -q __templum_installed
                     set w ''
                 end
             end
-            __templum_agent copilot "$w" $argv
+            __templum_agent copilot "$w" '' '' $argv
+        end
+    end
+    # OpenCode and Kilo Code take Templum's server and plugin from a variable.
+    if test -n "$TEMPLUM_OPENCODE_CONFIG"; and not functions -q opencode
+        function opencode
+            __templum_agent opencode '' OPENCODE_CONFIG_CONTENT "$TEMPLUM_OPENCODE_CONFIG" $argv
+        end
+    end
+    if test -n "$TEMPLUM_KILO_CONFIG"; and not functions -q kilo
+        function kilo
+            __templum_agent kilo '' KILO_CONFIG_CONTENT "$TEMPLUM_KILO_CONFIG" $argv
         end
     end
 end
