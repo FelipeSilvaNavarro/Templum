@@ -3,17 +3,46 @@
 
 use serde_json::{Map, Value, json};
 
+use crate::tools::Reply;
+
 /// The most characters of a header shown; a longer one is cut with "…".
 pub const HEADER_MAX: usize = 12;
 /// The most characters of the question a notice names.
 const NOTICE_MAX: usize = 60;
 
-/// An `ask_user` call's questions.
+/// An `ask_user` call's questions, or `propose_plan`'s plan.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Ask {
     pub questions: Vec<Question>,
     /// Asked with `questions`: the answer is JSON. Today's `question` gets plain text.
     pub json: bool,
+    /// `propose_plan`'s: its one question is Approve or Reject, with a comment.
+    pub plan: Option<Plan>,
+}
+
+/// A plan the person approves or rejects (docs/specs/agent-tools.md, propose_plan).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Plan {
+    pub title: Option<String>,
+    /// Markdown.
+    pub text: String,
+}
+
+/// The longest plan `propose_plan` takes, in bytes.
+pub const PLAN_MAX: usize = 256 * 1024;
+
+/// `propose_plan`'s dialog: one single-select question, Approve or Reject, and the comment.
+pub fn plan(title: Option<String>, text: String) -> Ask {
+    Ask {
+        questions: vec![Question {
+            text: "Approve the plan?".into(),
+            header: None,
+            options: vec![label("Approve"), label("Reject")],
+            multi: false,
+        }],
+        json: false,
+        plan: Some(Plan { title, text }),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -61,6 +90,7 @@ pub fn parse(args: &Value) -> Result<Ask, String> {
             Ok(Ask {
                 questions: vec![question],
                 json: false,
+                plan: None,
             })
         }
         _ => Err("Give question or questions, not both.".into()),
@@ -121,6 +151,7 @@ fn questions_of(value: &Value) -> Result<Ask, String> {
     Ok(Ask {
         questions,
         json: true,
+        plan: None,
     })
 }
 
@@ -170,8 +201,12 @@ fn cut(text: &str, max: usize) -> String {
 }
 
 impl Ask {
-    /// The first question's first line: the dot's tooltip, the notification's text.
+    /// The first question's first line, or a plan's title: the dot's tooltip, the notification's
+    /// text.
     pub fn summary(&self) -> String {
+        if let Some(plan) = &self.plan {
+            return plan.title.clone().unwrap_or_else(|| "A plan".into());
+        }
         let text = self.questions.first().map_or("", |q| q.text.as_str());
         text.lines().next().unwrap_or_default().to_string()
     }
@@ -207,6 +242,22 @@ impl Ask {
         answer.to_string()
     }
 
+    /// The tool's result: the answer as `answer` gives it; for a plan, `Approved.` or the error
+    /// `Rejected.`, with the person's comment when they wrote one.
+    pub fn reply(&self, answers: &[Vec<String>], note: &str) -> Reply {
+        if self.plan.is_none() {
+            return Reply::ok(self.answer(answers, note));
+        }
+        let comment = match note.trim() {
+            "" => String::new(),
+            note => format!("\nThe person's comment: {note}"),
+        };
+        match answers.first().and_then(|a| a.first()).map(String::as_str) {
+            Some("Approve") => Reply::ok(format!("Approved.{comment}")),
+            _ => Reply::err(format!("Rejected.{comment}")),
+        }
+    }
+
     /// Question `q`'s preview: None when no option of it has one; else the highlighted option's,
     /// or the picked one's, or the first one with a preview; `Some(None)`: "No preview".
     pub fn preview_of(&self, q: usize, form: &Form) -> Option<Option<&str>> {
@@ -226,8 +277,13 @@ impl Ask {
     /// line naming the question, then the answer on the next (a long one is a paste the first
     /// line comes with, as delegate's notices).
     pub fn notice(&self, answer: &str) -> String {
+        let what = if self.plan.is_some() {
+            "plan"
+        } else {
+            "question"
+        };
         format!(
-            "[answer to your question \"{}\"] The answer is in the pasted text.\n{answer}",
+            "[answer to your {what} \"{}\"] The answer is in the pasted text.\n{answer}",
             cut(&self.summary(), NOTICE_MAX)
         )
     }
@@ -318,6 +374,10 @@ impl Form {
     /// The dialog's rows in order: for `questions`, each question's options then its Other, then
     /// the note and Send; today's shape, its options alone, or its field and Send.
     pub fn rows(ask: &Ask) -> Vec<Row> {
+        // A plan's: Comment, then Reject on the left and Approve on the right.
+        if ask.plan.is_some() {
+            return vec![Row::Note, Row::Option(0, 1), Row::Option(0, 0)];
+        }
         if !ask.json {
             let options = ask.questions[0].options.len();
             return if options == 0 {
@@ -590,6 +650,46 @@ mod tests {
         assert_eq!(ask.answer(&[vec!["Yes".into()]], "a note"), "Yes");
         let when = parse(&json!({ "question": "When?" })).unwrap();
         assert_eq!(when.answer(&[vec!["Friday".into()]], ""), "Friday");
+    }
+
+    /// A plan is one implicit question, Approve or Reject, with a comment: approved is a result,
+    /// rejected an error; its notice names the plan (docs/specs/agent-tools.md, propose_plan).
+    #[test]
+    fn a_plans_form_answers_approved_or_rejected_with_the_comment() {
+        let ask = plan(Some("Move the bus".into()), "## Steps\n1. a".into());
+        assert_eq!(
+            Form::rows(&ask),
+            [Row::Note, Row::Option(0, 1), Row::Option(0, 0)],
+            "Comment, Reject, Approve"
+        );
+        let mut form = Form::new(&ask);
+        assert_eq!(form.answers(&ask, &[]), None);
+        form.pick(&ask, 0, 0);
+        let answers = form.answers(&ask, &[]).unwrap();
+        assert_eq!(ask.reply(&answers, " "), Reply::ok("Approved."));
+        form.pick(&ask, 0, 1);
+        let answers = form.answers(&ask, &[]).unwrap();
+        assert_eq!(
+            ask.reply(&answers, "do b first"),
+            Reply::err("Rejected.\nThe person's comment: do b first")
+        );
+        assert_eq!(
+            ask.notice("Rejected."),
+            "[answer to your plan \"Move the bus\"] The answer is in the pasted text.\nRejected."
+        );
+        assert_eq!(ask.summary(), "Move the bus");
+        let untitled = plan(None, "x".into());
+        assert!(
+            untitled
+                .notice("Approved.")
+                .starts_with("[answer to your plan \"A plan\"]")
+        );
+        // A question's reply is its answer, as before.
+        let one = parse(&json!({ "question": "Why?" })).unwrap();
+        assert_eq!(
+            one.reply(&[vec!["Because".into()]], ""),
+            Reply::ok("Because")
+        );
     }
 
     #[test]

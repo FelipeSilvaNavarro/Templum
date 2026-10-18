@@ -347,9 +347,9 @@ impl Workspace {
             )));
         }
         Outcome::Wait(
-            Waiting::Connect {
+            Box::new(Waiting::Connect {
                 to: block.to_string(),
-            },
+            }),
             Some(timeout),
         )
     }
@@ -562,7 +562,7 @@ impl Workspace {
             since: (status.finished, status.attention),
             watch,
         };
-        Outcome::Wait(what, Some(timeout))
+        Outcome::Wait(Box::new(what), Some(timeout))
     }
 
     /// The block of the terminal `terminal` waits for its person (its agent asks for `what`, or

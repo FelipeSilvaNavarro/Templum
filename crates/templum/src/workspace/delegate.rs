@@ -713,7 +713,7 @@ impl Workspace {
                 of: worker,
                 uid: block.to_string(),
             };
-            Outcome::Wait(what, Some(timeout))
+            Outcome::Wait(Box::new(what), Some(timeout))
         } else {
             Outcome::Now(Reply::ok(match mine {
                 Some(_) => format!("Typed into {block} as a change to task t{id}."),
@@ -815,7 +815,7 @@ impl Workspace {
                 of: pane.term.id().to_string(),
                 uid: block.to_string(),
             };
-            return Outcome::Wait(what, Some(timeout));
+            return Outcome::Wait(Box::new(what), Some(timeout));
         }
         Outcome::Now(Reply::ok(pane.answer.clone().unwrap_or_else(|| {
             format!("{block} is idle; Templum has heard no answer from it.")

@@ -445,6 +445,7 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `reply` | `block`, `text` | Answers the task the block handed the caller; with none waiting, types `[reply from …]` (from batch 8 naming the task) and the text into it | wired | 3, 8 |
 | `wait_for_idle` | `block`, `timeout` (300 s) | Waits until the agent finishes its turn, and for the answer to a task the caller handed it, past `delegate`'s timeout too; its last answer | wired | 3 |
 | `ask_user` | `questions` (each `question`, `header`, `options` with `label`, `description`, `preview`, `multiSelect`), or `question` and `options` (strings); `timeout` (none) | Questions in a balloon ([Requests](#requests-from-agents), [ask-user.md](ask-user.md)); the answers as JSON, or with `question` the answer as text | — | 3 |
+| `propose_plan` | `plan` (Markdown, at most 256 KB), `title`, `timeout` (none) | A plan in the caller's balloon, Approve or Reject with a comment ([agent-tools.md](agent-tools.md#propose_plan)); `Approved.`, or the error `Rejected.`, with the comment | — | card 35 |
 | `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, priority, assignee (`(you)` on the caller's), checklist progress and comment count; with `card`, that card whole: its description, checklist items and comments ([Cards for an agent](#cards-for-an-agent)) | wired kanban | 4, card 40 |
 | `create_card` | `board`, `column`, `title`, `description`, `priority`, `for`, `checklist` | A new card at the column's end (the board's first column when left out); its id. Its description tells an agent a review's findings are a card each (card 35) | wired kanban | 4, card 40 |
 | `edit_card` | `card`, `priority`, `for`, `add_items`, `check`, `uncheck` | Sets the card's priority and who it is for, adds checklist items, checks and unchecks them: one Ctrl+Z step ([Cards for an agent](#cards-for-an-agent)) | wired kanban | card 40 |
@@ -1135,6 +1136,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum reply <block> <text>` | `reply` | 3 |
 | `templum wait <block> [--for <event>] [--match <pattern>] [--lines <n>] [--timeout <s>]` | `wait_for_idle`, `wait_for` | 3, 5, card 35 |
 | `templum ask <question> [--option <o>]…` | `ask_user` | 3 |
+| `templum plan <file> [--title <t>]` (`-` reads stdin; a rejection exits 1) | `propose_plan` | card 35 |
 | `templum kanban list [<board>] [--card <card>] \| add <title> [--column <c>] [--description <d>] [--board <b>] [--priority <p>] [--for <who>] [--checklist <text>] \| edit <card> [--priority <p>] [--for <who>] [--add <text>] [--check <item>]… [--uncheck <item>]… \| move <card> <column> \| comment <card> <text> \| claim <card>` | the kanban tools (`edit` and the new options: card 40) | 4, card 40 |
 | `templum note read\|append <block> [text]` | `read_note`, `append_note` | 4 |
 | `templum note replace <block> <text> [--old <text>]` | `replace_note` | card 35 |

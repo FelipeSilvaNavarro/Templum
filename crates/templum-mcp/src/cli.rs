@@ -32,6 +32,7 @@ const VERBS: &[&str] = &[
     "keys",
     "interrupt",
     "stop",
+    "plan",
     "new",
     "close",
 ];
@@ -50,6 +51,7 @@ const KANBAN: &str = "kanban list [<board>] [--card <card>] | add <title> [--col
                       | claim <card> [--json]";
 const NOTE: &str = "note read <block> | note append <block> <text> \
                     | note replace <block> <text> [--old <text>] [--json]";
+const PLAN: &str = "plan <file> [--title <title>] [--json]";
 const NEW: &str = "new note [<text>] | new checklist <name> [--items <text>] \
                    | new terminal [--folder <folder>] [--command <command>] [--json]";
 const CHECKLIST: &str = "checklist read <block> | add <block> <text> | check <block> <item> \
@@ -100,7 +102,27 @@ pub fn run(
         None
     } else {
         match call_of(verb, rest) {
-            Ok(call) => Some(call),
+            Ok(mut call) => {
+                if call.name == "propose_plan" {
+                    let from = call.arguments["plan"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string();
+                    let mut text = String::new();
+                    let read = match from.as_str() {
+                        "-" => stdin.read_to_string(&mut text).map(|_| text),
+                        file => std::fs::read_to_string(file),
+                    };
+                    match read {
+                        Ok(text) => call.arguments["plan"] = json!(text),
+                        Err(e) => {
+                            let _ = writeln!(stderr, "templum: couldn't read {from}: {e}");
+                            return 2;
+                        }
+                    }
+                }
+                Some(call)
+            }
             Err(usage) => {
                 let _ = writeln!(stderr, "usage: templum {usage}");
                 return 2;
@@ -402,6 +424,11 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("interrupt", [block]) => ("interrupt", json!({ "block": block })),
         ("close", [block]) => ("close_block", json!({ "block": block })),
         ("stop", [block]) => ("stop_agent", json!({ "block": block })),
+        // The file is read by `run`, which has the standard input `-` names.
+        ("plan", [file]) => ("propose_plan", json!({ "plan": file })),
+        ("plan", [file, "--title", title]) => {
+            ("propose_plan", json!({ "plan": file, "title": title }))
+        }
         ("new", ["note", text @ ..]) => {
             let mut arguments = json!({ "kind": "note" });
             if !text.is_empty() {
@@ -451,6 +478,7 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("interrupt", _) => return Err("interrupt <block> [--json]"),
         ("close", _) => return Err("close <block> [--json]"),
         ("stop", _) => return Err("stop <block> [--json]"),
+        ("plan", _) => return Err(PLAN),
         ("new", _) => return Err(NEW),
         _ => return Err("notify <text> [--json]"),
     };
@@ -830,6 +858,37 @@ mod tests {
             assert_eq!(code, 2, "{args:?}");
             assert!(err.starts_with(usage), "{args:?}: {err}");
         }
+    }
+
+    /// `templum plan` sends a file's text, or its standard input's with `-`, as the plan.
+    #[test]
+    fn plan_sends_the_files_text() {
+        let (seen, calls) = std::sync::mpsc::channel();
+        let (_dir, bus) = test_bus(move |m| {
+            if let Incoming::Request { id, params, .. } = &m.incoming {
+                let _ = seen.send(params.clone());
+                let _ = m.reply.send(tool_result(id, &Reply::err("Rejected.")));
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("plan.md");
+        std::fs::write(&file, "## Steps\n1. a\n").unwrap();
+        let path = file.to_string_lossy().into_owned();
+        let (code, _, err) = run_with(&["plan", &path, "--title", "T"], &env(&bus), "");
+        assert_eq!(code, 1, "a rejection exits 1: {err}");
+        assert_eq!(
+            calls.recv_timeout(LIMIT).unwrap(),
+            json!({ "name": "propose_plan", "arguments": { "plan": "## Steps\n1. a\n", "title": "T" } })
+        );
+        run_with(&["plan", "-"], &env(&bus), "from stdin");
+        assert_eq!(
+            calls.recv_timeout(LIMIT).unwrap(),
+            json!({ "name": "propose_plan", "arguments": { "plan": "from stdin" } })
+        );
+        let missing = dir.path().join("nope.md").to_string_lossy().into_owned();
+        let (code, _, err) = run_with(&["plan", &missing], &env(&bus), "");
+        assert_eq!(code, 2, "{err}");
+        assert!(err.starts_with("templum: couldn't read "), "{err}");
     }
 
     #[test]

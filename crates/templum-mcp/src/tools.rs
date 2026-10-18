@@ -142,6 +142,12 @@ pub enum Call {
     Interrupt {
         block: String,
     },
+    /// A plan the person approves or rejects in the caller's balloon.
+    ProposePlan {
+        plan: String,
+        title: Option<String>,
+        timeout: Option<u64>,
+    },
     /// Ends what runs in a terminal the caller opened, and what it left running.
     StopAgent {
         block: String,
@@ -790,6 +796,27 @@ pub fn list() -> Value {
             },
         },
         {
+            "name": "propose_plan",
+            "description": "Shows the person a plan in Markdown, in a balloon on your block, with Approve, Reject and \
+                            a comment; waits for their decision (it may take minutes). Approved is a result, \
+                            Rejected an error, each with their comment when they wrote one. Use it before work \
+                            the person should agree to.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "plan": { "type": "string", "description": "The plan, in Markdown (at most 256 KB)." },
+                    "title": { "type": "string", "description": "A short title, shown up to 60 characters." },
+                    "timeout": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_WAIT,
+                        "description": "Seconds to wait before giving up; none waits until the person answers.",
+                    },
+                },
+                "required": ["plan"],
+            },
+        },
+        {
             "name": "interrupt",
             "description": "Presses Esc once in an agent connected to you while it works or waits for its person, \
                             and ends the task you handed it: its waits get \"Interrupted by you.\" Returns its \
@@ -1179,6 +1206,20 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
         "interrupt" => Call::Interrupt {
             block: text("block")?,
         },
+        "propose_plan" => {
+            let plan = text("plan")?;
+            if plan.trim().is_empty() {
+                return Err("\"plan\" is blank".into());
+            }
+            if plan.len() > crate::ask::PLAN_MAX {
+                return Err("\"plan\" is longer than 256 KB".into());
+            }
+            Call::ProposePlan {
+                plan,
+                title: optional("title")?,
+                timeout: timeout()?,
+            }
+        }
         "stop_agent" => Call::StopAgent {
             block: text("block")?,
         },
@@ -1317,6 +1358,10 @@ mod tests {
             (
                 "send_keys",
                 json!({ "block": "k9x1d", "keys": ["2", "enter"] }),
+            ),
+            (
+                "propose_plan",
+                json!({ "plan": "## Steps\n1. Replace the reader threads", "title": "Move the bus to tokio" }),
             ),
             ("interrupt", json!({ "block": "k9x1d" })),
             ("stop_agent", json!({ "block": "k9x1d" })),
@@ -1660,6 +1705,32 @@ mod tests {
         assert!(parse("replace_note", &json!({ "block": "b" })).is_err());
         assert!(parse("edit_item", &json!({ "block": "b", "text": "x" })).is_err());
         assert!(parse("delete_item", &json!({ "block": "b" })).is_err());
+    }
+
+    #[test]
+    fn propose_plan_takes_a_plan_and_refuses_a_blank_or_huge_one() {
+        assert_eq!(
+            parse(
+                "propose_plan",
+                &json!({ "plan": "## Steps", "title": "Move the bus" })
+            ),
+            Ok(Call::ProposePlan {
+                plan: "## Steps".into(),
+                title: Some("Move the bus".into()),
+                timeout: None
+            })
+        );
+        assert_eq!(
+            parse("propose_plan", &json!({ "plan": " \n" })),
+            Err("\"plan\" is blank".into())
+        );
+        assert_eq!(
+            parse(
+                "propose_plan",
+                &json!({ "plan": "x".repeat(256 * 1024 + 1) })
+            ),
+            Err("\"plan\" is longer than 256 KB".into())
+        );
     }
 
     /// create_block takes what its kind does, and names what it doesn't.

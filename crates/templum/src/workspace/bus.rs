@@ -66,7 +66,7 @@ pub(super) enum Outcome {
     /// Its answer, now.
     Now(Reply),
     /// It waits for this, at most these many seconds (`waits.rs`); None: until it comes.
-    Wait(Waiting, Option<u64>),
+    Wait(Box<Waiting>, Option<u64>),
     /// A job answers it when it is done (`spawn_agent` making a worktree).
     Later(Task<Reply>),
 }
@@ -194,7 +194,7 @@ impl Workspace {
                                         reply,
                                         from: hello.terminal,
                                     };
-                                    self.wait(asked, what, seconds, window, cx);
+                                    self.wait(asked, *what, seconds, window, cx);
                                     return;
                                 }
                                 Outcome::Later(job) => {
@@ -512,6 +512,23 @@ impl Workspace {
             Call::Interrupt { block } => return self.interrupt(terminal, &block, cx),
             Call::StopAgent { block } => self.stop_agent(terminal, &block, cx),
             Call::CloseBlock { block } => self.close_block(terminal, &block, window, cx),
+            Call::ProposePlan {
+                plan,
+                title,
+                timeout,
+            } => {
+                let ask = templum_mcp::ask::plan(title, plan);
+                let what = Waiting::Question {
+                    form: Form::new(&ask),
+                    ask,
+                    others: Vec::new(),
+                    note: None,
+                    away: false,
+                    stopped: false,
+                };
+                let seconds = deadline(timeout, self.config.connections.question_timeout);
+                return Outcome::Wait(Box::new(what), seconds);
+            }
             Call::AskUser { ask, timeout } => {
                 let what = Waiting::Question {
                     form: Form::new(&ask),
@@ -522,7 +539,7 @@ impl Workspace {
                     stopped: false,
                 };
                 let seconds = deadline(timeout, self.config.connections.question_timeout);
-                return Outcome::Wait(what, seconds);
+                return Outcome::Wait(Box::new(what), seconds);
             }
         })
     }

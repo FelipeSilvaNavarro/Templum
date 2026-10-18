@@ -32,9 +32,11 @@ pub(super) fn fields(
             field(key, Some(q), placeholder, window, cx)
         })
         .collect();
-    let note = ask
-        .json
-        .then(|| field(key, None, Some("Note (optional)"), window, cx));
+    let note = match (ask.json, &ask.plan) {
+        (_, Some(_)) => Some(field(key, None, Some("Comment (optional)"), window, cx)),
+        (true, None) => Some(field(key, None, Some("Note (optional)"), window, cx)),
+        (false, None) => None,
+    };
     (others, note)
 }
 
@@ -142,11 +144,11 @@ impl Workspace {
         let Some(answers) = form.answers(ask, &others) else {
             return;
         };
-        let text = ask.answer(&answers, &note);
+        let reply = ask.reply(&answers, &note);
         // Its client stopped waiting: typed into its terminal, once its agent takes typing.
         let notice = matches!(wait.what, Waiting::Question { stopped: true, .. })
-            .then(|| (wait.from.clone(), ask.notice(&text)));
-        self.close_question(key, Reply::ok(text), window, cx);
+            .then(|| (wait.from.clone(), ask.notice(&reply.text)));
+        self.close_question(key, reply, window, cx);
         if let Some((to, notice)) = notice {
             self.queue_notice(to, notice, cx);
         }
