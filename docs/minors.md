@@ -1518,4 +1518,31 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   branch doesn't have them yet, so the control server lists neither. Fix, once rebased: add `stop_agent` to
   `control::SHARED` with `Rule::AskOwn` (and to `approvals.rs`'s `called_block` and words), call `stop_in` from
   `control_call` as `interrupt_in` is called, and let `event_wait` take the pattern, as `wait_for` does there.
+- [ ] **`touched` and `denied` take the oldest matching action.** `Conversation::touched` and `denied`
+  (`crates/templum-agent/src/conversation.rs`) can give an earlier, finished row of the same call a new call's
+  target or Denied. Fix: search newest first, among Running rows only.
+- [ ] **A killed engine's secret stays good until the next start.** `kill_engine` (`crates/templum/src/workspace/agent.rs`)
+  leaves `TemplumAgent::secret` as it was, so a leftover process of the killed engine still says hello as it. Fix:
+  a new secret in `kill_engine`.
+- [ ] **The engine is written to on the UI thread.** `Engine::send` (`crates/templum-agent/src/engine.rs`) writes a
+  message (a notice may be 256 KB) straight into the pipe: an engine that stopped reading with a full pipe would
+  freeze Templum. Fix: a writer thread fed by a channel.
+- [ ] **Stop's fallback kills at once.** `Engine::stop` uses `Child::kill` (SIGKILL), where the spec says SIGTERM,
+  then a kill 2 s later. Fix: SIGTERM first on Unix (through `templum-terminal`'s signal helper), then kill.
+- [ ] **The engine chip never shows the model Claude Code reports.** `TemplumAgent::model`
+  (`crates/templum/src/chat/mod.rs`) is never set from `ChatEvent::Started`: with no model in Settings the chip
+  says "Claude Code". Fix: set it in `engine_line` on `Started`.
+- [ ] **`notify`'s notification opens nothing.** `control_call`'s `Notify` (`crates/templum/src/workspace/control.rs`)
+  shows a notification without a click handler, where its description says a click opens the chat. Fix: an
+  `on_click` that calls `review_agent`.
+- [ ] **Esc after clicking the approval goes to the canvas.** A click on the approval (`chat/approval.rs`) while a
+  terminal has the keyboard doesn't record `back`, so Esc afterwards gives the keyboard to the canvas, not that
+  terminal. Fix: record `back` in `focus_approval` when the pill didn't have the keyboard.
+- [ ] **The suggestions don't come back after New chat.** `panel::render` shows them only for an empty conversation,
+  and New chat leaves a "New conversation." note. Fix: show them while the rows are only notes.
+- [ ] **After Stop, a task's end still wakes the engine.** `agent_notice` (`crates/templum/src/workspace/agent.rs`)
+  sends every notice, so a run the person stopped goes on when an agent finishes. The spec doesn't say; ask the
+  maintainer whether Stop should hold the notices as rows until the person writes.
+- [ ] **The run meter never shows tokens.** `panel::meter` shows dollars only; the spec says tokens when there is no
+  cost. Fix: keep the turns' and the notices' tokens and show them when the cost is 0.
 

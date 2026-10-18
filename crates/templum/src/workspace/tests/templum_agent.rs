@@ -2285,3 +2285,72 @@ fn catch_me_up_sends_its_sentence(cx: &mut TestAppContext) {
         "{rows:#?}"
     );
 }
+
+#[gpui_kit::test]
+fn new_chat_lets_go_of_the_old_conversations_tasks(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
+    let (block, _, terminal) = handed_by_the_templum_agent(handle, &ws, cx);
+    ws.update(cx, |ws, cx| ws.new_chat(cx));
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.agent_tasks()),
+        0,
+        "the new chat counts none"
+    );
+    assert!(ws.read_with(cx, |ws, _| {
+        ws.space.terminal(block).unwrap().handed.is_none()
+    }));
+    ws.update(cx, |ws, cx| {
+        ws.end_turn(&terminal, templum_mcp::Reply::ok("Done."), cx)
+    });
+    super::bus::after(
+        cx,
+        crate::workspace::delegate::SPENT_AFTER.as_millis() as u64,
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            ws.templum_agent.sent.is_empty(),
+            "no old task wakes the new chat"
+        );
+        assert!(ws.templum_agent.engine.is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn an_approval_doesnt_take_the_keyboard_from_someone_typing(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(AGENT, cx);
+        window.render_frame(cx);
+        window.input("open ", cx);
+    })
+    .unwrap();
+    let answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    super::bus::after(cx, 600);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.input("2 agents", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        answers.try_recv().is_err(),
+        "a 2 typed in a sentence answers nothing"
+    );
+    assert_eq!(pill_text(&ws, cx), "open 2 agents");
+    assert!(pill_has_keys(handle, &ws, cx));
+}
+
+#[gpui_kit::test]
+fn overview_lists_the_tasks_it_handed(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, uid, _) = handed_by_the_templum_agent(handle, &ws, cx);
+    let (failed, text) = control(handle, &ws, cx, "overview", json!({}));
+    assert!(!failed, "{text}");
+    assert!(
+        text.contains(&format!("Your tasks under way: t1 to {uid}")),
+        "{text}"
+    );
+}

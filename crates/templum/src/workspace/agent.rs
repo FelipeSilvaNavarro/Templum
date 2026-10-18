@@ -357,6 +357,19 @@ impl Workspace {
     pub(crate) fn new_chat(&mut self, cx: &mut Context<Self>) {
         self.deny_waiting(STOPPED, cx);
         self.kill_engine();
+        // Its tasks were the old conversation's: their ends go nowhere now.
+        for space in std::iter::once(&mut self.space).chain(&mut self.others) {
+            for body in space.blocks.values_mut() {
+                if let Some(pane) = body.terminal_mut()
+                    && pane
+                        .handed
+                        .as_ref()
+                        .is_some_and(|h| h.by == templum_agent::ASKER)
+                {
+                    pane.handed = None;
+                }
+            }
+        }
         let agent = &mut self.templum_agent;
         agent.conversation = Conversation::new(&self.config.templum_agent.agent);
         agent.conversation.note("New conversation.");

@@ -115,9 +115,19 @@ pub struct Conversation {
     pub rows: Vec<Row>,
     #[serde(default)]
     pub own: Own,
+    /// What the session had spent at its last turn's end, in US dollars: Claude Code's
+    /// `total_cost_usd` is the session's running total (a resumed one's included).
+    #[serde(default)]
+    pub spent: f64,
     /// A turn runs, or a message waits for one.
     #[serde(skip)]
     pub working: bool,
+    /// The messages the engine was given that no turn has taken yet.
+    #[serde(skip)]
+    pending: u32,
+    /// The turn under way said it started (`Started`), so it took its message.
+    #[serde(skip)]
+    started: bool,
     /// The last row is the text the engine is writing: its next delta grows it.
     #[serde(skip)]
     open_text: bool,
@@ -169,7 +179,10 @@ impl Conversation {
             session: None,
             rows: Vec::new(),
             own: Own::default(),
+            spent: 0.0,
             working: false,
+            pending: 0,
+            started: false,
             open_text: false,
         }
     }
@@ -181,6 +194,7 @@ impl Conversation {
             text: text.to_owned(),
             queued: self.working,
         });
+        self.pending += 1;
         self.working = true;
     }
 
@@ -192,7 +206,15 @@ impl Conversation {
         // Only a delta keeps the turn's text open; `Text` ends the block that streamed.
         let open_text = std::mem::take(&mut self.open_text);
         match e {
-            ChatEvent::Started { session, .. } => self.session = Some(session),
+            // Every turn starts so, and takes one message.
+            ChatEvent::Started { session, .. } => {
+                self.session = Some(session);
+                if !self.started {
+                    self.pending = self.pending.saturating_sub(1);
+                }
+                self.started = true;
+                self.working = true;
+            }
             ChatEvent::Thinking => {
                 if self.rows.last() != Some(&Row::Thinking) {
                     self.rows.push(Row::Thinking);
@@ -265,16 +287,27 @@ impl Conversation {
                 cost_usd,
                 error,
             } => {
+                // The session's running total: this turn spent what it added.
+                let cost_usd = cost_usd.map(|total| {
+                    let turn = if total >= self.spent {
+                        total - self.spent
+                    } else {
+                        total
+                    };
+                    self.spent = total;
+                    turn
+                });
                 self.rows.push(Row::End { ms, cost_usd });
                 if let Some(error) = error {
                     self.rows.push(Row::Failure {
                         text: format!("The turn failed: {error}"),
                     });
                 }
-                self.working = self
-                    .rows
-                    .iter()
-                    .any(|r| matches!(r, Row::Person { queued: true, .. }));
+                if !self.started {
+                    self.pending = self.pending.saturating_sub(1);
+                }
+                self.started = false;
+                self.working = self.pending > 0;
             }
         }
     }
@@ -339,7 +372,15 @@ impl Conversation {
                 *state = ActionState::Failed;
             }
         }
+        // What it was given and didn't take is lost with it.
+        for row in &mut self.rows {
+            if let Row::Person { queued, .. } = row {
+                *queued = false;
+            }
+        }
         self.open_text = false;
+        self.pending = 0;
+        self.started = false;
         self.working = false;
     }
 
@@ -352,6 +393,7 @@ impl Conversation {
             level,
             target,
         });
+        self.pending += 1;
         self.working = true;
     }
 
@@ -381,7 +423,15 @@ impl Conversation {
             Err(_) => String::new(),
         };
         match serde_json::from_str::<Conversation>(&text) {
-            Ok(c) if c.version == VERSION => Load::Some(Box::new(c)),
+            Ok(mut c) if c.version == VERSION => {
+                // A message queued when Templum quit went with its engine.
+                for row in &mut c.rows {
+                    if let Row::Person { queued, .. } = row {
+                        *queued = false;
+                    }
+                }
+                Load::Some(Box::new(c))
+            }
             _ => {
                 let _ = std::fs::rename(path, path.with_extension("json.bak"));
                 Load::Unreadable
@@ -645,6 +695,81 @@ mod tests {
             None,
         );
         assert!((c.cost() - 0.35).abs() < 1e-9, "{}", c.cost());
+    }
+
+    #[test]
+    fn a_notice_during_a_turn_keeps_it_working_until_its_own_turn_ends() {
+        let mut c = Conversation::new("claude");
+        let started = || ChatEvent::Started {
+            session: "s".into(),
+            model: None,
+        };
+        let ended = || ChatEvent::TurnEnded {
+            ms: None,
+            cost_usd: None,
+            error: None,
+        };
+        c.person("go");
+        c.apply(started());
+        c.notice(
+            "[task t1 from Codex (b1): done in 3 s] Its answer.",
+            NoticeLevel::Done,
+            None,
+        );
+        c.apply(ended());
+        assert!(c.working, "the notice's turn comes next");
+        c.apply(started());
+        c.apply(ended());
+        assert!(!c.working);
+    }
+
+    #[test]
+    fn a_message_lost_with_the_engine_is_no_longer_queued() {
+        let mut c = Conversation::new("claude");
+        c.person("go");
+        c.apply(ChatEvent::Started {
+            session: "s".into(),
+            model: None,
+        });
+        c.person("and then this");
+        c.ended("Claude Code stopped: gone. Your next message starts it again.");
+        assert!(!c.working);
+        assert!(
+            !c.rows
+                .iter()
+                .any(|r| matches!(r, Row::Person { queued: true, .. }))
+        );
+        c.person("again");
+        c.apply(ChatEvent::Started {
+            session: "s".into(),
+            model: None,
+        });
+        c.apply(ChatEvent::TurnEnded {
+            ms: None,
+            cost_usd: None,
+            error: None,
+        });
+        assert!(!c.working, "the lost message waits for no turn");
+    }
+
+    #[test]
+    fn each_end_says_its_own_turns_cost_from_the_sessions_running_total() {
+        let c = turn(include_str!("../tests/fixtures/claude-queued.jsonl"));
+        let costs: Vec<f64> = c
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                Row::End { cost_usd, .. } => *cost_usd,
+                _ => None,
+            })
+            .collect();
+        // The stream says 0.0259058, then 0.0372116 for the whole process.
+        assert_eq!(costs.len(), 2);
+        assert!(
+            (costs[0] - 0.0259058).abs() < 1e-9 && (costs[1] - 0.0113058).abs() < 1e-9,
+            "{costs:?}"
+        );
+        assert!((c.cost() - 0.0372116).abs() < 1e-9);
     }
 
     #[test]

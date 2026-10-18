@@ -961,6 +961,19 @@ impl Workspace {
                 text.push(format!("  wires: {}", wires.join(", ")));
             }
         }
+        let tasks: Vec<String> = self
+            .agent_task_blocks()
+            .into_iter()
+            .filter_map(|(space, id)| {
+                let space = self.space_named(&space)?;
+                let handed = space.terminal(id)?.handed.as_ref()?;
+                let uid = space.uids.get(&id)?;
+                Some(format!("t{} to {uid}{}", handed.id, agent_state(space, id)))
+            })
+            .collect();
+        if !tasks.is_empty() {
+            text.push(format!("Your tasks under way: {}", tasks.join("; ")));
+        }
         tools::tail(&text.join("\n"), tools::MAX_TEXT).to_string()
     }
 
