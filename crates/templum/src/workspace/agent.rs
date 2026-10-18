@@ -95,6 +95,9 @@ impl Workspace {
             .engine
             .as_mut()
             .map(|engine| engine.send(&claude::message(text)));
+        if let (Some(Ok(())), Some(given)) = (&sent, &mut self.templum_agent.resuming) {
+            given.push(text.to_string());
+        }
         if let Some(Err(e)) = sent {
             self.kill_engine();
             let why = format!("Claude Code stopped: {e}. Your next message starts it again.");
@@ -202,6 +205,7 @@ impl Workspace {
         let engine =
             Engine::start(&launch, lines).map_err(|e| format!("Claude Code didn't start: {e}"))?;
         let agent = &mut self.templum_agent;
+        agent.resuming = matches!(options.session, Session::Resume(_)).then(Vec::new);
         agent.secret = secret;
         agent.engine = Some(engine);
         agent.engine_gen += 1;
@@ -256,7 +260,14 @@ impl Workspace {
                 for event in claude::parse(&line) {
                     let agent = &mut self.templum_agent;
                     let ended = matches!(event, ChatEvent::TurnEnded { .. });
+                    let started = matches!(event, ChatEvent::Started { .. });
                     match event {
+                        ChatEvent::TurnEnded {
+                            error: Some(ref e), ..
+                        } if agent.resuming.is_some() && claude::session_gone(e) => {
+                            self.new_session(cx);
+                            break;
+                        }
                         // The interrupt's end isn't a failure: the person stopped it.
                         ChatEvent::TurnEnded { ms, cost_usd, .. } if agent.stopping => {
                             let end = ChatEvent::TurnEnded {
@@ -269,6 +280,9 @@ impl Workspace {
                             agent.stopping = false;
                         }
                         event => agent.conversation.apply(event),
+                    }
+                    if started || ended {
+                        agent.resuming = None;
                     }
                     agent.unread |= !agent.open;
                     if ended {
@@ -300,6 +314,22 @@ impl Workspace {
             }
         }
         cx.notify();
+    }
+
+    /// The session it resumed is gone (Claude Code deletes old ones): the engine starts on a new
+    /// one and is given again what the old one never took.
+    fn new_session(&mut self, cx: &mut Context<Self>) {
+        let given = self.templum_agent.resuming.take().unwrap_or_default();
+        self.kill_engine();
+        let conversation = &mut self.templum_agent.conversation;
+        conversation.session = None;
+        // The new session's running total starts again.
+        conversation.spent = 0.0;
+        conversation.note("The old session is gone; a new one started.");
+        for text in given {
+            self.tell_engine(&text, cx);
+        }
+        self.save_conversation();
     }
 
     /// Ends the engine's process, if one runs: its lines from then on are dropped.

@@ -315,6 +315,11 @@ Each stdout line is one JSON object. Templum reads these and ignores every other
   `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"…"}]}}` and a newline.
 - **Between turns** the process stays up; each message is one such line. **The next start** (after Stop, a crash, a
   settings change or a restart of Templum) uses `--resume <uuid>`.
+- **The session is gone** (Claude Code deletes sessions older than `cleanupPeriodDays`, 30 by default): a resumed
+  start prints no `init`, then a `result` whose `errors` says "No conversation found with session ID: …", and exits.
+  Templum forgets the session, notes "The old session is gone; a new one started.", starts with `--session-id` and a
+  new UUID and gives it again the messages the old start was given. A failure row says a failed result's `errors[0]`,
+  else its `result`.
 - **Stop** sends Claude Code's interrupt request ([Checked](#claude-code-batch-1)): the turn ends, the process stays,
   and the turn's end is "Stopped by you." rather than a failure; what waits for approval is denied. When the process
   doesn't end the turn within 2 s, Templum ends the process (on Unix SIGTERM, then a kill after 2 s; on Windows a kill),

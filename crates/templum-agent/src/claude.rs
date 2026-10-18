@@ -68,7 +68,11 @@ pub fn args(o: &Options) -> Vec<String> {
     }
     a.extend(["--tools".into(), "Read,Glob,Grep".into()]);
     let home = std::env::home_dir();
-    for dir in o.add_dirs.iter().filter_map(|d| readable(d, home.as_deref())) {
+    for dir in o
+        .add_dirs
+        .iter()
+        .filter_map(|d| readable(d, home.as_deref()))
+    {
         a.extend(["--add-dir".into(), dir.to_string_lossy().into_owned()]);
     }
     a.extend([
@@ -136,6 +140,12 @@ pub fn message(text: &str) -> String {
     format!("{line}\n")
 }
 
+/// Whether a failed turn's error says the session it resumes is gone: Claude Code deletes
+/// sessions older than `cleanupPeriodDays` (30 by default).
+pub fn session_gone(error: &str) -> bool {
+    error.starts_with("No conversation found with session ID")
+}
+
 /// The prefix Claude Code gives the control server's tools.
 const PREFIX: &str = "mcp__templum-control__";
 
@@ -194,8 +204,9 @@ pub fn parse(line: &str) -> Vec<ChatEvent> {
         }
         Some("result") => {
             let error = (line["is_error"] == true).then(|| {
-                line["result"]
+                line["errors"][0]
                     .as_str()
+                    .or(line["result"].as_str())
                     .or(line["subtype"].as_str())
                     .unwrap_or("error")
                     .to_owned()
@@ -406,7 +417,10 @@ mod tests {
         let project = home.join("project");
         std::fs::create_dir_all(&project).unwrap();
         let home = Some(home.as_path());
-        assert_eq!(readable(&project, home), Some(project.canonicalize().unwrap()));
+        assert_eq!(
+            readable(&project, home),
+            Some(project.canonicalize().unwrap())
+        );
         let elsewhere = tempfile::tempdir().unwrap();
         assert!(readable(elsewhere.path(), home).is_some());
         for wide in [
@@ -471,6 +485,19 @@ mod tests {
                 error: Some("Overloaded".into())
             }]
         );
+        // Claude Code 2.1.286, `--resume` of a session it deleted: no init, then this, exit 1.
+        assert_eq!(
+            parse(
+                r#"{"type":"result","subtype":"error_during_execution","duration_ms":0,"is_error":true,"num_turns":0,"session_id":"3f1e","total_cost_usd":0,"errors":["No conversation found with session ID: 3f1e"]}"#
+            ),
+            vec![ChatEvent::TurnEnded {
+                ms: Some(0),
+                cost_usd: Some(0.0),
+                error: Some("No conversation found with session ID: 3f1e".into())
+            }]
+        );
+        assert!(session_gone("No conversation found with session ID: 3f1e"));
+        assert!(!session_gone("Overloaded"));
         assert_eq!(tool_name("mcp__templum-control__add_block"), "add_block");
         assert_eq!(tool_name("Read"), "Read");
     }

@@ -54,6 +54,9 @@ pub(crate) struct TemplumAgent {
     pub restart: bool,
     /// The model the engine said it runs on.
     pub model: Option<String>,
+    /// This start resumes a session and no turn has started in it yet: the messages it was
+    /// given, for a new session when that one is gone.
+    pub resuming: Option<Vec<String>>,
     /// The pill's field, made the first time it takes the keyboard.
     pub input: Option<Entity<TextareaState>>,
     _enter: Option<Subscription>,
@@ -103,6 +106,7 @@ impl Default for TemplumAgent {
             stopping: false,
             restart: false,
             model: None,
+            resuming: None,
             input: None,
             _enter: None,
             back: None,

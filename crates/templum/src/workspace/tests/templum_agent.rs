@@ -1080,7 +1080,7 @@ fn send_keys_shows_what_the_agent_asks(cx: &mut TestAppContext) {
 #[ignore = "the fake engine the Templum Agent's tests start"]
 fn fake_engine() {
     if let Ok(script) = std::env::var(::templum_agent::fake::VAR) {
-        let script = std::fs::read_to_string(script).unwrap();
+        let script = ::templum_agent::fake::this_start(std::path::Path::new(&script));
         ::templum_agent::fake::run(&script, std::io::stdin().lock(), std::io::stdout().lock());
     }
 }
@@ -1162,6 +1162,50 @@ fn a_message_starts_the_engine_and_its_turn_shows(cx: &mut TestAppContext) {
             "{words:?}"
         );
         assert!(dir.path().join("agent").join("mcp.json").exists());
+    });
+}
+
+#[gpui_kit::test]
+fn a_session_claude_code_deleted_gives_way_to_a_new_one(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    // Claude Code 2.1.286 on `--resume` of a session it deleted: no init, this result, exit 1.
+    let gone = r#"{"type":"result","subtype":"error_during_execution","duration_ms":0,"is_error":true,"num_turns":0,"session_id":"old-1","total_cost_usd":0,"errors":["No conversation found with session ID: old-1"]}"#;
+    let (exit, start) = (::templum_agent::fake::EXIT, ::templum_agent::fake::START);
+    let script = format!("{gone}\n{exit}\n{start}{TEXT_TURN}");
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[&script]);
+    ws.update(cx, |ws, _| {
+        ws.templum_agent.conversation.session = Some("old-1".into());
+        ws.templum_agent.conversation.spent = 2.0;
+    });
+    send(handle, &ws, cx, "hi");
+    let rows = rows_until(&ws, cx, ended);
+    assert!(
+        rows.contains(&::templum_agent::Row::Note {
+            text: "The old session is gone; a new one started.".into()
+        }),
+        "{rows:#?}"
+    );
+    assert!(
+        !rows
+            .iter()
+            .any(|r| matches!(r, ::templum_agent::Row::Failure { .. })),
+        "{rows:#?}"
+    );
+    ws.read_with(cx, |ws, _| {
+        let agent = &ws.templum_agent;
+        assert_eq!(agent.launched.len(), 2);
+        assert!(
+            agent.launched[0]
+                .windows(2)
+                .any(|w| w == ["--resume", "old-1"])
+        );
+        assert!(agent.launched[1].iter().any(|w| w == "--session-id"));
+        assert_eq!(agent.sent, ["hi", "hi"], "the new one is given the message");
+        assert_ne!(agent.conversation.session.as_deref(), Some("old-1"));
+        assert!(
+            agent.conversation.cost() > 0.0,
+            "its turn's cost counts from 0"
+        );
     });
 }
 

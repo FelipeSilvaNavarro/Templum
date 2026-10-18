@@ -12,6 +12,21 @@ pub const VAR: &str = "TEMPLUM_FAKE_ENGINE";
 /// A script's line that ends the fake engine where it is, as a crash would.
 pub const EXIT: &str = "<exit>";
 
+/// The line between a script's starts: the fake engine's nth start runs its nth part, the last
+/// one again after. A script without it runs whole at every start.
+pub const START: &str = "===\n";
+
+/// The part of the script at `path` this start of the fake engine runs; its starts are counted
+/// in `<path>.starts`.
+pub fn this_start(path: &Path) -> String {
+    let script = std::fs::read_to_string(path).expect("the fake engine's script");
+    let count = path.with_extension("starts");
+    let n = std::fs::read(&count).map_or(0, |c| c.len());
+    std::fs::write(&count, vec![b'.'; n + 1]).expect("the starts' count");
+    let parts: Vec<&str> = script.split(START).collect();
+    parts[n.min(parts.len() - 1)].to_owned()
+}
+
 /// For each line read, writes the next turn of `script` (turns are separated by a line `---`),
 /// a line at a time; after the last turn, reads until the end. A line [`EXIT`] ends it at once.
 pub fn run(script: &str, input: impl BufRead, mut output: impl Write) {
@@ -61,5 +76,14 @@ mod tests {
         let mut out = Vec::new();
         super::run("a\n<exit>\nb\n---\nc\n", &b"x\ny\n"[..], &mut out);
         assert_eq!(String::from_utf8(out).unwrap(), "a\n", "it ends at <exit>");
+    }
+
+    #[test]
+    fn each_start_runs_the_next_part() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("turns.jsonl");
+        std::fs::write(&script, "a\n===\nb\n").unwrap();
+        let starts: Vec<String> = (0..3).map(|_| super::this_start(&script)).collect();
+        assert_eq!(starts, ["a\n", "b\n", "b\n"]);
     }
 }
