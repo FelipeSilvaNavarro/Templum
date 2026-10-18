@@ -1091,3 +1091,28 @@ those of `development` at de530a6.
   one by one, a busy one after "Close the terminal?", and the next start shows an empty canvas. Ctrl+Z brings them
   back, but few know. Fix, a product choice: ask before closing the last terminal, or leave nothing focused after a
   close by shortcut.
+
+Left by the review of its fixes; line numbers are those of `development` at 94edde0.
+
+- [ ] **A second Templum still shares `config.toml`.** It keeps nothing of the data folder, but its config folder is
+  the first one's (`crates/templum/src/main.rs:92`), as with `--bench`: a setting changed in either window is written
+  by both, and the last to save wins, so a change made in the first can be undone by the second closing. Fix: the
+  second (and `--bench`) reads `config.toml` but never writes it, with a notice when a setting is changed there.
+- [ ] **Moving a "The shell ended" block to another workspace stops that one saving too.** `keep_dead_starts`
+  (`crates/templum/src/workspace/persist.rs:144`) freezes every workspace that holds a restored terminal whose shell
+  ended as it started, wherever it is now: moved there, it freezes a workspace whose own terminals all started, and
+  the notice "Some terminals couldn't start…" shows again. Fix: clear `Pane::restored` when a block moves to another
+  workspace (`move_blocks`, `spaces.rs:298`), or remember the workspace it was restored in.
+- [ ] **An agent quit right after its resume comes back at the next start.** `resuming`
+  (`crates/templum/src/workspace/mod.rs:692`) is let go only by a snapshot that finds an agent in the block: one
+  quit within the 5 seconds before the next snapshot is never seen, so for a minute (`STARTS_WITHIN`) the snapshots
+  still save it, and quitting Templum then resumes it again at the next start. Fix: let go of it also when the
+  shell's integration reports a command that finished (`Status::finished` grew) since the line was typed.
+- [ ] **The test of a shell that ends as it starts runs only on Unix.**
+  `a_restored_shell_that_ends_at_once_leaves_the_saved_canvas_alone`
+  (`crates/templum/src/workspace/tests/persistence.rs:321`) and its siblings use `sh -c "exit 1"`, so Windows, where
+  ConPTY reports the exit its own way, isn't checked. Fix: a `cmd /c exit 1` variant under `#[cfg(windows)]`.
+- [ ] **The second-Templum wiring has no test.** `main` (`crates/templum/src/main.rs:94-106`) turns a held lock into
+  a Templum without a data folder and its notice; only `session::lock` is tested. A change there that, say, keeps
+  the data folder on `WouldBlock` would pass CI. Fix: move the choice into a function of `session` (the lock's result
+  in, the data folder and whether to warn out) and test it.
