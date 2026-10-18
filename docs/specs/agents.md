@@ -38,9 +38,10 @@ conversation, so those agents start a new session on restore.
 - Claude Code, Codex and Qwen Code: the id is read from their files while saving
   ([persistence.md](persistence.md#agents); Qwen keeps `~/.qwen/sessions/<pid>.json` as Claude Code does), and
   restored with `claude --resume <id>`, `codex resume <id>`, `qwen --resume <id>`.
-- Gemini CLI, Grok Build and Pi: opened from the menu, they get `--session-id <a new UUID>`, and the id is read back
-  from the process's arguments (`--session-id` or the resume flag). Restored with `gemini --resume <id>`, `grok
-  --resume <id>`, `pi --session-id <id>` (Pi's opens it, or starts it when it has no message yet). Gemini deletes a
+- Gemini CLI, Grok Build, Pi and GitHub Copilot CLI (card 44): opened from the menu, they get `--session-id <a new
+  UUID>`, and the id is read back from the process's arguments (`--session-id` or the resume flag). Restored with
+  `gemini --resume <id>`, `grok --resume <id>`, `pi --session-id <id>`, `copilot --session-id <id>` (Pi's and
+  Copilot's open it, or start it when it has no message yet). Gemini deletes a
   session with no message when it exits, and can't resume it: Templum then types `gemini --session-id <id>` again.
 
 The command in the table is for a block whose session isn't known (an agent started by hand, a canvas from before),
@@ -51,8 +52,8 @@ or when the user changed the resume command.
 | Claude Code | `claude` | `claude --continue` | `curl -fsSL https://claude.ai/install.sh \| bash` | `claude`; `@anthropic-ai/claude-code` |
 | Codex | `codex` | `codex resume --last` | `npm install -g @openai/codex` | `codex`; `@openai/codex` |
 | Gemini CLI | `gemini` | `gemini --resume` | `npm install -g @google/gemini-cli` | `gemini`; `@google/gemini-cli` |
-| GitHub Copilot CLI | `copilot` | new session | `curl -fsSL https://gh.io/copilot-install \| bash` | `copilot`; `@github/copilot` |
-| Cursor CLI | `cursor-agent` | new session | `curl https://cursor.com/install -fsS \| bash` | `cursor-agent` (its `agent` alias is too common a name) |
+| GitHub Copilot CLI | `copilot` | new session; by its id from card 44 (its `--continue` falls back to any folder's latest) | `curl -fsSL https://gh.io/copilot-install \| bash` | `copilot`; `@github/copilot` |
+| Cursor CLI | `cursor-agent` | `cursor-agent --continue` from card 44 (its chats are kept per folder) | `curl https://cursor.com/install -fsS \| bash` | `cursor-agent` (its `agent` alias is too common a name) |
 | OpenCode | `opencode` | `opencode --continue` | `curl -fsSL https://opencode.ai/install \| bash` | `opencode`; `opencode-ai` |
 | Amp | `amp` | `amp threads continue --last` | `curl -fsSL https://ampcode.com/install.sh \| bash` | `amp`; `@sourcegraph/amp` |
 | Kiro CLI | `kiro-cli chat` | `kiro-cli chat --resume` | `curl -fsSL https://cli.kiro.dev/install \| bash` | `kiro-cli` |
@@ -62,7 +63,7 @@ or when the user changed the resume command.
 | Mistral Vibe | `vibe` | `vibe --continue` | `curl -LsSf https://mistral.ai/vibe/install.sh \| bash` | `vibe` (a Python script) |
 | Aider | `aider` | `aider --restore-chat-history` | `curl -LsSf https://aider.chat/install.sh \| sh` | `aider` (a Python script) |
 | Goose | `goose session` | new session | `download_cli.sh` from the goose releases | `goose` |
-| Crush | `crush` | new session | `npm install -g @charmland/crush` | `crush`; `@charmland/crush` |
+| Crush | `crush` | `crush --continue` from card 44 (the project's own `.crush` database) | `npm install -g @charmland/crush` | `crush`; `@charmland/crush` |
 | Droid | `droid` | new session | `curl -fsSL https://app.factory.ai/cli \| sh` | `droid` |
 | Auggie | `auggie` | new session | `npm install -g @augmentcode/auggie` | `auggie`; `@augmentcode/auggie` |
 | Kilo Code | `kilo` | `kilo --continue` | `npm install -g @kilocode/cli` | `kilo`, `kilocode`, `.kilo`; `@kilocode/cli` |
@@ -77,6 +78,34 @@ Interpreter, Qodo Command. Each is one more row in `templum-terminal/src/agent.r
 - its process or script name: the program, a process title the agent sets, or a native child an npm wrapper starts;
 - for a `node` or `bun` process, a piece of its npm package's path in the script argument;
 - for a `node` or `bun` process, an npm bin link with no extension, by its name.
+
+## A model and an effort
+
+`spawn_agent`'s `model` and `effort` become words after the agent's command (`launch_args`), on a restore and Ctrl+Z
+too ([connections.md](connections.md#spawning)). Read from each agent's `--help` (installed) or its reference (not
+installed) on 2026-10-18; card 44 adds every row but the first three, each with the long `--model` every one of them
+takes (`-m` too, for most). An agent not listed takes neither, and one with no effort list takes only a model. Where
+the audit's gap 2 differs (Droid's effort), this table wins.
+
+| Agent | Model | Effort | Efforts |
+|---|---|---|---|
+| Claude Code | `--model` | `--effort` | low, medium, high, xhigh, max |
+| Codex | `-m` | `-c model_reasoning_effort=` | low, medium, high, xhigh, max, ultra |
+| Gemini CLI | `-m` | — | |
+| GitHub Copilot CLI | `--model` | `--reasoning-effort` | none, minimal, low, medium, high, xhigh, max |
+| Grok Build | `--model` | `--reasoning-effort` | none, minimal, low, medium, high, xhigh, max |
+| Pi | `--model` | `--thinking` | off, minimal, low, medium, high, xhigh, max |
+| Kiro CLI | `--model` | `--effort` | low, medium, high, xhigh, max |
+| Cline | `--model` | `--thinking` | none, low, medium, high, xhigh |
+| Aider | `--model` | `--reasoning-effort` | low, medium, high (it passes any word to the model's API: the three every reasoning model takes) |
+| OpenCode, Kilo Code | `--model` (`provider/model`) | — (only `run --variant`, not the TUI) | |
+| Cursor CLI | `--model` | — (written in the model, `[effort=high]`, which a model Templum types can't hold) | |
+| Qwen Code | `--model` | — (only its settings, `model.reasoningEffort`) | |
+| Kimi Code | `--model` | — (`--thinking` is on or off) | |
+| Droid, Auggie | `--model` | — (a TUI's effort isn't confirmed) | |
+
+Left out: Amp (`--mode` only), Goose (`GOOSE_MODEL`, a variable), Crush (its TUI takes no model), Mistral Vibe
+(unconfirmed).
 
 ## Opening one
 

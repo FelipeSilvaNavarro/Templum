@@ -1155,6 +1155,16 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   whether Codex's `request_user_input` or Gemini CLI's `ask_user` fires a hook Templum hears was never tried, so a
   person may see one of them asking with no yellow dot. Fix: try each by hand; map the hook that tells, as
   `AskUserQuestion` is mapped.
+- [ ] **A `qwen -p` that a Qwen Code in Templum runs speaks for its block.** Left by the plan of card 44
+  (`docs/plans/2026-10-18-agent-parity.md`, task 11): Qwen Code's hooks come from `QWEN_CODE_SYSTEM_SETTINGS_PATH`,
+  which every program it starts inherits, so a `qwen -p` its shell tool runs sends its own `Stop`, and a task handed
+  to the block ends with that run's answer. OpenCode's and Pi's plugins avoid it with `TEMPLUM_HOOKED`; a hook command
+  can't. Fix: the pane follows the session id of the first hook that speaks for it and drops another session's
+  events, a new session counting only from a `SessionStart` that isn't `compact`.
+- [ ] **Gemini CLI's notice about its extension comes back at every run.** Left by the plan of card 44 (task 3,
+  `crates/templum/src/workspace/blocks.rs`): a person who doesn't want Templum's extension sees "Gemini CLI has no
+  Templum tools or status dot" the first time they open a Gemini CLI after each start of Templum. Fix: a "Don't
+  ask again" on it, kept in `config.toml` (`[connections] gemini_notice = false`).
 
 ## Keeping the canvas
 

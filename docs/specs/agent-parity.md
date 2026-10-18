@@ -1,7 +1,10 @@
 # Agent parity: what each agent gets of Templum
 
 - **Date:** 2026-10-18
-- **Status:** Audit (kanban card 44, "Melhorias task: Integrar MCP claude no terminal também"); no code changed
+- **Status:** Audit (kanban card 44, "Melhorias task: Integrar MCP claude no terminal também"); the design that
+  closes its gaps is [connections.md](connections.md#every-agent-that-can-take-it), planned in
+  [docs/plans/2026-10-18-agent-parity.md](../plans/2026-10-18-agent-parity.md); [After card 44](#after-card-44) says
+  what closes and what stays
 - **Builds on:** [agents.md](agents.md) (the agents), [connections.md](connections.md) (the server, the hooks, what
   is typed, agents typed in a terminal), [usage.md](usage.md), [ask-user.md](ask-user.md) and
   [persistence.md](persistence.md#agents)
@@ -123,23 +126,23 @@ OpenCode 1.19.0, Grok Build 1.0.50, Crush 0.98.1, Pi 0.85.1) or its docs; "uncon
 
 | Agent | Restore today | A session id Templum could use | Templum's server for one session | Hooks or events for one session | Model, effort | Its permission prompt, heard |
 |---|---|---|---|---|---|---|
-| GitHub Copilot CLI | new session | `--session-id <uuid>` starts or resumes one | `--additional-mcp-config @<file>` (its servers' `timeout` is 30 s unless set; it reads a server's instructions only with `--allow-all-mcp-server-instructions` or an allowlist) | a plugin's hooks, `--plugin-dir` | `--model`, `--reasoning-effort` (`none` to `max`) | `permissionRequest`; `notification` `permission_prompt` |
-| Cursor CLI | new session | `--resume <chatId>`, `--continue` | a plugin, `--plugin-dir`, with `--approve-mcps` | the plugin's `hooks.json` (`sessionStart`, `beforeSubmitPrompt`, `stop`…) | `--model` (an effort is written in the model, `[effort=high]`, which Templum's model rule refuses) | none (a `before*` hook can only ask) |
-| OpenCode | the folder's latest | `-s <id>` (it can't be chosen: read from its database) | `OPENCODE_CONFIG_CONTENT`, a variable merged with the person's config (its server `timeout` must be set: without it a tool call falls back to the MCP SDK's, about 60 s, unconfirmed) | JS plugins named in that variable: `session.idle`, `session.status`, `permission.asked` | `-m provider/model`; effort only for `opencode run` | `permission.asked` |
+| GitHub Copilot CLI | new session | `--session-id <uuid>` starts or resumes one; `--continue` falls back to any folder's latest | `--additional-mcp-config @<file>` (its servers get only `PATH` and the variables their `env` names, `${VAR}` expanded; `timeout` 30 s unless set; it reads a server's instructions up front only with `--allow-all-mcp-server-instructions` or its own allowlist) | a plugin's hooks, `--plugin-dir`; a hook's payload doesn't name its event; `agentStop` carries no answer, only `transcriptPath` | `--model`, `--reasoning-effort` (`none` to `max`) | `notification` `permission_prompt` (`permissionRequest` comes before its own rules, for calls they allow too) |
+| Cursor CLI | new session | `--resume <chatId>`, `--continue`, both within the folder's chats (re-checked: its chats are kept per folder); `create-chat` prints a new chat's id; a hidden `--new-session-id <uuid>` | a plugin, `--plugin-dir`, whose manifest declares `mcpServers` (a run unconfirmed), with `--approve-mcps` | the plugin's hooks (`sessionStart`, `beforeSubmitPrompt`, `stop`…); it also runs Claude Code's hooks from `~/.claude/settings.json` and a project's `.claude/settings.json` | `--model` (an effort is written in the model, `[effort=high]`, which Templum's model rule refuses) | none (a `before*` hook can only ask) |
+| OpenCode | the folder's latest | `-s <id>`, an existing session only (a new one's can't be chosen) | `OPENCODE_CONFIG_CONTENT`, merged last and deeply with the person's config, `plugin` lists adding up (re-checked with 1.19.0 under `opencode serve`); a server's `timeout` covers its start and every call, else the MCP SDK's 60 s | JS plugins named in that variable (a `file://` path, no install): `session.idle`, `session.status`, `permission.asked`, `question.asked`, the `chat.message` hook | `-m provider/model`; effort only for `opencode run --variant` | `permission.asked` |
 | Amp | the folder's latest | `amp threads continue <T-id>` | `--mcp-config '<json>'` | TS plugins (`agent.start`, `agent.end`, `tool.call`), installed with `amp plugins add`; per session unconfirmed | `--mode` only | — (Amp asks before no tool) |
 | Kiro CLI | the folder's latest | `--resume-id <id>` | an agent's config (`--agent <name>`, a file under `~/.kiro/agents`), or `KIRO_HOME`, which moves its login too | the same agent config (`SessionStart`, `UserPromptSubmit`, `Stop`, `Pre`/`PostToolUse`) | `--model`, `--effort` | none |
-| Qwen Code | its own session, from its files | `--session-id`, `--resume <id>` | `--mcp-config <json\|file>` | Claude Code's hooks, but only in its settings files (no `--settings`); its extensions take Gemini CLI's | `-m`; effort only in its settings | `PermissionRequest`; `Notification` `permission_prompt` |
+| Qwen Code | its own session, from its files | `--session-id` (a new session only), `--resume <id>` | `--mcp-config <json\|file>`, never asked about (re-checked in its 0.25.2 source) | Claude Code's hooks, but only in its settings files (no `--settings`); `QWEN_CODE_SYSTEM_SETTINGS_PATH` moves its system file, with no check of its owner; its extensions (Gemini CLI's too) serve every Qwen Code once linked | `-m`; effort only in its settings | `PermissionRequest`; `Notification` `permission_prompt` |
 | Grok Build | its own session (`--session-id`) | already used | none in 1.0.50's `--help` (its docs name a `--plugin-dir`); `GROK_HOME` moves its login too. It reads Claude Code's `~/.claude.json` and a project's `.mcp.json` (`grok inspect`, "Harness Compatibility") | hooks in `~/.grok/hooks/*.json` or `.claude/settings.json`, files only | `-m`, `--reasoning-effort` | unconfirmed (`Notification`) |
 | Kimi Code | the folder's latest | `-S <id>` | files only (`~/.kimi-code/mcp.json`) | `[[hooks]]` in its config, files only | `-m` | `PermissionRequest` |
 | Mistral Vibe | the folder's latest | `--resume <id>` | files only (`VIBE_HOME` moves everything) | `pre_tool`, `post_tool`, `post_agent`, files only | unconfirmed | none |
 | Aider | `--restore-chat-history` | none | impossible: no MCP | `--notifications-command` (a turn's end) only | `--model`, `--reasoning-effort` | — |
 | Goose | new session (its resume takes the newest of any folder) | unconfirmed | `goose session --with-extension "<command>"` | a plugin's hooks, no flag | `GOOSE_MODEL` (a variable) only | none |
-| Crush | new session | `-s <id>`; `-C` continues the project's latest | none: only `CRUSH_GLOBAL_CONFIG`, a variable naming its global file | `PreToolUse` only | none for its TUI (`crush run -m`) | none |
-| Droid | new session | `--resume <id>` | `--settings <path>` for one process (servers in it unconfirmed) | hooks in that file (unconfirmed); `Notification` | `-m`, `--reasoning-effort` | `Notification` `permission_prompt` |
+| Crush | new session | `-s <id>`, an existing session only; `-C` continues the latest of the project's `.crush` database (re-checked in its source) | none: only `CRUSH_GLOBAL_CONFIG`, which replaces its whole global folder | `PreToolUse` only | none for its TUI (`crush run -m`) | none |
+| Droid | new session | `--resume <id>` | `--settings <path>` for one process (servers in it unconfirmed) | hooks in that file (unconfirmed); `Notification` | `-m`; `--reasoning-effort` documented for `droid exec`, its TUI's unconfirmed | `Notification` `permission_prompt` |
 | Auggie | new session | `--resume <id>`, `--continue` | `--mcp-config <file\|json>` | a plugin's hooks, `--plugin-dir` | `--model` | `Notification` (unconfirmed) |
 | Kilo Code | the folder's latest | `--session <id>` | `KILO_CONFIG_CONTENT` (an OpenCode fork) | plugins as OpenCode's (unconfirmed) | `--model` | unconfirmed |
 | Cline | new session | `--id <id>` | `CLINE_MCP_SETTINGS_PATH`, a variable naming a servers file | `--hooks-dir <path>`; TS plugins | `-m`, `--thinking` | unconfirmed |
-| Pi | its own session (`--session-id`) | already used | impossible in 0.85.1: "No MCP" (its README); its main branch documents `pi.registerMcpServer()` from an extension, not released here | an extension, `-e <file.ts>`: `agent_start`, `agent_end`, `ui_prompt_start`, and `registerTool` | `--model`, `--thinking` | — (it has no permission prompts: its `docs/usage.md`) |
+| Pi | its own session (`--session-id`) | already used | none in 0.85.1 ("No MCP", its README); built in since 0.99 (1.3.0 released 2026-10-15): `mcp.json` files, or `pi.registerMcpServer()` from an extension for one session | an extension, `-e <file.ts>`: `session_start`, `agent_start`, `agent_end`, `tool_result`, `ui_prompt_start`, `session_shutdown`, and `registerTool` | `--model`, `--thinking` | — (it has no permission prompts: its `docs/usage.md`) |
 
 Two things the table shows beyond Templum: **Grok Build** already reads Claude Code's MCP servers and hooks from
 Claude Code's own files, which Templum never writes ([connections.md](connections.md#out-of-scope)), so that road stays
@@ -178,6 +181,45 @@ Gaps 2, 7a, 9 and 13 are also in [docs/minors.md](../minors.md#connections), as 
 **Order to do them in:** 2 and 7a now (small, direct); 1 next (Copilot CLI is the one agent that takes all of
 Claude Code's parts for one session); then 5, 6 and 3 with them; 8 and 9 for Gemini CLI; 4 alongside 1; 10 and 11
 when someone uses those agents.
+
+## After card 44
+
+What [connections.md](connections.md#every-agent-that-can-take-it) and its plan
+([docs/plans/2026-10-18-agent-parity.md](../plans/2026-10-18-agent-parity.md)) do with each gap above. The facts were
+checked again on 2026-10-18 (the installed `--help`s, Copilot CLI's bundled SDK types, OpenCode 1.19.0 under
+`opencode serve` with a probe plugin, the sources of Qwen Code 0.25.2, Crush 0.98.1, Kilo Code 7.8 and Pi 1.3.0);
+the table above carries the corrections.
+
+| # | Gap | Card 44 | Plan task |
+|---|---|---|---|
+| 1 | Copilot CLI gets nothing | **Closes**: its server, its hooks (a plugin), its instructions, its session by id, opened or typed | 4–8 |
+| 2 | `spawn_agent` refuses a model or an effort | **Closes**: a model for 13 agents, an effort for Copilot CLI, Grok Build, Pi, Kiro CLI, Cline and Aider ([agents.md](agents.md#a-model-and-an-effort), whose flags win over gap 2's) | 1 |
+| 3 | Agents without hooks look done at a dialog | **Closes for the agents card 44 connects**, through their own hooks; **stays** for the others: no generic reader of dialogs off a screen | 5, 9, 11, 12 |
+| 4 | Agents back on a new session | **Closes** for Copilot CLI (`--session-id`), Cursor CLI and Crush (`--continue`, each kept per folder); **stays** for Droid, Auggie and Cline (their ids from their files: medium) and OpenCode and Kilo Code (an id that can't be chosen) | 4 |
+| 5 | OpenCode and Kilo Code | **Closes**: `OPENCODE_CONFIG_CONTENT` and `KILO_CONFIG_CONTENT`, the server and a plugin; Kilo Code from its source only | 9, 10 |
+| 6 | Qwen Code | **Closes**, from its docs and source only (not installed here): `--mcp-config`, and hooks in a system settings file Templum moves | 11 |
+| 7 | Pi | (a) **closes**: Settings no longer names it; (b) **closes** as an extension that registers the server where Pi has MCP (0.99 and later) and reports its events everywhere | 2, 12 |
+| 8 | Gemini CLI connected only after a click | **Closes** as a notice once per run when it opens without the extension; its one-session road is still none | 3 |
+| 9 | Gemini CLI ignores the switch | **Closes** for every agent: off, the bus refuses `templum mcp` and `templum hook` | 2 |
+| 10 | Amp, Auggie, Goose, Cline, Droid take a server for one session | **Stays**: a spike each, when someone uses them | — |
+| 11 | Agents without the server aren't told about `templum` | **Stays** | — |
+| 12 | Usage for the others | **Stays** in [usage.md](usage.md#later-batches) (Copilot CLI's status line only from its settings file) | — |
+| 13 | Codex's and Gemini CLI's own questions | **Stays**, a minor | — |
+| 14 | *New:* Cursor CLI takes a plugin with servers and hooks (`--plugin-dir`, its manifest's `mcpServers` and `hooks`) | **Stays**: not run once, and not among the card's agents; the next one to connect | — |
+
+**What a client can't do, left out** (each cell of the matrix above says it too):
+
+- **An effort** for OpenCode and Kilo Code (only `run --variant`), Qwen Code (its settings only), Cursor CLI (in the
+  model's name), Kimi Code (`--thinking` is on or off), Gemini CLI (no flag); Droid's and Auggie's are unconfirmed.
+- **A session id Templum picks** for OpenCode, Kilo Code and Crush (`-s` takes an existing one); Cursor's
+  `--new-session-id` is hidden from its help, so may go.
+- **Copilot CLI's status line** for one session (its `settings.json` only), and an answer in its `agentStop` (read
+  from its transcript instead).
+- **A server for Pi 0.85.1** (no MCP before 0.99); permission prompts in Pi (it has none).
+- **Crush:** no server for one session (`CRUSH_GLOBAL_CONFIG` replaces its whole global folder), no model for its TUI,
+  `PreToolUse` its only hook.
+- **Hooks for one Qwen Code session without a variable:** it has no `--settings`; and none at all when its own system
+  settings file exists, which Templum's would hide.
 
 ## What doesn't need fixing
 

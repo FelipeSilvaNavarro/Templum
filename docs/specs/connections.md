@@ -1,7 +1,8 @@
 # Connections: blocks that talk to each other
 
 - **Date:** 2026-10-15
-- **Status:** Batches 1 to 8 and [agents typed in a terminal](#agents-typed-in-a-terminal) implemented
+- **Status:** Batches 1 to 8 and [agents typed in a terminal](#agents-typed-in-a-terminal) implemented;
+  [every agent that can take it](#every-agent-that-can-take-it) planned (kanban card 44)
 - **Builds on:** [agents.md](agents.md) (opening agents), [usage.md](usage.md) (the `--settings` Templum types for
   Claude Code), [shell-integration.md](shell-integration.md) (command marks, notifications),
   [persistence.md](persistence.md), [kanban.md](kanban.md) and [cockpit.md](cockpit.md) (notes, the editor, drawing)
@@ -37,10 +38,14 @@ agents without MCP, scripts and hooks.
 10. A `claude` or `codex` a person types in a Templum terminal (bash, zsh, fish, PowerShell) gets what the ones
     Templum opens get, without Templum writing anything outside its own folder
     ([Agents typed in a terminal](#agents-typed-in-a-terminal)).
+11. GitHub Copilot CLI, OpenCode, Kilo Code, Qwen Code and Pi, opened by Templum or typed in its terminals, get its
+    server (Pi where it has MCP) and its hooks for that session, and Gemini CLI is asked for its extension once
+    ([Every agent that can take it](#every-agent-that-can-take-it), card 44).
 
 ## Out of scope
 
-- Editing an agent's own settings files (`~/.claude/settings.json`, `~/.codex/config.toml`, Gemini's): Templum
+- Editing an agent's own settings files (`~/.claude/settings.json`, `~/.codex/config.toml`, Gemini's, and from
+  card 44 `~/.copilot`, OpenCode's, Kilo Code's, Qwen Code's and Pi's): Templum
   passes everything on the command line it types, for that session only. Gemini CLI gets an extension instead, below,
   only after the person agrees, and never through its settings file.
 - Wires between workspaces, and wires to drawings.
@@ -478,6 +483,7 @@ Templum is gone.
 | Claude Code | hooks in the `--settings` Templum types (JSON on stdin) | started, working, done, waiting for the person, ended: the table below |
 | Codex | hooks in the `-c` flags Templum types (JSON on stdin), once its person trusted them (batch 7; before, `notify`: done with its last answer) | the table below |
 | Gemini CLI | the hooks of Templum's extension (below), JSON on stdin | `SessionStart` started, `BeforeAgent` took a prompt: working, `AfterTool` working again after a permission, `AfterAgent` done with `prompt_response`, `Notification` (`ToolPermission`) waiting for the person, `SessionEnd` ended |
+| Copilot CLI, OpenCode, Kilo Code, Qwen Code, Pi | from card 44: a plugin's hooks, a JS plugin, a system settings file, an extension ([Every agent that can take it](#every-agent-that-can-take-it)) | each one's table there |
 | Others | — | none: their screen ([An agent's state](#an-agents-state)), and [Delegating](#delegating) point 6 |
 
 Claude Code's hooks:
@@ -597,7 +603,9 @@ one installed by an older Templum gets this one's.
 by hand or not, whatever `[connections]` says; outside Templum the server shows as disconnected and the hooks do
 nothing. Gemini CLI starts no stdio server in a folder it doesn't trust; it asks when it first opens one.
 
-**Others** (Grok Build, Pi, OpenCode, the person's own): **Settings ▸ Connections** shows `<data>/bin/templum mcp`
+**Others** (Grok Build, Cursor CLI, Kimi Code, the person's own; from card 44 Copilot CLI, OpenCode, Kilo Code, Qwen
+Code and Pi get theirs as [Every agent that can take it](#every-agent-that-can-take-it) says): **Settings ▸ Connections**
+shows `<data>/bin/templum mcp`
 with a Copy button. They know their block anyway: the server inherits `TEMPLUM_TERMINAL`.
 
 **Templum's program** is the AppImage when `$APPIMAGE` is set (its mounted executable goes away when it quits),
@@ -668,7 +676,8 @@ front of the person's:
 - An agent's own shell tool runs a non-interactive shell (Claude Code's snapshot of the shell reads the person's own
   startup files, not Templum's), so a `claude -p` an agent runs is never taken for the block's agent.
 - Gemini CLI: nothing new. Once its [extension](#what-templum-types-into-each-agent) is installed, every Gemini CLI
-  has the server and the hooks, typed by hand or not. Grok Build, Pi and the others: unchanged.
+  has the server and the hooks, typed by hand or not. Copilot CLI, OpenCode, Kilo Code, Qwen Code and Pi: [Every
+  agent that can take it](#every-agent-that-can-take-it) (card 44). Grok Build and the others: unchanged.
 
 **The block's identity.** Nothing new: the 5-second snapshot finds a typed agent (`agent_of`), which gives its name in
 `list_blocks`, Shift+Enter, the question before closing, delegating to it, and its resume on restore, typed with
@@ -683,7 +692,8 @@ opens, or that are typed in its terminals, get its MCP server and hooks". Off, a
 is empty, and its `TEMPLUM_CLAUDE_ARGS` holds only `--settings` and its file when the status line asks for it
 (`usage.claude_limits`), as what is typed. A terminal keeps the variables it started with: the switch reaches new terminals, as
 `shell.integration` does. No switch of its own: nothing outside Templum changes, and `command claude` runs the bare
-agent.
+agent. (Card 44 makes these words name every agent and the switch reach agents already running: [The switch reaches
+every agent](#the-switch-reaches-every-agent).)
 
 **Calls made for card 42** (the person was away; each can be changed): on by default under the existing switch, no
 switch of its own; functions in the shell integration, nothing on PATH and nothing in the agents' files; Templum's
@@ -712,6 +722,280 @@ its extension; a typed agent's identity left to the snapshot.
 - **Seeing the agent once it runs:** Templum already does (identity, state from the screen); a running agent can't be
   given an MCP server or hooks, and restarting it with them would cut its turn.
 
+## Every agent that can take it
+
+*Planned (kanban card 44): [docs/plans/2026-10-18-agent-parity.md](../plans/2026-10-18-agent-parity.md). The
+audit it closes: [agent-parity.md](agent-parity.md).*
+
+Card 42 gave a `claude` or `codex` typed by hand what the ones Templum opens get. Card 44 gives the same to every
+other agent whose own command line, environment or plugins take it **for one session**, opened from the menu,
+`spawn_agent`, a restore, or typed by hand, with the mechanisms card 42 built (`typed`, `Workspace::agent_env`, the
+shells' functions). Nothing is written outside Templum's data folder, as for Claude Code and Codex.
+
+| Agent | Templum's server | Hooks (the status dot, a task's end) | Typed by hand | Checked |
+|---|---|---|---|---|
+| GitHub Copilot CLI | `--additional-mcp-config=@<data>/copilot/mcp.json` | a plugin, `--plugin-dir=<data>/copilot/plugin` | `copilot` | 1.0.95's `--help`, its SDK's types; a run with a sign-in is the plan's first spike |
+| OpenCode | `OPENCODE_CONFIG_CONTENT`, merged with the person's config | a JS plugin named in the same variable | `opencode` | 1.19.0, `opencode serve` with a probe plugin; the TUI by hand in the plan |
+| Kilo Code | `KILO_CONFIG_CONTENT` (an OpenCode fork) | the same plugin | `kilo` | from its source (7.8.x); not installed here |
+| Qwen Code | `--mcp-config=<data>/qwen/mcp.json` | its system settings file moved to `<data>/qwen/settings.json` (`QWEN_CODE_SYSTEM_SETTINGS_PATH`) | `qwen` | from its docs and source (0.25.2); not installed here |
+| Pi | an extension, `-e <data>/pi/templum.ts`, that registers the server when Pi has MCP (0.99 and later) | the same extension's events | `pi` | 0.85.1 (no MCP: its events only); the server from 1.3.0's docs |
+
+Gemini CLI keeps its extension; it is asked for once ([below](#gemini-cli-without-its-extension)). The others stay as
+they are: [agent-parity.md](agent-parity.md#after-card-44) says why for each.
+
+**Common rules.** The same as for Claude Code and Codex: only with `[connections]` on, a bus, a data folder, not
+under WSL, and every path typeable (`typed_path`); otherwise the agent starts without them. Copilot's, Qwen's and Pi's
+words are paths and plain flags, so they go into every shell, cmd and Windows PowerShell 5.1 included. A file is
+written only when it changed, when an agent is opened and when a terminal opens. The program these files run is
+`<data>/bin/templum` (`templum.exe` on Windows), the link Templum points at itself at each start, as Gemini CLI's
+extension names it: the same words whatever Templum's version or where it runs from (an agent that asks to trust a
+hook asks once), so they need it there (`<data>/bin` on the terminal's `PATH`, as Codex's hooks do); a path holding
+a `'` gives no connections.
+
+### GitHub Copilot CLI
+
+It takes everything for one session (checked with `copilot --help` 1.0.95 and its bundled SDK's `types.d.ts`).
+
+**Words** after its command, opened or typed (`=` keeps each one word; the last names Templum's folder, which the shell
+function looks for):
+
+```
+copilot --allow-all-mcp-server-instructions --additional-mcp-config=@<data>/copilot/mcp.json --plugin-dir=<data>/copilot/plugin
+```
+
+- `--allow-all-mcp-server-instructions`: Copilot reads a server's instructions up front only for servers on its own
+  allowlist (others "on demand"); this flag lets Templum's in, and also the person's own servers', for that session.
+  It has no allowlist setting a session can add to.
+- `<data>/copilot/mcp.json`: Copilot hands a local server only `PATH` and the variables its `env` names, expanding
+  `${VAR}` from its own environment. The tool timeout is `timeout` in ms (30 s unless set):
+
+  ```json
+  { "mcpServers": { "templum": { "type": "local", "command": "<data>/bin/templum", "args": ["mcp"],
+      "env": { "TEMPLUM_BUS": "${TEMPLUM_BUS}", "TEMPLUM_TERMINAL": "${TEMPLUM_TERMINAL}" },
+      "tools": ["*"], "timeout": 604800000 } } }
+  ```
+
+  Its tools are named `templum-<tool>` in Copilot. Copilot asks the person before every MCP tool call; Templum passes
+  no `--allow-tool`, as it pre-allows nothing for Claude Code.
+- `<data>/copilot/plugin`: a plugin of hooks only, `plugin.json` (`{ "name": "templum" }`) and `hooks.json`. A hook's
+  payload doesn't name its event, so each hook's command does; `bash` on Unix and macOS, `powershell` on Windows, as
+  Gemini CLI's hooks are written (`gemini::hook_command`). A reporting hook must print nothing: Copilot reads a JSON
+  object from a hook's stdout, and a failing `preToolUse` hook denies the tool, so Templum hooks no `preToolUse`.
+
+  ```json
+  { "version": 1, "hooks": {
+      "agentStop": [{ "type": "command", "bash": "'<data>/bin/templum' hook copilot agentStop",
+                      "powershell": "& '<data>/bin/templum' hook copilot agentStop", "timeoutSec": 5 }],
+      "…": "the same for each hook of the table below" } }
+  ```
+
+| Hook | Event |
+|---|---|
+| `sessionStart` | started (any `source`: `startup`, `resume`, `new`) |
+| `userPromptSubmitted` | took a prompt: working; once a turn takes it (`at_enter` false) until the plan's spike shows it comes at the Enter |
+| `postToolUse`, `postToolUseFailure` | working (again, after a permission) |
+| `notification`, `notification_type` `permission_prompt` | waiting for the person, with its `message`. Not `permissionRequest`: it comes before Copilot's own rules, for calls they allow too |
+| `notification`, `elicitation_dialog` | waiting for the person (its own `ask_user`), with its `message` |
+| `agentStop` | done, with its last answer: the payload has none, only `transcriptPath` (`events.jsonl`), whose last `assistant.message` line's `data.content` `templum hook copilot` reads (its last 256 KB) |
+| `errorOccurred` with `recoverable` false | done, without an answer |
+| `sessionEnd` | ended |
+
+Esc, and a permission the person refuses, fire no `agentStop`: the person's keys and a still screen end Working after
+5 seconds, as an Esc while Claude Code writes does ([An agent's state](#an-agents-state)).
+
+**Its session.** `--session-id <uuid>` starts a session with that id, or resumes it when there is one: the Copilot
+Templum opens gets one (`new_id`), restored with `copilot --session-id <id>` (`resume_id`), as Pi's
+([agents.md](agents.md#the-agents)). `--continue` isn't used: it falls back to the latest session of any folder. A
+Copilot typed without `--session-id` comes back as a new session.
+
+**Not given:** a status line (Copilot takes one only from its `settings.json`; [usage.md](usage.md#later-batches));
+`--allow-tool`.
+
+### OpenCode and Kilo Code
+
+Neither has a flag for a server or a plugin, but each merges a variable of JSON into its config, last and deeply
+(`plugin` lists add up), and asks nothing about a server or a plugin it finds there (checked with OpenCode 1.19.0
+under `opencode serve`; Kilo Code from its source):
+
+```json
+{ "mcp": { "templum": { "type": "local", "command": ["<data>/bin/templum", "mcp"], "timeout": 604800000 } },
+  "plugin": ["file:///home/u/.local/share/templum/opencode/templum.js"] }
+```
+
+- **The variable:** `OPENCODE_CONFIG_CONTENT` for OpenCode, `KILO_CONFIG_CONTENT` for Kilo Code, the same JSON. Their
+  local servers inherit the environment (`TEMPLUM_BUS` and `TEMPLUM_TERMINAL` reach `templum mcp`). The server's
+  `timeout` covers its start, its tool list and every call (60 s without it, the MCP SDK's): seven days.
+- **The blocks Templum opens** for one of them (the menu, `spawn_agent`, a restore) get the variable in their shell's
+  environment; Templum types the command alone. A person's own `OPENCODE_CONFIG_CONTENT` (in Templum's environment)
+  wins: Templum then adds nothing.
+- **The plugin**, `<data>/opencode/templum.js`, plain JavaScript (no `package.json`, no install), hands each event
+  as one JSON line to `<data>/bin/templum hook opencode` and waits for it (`spawnSync`, so events stay in order; the hook
+  exits within a second when Templum is gone). It reports only the main session: a subagent's session (one with a
+  `parentID`) is never this block's turn. It sets `TEMPLUM_HOOKED` to its process id when it is empty, and says
+  nothing when it finds another process's: an `opencode run` an OpenCode in Templum starts from its shell tool
+  inherits the variable, and must not speak for the block. Every Templum terminal gets an empty `TEMPLUM_HOOKED`.
+
+| What the plugin hears | Event |
+|---|---|
+| its `chat.message` hook (a prompt taken) | took a prompt: working (`at_enter` false) |
+| `session.status` `busy` | working |
+| `session.idle` | done, with the session's last assistant text, which the plugin reads with `client.session.messages` |
+| `session.error` | done, without an answer |
+| `permission.asked` | waiting for the person: "Allow *permission*?" |
+| `question.asked` | waiting for the person, with its question |
+| `permission.replied`, `question.replied`, `question.rejected` | working |
+
+Ended: the snapshot (it has no event for quitting), as Codex's. **Its session:** `-s` takes only an existing id, and a
+new one's can't be chosen, so OpenCode and Kilo Code keep coming back on the folder's latest (`--continue`).
+
+### Qwen Code
+
+From Qwen Code's docs and source at 0.25.2 (not installed here: the plan checks what it can without it).
+
+- **The server:** `--mcp-config=<data>/qwen/mcp.json`, servers that are never asked about and load in its safe mode.
+  Its stdio servers inherit the environment. A tool call's `timeout` is in ms (10 minutes unless set):
+
+  ```json
+  { "mcpServers": { "templum": { "command": "<data>/bin/templum", "args": ["mcp"], "timeout": 604800000 } } }
+  ```
+
+- **The hooks:** Qwen Code takes Claude Code's hooks (same names, `last_assistant_message`, `transcript_path`), but
+  only from settings files; it has no `--settings`. Its system settings file can be moved with
+  `QWEN_CODE_SYSTEM_SETTINGS_PATH` (no check of its owner, unlike Gemini CLI's), and system hooks run with the
+  person's, after them. So the Qwen Code Templum opens gets that variable naming `<data>/qwen/settings.json`, which
+  holds only `hooks`. **Not when Qwen's own system file exists** (`/etc/qwen-code/settings.json`,
+  `/Library/Application Support/QwenCode/settings.json`, `C:\ProgramData\qwen-code\settings.json`): Templum's would
+  hide it, so Templum gives the server only. Each hook's command is `'<data>/bin/templum' hook qwen` (`& '…'` on
+  Windows, as Gemini CLI, which it forks).
+
+| Hook | Event |
+|---|---|
+| `SessionStart` | started; nothing when its `source` is `compact` |
+| `UserPromptSubmit` | took a prompt: working (`at_enter` false: not checked) |
+| `PermissionRequest` | waiting for the person, "Allow *tool*?" |
+| `PostToolUse` | working |
+| `Stop` | done, with `last_assistant_message` and `transcript_path` |
+| `StopFailure` | done, without an answer |
+| `Notification` `permission_prompt` | waiting for the person (the dialog `PermissionRequest` said); `idle_prompt` done without an answer, as Claude Code's |
+| `SessionEnd` | ended |
+
+- **The blocks Templum opens** get the words and the variable, as OpenCode's do. Programs Qwen Code starts inherit
+  the variable (it passes it on by design), so a `qwen -p` its shell tool runs would speak for the block
+  ([minors](../minors.md#connections)).
+- **Its session:** unchanged, by its files (`qwen --resume <id>`).
+
+### Pi
+
+Pi has no flag for a server, but takes an extension for one session (`-e <path>`, TypeScript loaded without a build).
+Templum's, `<data>/pi/templum.ts`:
+
+- registers Templum's server with `pi.registerMcpServer("templum", { command, args: ["mcp"], timeout: 604800 })`
+  (seconds) when Pi has it: Pi 0.99 and later have MCP; 0.85.1, installed here, has none, so it gets the events only;
+- hands Pi's events to `<data>/bin/templum hook pi`, one JSON line each, as OpenCode's plugin does, with the same
+  `TEMPLUM_HOOKED` rule (a `pi -p` its shell tool runs says nothing):
+
+| Pi's event | Event |
+|---|---|
+| `session_start` | started |
+| `agent_start` | took a prompt: working (`at_enter` false) |
+| `tool_result` | working |
+| `agent_end` | done, with its last assistant text (from the event's messages) |
+| `ui_prompt_start` | waiting for the person, with its title (an extension's dialog: Pi has no permission prompts) |
+| `ui_prompt_end` | working |
+| `session_shutdown` | ended |
+
+The words after its command are `-e` and the file. Its session is unchanged (`--session-id`).
+
+### Typed by hand: the shells
+
+Each new terminal also gets, always set and empty when there is nothing to give (the same rules as `typed`):
+
+| Variable | Holds |
+|---|---|
+| `TEMPLUM_COPILOT_ARGS` | Copilot's three words above, one per line |
+| `TEMPLUM_OPENCODE_CONFIG`, `TEMPLUM_KILO_CONFIG` | the JSON for `OPENCODE_CONFIG_CONTENT`, `KILO_CONFIG_CONTENT` |
+| `TEMPLUM_QWEN_ARGS`, `TEMPLUM_QWEN_SETTINGS` | `--mcp-config=<data>/qwen/mcp.json`; the settings file's path, empty when Qwen's own system file exists |
+| `TEMPLUM_PI_ARGS` | `-e` and `<data>/pi/templum.ts` |
+| `TEMPLUM_HOOKED` | always empty ([above](#opencode-and-kilo-code)) |
+
+The integration defines `copilot`, `opencode`, `kilo`, `qwen` and `pi` as it defines `claude` and `codex` (only while
+its variable is set when the shell starts, never over the person's own function, the program the shell would run,
+the exit status kept, what is piped in passed on), with one helper per shell for all of them:
+
+- **Words first**, then the person's, as for `claude`.
+- **Nothing twice:** no words when one of the person's words is the variable's last word, a path in Templum's folder,
+  which only Templum types (into the ones it opens). A person's own `--plugin-dir`, `--additional-mcp-config` or `-e`
+  adds to Templum's: Copilot CLI and Pi take several. Qwen Code takes one `--mcp-config` (a second is a fatal error),
+  so a person's own `--mcp-config`, alone or with `=…`, means no words for it, as Claude Code's rule is.
+- **Copilot CLI only when it starts a session:** its words go only when the person's first word is none or an
+  option (`copilot`, `copilot -p …`, `copilot --model …`), never before a subcommand (`copilot plugin list`, `copilot
+  login`), which needs none: AWS's Copilot CLI is also `copilot`, and every use of it starts with a subcommand
+  (`copilot app deploy` runs as it is).
+- **A variable for that one command:** `OPENCODE_CONFIG_CONTENT`, `KILO_CONFIG_CONTENT` or
+  `QWEN_CODE_SYSTEM_SETTINGS_PATH` is set for the agent only (bash and zsh `local -x`, fish `set -lx`, PowerShell
+  set and put back), unless the shell's environment already has it (the block Templum opened, or the person's own).
+
+### The switch reaches every agent
+
+`[connections] enabled` off now reaches every agent at once, Gemini CLI's extension included: the bus answers a
+`templum mcp` and a `templum hook` from any terminal as from a terminal it doesn't have. `initialize` says "Connections
+are off in Templum's settings: Templum's tools won't work here."; every tool call fails with "Connections are off:
+turn on Agents in Templum (Settings ▸ Connections) to use Templum's tools."; events are dropped, and every agent's
+state is read from its screen again (`speaks` false). The command line's verbs still work. Calls already waiting
+stay as they are, and end as they do today (the agent's screen going still, the person's answer, their timeout).
+Turned on again, the next call works; an agent started while it was off has no flags until its next start.
+
+Settings ▸ Connections names it **Agents in Templum**, "Agents opened from the canvas or typed in a terminal get
+Templum's server and hooks: they read and type into the blocks wired to them"; `config.toml`'s comment: "The agents
+Templum opens, or that are typed in its terminals, get its MCP server and hooks: they can read and type into the blocks
+wired to them (docs/specs/connections.md)." **Other agents** names the ones that take a server only from their own
+files: "Grok Build, Cursor CLI, Kimi Code or your own: add this command to their MCP servers…".
+
+### Gemini CLI without its extension
+
+A Gemini CLI opened from the menu or by `spawn_agent` while Templum's extension isn't installed (and connections are
+on, with a data folder) shows a notification, once per run of Templum: "Gemini CLI has no Templum tools or status dot"
+/ "Click to install Templum's extension: every Gemini CLI you open after gets them." Clicking it asks Install's
+question (Settings ▸ Connections' `INSTALL`), then installs. The Gemini CLI already open keeps running without it. A
+restore never shows it. Not remembered across runs: once per run is the whole cost of ignoring it
+([minors](../minors.md#connections)).
+
+### A dialog Templum doesn't hear
+
+The audit's gap 3, "an agent without hooks looks ready during a permission prompt", closes for each agent above
+through its own hook (Copilot's `permission_prompt`, OpenCode's and Kilo's `permission.asked` and `question.asked`,
+Qwen Code's `PermissionRequest`; Pi has no permission prompts, and its extensions' dialogs are `ui_prompt_start`).
+For the agents that stay without hooks it stays a documented gap ([agent-parity.md](agent-parity.md#after-card-44)):
+reading a dialog off each agent's screen is guesswork, and a wrong yellow is worse than none.
+
+**Calls made for card 44** (the person was away; each can be changed): Copilot gets the instructions flag but no
+`--allow-tool`; its last answer from the transcript, not its screen; OpenCode, Kilo Code and Qwen Code get their
+variable in the blocks Templum opens for them, and for that one command when typed; `TEMPLUM_HOOKED` keeps a nested
+OpenCode, Kilo Code or Pi quiet, while a nested Qwen Code stays a minor; Qwen Code gets no hooks when its own system file
+exists, and none when the person gives their own `--mcp-config`; Copilot CLI's words never before a subcommand (AWS's
+`copilot`); the files run `<data>/bin/templum`, not Templum's program path; Pi's extension gives the server only where
+Pi has MCP; the switch off cuts agents already running and leaves the calls that wait; Gemini CLI's notice once per
+run, never on restore; a generic dialog reader left out.
+
+**Considered and left out:**
+
+- **Templum's own environment variable for every terminal** (`OPENCODE_CONFIG_CONTENT` in each terminal): every
+  `opencode` any program runs there would get the plugin, card 42's reason for functions.
+- **Copilot's plugin carrying the server too** (its `.mcp.json`): one flag fewer, but whether a plugin's server
+  expands `${TEMPLUM_BUS}` isn't documented, and `--additional-mcp-config` comes first among Copilot's sources.
+- **Qwen Code's extension** (`qwen extensions link`, as Gemini CLI's Install): it serves every Qwen Code once linked,
+  where a variable serves one session.
+- **`OPENCODE_CONFIG_DIR`:** OpenCode installs packages into that folder.
+- **A Pi extension that declares each of Templum's 26 tools with `registerTool`:** a second copy of the tools'
+  schemas, for a Pi older than its own MCP.
+- **Progress notifications** from Templum's server, which reset OpenCode's call timeout: a bus-wide change for one
+  client, where its `timeout` does it.
+- **Telling an agent from another program of its name** (by its package's path, or its `--version`): only Copilot's
+  name is known to be shared (AWS's Copilot CLI), and its subcommand rule covers it; another `pi` would get `-e
+  <file>` (`command pi` runs it bare).
+- **Answering the calls that wait** when the switch goes off: they already end through the screen, the person or
+  their timeout.
+
 ## The `templum` command line
 
 The same program, without a window, when its first argument is one of these verbs. Each verb is one tool call: it
@@ -728,6 +1012,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum mcp` | the MCP bridge | 1 |
 | `templum hook claude` / `templum hook codex <json>` | an agent's hook (`templum hook codex` reads its JSON on stdin from batch 7; an argument, an older Templum's `notify`, is ignored, and stdin, then Codex's terminal, isn't read) | 1, 7 |
 | `templum hook gemini` | Gemini CLI's hooks (JSON on stdin) | 5 |
+| `templum hook copilot <event>` / `templum hook opencode` / `templum hook qwen` / `templum hook pi` | Copilot CLI's hooks (the event named by its command), the OpenCode and Kilo Code plugin's events, Qwen Code's hooks, Pi's extension's events (JSON on stdin) | card 44 |
 | `templum connect <block>` | `connect` | 3 |
 | `templum spawn <agent> [--folder <f>] [--worktree <name>] [--prompt <text>] [--model <m>] [--effort <e>]` | `spawn_agent` | 3, 6 |
 | `templum delegate <block> <task> [--wait]` | `delegate` (from batch 8 it prints the task's id; a script's terminal gets no notice: `templum wait` waits for its end) | 3, 8 |
@@ -793,6 +1078,10 @@ a Copy button, and Gemini CLI's Install and Remove.
   `t1` again.
 - **`<data>/mcp.json`** and the hooks in `<data>/claude-statusline.json` are written when an agent is opened, only
   when they changed, atomically.
+- **From card 44:** `<data>/copilot/mcp.json` and `<data>/copilot/plugin/` (`plugin.json`, `hooks.json`),
+  `<data>/opencode/templum.js` (OpenCode's and Kilo Code's plugin), `<data>/qwen/mcp.json` and
+  `<data>/qwen/settings.json`, `<data>/pi/templum.ts`: written the same way, when an agent is opened and when a
+  terminal opens.
 
 ## Architecture
 
@@ -823,6 +1112,7 @@ a Copy button, and Gemini CLI's Install and Remove.
 | `templum-mcp/src/hooks.rs`, `lib.rs`, `cli.rs`; `templum-terminal/src/terminal.rs`; `templum/src/workspace/bus.rs`, `delegate.rs`, `activity.rs`, `spawn.rs`, `waits.rs`, `input.rs`, `mod.rs` | Codex's hooks; a prompt taken (`Submitted`) confirms a task and decides which turn answers it; the first line as a paste of its own; a prompt waits for its agent's input (`Modes::typing`); seems stuck; dialogs as drawn | 7 |
 | `templum-mcp/src/hooks.rs`, `tools.rs`; `templum/src/workspace/delegate.rs`, `waits.rs`, `bus.rs`, `activity.rs`, `spawn.rs`, `blocks.rs`, `usage.rs`, `mod.rs` | task ids; the notices typed back (`Workspace::notices`, delivered as each look and each notice comes), with what the task spent read again a second after its end; changes to a task; a task's timeout; the transcript a turn's end names | 8 |
 | `templum-mcp/src/lib.rs`, `templum-usage/src/claude.rs`, `templum/src/workspace/usage.rs`, `blocks.rs`; `templum-terminal/src/integration/*` | the words typed as raw arguments (`codex_args`, `settings_file`, `mcp_file`, `claude_args`); `Workspace::agent_env` on each new terminal; the `claude` and `codex` functions ([Agents typed in a terminal](#agents-typed-in-a-terminal)) | card 42 |
+| `templum-terminal/src/agent.rs`; `templum-usage/src/copilot.rs`, `opencode.rs`, `qwen.rs`, `pi.rs` (new); `templum-mcp/src/hooks.rs`, `cli.rs`; `templum/src/workspace/usage.rs`, `blocks.rs`, `persist.rs`, `spawn.rs`, `bus.rs`; `templum/src/settings/connections.rs`; `templum-terminal/src/integration/*` | each agent's model and effort and resume; the files and words each agent gets; `templum hook copilot`, `opencode`, `qwen`, `pi`; the variable a block Templum opens gets; the switch reaching running agents; Gemini CLI's notice; the five new functions ([Every agent that can take it](#every-agent-that-can-take-it)) | card 44 |
 
 Every request reaches the main thread through a channel the bus's threads write to, drained by a task as the
 terminals' wake-ups are; the main thread never touches a socket. A request that waits keeps its reply channel in
@@ -918,6 +1208,17 @@ its words after Templum's, the person's own function runs instead, `--settings x
 `mcp_servers.templum.…`) passes as it is, an emptied variable adds nothing, and without the variable there is no
 function; a shell that isn't installed is skipped.
 
+**Card 44:** each agent's model and effort words, and an effort it doesn't take refused; Copilot's, Cursor's and Crush's
+resume; each agent's files exactly (not rewritten unchanged, Windows' forms, a `'` in the path gives none) and its
+words, typed and raw, none when `[connections]` is off, under WSL or without a data folder; each hook payload or
+plugin event to its event, unknown ones none, Copilot's last answer from a transcript; a block Templum opens for
+OpenCode, Kilo Code or Qwen Code gets its variable, a person's own wins; the switch off fails a tool call, drops an
+event and reads the screen again, the verbs still answer; Gemini CLI's notice once, not on restore, not with the
+extension; in bash, zsh, fish and PowerShell with fakes of the five agents that write their arguments and their
+variable: Templum's words first, none when the last one is the person's, the variable for that command only and not
+over one already set. A test that needs an agent installed (its `--help` naming the flags Templum gives) skips without
+it.
+
 **Manual (Hyprland):** Claude Code from the menu: `/mcp` lists `templum` connected, "list the blocks" and "read the
 last 30 lines of the dev server" work, the dot follows its turns and a permission prompt; Codex: `/mcp` lists it;
 `templum blocks` in a plain terminal; `templum mcp` in another terminal emulator exits 2; wiring by tool and menu,
@@ -954,6 +1255,9 @@ One pull request per batch, each with its own plan in `docs/plans/`:
 8. **Async:** task ids, the notices typed back with time and tokens, changes to a task, a task's timeout told.
 9. **Agents typed in a terminal** (kanban card 42, [its plan](../plans/2026-10-18-agents-in-any-terminal.md)): the
    variables, the shells' functions, the switch's words. It types nothing into agents and paints nothing: no bench.
+10. **Every agent that can take it** (kanban card 44, [its plan](../plans/2026-10-18-agent-parity.md)): the small gaps
+    of [agent-parity.md](agent-parity.md), then Copilot CLI, OpenCode and Kilo Code, Qwen Code and Pi. It paints
+    nothing: no bench. Copilot, OpenCode and Pi start with a check by hand of their hooks and events.
 
 Batches 2, 3 and 6 to 8 paint or type into agents, so their pull requests carry `--bench` and `--bench-mixed`. Batches 7
 and 8 start with checks by hand of the agents themselves (what Codex takes on its command line and the payloads of its
@@ -997,3 +1301,8 @@ results](../plans/2026-10-16-connections-batch-8.md#spike-results)).
 | A person's own `claude` function or alias | Theirs wins (a function) or composes (an alias), tested in each shell; `command claude` is always the bare agent |
 | A newer Claude Code makes `--mcp-config=` take more than one word, or refuses root flags before a subcommand | Checked by hand on 2.1.286; the shells' tests run a fake `claude`, so a by-hand check at each card on connections (`/mcp` in a typed Claude Code) catches it |
 | A tmux pane's agent speaking for the block that started tmux's server | No function there: tmux's shells don't load Templum's integration |
+| A failing hook denies Copilot a tool (`preToolUse` fails closed) | Templum hooks no `preToolUse`, and `templum hook` always exits 0 and prints nothing |
+| A nested agent (an `opencode run` or a `pi -p` its own shell tool starts) speaks for the block | `TEMPLUM_HOOKED`: the first plugin of a process tree speaks, the others say nothing; Qwen Code's hooks are commands and can't tell: a minor |
+| Templum's Qwen settings file hides Qwen's own system file | Not given when that file exists: the server only |
+| A seven-day `timeout` makes OpenCode wait seven days for a server that hangs at its start | `templum mcp` answers at once or exits 2 (no bus, Templum gone) |
+| Copilot's flags or its hooks' payloads change (it ships weekly) | The test that reads an installed agent's `--help` for Templum's flags; the hook parser's payloads recorded by the plan's spike |
