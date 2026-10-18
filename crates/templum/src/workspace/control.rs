@@ -175,6 +175,11 @@ impl Workspace {
             }
             ControlCall::AddBlock(add) => return self.add_block_for_agent(add, window, cx),
             ControlCall::OpenAgent(opening) => {
+                if opening.spawn.prompt.is_some()
+                    && let Some(refused) = self.too_many_tasks()
+                {
+                    return (Outcome::Now(refused), None);
+                }
                 return (
                     self.open_agent_for_agent(opening, args.clone(), window, cx),
                     None,
@@ -210,6 +215,15 @@ impl Workspace {
                 wait,
                 timeout,
             }) => {
+                // A change to a task of its own is no new task.
+                let own_task = self.find_block(&block).is_some_and(|(space, id)| {
+                    self.space_named(&space)
+                        .and_then(|s| s.terminal(id)?.handed.as_ref())
+                        .is_some_and(|h| h.by == templum_agent::ASKER)
+                });
+                if !own_task && let Some(refused) = self.too_many_tasks() {
+                    return (Outcome::Now(refused), None);
+                }
                 return self.on_task(&block, |ws, at| {
                     let by = "Templum Agent";
                     ws.hand_task(
@@ -746,6 +760,29 @@ impl Workspace {
             block: Some(uid.to_string()),
         });
         (Outcome::Now(done), target)
+    }
+
+    /// Its tasks under way: the agents it handed a task (a prompt, `delegate`) that hasn't ended.
+    pub(crate) fn agent_tasks(&self) -> usize {
+        self.spaces()
+            .flat_map(|s| s.terminals())
+            .filter(|(_, pane)| {
+                pane.handed
+                    .as_ref()
+                    .is_some_and(|h| h.by == templum_agent::ASKER)
+            })
+            .count()
+    }
+
+    /// The refusal of a new task while `max_agents` of its tasks are under way.
+    fn too_many_tasks(&self) -> Option<Reply> {
+        let most = self.config.templum_agent.max_agents;
+        (self.agent_tasks() >= most as usize).then(|| {
+            Reply::err(format!(
+                "{most} of your tasks are under way (the most at once: Settings ▸ Templum Agent ▸ \
+                 Agents at once). End your turn: each one's end comes back into this chat."
+            ))
+        })
     }
 
     /// `f` on the block `uid` names, in any workspace, for a call that may wait or answer later.

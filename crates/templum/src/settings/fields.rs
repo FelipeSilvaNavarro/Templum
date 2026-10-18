@@ -227,6 +227,16 @@ pub(super) static QUESTION_TIMEOUT: Number = Number {
     set: |c, v| c.connections.question_timeout = v as u64,
 };
 
+pub(super) static MAX_AGENTS: Number = Number {
+    table: "templum_agent",
+    key: "max_agents",
+    min: 1.0,
+    max: 16.0,
+    step: 1.0,
+    get: |c| c.templum_agent.max_agents as f64,
+    set: |c, v| c.templum_agent.max_agents = v as u32,
+};
+
 pub(super) static MAX_DIFF: Number = Number {
     table: "git.commit_message",
     key: "max_diff_kb",

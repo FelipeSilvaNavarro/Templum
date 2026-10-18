@@ -4,7 +4,9 @@
 use gpui_kit::component::switch::Switch;
 use gpui_kit::{App, Context, ElementId, Entity, SharedString, Window};
 
+use super::fields::MAX_AGENTS;
 use super::row::{Row, menu_button, remove, text_input};
+use super::sections::number_row;
 use crate::config::Edit;
 use crate::workspace::Workspace;
 
@@ -98,6 +100,8 @@ pub(super) fn rows(
                     c.templum_agent.pill = true
                 }),
             ),
+        number_row(ws, entity, &MAX_AGENTS, "Agents at once", window, cx)
+            .description("How many of its tasks may run together; a new one waits for one to end"),
     ]
 }
 

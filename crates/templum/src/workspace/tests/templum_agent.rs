@@ -2139,3 +2139,74 @@ fn interrupting_the_persons_agent_asks_its_own_doesnt(cx: &mut TestAppContext) {
         1
     );
 }
+
+/// The refusal while `n` of its tasks are under way.
+fn too_many(n: u32) -> String {
+    format!(
+        "{n} of your tasks are under way (the most at once: Settings ▸ Templum Agent ▸ Agents at \
+         once). End your turn: each one's end comes back into this chat."
+    )
+}
+
+#[gpui_kit::test]
+fn the_fifth_task_is_refused_while_four_run(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let shown = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let mut terminals = Vec::new();
+    for _ in 0..4 {
+        terminals.push(handed_by_the_templum_agent(handle, &ws, cx).2);
+    }
+    let (_, other) = busy_terminal(handle, &ws, cx);
+    let open = json!({"agent": "nope", "workspace": shown, "prompt": "Take card 5"});
+    assert_eq!(
+        control(handle, &ws, cx, "open_agent", open.clone()),
+        (true, too_many(4))
+    );
+    assert_eq!(
+        control(
+            handle,
+            &ws,
+            cx,
+            "delegate",
+            json!({"block": other, "task": "Take card 5"})
+        ),
+        (true, too_many(4))
+    );
+    // Without a prompt it hands no task: the cap doesn't hold it.
+    let (_, text) = control(
+        handle,
+        &ws,
+        cx,
+        "open_agent",
+        json!({"agent": "nope", "workspace": shown}),
+    );
+    assert!(text.contains("There's no agent nope"), "{text}");
+    ws.update(cx, |ws, cx| {
+        ws.end_turn(&terminals[0], templum_mcp::Reply::ok("Done."), cx)
+    });
+    let (_, text) = control(handle, &ws, cx, "open_agent", open);
+    assert!(
+        text.contains("There's no agent nope"),
+        "one ended, it goes: {text}"
+    );
+}
+
+#[gpui_kit::test]
+fn max_agents_from_the_settings(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, cx| {
+        ws.edit(
+            Edit::set("templum_agent", "max_agents", 1_i64),
+            |c| c.templum_agent.max_agents = 1,
+            cx,
+        )
+    });
+    frame(handle, cx);
+    handed_by_the_templum_agent(handle, &ws, cx);
+    let shown = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let open = json!({"agent": "nope", "workspace": shown, "prompt": "go"});
+    assert_eq!(
+        control(handle, &ws, cx, "open_agent", open),
+        (true, too_many(1))
+    );
+}
