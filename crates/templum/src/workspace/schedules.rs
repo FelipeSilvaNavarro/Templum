@@ -286,7 +286,7 @@ impl Workspace {
 
     /// Schedule `id` goes now, as the tool it stands for would from its asker: a notice to the
     /// asker's own block, a task to an agent that has none, the text and Enter to a terminal
-    /// running no agent. Err: why not, and whether its block was closed (which ends it).
+    /// running no agent whose shell waits at an empty prompt. Err: why not, and whether its block was closed (which ends it).
     fn deliver(&mut self, id: u64, cx: &mut Context<Self>) -> Result<(), (String, bool)> {
         let s = self.schedules.iter().find(|s| s.id == id).expect("due");
         let (by, uid, text, agent) = (s.by.clone(), s.to.clone(), s.text.clone(), s.agent);
@@ -310,6 +310,17 @@ impl Workspace {
                     format!(
                         "{uid} runs no agent now: a schedule for an agent never types into its \
                          shell."
+                    ),
+                    false,
+                ));
+            }
+            // Else it would go to what runs there (vim, ssh, a password's prompt), or after a line
+            // half typed.
+            if !pane.term.at_empty_prompt() {
+                return Err((
+                    format!(
+                        "{uid}'s shell isn't waiting at an empty prompt: a schedule types into a \
+                         terminal only then."
                     ),
                     false,
                 ));

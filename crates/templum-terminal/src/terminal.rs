@@ -822,8 +822,8 @@ pub struct Terminal {
     /// Unique among the terminals of every Templum running; its programs see it as
     /// `TEMPLUM_TERMINAL`.
     id: String,
-    /// Someone typed into it ([`Terminal::had_input`]).
-    input: AtomicBool,
+    /// When someone last typed into it ([`Terminal::had_input`]).
+    input: Mutex<Option<Instant>>,
 }
 
 impl Terminal {
@@ -919,7 +919,7 @@ impl Terminal {
             rows: opts.rows,
             shell_name,
             id,
-            input: AtomicBool::new(false),
+            input: Mutex::new(None),
         })
     }
 
@@ -1088,7 +1088,7 @@ impl Terminal {
     /// Once the shell ended, input reaches nothing and ends nothing: it doesn't count.
     fn input(&self, bytes: impl Into<Cow<'static, [u8]>>) {
         if !self.exited() {
-            self.input.store(true, Ordering::Relaxed);
+            *self.input.lock().unwrap() = Some(Instant::now());
         }
         self.write(bytes);
     }
@@ -1097,7 +1097,25 @@ impl Terminal {
     /// (`key`, `press`, `paste`, `type_in`): a shell that ends then was ended, it didn't fail to
     /// start. What the app itself writes (`write`) doesn't count.
     pub fn had_input(&self) -> bool {
-        self.input.load(Ordering::Relaxed)
+        self.input.lock().unwrap().is_some()
+    }
+
+    /// Its shell waits at an empty prompt, where a command typed runs: shell integration drew a
+    /// prompt since anyone last typed into it, and no command started since; on Unix its shell
+    /// also leads the foreground (bash before 4.4 doesn't say when a command starts). False
+    /// without shell integration.
+    pub fn at_empty_prompt(&self) -> bool {
+        let typed = *self.input.lock().unwrap();
+        let status = self.status();
+        let prompted = status
+            .prompted
+            .is_some_and(|at| typed.is_none_or(|typed| typed < at));
+        prompted
+            && status.running.is_none()
+            && (cfg!(windows)
+                || self
+                    .foreground()
+                    .is_some_and(|f| self.shells().contains(&f)))
     }
 
     /// Sends a key press. Returns false for printable text, which must come through the

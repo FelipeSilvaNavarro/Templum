@@ -354,9 +354,13 @@ conversation.
     `[from Claude Code · api (b7k2m), task t9, scheduled s3]`), whose end comes back to the caller typed. A schedule
     never changes a task: an agent still on a task, the caller's included (one an earlier time of this schedule
     handed), doesn't take it: "k9x1d is on a task (t7): a schedule hands a task only to an agent that has none.";
-  - to a terminal running no agent: typed with Enter, as `send_to_terminal` with `enter`; never when an agent ran
-    there as it was set, whose quitting would leave the text to run as a command (refused: "k9x1d runs no agent now:
-    a schedule for an agent never types into its shell.");
+  - to a terminal running no agent: typed with Enter, as `send_to_terminal` with `enter`, only while its shell waits at
+    an empty prompt: shell integration drew a prompt since anyone last typed there, no command started since, and on
+    Unix its shell leads the foreground. Else (vim, `ssh`, a password's prompt in front, a line half typed, no shell
+    integration, as cmd.exe) "k9x1d's shell isn't waiting at an empty prompt: a schedule types into a terminal only
+    then."; never when an agent ran there as it was set, or Templum started one there, whose quitting would leave
+    the text to run as a command (refused: "k9x1d runs no agent now: a schedule for an agent never types into its
+    shell.");
   - to the caller's own block: a notice, `[scheduled s3] Its text is in the pasted text.` and the text, typed once the
     caller takes typing ([connections.md](connections.md#delegating) 10).
   It goes through the same checks as the tool it stands for, at that moment: a block no longer wired, an agent waiting

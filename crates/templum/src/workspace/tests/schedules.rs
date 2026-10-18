@@ -47,6 +47,14 @@ fn wired_plain(
     .unwrap()
 }
 
+/// A shell of its own with shell integration (`A` before each prompt, `C` and `D` around each
+/// command), which prints each line it reads back.
+fn prompting() -> (String, Vec<String>) {
+    let script = "while printf '\\033]133;A\\007$ '; IFS= read -r l; do \
+                  printf '\\033]133;C\\007%s\\n\\033]133;D;0\\007' \"$l\"; done";
+    ("sh".into(), vec!["-c".into(), script.into()])
+}
+
 fn notices(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<String> {
     ws.read_with(cx, |ws, _| {
         ws.notices.iter().map(|n| n.text.clone()).collect()
@@ -92,7 +100,8 @@ fn a_schedule_goes_at_its_time_to_the_caller_and_a_terminal(cx: &mut TestAppCont
         ["[scheduled s1] Its text is in the pasted text.\ncheck the build"]
     );
     assert_eq!(ids(&ws, cx), Vec::<u64>::new(), "a one-time schedule ends");
-    // A wired terminal running no agent, every minute: typed with Enter each time.
+    // A wired terminal running no agent, at its prompt, every minute: typed with Enter each time.
+    ws.update(cx, |ws, _| ws.command = Some(prompting()));
     let plain = wired_plain(handle, &ws, cx, mine);
     let (_, them) = me(&ws, cx, plain);
     let (failed, text) = call(
@@ -117,7 +126,7 @@ fn a_schedule_goes_at_its_time_to_the_caller_and_a_terminal(cx: &mut TestAppCont
             cx,
             crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
         );
-        // The terminal echoes it, and `cat` prints it back once Enter came.
+        // The terminal echoes it, and the shell prints it back once Enter came.
         screen_until(&ws, cx, plain, |shown| {
             shown.matches("echo tick").count() >= times
         });
@@ -460,4 +469,66 @@ fn a_schedule_set_right_after_spawn_agent_never_types_into_its_shell(cx: &mut Te
     std::thread::sleep(Duration::from_millis(300));
     let shown = ws.read_with(cx, |ws, _| ws.space.terminal(other).unwrap().screen());
     assert!(!shown.contains("ran-in-the-shell"), "{shown}");
+}
+
+/// A schedule types into a terminal running no agent only while its shell waits at an empty
+/// prompt: not into a program in front of it (vim, ssh, a password's prompt), nor after a line the
+/// person half typed.
+#[gpui_kit::test]
+fn a_schedule_types_into_a_terminal_only_at_its_empty_prompt(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    agent_without_notices(&ws, cx, mine);
+    // `cat` in front of its shell, as a program the person runs there.
+    let busy = wired_plain(handle, &ws, cx, mine);
+    let (_, them) = me(&ws, cx, busy);
+    in_front(&ws, cx, busy, true);
+    let once = json!({ "block": them, "text": "echo ran-in-a-program", "after": 1 });
+    assert!(!call(handle, &ws, cx, &terminal, "schedule", once).0);
+    due_now(&ws, cx, 1);
+    look(cx);
+    let refused = |uid: &str| {
+        format!(
+            "{uid}'s shell isn't waiting at an empty prompt: a schedule types into a terminal only \
+             then."
+        )
+    };
+    assert_eq!(
+        notices(&ws, cx),
+        [format!(
+            "[schedule s1 to {them} didn't go: {}]",
+            refused(&them)
+        )]
+    );
+    // A shell at its prompt, a line half typed there.
+    ws.update(cx, |ws, _| {
+        ws.command = Some(prompting());
+        ws.notices.clear();
+    });
+    let shell = wired_plain(handle, &ws, cx, mine);
+    let (_, theirs) = me(&ws, cx, shell);
+    screen_until(&ws, cx, shell, |shown| shown.contains('$'));
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(shell).unwrap().term.type_in("rm -rf ")
+    });
+    let once = json!({ "block": theirs, "text": "echo after-half-a-line", "after": 1 });
+    assert!(!call(handle, &ws, cx, &terminal, "schedule", once).0);
+    due_now(&ws, cx, 2);
+    look(cx);
+    assert_eq!(
+        notices(&ws, cx),
+        [format!(
+            "[schedule s2 to {theirs} didn't go: {}]",
+            refused(&theirs)
+        )]
+    );
+    after(
+        cx,
+        crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    for (id, text) in [(busy, "ran-in-a-program"), (shell, "after-half-a-line")] {
+        let shown = ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().screen());
+        assert!(!shown.contains(text), "{shown}");
+    }
 }

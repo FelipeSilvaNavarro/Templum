@@ -730,3 +730,44 @@ fn the_shell_is_the_real_bash_git_bash_starts() {
         [10]
     );
 }
+
+/// A shell with integration at its prompt, nothing typed: a command typed there runs. Not with
+/// text typed since the prompt, nor while a command runs, nor before any prompt was drawn.
+#[cfg(unix)]
+#[test]
+fn a_shell_is_at_an_empty_prompt_until_something_is_typed_or_runs() {
+    // A shell of its own with integration: A before each prompt, C and D around each command.
+    let script = "sleep 0.5; while printf '\\033]133;A\\007$ '; IFS= read -r l; do \
+                  printf '\\033]133;C\\007'; sleep 0.5; printf '\\033]133;D;0\\007'; done";
+    let term = Terminal::spawn(
+        SpawnOptions {
+            cols: 40,
+            rows: 5,
+            cell_px: (8, 16),
+            command: Some(("sh".into(), vec!["-c".into(), script.into()])),
+            palette: Palette::default(),
+            options: TermOptions::default(),
+            working_directory: None,
+            integration: None,
+            env: Vec::new(),
+        },
+        Arc::new(|| {}),
+    )
+    .expect("spawn");
+    assert!(!term.at_empty_prompt(), "no prompt yet");
+    let until = |at: bool| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while term.at_empty_prompt() != at {
+            assert!(Instant::now() < deadline, "never {at}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    until(true);
+    term.type_in("echo half");
+    assert!(!term.at_empty_prompt(), "half typed");
+    term.write(&b"\r"[..]);
+    // The command runs, then the next prompt is drawn.
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(!term.at_empty_prompt(), "a command runs");
+    until(true);
+}
