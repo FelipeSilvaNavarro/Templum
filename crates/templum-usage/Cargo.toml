@@ -1,6 +1,6 @@
 [package]
 name = "templum-usage"
-description = "What CLI agents tell about their sessions and plan limits, read from their own files. No UI."
+description = "What CLI agents tell about their sessions and plan limits, read from their own files, and their accounts' folders. No UI."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

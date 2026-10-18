@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+pub mod accounts;
 pub mod claude;
 pub mod codex;
 pub mod copilot;
