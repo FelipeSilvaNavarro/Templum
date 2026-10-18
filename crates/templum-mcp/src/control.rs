@@ -125,7 +125,7 @@ pub enum Level {
 
 /// What the block server's descriptions say of the caller, said for the Templum Agent: it acts
 /// on any block and any board.
-const SHARED_WORDS: [(&str, &str); 11] = [
+const SHARED_WORDS: [(&str, &str); 16] = [
     (" connected to you", ""),
     (" shown by a kanban", ""),
     ("; may be left out when one kanban shows a board", ""),
@@ -158,7 +158,28 @@ const SHARED_WORDS: [(&str, &str); 11] = [
         "Only the person stops a block you didn't open.",
         "The person allows it first, unless you opened the block.",
     ),
+    // Its tasks' ends and watches come back into its chat; it has no reply of its own.
+    (
+        "what it sends you with reply",
+        "what it sends you with its reply tool",
+    ),
+    ("back typed into your terminal as", "back into this chat as"),
+    (
+        "is typed into your terminal while you work",
+        "comes back into this chat while you work",
+    ),
+    (" Left out with fork.", ""),
+    (" ((you) on yours)", ""),
 ];
+
+/// `tool` as the Templum Agent reads it: SHARED_WORDS said for it.
+fn for_it(tool: &Value) -> Value {
+    let mut text = tool.to_string();
+    for (from, to) in SHARED_WORDS {
+        text = text.replace(from, to);
+    }
+    serde_json::from_str(&text).expect("JSON")
+}
 
 /// `reason`, on every tool that may wait for the person.
 fn reason() -> Value {
@@ -176,11 +197,7 @@ pub fn list() -> Value {
         .iter()
         .filter(|t| SHARED.iter().any(|name| t["name"] == *name))
         .map(|t| {
-            let mut text = t.to_string();
-            for (from, to) in SHARED_WORDS {
-                text = text.replace(from, to);
-            }
-            let mut tool: Value = serde_json::from_str(&text).expect("JSON");
+            let mut tool = for_it(t);
             if [
                 "send_to_terminal",
                 "send_keys",
@@ -199,7 +216,7 @@ pub fn list() -> Value {
         .iter()
         .find(|t| t["name"] == "spawn_agent")
         .expect("spawn_agent")["inputSchema"]["properties"];
-    let mut opening = spawn.clone();
+    let mut opening = for_it(spawn);
     // The Templum Agent has no block session to fork, and opens no role.
     for key in ["fork", "role"] {
         opening.as_object_mut().expect("properties").remove(key);
@@ -656,12 +673,19 @@ mod tests {
         ] {
             assert!(!crate::tools::known(control), "{control}");
         }
-        // The shared tools speak of any block, not of the caller's wires.
+        // The shared tools speak of any block, not of the caller's wires, and of its chat, not of
+        // a terminal of its own.
         let text = list().to_string();
-        assert!(
-            !text.contains("connected to you") && !text.contains("list_blocks"),
-            "{text}"
-        );
+        for block_words in [
+            "connected to you",
+            "list_blocks",
+            "your terminal",
+            "with reply",
+            "fork",
+            "(you)",
+        ] {
+            assert!(!text.contains(block_words), "{block_words}: {text}");
+        }
         let stop = &list()["tools"]
             .as_array()
             .unwrap()
