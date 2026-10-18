@@ -82,6 +82,9 @@ fn main() {
     if !bench {
         templum_terminal::read_shell_path();
     }
+    // At sign-out and shutdown the canvas is saved while its terminals still run.
+    #[cfg(windows)]
+    templum_terminal::quit_before_terminals();
     gpui_kit::application()
         // Every Lucide icon, by name: the toolbar and the notes use ones outside the default set.
         .with_assets(gpui_kit::assets::AllAssets)

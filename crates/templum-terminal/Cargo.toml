@@ -22,6 +22,8 @@ rustix = { version = "1.1", default-features = false, features = ["std", "termio
 [target.'cfg(windows)'.dependencies]
 # Already in the tree (GPUI's): PATH as an installer left it in the registry.
 windows-registry = "0.6"
+# Already in the tree (GPUI's): Templum's place in the order Windows ends programs at sign-out.
+windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3"

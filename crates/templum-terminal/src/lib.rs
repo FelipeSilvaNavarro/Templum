@@ -26,6 +26,8 @@ pub use palette::Palette;
 pub use shells::{ShellOption, available_shells, default_shell, default_shell_label};
 pub use snapshot::{Bar, Cursor, Row, Run, Snapshot, Span};
 pub use tap::{Mark, Outcome, Status};
+#[cfg(windows)]
+pub use terminal::quit_before_terminals;
 pub use terminal::{
     Inspection, Modes, Notify, Processes, Running, SelectionKind, SharedTerm, SpawnOptions,
     TermOptions, Terminal, inspect, kill_left, tree,

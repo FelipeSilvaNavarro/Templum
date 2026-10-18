@@ -560,6 +560,29 @@ pub fn kill_left(procs: &[Running]) {
     }
 }
 
+/// The level Windows ends this process at when the session ends, before every program at the
+/// default 0x280: the first of the range applications may take.
+#[cfg(windows)]
+const SHUTDOWN_LEVEL: u32 = 0x3FF;
+
+/// Asks Windows to end this process before the programs in its terminals at sign-out, restart
+/// and shutdown. Every process starts at the same level, and Windows ends those in any order: it
+/// could end the shells and agents first, while Templum, still running, closes their blocks and
+/// then saves the canvas without them.
+#[cfg(windows)]
+pub fn quit_before_terminals() {
+    use windows_sys::Win32::System::Threading::SetProcessShutdownParameters;
+    // SAFETY: two numbers in, no pointers; it only sets this process's place in the order.
+    #[allow(unsafe_code)]
+    let set = unsafe { SetProcessShutdownParameters(SHUTDOWN_LEVEL, 0) };
+    if set == 0 {
+        eprintln!(
+            "templum: couldn't ask Windows to close Templum before its terminals: {}",
+            io::Error::last_os_error()
+        );
+    }
+}
+
 pub struct SpawnOptions {
     pub cols: u16,
     pub rows: u16,
@@ -977,6 +1000,20 @@ pub(crate) fn feed_heard(term: &SharedTerm, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_ends_templum_before_the_programs_in_its_terminals() {
+        use windows_sys::Win32::System::Threading::GetProcessShutdownParameters;
+        quit_before_terminals();
+        let (mut level, mut flags) = (0, 0);
+        // SAFETY: two valid places for the two numbers it writes.
+        #[allow(unsafe_code)]
+        let read = unsafe { GetProcessShutdownParameters(&mut level, &mut flags) };
+        assert_ne!(read, 0, "{}", io::Error::last_os_error());
+        // Windows ends the higher levels first; a shell or an agent starts at 0x280.
+        assert!(level > 0x280, "level {level:#x}");
+    }
 
     #[test]
     fn modes_say_what_the_program_asked_for() {

@@ -157,6 +157,12 @@ What doesn't come back: the text that was on screen, and programs other than the
   with no event for each.
 - **On quit:** when the window closes or Templum quits, a last snapshot is written at once, next to the pending
   `config.toml` save.
+- **At sign-out, restart and shutdown:** that last snapshot must still find every terminal running. A block whose
+  shell ended closes, so a save taken after the system ended the shells would write a canvas without them. Windows
+  ends programs by level, and every process starts at the same one (0x280), in any order: Templum takes a higher one
+  (`SetProcessShutdownParameters`), so Windows asks it to close, and it saves, before the programs in its terminals.
+  macOS quits the apps before the other processes, and Linux ends Templum at once on `SIGTERM`, with no last save:
+  the snapshot from up to 5 seconds before stays.
 - **Off the UI thread:** the UI thread only gathers each block's rect and process ids. Reading the processes
   (folders, agents) and writing the file run in a background task, so a snapshot never costs a frame. On quit the
   same work runs at once, before Templum exits.
