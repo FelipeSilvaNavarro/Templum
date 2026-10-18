@@ -667,8 +667,11 @@ fn open_accounts(handle: AnyWindowHandle, cx: &mut TestAppContext) {
 fn pick(handle: AnyWindowHandle, cx: &mut TestAppContext, id: &'static str, index: usize) {
     cx.update_window(handle, |_, window, cx| {
         window.click(id, cx);
+        // A scrollable menu is laid out over two frames.
+        window.render_frame(cx);
         window.render_frame(cx);
         window.within("popup-menu").click(index, cx);
+        window.render_frame(cx);
         window.render_frame(cx);
     })
     .unwrap();
@@ -679,7 +682,9 @@ fn add_claude_account(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut 
     cx.update_window(handle, |_, window, cx| {
         window.click("add-account", cx);
         window.render_frame(cx);
-        assert!(gpui_kit::component::WindowExt::has_active_dialog(window, cx));
+        assert!(gpui_kit::component::WindowExt::has_active_dialog(
+            window, cx
+        ));
     })
     .unwrap();
     let claude = ws.read_with(cx, |ws, _| {
