@@ -20,9 +20,13 @@ if status is-interactive; and not set -q __templum_installed
     # the person's own function (an alias, an autoloaded one): fish read their config before this.
     if test -n "$TEMPLUM_CLAUDE_ARGS"; and not functions -q claude
         function claude
-            # As fish says it, not from inside this function.
+            # As fish says it, not from inside this function (before 3.2, without its handler).
             if not command -q claude
-                fish_command_not_found claude
+                if functions -q fish_command_not_found
+                    fish_command_not_found claude
+                else
+                    echo "fish: Unknown command: claude" >&2
+                end
                 return 127
             end
             set -l words (string split --no-empty \n -- "$TEMPLUM_CLAUDE_ARGS")
@@ -37,9 +41,13 @@ if status is-interactive; and not set -q __templum_installed
     end
     if test -n "$TEMPLUM_CODEX_ARGS"; and not functions -q codex
         function codex
-            # As fish says it, not from inside this function.
+            # As fish says it, not from inside this function (before 3.2, without its handler).
             if not command -q codex
-                fish_command_not_found codex
+                if functions -q fish_command_not_found
+                    fish_command_not_found codex
+                else
+                    echo "fish: Unknown command: codex" >&2
+                end
                 return 127
             end
             set -l words (string split --no-empty \n -- "$TEMPLUM_CODEX_ARGS")

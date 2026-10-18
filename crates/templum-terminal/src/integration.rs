@@ -818,10 +818,18 @@ mod tests {
         /// Templum's on the screen, and a failed command.
         #[test]
         fn a_missing_agent_is_told_as_without_templum() {
-            let shells: [(&str, &[&str], &str, &str, bool); 4] = [
+            let shells: [(&str, &[&str], &str, &str, bool); 5] = [
                 ("bash", &[], ".bashrc", "cd", bash_has_ps0()),
                 ("zsh", &[], ".zshrc", "cd", true),
                 ("fish", &[], ".config/fish/config.fish", "cd", true),
+                // fish before 3.2 has no fish_command_not_found.
+                (
+                    "fish",
+                    &[],
+                    ".config/fish/config.fish",
+                    "functions -e fish_command_not_found; cd",
+                    true,
+                ),
                 (
                     "pwsh",
                     &["-NoLogo"],
