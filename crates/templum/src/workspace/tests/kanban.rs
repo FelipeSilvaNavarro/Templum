@@ -737,3 +737,135 @@ fn a_session_chosen_in_the_assignee_menu_is_one_step_and_the_dialog_stays(cx: &m
     ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
     assert_eq!(assignee(cx), None, "one Ctrl+Z step");
 }
+
+/// Presses on `from`, moves 10 px down (the drag starts) and on to `to`, and holds it there:
+/// three frames 100 ms apart, the pointer still.
+fn hold_drag(
+    handle: AnyWindowHandle,
+    cx: &mut TestAppContext,
+    from: gpui_kit::Point<gpui_kit::Pixels>,
+    to: gpui_kit::Point<gpui_kit::Pixels>,
+) {
+    let moved = |position| {
+        PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+            position,
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Modifiers::default(),
+        })
+    };
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: from,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(moved(from + point(px(0.0), px(10.0))), cx);
+        window.dispatch_event(moved(to), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    for _ in 0..2 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    }
+}
+
+fn release(
+    handle: AnyWindowHandle,
+    cx: &mut TestAppContext,
+    at: gpui_kit::Point<gpui_kit::Pixels>,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: at,
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn dragging_a_card_near_a_long_columns_bottom_scrolls_its_cards(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (block, board, first) = board_with_a_card(handle, &ws, cx);
+    let n = block.0;
+    let (todo, cards) = ws.update(cx, |ws, _| {
+        let todo = ws.boards.board(board).unwrap().columns[0].id;
+        let cards: Vec<u64> = (0..29)
+            .map(|_| ws.edit_boards(|b| b.add_card(board, todo)).unwrap())
+            .collect();
+        (todo, cards)
+    });
+    let el = |what: &str, id: u64| gpui_kit::ElementId::Name(format!("{what}-{n}-{id}").into());
+    let (from, to, top) = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let list = window.find(el("cards", todo)).bounds();
+            let card = window.find(el("card", first)).bounds();
+            (
+                card.center(),
+                point(list.center().x, list.bottom() - px(8.0)),
+                card.top(),
+            )
+        })
+        .unwrap();
+    hold_drag(handle, cx, from, to);
+    let now = |cx: &mut TestAppContext, card: u64| {
+        cx.update_window(handle, |_, window, _| {
+            window.find(el("card", card)).bounds().top()
+        })
+        .unwrap()
+    };
+    assert!(now(cx, first) < top, "the cards scrolled up");
+    release(handle, cx, to);
+    let before = now(cx, cards[3]);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(now(cx, cards[3]), before, "scrolling stopped with the drag");
+}
+
+#[gpui_kit::test]
+fn dragging_a_card_near_the_boards_right_edge_scrolls_its_columns(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (block, board, card) = board_with_a_card(handle, &ws, cx);
+    let n = block.0;
+    let last = ws.update(cx, |ws, _| {
+        (0..4)
+            .map(|_| ws.edit_boards(|b| b.add_column(board)).unwrap())
+            .last()
+            .unwrap()
+    });
+    let el = |what: &str, id: u64| gpui_kit::ElementId::Name(format!("{what}-{n}-{id}").into());
+    let (from, to, left) = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let row = window.find(("columns", n as usize)).bounds();
+            (
+                window.find(el("card", card)).bounds().center(),
+                point(row.right() - px(8.0), row.center().y),
+                window.find(el("column", last)).bounds().left(),
+            )
+        })
+        .unwrap();
+    hold_drag(handle, cx, from, to);
+    let now = cx
+        .update_window(handle, |_, window, _| {
+            window.find(el("column", last)).bounds().left()
+        })
+        .unwrap();
+    assert!(now < left, "the columns scrolled left: {now:?} {left:?}");
+    release(handle, cx, to);
+}

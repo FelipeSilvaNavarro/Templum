@@ -4,6 +4,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Instant;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -13,11 +14,11 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Entity, FontWeight, MouseButton,
-    MouseDownEvent, Render, ScrollWheelEvent, SharedString, TestSupportExt, Window, div, point, px,
-    relative,
+    AnyElement, App, BoxShadow, ClickEvent, Context, DragMoveEvent, ElementId, Entity, FontWeight,
+    MouseButton, MouseDownEvent, Render, ScrollHandle, ScrollWheelEvent, SharedString,
+    TestSupportExt, Window, div, point, px, relative,
 };
-use templum_canvas::{BlockId, Size};
+use templum_canvas::{BlockId, Point, Rect, Size, edge_scroll};
 
 use crate::board::{Assignee, Board, Boards, Card, Column, Comment, Label, Priority};
 use crate::checklists;
@@ -102,6 +103,111 @@ impl Render for DragPreview {
     }
 }
 
+/// How fast a drag at `pointer` scrolls a container at `bounds` (both in pixels) along its
+/// axis, in world units a second, positive toward the end: the canvas's edge rule measured in
+/// world units, so the zone and the speed scale with the zoom `z`. Zero when the pointer is
+/// outside the container across the axis (over another column).
+pub(crate) fn drag_speed(pointer: Point, bounds: Rect, vertical: bool, z: f32) -> f32 {
+    let local = Point::new((pointer.x - bounds.x) / z, (pointer.y - bounds.y) / z);
+    let size = Size {
+        w: bounds.w / z,
+        h: bounds.h / z,
+    };
+    let (across, length) = if vertical {
+        (local.x, size.w)
+    } else {
+        (local.y, size.h)
+    };
+    if !(0.0..=length).contains(&across) {
+        return 0.0;
+    }
+    let speed = edge_scroll(local, size);
+    if vertical { speed.y } else { speed.x }
+}
+
+/// A scroll container that scrolls while a drag holds the pointer near its edge: its handle,
+/// the speed the last drag move gave (world units a second), and when it last moved.
+#[derive(Default)]
+struct EdgeScroll {
+    handle: ScrollHandle,
+    speed: f32,
+    at: Option<Instant>,
+}
+
+/// The `EdgeScroll` of the container `key`, kept across frames, moved by this frame's step;
+/// asks for the next frame while it scrolls.
+fn edge_scroll_state(
+    key: impl Into<ElementId>,
+    vertical: bool,
+    z: f32,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<EdgeScroll> {
+    let edge = window.use_keyed_state(key, cx, |_, _| EdgeScroll::default());
+    let dragging = cx.has_active_drag();
+    if step(&edge, vertical, z, dragging, Instant::now(), cx) {
+        window.request_animation_frame();
+    }
+    edge
+}
+
+/// One frame of scrolling while a drag is near an edge: the offset moves by the speed × `z` ×
+/// the time since the last frame (at most 0.05 s, so a stalled frame doesn't jump; none the
+/// first time), within the container's ends. True while it scrolls. A drag that ended, or a
+/// pointer out of the zone, stops it at once.
+fn step(
+    edge: &Entity<EdgeScroll>,
+    vertical: bool,
+    z: f32,
+    dragging: bool,
+    now: Instant,
+    cx: &mut App,
+) -> bool {
+    edge.update(cx, |e, _| {
+        if !dragging || e.speed == 0.0 {
+            e.speed = 0.0;
+            e.at = None;
+            return false;
+        }
+        let dt =
+            e.at.map_or(0.0, |at| now.duration_since(at).as_secs_f32().min(0.05));
+        e.at = Some(now);
+        let (offset, max) = (e.handle.offset(), e.handle.max_offset());
+        let by = px(e.speed * z * dt);
+        let moved = if vertical {
+            point(offset.x, (offset.y - by).clamp(-max.y, px(0.0)))
+        } else {
+            point((offset.x - by).clamp(-max.x, px(0.0)), offset.y)
+        };
+        e.handle.set_offset(moved);
+        true
+    })
+}
+
+/// A drag move over a container: its speed from where the pointer is.
+fn on_edge<T: 'static>(
+    edge: &Entity<EdgeScroll>,
+    vertical: bool,
+    z: f32,
+) -> impl Fn(&DragMoveEvent<T>, &mut Window, &mut App) + 'static {
+    let edge = edge.clone();
+    move |e, window, cx| {
+        let (p, b) = (e.event.position, e.bounds);
+        let pointer = Point::new(p.x.into(), p.y.into());
+        let bounds = Rect {
+            x: b.origin.x.into(),
+            y: b.origin.y.into(),
+            w: b.size.width.into(),
+            h: b.size.height.into(),
+        };
+        let speed = drag_speed(pointer, bounds, vertical, z);
+        edge.update(cx, |e, _| e.speed = speed);
+        if speed != 0.0 {
+            window.refresh();
+        }
+    }
+}
+
 fn name(prefix: &str, n: usize, id: u64) -> ElementId {
     ElementId::Name(format!("{prefix}-{n}-{id}").into())
 }
@@ -112,10 +218,11 @@ pub(crate) fn body(
     block: BlockId,
     kanban: Kanban,
     z: f32,
+    window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let view = match kanban.shown(ws) {
-        Some(board) => board_view(ws, block, board, z, cx),
+        Some(board) => board_view(ws, block, board, z, window, cx),
         None => list_view(ws, block, z, cx),
     };
     // The wheel scrolls what is in the block, and stops there; with Ctrl it zooms the canvas.
@@ -237,6 +344,7 @@ fn board_view(
     block: BlockId,
     board: &Board,
     z: f32,
+    window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
@@ -245,8 +353,9 @@ fn board_view(
     let columns: Vec<AnyElement> = board
         .columns
         .iter()
-        .map(|column| column_view(ws, n, board_id, column, z, cx))
+        .map(|column| column_view(ws, n, board_id, column, z, window, cx))
         .collect();
+    let edge = edge_scroll_state(("columns-scroll", n), false, z, window, cx);
     let add = div()
         .id(("add-column", n))
         .flex_shrink_0()
@@ -281,6 +390,10 @@ fn board_view(
         .gap(px(10.0 * z))
         .p(px(4.0 * z))
         .overflow_x_scroll()
+        .track_scroll(&edge.read(cx).handle)
+        // A card, or a column by its title, dragged near the left or right scrolls the columns.
+        .on_drag_move(on_edge::<CardDrag>(&edge, false, z))
+        .on_drag_move(on_edge::<ColumnDrag>(&edge, false, z))
         .children(columns)
         .child(add)
         .test_support()
@@ -293,6 +406,7 @@ fn column_view(
     board: u64,
     column: &Column,
     z: f32,
+    window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
@@ -350,6 +464,7 @@ fn column_view(
         .iter()
         .map(|card| card_view(ws, n, board, col, card, z, cx))
         .collect();
+    let edge = edge_scroll_state(name("cards-scroll", n, col), true, z, window, cx);
     let add = div()
         .id(name("add-card", n, col))
         .flex()
@@ -407,6 +522,9 @@ fn column_view(
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
+                .track_scroll(&edge.read(cx).handle)
+                // A card dragged near the top or bottom of the list scrolls it.
+                .on_drag_move(on_edge::<CardDrag>(&edge, true, z))
                 .child(
                     div()
                         .flex()
@@ -415,7 +533,8 @@ fn column_view(
                         .px(px(6.0 * z))
                         .pb(px(6.0 * z))
                         .children(cards),
-                ),
+                )
+                .test_support(),
         )
         .child(add)
         .test_support()
@@ -1204,4 +1323,58 @@ pub(crate) fn open_card(
             input.select_all(window, cx);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use templum_canvas::EDGE_SPEED;
+
+    #[test]
+    fn a_drag_scrolls_faster_near_an_edge_in_world_units_and_never_across_another_column() {
+        let column = Rect {
+            x: 100.0,
+            y: 50.0,
+            w: 260.0,
+            h: 400.0,
+        };
+        let at = Point::new;
+        assert_eq!(
+            drag_speed(at(230.0, 250.0), column, true, 1.0),
+            0.0,
+            "the middle"
+        );
+        let near = drag_speed(at(230.0, 440.0), column, true, 1.0);
+        assert!(near > 0.0 && near < EDGE_SPEED);
+        assert!(
+            drag_speed(at(230.0, 445.0), column, true, 1.0) > near,
+            "faster nearer"
+        );
+        assert_eq!(
+            drag_speed(at(230.0, 600.0), column, true, 1.0),
+            EDGE_SPEED,
+            "past the edge"
+        );
+        assert_eq!(
+            drag_speed(at(230.0, 60.0), column, true, 1.0),
+            -EDGE_SPEED * 0.75,
+            "up"
+        );
+        assert_eq!(
+            drag_speed(at(500.0, 445.0), column, true, 1.0),
+            0.0,
+            "over another column"
+        );
+        assert!(
+            drag_speed(at(355.0, 250.0), column, false, 1.0) > 0.0,
+            "sideways, for the row"
+        );
+        // The zone is 40 world units: 60 px from the bottom is in it at zoom 2 only.
+        let tall = Rect { h: 800.0, ..column };
+        assert_eq!(drag_speed(at(230.0, 790.0), tall, true, 1.0), 0.0);
+        assert!(drag_speed(at(230.0, 790.0), tall, true, 2.0) > 0.0);
+        // A list shorter than both zones (a small block far away) stays still at its middle.
+        let short = Rect { h: 60.0, ..column };
+        assert_eq!(drag_speed(at(230.0, 80.0), short, true, 1.0), 0.0);
+    }
 }

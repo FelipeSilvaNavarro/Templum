@@ -551,7 +551,7 @@ pub(crate) fn render(
                 )
         }
         // A fading kanban block is drawn empty: its board is still live elsewhere.
-        Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
+        Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, window, cx))),
         // A fading checklist block is drawn empty too: its checklists are live elsewhere.
         Body::Checklist(c) => frame.when(live, |el| el.child(checklist::body(ws, id, c, z, cx))),
         // A fading note is drawn empty, like a kanban block.
