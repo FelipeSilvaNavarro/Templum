@@ -12,5 +12,8 @@ publish.workspace = true
 # Already in the tree: the engine's stream of JSON lines.
 serde_json = "1"
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints]
 workspace = true

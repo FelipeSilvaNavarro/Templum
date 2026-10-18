@@ -1,6 +1,8 @@
 //! The Templum Agent (docs/specs/templum-agent.md): the headless CLI agent the person talks to
 //! in the chat, its stream read into events, and the conversation they make. No UI.
 
+use std::path::Path;
+
 pub mod claude;
 
 /// The Templum Agent's word where a terminal's id would be: the asker of the tasks it hands and
@@ -43,4 +45,17 @@ pub enum ChatEvent {
         cost_usd: Option<f64>,
         error: Option<String>,
     },
+}
+
+/// Writes `bytes` to `path` through a temporary file renamed over it, so a reader never sees
+/// half of it.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let dir = path.parent().expect("a file in a folder");
+    std::fs::create_dir_all(dir)?;
+    let name = path.file_name().expect("a file name").to_string_lossy();
+    let temp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    std::fs::write(&temp, bytes)?;
+    std::fs::rename(&temp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp);
+    })
 }
