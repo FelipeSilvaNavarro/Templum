@@ -9,7 +9,7 @@ use templum_mcp::{Reply, tools};
 
 use super::bus::{flat, target};
 use super::{BlockId, Body, Space, Workspace};
-use crate::board::{Card, Comment};
+use crate::board::{Assignee, Card, Comment};
 use crate::checklists;
 use crate::editor::{Content, Editor};
 use crate::notes;
@@ -170,8 +170,12 @@ impl Workspace {
             let names: Vec<&str> = c.labels.iter().map(|l| l.name()).collect();
             line.push_str(&format!("  [{}]", names.join(", ")));
         }
-        if let Some(uid) = &c.assignee {
-            line.push_str(&format!("  assignee {}", self.who(uid, cx)));
+        match &c.assignee {
+            Some(Assignee::Block(uid)) => {
+                line.push_str(&format!("  assignee {}", self.who(uid, cx)))
+            }
+            Some(Assignee::Agent(id)) => line.push_str(&format!("  for any {id}")),
+            None => {}
         }
         match c.comments.len() {
             0 => {}
@@ -338,19 +342,24 @@ impl Workspace {
             .card(board, card)
             .and_then(|c| c.assignee.clone())
         {
-            Some(holder) if holder == mine => {
+            Some(Assignee::Block(holder)) if holder == mine => {
                 return Reply::ok(format!("Card {card} is already yours."));
             }
             Some(holder) => {
+                let holder = match holder {
+                    Assignee::Block(uid) => self.who(&uid, cx),
+                    Assignee::Agent(id) => format!("any {id}"),
+                };
                 return Reply::err(format!(
-                    "Card {card} is taken by {}. Ask the person to free it (the ✕ by its assignee in \
-                     the open card), or take another card.",
-                    self.who(&holder, cx)
+                    "Card {card} is taken by {holder}. Ask the person to free it (the ✕ by its \
+                     assignee in the open card), or take another card."
                 ));
             }
             None => {}
         }
-        self.edit_boards(|b| b.edit_card(board, card, |c| c.assignee = Some(mine)));
+        self.edit_boards(|b| {
+            b.edit_card(board, card, |c| c.assignee = Some(Assignee::Block(mine)))
+        });
         cx.notify();
         Reply::ok(format!("Card {card} is yours."))
     }

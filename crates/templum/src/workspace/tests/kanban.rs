@@ -378,7 +378,7 @@ fn a_card_shows_its_assignee_and_how_many_comments(cx: &mut TestAppContext) {
     ws.update(cx, |ws, _| {
         ws.edit_boards(|b| {
             b.edit_card(board, card, |c| {
-                c.assignee = Some(uid.clone());
+                c.assignee = Some(crate::board::Assignee::Block(uid.clone()));
                 c.comments.push(crate::board::Comment {
                     by: "you".into(),
                     text: "hi".into(),
@@ -398,7 +398,11 @@ fn the_open_card_adds_a_comment_and_frees_its_assignee(cx: &mut TestAppContext) 
     let (handle, ws) = open(cx);
     let (_, board, card) = board_with_a_card(handle, &ws, cx);
     ws.update(cx, |ws, _| {
-        ws.edit_boards(|b| b.edit_card(board, card, |c| c.assignee = Some("zzzzz".into())))
+        ws.edit_boards(|b| {
+            b.edit_card(board, card, |c| {
+                c.assignee = Some(crate::board::Assignee::Block("zzzzz".into()))
+            })
+        })
     });
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
@@ -442,8 +446,7 @@ fn the_open_card_adds_a_comment_and_frees_its_assignee(cx: &mut TestAppContext) 
             .card(board, card)
             .unwrap()
             .assignee
-            .clone())
-            .as_deref(),
-        Some("zzzzz")
+            .clone()),
+        Some(crate::board::Assignee::Block("zzzzz".into()))
     );
 }

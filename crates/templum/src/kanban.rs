@@ -16,7 +16,7 @@ use gpui_kit::{
 };
 use templum_canvas::{BlockId, Size};
 
-use crate::board::{Board, Boards, Card, Column, Comment, Label};
+use crate::board::{Assignee, Board, Boards, Card, Column, Comment, Label};
 use crate::grid::hsla;
 use crate::menu::Target;
 use crate::notes;
@@ -471,10 +471,10 @@ fn card_view(
             !card.description.is_empty() || !card.comments.is_empty() || card.assignee.is_some(),
             |el| {
                 let count = card.comments.len();
-                let who = card
-                    .assignee
-                    .as_ref()
-                    .map(|uid| ws.uid_title(uid, cx).unwrap_or_else(|| uid.clone()));
+                let who = card.assignee.as_ref().map(|a| match a {
+                    Assignee::Block(uid) => ws.uid_title(uid, cx).unwrap_or_else(|| uid.clone()),
+                    Assignee::Agent(id) => format!("Any {}", ws.agent_title(id)),
+                });
                 el.child(
                     div()
                         .flex()
@@ -673,7 +673,13 @@ pub(crate) fn open_card(
                 ws_now.uid_title(by, cx).unwrap_or_else(|| by.to_string())
             }
         };
-        let assignee = assignee.map(|uid| (author(&uid), ws.clone()));
+        let assignee = assignee.map(|a| {
+            let who = match &a {
+                Assignee::Block(uid) => author(uid),
+                Assignee::Agent(id) => format!("Any {}", ws_now.agent_title(id)),
+            };
+            (who, ws.clone())
+        });
         let comments: Vec<_> = comments
             .iter()
             .map(|c| {

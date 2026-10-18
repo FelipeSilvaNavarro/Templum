@@ -32,7 +32,7 @@ fn list_cards_shows_the_wired_board_and_a_card_whole(cx: &mut TestAppContext) {
             b.edit_card(board, card, |c| {
                 c.title = "Fix\nlogin".into();
                 c.description = "It 500s.\nOn Safari.".into();
-                c.assignee = Some(uid.clone());
+                c.assignee = Some(crate::board::Assignee::Block(uid.clone()));
                 c.comments.push(crate::board::Comment {
                     by: "you".into(),
                     text: "Please".into(),
@@ -168,7 +168,7 @@ fn create_move_comment_and_claim_change_the_board(cx: &mut TestAppContext) {
     assert!(!call(handle, &ws, cx, &me, "claim_card", json!({ "card": card })).0);
     ws.read_with(cx, |ws, _| {
         let c = ws.boards.card(board, card).unwrap();
-        assert_eq!(c.assignee.as_deref(), Some(uid.as_str()));
+        assert_eq!(c.assignee, Some(crate::board::Assignee::Block(uid.clone())));
         assert_eq!(
             (c.comments[0].by.as_str(), c.comments[0].text.as_str()),
             (uid.as_str(), "Done.")
@@ -197,7 +197,11 @@ fn claim_card_refuses_a_card_another_block_holds(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (me, _, _, board, card) = wired_board(handle, &ws, cx);
     ws.update(cx, |ws, _| {
-        ws.edit_boards(|b| b.edit_card(board, card, |c| c.assignee = Some("zzzzz".into())))
+        ws.edit_boards(|b| {
+            b.edit_card(board, card, |c| {
+                c.assignee = Some(crate::board::Assignee::Block("zzzzz".into()))
+            })
+        })
     });
     let (failed, text) = call(handle, &ws, cx, &me, "claim_card", json!({ "card": card }));
     assert!(
@@ -210,9 +214,8 @@ fn claim_card_refuses_a_card_another_block_holds(cx: &mut TestAppContext) {
             .card(board, card)
             .unwrap()
             .assignee
-            .clone())
-            .as_deref(),
-        Some("zzzzz")
+            .clone()),
+        Some(crate::board::Assignee::Block("zzzzz".into()))
     );
 }
 
