@@ -1663,6 +1663,37 @@ fn a_turn_shows_its_rows(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_text_it_writes_is_markdown_once_whole(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        let c = &mut ws.templum_agent.conversation;
+        c.person("hi");
+        c.apply(::templum_agent::ChatEvent::TextDelta("**Hel".into()));
+        c.apply(::templum_agent::ChatEvent::TextDelta("lo**".into()));
+    });
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, _| {
+        assert!(
+            window.try_find("agent-streaming").is_some(),
+            "plain while it grows"
+        );
+    })
+    .unwrap();
+    ws.update(cx, |ws, _| {
+        let whole = ::templum_agent::ChatEvent::Text("**Hello**".into());
+        ws.templum_agent.conversation.apply(whole);
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("agent-streaming").is_none(),
+            "Markdown once whole"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn a_rows_click_reveals_its_block_in_another_workspace(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     control(handle, &ws, cx, "create_workspace", json!({"name": "API"}));

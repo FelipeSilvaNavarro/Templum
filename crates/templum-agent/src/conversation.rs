@@ -187,6 +187,11 @@ impl Conversation {
         }
     }
 
+    /// The last row is the text the engine is writing: it grows with each delta.
+    pub fn streaming(&self) -> bool {
+        self.open_text
+    }
+
     /// The person sent a message: queued when a turn runs.
     pub fn person(&mut self, text: &str) {
         self.open_text = false;

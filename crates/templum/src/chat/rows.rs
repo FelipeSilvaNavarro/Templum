@@ -35,20 +35,30 @@ pub(crate) fn row(ws: &Workspace, n: usize, row: &Row, cx: &mut Context<Workspac
                 .child(text.clone())
                 .when(*queued, |el| el.child(small("Queued".into(), ui.title_dim))),
         ),
-        Row::Text { text } => el.child(
-            div()
-                .w_full()
-                .text_size(px(13.0))
-                .text_color(ui.title)
-                .child(
-                    TextView::markdown(
-                        ElementId::Name(format!("agent-md-{n}").into()),
-                        SharedString::from(text.clone()),
-                    )
+        Row::Text { text } => {
+            let conversation = &ws.templum_agent.conversation;
+            let text = SharedString::from(text.clone());
+            // Markdown once it is whole: parsed at each delta, each left a layout behind.
+            let body = if conversation.streaming() && n + 1 == conversation.rows.len() {
+                div()
+                    .id("agent-streaming")
+                    .child(text)
+                    .test_support()
+                    .into_any_element()
+            } else {
+                TextView::markdown(ElementId::Name(format!("agent-md-{n}").into()), text)
                     .style(crate::markdown::style(1.0))
-                    .selectable(true),
-                ),
-        ),
+                    .selectable(true)
+                    .into_any_element()
+            };
+            el.child(
+                div()
+                    .w_full()
+                    .text_size(px(13.0))
+                    .text_color(ui.title)
+                    .child(body),
+            )
+        }
         Row::Thinking => el.child(small("Thinking".into(), ui.title_dim)),
         Row::Action {
             tool,
