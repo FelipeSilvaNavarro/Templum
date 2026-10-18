@@ -2382,13 +2382,23 @@ fn waiting_for_its_person_is_told_once(cx: &mut TestAppContext) {
 fn delegate_hands_a_task_under_the_templum_agents_line(cx: &mut TestAppContext) {
     let (handle, ws, _, theirs) = super::delegate::two_agents(cx);
     let (_, them) = me(&ws, cx, theirs);
-    let (failed, text) = control(
+    // The person's agent runs it as its mode lets it: the person allows it first.
+    let answers = control_later(
         handle,
         &ws,
         cx,
+        6,
         "delegate",
         json!({"block": them, "task": "fix the tests"}),
     );
+    assert!(answers.try_recv().is_err(), "it asks");
+    ws.read_with(cx, |ws, _| {
+        let approval = &ws.templum_agent.approvals[0];
+        assert!(approval.said.starts_with("Hand \""), "{}", approval.said);
+        assert_eq!(approval.details, "fix the tests");
+    });
+    answer(handle, &ws, cx, crate::chat::Answer::Conversation);
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
     assert_eq!(
         (failed, text),
         (false, format!("Handed to {them} as task t1."))
@@ -2630,6 +2640,9 @@ fn the_fifth_task_is_refused_while_four_run(cx: &mut TestAppContext) {
         terminals.push(handed_by_the_templum_agent(handle, &ws, cx).2);
     }
     let (_, other) = busy_terminal(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.templum_agent.conversation.own.blocks.push(other.clone())
+    });
     let open = json!({"agent": "nope", "workspace": shown, "prompt": "Take card 5"});
     assert_eq!(
         control(handle, &ws, cx, "open_agent", open.clone()),

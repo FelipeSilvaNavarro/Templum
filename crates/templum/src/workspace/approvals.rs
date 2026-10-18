@@ -246,6 +246,9 @@ impl Workspace {
                 };
                 (format!("Press keys in {title:?}"), details)
             }
+            ControlCall::Block(Call::Delegate { task, .. }) => {
+                (format!("Hand {title:?} a task"), typed(task).0)
+            }
             ControlCall::Block(Call::Interrupt { .. }) => (
                 format!("Interrupt {title:?}"),
                 "Esc once: its turn stops where it is.".to_string(),
@@ -452,6 +455,7 @@ fn called_block(call: &ControlCall) -> Option<&str> {
         | ControlCall::Block(
             Call::SendToTerminal { block, .. }
             | Call::SendKeys { block, .. }
+            | Call::Delegate { block, .. }
             | Call::Interrupt { block }
             | Call::StopAgent { block },
         ) => Some(block),

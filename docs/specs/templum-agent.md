@@ -403,7 +403,7 @@ conversation". `reason` is an optional string on every Ask tool, shown in the ap
 | `send_to_terminal` | `block`, `text`, `enter`, `reason` | As the block server's; a text over 256 KiB is refused before asking (the approval shows it whole) | Ask | 1 |
 | `send_keys` | `block`, `keys`, `reason` | As the block server's: answering an agent's dialog is approving its tool for the person | Ask | 1 |
 | `notify` | `text` | A notification from the Templum Agent; a click opens the chat | – | 1 |
-| `delegate` | `block`, `task`, `wait` | Hands an agent block a task ([Orchestration](#orchestration)) | – | 2 |
+| `delegate` | `block`, `task`, `wait`, `reason` | Hands an agent block a task ([Orchestration](#orchestration)); the approval shows the task | Ask own | 2 |
 | `wait_for` | `block`, `event`, and card 35's `pattern`, `lines` and `wait` | As the block server's; with `wait` false, the match (or the watch's end) comes back into the chat as a notice | – | 2 |
 | `interrupt`, `stop_agent` | `block`, `reason` | As the block server's (`stop_agent` is card 35's) | Ask own | 2 |
 | `edit_workspace` | `workspace`, `name`, `folder`, `color`, `icon` | Its name, folder and look | – | 3 |
@@ -431,9 +431,11 @@ Danger is decided by Templum, from the tool and its target, in one table (`templ
 arguments can't lower it.
 
 - **Runs at once:** reading; making something; changes Ctrl+Z takes back (cards, wires to anything but the person's
-  terminals, items, placement); showing. Opening an agent and handing it a task run at once: that agent's own permission dialogs still guard what it does, and
-  it is a block the person sees.
-- **Asks:** what types or runs something in a terminal (`send_to_terminal`, `send_keys`, `run`); a wire (`connect`,
+  terminals, items, placement); showing. Opening an agent and handing a task to one it opened run at once: that agent's own permission dialogs still
+  guard what it does, and it is a block the person sees.
+- **Asks:** what types or runs something in a terminal (`send_to_terminal`, `send_keys`, `run`); a task handed to an
+  agent it didn't open (`delegate`), which runs as that agent's mode lets it (in bypass or auto, whatever the task
+  says); a wire (`connect`,
   `open_agent`'s `connect`) between two terminals when one isn't its own, since the wire is the person's consent that
   each agent on it types into the other and answers its dialogs (the approval: "Wire *A* to *B*", "*A* can type into
   *B* and answer its dialogs."); wires to a kanban, a note or a checklist run at once; what ends a program

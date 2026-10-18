@@ -181,9 +181,15 @@ pub fn list() -> Value {
                 text = text.replace(from, to);
             }
             let mut tool: Value = serde_json::from_str(&text).expect("JSON");
-            if ["send_to_terminal", "send_keys", "interrupt", "stop_agent"]
-                .iter()
-                .any(|name| t["name"] == *name)
+            if [
+                "send_to_terminal",
+                "send_keys",
+                "delegate",
+                "interrupt",
+                "stop_agent",
+            ]
+            .iter()
+            .any(|name| t["name"] == *name)
             {
                 tool["inputSchema"]["properties"]["reason"] = reason();
             }
@@ -411,11 +417,12 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
         _ if SHARED.contains(&name) => {
             let call = tools::parse(name, args)?;
             // The approval shows it whole: a longer one would stall each frame that draws it.
-            if let Call::SendToTerminal { text, .. } = &call
+            if let Call::SendToTerminal { text, .. } | Call::Delegate { task: text, .. } = &call
                 && text.len() > tools::MAX_TEXT
             {
+                let key = if name == "delegate" { "task" } else { "text" };
                 return Err(format!(
-                    "\"text\" is at most {} bytes: send it in parts.",
+                    "\"{key}\" is at most {} bytes: send it in parts.",
                     tools::MAX_TEXT
                 ));
             }
@@ -469,8 +476,11 @@ pub fn rule(call: &ControlCall) -> Rule {
         ControlCall::Block(Call::SendToTerminal { .. } | Call::SendKeys { .. }) => Rule::Ask,
         ControlCall::CloseBlock { .. } => Rule::AskOwnWhenLosing,
         // A wire lets each terminal on it type into the other and answer its dialogs: Templum
-        // asks when it would reach a terminal that isn't the Templum Agent's own.
-        ControlCall::Block(Call::Interrupt { .. } | Call::StopAgent { .. })
+        // asks when it would reach a terminal that isn't the Templum Agent's own. A task runs as
+        // the person's agent's mode lets it: in bypass or auto, whatever the task says.
+        ControlCall::Block(
+            Call::Interrupt { .. } | Call::StopAgent { .. } | Call::Delegate { .. },
+        )
         | ControlCall::Connect { .. }
         | ControlCall::OpenAgent(_) => Rule::AskOwn,
         _ => Rule::Free,
@@ -612,10 +622,12 @@ mod tests {
         let typing = |text: String| parse("send_to_terminal", &json!({"block": "b", "text": text}));
         assert!(typing(long.clone()).is_ok());
         assert!(
-            typing(long + "x")
+            typing(long.clone() + "x")
                 .unwrap_err()
                 .contains("\"text\" is at most 262144 bytes")
         );
+        let task = parse("delegate", &json!({"block": "b", "task": long + "x"}));
+        assert!(task.unwrap_err().contains("\"task\" is at most"));
     }
 
     #[test]
@@ -712,7 +724,7 @@ mod tests {
         );
         assert_eq!(
             rule_of("delegate", json!({"block": "b", "task": "t"})),
-            Rule::Free
+            Rule::AskOwn
         );
         assert_eq!(Rule::AskOwnWhenLosing.level(false, true), Some(Level::Ask));
         assert_eq!(Rule::AskOwnWhenLosing.level(true, true), None);
