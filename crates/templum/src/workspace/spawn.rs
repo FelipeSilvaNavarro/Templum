@@ -11,7 +11,6 @@ use templum_terminal::Agent;
 
 use super::bus::{Outcome, target};
 use super::delegate::TASK_LEAD;
-use super::history::Then;
 use super::ops::Place;
 use super::{AGENT_COLS, AGENT_ROWS, Handed, Prompt, Space, Workspace};
 use crate::agents::AgentEntry;
@@ -383,22 +382,7 @@ impl Workspace {
                 "Only the person closes {block}: you didn't open it."
             ));
         }
-        let terminal = space.terminal(id).map(|p| p.term.id().to_string());
-        if let Some(pane) = terminal.as_deref().and_then(|t| self.pane_mut(t))
-            && pane.handed.as_ref().is_some_and(|h| h.by == from)
-        {
-            pane.handed = None;
-        }
-        self.in_space(&space_id, |ws| {
-            ws.close_now(&[id], Then::New, window, cx);
-            // Its shell and agent end now: a ghost waits for a frame of its workspace, which one
-            // not shown, or a window not drawn, doesn't have.
-            ws.space.ghosts.retain(|g| g.block.id != id);
-        });
-        cx.notify();
-        Reply::ok(format!(
-            "Closed {block}. The person can bring it back with Ctrl+Z."
-        ))
+        self.block_close((&space_id, id), block, from, window, cx)
     }
 
     /// Looks, every READY_LOOK, whether the agent in `terminal` is ready for its prompt, until it

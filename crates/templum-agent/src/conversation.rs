@@ -206,7 +206,15 @@ impl Conversation {
                 }
             }
             ChatEvent::ToolResult { id, text, is_error } => {
-                if let Some(Row::Action { state, said, .. }) = self.action(&id) {
+                if let Some(Row::Action { state, said, .. }) = self.action(&id).filter(|r| {
+                    !matches!(
+                        r,
+                        Row::Action {
+                            state: ActionState::Denied,
+                            ..
+                        }
+                    )
+                }) {
                     *state = if is_error {
                         ActionState::Failed
                     } else {
@@ -259,6 +267,17 @@ impl Conversation {
                 if t == tool && (i == input || i.is_null()))
         }) {
             *t = Some(target);
+        }
+    }
+
+    /// The person denied a call: its action row says so, whatever its refusal says after.
+    pub fn denied(&mut self, tool: &str, input: &Value) {
+        if let Some(Row::Action { state, said, .. }) = self.rows.iter_mut().find(|r| {
+            matches!(r, Row::Action { tool: t, input: i, state: ActionState::Running, .. }
+                if t == tool && (i == input || i.is_null()))
+        }) {
+            *state = ActionState::Denied;
+            *said = "You denied this.".into();
         }
     }
 
@@ -504,6 +523,28 @@ mod tests {
                 text: "second".into(),
                 queued: false
             }
+        );
+    }
+
+    #[test]
+    fn a_denied_action_stays_denied_when_its_refusal_comes() {
+        let mut c = Conversation::new("claude");
+        c.person("close it");
+        c.apply(started("t1", "mcp__templum-control__close_block"));
+        c.apply(ChatEvent::ToolCall {
+            id: "t1".into(),
+            name: "mcp__templum-control__close_block".into(),
+            input: json!({"block": "b1"}),
+        });
+        c.denied("close_block", &json!({"block": "b1"}));
+        c.apply(ChatEvent::ToolResult {
+            id: "t1".into(),
+            text: "The person denied this.".into(),
+            is_error: true,
+        });
+        assert!(
+            matches!(&c.rows[1], Row::Action { state: ActionState::Denied, said, .. }
+            if said == "You denied this.")
         );
     }
 

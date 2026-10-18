@@ -10,8 +10,9 @@ use templum_canvas::{BlockId, Rect, Size, chrome, free_spot};
 use templum_mcp::{Reply, tools};
 use templum_terminal::Pattern;
 
-use super::bus::{clean_title, flat};
+use super::bus::{Outcome, clean_title, flat};
 use super::content::Caller;
+use super::history::Then;
 use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Kanban, Space, Workspace, remember};
 use crate::board::{Assignee, Card, Comment, Priority};
 use crate::checklist::{self, Checklist};
@@ -417,6 +418,80 @@ impl Workspace {
                 tools::MAX_TEXT,
             ))
         }
+    }
+
+    /// Types `text` into a terminal, as a paste; Enter after it when `enter`, answered once it
+    /// went: a caller that waits for each answer gets its texts and Enters in order.
+    pub(super) fn type_text(
+        &self,
+        (space, id): (&str, BlockId),
+        block: &str,
+        text: &str,
+        enter: bool,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
+        let Some(pane) = self.space_named(space).and_then(|s| s.terminal(id)) else {
+            return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
+        };
+        if !enter {
+            pane.term.type_in(text);
+            return Outcome::Now(Reply::ok(format!("Typed into {block}.")));
+        }
+        let entered = self.type_then_enter(pane.term.id().to_string(), text, cx);
+        let block = block.to_string();
+        Outcome::Later(cx.spawn(async move |_, _| {
+            if entered.await {
+                Reply::ok(format!("Typed into {block}."))
+            } else {
+                Reply::err(format!("{block} was closed before its Enter."))
+            }
+        }))
+    }
+
+    /// Closes a block, also in a workspace not shown, as one step of Ctrl+Z. The task `asker`
+    /// handed its agent ends untold: the asker knows.
+    pub(super) fn block_close(
+        &mut self,
+        (space, id): (&str, BlockId),
+        block: &str,
+        asker: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let terminal = self
+            .space_named(space)
+            .and_then(|s| s.terminal(id))
+            .map(|p| p.term.id().to_string());
+        if let Some(pane) = terminal.as_deref().and_then(|t| self.pane_mut(t))
+            && pane.handed.as_ref().is_some_and(|h| h.by == asker)
+        {
+            pane.handed = None;
+        }
+        self.in_space(space, |ws| {
+            ws.close_now(&[id], Then::New, window, cx);
+            // Its shell and agent end now: a ghost waits for a frame of its workspace, which one
+            // not shown, or a window not drawn, doesn't have.
+            ws.space.ghosts.retain(|g| g.block.id != id);
+        });
+        cx.notify();
+        Reply::ok(format!(
+            "Closed {block}. The person can bring it back with Ctrl+Z."
+        ))
+    }
+
+    /// What closing a block would lose, as the person's own close asks: a program at work in a
+    /// terminal, unsaved edits in an editor. None when nothing would be.
+    pub(super) fn would_lose(&self, (space, id): (&str, BlockId)) -> Option<String> {
+        let space = self.space_named(space)?;
+        if let Some(pane) = space.terminal(id) {
+            // A shell that ended has nothing left to lose.
+            if pane.term.exited() {
+                return None;
+            }
+            return crate::alert::busy(&pane.term.status(), self.agent_name(pane));
+        }
+        let unsaved = space.unsaved(Some(id));
+        (!unsaved.is_empty()).then(|| format!("Unsaved edits: {}.", unsaved.join(", ")))
     }
 
     /// The editor of the note a note block shows.

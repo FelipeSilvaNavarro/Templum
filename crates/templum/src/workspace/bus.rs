@@ -157,7 +157,7 @@ impl Workspace {
             reply,
         } = message;
         if hello.client == "control" {
-            return self.serve_control(hello, incoming, reply, window, cx);
+            return self.serve_control(hello, conn, incoming, reply, window, cx);
         }
         // Connections off: an agent's server and hooks get nothing, the command line works.
         let off = !self.config.connections.enabled && hello.client != "cli";
@@ -445,23 +445,7 @@ impl Workspace {
                     Ok(id) => id,
                     Err(reply) => return Outcome::Now(reply),
                 };
-                let Some(pane) = space.terminal(id) else {
-                    return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
-                };
-                if !enter {
-                    pane.term.type_in(&text);
-                    return Outcome::Now(Reply::ok(format!("Typed into {block}.")));
-                }
-                // Answered after its Enter: a caller that waits for each answer (a script's
-                // `templum send` twice) gets its texts and Enters in order.
-                let entered = self.type_then_enter(pane.term.id().to_string(), &text, cx);
-                return Outcome::Later(cx.spawn(async move |_, _| {
-                    if entered.await {
-                        Reply::ok(format!("Typed into {block}."))
-                    } else {
-                        Reply::err(format!("{block} was closed before its Enter."))
-                    }
-                }));
+                return self.type_text((&space_id, id), &block, &text, enter, cx);
             }
             Call::Notify { text } => {
                 let (_, title, _) = self.about(&space.blocks[&me], cx);

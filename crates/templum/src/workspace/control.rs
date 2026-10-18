@@ -23,14 +23,23 @@ impl Workspace {
     pub(super) fn serve_control(
         &mut self,
         hello: Hello,
+        conn: u64,
         incoming: Incoming,
         reply: Replier,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let genuine = hello.control.as_deref() == Some(self.templum_agent.secret.as_str());
-        let Incoming::Request { id, method, params } = incoming else {
-            return;
+        let (id, method, params) = match incoming {
+            Incoming::Request { id, method, params } => (id, method, params),
+            // The engine gave up on a call, or its connection ended: what waits goes.
+            Incoming::Notification { method, params } if method == "notifications/cancelled" => {
+                return self.drop_approval(conn, &params["requestId"], cx);
+            }
+            Incoming::Notification { method, .. } if method == templum_mcp::bus::CLOSED => {
+                return self.drop_approvals_of(conn, cx);
+            }
+            Incoming::Notification { .. } | Incoming::Response => return,
         };
         let answer = match method.as_str() {
             "initialize" => {
@@ -52,34 +61,58 @@ impl Workspace {
                 if !control::known(name) {
                     rpc::error(&id, rpc::PARAMS, &format!("Unknown tool: {name}"))
                 } else {
-                    let (outcome, target) = match control::parse(name, arguments) {
-                        Ok(parsed) => self.control_call(parsed, arguments, window, cx),
-                        Err(why) => (Outcome::Now(Reply::err(why)), None),
-                    };
-                    if let Some(target) = target {
-                        let conversation = &mut self.templum_agent.conversation;
-                        conversation.touched(name, arguments, target);
-                    }
-                    match outcome {
-                        Outcome::Now(done) => tools::tool_result(&id, &done),
-                        Outcome::Later(job) => {
-                            cx.spawn(async move |_, _| {
-                                let done = job.await;
-                                let _ = reply.send(tools::tool_result(&id, &done));
-                            })
-                            .detach();
+                    match control::parse(name, arguments) {
+                        Ok(parsed) => {
+                            let args = arguments.clone();
+                            if let Some((id, reply, parsed, args)) =
+                                self.gate(conn, id, reply, name, parsed, args, cx)
+                            {
+                                self.run_control(id, reply, name, parsed, &args, window, cx);
+                            }
                             return;
                         }
-                        Outcome::Wait(..) => tools::tool_result(
-                            &id,
-                            &Reply::err("Templum can't wait on that for the Templum Agent yet."),
-                        ),
+                        Err(why) => tools::tool_result(&id, &Reply::err(why)),
                     }
                 }
             }
             _ => rpc::error(&id, rpc::METHOD, &format!("Method not found: {method}")),
         };
         let _ = reply.send(answer);
+    }
+
+    /// Runs a control call past its gate and answers it, now or when it is done; what it
+    /// touched goes to its row in the chat.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn run_control(
+        &mut self,
+        id: Value,
+        reply: Replier,
+        name: &str,
+        parsed: Parsed,
+        args: &Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (outcome, target) = self.control_call(parsed, args, window, cx);
+        if let Some(target) = target {
+            self.templum_agent.conversation.touched(name, args, target);
+        }
+        match outcome {
+            Outcome::Now(done) => {
+                let _ = reply.send(tools::tool_result(&id, &done));
+            }
+            Outcome::Later(job) => {
+                cx.spawn(async move |_, _| {
+                    let done = job.await;
+                    let _ = reply.send(tools::tool_result(&id, &done));
+                })
+                .detach();
+            }
+            Outcome::Wait(..) => {
+                let refused = Reply::err("Templum can't wait on that for the Templum Agent yet.");
+                let _ = reply.send(tools::tool_result(&id, &refused));
+            }
+        }
     }
 
     /// A control call: its answer, and what it touched for the chat's row.
@@ -122,6 +155,28 @@ impl Workspace {
             }
             ControlCall::Connect { a, b } => return self.wire_for_agent(&a, &b, true, cx),
             ControlCall::Disconnect { a, b } => return self.wire_for_agent(&a, &b, false, cx),
+            ControlCall::CloseBlock { block } => {
+                let asker = templum_agent::ASKER;
+                return self.on_block(&block, |ws, at| {
+                    ws.block_close(at, &block, asker, window, cx)
+                });
+            }
+            ControlCall::Block(Call::SendToTerminal { block, text, enter }) => {
+                return match self.find_block(&block) {
+                    Some((space, id)) => {
+                        let typed = self.type_text((&space, id), &block, &text, enter, cx);
+                        let target = Target {
+                            workspace: Some(space),
+                            block: Some(block),
+                        };
+                        (typed, Some(target))
+                    }
+                    None => (Outcome::Now(no_block(&block)), None),
+                };
+            }
+            ControlCall::Block(Call::SendKeys { block, keys }) => {
+                return self.keys_for_agent(&block, keys, cx);
+            }
             ControlCall::Block(Call::ListCards { board, card }) => {
                 let board = match card {
                     Some(card) => self
@@ -526,6 +581,45 @@ impl Workspace {
             done
         };
         self.in_worktree(folder, worktree, open, window, cx)
+    }
+
+    /// `send_keys`: the keys pressed in a terminal, once the person allowed it.
+    fn keys_for_agent(
+        &mut self,
+        block: &str,
+        keys: Vec<String>,
+        cx: &mut Context<Self>,
+    ) -> (Outcome, Option<Target>) {
+        let Some((space, id)) = self.find_block(block) else {
+            return (Outcome::Now(no_block(block)), None);
+        };
+        let Some(pane) = self.space_named(&space).and_then(|s| s.terminal(id)) else {
+            return (
+                Outcome::Now(Reply::err(format!("{block} isn't a terminal."))),
+                None,
+            );
+        };
+        if let Some(bad) = keys
+            .iter()
+            .find(|k| templum_terminal::named_key(k).is_none())
+        {
+            let why = format!(
+                "{bad:?} isn't a key Templum knows. Keys: {}.",
+                templum_terminal::KEY_NAMES
+            );
+            return (Outcome::Now(Reply::err(why)), None);
+        }
+        let worker = pane.term.id().to_string();
+        let said = match keys.len() {
+            1 => format!("Pressed 1 key in {block}."),
+            n => format!("Pressed {n} keys in {block}."),
+        };
+        let pressed = self.press_keys(worker, "Templum Agent".into(), keys, said, cx);
+        let target = Target {
+            workspace: Some(space),
+            block: Some(block.to_string()),
+        };
+        (Outcome::Later(pressed), Some(target))
     }
 
     /// `connect` (`on`) and `disconnect`: a wire between two blocks of one workspace, a step of

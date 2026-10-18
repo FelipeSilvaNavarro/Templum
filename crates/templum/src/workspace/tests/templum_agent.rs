@@ -765,3 +765,313 @@ fn an_unknown_agent_or_a_bad_effort_opens_nothing(cx: &mut TestAppContext) {
     assert!(failed && text.contains("nope1"), "{text}");
     assert_eq!(blocks(&ws, cx), before);
 }
+
+/// Calls `tool` as the engine does, on connection `conn` (its request's id is `conn` too): the
+/// channel its answer comes on, now or once the person answers.
+fn control_later(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    conn: u64,
+    tool: &str,
+    arguments: Value,
+) -> std::sync::mpsc::Receiver<String> {
+    let secret = ws.read_with(cx, |ws, _| ws.templum_agent.secret.clone());
+    let (reply, answers) = std::sync::mpsc::channel();
+    let message = Message {
+        hello: Hello {
+            terminal: String::new(),
+            client: "control".into(),
+            control: Some(secret),
+        },
+        conn,
+        incoming: Incoming::Request {
+            id: json!(conn),
+            method: "tools/call".into(),
+            params: json!({ "name": tool, "arguments": arguments }),
+        },
+        reply,
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.serve(message, window, cx))
+    })
+    .unwrap();
+    answers
+}
+
+/// A notification on the control connection `conn`, as the engine or the bus sends it.
+fn control_note(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    conn: u64,
+    method: &str,
+    params: Value,
+) {
+    let secret = ws.read_with(cx, |ws, _| ws.templum_agent.secret.clone());
+    let (reply, _) = std::sync::mpsc::channel();
+    let message = Message {
+        hello: Hello {
+            terminal: String::new(),
+            client: "control".into(),
+            control: Some(secret),
+        },
+        conn,
+        incoming: Incoming::Notification {
+            method: method.into(),
+            params,
+        },
+        reply,
+    };
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.serve(message, window, cx))
+    })
+    .unwrap();
+}
+
+fn answer(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    answer: crate::chat::Answer,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let id = ws.templum_agent.approvals[0].id;
+            ws.answer_approval(id, answer, window, cx)
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+/// A new terminal in the shown workspace where Claude Code runs, as a snapshot would have found
+/// it: closing it loses work. Its block and its id.
+fn busy_terminal(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> (BlockId, String) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.new_terminal(window, cx);
+            let id = ws.space.canvas.top().unwrap();
+            ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into());
+            (id, ws.space.uids[&id].clone())
+        })
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn an_idle_shell_closes_at_once_a_running_program_waits(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let idle = first_id(&ws, cx);
+    let idle_uid = ws.read_with(cx, |ws, _| ws.space.uids[&idle].clone());
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    let (failed, text) = control(handle, &ws, cx, "close_block", json!({"block": idle_uid}));
+    assert_eq!(
+        (failed, text),
+        (
+            false,
+            format!("Closed {idle_uid}. The person can bring it back with Ctrl+Z.")
+        )
+    );
+    let answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "close_block",
+        json!({"block": uid, "reason": "done"}),
+    );
+    assert!(answers.try_recv().is_err(), "it waits for the person");
+    ws.read_with(cx, |ws, _| {
+        let approvals = &ws.templum_agent.approvals;
+        assert_eq!(approvals.len(), 1);
+        assert_eq!(approvals[0].said, "Close \"Claude Code\"");
+        assert_eq!(approvals[0].details, "Claude Code is running in it.");
+        assert!(ws.space.canvas.get(busy).is_some());
+        assert!(ws.templum_agent.unread);
+    });
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert!(
+        !failed && text.starts_with(&format!("Closed {uid}.")),
+        "{text}"
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.canvas.get(busy).is_none());
+        assert!(ws.templum_agent.approvals.is_empty());
+        assert!(
+            ws.templum_agent
+                .conversation
+                .rows
+                .contains(&::templum_agent::Row::Approval {
+                    said: "Close \"Claude Code\"".into(),
+                    answer: "Allowed once".into(),
+                })
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn deny_answers_the_refusal_with_the_persons_words(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    let answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    answer(
+        handle,
+        &ws,
+        cx,
+        crate::chat::Answer::Deny(Some("leave it".into())),
+    );
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert!(failed);
+    assert_eq!(
+        text,
+        "The person denied this. Don't try it another way: ask them what they want.\nThey said: leave it"
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.canvas.get(busy).is_some());
+        assert!(
+            ws.templum_agent
+                .conversation
+                .rows
+                .contains(&::templum_agent::Row::Approval {
+                    said: "Close \"Claude Code\"".into(),
+                    answer: "Denied".into(),
+                })
+        );
+    });
+    let answers = control_later(handle, &ws, cx, 8, "close_block", json!({"block": uid}));
+    answer(handle, &ws, cx, crate::chat::Answer::Deny(None));
+    let (_, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert_eq!(
+        text,
+        "The person denied this. Don't try it another way: ask them what they want."
+    );
+}
+
+#[gpui_kit::test]
+fn a_grant_lets_the_tool_through(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&first].clone());
+    let answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "send_to_terminal",
+        json!({"block": uid, "text": "ls"}),
+    );
+    assert!(answers.try_recv().is_err(), "it waits");
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.templum_agent.approvals[0].details.clone()),
+        "ls"
+    );
+    answer(handle, &ws, cx, crate::chat::Answer::Conversation);
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert_eq!(
+        (failed, text.as_str()),
+        (false, format!("Typed into {uid}.").as_str())
+    );
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "send_to_terminal",
+        json!({"block": uid, "text": "pwd"}),
+    );
+    assert!(!failed, "the grant lets it through: {text}");
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.templum_agent.grants.contains("send_to_terminal"));
+        assert!(ws.templum_agent.approvals.is_empty());
+    });
+}
+
+#[gpui_kit::test]
+fn its_own_running_agent_closes_without_asking(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.templum_agent.conversation.own.blocks.push(uid.clone())
+    });
+    let (failed, text) = control(handle, &ws, cx, "close_block", json!({"block": uid}));
+    assert!(!failed, "{text}");
+    assert!(ws.read_with(cx, |ws, _| ws.space.canvas.get(busy).is_none()));
+}
+
+#[gpui_kit::test]
+fn a_target_gone_meanwhile_is_answered_as_gone(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    let answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.close_now(&[busy], super::super::history::Then::New, window, cx)
+        })
+    })
+    .unwrap();
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert_eq!(
+        (failed, text),
+        (
+            true,
+            format!("There's no block {uid}: overview lists them.")
+        )
+    );
+}
+
+#[gpui_kit::test]
+fn a_cancel_or_the_engines_end_drops_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    let first = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    control_note(
+        handle,
+        &ws,
+        cx,
+        7,
+        "notifications/cancelled",
+        json!({"requestId": 7}),
+    );
+    assert!(ws.read_with(cx, |ws, _| ws.templum_agent.approvals.is_empty()));
+    assert!(matches!(
+        first.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Disconnected)
+    ));
+    let _second = control_later(handle, &ws, cx, 8, "close_block", json!({"block": uid}));
+    let _third = control_later(handle, &ws, cx, 9, "close_block", json!({"block": uid}));
+    control_note(handle, &ws, cx, 8, templum_mcp::bus::CLOSED, json!({}));
+    let left: Vec<u64> = ws.read_with(cx, |ws, _| {
+        ws.templum_agent.approvals.iter().map(|a| a.conn).collect()
+    });
+    assert_eq!(left, [9], "only connection 8's went");
+}
+
+#[gpui_kit::test]
+fn send_keys_shows_what_the_agent_asks(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(busy).unwrap().state = Some(crate::workspace::AgentState::NeedsYou(
+            Some("Allow Edit?".into()),
+        ));
+    });
+    let _answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "send_keys",
+        json!({"block": uid, "keys": ["2", "enter"]}),
+    );
+    ws.read_with(cx, |ws, _| {
+        let approval = &ws.templum_agent.approvals[0];
+        assert_eq!(approval.said, "Press keys in \"Claude Code\"");
+        assert_eq!(approval.details, "It asks: Allow Edit?\n2 enter");
+    });
+}

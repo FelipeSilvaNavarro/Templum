@@ -1,6 +1,7 @@
 //! The main view: the canvas of terminal blocks.
 
 mod activity;
+mod approvals;
 mod blocks;
 mod bus;
 mod checklist_blocks;
