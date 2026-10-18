@@ -1831,26 +1831,37 @@ fn the_popup_answers_with_its_buttons_and_keys(cx: &mut TestAppContext) {
         window.render_frame(cx);
     })
     .unwrap();
+    assert!(
+        answers.try_recv().is_err(),
+        "a click as it shows is ignored"
+    );
+    super::bus::after(cx, 600);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("approval-once", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
     cx.run_until_parked();
     let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
     assert!(!failed, "{text}");
     assert!(ws.read_with(cx, |ws, _| ws.space.canvas.get(busy).is_none()));
-    // The pill has the keyboard: the next approval takes it, and its keys wait half a second.
+    // A click on it gives it the keyboard; its keys wait half a second from then.
     let (_, uid) = busy_terminal(handle, &ws, cx);
-    cx.update_window(handle, |_, window, cx| {
-        window.render_frame(cx);
-        window.press(AGENT, cx);
-        window.render_frame(cx);
-    })
-    .unwrap();
     let answers = control_later(handle, &ws, cx, 8, "close_block", json!({"block": uid}));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    super::bus::after(cx, 600);
     cx.update_window(handle, |_, window, cx| {
+        window.click_at("approval", point(px(4.0), px(4.0)), cx);
         window.render_frame(cx);
         window.press("3", cx);
         window.render_frame(cx);
     })
     .unwrap();
-    assert!(answers.try_recv().is_err(), "too soon after it showed");
+    assert!(
+        answers.try_recv().is_err(),
+        "too soon after it took the keyboard"
+    );
     super::bus::after(cx, 600);
     cx.update_window(handle, |_, window, cx| {
         window.press("3", cx);
@@ -1861,6 +1872,49 @@ fn the_popup_answers_with_its_buttons_and_keys(cx: &mut TestAppContext) {
     assert!(
         failed && text.starts_with("The person denied this."),
         "{text}"
+    );
+}
+
+#[gpui_kit::test]
+fn a_digit_for_the_pill_never_answers_an_approval(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    let answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    super::bus::after(cx, 600);
+    // The shortcut, with an approval waiting long enough: the field takes the keyboard.
+    cx.update_window(handle, |_, window, cx| {
+        window.press(AGENT, cx);
+        window.render_frame(cx);
+        window.input("1", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(pill_has_keys(handle, &ws, cx));
+    assert_eq!(pill_text(&ws, cx), "1");
+    assert!(answers.try_recv().is_err(), "the 1 is the pill's");
+    // A click on the pill that asks: its field too.
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        window.render_frame(cx);
+        ws.update(cx, |ws, cx| {
+            let input = ws.templum_agent.input.clone().unwrap();
+            input.update(cx, |input, cx| input.set_value("", window, cx));
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("agent-asks").is_some());
+        window.click("agent-asks", cx);
+        window.render_frame(cx);
+        window.input("2", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(pill_has_keys(handle, &ws, cx));
+    assert!(answers.try_recv().is_err(), "the 2 is the pill's");
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.templum_agent.approvals.len()),
+        1
     );
 }
 

@@ -65,22 +65,13 @@ impl Workspace {
             tool: tool.to_string(),
             level,
             shown: Default::default(),
+            keys: Default::default(),
             said,
             details,
         });
         agent.unread = true;
-        // It takes the keyboard only from the pill or the chat, never from a terminal.
-        // Nor from someone writing in the pill: a digit of their sentence would answer it.
-        let had_keys = self.agent_has_keys(window, cx);
-        let writing = self
-            .templum_agent
-            .input
-            .as_ref()
-            .is_some_and(|i| !i.read(cx).value().is_empty());
+        // It never takes the keyboard: a digit meant for a terminal or the pill would answer it.
         self.approval_ui(window, cx);
-        if had_keys && !writing {
-            self.focus_approval(window, cx);
-        }
         self.tell_approval(window, cx);
         cx.notify();
         None

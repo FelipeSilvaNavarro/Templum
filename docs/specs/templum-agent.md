@@ -165,9 +165,10 @@ A dangerous call ([The gate](#the-gate)) waits. Templum shows the approval in th
 - **Buttons:** **Allow once** (`1`), **Allow for this conversation** (`2`), **Deny** (`3` or Esc), then a field "Or tell
   it what to do instead" (Enter denies with that text). An action that asks each time has no `2`, and its Allow once is
   red (`normal.red`).
-- **The keyboard:** the approval has it only when the chat or the pill had it, when it is clicked, or after the
-  shortcut. It never takes it from a terminal or an editor. Keys within 0.5 s of it showing are ignored, as the
-  balloon's are.
+- **The keyboard:** the approval has it only once clicked, or after Review (on the pill or its notification); never by
+  itself, so a digit meant for a terminal, an editor or the pill answers nothing. With one waiting, the shortcut and a
+  click on the pill give the keyboard to the pill's field (Enter there denies it with the words). Keys within 0.5 s of
+  it taking the keyboard, and clicks within 0.5 s of it showing, are ignored, as the balloon's are.
 - **Several** wait in turn, the oldest shown, with "1 of 3".
 - **Telling the person:** the pill turns yellow (above). When the window is in the background, or the pill can't be
   seen (the workspaces screen, the welcome, the pill turned off), a system notification "Templum Agent asks: *Close

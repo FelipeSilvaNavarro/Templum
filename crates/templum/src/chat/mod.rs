@@ -148,9 +148,11 @@ pub(crate) struct Approval {
     pub tool: String,
     /// Ask, or Ask each time (no "Allow for this conversation").
     pub level: Level,
-    /// When it first showed at the front, by the executor's clock: keys before KEYS_AFTER are
+    /// When it first showed at the front, by the executor's clock: clicks before KEYS_AFTER are
     /// ignored.
-    pub shown: Cell<Option<std::time::Instant>>,
+    pub shown: Cell<Option<Instant>>,
+    /// When it took the keyboard: keys before KEYS_AFTER are ignored.
+    pub keys: Cell<Option<Instant>>,
     /// The action in one sentence: `Close "Codex · api"`.
     pub said: String,
     /// Exactly what will happen: the text to type, the keys, what stops.
@@ -202,10 +204,12 @@ impl Workspace {
             self.open_agent_settings(window, cx);
             return;
         }
+        // The field, even while an approval waits: Enter there denies it with the words. Only a
+        // click on the approval, or Review, gives it the keyboard, so no digit meant for the field
+        // answers it.
         let input = self.agent_input(window, cx);
         self.templum_agent.back = self.space.focused;
         input.update(cx, |input, cx| input.focus(window, cx));
-        self.focus_approval(window, cx);
         let agent = &mut self.templum_agent;
         if !agent.conversation.rows.is_empty() {
             agent.open = true;
@@ -257,13 +261,32 @@ impl Workspace {
                 .is_some_and(|f| f.contains_focused(window, cx))
     }
 
-    /// The front approval takes the keyboard, when one waits.
+    /// The front approval takes the keyboard, when one waits: its keys count from now, unless
+    /// it already had it.
     pub(crate) fn focus_approval(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.templum_agent.approvals.is_empty() {
             return;
         }
         let focus = self.approval_ui(window, cx);
+        let front = &self.templum_agent.approvals[0];
+        if !focus.is_focused(window) || front.keys.get().is_none() {
+            front.keys.set(Some(cx.background_executor().now()));
+        }
         window.focus(&focus, cx);
+    }
+
+    /// The front approval showed or took the keyboard under KEYS_AFTER ago: a press on it, or a
+    /// key (`keys`), is ignored.
+    pub(crate) fn approval_too_soon(&self, keys: bool, cx: &gpui_kit::App) -> bool {
+        let Some(front) = self.templum_agent.approvals.first() else {
+            return true;
+        };
+        let now = cx.background_executor().now();
+        let soon = |at: &Cell<Option<Instant>>| {
+            at.get()
+                .is_none_or(|at| now.duration_since(at) < approval::KEYS_AFTER)
+        };
+        soon(&front.shown) || (keys && soon(&front.keys))
     }
 
     /// The approval's focus and its field, made the first time one shows.
@@ -309,13 +332,17 @@ impl Workspace {
         }
     }
 
-    /// A button of the popup: the front approval answered.
+    /// A button of the popup: the front approval answered; none within KEYS_AFTER of it
+    /// showing, as the balloon's.
     pub(crate) fn answer_front(
         &mut self,
         answer: Answer,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.approval_too_soon(false, cx) {
+            return;
+        }
         if let Some(id) = self.templum_agent.approvals.first().map(|a| a.id) {
             self.answer_approval(id, answer, window, cx);
             self.after_approval(window, cx);
@@ -324,7 +351,7 @@ impl Workspace {
 
     /// Keys while the approval itself has the keyboard: `1` Allow once, `2` Allow for this
     /// conversation (not for one that asks each time), `3` or Esc Deny; none within KEYS_AFTER
-    /// of it showing, as the balloon's. Templum's shortcuts run.
+    /// of it showing or taking the keyboard. Templum's shortcuts run.
     pub(crate) fn on_approval_key(
         &mut self,
         e: &KeyDownEvent,
@@ -343,11 +370,6 @@ impl Workspace {
         if !focused || k.modifiers.modified() {
             return;
         }
-        let now = cx.background_executor().now();
-        let early = front
-            .shown
-            .get()
-            .is_none_or(|at| now.duration_since(at) < approval::KEYS_AFTER);
         let answer = match k.key.as_str() {
             "1" => Some(Answer::Once),
             "2" if front.level == Level::Ask => Some(Answer::Conversation),
@@ -358,7 +380,7 @@ impl Workspace {
             return;
         };
         cx.stop_propagation();
-        if !early {
+        if !self.approval_too_soon(true, cx) {
             self.answer_front(answer, window, cx);
         }
     }

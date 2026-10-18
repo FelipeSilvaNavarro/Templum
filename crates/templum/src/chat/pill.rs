@@ -204,7 +204,10 @@ pub(crate) fn render(
             }),
         _ if asks.is_some() => {
             let said = asks.map(|a| a.said.clone()).unwrap_or_default();
-            pill.child(div().flex_none().size(px(8.0)).rounded_full().bg(yellow))
+            // A click on it is for its field; Review is for the approval.
+            pill.cursor_pointer()
+                .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_agent(window, cx)))
+                .child(div().flex_none().size(px(8.0)).rounded_full().bg(yellow))
                 .child(line(
                     format!("Templum Agent asks you: {said}").into(),
                     "agent-asks",
@@ -222,11 +225,10 @@ pub(crate) fn render(
                         .text_size(px(12.0))
                         .cursor_pointer()
                         .hover(move |s| s.bg(ui.hover))
-                        .on_click(
-                            cx.listener(|ws, _: &ClickEvent, window, cx| {
-                                ws.review_agent(window, cx)
-                            }),
-                        )
+                        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
+                            cx.stop_propagation();
+                            ws.review_agent(window, cx)
+                        }))
                         .child("Review")
                         .test_support(),
                 )
