@@ -1322,6 +1322,42 @@ fn an_allow_after_its_block_came_back_asks_again(cx: &mut TestAppContext) {
     assert!(ws.read_with(cx, |ws, _| ws.templum_agent.approvals[0].changed));
 }
 
+/// A program animates its title while it works (Claude Code's spinner): an Allow on a terminal
+/// whose agent Templum didn't find (over ssh, or before a snapshot) isn't asked again for it.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_title_that_changes_asks_nothing_again(cx: &mut TestAppContext) {
+    let script = r"printf '\033]2;one\007'; read x; printf '\033]2;two\007'; exec cat";
+    let command = ("sh".to_string(), vec!["-c".to_string(), script.to_string()]);
+    let (handle, ws) = open_as(cx, Some(command), None, None);
+    let first = first_id(&ws, cx);
+    let title = |ws: &Entity<Workspace>, cx: &mut TestAppContext, want: &str| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while ws.read_with(cx, |ws, _| ws.space.terminal(first).unwrap().term.title()) != want {
+            assert!(std::time::Instant::now() < deadline, "no title {want}");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    };
+    title(&ws, cx, "one");
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&first].clone());
+    let answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "send_to_terminal",
+        json!({"block": uid, "text": "hi"}),
+    );
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(first).unwrap().term.write(&b"\n"[..])
+    });
+    title(&ws, cx, "two");
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    super::bus::after(cx, 1_000);
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert!(!failed, "{text}");
+}
+
 #[test]
 #[ignore = "the fake engine the Templum Agent's tests start"]
 fn fake_engine() {

@@ -124,17 +124,17 @@ impl Workspace {
         }
     }
 
-    /// What the person saw of block `at` when asked, to tell whether it changed since: its
-    /// title, a terminal's own (one brought back with Ctrl+Z is another), what runs in it (its
-    /// agent, or its command by when it started: one started since is another; its shell back in
-    /// front), what its agent asks and which of its waits that is (two dialogs in the same words
-    /// are two), an editor's unsaved files.
+    /// What the person saw of block `at` when asked, to tell whether it changed since: a
+    /// terminal's own (one brought back with Ctrl+Z is another), what runs in it (its agent, or
+    /// its command by when it started: one started since is another; its shell back in front),
+    /// what its agent asks and which of its waits that is (two dialogs in the same words are
+    /// two); a block's title and an editor's unsaved files. Not a terminal's title: an agent
+    /// animates its own while it works.
     fn facts(&self, (space, id): (&str, BlockId), cx: &App) -> String {
         let Some(home) = self.space_named(space) else {
             return String::new();
         };
-        let title = home.blocks.get(&id).map(|b| self.about(b, cx).1);
-        let runs = match home.terminal(id) {
+        match home.terminal(id) {
             Some(pane) => {
                 let asks = match &pane.state {
                     Some(AgentState::NeedsYou(what)) => Some(what),
@@ -150,9 +150,11 @@ impl Workspace {
                     pane.term.exited()
                 )
             }
-            None => home.unsaved(Some(id)).join("\n"),
-        };
-        format!("{title:?}\n{runs}")
+            None => {
+                let title = home.blocks.get(&id).map(|b| self.about(b, cx).1);
+                format!("{title:?}\n{}", home.unsaved(Some(id)).join("\n"))
+            }
+        }
     }
 
     /// The approval at `at` was written from its block as the person saw it. When that changed
