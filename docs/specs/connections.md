@@ -439,8 +439,9 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
   current. The result is at most 256 KB.
 - Agents may stop waiting on long tool calls (Claude Code moves a call past 2 minutes to the background); the
   descriptions of the tools that wait say they may take minutes.
-- A `timeout` is whole seconds from 1 to 3600 (Codex gives up on a tool call after an hour); a longer one is cut to
-  3600.
+- A `timeout` is whole seconds from 1 to 3600; a longer one is cut to 3600. The agents Templum opens wait seven days
+  for a tool call (Codex's `tool_timeout_sec=604800`, the `timeout` of Claude Code's `mcp.json` and of Gemini CLI's
+  extension), so a question asked without a `timeout` can wait for its person.
 
 ## Hooks and agent state
 
@@ -526,8 +527,11 @@ comes only with the hooks: when the settings file can't be given (Templum's prog
 }
 ```
 
+The server's `timeout` (seven days, ms) replaces Claude Code's `MCP_TOOL_TIMEOUT`, so a question can wait for its
+person ([ask-user.md](ask-user.md#when-the-client-stops-waiting)).
+
 ```json
-{ "mcpServers": { "templum": { "type": "stdio", "command": "/opt/templum", "args": ["mcp"] } } }
+{ "mcpServers": { "templum": { "type": "stdio", "command": "/opt/templum", "args": ["mcp"], "timeout": 604800000 } } }
 ```
 
 **Codex:** five flags until batch 7, in single quotes (so not under `cmd.exe`; not under Windows PowerShell 5.1
@@ -536,7 +540,7 @@ pwsh 7 is fine; and not when a path has a `'`); `env_vars` because Codex hands a
 to:
 
 ```
-codex -c 'mcp_servers.templum.command="/opt/templum"' -c 'mcp_servers.templum.args=["mcp"]' -c 'mcp_servers.templum.env_vars=["TEMPLUM_BUS","TEMPLUM_TERMINAL"]' -c 'mcp_servers.templum.tool_timeout_sec=3600' -c 'notify=["/opt/templum","hook","codex"]'
+codex -c 'mcp_servers.templum.command="/opt/templum"' -c 'mcp_servers.templum.args=["mcp"]' -c 'mcp_servers.templum.env_vars=["TEMPLUM_BUS","TEMPLUM_TERMINAL"]' -c 'mcp_servers.templum.tool_timeout_sec=604800' -c 'notify=["/opt/templum","hook","codex"]'
 ```
 
 From batch 7 the four `mcp_servers` flags stay, and `notify` gives way to one flag per hook of the table
@@ -559,7 +563,7 @@ Templum hears nothing from it and reads its screen. With no `notify` flag, the p
 
 **Gemini CLI:** it has no flag for MCP servers or hooks, and ignores a system settings file root doesn't own.
 **Settings ▸ Connections ▸ Gemini CLI ▸ Install**, after a question, writes `<data>/gemini/gemini-extension.json` (the
-server, `<data>/bin/templum mcp`, with an hour's timeout) and `<data>/gemini/hooks/hooks.json` (the hooks,
+server, `<data>/bin/templum mcp`, with a seven days' timeout, 604800000 ms) and `<data>/gemini/hooks/hooks.json` (the hooks,
 `'<data>/bin/templum' hook gemini`; `& '…'` on Windows, where Gemini CLI runs hooks through PowerShell), and runs
 `gemini extensions link <data>/gemini --consent`; **Remove** runs `gemini extensions uninstall templum`.
 `~/.gemini/settings.json` is never touched. Every Gemini CLI the person opens then has the server and the hooks, typed

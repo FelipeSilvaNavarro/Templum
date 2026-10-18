@@ -40,9 +40,8 @@ pub fn extension(data: &Path, windows: bool) -> Option<PathBuf> {
         .map(|event| (event.to_string(), hook.clone()))
         .collect();
     let folder = data.join("gemini");
-    // Gemini CLI gives up on a tool after 10 minutes unless told: Templum's waits last an hour
-    // at most (ms).
-    let server = json!({ "command": bin, "args": ["mcp"], "timeout": 3_600_000 });
+    // Gemini CLI gives up on a tool after 10 minutes unless told: a question may wait days.
+    let server = json!({ "command": bin, "args": ["mcp"], "timeout": crate::MCP_TIMEOUT_MS });
     write_changed(
         &folder.join("gemini-extension.json"),
         &json!({ "name": NAME, "version": "1.0.0", "mcpServers": { "templum": server } }),
@@ -105,7 +104,7 @@ mod tests {
                 "name": "templum",
                 "version": "1.0.0",
                 "mcpServers": {
-                    "templum": { "command": bin, "args": ["mcp"], "timeout": 3_600_000 }
+                    "templum": { "command": bin, "args": ["mcp"], "timeout": 604_800_000 }
                 },
             })
         );

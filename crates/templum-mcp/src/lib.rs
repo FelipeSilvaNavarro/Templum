@@ -42,7 +42,7 @@ pub fn codex_flags(exe: &str, windows: bool, hooks: bool) -> Option<String> {
     let mut flags = format!(
         " -c 'mcp_servers.templum.command=\"{exe}\"' -c 'mcp_servers.templum.args=[\"mcp\"]' \
          -c 'mcp_servers.templum.env_vars=[\"TEMPLUM_BUS\",\"TEMPLUM_TERMINAL\"]' \
-         -c 'mcp_servers.templum.tool_timeout_sec=3600'"
+         -c 'mcp_servers.templum.tool_timeout_sec=604800'"
     );
     if hooks {
         for (event, timeout) in CODEX_HOOKS {
@@ -90,7 +90,7 @@ mod tests {
         // Without `templum` on the terminal's PATH, the server only.
         let bare = codex_flags("/opt/templum", false, false).unwrap();
         assert!(
-            bare.ends_with("tool_timeout_sec=3600'") && !bare.contains("hooks."),
+            bare.ends_with("tool_timeout_sec=604800'") && !bare.contains("hooks."),
             "{bare}"
         );
         let windows = codex_flags(r"C:\Program Files\Templum\templum.exe", true, true).unwrap();

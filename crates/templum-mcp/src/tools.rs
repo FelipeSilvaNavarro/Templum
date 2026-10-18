@@ -11,8 +11,9 @@ const VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-
 pub const MAX_LINES: usize = 2000;
 /// The most bytes of text a tool returns: its end is kept.
 pub const MAX_TEXT: usize = 256 * 1024;
-/// The longest a tool waits, seconds: Codex gives up on a call after an hour (the
-/// `tool_timeout_sec` of `codex_flags`).
+/// The longest `timeout` a call may ask, seconds. A question asked without one may wait longer:
+/// the agents Templum opens wait a week for a tool (`codex_flags`, templum-usage's
+/// `MCP_TIMEOUT_MS`).
 pub const MAX_WAIT: u64 = 3600;
 /// How long a question or a request to connect waits for the person, seconds, unless asked.
 pub const ASK_WAIT: u64 = 1800;

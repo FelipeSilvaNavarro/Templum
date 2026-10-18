@@ -244,7 +244,9 @@ pub fn mcp_arg(data: &Path, exe: &Path, windows: bool) -> Option<String> {
     let exe = exe.to_string_lossy();
     let exe = exe.strip_suffix(" (deleted)").unwrap_or(&exe);
     let config = serde_json::json!({
-        "mcpServers": { "templum": { "type": "stdio", "command": exe, "args": ["mcp"] } }
+        "mcpServers": { "templum": {
+            "type": "stdio", "command": exe, "args": ["mcp"], "timeout": crate::MCP_TIMEOUT_MS
+        } }
     });
     write_changed(&path, &config)?;
     Some(typed)
@@ -833,7 +835,7 @@ mod tests {
         // Not typed in a shell: the path as it is.
         assert_eq!(
             written["mcpServers"]["templum"],
-            serde_json::json!({ "type": "stdio", "command": "/opt/Templum App/templum", "args": ["mcp"] })
+            serde_json::json!({ "type": "stdio", "command": "/opt/Templum App/templum", "args": ["mcp"], "timeout": 604_800_000 })
         );
         assert_eq!(
             mcp_arg(Path::new("/home/$x"), Path::new("/opt/templum"), false),

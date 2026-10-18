@@ -40,6 +40,11 @@ pub struct Window {
     pub scope: Option<String>,
 }
 
+/// How long the agents Templum opens wait for one of its tools, ms: seven days, so a question
+/// can wait for its person. Under JavaScript's largest timer (2³¹ − 1 ms, 24.8 days; a longer
+/// one fires at once), which Claude Code and Gemini CLI run on.
+pub const MCP_TIMEOUT_MS: u64 = 604_800_000;
+
 /// The agents whose plan limits Templum reads, in the order it shows them.
 pub const LIMITED: [&str; 2] = ["claude", "codex"];
 
