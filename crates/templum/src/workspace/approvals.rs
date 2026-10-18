@@ -34,7 +34,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<(Value, Replier, Parsed, Value)> {
-        let uid = self.asked_about(&parsed.call);
+        let uid = self.asked_about(&parsed.call).into_iter().next();
         let target = uid.as_deref().and_then(|uid| self.find_block(uid));
         let own = uid.as_deref().is_some_and(|uid| self.own_block(uid));
         let losing = target
@@ -47,7 +47,7 @@ impl Workspace {
             return Some((request, reply, parsed, args));
         };
         let (said, details) = self.approval_words(&parsed.call, (&space, id), losing, cx);
-        let facts = self.facts((&space, id), cx);
+        let facts = self.facts(&parsed.call, cx);
         // It shows on one line, its invisible characters shown.
         parsed.reason = parsed.reason.map(|reason| visible(&reason));
         let agent = &mut self.templum_agent;
@@ -113,48 +113,49 @@ impl Workspace {
         self.chime(cx);
     }
 
-    /// The block a call's approval is about: the one it aims at; for a wire, the person's
-    /// terminal it would reach.
-    fn asked_about(&self, call: &ControlCall) -> Option<String> {
+    /// The blocks a call's approval is about: the one it aims at; for a wire, the person's
+    /// terminals it would reach.
+    fn asked_about(&self, call: &ControlCall) -> Vec<String> {
         match call {
-            ControlCall::Connect { .. } | ControlCall::OpenAgent(_) => {
-                self.wired_terminals(call).into_iter().next()
-            }
-            call => called_block(call).map(str::to_owned),
+            ControlCall::Connect { .. } | ControlCall::OpenAgent(_) => self.wired_terminals(call),
+            call => called_block(call).map(str::to_owned).into_iter().collect(),
         }
     }
 
-    /// What the person saw of block `at` when asked, to tell whether it changed since: a
-    /// terminal's own (one brought back with Ctrl+Z is another), what runs in it (its agent, or
-    /// its command by when it started: one started since is another; its shell back in front),
-    /// what its agent asks and which of its waits that is (two dialogs in the same words are
-    /// two); a block's title and an editor's unsaved files. Not a terminal's title: an agent
+    /// What the person saw of the blocks `call` is about when asked, to tell whether they changed
+    /// since: a terminal's own (one brought back with Ctrl+Z is another), what runs in it (its
+    /// agent, or its command by when it started: one started since is another; its shell back in
+    /// front), what its agent asks and which of its waits that is (two dialogs in the same words
+    /// are two); a block's title and an editor's unsaved files. Not a terminal's title: an agent
     /// animates its own while it works.
-    fn facts(&self, (space, id): (&str, BlockId), cx: &App) -> String {
-        let Some(home) = self.space_named(space) else {
-            return String::new();
+    fn facts(&self, call: &ControlCall, cx: &App) -> String {
+        let block = |uid: &String| {
+            let (space, id) = self.find_block(uid)?;
+            let home = self.space_named(&space)?;
+            Some(match home.terminal(id) {
+                Some(pane) => {
+                    let asks = match &pane.state {
+                        Some(AgentState::NeedsYou(what)) => Some(what),
+                        _ => None,
+                    };
+                    format!(
+                        "{} {:?} {:?} {asks:?} {} {} {}",
+                        pane.term.id(),
+                        self.agent_name(pane),
+                        pane.term.status().running,
+                        pane.dialogs,
+                        pane.shell_in_front(),
+                        pane.term.exited()
+                    )
+                }
+                None => {
+                    let title = home.blocks.get(&id).map(|b| self.about(b, cx).1);
+                    format!("{title:?}\n{}", home.unsaved(Some(id)).join("\n"))
+                }
+            })
         };
-        match home.terminal(id) {
-            Some(pane) => {
-                let asks = match &pane.state {
-                    Some(AgentState::NeedsYou(what)) => Some(what),
-                    _ => None,
-                };
-                format!(
-                    "{} {:?} {:?} {asks:?} {} {} {}",
-                    pane.term.id(),
-                    self.agent_name(pane),
-                    pane.term.status().running,
-                    pane.dialogs,
-                    pane.shell_in_front(),
-                    pane.term.exited()
-                )
-            }
-            None => {
-                let title = home.blocks.get(&id).map(|b| self.about(b, cx).1);
-                format!("{title:?}\n{}", home.unsaved(Some(id)).join("\n"))
-            }
-        }
+        let facts: Vec<String> = self.asked_about(call).iter().filter_map(block).collect();
+        facts.join("\n\n")
     }
 
     /// The approval at `at` was written from its block as the person saw it. When that changed
@@ -163,10 +164,11 @@ impl Workspace {
     /// didn't see. True when it changed.
     fn asked_again(&mut self, at: usize, cx: &mut Context<Self>) -> bool {
         let call = &self.templum_agent.approvals[at].parsed.call;
-        let Some((space, id)) = self.asked_about(call).and_then(|uid| self.find_block(&uid)) else {
+        let first = self.asked_about(call).into_iter().next();
+        let Some((space, id)) = first.and_then(|uid| self.find_block(&uid)) else {
             return false;
         };
-        let facts = self.facts((&space, id), cx);
+        let facts = self.facts(call, cx);
         if facts == self.templum_agent.approvals[at].facts {
             return false;
         }

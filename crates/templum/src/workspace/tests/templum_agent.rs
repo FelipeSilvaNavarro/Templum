@@ -661,6 +661,27 @@ fn a_wire_that_reaches_your_terminal_asks(cx: &mut TestAppContext) {
     });
 }
 
+/// A wire between two of the person's terminals is about both: when the second changed since the
+/// person looked, Allow wires nothing and asks again.
+#[gpui_kit::test]
+fn a_wire_asks_again_when_either_end_changed(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, a) = busy_terminal(handle, &ws, cx);
+    let (b, b_uid) = busy_terminal(handle, &ws, cx);
+    let waiting = control_later(handle, &ws, cx, 7, "connect", json!({"a": a, "b": b_uid}));
+    let terminal = ws.read_with(cx, |ws, _| {
+        ws.space.terminal(b).unwrap().term.id().to_string()
+    });
+    let asks = json!({ "event": "needs_you", "message": "Allow Bash?" });
+    super::bus::event(handle, &ws, cx, &terminal, asks);
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    assert!(waiting.try_recv().is_err(), "it still waits");
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.wires.is_empty(), "no wire");
+        assert!(ws.templum_agent.approvals[0].changed);
+    });
+}
+
 /// Claude Code and Codex started as `cat` in front of new terminals' shells, their input boxes
 /// bracketing pastes (as the spawn tests' `spawner`).
 #[cfg(unix)]
