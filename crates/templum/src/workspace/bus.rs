@@ -9,10 +9,11 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, Task, Window};
 use serde_json::json;
 use templum_canvas::BlockId;
+use templum_mcp::ask::Form;
 use templum_mcp::{Bus, Call, Incoming, Message, Reply, rpc, tools};
 
 use super::delegate::ENTER_AFTER;
-use super::waits::{Asked, Waiting};
+use super::waits::{Asked, Waiting, deadline};
 use super::{AgentState, Body, Pane, Space, Workspace, show_notification};
 
 /// Starts the bus in the data folder, and the task that hands its messages to the workspace.
@@ -54,8 +55,8 @@ pub(super) fn start(
 pub(super) enum Outcome {
     /// Its answer, now.
     Now(Reply),
-    /// It waits for this, at most these many seconds (`waits.rs`).
-    Wait(Waiting, u64),
+    /// It waits for this, at most these many seconds (`waits.rs`); None: until it comes.
+    Wait(Waiting, Option<u64>),
     /// A job answers it when it is done (`spawn_agent` making a worktree).
     Later(Task<Reply>),
 }
@@ -492,17 +493,15 @@ impl Workspace {
             Call::SendKeys { block, keys } => return self.send_keys(terminal, &block, keys, cx),
             Call::Interrupt { block } => return self.interrupt(terminal, &block, cx),
             Call::CloseBlock { block } => self.close_block(terminal, &block, window, cx),
-            Call::AskUser {
-                question,
-                options,
-                timeout,
-            } => {
+            Call::AskUser { ask, timeout } => {
                 let what = Waiting::Question {
-                    text: question,
-                    options,
-                    field: None,
+                    form: Form::new(&ask),
+                    ask,
+                    others: Vec::new(),
+                    note: None,
                 };
-                return Outcome::Wait(what, timeout);
+                let seconds = deadline(timeout, self.config.connections.question_timeout);
+                return Outcome::Wait(what, seconds);
             }
         })
     }

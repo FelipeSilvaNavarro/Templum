@@ -281,11 +281,20 @@ impl Default for UpdatesConfig {
 pub(crate) struct ConnectionsConfig {
     /// The Claude Code and Codex Templum opens get its MCP server and hooks.
     pub enabled: bool,
+    /// How long an agent's question waits for its answer, minutes, 0 to 1440; 0: until answered
+    /// (docs/specs/ask-user.md).
+    pub question_timeout: u64,
+    /// A short sound when an agent asks the person something.
+    pub sound: bool,
 }
 
 impl Default for ConnectionsConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            question_timeout: 0,
+            sound: true,
+        }
     }
 }
 
@@ -430,6 +439,13 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
         scrollback <= 100_000,
         "0 and 100000",
         scrollback.to_string(),
+    )?;
+    let question = config.connections.question_timeout;
+    range(
+        "connections.question_timeout",
+        question <= 1440,
+        "0 and 1440",
+        question.to_string(),
     )?;
     let message = &config.git.commit_message;
     range(
@@ -870,7 +886,11 @@ pub(crate) fn template(macos: bool) -> String {
         "[connections]\n",
         "## The Claude Code and Codex Templum opens get its MCP server and hooks: they can read and\n",
         "## type into the blocks wired to them (docs/specs/connections.md).\n",
-        "# enabled = true\n\n",
+        "# enabled = true\n",
+        "## How long an agent's question waits for your answer, in minutes; 0 waits until you answer.\n",
+        "# question_timeout = 0\n",
+        "## A short sound when an agent asks you something.\n",
+        "# sound = true\n\n",
         "[git]\n",
         "# program = \"git\"   # a name on PATH, or a path\n\n",
         "[keys]\n",
@@ -1380,6 +1400,22 @@ scrollback = 500
         );
         let err = parse("[connections]\nmcp = true\n").unwrap_err();
         assert!(err.contains("mcp"), "{err}");
+    }
+
+    #[test]
+    fn questions_wait_until_answered_and_make_a_sound_unless_set() {
+        let connections = parse("").unwrap().connections;
+        assert_eq!(connections.question_timeout, 0);
+        assert!(connections.sound);
+        let set = parse("[connections]\nquestion_timeout = 1440\nsound = false\n").unwrap();
+        assert_eq!(set.connections.question_timeout, 1440);
+        assert!(!set.connections.sound);
+        let err = parse("[connections]\nquestion_timeout = 1441\n").unwrap_err();
+        assert!(
+            err.contains("connections.question_timeout must be between 0 and 1440"),
+            "{err}"
+        );
+        assert!(parse("[connections]\nquestion_timeout = -1\n").is_err());
     }
 
     #[test]

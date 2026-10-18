@@ -123,6 +123,14 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
 | Arguments | Text: separated by spaces, with `"…"` or `'…'` to keep spaces inside one argument | `shell.args` |
 | Start folder | Dropdown: Inherit from the focused block, Home, A folder… With "A folder…", a text field takes the path | `shell.working_directory` |
 
+**Connections** ([connections.md](connections.md#config), [ask-user.md](ask-user.md#settings))
+
+| Field | Control | Option |
+|---|---|---|
+| Agents Templum opens | Switch, on by default: the Claude Code and Codex Templum opens get its server and hooks | `connections.enabled` |
+| Questions wait | Number 0–1440 minutes, step 5: how long an agent's question waits for an answer; 0 waits until it is answered | `connections.question_timeout` |
+| Sound | Switch, on by default: a short sound when an agent asks something | `connections.sound` |
+
 **Shortcuts**
 
 - **Rows:** one per command, 12 in the [keys](config.md#the-file) order including `settings` and `quit`. Each row

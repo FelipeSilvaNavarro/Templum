@@ -304,7 +304,7 @@ pub(super) fn rows(
             }
             rows
         }
-        Section::Connections => super::connections::rows(ws, entity),
+        Section::Connections => super::connections::rows(ws, entity, window, cx),
         Section::Updates => super::updates::rows(ws, entity),
         Section::Shortcuts => Command::ALL
             .map(|command| shortcut_row(ws, entity, command))

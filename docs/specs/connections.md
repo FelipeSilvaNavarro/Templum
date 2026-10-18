@@ -127,9 +127,10 @@ later starts with none.
   its height, its sizes the block's at the zoom, so it scales like a photo; past that height it scrolls, the wheel
   over it scrolling it and not the terminal (with Ctrl it zooms the canvas). A yellow frame and a first line, a
   yellow dot and "Waiting for your answer", say the agent waits for the person, in the yellow of the block's dot:
-  - a question shows its text whole and a button per option, each on its own lines and whole, or a text field and
-    **Send** when it has none ([ask-user.md](ask-user.md), designed, brings several questions, previews, checkboxes,
-    Other and a note, no deadline by default, and a sound);
+  - a question ([ask-user.md](ask-user.md#the-dialog)) shows its questions, each with its header, its options (a
+    radio or a checkbox, the label, the description), an Other field, then a note, **Dismiss** and **Send**; today's
+    shape (`question`, `options` as strings) shows its text whole and a button per option, or a text field and
+    **Send** when it has none, and **Dismiss**;
   - a request to connect says "*Claude Code · api* wants to connect to *Dev server*" with **Allow** and **Deny**;
     Allow wires them;
   - a request for a block already wired is answered at once; Allow is a step of Ctrl+Z, as wiring by hand is;
@@ -139,8 +140,10 @@ later starts with none.
     or too small on screen for the Full level and not focused, or the window is in the background), a notification
     says what the agent asks, also the system's in the background; clicking it reveals the block;
   - the block's dot shows it waiting for the person (yellow, "Waiting for you: *the question*"), at every level;
-  - a request no one answers is withdrawn after its timeout (30 minutes unless the agent asked for another), and the
-    agent is told so; closing the block withdraws its requests, and so does the agent leaving (its connection to
+  - a request no one answers is withdrawn after its timeout, and the agent is told so: a request to connect's is 30
+    minutes unless the agent asked for another; a question waits until it is answered unless the agent gave a
+    `timeout` or `[connections] question_timeout` sets one, the shorter winning
+    ([ask-user.md](ask-user.md#how-long-it-waits)); closing the block withdraws its requests, and so does the agent leaving (its connection to
     Templum ends) or cancelling the call.
 
 ### Delegating
@@ -415,7 +418,7 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `delegate` | `block`, `task`, `wait` (false), `timeout` (600 s) | [Delegating](#delegating); without `wait`, says the task's id at once, and its end is typed into the caller's terminal; to the agent on the caller's task, a change to it | wired, an agent | 3, 8 |
 | `reply` | `block`, `text` | Answers the task the block handed the caller; with none waiting, types `[reply from …]` (from batch 8 naming the task) and the text into it | wired | 3, 8 |
 | `wait_for_idle` | `block`, `timeout` (300 s) | Waits until the agent finishes its turn, and for the answer to a task the caller handed it, past `delegate`'s timeout too; its last answer | wired | 3 |
-| `ask_user` | `question`, `options`, `timeout` (1800 s) | A question in a balloon ([Requests](#requests-from-agents)); the answer. v2: [ask-user.md](ask-user.md) | — | 3 |
+| `ask_user` | `questions` (each `question`, `header`, `options` with `label`, `description`, `preview`, `multiSelect`), or `question` and `options` (strings); `timeout` (none) | Questions in a balloon ([Requests](#requests-from-agents), [ask-user.md](ask-user.md)); the answers as JSON, or with `question` the answer as text | — | 3 |
 | `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, assignee and comment count; with `card`, that card whole: its description and comments | wired kanban | 4 |
 | `create_card` | `board`, `column`, `title`, `description` | A new card at the column's end (the board's first column when left out); its id | wired kanban | 4 |
 | `move_card` | `card`, `column` | Moves a card to the end of a column; into the board's last column or one titled Review (either case), unless the card's newest comment is the caller's, its answer asks for one: "Say on it what you did and what the next one needs to know: comment_card." | wired kanban | 4 |
@@ -621,10 +624,15 @@ output reaches a pipe (`templum blocks | more`) but not a console directly.
 [connections]
 ## Templum's MCP server and hooks are given to the Claude Code and Codex it opens.
 # enabled = true
+## How long an agent's question waits for your answer, in minutes; 0 waits until you answer.
+# question_timeout = 0
+## A short sound when an agent asks you something.
+# sound = true
 ```
 
 Off, nothing is typed into agents; the bus still serves the command line. **Settings ▸ Connections** (batch 5) has
-the switch, the server's command for other agents with a Copy button, and Gemini CLI's Install and Remove.
+the switch, Questions wait and Sound ([ask-user.md](ask-user.md#settings)), the server's command for other agents with
+a Copy button, and Gemini CLI's Install and Remove.
 
 ## Files
 

@@ -26,6 +26,7 @@ mod input;
 mod note_tabs;
 mod persist;
 mod preferences;
+mod questions;
 mod render;
 mod selection;
 mod spaces;

@@ -3,10 +3,12 @@
 
 use std::sync::mpsc::TryRecvError;
 
+use gpui_kit::component::input::InputState;
 use serde_json::{Value, json};
 
 use super::bus::{after, answered, bus_note, call, call_later, event, me};
 use super::*;
+use crate::workspace::Waiting;
 
 /// The newest wait's key.
 fn last_wait(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> u64 {
@@ -21,20 +23,116 @@ fn dot_text(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> Opt
     })
 }
 
-/// The person answers the question `key` with `text`.
-fn reply_with(
+/// The person picks option `i` of question `q` of the question `key`.
+fn pick(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
     key: u64,
+    q: usize,
+    i: usize,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.pick_option(key, q, i, window, cx))
+    })
+    .unwrap();
+}
+
+/// The field of the question `key`: question `q`'s Other field, or with None its note.
+fn field_of(ws: &Workspace, key: u64, field: Option<usize>) -> Entity<InputState> {
+    let wait = ws.waits.iter().find(|w| w.key == key).expect("the wait");
+    match (&wait.what, field) {
+        (Waiting::Question { others, .. }, Some(q)) => others[q].0.clone(),
+        (
+            Waiting::Question {
+                note: Some(note), ..
+            },
+            None,
+        ) => note.0.clone(),
+        _ => panic!("no such field"),
+    }
+}
+
+/// The person types `text` in a field of the question `key` (`field_of`), the dialog drawn.
+fn type_into(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    key: u64,
+    field: Option<usize>,
     text: &str,
 ) {
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| {
-            ws.answer_question(key, text.to_string(), window, cx)
-        })
+        window.render_frame(cx);
+        let input = field_of(ws.read(cx), key, field);
+        input.update(cx, |input, cx| input.focus(window, cx));
+        window.render_frame(cx);
+        window.input(text, cx);
     })
     .unwrap();
+}
+
+/// Clicks the balloon's element `what` on block `n`, drawn first and scrolled into view.
+fn click_part(handle: AnyWindowHandle, cx: &mut TestAppContext, n: usize, what: &str) {
+    cx.update_window(handle, |_, window, cx| {
+        scroll_to(window, cx, n, what);
+        window.click(crate::balloon::part(n, what), cx);
+    })
+    .unwrap();
+}
+
+/// Scrolls the balloon of block `n` until its element `what` shows: it scrolls past 80% of its
+/// terminal's height.
+fn scroll_to(window: &mut Window, cx: &mut gpui_kit::App, n: usize, what: &str) {
+    window.render_frame(cx);
+    let target = window.find(crate::balloon::part(n, what)).bounds();
+    let balloon = window.find(("balloon", n)).bounds();
+    let by = if target.bottom() > balloon.bottom() {
+        balloon.bottom() - target.bottom() - px(8.0)
+    } else if target.top() < balloon.top() {
+        balloon.top() - target.top() + px(8.0)
+    } else {
+        return;
+    };
+    window.scroll(("balloon", n), ScrollDelta::Pixels(point(px(0.0), by)), cx);
+    window.render_frame(cx);
+}
+
+/// Whether the balloon of block `n` draws `what`.
+fn drawn(handle: AnyWindowHandle, cx: &mut TestAppContext, n: usize, what: &str) -> bool {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(crate::balloon::part(n, what)).is_some()
+    })
+    .unwrap()
+}
+
+/// The spec's call: two questions, the second a multiSelect.
+fn two_questions() -> Value {
+    json!({
+        "questions": [
+            {
+                "question": "Which database should the service use?",
+                "header": "Database",
+                "options": [
+                    { "label": "Postgres", "description": "What production runs",
+                      "preview": "DATABASE_URL=postgres://…\npool = 10" },
+                    { "label": "SQLite", "description": "One file, no server" }
+                ]
+            },
+            {
+                "question": "Which features go in the first release?",
+                "header": "Features",
+                "options": [{ "label": "Auth" }, { "label": "Search" }, { "label": "Export" }],
+                "multiSelect": true
+            }
+        ]
+    })
+}
+
+/// The JSON of an answer.
+fn json_of(text: &str) -> Value {
+    serde_json::from_str(text).unwrap_or_else(|_| panic!("JSON: {text}"))
 }
 
 #[gpui_kit::test]
@@ -78,7 +176,7 @@ fn ask_user_waits_for_the_persons_answer(cx: &mut TestAppContext) {
         Some("Waiting for you: Ship it?")
     );
     let key = last_wait(&ws, cx);
-    reply_with(handle, &ws, cx, key, "Yes");
+    pick(handle, &ws, cx, key, 0, 0);
     assert_eq!(answered(&answers), (false, "Yes".to_string()));
     ws.read_with(cx, |ws, _| assert!(ws.waits.is_empty()));
     assert_eq!(dot_text(&ws, cx, first), None);
@@ -87,30 +185,22 @@ fn ask_user_waits_for_the_persons_answer(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_question_without_options_takes_what_the_person_types(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
-    let first = first_id(&ws, cx);
-    let (terminal, _) = me(&ws, cx, first);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
     let asked = json!({ "question": "When?" });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
     let key = last_wait(&ws, cx);
-    let send = |text: &'static str, cx: &mut TestAppContext| {
+    let send = |cx: &mut TestAppContext| {
         cx.update_window(handle, |_, window, cx| {
-            ws.update(cx, |ws, cx| {
-                let input = match &ws.waits[0].what {
-                    crate::workspace::waits::Waiting::Question {
-                        field: Some((input, _)),
-                        ..
-                    } => input.clone(),
-                    _ => panic!("a question without options has a field"),
-                };
-                input.update(cx, |input, cx| input.set_value(text, window, cx));
-                ws.send_field(key, window, cx);
-            })
+            ws.update(cx, |ws, cx| ws.send_question(key, window, cx))
         })
         .unwrap();
     };
-    send("   ", cx);
+    type_into(handle, &ws, cx, key, Some(0), "   ");
+    send(cx);
     assert!(answers.try_recv().is_err(), "a blank answer isn't sent");
-    send("Friday", cx);
+    type_into(handle, &ws, cx, key, Some(0), "Friday");
+    send(cx);
     assert_eq!(answered(&answers), (false, "Friday".to_string()));
 }
 
@@ -137,7 +227,7 @@ fn an_answer_and_its_timeout_answer_once(cx: &mut TestAppContext) {
     let asked = json!({ "question": "Now?", "options": ["Yes"], "timeout": 1 });
     let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
     let key = last_wait(&ws, cx);
-    reply_with(handle, &ws, cx, key, "Yes");
+    pick(handle, &ws, cx, key, 0, 0);
     after(cx, 2000);
     assert_eq!(answered(&answers), (false, "Yes".to_string()));
     assert!(answers.try_recv().is_err(), "answered once");
@@ -287,8 +377,8 @@ fn a_question_is_a_dialog_over_the_asking_terminal(cx: &mut TestAppContext) {
             (
                 bounds(("block", n).into()),
                 bounds(("balloon", n).into()),
-                bounds(part(n, "option-0")),
-                bounds(part(n, "option-1")),
+                bounds(part(n, "q0-option-0")),
+                bounds(part(n, "q0-option-1")),
             )
         })
         .unwrap()
@@ -582,7 +672,7 @@ fn the_balloons_buttons_answer_a_question_then_a_request(cx: &mut TestAppContext
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.try_find(part(n, "count")).is_some(), "1 of 2");
-        window.click(part(n, "option-1"), cx);
+        window.click(part(n, "q0-option-1"), cx);
     })
     .unwrap();
     assert_eq!(answered(&question), (false, "Not yet".to_string()));
@@ -679,7 +769,7 @@ fn a_double_click_answers_one_request(cx: &mut TestAppContext) {
     };
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        let yes = at(window, "option-0");
+        let yes = at(window, "q0-option-0");
         click(window, cx, yes, 1);
         window.render_frame(cx);
         let allow = at(window, "allow");
@@ -713,7 +803,7 @@ fn a_press_on_a_withdrawn_requests_button_answers_no_other(cx: &mut TestAppConte
     let _last = call_later(handle, &ws, cx, &terminal, 3, "ask_user", asked);
     let yes = |window: &mut Window| {
         window
-            .find(crate::balloon::part(n, "option-0"))
+            .find(crate::balloon::part(n, "q0-option-0"))
             .bounds()
             .center()
     };
@@ -771,13 +861,8 @@ fn keys_in_the_balloons_field_never_reach_the_terminal(cx: &mut TestAppContext) 
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| ws.focus_block(mine, window, cx));
         window.render_frame(cx);
-        let input = match &ws.read(cx).waits[0].what {
-            crate::workspace::Waiting::Question {
-                field: Some((input, _)),
-                ..
-            } => input.clone(),
-            _ => panic!("a question without options has a field"),
-        };
+        let key = ws.read(cx).waits[0].key;
+        let input = field_of(ws.read(cx), key, Some(0));
         input.update(cx, |input, cx| input.focus(window, cx));
         window.render_frame(cx);
         window.input("Ada", cx);
@@ -797,4 +882,259 @@ fn keys_in_the_balloons_field_never_reach_the_terminal(cx: &mut TestAppContext) 
         snap.text()
     });
     assert!(!shown.contains("^L") && !shown.contains("Ada"), "{shown:?}");
+}
+
+#[test]
+fn deadline_takes_the_shorter() {
+    use crate::workspace::waits::deadline;
+    assert_eq!(deadline(None, 0), None);
+    assert_eq!(deadline(Some(30), 0), Some(30));
+    assert_eq!(deadline(None, 1), Some(60));
+    assert_eq!(deadline(Some(120), 1), Some(60));
+    assert_eq!(deadline(Some(30), 1), Some(30));
+}
+
+#[gpui_kit::test]
+fn a_questions_call_answers_json(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", two_questions());
+    let key = last_wait(&ws, cx);
+    for part in ["q0-option-1", "q1-option-0", "q1-option-2"] {
+        click_part(handle, cx, n, part);
+    }
+    assert!(answers.try_recv().is_err(), "it waits for Send");
+    type_into(handle, &ws, cx, key, None, "keep it small");
+    click_part(handle, cx, n, "send");
+    let (failed, text) = answered(&answers);
+    assert!(!failed, "{text}");
+    assert_eq!(
+        json_of(&text),
+        json!({
+            "answers": {
+                "Which database should the service use?": "SQLite",
+                "Which features go in the first release?": ["Auth", "Export"],
+            },
+            "note": "keep it small",
+        })
+    );
+}
+
+#[gpui_kit::test]
+fn send_waits_for_every_question(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", two_questions());
+    click_part(handle, cx, n, "q0-option-0");
+    click_part(handle, cx, n, "send");
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "it waits");
+    assert!(drawn(handle, cx, n, "send"));
+}
+
+#[gpui_kit::test]
+fn todays_call_draws_todays_dialog(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let asked = json!({ "question": "Ship it?", "options": ["Yes", "Not yet"] });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    for part in ["q0-option-0", "q0-option-1", "dismiss"] {
+        assert!(drawn(handle, cx, n, part), "{part}");
+    }
+    for part in ["q0-other", "note", "send"] {
+        assert!(!drawn(handle, cx, n, part), "{part}");
+    }
+    click_part(handle, cx, n, "q0-option-1");
+    assert_eq!(answered(&answers), (false, "Not yet".to_string()));
+    let answers = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        2,
+        "ask_user",
+        json!({ "question": "When?" }),
+    );
+    let key = last_wait(&ws, cx);
+    for part in ["q0-other", "send", "dismiss"] {
+        assert!(drawn(handle, cx, n, part), "{part}");
+    }
+    assert!(!drawn(handle, cx, n, "note"));
+    type_into(handle, &ws, cx, key, Some(0), "   ");
+    cx.update_window(handle, |_, window, cx| window.press("enter", cx))
+        .unwrap();
+    assert!(answers.try_recv().is_err(), "a blank answer isn't sent");
+    type_into(handle, &ws, cx, key, Some(0), "Friday");
+    cx.update_window(handle, |_, window, cx| window.press("enter", cx))
+        .unwrap();
+    assert_eq!(answered(&answers), (false, "Friday".to_string()));
+}
+
+#[gpui_kit::test]
+fn one_single_select_question_answers_on_a_click(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let asked = json!({ "questions": [{ "question": "When?", "options": ["Now", "Later"] }] });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    let key = last_wait(&ws, cx);
+    type_into(handle, &ws, cx, key, None, "after lunch");
+    click_part(handle, cx, n, "q0-option-1");
+    let (failed, text) = answered(&answers);
+    assert!(!failed, "{text}");
+    assert_eq!(
+        json_of(&text),
+        json!({ "answers": { "When?": "Later" }, "note": "after lunch" })
+    );
+}
+
+#[gpui_kit::test]
+fn dismiss_refuses_the_question(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", two_questions());
+    click_part(handle, cx, n, "dismiss");
+    assert_eq!(
+        answered(&answers),
+        (
+            true,
+            "The person dismissed the question without answering.".to_string()
+        )
+    );
+    ws.read_with(cx, |ws, _| assert!(ws.waits.is_empty()));
+}
+
+#[gpui_kit::test]
+fn a_question_waits_without_a_deadline_by_default(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let (terminal, _) = me(&ws, cx, first);
+    let asked = json!({ "question": "Ship it?", "options": ["Yes"] });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    after(cx, 7_200_000);
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "it waits");
+    ws.read_with(cx, |ws, _| assert_eq!(ws.waits.len(), 1));
+}
+
+#[gpui_kit::test]
+fn the_setting_sets_the_deadline_unless_the_call_is_shorter(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let (terminal, _) = me(&ws, cx, first);
+    ws.update(cx, |ws, _| ws.config.connections.question_timeout = 1);
+    let ask = |timeout: Option<u64>| match timeout {
+        Some(t) => json!({ "question": "Ship it?", "options": ["Yes"], "timeout": t }),
+        None => json!({ "question": "Ship it?", "options": ["Yes"] }),
+    };
+    let short = call_later(handle, &ws, cx, &terminal, 1, "ask_user", ask(Some(30)));
+    let long = call_later(handle, &ws, cx, &terminal, 2, "ask_user", ask(Some(120)));
+    let none = call_later(handle, &ws, cx, &terminal, 3, "ask_user", ask(None));
+    after(cx, 29_000);
+    assert!(short.try_recv().is_err(), "not yet");
+    after(cx, 2_000);
+    let (failed, text) = answered(&short);
+    assert!(failed && text.contains("within 30 seconds"), "{text}");
+    after(cx, 28_000);
+    assert!(
+        long.try_recv().is_err() && none.try_recv().is_err(),
+        "not yet"
+    );
+    after(cx, 2_000);
+    for answers in [long, none] {
+        let (failed, text) = answered(&answers);
+        assert!(failed && text.contains("within 60 seconds"), "{text}");
+    }
+}
+
+#[gpui_kit::test]
+fn a_setting_changed_later_keeps_a_questions_deadline(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let (terminal, _) = me(&ws, cx, first);
+    let asked = json!({ "question": "Ship it?", "options": ["Yes"] });
+    let before = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked.clone());
+    ws.update(cx, |ws, _| ws.config.connections.question_timeout = 1);
+    after(cx, 90_000);
+    assert_eq!(before.try_recv(), Err(TryRecvError::Empty), "it waits");
+    let now = call_later(handle, &ws, cx, &terminal, 2, "ask_user", asked);
+    after(cx, 61_000);
+    let (failed, text) = answered(&now);
+    assert!(failed && text.contains("withdrawn"), "{text}");
+    assert_eq!(
+        before.try_recv(),
+        Err(TryRecvError::Empty),
+        "it still waits"
+    );
+}
+
+#[gpui_kit::test]
+fn two_calls_from_one_block_keep_their_own_answers(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let asked = json!({ "questions": [{ "question": "Name?" }] });
+    let first = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked.clone());
+    let second = call_later(handle, &ws, cx, &terminal, 2, "ask_user", asked);
+    let shown = ws.read_with(cx, |ws, _| ws.waits[0].key);
+    type_into(handle, &ws, cx, shown, Some(0), "first");
+    cx.update_window(handle, |_, window, cx| window.press("enter", cx))
+        .unwrap();
+    assert_eq!(
+        json_of(&answered(&first).1),
+        json!({ "answers": { "Name?": "first" } })
+    );
+    let next = ws.read_with(cx, |ws, cx| {
+        let wait = &ws.waits[0];
+        assert_ne!(wait.key, shown);
+        field_of(ws, wait.key, Some(0)).read(cx).value().to_string()
+    });
+    assert_eq!(next, "", "its own field");
+    let key = last_wait(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.send_question(key, window, cx))
+    })
+    .unwrap();
+    assert_eq!(second.try_recv(), Err(TryRecvError::Empty), "nothing typed");
+}
+
+/// Every size is a world size × the zoom: at twice the zoom, an option and the note are twice as
+/// wide, but for the 1 px frames of the block and the balloon.
+#[gpui_kit::test]
+fn the_dialog_scales_with_the_zoom(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", two_questions());
+    let widths = |cx: &mut TestAppContext, zoom: f32| {
+        ws.update(cx, |ws, _| {
+            ws.space.canvas.camera = Camera::at(Point::new(40.0, 400.0), zoom)
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let width = |what: &str| {
+                f32::from(
+                    window
+                        .find(crate::balloon::part(n, what))
+                        .bounds()
+                        .size
+                        .width,
+                )
+            };
+            (width("q0-option-0"), width("note"))
+        })
+        .unwrap()
+    };
+    let (option, note) = widths(cx, 1.0);
+    let (option2, note2) = widths(cx, 2.0);
+    assert!((option2 - 2.0 * option).abs() <= 4.0, "{option} {option2}");
+    assert!((note2 - 2.0 * note).abs() <= 4.0, "{note} {note2}");
 }

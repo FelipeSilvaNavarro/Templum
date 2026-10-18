@@ -15,7 +15,8 @@ pub const MAX_TEXT: usize = 256 * 1024;
 /// the agents Templum opens wait a week for a tool (`codex_flags`, templum-usage's
 /// `MCP_TIMEOUT_MS`).
 pub const MAX_WAIT: u64 = 3600;
-/// How long a question or a request to connect waits for the person, seconds, unless asked.
+/// How long a request to connect waits for the person, seconds, unless asked. A question waits
+/// until it is answered (docs/specs/ask-user.md, How long it waits).
 pub const ASK_WAIT: u64 = 1800;
 /// How long `delegate` waits for the answer, and how long a task stays handed over, seconds,
 /// unless asked.
@@ -43,10 +44,10 @@ pub enum Call {
     Notify {
         text: String,
     },
+    /// `timeout`: the call's own, if it gave one.
     AskUser {
-        question: String,
-        options: Vec<String>,
-        timeout: u64,
+        ask: crate::ask::Ask,
+        timeout: Option<u64>,
     },
     Connect {
         block: String,
@@ -224,6 +225,32 @@ pub fn list() -> Value {
             "description": "Seconds to wait before giving up.",
         })
     };
+    // ask_user's, apart: one json! of every tool reaches the macro's recursion limit.
+    let choice = json!({
+        "type": "object",
+        "properties": {
+            "label": { "type": "string" },
+            "description": { "type": "string" },
+            "preview": {
+                "type": "string",
+                "description": "Shown beside the options, in a monospace frame.",
+            },
+        },
+        "required": ["label"],
+    });
+    let question = json!({
+        "type": "object",
+        "properties": {
+            "question": { "type": "string" },
+            "header": {
+                "type": "string",
+                "description": "A short label, shown up to 12 characters.",
+            },
+            "options": { "type": "array", "items": choice },
+            "multiSelect": { "type": "boolean", "default": false },
+        },
+        "required": ["question"],
+    });
     json!({ "tools": [
         {
             "name": "whoami",
@@ -278,21 +305,34 @@ pub fn list() -> Value {
         },
         {
             "name": "ask_user",
-            "description": "Asks the person a question in a balloon on your block: a button per option, or a \
-                            text field when there are none. Waits for the answer and returns it; it may take \
-                            minutes.",
+            "description": "Asks the person in a dialog on your block, as AskUserQuestion does: questions, \
+                            each with a header, options (label, description, preview) and multiSelect; every \
+                            question also gets an Other field, and the person may add a note. Returns \
+                            {\"answers\": {question: answer, or a list for multiSelect}, \"note\": …}. Waits \
+                            until the person answers: no limit unless you give timeout (seconds) or the \
+                            person set one; if your client stops waiting, the answer is typed into your \
+                            terminal later. The older question with options (strings) still works and \
+                            returns the answer as text.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "question": { "type": "string" },
+                    "questions": { "type": "array", "minItems": 1, "items": question },
+                    "question": {
+                        "type": "string",
+                        "description": "The older shape: one question, without questions.",
+                    },
                     "options": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "The answers to offer; none for a text field.",
+                        "description": "The older shape's answers to offer; none for a text field.",
                     },
-                    "timeout": seconds(ASK_WAIT),
+                    "timeout": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_WAIT,
+                        "description": "Seconds to wait before giving up; none waits until the person answers.",
+                    },
                 },
-                "required": ["question"],
             },
         },
         {
@@ -581,14 +621,15 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             .as_bool()
             .ok_or_else(|| format!("\"{key}\" is true or false")),
     };
-    let seconds = |default: u64| match &args["timeout"] {
-        Value::Null => Ok(default),
+    let timeout = || match &args["timeout"] {
+        Value::Null => Ok(None),
         value => value
             .as_u64()
             .filter(|n| *n >= 1)
-            .map(|n| n.min(MAX_WAIT))
+            .map(|n| Some(n.min(MAX_WAIT)))
             .ok_or_else(|| format!("\"timeout\" is a number of seconds from 1 to {MAX_WAIT}")),
     };
+    let seconds = |default: u64| timeout().map(|t| t.unwrap_or(default));
     // A blank string is no value: `"worktree": ""` names no worktree, `"prompt": " "` no task.
     let optional = |key: &str| match &args[key] {
         Value::Null => Ok(None),
@@ -640,17 +681,8 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             text: text("text")?,
         },
         "ask_user" => Call::AskUser {
-            question: text("question")?,
-            options: match &args["options"] {
-                Value::Null => Vec::new(),
-                Value::Array(items) => items
-                    .iter()
-                    .map(|o| o.as_str().map(str::to_string))
-                    .collect::<Option<_>>()
-                    .ok_or_else(|| "\"options\" is a list of strings".to_string())?,
-                _ => return Err("\"options\" is a list of strings".into()),
-            },
-            timeout: seconds(ASK_WAIT)?,
+            ask: crate::ask::parse(args)?,
+            timeout: timeout()?,
         },
         "connect" => Call::Connect {
             block: text("block")?,
@@ -821,7 +853,27 @@ mod tests {
             ("notify", json!({ "text": "done" })),
             (
                 "ask_user",
-                json!({ "question": "Ship it?", "options": ["Yes", "No"], "timeout": 60 }),
+                json!({
+                    "questions": [
+                        {
+                            "question": "Which database should the service use?",
+                            "header": "Database",
+                            "options": [
+                                { "label": "Postgres", "description": "What production runs",
+                                  "preview": "DATABASE_URL=postgres://…\npool = 10" },
+                                { "label": "SQLite", "description": "One file, no server" }
+                            ],
+                            "multiSelect": false
+                        },
+                        {
+                            "question": "Which features go in the first release?",
+                            "header": "Features",
+                            "options": [{ "label": "Auth" }, { "label": "Search" }, { "label": "Export" }],
+                            "multiSelect": true
+                        }
+                    ],
+                    "timeout": 600
+                }),
             ),
             ("connect", json!({ "block": "k9x1d", "timeout": 60 })),
             (
@@ -914,13 +966,14 @@ mod tests {
 
     #[test]
     fn the_tools_that_wait_have_their_defaults_and_limits() {
+        let why = crate::ask::parse(&json!({ "question": "Why?" })).unwrap();
         assert_eq!(
             parse("ask_user", &json!({ "question": "Why?" })),
             Ok(Call::AskUser {
-                question: "Why?".into(),
-                options: Vec::new(),
-                timeout: ASK_WAIT
-            })
+                ask: why.clone(),
+                timeout: None
+            }),
+            "a question waits until it is answered"
         );
         assert_eq!(
             parse(
@@ -928,9 +981,8 @@ mod tests {
                 &json!({ "question": "Why?", "timeout": 99_999 })
             ),
             Ok(Call::AskUser {
-                question: "Why?".into(),
-                options: Vec::new(),
-                timeout: MAX_WAIT
+                ask: why,
+                timeout: Some(MAX_WAIT)
             })
         );
         assert_eq!(
@@ -1015,6 +1067,35 @@ mod tests {
         ] {
             assert!(parse("ask_user", &bad).is_err(), "{bad}");
         }
+    }
+
+    /// Both shapes, neither required: a client that checks a call against the schema still sends
+    /// today's. Options are objects only (no `anyOf`), though strings are taken.
+    #[test]
+    fn ask_users_schema_lists_both_shapes() {
+        let tools = list();
+        let ask = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "ask_user")
+            .unwrap();
+        let schema = &ask["inputSchema"];
+        assert_eq!(schema["required"], Value::Null);
+        for key in ["questions", "question", "options", "timeout"] {
+            assert!(schema["properties"][key].is_object(), "{key}");
+        }
+        let question = &schema["properties"]["questions"]["items"]["properties"];
+        for key in ["question", "header", "options", "multiSelect"] {
+            assert!(question[key].is_object(), "{key}");
+        }
+        assert_eq!(question["options"]["items"]["type"], "object");
+        assert!(
+            ask["description"]
+                .as_str()
+                .unwrap()
+                .starts_with("Asks the person in a dialog on your block, as AskUserQuestion does")
+        );
     }
 
     /// The events tools/list offers are the ones wait_for takes; any other is refused, naming them.

@@ -217,6 +217,16 @@ pub(super) static TIMEOUT: Number = Number {
     set: |c, v| c.git.commit_message.timeout = v as u64,
 };
 
+pub(super) static QUESTION_TIMEOUT: Number = Number {
+    table: "connections",
+    key: "question_timeout",
+    min: 0.0,
+    max: 1440.0,
+    step: 5.0,
+    get: |c| c.connections.question_timeout as f64,
+    set: |c, v| c.connections.question_timeout = v as u64,
+};
+
 pub(super) static MAX_DIFF: Number = Number {
     table: "git.commit_message",
     key: "max_diff_kb",

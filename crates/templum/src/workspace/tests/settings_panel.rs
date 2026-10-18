@@ -89,6 +89,7 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
             ws.config.terminal.notifications,
             ws.config.usage.claude_limits,
             ws.config.connections.enabled,
+            ws.config.connections.sound,
             ws.config.canvas.focus_follows_pointer,
         )
     };
@@ -116,6 +117,12 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
             "field-connections.enabled",
             "reset-connections.enabled",
             "enabled = false",
+        ),
+        (
+            "settings-tab-connections",
+            "field-connections.sound",
+            "reset-connections.sound",
+            "sound = false",
         ),
         (
             "settings-tab-canvas",
@@ -152,7 +159,7 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
     }
     assert_eq!(
         ws.read_with(cx, |ws, _| on(ws)),
-        (true, true, true, true, true),
+        (true, true, true, true, true, true),
         "back on"
     );
     ws.update(cx, |ws, _| ws.save());
@@ -162,6 +169,7 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
             && !text.contains("notifications")
             && !text.contains("claude_limits")
             && !text.contains("enabled")
+            && !text.contains("sound")
             && !text.contains("focus_follows_pointer"),
         "{text}"
     );
@@ -179,7 +187,20 @@ fn connections_give_the_servers_command_to_copy_and_ask_before_gemini(cx: &mut T
         window.click("settings-tab-connections", cx);
         window.render_frame(cx);
         assert!(window.try_find("connections-command").is_some());
+        assert!(
+            window
+                .try_find("field-connections.question_timeout")
+                .is_some(),
+            "Questions wait"
+        );
         window.click("connections-copy", cx);
+        // Below the questions' rows, maybe below the fold of a small window.
+        window.scroll(
+            "settings-scroll",
+            ScrollDelta::Pixels(point(px(0.), px(-5000.))),
+            cx,
+        );
+        window.render_frame(cx);
         window.click("gemini-setup", cx);
         window.render_frame(cx);
         assert!(window.has_active_dialog(cx), "it asks first");

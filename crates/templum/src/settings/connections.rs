@@ -8,9 +8,11 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
-use gpui_kit::{ClickEvent, Entity, TestSupportExt, div, px};
+use gpui_kit::{App, ClickEvent, Entity, TestSupportExt, Window, div, px};
 
+use super::fields::QUESTION_TIMEOUT;
 use super::row::{Row, remove};
+use super::sections::number_row;
 use crate::config::Edit;
 use crate::grid::hsla;
 use crate::prompt;
@@ -30,9 +32,16 @@ const REMOVE: (&str, &str, &str) = (
     "Remove",
 );
 
-pub(super) fn rows(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<Row> {
+pub(super) fn rows(
+    ws: &Workspace,
+    entity: &Entity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<Row> {
     let on = ws.config.connections.enabled;
+    let sound = ws.config.connections.sound;
     let e = entity.clone();
+    let s = entity.clone();
     let mut rows = vec![
         Row::new("connections.enabled", "Agents Templum opens")
             .description(
@@ -55,6 +64,30 @@ pub(super) fn rows(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<Row> {
                 !on,
                 remove(entity, "connections", "enabled", |c| {
                     c.connections.enabled = true
+                }),
+            ),
+        number_row(ws, entity, &QUESTION_TIMEOUT, "Questions wait", window, cx).description(
+            "How long an agent's question waits for your answer, in minutes. 0 waits until you \
+             answer",
+        ),
+        Row::new("connections.sound", "Sound")
+            .description("A short sound when an agent asks you something")
+            .control(Switch::new("connections-sound").checked(sound).on_click(
+                move |on: &bool, _, cx| {
+                    let on = *on;
+                    s.update(cx, |ws, cx| {
+                        ws.edit(
+                            Edit::set("connections", "sound", on),
+                            |c| c.connections.sound = on,
+                            cx,
+                        )
+                    })
+                },
+            ))
+            .reset(
+                !sound,
+                remove(entity, "connections", "sound", |c| {
+                    c.connections.sound = true
                 }),
             ),
     ];

@@ -4,11 +4,11 @@
 
 use std::time::Duration;
 
-use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::prelude::*;
+use gpui_kit::component::input::InputState;
 use gpui_kit::{App, Context, Entity, Focusable as _, Subscription, Window};
 use serde_json::Value;
 use templum_canvas::Level;
+use templum_mcp::ask::{Ask, Form};
 use templum_mcp::tools::Event;
 use templum_mcp::{Replier, Reply, tools};
 
@@ -37,13 +37,19 @@ pub(crate) struct Wait {
     pub what: Waiting,
 }
 
+/// A field of a question's dialog, and what it hears from it.
+pub(crate) type Field = (Entity<InputState>, Subscription);
+
 /// What a wait waits for.
 pub(crate) enum Waiting {
-    /// `ask_user`: one of `options`, or what the person types in `field` when there are none.
+    /// `ask_user` (docs/specs/ask-user.md): its questions, what the person picked, each
+    /// question's Other field, and the note (asked with `questions` only). `wait` makes the
+    /// fields.
     Question {
-        text: String,
-        options: Vec<String>,
-        field: Option<(Entity<InputState>, Subscription)>,
+        ask: Ask,
+        form: Form,
+        others: Vec<Field>,
+        note: Option<Field>,
     },
     /// `connect`: the person's Allow or Deny to wiring the asking block to block `to` (its block
     /// id).
@@ -74,7 +80,7 @@ impl Wait {
     /// What it asks the person, on one line: the dot's tooltip.
     pub fn summary(&self) -> String {
         match &self.what {
-            Waiting::Question { text, .. } => text.lines().next().unwrap_or_default().to_string(),
+            Waiting::Question { ask, .. } => ask.summary(),
             Waiting::Connect { to } => format!("connect to {to}"),
             Waiting::Turn { .. } | Waiting::Event { .. } => String::new(),
         }
@@ -82,42 +88,35 @@ impl Wait {
 }
 
 impl Workspace {
-    /// Keeps `asked` until what it waits for comes, or `seconds` pass; a question without options
-    /// gets its field. The person hears of a request when its block isn't on screen.
+    /// Keeps `asked` until what it waits for comes, or `seconds` pass (None: no deadline); a
+    /// question gets its fields. The person hears of a request when its block isn't on screen.
     pub(super) fn wait(
         &mut self,
         asked: Asked,
         mut what: Waiting,
-        seconds: u64,
+        seconds: Option<u64>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.next_wait += 1;
         let key = self.next_wait;
-        if let Waiting::Question { options, field, .. } = &mut what
-            && options.is_empty()
+        if let Waiting::Question {
+            ask, others, note, ..
+        } = &mut what
         {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Your answer"));
-            let events = cx.subscribe_in(
-                &input,
-                window,
-                move |ws, _, event: &InputEvent, window, cx| {
-                    if let InputEvent::PressEnter { .. } = event {
-                        ws.send_field(key, window, cx);
-                    }
-                },
-            );
-            *field = Some((input, events));
+            (*others, *note) = super::questions::fields(key, ask, window, cx);
         }
         // ponytail: one timer per wait, left to run out once it is answered (it then finds
-        // nothing); a call waits an hour at most.
-        cx.spawn(async move |ws, cx| {
-            cx.background_executor()
-                .timer(Duration::from_secs(seconds))
-                .await;
-            ws.update(cx, |ws, cx| ws.expire(key, seconds, cx)).ok();
-        })
-        .detach();
+        // nothing); a call waits an hour at most, a question a day.
+        if let Some(seconds) = seconds {
+            cx.spawn(async move |ws, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_secs(seconds))
+                    .await;
+                ws.update(cx, |ws, cx| ws.expire(key, seconds, cx)).ok();
+            })
+            .detach();
+        }
         let wait = Wait {
             key,
             conn: asked.conn,
@@ -248,42 +247,6 @@ impl Workspace {
         }
     }
 
-    /// The person's answer to the question `key`: an option, or what they typed. The keyboard
-    /// goes back to the canvas when the question's field had it.
-    pub(crate) fn answer_question(
-        &mut self,
-        key: u64,
-        text: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let typing = self
-            .waits
-            .iter()
-            .any(|w| w.key == key && field_focused(w, window, cx));
-        if self.answer(key, Reply::ok(text), cx) && typing {
-            window.focus(&self.focus_handle, cx);
-        }
-    }
-
-    /// Send, or Enter in a question's field: its text answers, unless it is blank.
-    pub(crate) fn send_field(&mut self, key: u64, window: &mut Window, cx: &mut Context<Self>) {
-        let typed = self
-            .waits
-            .iter()
-            .find(|w| w.key == key)
-            .and_then(|w| match &w.what {
-                Waiting::Question {
-                    field: Some((input, _)),
-                    ..
-                } => Some(input.read(cx).value().to_string()),
-                _ => None,
-            });
-        if let Some(text) = typed.filter(|t| !t.trim().is_empty()) {
-            self.answer_question(key, text, window, cx);
-        }
-    }
-
     /// `connect` from the terminal `from`: the person's answer to wait for, unless there is
     /// nothing to ask.
     pub(super) fn ask_to_connect(&self, from: &str, block: &str, timeout: u64) -> Outcome {
@@ -315,7 +278,7 @@ impl Workspace {
             Waiting::Connect {
                 to: block.to_string(),
             },
-            timeout,
+            Some(timeout),
         )
     }
 
@@ -409,7 +372,7 @@ impl Workspace {
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let (_, title, _) = self.about(&space.blocks[&me], cx);
         let text = match &wait.what {
-            Waiting::Question { text, .. } => format!("Asks you: {text}"),
+            Waiting::Question { ask, .. } => format!("Asks you: {}", ask.summary()),
             Waiting::Connect { .. } => self.connect_line(wait, cx),
             Waiting::Turn { .. } | Waiting::Event { .. } => return,
         };
@@ -452,7 +415,7 @@ impl Workspace {
             event,
             since: (status.finished, status.attention),
         };
-        Outcome::Wait(what, timeout)
+        Outcome::Wait(what, Some(timeout))
     }
 
     /// The block of the terminal `terminal` waits for its person (its agent asks for `what`, or
@@ -566,13 +529,25 @@ impl Workspace {
     }
 }
 
-/// The question's field has the keyboard.
-fn field_focused(wait: &Wait, window: &Window, cx: &App) -> bool {
-    matches!(
-        &wait.what,
-        Waiting::Question { field: Some((input, _)), .. }
-            if input.read(cx).focus_handle(cx).is_focused(window)
-    )
+/// One of the question's fields has the keyboard.
+pub(super) fn field_focused(wait: &Wait, window: &Window, cx: &App) -> bool {
+    let Waiting::Question { others, note, .. } = &wait.what else {
+        return false;
+    };
+    others
+        .iter()
+        .chain(note)
+        .any(|(input, _)| input.read(cx).focus_handle(cx).is_focused(window))
+}
+
+/// How long a question waits, seconds: the shorter of the call's `timeout` and the setting's
+/// minutes when not 0; with neither, until it is answered (None).
+pub(super) fn deadline(call: Option<u64>, setting_minutes: u64) -> Option<u64> {
+    let setting = (setting_minutes > 0).then_some(setting_minutes * 60);
+    match (call, setting) {
+        (Some(call), Some(setting)) => Some(call.min(setting)),
+        (call, setting) => call.or(setting),
+    }
 }
 
 /// `wait_for(needs_you)`'s answer: block `uid` waits for its person, for `what` when it says,
