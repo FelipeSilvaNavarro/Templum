@@ -14,9 +14,10 @@ Templum is a single native Rust application. There is no webview: the UI is draw
 | `templum-git` | lib | Runs the user's `git` as a command (`std::process::Command`) and parses its machine formats into typed values, finds conflict regions by their markers (`conflict.rs`), lays History's commits out in lanes from their parents (`graph.rs`), turns a blame into the diff panel's rows (`blame.rs`), makes a worktree for a new branch under `.worktrees/` (`repo.rs`), keeps the trash of discarded changes, and asks an AI agent for a commit message (`message.rs`) | No |
 | `templum-usage` | lib | Reads what CLI agents write about their sessions and plan limits: Claude Code's status line through Templum's relay, and its transcripts (`claude.rs`, which also writes the settings file Claude Code is given, with Templum's hooks, and its `mcp.json`); Codex's rollout files (`codex.rs`); the Gemini CLI extension (`gemini.rs`); the files that give Copilot CLI Templum's server and a plugin of hooks, with the words that name them (`copilot.rs`); the JSON and the JavaScript plugin that give OpenCode and Kilo Code the same through their config variable (`opencode.rs`, `opencode.js`); Qwen Code's MCP file and the system settings file with Templum's hooks that its variable moves (`qwen.rs`); Pi's extension, which reports its events and registers the server where Pi has MCP (`pi.rs`, `pi.ts`); the program those files run and its hook command (`bin`, `hook_command`); when to warn about a limit or tell its reset (`watch.rs`); each agent's variable, items and login for its accounts (`accounts.rs`). Never an agent's credentials ([specs/usage.md](specs/usage.md)) | No |
 | `templum-update` | lib | Finds the newest release on GitHub (`lib.rs`), how Templum was installed and the release file that fits it (`install.rs`). Downloads it and checks GitHub's SHA-256 (`fetch.rs`), then puts it in place: a rename over the AppImage or executable, a bundle swap on macOS, an installer's command line, a command for a terminal ([specs/updates.md](specs/updates.md)) | No |
-| `templum-mcp` | lib | The bus Templum's blocks talk over: JSON-RPC lines on a local socket (`bus.rs`), the MCP tools (`tools.rs`), the agents' hook events (`hooks.rs`) and the `templum` command line (`cli.rs`: the MCP bridge, `hook`, the verbs) ([specs/connections.md](specs/connections.md)) | No |
+| `templum-mcp` | lib | The bus Templum's blocks talk over: JSON-RPC lines on a local socket (`bus.rs`), the MCP tools (`tools.rs`), the Templum Agent's control tools and their danger (`control.rs`), the agents' hook events (`hooks.rs`) and the `templum` command line (`cli.rs`: the MCP bridges `mcp` and `control`, `hook`, the verbs) ([specs/connections.md](specs/connections.md)) | No |
+| `templum-agent` | lib | The Templum Agent's engine: Claude Code's words and its stream-json lines read into chat events (`claude.rs`), the conversation's rows, its own things and its file (`conversation.rs`), the child process and its reader threads (`engine.rs`), and the fake engine the tests run (`fake.rs`) ([specs/templum-agent.md](specs/templum-agent.md)) | No |
 
-All seven crates exist. New library crates are created together with the first real code that needs
+All eight crates exist. New library crates are created together with the first real code that needs
 them, never as empty scaffolding. The behavior of the current version is specified in
 [specs/walking-skeleton.md](specs/walking-skeleton.md), [specs/design-system.md](specs/design-system.md) and
 [specs/config.md](specs/config.md).
@@ -60,8 +61,13 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   this Templum: a link to it on Unix, a hard link or a copy named `templum.exe` on Windows. `templum mcp`,
   `templum hook …` and the verbs are the same program run without a window (`main.rs`). Each connection has a number;
   when one ends the UI hears it (`templum/closed`) and drops what it waited for.
-  Planned (kanban card 43): a fourth kind of client, `control`, the MCP server only the Templum Agent's process gets,
-  with a per-start secret, and the chat that drives it ([specs/templum-agent.md](specs/templum-agent.md)).
+  A fourth kind of client, `control`, is the MCP server only the Templum Agent's process gets: its hello carries a
+  secret new at each start of the engine, compared at every message, and `workspace/control.rs` serves it on every
+  workspace, through the operations both servers share (`workspace/ops.rs`) and the gate (`workspace/approvals.rs`)
+  ([specs/templum-agent.md](specs/templum-agent.md)).
+- **The Templum Agent** (`templum-agent`, `workspace/agent.rs`): a headless Claude Code started with the first
+  message (`std::process::Command`, no PTY), its stdout and stderr read on threads of their own into a channel the UI
+  thread drains; Stop sends its interrupt request; the conversation is saved in `<data>/agent/`.
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.
   Far away, each block is drawn at a level of detail picked by its text's size on screen at the zoom the camera
@@ -127,11 +133,14 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   `delegate.rs` (tasks handed between agents: typing them, their answers, `reply`, `wait_for_idle`, `send_keys` and
   `interrupt`), `spawn.rs` (`spawn_agent`: an agent beside the caller, its worktree, its model and effort, its prompt
   once it is ready, `close_block`), `content.rs` (the tools on a
-  wired block's content: a kanban's cards, a note, a checklist, a file opened in an editor), `ops.rs` (the workspace
-  operations both MCP servers call, each taking its target, never a caller: `stop_in`, `add_block_in`, the
-  worktree operations…), `schedules.rs` (texts an agent asked to have delivered later, and the watches whose match
-  is typed back), `worktrees.rs` (`remove_worktree`, `merge_worktree`). Methods a
-  sibling or a test calls are `pub(super)`.
+  wired block's content: a kanban's cards, a note, a checklist, a file opened in an editor, after their wire check),
+  `ops.rs` (the workspace operations both MCP servers call, each taking its target, never a caller: `stop_in`,
+  `add_block_in`, the worktree operations, a terminal's text, typing into it, closing a block, cards, notes and
+  checklists…), `schedules.rs` (texts an agent asked to have delivered later, and the watches whose match is typed
+  back), `worktrees.rs` (`remove_worktree`, `merge_worktree`), `control.rs` (the control server: its tools on every
+  workspace, `overview`), `approvals.rs` (the calls that wait for the person, grants, their answers and
+  notification), `agent.rs` (the Templum Agent's engine: started, resumed, stopped, its lines folded into the
+  conversation, its file). Methods a sibling or a test calls are `pub(super)`.
   `workspace/tests/` holds its tests, one file per area, with the shared helpers in `tests/mod.rs`.
 - `settings/`, `git_block/` and `menu/`: the panel's sections, the Git popup's view and tabs, and what each menu lists, each
   in its own file behind the folder's `mod.rs`, which keeps the paths the rest of the crate uses. `git_block/diff_view/`
@@ -142,6 +151,10 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   working changes never touches another tab's. `git_block/history.rs` draws History's left column: the commits
   with their graph, or the commit shown. `git_block/words.rs` holds the Git words' tooltips and the sentences the Git says;
   `git_block/switcher.rs` the branch switcher.
+- `chat/`: the Templum Agent's state on the workspace (`mod.rs`: `TemplumAgent`, the pill's keyboard, the
+  approval's), the pill (`pill.rs`), the chat (`panel.rs`) and its rows (`rows.rs`), and the approval popup
+  (`approval.rs`): window chrome over the canvas's bottom center, never scaled by the zoom
+  ([specs/templum-agent.md](specs/templum-agent.md#what-a-person-sees)).
 - `sidebar.rs`: the workspaces' tiles, a workspace's face (its image, icon or initials, in its color) and the Git
   button at its foot;
   `spaces_screen.rs`: the workspaces screen (cards, search, keys, dragging to reorder); `space_dialog.rs`: a

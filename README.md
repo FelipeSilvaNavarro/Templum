@@ -147,6 +147,17 @@ as you make it.
   to have it.
 - Edits you make by hand to `config.toml` show up in the panel.
 
+## Templum Agent
+
+**Ctrl+Shift+Space** (**Cmd+Shift+Space** on macOS), or a click on the pill at the bottom of the canvas, asks the
+Templum Agent: a Claude Code of yours, run in the background with your login, that builds and runs the canvas for
+you. "Make a workspace for ~/proj with a kanban of 4 cards and a Claude Code per card" makes the workspace, the
+board and its cards, and opens the agents wired to it with their prompts. It doesn't write code: every agent it opens
+is a block you can watch, type into or stop. Each of its actions is a row in the chat; a click shows its block.
+Closing a block where something of yours runs, typing into a terminal or pressing keys in one waits for your
+**Allow once**, **Allow for this conversation** or **Deny**. Settings ▸ Templum Agent picks its model, its effort
+and hides the pill. The conversation is kept across restarts; **New chat** starts another.
+
 ## Kanban boards
 
 The toolbar's board button (or Ctrl+Shift+K) puts a kanban block on the canvas, Trello-style. Pick a board

@@ -1,7 +1,8 @@
 //! `templum --bench`: 20 terminals, 5 running `yes`, 200 strokes over them, 10 s of animated pan
 //! and zoom. `templum --bench-mixed`: a canvas like an agent cockpit instead — 5 terminals
 //! redrawing a colored screen 10× a second (an agent's TUI), 3 editors, a note and 2 kanban
-//! blocks, each wired to the next, no strokes.
+//! blocks, each wired to the next, no strokes; and the Templum Agent's chat open on a 30-row
+//! conversation whose last text grows by a word each frame, as an engine streams it.
 //! `templum --bench-zoom=<kind>`: 10 blocks of one kind (`terminal`, `editor`, `note`, `kanban`)
 //! or none (`empty`), on the folder Templum runs from; the zoom glides step by step from 25% to
 //! 200% and back, 4 steps a second, around the view's center. No pan, no output.
@@ -51,6 +52,7 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, mixed: bool, c
                     ws.add_kanban_at(next(), window, cx);
                 }
                 wire_in_a_chain(ws);
+                agent_chat(ws);
                 return;
             }
             for i in 1..20 {
@@ -97,6 +99,10 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, mixed: bool, c
                 // The bench drives the camera: stop keeping the startup terminal centered.
                 ws.space.pristine = false;
                 measure(ws, idle_rss, move |ws, window, cx, t| {
+                    if mixed {
+                        let word = templum_agent::ChatEvent::TextDelta("streaming ".into());
+                        ws.templum_agent.conversation.apply(word);
+                    }
                     // Zoom sweeps every step back and forth (4 per second) while panning in a circle.
                     let n = ZOOM_STEPS.len();
                     let k = (t / 0.25) as usize % (2 * (n - 1));
@@ -124,6 +130,39 @@ pub(crate) fn run(window: AnyWindowHandle, ws: Entity<Workspace>, mixed: bool, c
         });
     })
     .detach();
+}
+
+/// The Templum Agent's chat open on 30 rows of a conversation, its turn still running.
+fn agent_chat(ws: &mut Workspace) {
+    use templum_agent::ChatEvent;
+    let c = &mut ws.templum_agent.conversation;
+    for i in 0..6 {
+        c.person(&format!(
+            "Open an agent on card {i} and tell me when it is done."
+        ));
+        c.apply(ChatEvent::Text(format!(
+            "Opening **Codex** on card {i}: it takes the card, does it, then moves it to `Review`."
+        )));
+        let id = format!("t{i}");
+        let name = "mcp__templum-control__open_agent".to_string();
+        c.apply(ChatEvent::ToolStarted {
+            id: id.clone(),
+            name,
+        });
+        c.apply(ChatEvent::ToolResult {
+            id,
+            text: format!("Opened Codex as b{i} in ~/proj."),
+            is_error: false,
+        });
+        c.apply(ChatEvent::TurnEnded {
+            ms: Some(14_000),
+            cost_usd: Some(0.04),
+            error: None,
+        });
+    }
+    c.person("Now the next one.");
+    c.apply(ChatEvent::TextDelta("Opening ".into()));
+    ws.templum_agent.open = true;
 }
 
 pub(crate) fn run_zoom(window: AnyWindowHandle, ws: Entity<Workspace>, kind: String, cx: &mut App) {

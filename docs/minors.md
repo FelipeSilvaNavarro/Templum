@@ -1485,3 +1485,32 @@ Left by the data-safety fixes after that review; line numbers are those of `deve
   folder a link to `~/.claude` and claude5 on `~/.claude/work`, deleting claude2 says "Claude Code 5's folder is in
   Claude Code (claude2)'s: change it first", though deleting would only remove the link. Found by reading. Fix: skip
   the check when the account's folder is itself a link.
+
+## Templum Agent
+
+Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those of `templum-agent` at its Task 18.
+
+- [ ] **The pill and the chat don't animate their size.** The pill jumps from 300 to 640 px wide
+  (`crates/templum/src/chat/pill.rs`, `render`), where the spec grows it over 0.18 s; the chat fades and rises but its
+  height jumps with its rows. Fix: a `with_animation` on the width keyed on the wide state.
+- [ ] **No less-motion mode.** The spec stills the working line, the glow and the chat's rise when the system asks
+  for less motion; Templum reads no such setting anywhere (`crates/templum/src/motion.rs`). Fix: read the system's
+  reduced-motion preference once in `motion.rs` and skip those animations.
+- [ ] **The Thinking row has no sweeping band.** `rows::row` (`crates/templum/src/chat/rows.rs`) draws "Thinking"
+  still. Fix: the working line's band, over its text.
+- [ ] **A reads row doesn't say what it read.** `Row::Reads` (`crates/templum-agent/src/conversation.rs`) keeps a
+  count only, so its tooltip ("Read `src/main.rs`") can't be shown. Fix: keep each read's tool and path in the row.
+- [ ] **The pill's working words are generic.** `pill::doing` says the tool's title ("Opening an agent…"), where the
+  spec says "Opening Codex in api…". Fix: write the sentence from the running action's call.
+- [ ] **`overview` doesn't list what waits for the person.** `Workspace::overview`
+  (`crates/templum/src/workspace/control.rs`) lists each agent's state, not the approvals waiting. Fix: a last line
+  per approval waiting.
+- [ ] **A model typed in Settings ▸ Templum Agent that Templum wouldn't type is dropped silently.** `set_model`
+  (`crates/templum/src/settings/templum_agent.rs`) leaves the field at the last good model. Fix: show why under the
+  field, as the shell's arguments do.
+- [ ] **Not checked by hand.** The spec's Manual list on Hyprland (the pill, the chat rising and closing, the
+  approval's keys, the glow, light and dark themes, a real Claude Code conversation building criterion 2's
+  workspace, Stop during a turn, a restart in the middle) wasn't done: the headless tests and a real Claude Code
+  run outside Templum (the command line, `--resume`, the stream, the interrupt) are. Windows' `.cmd` launch of
+  `claude` (`crates/templum-agent/src/engine.rs`, `command`) is untested.
+

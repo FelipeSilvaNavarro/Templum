@@ -1,7 +1,8 @@
 # Templum Agent: the canvas you talk to
 
 - **Date:** 2026-10-18
-- **Status:** Planned (kanban card 43): [docs/plans/2026-10-18-templum-agent.md](../plans/2026-10-18-templum-agent.md)
+- **Status:** Batch 1 implemented (kanban card 43); batches 2 to 4 planned:
+  [docs/plans/2026-10-18-templum-agent.md](../plans/2026-10-18-templum-agent.md)
 - **Builds on:** [connections.md](connections.md) (the bus, the MCP server, tasks handed over, spawning, the
   balloon's rules), [agents.md](agents.md) (the agents and `[agents]`), [kanban.md](kanban.md),
   [checklist.md](checklist.md), [cockpit.md](cockpit.md) (block kinds, the toolbar, notes),
@@ -225,7 +226,8 @@ claude -p --verbose --input-format stream-json --output-format stream-json --inc
 ```
 
 - **`--tools Read,Glob,Grep`:** its only built-in tools read files, so it can look at a project before planning it.
-  `--add-dir` names each folder of a block in any workspace (deduped), read again at each start of the process. No
+  `--add-dir` names each workspace's folder and each folder of a block in any workspace (deduped), read again at each
+  start of the process, so a project is readable once its workspace exists. No
   Bash, Edit, Write, WebFetch or Agent: what it changes, it changes through Templum, where the gate is.
 - **`--strict-mcp-config` and `<data>/agent/mcp.json`:** its only MCP server is the control server (the person's own
   servers are for their agents). The file, written at each start only when it changed:
