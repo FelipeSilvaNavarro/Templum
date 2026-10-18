@@ -118,7 +118,7 @@ What each client does with a long tool call (read in their documentation, 2026-1
 |---|---|---|
 | Claude Code | Gives up on a call that sends nothing for 1800 s, its idle timeout for stdio servers (`CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`; seen 2026-10-17 with a Templum `mcp.json` without `timeout`: `MCP server "templum" tool "wait_for_idle" sent no response or progress for 1800s; aborting. If this server is configured in your MCP settings, set a per-server "timeout" (ms)…`). A server's own `timeout` lifts it, and replaces `MCP_TOOL_TIMEOUT` (100000000 ms, about 28 hours, by default). Moves a call past 2 minutes to the background, where its documentation says it keeps waiting; not checked by hand yet ([minors](../minors.md#connections)). Esc in the agent cancels the call (`notifications/cancelled`) | The `mcp.json` it is given sets `"timeout": 604800000` on Templum's server |
 | Codex | Gives up at the server's `tool_timeout_sec` | `tool_timeout_sec=604800` (it was 3600) |
-| Gemini CLI | Gives up at the server's `timeout` (ms; 10 minutes unless set); the MCP TypeScript SDK sends `notifications/cancelled` when it does | The extension's `timeout` is 604800000 (it was 3600000) |
+| Gemini CLI | Gives up at the server's `timeout` (ms; 10 minutes unless set); the MCP TypeScript SDK sends `notifications/cancelled` when it does | The extension's `timeout` is 604800000 (it was 3600000); one linked before gets it at Templum's next start |
 | Others (the command in Settings ▸ Connections) | Their own limits | The fallback below |
 
 - Seven days is longer than any question is left in practice, and stays under the largest JavaScript timer (2³¹ − 1

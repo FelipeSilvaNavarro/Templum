@@ -82,6 +82,14 @@ pub fn installed(gemini_dir: &Path) -> bool {
     gemini_dir.join("extensions").join(NAME).exists()
 }
 
+/// Writes the extension again when Gemini CLI, whose folder is `gemini_dir`, has it: one
+/// installed by an older Templum gets this one's (a question's seven-day timeout).
+pub fn refresh(data: &Path, gemini_dir: &Path, windows: bool) {
+    if installed(gemini_dir) {
+        extension(data, windows);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +129,23 @@ mod tests {
                 "Notification": hook,
                 "SessionEnd": hook,
             }})
+        );
+    }
+
+    #[test]
+    fn an_installed_extension_is_written_again() {
+        let data = tempfile::tempdir().unwrap();
+        let gemini = tempfile::tempdir().unwrap();
+        let manifest = data.path().join("gemini").join("gemini-extension.json");
+        let old = json!({ "name": NAME, "mcpServers": { "templum": { "timeout": 3_600_000 } } });
+        write_changed(&manifest, &old).unwrap();
+        refresh(data.path(), gemini.path(), false);
+        assert_eq!(read(&manifest), old, "not installed: left alone");
+        std::fs::create_dir_all(gemini.path().join("extensions").join(NAME)).unwrap();
+        refresh(data.path(), gemini.path(), false);
+        assert_eq!(
+            read(&manifest)["mcpServers"]["templum"]["timeout"],
+            604_800_000
         );
     }
 

@@ -584,7 +584,9 @@ Templum hears nothing from it and reads its screen. With no `notify` flag, the p
 **Settings ▸ Connections ▸ Gemini CLI ▸ Install**, after a question, writes `<data>/gemini/gemini-extension.json` (the
 server, `<data>/bin/templum mcp`, with a seven days' timeout, 604800000 ms) and `<data>/gemini/hooks/hooks.json` (the hooks,
 `'<data>/bin/templum' hook gemini`; `& '…'` on Windows, where Gemini CLI runs hooks through PowerShell), and runs
-`gemini extensions link <data>/gemini --consent`; **Remove** runs `gemini extensions uninstall templum`.
+`gemini extensions link <data>/gemini --consent`; **Remove** runs `gemini extensions uninstall templum`. Each start,
+while `~/.gemini/extensions/templum` is there, Templum writes the two files again (an unchanged file is left alone):
+one installed by an older Templum gets this one's.
 `~/.gemini/settings.json` is never touched. Every Gemini CLI the person opens then has the server and the hooks, typed
 by hand or not, whatever `[connections]` says; outside Templum the server shows as disconnected and the hooks do
 nothing. Gemini CLI starts no stdio server in a folder it doesn't trust; it asks when it first opens one.
