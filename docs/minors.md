@@ -1374,11 +1374,6 @@ by hand (a second real login, macOS, Windows). Line numbers are those of `develo
 
 Left by the final review of kanban card 37; line numbers are those of `development` at 65e2868.
 
-- [ ] **An account's folder that is the agent's own through a link isn't refused.** `check_account`
-  (`crates/templum/src/config.rs:582`) compares the paths' text, so `folder = "~/dotfiles/claude"` when
-  `~/.claude` links there (or a case variant on macOS and Windows) passes; Save then keeps the agent's own items
-  aside and links them to themselves (setting them Own and saving again undoes it). Fix: compare canonicalized
-  paths, with a test.
 - [ ] **A source folder Templum makes for a share isn't private.** `apply_path`
   (`crates/templum-usage/src/accounts/folder.rs:243`) makes a missing item folder of the source (another account's,
   or the agent's own) with `create_dir_all`: 0755 on Unix, where the account's own folder is 0700. Fix: `make_dir`

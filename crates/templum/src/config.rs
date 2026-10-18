@@ -519,8 +519,10 @@ pub(crate) fn parse_in(text: &str, data: Option<&Path>) -> Result<Config, String
 
 /// The account `id` of `agents` (an entry with `of`), checked: its agent has accounts, it takes
 /// nothing its agent has, each share names an item and one of its agent's folders without coming
-/// back to it, and its folder is no other's, nor in Templum's folder for accounts
-/// (`<data>/accounts`, whose folders are deleted with their account).
+/// back to it, and its folder is no agent's own, not the home folder, apart from every other
+/// account's, and neither in nor around Templum's folder for accounts (`<data>/accounts`, whose
+/// folders are deleted with their account). Folders are compared with their links followed
+/// (`resolved`).
 pub(crate) fn check_account(
     id: &str,
     agents: &BTreeMap<String, AgentConfig>,
@@ -599,36 +601,57 @@ pub(crate) fn check_account(
                 "{FILE}: agents.{id}.folder: {folder} isn't a full path: start it with {start}"
             ));
         }
-        if data.is_some_and(|data| path.starts_with(data.join("accounts"))) {
-            return Err(format!(
-                "{FILE}: agents.{id}.folder: {folder} is Templum's folder for accounts: leave Folder empty"
-            ));
+        let refuse = |why: String| Err(format!("{FILE}: agents.{id}.folder: {folder} {why}"));
+        let real = resolved(&path);
+        let home = std::env::home_dir();
+        if home.as_deref().is_some_and(|home| resolved(home) == real) {
+            return refuse("is your home folder: choose a folder of its own".to_string());
         }
-        let own = kind.own_folder(std::env::var_os(kind.var), std::env::home_dir().as_deref());
-        if own.is_some_and(|own| own == path) {
-            return Err(format!(
-                "{FILE}: agents.{id}.folder: {folder} is {of}'s own folder"
-            ));
+        if let Some(accounts) = data.map(|data| resolved(&data.join("accounts"))) {
+            if real.starts_with(&accounts) {
+                return refuse("is Templum's folder for accounts: leave Folder empty".to_string());
+            }
+            if accounts.starts_with(&real) {
+                return refuse(
+                    "holds Templum's folder for accounts: choose a folder of its own".to_string(),
+                );
+            }
         }
-        if std::env::home_dir().is_some_and(|home| home == path) {
-            return Err(format!(
-                "{FILE}: agents.{id}.folder: {folder} is your home folder: choose a folder of its own"
-            ));
+        let state = resolved(&kind.state_dir(&path));
+        for other in templum_usage::accounts::kinds() {
+            let own = other.own_folder(std::env::var_os(other.var), home.as_deref());
+            if own.is_some_and(|own| resolved(&other.state_dir(&own)) == state) {
+                return refuse(format!("is {}'s own folder", other.agent));
+            }
         }
-        let taken = agents.iter().find(|(other, a)| {
-            *other != id
-                && a.of.is_some()
-                && a.folder
-                    .as_deref()
-                    .is_some_and(|f| crate::launcher::expand(f) == path)
-        });
-        if let Some((other, _)) = taken {
-            return Err(format!(
-                "{FILE}: agents.{id}.folder: {folder} is {other}'s folder"
-            ));
+        for (other, a) in agents
+            .iter()
+            .filter(|(other, a)| *other != id && a.of.is_some())
+        {
+            let Some(theirs) = a.folder.as_deref().filter(|f| !f.trim().is_empty()) else {
+                continue;
+            };
+            let theirs = resolved(&crate::launcher::expand(theirs));
+            if real == theirs {
+                return refuse(format!("is {other}'s folder"));
+            }
+            if real.starts_with(&theirs) {
+                return refuse(format!("is in {other}'s folder: choose one apart"));
+            }
+            if theirs.starts_with(&real) {
+                return refuse(format!("holds {other}'s folder: choose one apart"));
+            }
         }
     }
     Ok(())
+}
+
+/// `path` with its links followed as far as it exists (the rest as written), to compare folders:
+/// a link's target and the link, a case variant on macOS and Windows, a `\\?\` path.
+fn resolved(path: &Path) -> PathBuf {
+    path.ancestors()
+        .find_map(|a| Some(a.canonicalize().ok()?.join(path.strip_prefix(a).ok()?)))
+        .unwrap_or_else(|| path.to_path_buf())
 }
 
 /// `<dir>/config.toml`, with Templum's data folder `data`. No folder or no file: the defaults.
@@ -1801,6 +1824,80 @@ scrollback = 500
                 "{err}"
             );
         }
+    }
+
+    /// Every agent's own folder (another agent's files: Codex's account on ~/.claude), however
+    /// its variable sets it.
+    #[test]
+    fn an_account_folder_is_no_agents_own() {
+        let home = std::env::home_dir();
+        for (of, owner) in [
+            ("claude", "claude"),
+            ("codex", "claude"),
+            ("pi", "codex"),
+            ("claude", "gemini"),
+        ] {
+            let kind = templum_usage::accounts::kind(owner).unwrap();
+            let own = kind
+                .own_folder(std::env::var_os(kind.var), home.as_deref())
+                .unwrap();
+            let folder = kind.state_dir(&own);
+            let text = format!(
+                "[agents.{of}9]\nof = \"{of}\"\nfolder = '{}'\n",
+                folder.display()
+            );
+            let err = parse(&text).unwrap_err();
+            assert!(
+                err.contains(&format!("is {owner}'s own folder")),
+                "{text}\n{err}"
+            );
+        }
+    }
+
+    /// Folders are compared with their links followed: one in another, around Templum's folder
+    /// for accounts, or a link to either, is refused.
+    #[cfg(unix)]
+    #[test]
+    fn an_account_folder_is_apart_from_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, data) = (dir.path().join("w"), dir.path().join("data"));
+        std::fs::create_dir_all(w.join("skills")).unwrap();
+        std::fs::create_dir_all(data.join("accounts/claude3")).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&w, &link).unwrap();
+        let to_data = dir.path().join("to-data");
+        std::os::unix::fs::symlink(&data, &to_data).unwrap();
+        let two = |a: &Path, b: &Path| {
+            let text = format!(
+                "[agents.claude2]\nof = \"claude\"\nfolder = '{}'\n[agents.claude3]\nof = \"claude\"\nfolder = '{}'\n",
+                a.display(),
+                b.display()
+            );
+            parse_in(&text, Some(&data)).map(|_| ()).unwrap_err()
+        };
+        assert!(two(&w, &w.join("skills")).contains("holds claude3's folder"));
+        assert!(two(&w.join("skills"), &w).contains("is in claude3's folder"));
+        assert!(
+            two(&link, &w).contains("is claude3's folder"),
+            "through a link"
+        );
+        assert!(
+            two(&link.join("new"), &w).contains("is in claude3's folder"),
+            "not made yet"
+        );
+        let one = |a: &Path| {
+            let text = format!(
+                "[agents.claude2]\nof = \"claude\"\nfolder = '{}'\n",
+                a.display()
+            );
+            parse_in(&text, Some(&data)).map(|_| ())
+        };
+        let err = one(&to_data.join("accounts/claude3")).unwrap_err();
+        assert!(err.contains("is Templum's folder for accounts"), "{err}");
+        let err = one(&to_data).unwrap_err();
+        assert!(err.contains("holds Templum's folder for accounts"), "{err}");
+        one(&w.join("skills")).unwrap();
+        one(&dir.path().join("apart")).unwrap();
     }
 
     #[test]

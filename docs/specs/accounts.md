@@ -186,9 +186,11 @@ share = { settings = "claude3", instructions = "claude3", rules = "claude3", ski
   neither, an account of another agent, or a chain that comes back to the account (claude3's `skills` from claude4,
   claude4's from claude3) is a config error naming the key, and the last valid config stays.
 - `folder`: `~` is the home folder. It is a full path (`/…` or `~/…`; `C:\…` on Windows): a relative one would be each
-  block's working folder. It can't be the agent's own folder, nor another account's, nor in Templum's folder for
-  accounts (`<data>/accounts`, whose folders go with their account: "that is Templum's folder for accounts: leave
-  Folder empty"), nor the home folder.
+  block's working folder. It can't be any agent's own folder (another agent's too: a Codex account on `~/.claude`),
+  nor the home folder, nor in or around Templum's folder for accounts (`<data>/accounts`, whose folders go with their
+  account: "that is Templum's folder for accounts: leave Folder empty"), nor another account's, in it or around it
+  (claude3 on `~/w/skills` and claude2 on `~/w`). Folders are compared with their links followed, as far as they
+  exist: a link to `~/.claude`, a case variant on macOS and Windows and a `\\?\` path are that folder.
 - The id of an account added in Settings is its agent's id and the first free number from 2: `claude2`, `claude3`,
   `codex2`; a number whose `<data>/accounts/<id>` is still there (an old folder kept by a change of folder, with its
   login) is taken. It never changes; the name does. One written by hand may be any free id (`work`).
@@ -480,9 +482,9 @@ by any of these; deleting removes the folder's links before the folder and leave
 junction, a file without the privilege is refused with the copy above.
 
 **Unit (`templum`):** `[agents.claude2] of = "claude"` parses; `command` on an account, an unknown item, a target of
-another agent, a cycle and a taken folder are errors; an account inherits its agent's command and resume, with the
-person's changes; ids `claude2`, `claude3`; accounts aren't detected as agents; its variable; a card for `claude2` is
-taken by a claude2 block only, one for `claude` by both.
+another agent, a cycle, a taken folder, one in or around another's and any agent's own folder are errors; an
+account inherits its agent's command and resume, with the person's changes; ids `claude2`, `claude3`; accounts aren't
+detected as agents; its variable; a card for `claude2` is taken by a claude2 block only, one for `claude` by both.
 
 **Unit (`templum-usage`):** the relay writes `templum_config_dir` from its environment; limits per folder; Codex limits from a
 process's own rollout when sessions are shared; a process's session id read from its account's folder.
