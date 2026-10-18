@@ -59,8 +59,9 @@ impl Workspace {
 
     /// Saves an account from Settings ▸ Agents ▸ Accounts (docs/specs/accounts.md): `id` names
     /// one already there, None a new one (its agent's id and the first free number). Its folder
-    /// then gets its choices, a real item in the way of a link kept aside. A change of folder
-    /// waits for its blocks to close and for no other account to share from it. Returns its id.
+    /// then gets its choices, a real item in the way of a link kept aside in Templum's folder and
+    /// left in one the person chose. A change of folder waits for its blocks to close and for no
+    /// other account to share from it. Returns its id.
     pub(crate) fn save_account(
         &mut self,
         id: Option<&str>,
@@ -94,14 +95,6 @@ impl Workspace {
         let moved = old.is_some_and(|old| old.folder != account.folder);
         if moved && let Some(why) = self.account_in_use(&id) {
             return Err(format!("{why} to change its folder"));
-        }
-        let new = old.is_none_or(|old| old.folder != account.folder);
-        if account.chosen && new && !templum_usage::accounts::fits(account.kind, &account.folder) {
-            let agent = entry.builtin.map_or(account.kind.agent, |a| a.title());
-            return Err(format!(
-                "{} already holds files and isn't a {agent} folder: choose a new or empty folder",
-                agents::tilde(&account.folder)
-            ));
         }
         let key = id.clone();
         self.edit(

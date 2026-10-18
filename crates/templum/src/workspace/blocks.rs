@@ -431,7 +431,8 @@ impl Workspace {
     }
 
     /// The notifications of what applying the account `entry`'s choices met: one for what
-    /// couldn't be done, one per item its agent replaced with its own copy.
+    /// couldn't be done, one for what was kept aside or left, one per item its agent replaced
+    /// with its own copy.
     pub(crate) fn tell_account(
         &self,
         entry: &AgentEntry,
@@ -465,12 +466,27 @@ impl Workspace {
             );
             show_notification(window, cx, Notification::info(message));
         }
+        let path = |key: &str| {
+            account
+                .kind
+                .item(key)
+                .map(|i| i.paths[0].trim_end_matches('/'))
+        };
+        if !report.left.is_empty() {
+            let left: Vec<&str> = report.left.iter().filter_map(|k| path(k)).collect();
+            let message = format!(
+                "{} keeps its own {}: Templum never moves files in a folder you chose ({}).",
+                entry.title,
+                left.join(", "),
+                crate::agents::tilde(&account.folder)
+            );
+            show_notification(window, cx, Notification::info(message));
+        }
         let agent = entry.builtin.map_or(account.kind.agent, |a| a.title());
         for key in &report.replaced {
-            let Some(item) = account.kind.item(key) else {
+            let Some(path) = path(key) else {
                 continue;
             };
-            let path = item.paths[0].trim_end_matches('/');
             let message = format!(
                 "{}'s {path} isn't shared any more: {agent} wrote its own. Edit the account to \
                  share it again.",

@@ -201,13 +201,11 @@ share = { settings = "claude3", instructions = "claude3", rules = "claude3", ski
 What the account's choices say is applied when the dialog saves it, and again each time it starts (the menu,
 `spawn_agent`, a restore, Log in), so a link that went missing is made again:
 
-- **The folder** is made when missing (0700 on Unix). One the person chooses must be new, empty or already the
-  agent's: its login there, or a link at one of its items. Save refuses any other, whose real items it would keep
-  aside ("~/Documents already holds files and isn't a Claude Code folder: choose a new or empty folder"), when the
-  folder is new to the account; the home folder is never one ("~ is your home folder: choose a folder of its own").
-  One that already has files is taken as it is, and the dialog reads its links when it is chosen: a link to the same
-  item of the agent's own folder or of an account becomes that item's choice, so a folder set up by hand keeps its
-  sharing.
+- **The folder** is made when missing (0700 on Unix). **Templum moves a real file or folder only in the folder it
+  made itself** (`<data>/accounts/<id>`); in a folder the person chose it only makes and removes its own links, so
+  one that already has files (~/Documents, another agent's) is taken as it is and nothing of it is renamed. The
+  dialog reads its links when it is chosen: a link to the same item of the agent's own folder or of an account
+  becomes that item's choice, so a folder set up by hand keeps its sharing.
 - **Shared item, nothing there:** a link to the same item of who it is shared with. That item is a folder Templum
   makes (empty) when missing, so a link never points at nothing; a file that doesn't exist there yet isn't linked, and
   is linked at a later start once the agent made it (its settings file, written at its first change).
@@ -216,12 +214,16 @@ What the account's choices say is applied when the dialog saves it, and again ea
   ~/dotfiles/claude/skills" in place of its dropdown. Templum only ever replaces or removes the links it would make.
 - **Shared item, a link Templum would make there:** pointed at who it is shared with now (only the link is
   replaced).
-- **Shared item, a real file or folder there**, when the dialog saves: it is kept aside as `<item>.own` (then
-  `.own-2`, …) and the link made. At a start, nothing is moved: the agent replaced the link with its own copy (some
-  write a settings file by a rename), and a notification says so: "Claude Code 2's settings.json isn't shared any
-  more: Claude Code wrote its own. Edit the account to share it again." Saving the dialog then keeps that copy aside.
-- **Own item, a link Templum would make there:** the link is removed (never what it points at), and `<item>.own`
-  comes back when it is there. Otherwise the item stays missing and the agent starts it fresh.
+- **Shared item, a real file or folder there**, in Templum's folder, when the dialog saves: it is kept aside as
+  `<item>.own` (then `.own-2`, …) and the link made. At a start, nothing is moved: the agent replaced the link with
+  its own copy (some write a settings file by a rename), and a notification says so: "Claude Code 2's settings.json
+  isn't shared any more: Claude Code wrote its own. Edit the account to share it again." Saving the dialog then keeps
+  that copy aside.
+- **Shared item, a real file or folder there, in a folder the person chose:** left as it is, at Save and at a start
+  alike, and one notification names them: "Claude Code 2 keeps its own projects: Templum never moves files in a
+  folder you chose (~/Documents)."
+- **Own item, a link Templum would make there:** the link is removed (never what it points at), and in Templum's
+  folder `<item>.own` comes back when it is there. Otherwise the item stays missing and the agent starts it fresh.
 - **Own item, a real one there:** left as it is.
 - **The login** ([the table](#which-agents)) is never made, linked, moved, read or deleted; an account's folder
   starts without it, and the agent's login writes it there.
@@ -467,7 +469,8 @@ Each goes to [docs/minors.md](../minors.md) under **Agent accounts** with the co
 
 **Unit (`templum-usage`'s `accounts`):** no agent's item is or holds one of its login's names; every key is unique per agent; a
 shared item becomes a link to the other folder's item, a missing source folder is made, a missing source file isn't
-linked; a real item is kept aside on save (`.own`, then `.own-2`) and left at a start (reported); own again removes
+linked; a real item is kept aside on save (`.own`, then `.own-2`) and left at a start (reported), and never moved
+in a folder the person chose; own again removes
 only the link and brings `.own` back; a link the person made elsewhere is never replaced nor removed, and a folder
 set up by hand is read back as choices; a chain links to the middle account's item; the login file is never touched
 by any of these; deleting removes the folder's links before the folder and leaves their targets; Windows: a folder is a
@@ -484,9 +487,10 @@ process's own rollout when sessions are shared; a process's session id read from
 **Headless UI:** the menu opens an account with its variable in the shell's environment and its name as the cover's
 title; `spawn_agent` takes `claude2`; a snapshot that finds Claude Code in an account's block names the account; the
 canvas file keeps `account` and a restore gives the shell the variable; Settings adds an account (an `[agents]` entry
-and a folder with its links), edits a share, refuses a cycle, logs in (a block of the account, its login typed) and
-deletes one (the folder gone, the shared source left); deleting or moving an account with a block of it open (its
-shell alone too) is refused, and a block of a deleted account comes back plain.
+and a folder with its links), keeps a chosen folder's own files where they are, edits a share, refuses a cycle, logs
+in (a block of the account, its login typed) and deletes one (the folder gone, the shared source left); deleting or
+moving an account with a block of it open (its shell alone too) is refused, and a block of a deleted account comes
+back plain.
 
 **Manual (Hyprland, and macOS for the Keychain):** two Claude Code accounts logged in, each with its own limits;
 claude2 sharing claude's sessions resumes one of claude's with `/resume`; codex2 with its own login; a Windows

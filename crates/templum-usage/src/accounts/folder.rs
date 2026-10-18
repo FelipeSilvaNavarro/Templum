@@ -1,6 +1,7 @@
 //! An account's folder: its items made its own or links to another folder's, as its choices say
 //! (docs/specs/accounts.md, Its folder and its items). Only the links Templum would make are ever
-//! replaced or removed, and never what they point at; the login is never opened.
+//! replaced or removed, and never what they point at; a real item is moved only in a folder
+//! Templum made; the login is never opened.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -10,7 +11,7 @@ use super::{Item, Kind};
 /// When an account's choices are applied.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum When {
-    /// The dialog saved them: a real item in the way of a link is kept aside.
+    /// The dialog saved them: a real item in the way of a link is kept aside, in Templum's folder.
     Saved,
     /// The account starts: a real item is left, and reported.
     Starting,
@@ -33,6 +34,8 @@ pub struct Report {
     pub replaced: Vec<&'static str>,
     /// Real items kept aside on Save to make their links, and where they went.
     pub kept: Vec<(&'static str, PathBuf)>,
+    /// Shared items left real in a folder the person chose, where Templum never moves files.
+    pub left: Vec<&'static str>,
     /// Items holding a link Templum didn't make, and where it points.
     pub theirs: Vec<(&'static str, PathBuf)>,
 }
@@ -157,14 +160,17 @@ fn own_path(path: &Path) -> PathBuf {
 /// Applies an account's `shares` to its `folder`: each item a link to the same item of the
 /// state folder it is shared with, or its own. `sources` are every state folder a share of this
 /// agent may point at: a link to one of them is Templum's, and only those are replaced or removed.
+/// `made`: Templum made `folder` (`<data>/accounts/<id>`), the only one where it moves a real item
+/// (aside on Save, back when its own again); in a folder the person chose it only links.
 pub fn apply(
     kind: &Kind,
     folder: &Path,
     shares: &[Share],
     sources: &[PathBuf],
     when: When,
+    made: bool,
 ) -> Report {
-    apply_with(kind, folder, shares, sources, when, files_share())
+    apply_with(kind, folder, shares, sources, when, made, files_share())
 }
 
 /// `apply`, where a file can be shared by a link (`files`) or stays its own.
@@ -174,6 +180,7 @@ fn apply_with(
     shares: &[Share],
     sources: &[PathBuf],
     when: When,
+    made: bool,
     files: bool,
 ) -> Report {
     let mut report = Report::default();
@@ -197,6 +204,7 @@ fn apply_with(
                 from,
                 sources,
                 when,
+                made,
                 files,
                 &mut report,
             ) {
@@ -216,6 +224,7 @@ fn apply_path(
     from: Option<&Path>,
     sources: &[PathBuf],
     when: When,
+    made: bool,
     files: bool,
     report: &mut Report,
 ) -> io::Result<()> {
@@ -231,7 +240,7 @@ fn apply_path(
         if let At::Ours(_) = here {
             unlink(path, dir)?;
             let own = own_path(path);
-            if std::fs::symlink_metadata(&own).is_ok() {
+            if made && std::fs::symlink_metadata(&own).is_ok() {
                 std::fs::rename(own, path)?;
             }
         }
@@ -259,6 +268,12 @@ fn apply_path(
         At::Ours(_) => {
             unlink(path, dir)?;
             link(&source, path, dir)
+        }
+        At::Real if !made => {
+            if !report.left.contains(&item.key) {
+                report.left.push(item.key);
+            }
+            Ok(())
         }
         At::Real if when == When::Saved => {
             let aside = aside(path);
@@ -293,24 +308,6 @@ pub fn read(kind: &Kind, folder: &Path, sources: &[PathBuf]) -> Vec<(&'static st
             (item.key, found)
         })
         .collect()
-}
-
-/// Whether the person may choose `folder` for an account: its state folder new or empty, or
-/// already the agent's (its login there, or a link at one of its items). Save would keep aside
-/// any other's real items (a home folder's `projects/`).
-pub fn fits(kind: &Kind, folder: &Path) -> bool {
-    let state = kind.state_dir(folder);
-    let Ok(mut entries) = std::fs::read_dir(&state) else {
-        return true;
-    };
-    let there = |path: &&str| std::fs::symlink_metadata(state.join(name(path).0));
-    entries.next().is_none()
-        || kind.login.iter().any(|p| there(p).is_ok())
-        || kind
-            .items
-            .iter()
-            .flat_map(|i| i.paths)
-            .any(|p| there(p).is_ok_and(|m| m.file_type().is_symlink()))
 }
 
 /// Deletes an account's `folder`: its items' links first (only the links), then the folder,
@@ -415,6 +412,7 @@ mod tests {
                 shares,
                 std::slice::from_ref(&self.src),
                 when,
+                true,
             );
             self.logins_intact();
             report
@@ -504,6 +502,7 @@ mod tests {
             &t.share("settings"),
             sources,
             When::Starting,
+            true,
             false,
         );
         assert!(report.problems.is_empty(), "{:?}", report.problems);
@@ -514,6 +513,7 @@ mod tests {
             &t.share("settings"),
             sources,
             When::Saved,
+            true,
             false,
         );
         assert_eq!(report.problems, [format!("Settings: {NO_FILE_LINKS}")]);
@@ -525,6 +525,7 @@ mod tests {
             &t.share("skills"),
             sources,
             When::Starting,
+            true,
             false,
         );
         assert!(report.problems.is_empty());
@@ -560,13 +561,22 @@ mod tests {
                 from: Some(dir.to_path_buf()),
             }]
         };
-        apply(&FAKE, &c3, &from(&c), &[c.clone(), c4.clone()], When::Saved);
+        let made = true;
+        apply(
+            &FAKE,
+            &c3,
+            &from(&c),
+            &[c.clone(), c4.clone()],
+            When::Saved,
+            made,
+        );
         apply(
             &FAKE,
             &c4,
             &from(&c3),
             &[c.clone(), c3.clone()],
             When::Saved,
+            made,
         );
         assert_eq!(fs::read_link(c4.join("skills")).unwrap(), c3.join("skills"));
         fs::write(c.join("skills/f"), "seen").unwrap();
@@ -603,20 +613,44 @@ mod tests {
         t.logins_intact();
     }
 
+    /// What the person's folder holds, by path: nothing of it is moved, whatever is shared.
+    fn untouched(folder: &Path) {
+        assert_eq!(fs::read(folder.join("skills/a")).unwrap(), b"mine");
+        assert_eq!(fs::read(folder.join("settings.json")).unwrap(), b"mine");
+        assert!(!is_link(&folder.join("skills")) && !is_link(&folder.join("settings.json")));
+        assert!(
+            fs::read_dir(folder)
+                .unwrap()
+                .all(|e| { !e.unwrap().file_name().to_string_lossy().contains(".own") })
+        );
+    }
+
     #[test]
-    fn a_folder_fits_when_new_empty_or_the_agents() {
+    fn a_chosen_folders_real_items_are_never_moved() {
         let t = Two::new();
-        let folder = t.root.join("chosen");
-        assert!(fits(&FAKE, &folder), "new");
-        fs::create_dir_all(&folder).unwrap();
-        assert!(fits(&FAKE, &folder), "empty");
-        fs::create_dir_all(folder.join("skills")).unwrap();
-        fs::write(folder.join("notes.txt"), "mine").unwrap();
-        assert!(!fits(&FAKE, &folder), "someone else's files");
-        fs::remove_dir(folder.join("skills")).unwrap();
-        std::os::unix::fs::symlink(t.src.join("skills"), folder.join("skills")).unwrap();
-        assert!(fits(&FAKE, &folder), "an item linked: set up by hand");
-        assert!(fits(&FAKE, &t.acc), "its login there");
+        let chosen = t.root.join("Documents");
+        fs::create_dir_all(chosen.join("skills")).unwrap();
+        fs::write(chosen.join("skills/a"), "mine").unwrap();
+        fs::write(chosen.join("settings.json"), "mine").unwrap();
+        fs::write(t.src.join("settings.json"), "{}").unwrap();
+        let shares = [t.share("skills"), t.share("settings"), t.share("agents")].concat();
+        let sources = std::slice::from_ref(&t.src);
+        for when in [When::Saved, When::Starting] {
+            let report = apply(&FAKE, &chosen, &shares, sources, when, false);
+            untouched(&chosen);
+            assert_eq!(report.left, ["skills", "settings"], "said");
+            assert!(report.kept.is_empty() && report.replaced.is_empty());
+            assert!(
+                is_link(&chosen.join("agents")),
+                "what is missing is still linked"
+            );
+        }
+        // Its own again: Templum's link goes, a `.own` there stays where it is.
+        fs::create_dir_all(chosen.join("agents.own")).unwrap();
+        apply(&FAKE, &chosen, &[], sources, When::Saved, false);
+        assert!(fs::symlink_metadata(chosen.join("agents")).is_err());
+        assert!(chosen.join("agents.own").is_dir());
+        t.logins_intact();
     }
 
     #[test]
@@ -700,6 +734,7 @@ mod windows_tests {
             &shares,
             std::slice::from_ref(&src),
             When::Saved,
+            true,
         );
         assert!(junction::exists(acc.join("skills")).unwrap());
         fs::write(src.join("skills/keep"), "x").unwrap();

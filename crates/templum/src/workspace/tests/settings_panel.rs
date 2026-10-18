@@ -1057,36 +1057,60 @@ fn an_account_folder_in_templums_folder_for_accounts_is_refused(cx: &mut TestApp
     );
 }
 
+/// A folder the person chose keeps its own files, whatever it shares: ~/Documents with a
+/// `backups/` (a name of Claude Code's), Claude Code's own folder for a Codex account, an empty one.
+#[cfg(unix)]
 #[gpui_kit::test]
-fn a_folder_of_other_files_isnt_taken_for_an_account(cx: &mut TestAppContext) {
+fn a_chosen_folders_own_files_are_never_moved(cx: &mut TestAppContext) {
     let own = tempfile::tempdir().unwrap();
     crate::agents::OWN_FOLDERS.set(Some(own.path().to_path_buf()));
     let data = tempfile::tempdir().unwrap();
     let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
-    // Like a home folder: its own projects/, which sharing sessions would keep aside.
-    let home = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(home.path().join("projects").join("app")).unwrap();
-    let draft = crate::agents::AccountDraft {
-        of: "claude".to_string(),
-        show: true,
-        folder: Some(home.path().display().to_string()),
-        share: [("sessions".to_string(), "claude".to_string())].into(),
-        ..Default::default()
-    };
-    let saved = cx
-        .update_window(handle, |_, window, cx| {
+    let mine = tempfile::tempdir().unwrap();
+    let documents = mine.path().join("Documents");
+    std::fs::create_dir_all(documents.join("backups")).unwrap();
+    std::fs::create_dir_all(documents.join("projects").join("app")).unwrap();
+    let claudes = own.path().join("claude");
+    std::fs::create_dir_all(claudes.join("skills").join("mine")).unwrap();
+    let empty = mine.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let mut save = |of: &str, folder: &std::path::Path, keys: &[&str]| {
+        let draft = crate::agents::AccountDraft {
+            of: of.to_string(),
+            show: true,
+            folder: Some(folder.display().to_string()),
+            share: keys
+                .iter()
+                .map(|k| (k.to_string(), of.to_string()))
+                .collect(),
+            ..Default::default()
+        };
+        cx.update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| ws.save_account(None, &draft, window, cx))
         })
-        .unwrap();
-    assert_eq!(
-        saved,
-        Err(format!(
-            "{} already holds files and isn't a Claude Code folder: choose a new or empty folder",
-            crate::agents::tilde(home.path())
-        ))
+        .unwrap()
+        .unwrap()
+    };
+    save("claude", &documents, &["sessions", "skills"]);
+    assert!(documents.join("projects").join("app").is_dir());
+    assert!(!is_link(&documents.join("projects")) && !documents.join("projects.own").exists());
+    assert!(
+        is_link(&documents.join("skills")),
+        "what is missing is linked"
     );
-    assert!(home.path().join("projects").join("app").is_dir());
-    assert!(!home.path().join("projects.own").exists(), "nothing moved");
+    save("codex", &claudes, &["skills"]);
+    assert!(claudes.join("skills").join("mine").is_dir());
+    assert!(!is_link(&claudes.join("skills")) && !claudes.join("skills.own").exists());
+    save("claude", &empty, &["skills", "settings"]);
+    assert_eq!(
+        std::fs::read_link(empty.join("skills")).unwrap(),
+        claudes.join("skills")
+    );
+}
+
+#[cfg(unix)]
+fn is_link(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
 }
 
 /// The row's Log in opens a block of the account; its dialog's Delete asks, then deletes it.

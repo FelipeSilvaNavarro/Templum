@@ -143,6 +143,7 @@ impl AgentEntry {
                 &other.shares(agents),
                 &other.sources(agents),
                 When::Starting,
+                !theirs.chosen,
             );
         }
         templum_usage::accounts::apply(
@@ -151,6 +152,7 @@ impl AgentEntry {
             &self.shares(agents),
             &self.sources(agents),
             when,
+            !account.chosen,
         )
     }
 
