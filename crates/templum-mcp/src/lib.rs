@@ -1,6 +1,7 @@
 //! The bus Templum's blocks talk over (docs/specs/connections.md): JSON-RPC lines on a local
 //! socket, the MCP tools, the agents' hook events and the `templum` command line. No UI.
 
+pub mod ask;
 pub mod bus;
 pub mod cli;
 pub mod hooks;
