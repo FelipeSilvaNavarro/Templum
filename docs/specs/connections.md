@@ -128,7 +128,8 @@ later starts with none.
   over it scrolling it and not the terminal (with Ctrl it zooms the canvas). A yellow frame and a first line, a
   yellow dot and "Waiting for your answer", say the agent waits for the person, in the yellow of the block's dot:
   - a question shows its text whole and a button per option, each on its own lines and whole, or a text field and
-    **Send** when it has none;
+    **Send** when it has none ([ask-user.md](ask-user.md), designed, brings several questions, previews, checkboxes,
+    Other and a note, no deadline by default, and a sound);
   - a request to connect says "*Claude Code · api* wants to connect to *Dev server*" with **Allow** and **Deny**;
     Allow wires them;
   - a request for a block already wired is answered at once; Allow is a step of Ctrl+Z, as wiring by hand is;
@@ -414,7 +415,7 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `delegate` | `block`, `task`, `wait` (false), `timeout` (600 s) | [Delegating](#delegating); without `wait`, says the task's id at once, and its end is typed into the caller's terminal; to the agent on the caller's task, a change to it | wired, an agent | 3, 8 |
 | `reply` | `block`, `text` | Answers the task the block handed the caller; with none waiting, types `[reply from …]` (from batch 8 naming the task) and the text into it | wired | 3, 8 |
 | `wait_for_idle` | `block`, `timeout` (300 s) | Waits until the agent finishes its turn, and for the answer to a task the caller handed it, past `delegate`'s timeout too; its last answer | wired | 3 |
-| `ask_user` | `question`, `options`, `timeout` (1800 s) | A question in a balloon ([Requests](#requests-from-agents)); the answer | — | 3 |
+| `ask_user` | `question`, `options`, `timeout` (1800 s) | A question in a balloon ([Requests](#requests-from-agents)); the answer. v2: [ask-user.md](ask-user.md) | — | 3 |
 | `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, assignee and comment count; with `card`, that card whole: its description and comments | wired kanban | 4 |
 | `create_card` | `board`, `column`, `title`, `description` | A new card at the column's end (the board's first column when left out); its id | wired kanban | 4 |
 | `move_card` | `card`, `column` | Moves a card to the end of a column; into the board's last column or one titled Review (either case), unless the card's newest comment is the caller's, its answer asks for one: "Say on it what you did and what the next one needs to know: comment_card." | wired kanban | 4 |
