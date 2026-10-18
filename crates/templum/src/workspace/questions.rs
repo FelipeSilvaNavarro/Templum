@@ -137,9 +137,16 @@ impl Workspace {
         else {
             return;
         };
-        if let Some(answers) = form.answers(ask, &others) {
-            let text = ask.answer(&answers, &note);
-            self.close_question(key, Reply::ok(text), window, cx);
+        let Some(answers) = form.answers(ask, &others) else {
+            return;
+        };
+        let text = ask.answer(&answers, &note);
+        // Its client stopped waiting: typed into its terminal, once its agent takes typing.
+        let notice = matches!(wait.what, Waiting::Question { stopped: true, .. })
+            .then(|| (wait.from.clone(), ask.notice(&text)));
+        self.close_question(key, Reply::ok(text), window, cx);
+        if let Some((to, notice)) = notice {
+            self.queue_notice(to, notice, cx);
         }
     }
 

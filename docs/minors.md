@@ -1036,3 +1036,13 @@ Left by the ask_user dialog (kanban card 29).
   (`crates/templum/src/balloon.rs`), its first line too: a person who scrolls down a long question or many options
   no longer sees that the agent waits (the block's dot still says so). Fix: keep the first line out of the scrolled
   part (a column with the line, then a `min_h_0` part that scrolls), checked by hand that taffy shrinks it.
+
+Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
+
+- [ ] **A question Claude Code moves to the background isn't checked by hand.** Claude Code moves a tool call past 2
+  minutes to the background; its documentation says it keeps waiting there, which no one has watched with
+  `ask_user`. If it cancels the call instead, the dialog says the agent stopped waiting and the answer is typed back
+  (`send_question`, `crates/templum/src/workspace/questions.rs`); if it drops it without a cancel, a person's answer
+  goes to a call no one reads and nothing is typed. Fix: ask from Claude Code, leave it 3 minutes, answer, and write
+  what happened in `ask-user.md`'s client table and connections.md's Risks row; on a silent drop, treat the call's
+  backgrounding hook (if one comes) as a cancel.

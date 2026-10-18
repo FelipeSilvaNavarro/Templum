@@ -145,8 +145,12 @@ later starts with none.
   - a request no one answers is withdrawn after its timeout, and the agent is told so: a request to connect's is 30
     minutes unless the agent asked for another; a question waits until it is answered unless the agent gave a
     `timeout` or `[connections] question_timeout` sets one, the shorter winning
-    ([ask-user.md](ask-user.md#how-long-it-waits)); closing the block withdraws its requests, and so does the agent leaving (its connection to
-    Templum ends) or cancelling the call.
+    ([ask-user.md](ask-user.md#how-long-it-waits)); closing the block withdraws its requests, and so does the
+    agent leaving (its connection to Templum ends);
+  - a cancelled call (`notifications/cancelled`: the agent's client gave up, or the person pressed Esc in it) drops a
+    request to connect; a question stays, saying "The agent stopped waiting: your answer will be typed into its
+    terminal.", and its answer is typed into the agent's terminal as a notice, `[answer to your question "…"] …`
+    ([ask-user.md](ask-user.md#when-the-client-stops-waiting)); Dismiss or its deadline drop it silently.
 
 ### Delegating
 
@@ -206,8 +210,9 @@ later starts with none.
    leaves it to the next turn, which no hook says starts, and that turn's end answers it. An Esc while it writes
    ends its turn with no hook, and the task's answer is lost (deferred: [minors](../minors.md#connections)).
 10. **Its end comes back** (batch 8). When a task ends and no call of the agent that handed it over waits for it
-    (`delegate` with `wait`, `wait_for_idle`; a call its client cancelled, as Claude Code does past 2 minutes, no
-    longer waits), Templum types into that agent, as a reply is typed, a first line
+    (`delegate` with `wait`, `wait_for_idle`; a call its client cancelled no longer waits: Esc in the agent, or a
+    call silent past Claude Code's idle timeout, 1800 s unless its server's `timeout` is longer), Templum types into
+    that agent, as a reply is typed, a first line
     `[task t7 from Codex · api (k9x1d): done in 31 s, 60231 tokens, transcript /…/rollout.jsonl] Its answer is in the
     pasted text.` and its answer on the lines after; `failed` instead of `done` and `What happened is in the pasted
     text.`, then why: it didn't take the task, its turn ended without an answer (an error, an Esc), its agent left,
@@ -442,8 +447,12 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
   `board`, `column` and `card` may be numbers or strings; a blank title, text or comment is refused.
 - `read_terminal` reads the terminal's own history, never what is painted, so a terminal off screen reads as
   current. The result is at most 256 KB.
-- Agents may stop waiting on long tool calls (Claude Code moves a call past 2 minutes to the background); the
-  descriptions of the tools that wait say they may take minutes.
+- Agents may stop waiting on long tool calls. Claude Code gives up on a call that sends nothing for 1800 s, its idle
+  timeout for stdio servers, unless the server's own `timeout` is longer (seen 2026-10-17: `MCP server "templum"
+  tool "wait_for_idle" sent no response or progress for 1800s; aborting`); the `mcp.json` Templum gives it sets
+  seven days on Templum's server, for every one of its tools (`wait_for_idle`, `wait_for`, `delegate` with `wait`,
+  `ask_user`). It also moves a call past 2 minutes to the background, where it keeps waiting by its documentation
+  (not checked by hand). The descriptions of the tools that wait say they may take minutes.
 - A `timeout` is whole seconds from 1 to 3600; a longer one is cut to 3600. The agents Templum opens wait seven days
   for a tool call (Codex's `tool_timeout_sec=604800`, the `timeout` of Claude Code's `mcp.json` and of Gemini CLI's
   extension), so a question asked without a `timeout` can wait for its person.
@@ -694,7 +703,7 @@ a Copy button, and Gemini CLI's Install and Remove.
 Every request reaches the main thread through a channel the bus's threads write to, drained by a task as the
 terminals' wake-ups are; the main thread never touches a socket. A request that waits keeps its reply channel in
 `Workspace::waits` until an event, a button, its block's closing (checked each frame), its connection ending or its
-cancel (`notifications/cancelled`), or its deadline (a timer: with nothing on screen moving, no frame comes) answers or
+cancel (`notifications/cancelled`; a question stays, its answer typed back), or its deadline (a timer: with nothing on screen moving, no frame comes) answers or
 drops it.
 No new dependency: `futures`, `serde`, `serde_json` and `uuid` are in the tree.
 
@@ -822,7 +831,7 @@ results](../plans/2026-10-16-connections-batch-8.md#spike-results)).
 
 | Risk | What we do |
 |---|---|
-| Claude Code moves a tool call past 2 minutes to the background, and stops waiting for it | The tools that wait say so; a cancelled call (`notifications/cancelled`) drops its request (tested); that a late result reaches the agent is checked by hand |
+| Claude Code gives up on a tool call that sends nothing for 1800 s (its idle timeout for stdio servers) | The `mcp.json` Templum gives it sets Templum's server's `timeout` to seven days, which lifts it for every tool; a Claude Code opened by hand keeps 1800 s. A cancelled call (`notifications/cancelled`) drops its request, a cancelled question stays and its answer is typed back (tested); a call backgrounded past 2 minutes isn't checked by hand |
 | Typing into an agent that is busy | Refused while it waits for its person; while it works, Claude Code and Codex queue typed input (checked by hand in batch 3); the `[from …]` line keeps it readable; Claude Code fires `UserPromptSubmit` for it at the Enter and queues it behind the turn under way unless a tool's end takes it in, Codex once a turn takes it in (batch 7's spikes), which a change to a task (batch 8) relies on |
 | An agent answers another's trust question (a folder's, or Codex's for hooks, which may list a repository's own hooks) | The wire is the person's consent; "answered by" names the agent; the result shows the screen after the keys |
 | Keys into a shell | The same trust as `send_to_terminal`; at most 16 keys a call |

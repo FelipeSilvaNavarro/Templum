@@ -18,6 +18,8 @@ use crate::workspace::{Wait, Waiting, Workspace};
 
 /// Its width, and its height at most (it scrolls past that), of the terminal's.
 const SHARE: f32 = 0.8;
+/// What a question whose client stopped waiting says under its first line.
+const STOPPED: &str = "The agent stopped waiting: your answer will be typed into its terminal.";
 /// Its text's size, world units: the questions and the options' labels.
 const TEXT: f32 = 14.0;
 /// The size of what is said about them, world units: descriptions, headers, "Pick any", the
@@ -136,6 +138,18 @@ pub(crate) fn render(
                             .gap(px(10.0 * z))
                             .p(px(14.0 * z))
                             .child(head)
+                            .when(
+                                matches!(wait.what, Waiting::Question { stopped: true, .. }),
+                                |el| {
+                                    el.child(
+                                        div()
+                                            .id(part(n, "stopped"))
+                                            .text_color(ui.title_dim)
+                                            .child(STOPPED)
+                                            .test_support(),
+                                    )
+                                },
+                            )
                             .child(body),
                     )
                     .test_support(),

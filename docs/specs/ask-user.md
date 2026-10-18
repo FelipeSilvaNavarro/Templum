@@ -116,7 +116,7 @@ What each client does with a long tool call (read in their documentation, 2026-1
 
 | Client | A long call | What Templum does |
 |---|---|---|
-| Claude Code | Moves a call past 2 minutes to the background; whether it also cancels it there is checked by hand in the plan's Task 7 (connections.md has said it does, its documentation that a call may run for `MCP_TOOL_TIMEOUT`). `MCP_TOOL_TIMEOUT` defaults to 100000000 ms (about 28 hours). A server's own `timeout` replaces it, and also floors the idle timeout of 2.1.187 (`CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`, whose default for stdio servers isn't documented). Esc in the agent cancels the call (`notifications/cancelled`) | The `mcp.json` it is given sets `"timeout": 604800000` on Templum's server |
+| Claude Code | Gives up on a call that sends nothing for 1800 s, its idle timeout for stdio servers (`CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`; seen 2026-10-17 with a Templum `mcp.json` without `timeout`: `MCP server "templum" tool "wait_for_idle" sent no response or progress for 1800s; aborting. If this server is configured in your MCP settings, set a per-server "timeout" (ms)…`). A server's own `timeout` lifts it, and replaces `MCP_TOOL_TIMEOUT` (100000000 ms, about 28 hours, by default). Moves a call past 2 minutes to the background, where its documentation says it keeps waiting; not checked by hand yet ([minors](../minors.md#connections)). Esc in the agent cancels the call (`notifications/cancelled`) | The `mcp.json` it is given sets `"timeout": 604800000` on Templum's server |
 | Codex | Gives up at the server's `tool_timeout_sec` | `tool_timeout_sec=604800` (it was 3600) |
 | Gemini CLI | Gives up at the server's `timeout` (ms; 10 minutes unless set); the MCP TypeScript SDK sends `notifications/cancelled` when it does | The extension's `timeout` is 604800000 (it was 3600000) |
 | Others (the command in Settings ▸ Connections) | Their own limits | The fallback below |
@@ -133,8 +133,9 @@ What each client does with a long tool call (read in their documentation, 2026-1
 - The connection ending (the agent quit, `templum ask` stopped with Ctrl+C) withdraws its questions, as today, and
   so does closing the block.
 - Either way the person's answer reaches the agent: as the call's result while the client waits, typed in once it
-  cancelled. If Claude Code does cancel past 2 minutes, typed-in answers are its usual case after that, and Task 7
-  corrects connections.md (Delegating 10, the note under Tools, the Risks row) to what it does.
+  cancelled. Claude Code's 1800-second idle timeout is lifted by the server `timeout` Templum gives it, so a question
+  waits there as long as the person takes; a Claude Code given no such `timeout` (opened by hand with its own MCP
+  settings) gives up at 1800 s, and whether that abort sends a cancel isn't known.
 - A client that drops a call without a cancel loses an answer that comes after it gave up; that happens only past its
   own timeout, which Templum sets to seven days where it can.
 

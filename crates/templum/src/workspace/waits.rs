@@ -51,12 +51,14 @@ pub(crate) enum Waiting {
     /// `ask_user` (docs/specs/ask-user.md): its questions, what the person picked, each
     /// question's Other field, and the note (asked with `questions` only). `wait` makes the
     /// fields. `away`: Esc gave the keyboard back to the terminal, until a press on the dialog.
+    /// `stopped`: its client gave up on the call; the answer is typed into its terminal.
     Question {
         ask: Ask,
         form: Form,
         others: Vec<Field>,
         note: Option<Field>,
         away: bool,
+        stopped: bool,
     },
     /// `connect`: the person's Allow or Deny to wiring the asking block to block `to` (its block
     /// id).
@@ -163,13 +165,16 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Answers the wait `key`, once: it is gone after. False when it already was.
+    /// Answers the wait `key`, once: it is gone after. False when it already was. A question
+    /// whose call was cancelled goes without an answer: MCP sends none to a cancelled call.
     pub(super) fn answer(&mut self, key: u64, reply: Reply, cx: &mut Context<Self>) -> bool {
         let Some(i) = self.waits.iter().position(|w| w.key == key) else {
             return false;
         };
         let wait = self.waits.remove(i);
-        let _ = wait.reply.send(tools::tool_result(&wait.id, &reply));
+        if !matches!(wait.what, Waiting::Question { stopped: true, .. }) {
+            let _ = wait.reply.send(tools::tool_result(&wait.id, &reply));
+        }
         cx.notify();
         true
     }
@@ -205,9 +210,21 @@ impl Workspace {
     }
 
     /// MCP's `notifications/cancelled` for the call `id` of connection `conn`: dropped, with no
-    /// answer (the client wants none).
+    /// answer (the client wants none). A question stays, its answer to be typed into its
+    /// terminal (docs/specs/ask-user.md, When the client stops waiting).
     pub(super) fn cancel(&mut self, conn: u64, id: &Value, cx: &mut Context<Self>) {
-        self.waits.retain(|w| w.conn != conn || w.id != *id);
+        self.waits.retain_mut(|w| {
+            if w.conn != conn || w.id != *id {
+                return true;
+            }
+            match &mut w.what {
+                Waiting::Question { stopped, .. } => {
+                    *stopped = true;
+                    true
+                }
+                _ => false,
+            }
+        });
         cx.notify();
     }
 

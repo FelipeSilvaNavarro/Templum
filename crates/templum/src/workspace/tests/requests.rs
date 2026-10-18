@@ -172,7 +172,7 @@ fn the_balloon_shows_the_oldest_request_and_counts_them(cx: &mut TestAppContext)
         })
     };
     assert_eq!(shown(cx), Some(("One?".to_string(), 3)));
-    // The one shown is withdrawn: the next comes, counted again.
+    // The one shown is cancelled: it stays, its answer to be typed back.
     bus_note(
         handle,
         &ws,
@@ -181,6 +181,9 @@ fn the_balloon_shows_the_oldest_request_and_counts_them(cx: &mut TestAppContext)
         "notifications/cancelled",
         json!({ "requestId": 1 }),
     );
+    assert_eq!(shown(cx), Some(("One?".to_string(), 3)));
+    // Its agent leaves: withdrawn, the next comes, counted again.
+    bus_note(handle, &ws, cx, 1, templum_mcp::bus::CLOSED, Value::Null);
     assert_eq!(shown(cx), Some(("Two?".to_string(), 2)));
 }
 
@@ -254,12 +257,42 @@ fn an_answer_and_its_timeout_answer_once(cx: &mut TestAppContext) {
     assert!(answers.try_recv().is_err(), "answered once");
 }
 
+/// The asking terminal runs an agent that doesn't take notices yet: a notice to it waits in
+/// `Workspace::notices`, to be read.
+fn agent_without_notices(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) {
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into())
+    });
+}
+
+/// The notices waiting to be typed: to whom, and what.
+fn notices(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<(String, String)> {
+    ws.read_with(cx, |ws, _| {
+        ws.notices
+            .iter()
+            .map(|n| (n.to.clone(), n.text.clone()))
+            .collect()
+    })
+}
+
+/// The oldest wait is a question its client stopped waiting for.
+fn stopped(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> bool {
+    ws.read_with(cx, |ws, _| {
+        matches!(
+            ws.waits.first().map(|w| &w.what),
+            Some(Waiting::Question { stopped: true, .. })
+        )
+    })
+}
+
 #[gpui_kit::test]
-fn a_cancelled_call_drops_its_question_unanswered(cx: &mut TestAppContext) {
+fn a_cancelled_question_stays_and_its_answer_is_typed_back(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
-    let first = first_id(&ws, cx);
-    let (terminal, _) = me(&ws, cx, first);
-    let question = json!({ "question": "Ship it?", "options": ["Yes"] });
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    agent_without_notices(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let question = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
     let first = call_later(handle, &ws, cx, &terminal, 3, "ask_user", question.clone());
     let _second = call_later(handle, &ws, cx, &terminal, 4, "ask_user", question);
     // Request 3 of another connection is another call.
@@ -271,15 +304,117 @@ fn a_cancelled_call_drops_its_question_unanswered(cx: &mut TestAppContext) {
         "notifications/cancelled",
         json!({ "requestId": 3 }),
     );
-    ws.read_with(cx, |ws, _| assert_eq!(ws.waits.len(), 2));
+    assert!(!stopped(&ws, cx));
+    assert!(!drawn(handle, cx, n, "stopped"));
     let cancel = json!({ "requestId": 3, "reason": "The person pressed Esc" });
     bus_note(handle, &ws, cx, 3, "notifications/cancelled", cancel);
+    ws.read_with(cx, |ws, _| assert_eq!(ws.waits.len(), 2));
+    assert!(stopped(&ws, cx));
+    assert!(drawn(handle, cx, n, "stopped"), "the dialog says so");
+    assert_eq!(first.try_recv(), Err(TryRecvError::Empty));
+    click_part(handle, cx, n, "q0-option-0");
+    assert_eq!(
+        notices(&ws, cx),
+        [(
+            terminal.clone(),
+            "[answer to your question \"Ship it?\"] Yes".to_string()
+        )]
+    );
     ws.read_with(cx, |ws, _| assert_eq!(ws.waits.len(), 1));
     assert_eq!(
         first.try_recv(),
         Err(TryRecvError::Disconnected),
         "MCP sends no answer to a cancelled call"
     );
+}
+
+#[gpui_kit::test]
+fn dismissing_a_stopped_question_types_nothing(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    agent_without_notices(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", two_questions());
+    bus_note(
+        handle,
+        &ws,
+        cx,
+        1,
+        "notifications/cancelled",
+        json!({ "requestId": 1 }),
+    );
+    click_part(handle, cx, n, "dismiss");
+    ws.read_with(cx, |ws, _| assert!(ws.waits.is_empty()));
+    assert!(notices(&ws, cx).is_empty());
+    assert_eq!(asked.try_recv(), Err(TryRecvError::Disconnected));
+}
+
+/// A cancelled question whose agent quits, or whose block closes, is withdrawn: nothing is typed,
+/// nothing answered.
+#[gpui_kit::test]
+fn a_stopped_question_goes_with_its_agent(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    agent_without_notices(&ws, cx, mine);
+    let asked = json!({ "question": "Ship it?", "options": ["Yes"] });
+    let quits = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked.clone());
+    bus_note(
+        handle,
+        &ws,
+        cx,
+        1,
+        "notifications/cancelled",
+        json!({ "requestId": 1 }),
+    );
+    bus_note(handle, &ws, cx, 1, templum_mcp::bus::CLOSED, Value::Null);
+    ws.read_with(cx, |ws, _| assert!(ws.waits.is_empty()));
+    assert!(notices(&ws, cx).is_empty());
+    assert_eq!(quits.try_recv(), Err(TryRecvError::Disconnected));
+    let closes = call_later(handle, &ws, cx, &terminal, 2, "ask_user", asked);
+    bus_note(
+        handle,
+        &ws,
+        cx,
+        2,
+        "notifications/cancelled",
+        json!({ "requestId": 2 }),
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.remove_block(mine, window, cx))
+    })
+    .unwrap();
+    frame(handle, cx);
+    ws.read_with(cx, |ws, _| assert!(ws.waits.is_empty()));
+    assert!(notices(&ws, cx).is_empty());
+    assert_eq!(
+        closes.try_recv(),
+        Err(TryRecvError::Disconnected),
+        "no answer to a cancelled call"
+    );
+}
+
+#[gpui_kit::test]
+fn a_stopped_questions_deadline_drops_it_silently(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    agent_without_notices(&ws, cx, mine);
+    let asked = json!({ "question": "Ship it?", "options": ["Yes"], "timeout": 1 });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    bus_note(
+        handle,
+        &ws,
+        cx,
+        1,
+        "notifications/cancelled",
+        json!({ "requestId": 1 }),
+    );
+    after(cx, 1100);
+    ws.read_with(cx, |ws, _| assert!(ws.waits.is_empty()));
+    assert!(notices(&ws, cx).is_empty());
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Disconnected));
 }
 
 #[gpui_kit::test]
@@ -845,8 +980,8 @@ fn a_press_on_a_withdrawn_requests_button_answers_no_other(cx: &mut TestAppConte
         );
     })
     .unwrap();
-    let cancel = json!({ "requestId": 1 });
-    bus_note(handle, &ws, cx, 1, "notifications/cancelled", cancel);
+    // Its agent leaves (a cancelled question would stay).
+    bus_note(handle, &ws, cx, 1, templum_mcp::bus::CLOSED, Value::Null);
     // Long enough for a press on the next one to count, were it a click on it.
     shown(handle, cx);
     cx.update_window(handle, |_, window, cx| {
