@@ -725,15 +725,28 @@ mod tests {
             }
         }
 
+        /// `claude` is installed after a command made zsh read its folder (npm's with nvm, its
+        /// own installer's ~/.local/bin): found all the same, as by `command`.
         #[test]
         fn zsh_gives_typed_agents_templums_words() {
             let home = Home::new();
             home.write(".zshrc", format!("cd '{}'\n", home.start()));
             zsh_modules(&home);
-            let path = home.fake_agents();
-            if let Some(term) = home.spawn_with("zsh", &[], &with_agents(&path)) {
-                typed_agents(&term, &home, "unset TEMPLUM_CLAUDE_ARGS", true);
-            }
+            home.fake_agents();
+            let bin = home.dir.path().join("bin");
+            std::fs::remove_file(bin.join("claude")).unwrap();
+            // No other `claude` further on, which zsh would run instead.
+            let path = format!("{}:/usr/bin:/bin", bin.display());
+            let Some(term) = home.spawn_with("zsh", &[], &with_agents(&path)) else {
+                return;
+            };
+            wait(&term, "the startup file's folder", |t| {
+                same(t.processes().reported, home.start.path())
+            });
+            term.write(&b"ls\r"[..]);
+            wait(&term, "ls to end", |t| t.status().finished == 1);
+            home.fake_agents();
+            typed_agents(&term, &home, "unset TEMPLUM_CLAUDE_ARGS", true);
         }
 
         /// The person's alias and function, read before Templum defines its own (bash) or after
