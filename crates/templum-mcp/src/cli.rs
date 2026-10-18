@@ -12,6 +12,7 @@ use crate::{hooks, rpc};
 /// The first arguments that make `templum` a command instead of the app.
 const VERBS: &[&str] = &[
     "mcp",
+    "control",
     "hook",
     "whoami",
     "blocks",
@@ -73,6 +74,8 @@ pub fn is_verb(arg: &str) -> bool {
 pub struct Env {
     pub bus: Option<String>,
     pub terminal: Option<String>,
+    /// The Templum Agent's secret (`TEMPLUM_CONTROL`), only in its engine's environment.
+    pub control: Option<String>,
 }
 
 impl Env {
@@ -80,6 +83,7 @@ impl Env {
         Env {
             bus: std::env::var("TEMPLUM_BUS").ok(),
             terminal: std::env::var("TEMPLUM_TERMINAL").ok(),
+            control: std::env::var("TEMPLUM_CONTROL").ok(),
         }
     }
 }
@@ -103,6 +107,9 @@ pub fn run(
             let _ = send_event(env, &event);
         }
         return 0;
+    }
+    if verb == "control" {
+        return control(rest, env, stdin, stdout, stderr);
     }
     let call = if verb == "mcp" {
         None
@@ -553,9 +560,45 @@ fn open(env: &Env, client: &str) -> Result<Stream, &'static str> {
     let gone = "Templum isn't running";
     let (mut stream, token) = bus::connect(address).map_err(|_| gone)?;
     stream
-        .write_all(bus::hello_line(terminal, client, token.as_deref()).as_bytes())
+        .write_all(bus::hello_line(terminal, client, token.as_deref(), None).as_bytes())
         .map_err(|_| gone)?;
     Ok(stream)
+}
+
+/// `templum control`, the Templum Agent's own MCP server (docs/specs/templum-agent.md): a bridge
+/// as `templum mcp` is, its hello carrying the secret only the engine's process has.
+fn control(
+    args: &[String],
+    env: &Env,
+    stdin: Box<dyn Read + Send>,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> i32 {
+    if !args.is_empty() {
+        let _ = writeln!(stderr, "usage: templum control");
+        return 2;
+    }
+    let bus = env.bus.as_ref().filter(|bus| !bus.is_empty());
+    let (Some(address), Some(secret)) = (bus, &env.control) else {
+        let _ = writeln!(
+            stderr,
+            "templum: the control server is only for the Templum Agent"
+        );
+        return 2;
+    };
+    let hello =
+        |token: Option<String>| bus::hello_line("", "control", token.as_deref(), Some(secret));
+    let stream = bus::connect(address).and_then(|(mut stream, token)| {
+        stream.write_all(hello(token).as_bytes())?;
+        Ok(stream)
+    });
+    match stream {
+        Ok(stream) => bridge(stdin, stdout, stream),
+        Err(_) => {
+            let _ = writeln!(stderr, "templum: Templum isn't running");
+            2
+        }
+    }
 }
 
 /// Copies the MCP client's lines (stdin) to the bus and the bus's back (stdout) until the bus
@@ -709,6 +752,7 @@ mod tests {
         Env {
             bus: Some(bus.env.clone()),
             terminal: Some("123-4".into()),
+            control: None,
         }
     }
 
@@ -1276,6 +1320,59 @@ mod tests {
     }
 
     #[test]
+    fn templum_control_without_its_variable_says_so_and_exits_2() {
+        let (_dir, bus) = test_bus(|_| {});
+        for env in [
+            Env {
+                control: None,
+                ..env(&bus)
+            },
+            Env {
+                bus: None,
+                control: Some("s3cret".into()),
+                terminal: None,
+            },
+            Env {
+                bus: Some(String::new()),
+                control: Some("s3cret".into()),
+                terminal: None,
+            },
+        ] {
+            let (code, out, err) = run_with(&["control"], &env, "");
+            assert_eq!((code, out.as_str()), (2, ""));
+            assert_eq!(
+                err,
+                "templum: the control server is only for the Templum Agent\n"
+            );
+        }
+    }
+
+    #[test]
+    fn templum_control_says_hello_with_its_secret_then_bridges() {
+        let (_dir, bus) = test_bus(|m| {
+            if let Incoming::Request { id, .. } = &m.incoming {
+                let hello = json!({
+                    "terminal": m.hello.terminal, "client": m.hello.client, "control": m.hello.control,
+                });
+                let _ = m.reply.send(rpc::result(id, hello));
+            }
+        });
+        let env = Env {
+            control: Some("s3cret".into()),
+            terminal: None,
+            ..env(&bus)
+        };
+        let (code, out, _) = run_with(&["control"], &env, &rpc::request(7, "ping", Value::Null));
+        assert_eq!(code, 0);
+        let answer: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(answer["id"], 7);
+        assert_eq!(
+            answer["result"],
+            json!({ "terminal": "", "client": "control", "control": "s3cret" })
+        );
+    }
+
+    #[test]
     fn outside_templum_or_with_it_gone_a_command_exits_2() {
         let (code, out, err) = run_with(&["blocks"], &Env::default(), "");
         assert_eq!((code, out.as_str()), (2, ""));
@@ -1284,6 +1381,7 @@ mod tests {
         let no_bus = Env {
             bus: Some(String::new()),
             terminal: Some("1-1".into()),
+            control: None,
         };
         let (code, _, err) = run_with(&["blocks"], &no_bus, "");
         assert_eq!(code, 2);
@@ -1295,6 +1393,7 @@ mod tests {
                 "tcp:127.0.0.1:9:x".into()
             }),
             terminal: Some("1-1".into()),
+            control: None,
         };
         let (code, out, err) = run_with(&["mcp"], &gone, "");
         assert_eq!((code, out.as_str()), (2, ""));
@@ -1307,6 +1406,7 @@ mod tests {
     #[test]
     fn only_the_verbs_are_commands() {
         assert!(is_verb("mcp") && is_verb("hook") && is_verb("read"));
+        assert!(is_verb("control"));
         assert!(is_verb("ask"));
         assert!(is_verb("wire"));
         assert!(is_verb("keys") && is_verb("interrupt") && is_verb("close"));
@@ -1347,7 +1447,7 @@ mod tests {
         for verb in VERBS
             .iter()
             .copied()
-            .filter(|v| !matches!(*v, "mcp" | "hook"))
+            .filter(|v| !matches!(*v, "mcp" | "control" | "hook"))
         {
             let usages: Vec<&str> = [&none[..], &one[..]]
                 .into_iter()

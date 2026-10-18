@@ -34,6 +34,7 @@ fn ask_as(
         hello: Hello {
             terminal: terminal.into(),
             client: client.into(),
+            control: None,
         },
         conn: 0,
         incoming: Incoming::Request {
@@ -90,6 +91,7 @@ pub(super) fn call_later(
         hello: Hello {
             terminal: terminal.into(),
             client: "mcp".into(),
+            control: None,
         },
         conn,
         incoming: Incoming::Request {
@@ -130,6 +132,7 @@ pub(super) fn bus_note(
         hello: Hello {
             terminal: String::new(),
             client: "mcp".into(),
+            control: None,
         },
         conn,
         incoming: Incoming::Notification {
@@ -541,7 +544,7 @@ fn the_bus_answers_over_its_socket(cx: &mut TestAppContext) {
     std::thread::spawn(move || {
         use std::io::{BufRead as _, Write as _};
         let (mut stream, token) = templum_mcp::bus::connect(&env).unwrap();
-        let hello = templum_mcp::bus::hello_line(&terminal, "cli", token.as_deref());
+        let hello = templum_mcp::bus::hello_line(&terminal, "cli", token.as_deref(), None);
         let call = templum_mcp::rpc::request(
             1,
             "tools/call",
@@ -747,6 +750,7 @@ pub(super) fn event(
         hello: Hello {
             terminal: terminal.into(),
             client: "hook".into(),
+            control: None,
         },
         conn: 0,
         incoming: Incoming::Notification {
