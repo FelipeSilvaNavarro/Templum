@@ -83,8 +83,9 @@ Interpreter, Qodo Command. Each is one more row in `templum-terminal/src/agent.r
 
 `spawn_agent`'s `model` and `effort` become words after the agent's command (`launch_args`), on a restore and Ctrl+Z
 too ([connections.md](connections.md#spawning)). Read from each agent's `--help` (installed) or its reference (not
-installed) on 2026-10-18; card 44 adds every row but the first three, each with the long `--model` every one of them
-takes (`-m` too, for most). An agent not listed takes neither, and one with no effort list takes only a model. Where
+installed) on 2026-10-18; every row but the first three came with card 44, each with the long `--model` every one of
+them takes (`-m` too, for most); `cargo test -p templum-terminal -- --ignored installed_agents` checks the installed
+ones' `--help` again. An agent not listed takes neither, and one with no effort list takes only a model. Where
 the audit's gap 2 differs (Droid's effort), this table wins.
 
 | Agent | Model | Effort | Efforts |

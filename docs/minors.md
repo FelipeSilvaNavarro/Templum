@@ -1135,12 +1135,6 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   `$Global:__TemplumAgentExit` before `Set-StrictMode -Off` without setting it. Fix: test with
   `Test-Path Variable:Global:__TemplumPrompt`, set `$Global:__TemplumAgentExit = $null` beside `__TemplumRunning`,
   and move line 15 below `Set-StrictMode -Off`.
-- [ ] **`spawn_agent` refuses a model or an effort for agents that take one.** Left by the parity audit of card 44
-  ([agent-parity.md](specs/agent-parity.md#the-gaps), gap 2; at 565cbfd): `LAUNCH`
-  (`crates/templum-terminal/src/agent.rs:267`) has Claude Code, Codex and Gemini CLI only, so a person asking for
-  "a Grok Build on grok-5" sees "Templum doesn't give Grok Build a model or an effort." Fix: a row each for Copilot
-  CLI, Grok Build, Pi, OpenCode, Cursor CLI, Qwen Code, Kiro CLI, Kimi Code, Droid, Auggie, Kilo Code, Cline and
-  Aider, each flag and effort list read from the installed `--help`.
 - [ ] **Settings ▸ Connections tells the person to give Pi Templum's MCP command.** Left by the parity audit of card
   44 (gap 7a): the description of **Other agents** (`crates/templum/src/settings/connections.rs:105`) names Pi, which
   has no MCP ("No MCP" in Pi 0.85.1's README), so a person looks for a setting that isn't there. Fix: drop Pi from

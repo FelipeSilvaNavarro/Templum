@@ -165,7 +165,7 @@ fn spawn_agent_types_its_model_and_effort_first(cx: &mut TestAppContext) {
         ),
         (json!({ "agent": "gemini", "effort": "high" }), "no effort"),
         (
-            json!({ "agent": "copilot", "model": "gpt-5" }),
+            json!({ "agent": "amp", "model": "gpt-5" }),
             "a model or an effort",
         ),
         (

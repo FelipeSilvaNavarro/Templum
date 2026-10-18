@@ -257,6 +257,9 @@ const SPECS: [Spec; 20] = [
 /// before a model, the one before an effort, and the efforts it takes. Checked on 2026-10-16:
 /// Claude Code 2.1.286 (`claude --help`), Codex 0.154.0 (`codex --help`, `codex debug models`:
 /// a `-c` value that isn't TOML is a string, so no quotes), Gemini CLI 0.63.0 (`gemini --help`).
+/// The others on 2026-10-18: the `--help` of Copilot CLI 1.0.95, Cursor CLI, OpenCode 1.19.0,
+/// Grok Build and Pi 0.85.1, installed then; the references of Kiro CLI, Qwen Code, Kimi Code,
+/// Aider, Droid, Auggie, Kilo Code and Cline (docs/specs/agents.md, A model and an effort).
 struct Launch {
     id: &'static str,
     model: &'static str,
@@ -264,7 +267,7 @@ struct Launch {
     efforts: &'static [&'static str],
 }
 
-const LAUNCH: [Launch; 3] = [
+const LAUNCH: [Launch; 16] = [
     Launch {
         id: "claude",
         model: "--model ",
@@ -282,6 +285,84 @@ const LAUNCH: [Launch; 3] = [
         model: "-m ",
         effort: None,
         efforts: &[],
+    },
+    Launch {
+        id: "copilot",
+        model: "--model ",
+        effort: Some("--reasoning-effort "),
+        efforts: &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+    },
+    Launch {
+        id: "cursor",
+        model: "--model ",
+        effort: None,
+        efforts: &[],
+    },
+    Launch {
+        id: "opencode",
+        model: "--model ",
+        effort: None,
+        efforts: &[],
+    },
+    Launch {
+        id: "kiro",
+        model: "--model ",
+        effort: Some("--effort "),
+        efforts: &["low", "medium", "high", "xhigh", "max"],
+    },
+    Launch {
+        id: "qwen",
+        model: "--model ",
+        effort: None,
+        efforts: &[],
+    },
+    Launch {
+        id: "grok",
+        model: "--model ",
+        effort: Some("--reasoning-effort "),
+        efforts: &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+    },
+    Launch {
+        id: "kimi",
+        model: "--model ",
+        effort: None,
+        efforts: &[],
+    },
+    Launch {
+        id: "aider",
+        model: "--model ",
+        effort: Some("--reasoning-effort "),
+        efforts: &["low", "medium", "high"],
+    },
+    Launch {
+        id: "droid",
+        model: "--model ",
+        effort: None,
+        efforts: &[],
+    },
+    Launch {
+        id: "auggie",
+        model: "--model ",
+        effort: None,
+        efforts: &[],
+    },
+    Launch {
+        id: "kilo",
+        model: "--model ",
+        effort: None,
+        efforts: &[],
+    },
+    Launch {
+        id: "cline",
+        model: "--model ",
+        effort: Some("--thinking "),
+        efforts: &["none", "low", "medium", "high", "xhigh"],
+    },
+    Launch {
+        id: "pi",
+        model: "--model ",
+        effort: Some("--thinking "),
+        efforts: &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
     },
 ];
 
@@ -969,10 +1050,113 @@ mod tests {
         assert!(codex.launch_args(None, Some("HIGH")).is_err());
         let err = gemini.launch_args(None, Some("high")).unwrap_err();
         assert!(err.contains("no effort"), "{err}");
-        let err = agent("copilot")
-            .launch_args(Some("gpt-5"), None)
-            .unwrap_err();
-        assert!(err.contains("a model or an effort"), "{err}");
+        assert_eq!(
+            agent("copilot").launch_args(Some("gpt-5.4"), Some("none")),
+            ok(" --model gpt-5.4 --reasoning-effort none")
+        );
+        assert_eq!(
+            agent("grok").launch_args(Some("grok-5"), Some("max")),
+            ok(" --model grok-5 --reasoning-effort max")
+        );
+        assert_eq!(
+            agent("pi").launch_args(Some("anthropic/claude-opus-5-5"), Some("off")),
+            ok(" --model anthropic/claude-opus-5-5 --thinking off")
+        );
+        assert_eq!(
+            agent("kiro").launch_args(Some("claude-sonnet-5-5"), Some("xhigh")),
+            ok(" --model claude-sonnet-5-5 --effort xhigh")
+        );
+        assert_eq!(
+            agent("cline").launch_args(Some("gpt-5.4"), Some("none")),
+            ok(" --model gpt-5.4 --thinking none")
+        );
+        assert_eq!(
+            agent("aider").launch_args(Some("o4"), Some("medium")),
+            ok(" --model o4 --reasoning-effort medium")
+        );
+        for id in [
+            "opencode", "kilo", "cursor", "qwen", "kimi", "droid", "auggie",
+        ] {
+            assert_eq!(
+                agent(id).launch_args(Some("p/m-1"), None),
+                ok(" --model p/m-1"),
+                "{id}"
+            );
+        }
+        assert_eq!(
+            agent("opencode")
+                .launch_args(None, Some("high"))
+                .unwrap_err(),
+            "OpenCode takes no effort from Templum."
+        );
+        assert_eq!(
+            agent("aider").launch_args(None, Some("xhigh")).unwrap_err(),
+            "Aider's effort is low, medium or high."
+        );
+        assert_eq!(
+            agent("amp").launch_args(Some("x"), None).unwrap_err(),
+            "Templum doesn't give Amp a model or an effort."
+        );
+        assert!(
+            agent("crush").launch_args(Some("x"), None).is_err()
+                && agent("goose").launch_args(Some("x"), None).is_err()
+        );
+    }
+
+    /// Each installed agent's `--help` still names the flags `LAUNCH` types (run by hand after
+    /// changing an agent's words: Copilot's and OpenCode's mise shims rewrite mise's global
+    /// config at every run).
+    #[test]
+    #[ignore = "runs each installed agent's --help"]
+    fn installed_agents_take_the_flags_templum_types() {
+        let dirs = program_dirs();
+        for launch in &LAUNCH {
+            let agent = Agent::from_name(launch.id).unwrap();
+            let Some(program) = find_program(agent.program(), &dirs) else {
+                println!("skipped: {}", agent.program());
+                continue;
+            };
+            let mut command = std::process::Command::new(&program);
+            command
+                .args(agent.command().split_whitespace().skip(1))
+                .arg("--help")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let mut child = command.spawn().expect("run the agent");
+            let started = std::time::Instant::now();
+            while child.try_wait().unwrap().is_none() {
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(20),
+                    "{}: --help took over 20 s",
+                    launch.id
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            let out = child.wait_with_output().unwrap();
+            let help = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+            let word = |flag: &str| {
+                flag.split(['=', ' '])
+                    .find(|w| !w.is_empty())
+                    .unwrap()
+                    .to_string()
+            };
+            let model = word(launch.model);
+            assert!(
+                help.contains(&model),
+                "{}: no {model} in its --help",
+                launch.id
+            );
+            if let Some(effort) = launch.effort.filter(|e| !e.starts_with("-c ")) {
+                let effort = word(effort);
+                assert!(
+                    help.contains(&effort),
+                    "{}: no {effort} in its --help",
+                    launch.id
+                );
+            }
+            println!("checked: {}", launch.id);
+        }
     }
 
     #[test]

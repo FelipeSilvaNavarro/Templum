@@ -437,12 +437,16 @@ pub fn list() -> Value {
                     },
                     "model": {
                         "type": "string",
-                        "description": "Its model: claude --model, codex -m, gemini -m. Letters, digits, . - _ : and /.",
+                        "description": "Its model, as its own --model or -m takes it (provider/model for OpenCode, \
+                                        Kilo Code and Pi). Letters, digits, . - _ : and /.",
                     },
                     "effort": {
                         "type": "string",
                         "description": "Its reasoning effort. claude: low, medium, high, xhigh, max. codex: low, medium, \
-                                        high, xhigh, max, ultra. gemini takes none.",
+                                        high, xhigh, max, ultra. copilot and grok: none, minimal, low, medium, high, \
+                                        xhigh, max. pi: off, minimal, low, medium, high, xhigh, max. kiro: low, medium, \
+                                        high, xhigh, max. cline: none, low, medium, high, xhigh. aider: low, medium, \
+                                        high. The others take none.",
                     },
                 },
                 "required": ["agent"],
