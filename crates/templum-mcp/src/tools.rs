@@ -462,7 +462,7 @@ pub fn list() -> Value {
                 "properties": {
                     "agent": {
                         "type": "string",
-                        "description": "Which agent: claude, codex, gemini, … (an id of Settings ▸ Agents).",
+                        "description": "Which agent: claude, codex, gemini, … or an account, like claude2 (an id of Settings ▸ Agents).",
                     },
                     "prompt": { "type": "string" },
                     "folder": {

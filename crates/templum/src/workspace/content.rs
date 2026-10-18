@@ -126,8 +126,16 @@ impl Workspace {
     }
 
     /// Whether a block running `pane_agent` runs `agent` to a card: the same agent, or one with
-    /// its program (the first word of their commands, as `program_name` reads it).
+    /// its program (the first word of their commands, as `program_name` reads it). A card for an
+    /// account is that account's only: its agent's other folders run the same program.
     fn runs(&self, pane_agent: Option<&str>, agent: &str) -> bool {
+        if self
+            .agents
+            .iter()
+            .any(|a| a.id == agent && a.account.is_some())
+        {
+            return pane_agent == Some(agent);
+        }
         let program = |id: &str| {
             self.agents
                 .iter()

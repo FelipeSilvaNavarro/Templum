@@ -1390,3 +1390,42 @@ fn claim_card_follows_who_a_card_is_for(cx: &mut TestAppContext) {
     set(cx, Some(Assignee::Agent("codex-work".into())));
     assert_eq!(claim(cx), (false, format!("Card {card} is yours.")));
 }
+
+/// A card for an account is that account's only; one for its agent is any of the agent's blocks,
+/// the account's included.
+#[gpui_kit::test]
+fn a_card_for_an_account_is_its_own(cx: &mut TestAppContext) {
+    use crate::board::Assignee;
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    super::agents::with_agents(&ws, cx, super::agents::CLAUDE2);
+    let terminal = first_id(&ws, cx);
+    let (me, _, _, board, card) = wired_board(handle, &ws, cx);
+    let set = |cx: &mut TestAppContext, a: Assignee| {
+        ws.update(cx, |ws, _| {
+            ws.edit_boards(|b| b.edit_card(board, card, |c| c.assignee = Some(a)))
+        })
+    };
+    let runs = |cx: &mut TestAppContext, agent: &str| {
+        ws.update(cx, |ws, _| {
+            ws.space.terminal_mut(terminal).unwrap().seen.agent = Some(agent.to_string())
+        })
+    };
+    let claim =
+        |cx: &mut TestAppContext| call(handle, &ws, cx, &me, "claim_card", json!({ "card": card }));
+    set(cx, Assignee::Agent("claude2".into()));
+    runs(cx, "claude");
+    let (failed, text) = claim(cx);
+    assert!(
+        failed,
+        "Claude Code's own folder isn't Claude Code 2: {text}"
+    );
+    runs(cx, "claude2");
+    assert_eq!(claim(cx), (false, format!("Card {card} is yours.")));
+    set(cx, Assignee::Agent("claude".into()));
+    assert_eq!(
+        claim(cx),
+        (false, format!("Card {card} is yours.")),
+        "any Claude Code: its accounts run it"
+    );
+}

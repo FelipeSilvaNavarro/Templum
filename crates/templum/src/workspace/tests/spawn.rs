@@ -866,3 +866,36 @@ fn a_spawned_agent_fits_where_nothing_is_toward_the_callers_connections(cx: &mut
         );
     });
 }
+
+/// `spawn_agent` opens an account by its id, on its folder, with its agent's model.
+#[gpui_kit::test]
+fn spawn_agent_opens_an_account(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let mine = first_id(&ws, cx);
+    super::agents::with_agents(
+        &ws,
+        cx,
+        &format!(
+            "[agents.claude]\ncommand = \"cat\"\n{}",
+            super::agents::CLAUDE2
+        ),
+    );
+    ws.update(cx, |ws, _| {
+        ws.command = Some(jobs("echo \"dir=$CLAUDE_CONFIG_DIR;\"; cat; true"));
+    });
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "claude2", "folder": folder.path(), "model": "opus" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    assert!(!failed, "{text}");
+    let new = spawned(&ws, cx, mine);
+    let account = data.path().join("accounts").join("claude2");
+    screen_with(&ws, cx, new, &format!("dir={};", account.display()));
+    screen_with(&ws, cx, new, "cat --model opus");
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(new).unwrap();
+        assert_eq!(pane.account.as_deref(), Some("claude2"));
+        assert_eq!(pane.agent(), Some("claude2"));
+    });
+}
