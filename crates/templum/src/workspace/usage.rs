@@ -80,6 +80,13 @@ impl Workspace {
                 templum_mcp::codex_flags(&gives.exe.to_string_lossy(), windows, gives.on_path)
         {
             line.push_str(&flags);
+        } else if builtin == Some(Agent::COPILOT)
+            && gives.connected
+            && gives.on_path
+            && let Some(words) = templum_usage::copilot::args(&gives.data, windows)
+                .and_then(|w| typed_words(&w, windows))
+        {
+            line.push_str(&words);
         }
         line
     }
@@ -511,6 +518,20 @@ pub(super) fn claude_flags(
         flags.push_str(&format!(" --mcp-config {arg}"));
     }
     flags
+}
+
+/// `words`, each typed as a shell takes it (`typed_path`), each after a space; None when one can't
+/// be.
+fn typed_words(words: &[String], windows: bool) -> Option<String> {
+    words
+        .iter()
+        .map(|w| {
+            Some(format!(
+                " {}",
+                templum_usage::claude::typed_path(w, windows)?
+            ))
+        })
+        .collect()
 }
 
 /// `claude_flags` as the words a program gets, unquoted, Windows' `\` as `/`; the MCP config as

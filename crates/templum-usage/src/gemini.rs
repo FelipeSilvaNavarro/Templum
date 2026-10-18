@@ -29,11 +29,9 @@ const HOOKED: [&str; 6] = [
 /// Writes the extension to `<data>/gemini`, for Windows when `windows`, and returns its folder.
 /// None when Templum's program can't go in a hook's command, or a file can't be written.
 pub fn extension(data: &Path, windows: bool) -> Option<PathBuf> {
-    let bin = data
-        .join("bin")
-        .join(if windows { "templum.exe" } else { "templum" });
+    let bin = crate::bin(data, windows);
     let bin = bin.to_string_lossy();
-    let command = hook_command(&bin, windows)?;
+    let command = crate::hook_command(&bin, windows, "gemini")?;
     let hook = json!([{ "hooks": [{ "type": "command", "command": command, "timeout": 5000 }] }]);
     let hooks: serde_json::Map<String, serde_json::Value> = HOOKED
         .iter()
@@ -51,19 +49,6 @@ pub fn extension(data: &Path, windows: bool) -> Option<PathBuf> {
         &json!({ "hooks": hooks }),
     )?;
     Some(folder)
-}
-
-/// `bin hook gemini`, as Gemini CLI runs a hook: through bash on Unix, PowerShell on Windows,
-/// with `bin` in single quotes. None when `bin` holds a `'` or a line break.
-pub fn hook_command(bin: &str, windows: bool) -> Option<String> {
-    if bin.is_empty() || bin.contains(['\'', '\n', '\r']) {
-        return None;
-    }
-    Some(if windows {
-        format!("& '{bin}' hook gemini")
-    } else {
-        format!("'{bin}' hook gemini")
-    })
 }
 
 /// What `gemini` is given to install the extension in `folder`, the person agreeing: a link,
@@ -170,28 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hook_runs_templum_in_single_quotes_through_bash_or_powershell() {
-        assert_eq!(
-            hook_command("/home/u/.local/share/templum/bin/templum", false).as_deref(),
-            Some("'/home/u/.local/share/templum/bin/templum' hook gemini")
-        );
-        assert_eq!(
-            hook_command(
-                r"C:\Users\Jane Doe\AppData\Roaming\templum\bin\templum.exe",
-                true
-            )
-            .as_deref(),
-            Some(r"& 'C:\Users\Jane Doe\AppData\Roaming\templum\bin\templum.exe' hook gemini")
-        );
-        // Single quotes keep $, ` and " as they are; only a ' or a line break can't go inside.
-        assert_eq!(
-            hook_command("/home/$x/templum", false).as_deref(),
-            Some("'/home/$x/templum' hook gemini")
-        );
-        assert_eq!(hook_command("/home/o'neil/templum", false), None);
-        assert_eq!(hook_command("/home/o'neil/templum", true), None);
-        assert_eq!(hook_command("/home/a\nb/templum", false), None);
-        assert_eq!(hook_command("", false), None);
+    fn a_windows_extension_runs_templum_through_powershell() {
         let dir = tempfile::tempdir().unwrap();
         let folder = extension(dir.path(), true).unwrap();
         let bin = dir.path().join("bin").join("templum.exe");

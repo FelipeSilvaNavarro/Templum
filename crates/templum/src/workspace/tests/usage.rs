@@ -10,7 +10,7 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
     let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
     ws.update(cx, |ws, _| {
         let agent = |id: &str| ws.agents.iter().find(|a| a.id == id).cloned();
-        let (claude, codex) = (agent("claude"), agent("codex"));
+        let (claude, codex, copilot) = (agent("claude"), agent("codex"), agent("copilot"));
         let typed = |name: &str| {
             templum_usage::claude::typed_path(
                 &data.path().join(name).to_string_lossy(),
@@ -59,6 +59,23 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
             ws.bus_env = env;
         }
         assert_eq!(ws.typed(None, "claude"), "claude");
+        // Copilot CLI: its server, its instructions and its plugin of hooks, in every shell.
+        let words = templum_usage::copilot::args(data.path(), cfg!(windows))
+            .unwrap()
+            .iter()
+            .map(|w| templum_usage::claude::typed_path(w, cfg!(windows)).unwrap())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(words.contains("--plugin-dir="), "{words}");
+        assert_eq!(
+            ws.typed(copilot.as_ref(), "copilot --session-id 0d5e"),
+            format!("copilot --session-id 0d5e {words}")
+        );
+        // Without `<data>/bin` on the terminal's PATH, the files' program can't be found.
+        let env = ws.bus_env.clone();
+        ws.bus_env.retain(|(k, _)| k != "PATH");
+        assert_eq!(ws.typed(copilot.as_ref(), "copilot"), "copilot");
+        ws.bus_env = env;
         // Windows PowerShell 5.1 passes `args=["mcp"]` on as `args=[mcp]`; pwsh 7 doesn't.
         let shell = ws.config.shell.program.clone();
         ws.config.shell.program = Some("powershell".into());
@@ -70,6 +87,9 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
         }
         ws.config.shell.program = Some("WSL.exe".into());
         assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
+        assert_eq!(ws.typed(copilot.as_ref(), "copilot"), "copilot");
+        ws.config.shell.program = Some("powershell".into());
+        assert!(ws.typed(copilot.as_ref(), "copilot").contains("--plugin-dir="));
         ws.config.shell.program = Some("pwsh".into());
         assert!(
             ws.typed(codex.as_ref(), "codex")
@@ -83,6 +103,7 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
             format!("claude --settings {settings}")
         );
         assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex");
+        assert_eq!(ws.typed(copilot.as_ref(), "copilot"), "copilot");
         ws.config.usage.claude_limits = false;
         assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
         // Connections without the status line: the hooks still need the settings file.

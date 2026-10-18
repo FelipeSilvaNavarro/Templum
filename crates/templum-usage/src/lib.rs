@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 pub mod claude;
 pub mod codex;
+pub mod copilot;
 pub mod gemini;
 mod watch;
 
@@ -44,6 +45,26 @@ pub struct Window {
 /// can wait for its person. Under JavaScript's largest timer (2³¹ − 1 ms, 24.8 days; a longer
 /// one fires at once), which Claude Code and Gemini CLI run on.
 pub const MCP_TIMEOUT_MS: u64 = 604_800_000;
+
+/// `<data>/bin/templum` (`templum.exe` on Windows), the link Templum points at itself at each
+/// start: the program the files it writes for agents run, the same whatever its version.
+pub fn bin(data: &Path, windows: bool) -> PathBuf {
+    data.join("bin")
+        .join(if windows { "templum.exe" } else { "templum" })
+}
+
+/// `bin hook <words>`, as an agent runs a hook: through bash on Unix, PowerShell on Windows, with
+/// `bin` in single quotes. None when `bin` holds a `'` or a line break.
+pub fn hook_command(bin: &str, windows: bool, words: &str) -> Option<String> {
+    if bin.is_empty() || bin.contains(['\'', '\n', '\r']) {
+        return None;
+    }
+    Some(if windows {
+        format!("& '{bin}' hook {words}")
+    } else {
+        format!("'{bin}' hook {words}")
+    })
+}
 
 /// The agents whose plan limits Templum reads, in the order it shows them.
 pub const LIMITED: [&str; 2] = ["claude", "codex"];
@@ -261,6 +282,40 @@ pub(crate) fn modified(path: &Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hook_runs_templum_in_single_quotes_through_bash_or_powershell() {
+        assert_eq!(
+            hook_command("/home/u/.local/share/templum/bin/templum", false, "gemini").as_deref(),
+            Some("'/home/u/.local/share/templum/bin/templum' hook gemini")
+        );
+        assert_eq!(
+            hook_command(
+                r"C:\Users\Jane Doe\AppData\Roaming\templum\bin\templum.exe",
+                true,
+                "gemini"
+            )
+            .as_deref(),
+            Some(r"& 'C:\Users\Jane Doe\AppData\Roaming\templum\bin\templum.exe' hook gemini")
+        );
+        // Single quotes keep $, ` and " as they are; only a ' or a line break can't go inside.
+        assert_eq!(
+            hook_command("/home/$x/templum", false, "gemini").as_deref(),
+            Some("'/home/$x/templum' hook gemini")
+        );
+        assert_eq!(hook_command("/home/o'neil/templum", false, "gemini"), None);
+        assert_eq!(hook_command("/home/o'neil/templum", true, "gemini"), None);
+        assert_eq!(hook_command("/home/a\nb/templum", false, "gemini"), None);
+        assert_eq!(hook_command("", false, "gemini"), None);
+        assert_eq!(
+            bin(Path::new("/d"), false),
+            Path::new("/d").join("bin").join("templum")
+        );
+        assert_eq!(
+            bin(Path::new("/d"), true),
+            Path::new("/d").join("bin").join("templum.exe")
+        );
+    }
 
     #[test]
     fn the_newer_limits_win_and_keep_their_place() {

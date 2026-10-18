@@ -734,7 +734,7 @@ shells' functions). Nothing is written outside Templum's data folder, as for Cla
 
 | Agent | Templum's server | Hooks (the status dot, a task's end) | Typed by hand | Checked |
 |---|---|---|---|---|
-| GitHub Copilot CLI | `--additional-mcp-config=@<data>/copilot/mcp.json` | a plugin, `--plugin-dir=<data>/copilot/plugin` | `copilot` | 1.0.95's `--help`, its SDK's types; a run with a sign-in is the plan's first spike |
+| GitHub Copilot CLI | `--additional-mcp-config=@<data>/copilot/mcp.json` | a plugin, `--plugin-dir=<data>/copilot/plugin` | `copilot` | 1.0.95's `--help`, its SDK's types, a run by hand with a sign-in (its hooks) |
 | OpenCode | `OPENCODE_CONFIG_CONTENT`, merged with the person's config | a JS plugin named in the same variable | `opencode` | 1.19.0, `opencode serve` with a probe plugin; the TUI by hand in the plan |
 | Kilo Code | `KILO_CONFIG_CONTENT` (an OpenCode fork) | the same plugin | `kilo` | from its source (7.8.x); not installed here |
 | Qwen Code | `--mcp-config=<data>/qwen/mcp.json` | its system settings file moved to `<data>/qwen/settings.json` (`QWEN_CODE_SYSTEM_SETTINGS_PATH`) | `qwen` | from its docs and source (0.25.2); not installed here |
@@ -754,7 +754,9 @@ a `'` gives no connections.
 
 ### GitHub Copilot CLI
 
-It takes everything for one session (checked with `copilot --help` 1.0.95 and its bundled SDK's `types.d.ts`).
+It takes everything for one session (checked with `copilot --help` 1.0.95 and its bundled SDK's `types.d.ts`). The
+Copilot CLI Templum opens (the menu, `spawn_agent`, a restore) gets the words below (`templum_usage::copilot::args`,
+`Workspace::typed`), only with `<data>/bin` on the terminal's `PATH`.
 
 **Words** after its command, opened or typed (`=` keeps each one word; the last names Templum's folder, which the shell
 function looks for):
@@ -779,7 +781,7 @@ copilot --allow-all-mcp-server-instructions --additional-mcp-config=@<data>/copi
   no `--allow-tool`, as it pre-allows nothing for Claude Code.
 - `<data>/copilot/plugin`: a plugin of hooks only, `plugin.json` (`{ "name": "templum" }`) and `hooks.json`. A hook's
   payload doesn't name its event, so each hook's command does; `bash` on Unix and macOS, `powershell` on Windows, as
-  Gemini CLI's hooks are written (`gemini::hook_command`). A reporting hook must print nothing: Copilot reads a JSON
+  Gemini CLI's hooks are written (`templum_usage::hook_command`). A reporting hook must print nothing: Copilot reads a JSON
   object from a hook's stdout, and a failing `preToolUse` hook denies the tool, so Templum hooks no `preToolUse`.
 
   ```json
