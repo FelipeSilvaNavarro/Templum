@@ -632,7 +632,9 @@ impl Workspace {
     /// saying who hands it over; with `wait`, the call waits for its answer. Into an agent on the
     /// caller's own task (also past its deadline), it is a change to that task, typed at once: the
     /// end of the turn that takes it answers the task, whose timeout starts again
-    /// (docs/specs/connections.md, Delegating 11).
+    /// (docs/specs/connections.md, Delegating 11). `scheduled`: the schedule that hands it, which
+    /// its line names.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn delegate(
         &mut self,
         from: &str,
@@ -640,6 +642,7 @@ impl Workspace {
         task: &str,
         wait: bool,
         timeout: u64,
+        scheduled: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Outcome {
         let now = Instant::now();
@@ -684,7 +687,10 @@ impl Workspace {
         });
         let line = match mine {
             Some(_) => format!("[from {by}, a change to task t{id}] {CHANGE_LEAD}\n{task}"),
-            None => format!("[from {by}, task t{id}] {TASK_LEAD}\n{task}"),
+            None => {
+                let from = scheduled.map_or(String::new(), |s| format!(", scheduled s{s}"));
+                format!("[from {by}, task t{id}{from}] {TASK_LEAD}\n{task}")
+            }
         };
         self.send_task(&worker, &line, true, cx);
         let until = Instant::now() + Duration::from_secs(timeout);

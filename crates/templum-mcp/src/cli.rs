@@ -32,6 +32,8 @@ const VERBS: &[&str] = &[
     "keys",
     "interrupt",
     "stop",
+    "schedule",
+    "unschedule",
     "plan",
     "new",
     "close",
@@ -51,6 +53,8 @@ const KANBAN: &str = "kanban list [<board>] [--card <card>] | add <title> [--col
                       | claim <card> [--json]";
 const NOTE: &str = "note read <block> | note append <block> <text> \
                     | note replace <block> <text> [--old <text>] [--json]";
+const SCHEDULE: &str = "schedule <block> <text> [--at HH:MM] [--after <minutes>] \
+                        [--every <minutes>] [--json]";
 const PLAN: &str = "plan <file> [--title <title>] [--json]";
 const NEW: &str = "new note [<text>] | new checklist <name> [--items <text>] \
                    | new terminal [--folder <folder>] [--command <command>] [--json]";
@@ -424,6 +428,28 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("interrupt", [block]) => ("interrupt", json!({ "block": block })),
         ("close", [block]) => ("close_block", json!({ "block": block })),
         ("stop", [block]) => ("stop_agent", json!({ "block": block })),
+        ("schedule", [block, rest @ ..]) => {
+            let mut arguments = json!({ "block": block });
+            let mut words = Vec::new();
+            let mut rest = rest.iter();
+            while let Some(word) = rest.next() {
+                match *word {
+                    "--at" => arguments["at"] = json!(rest.next().ok_or(SCHEDULE)?),
+                    "--after" | "--every" => {
+                        let minutes: u64 =
+                            rest.next().ok_or(SCHEDULE)?.parse().map_err(|_| SCHEDULE)?;
+                        arguments[&word[2..]] = json!(minutes);
+                    }
+                    word => words.push(word),
+                }
+            }
+            if words.is_empty() {
+                return Err(SCHEDULE);
+            }
+            arguments["text"] = json!(words.join(" "));
+            ("schedule", arguments)
+        }
+        ("unschedule", [id]) => ("cancel_schedule", json!({ "schedule": id })),
         // The file is read by `run`, which has the standard input `-` names.
         ("plan", [file]) => ("propose_plan", json!({ "plan": file })),
         ("plan", [file, "--title", title]) => {
@@ -478,6 +504,8 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("interrupt", _) => return Err("interrupt <block> [--json]"),
         ("close", _) => return Err("close <block> [--json]"),
         ("stop", _) => return Err("stop <block> [--json]"),
+        ("schedule", _) => return Err(SCHEDULE),
+        ("unschedule", _) => return Err("unschedule <id> [--json]"),
         ("plan", _) => return Err(PLAN),
         ("new", _) => return Err(NEW),
         _ => return Err("notify <text> [--json]"),
@@ -948,6 +976,20 @@ mod tests {
             (
                 &["checklist", "delete", "4qm2a", "41"][..],
                 json!({ "name": "delete_item", "arguments": { "block": "4qm2a", "item": "41" } }),
+            ),
+            (
+                &[
+                    "schedule", "k9x1d", "check", "it", "--at", "15:00", "--every", "10",
+                ][..],
+                json!({ "name": "schedule", "arguments": { "block": "k9x1d", "text": "check it", "at": "15:00", "every": 10 } }),
+            ),
+            (
+                &["schedule", "k9x1d", "go", "--after", "5"][..],
+                json!({ "name": "schedule", "arguments": { "block": "k9x1d", "text": "go", "after": 5 } }),
+            ),
+            (
+                &["unschedule", "s3"][..],
+                json!({ "name": "cancel_schedule", "arguments": { "schedule": "s3" } }),
             ),
             (
                 &["spawn", "--role", "reviewer", "--prompt", "review it"][..],

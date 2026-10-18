@@ -29,6 +29,7 @@ mod persist;
 mod preferences;
 mod questions;
 mod render;
+mod schedules;
 mod selection;
 mod spaces;
 mod spawn;
@@ -1181,6 +1182,11 @@ pub struct Workspace {
     /// What tasks' agents did, waiting to be typed into the agents that handed them over, oldest
     /// first (`delegate.rs`).
     pub(crate) notices: Vec<delegate::Notice>,
+    /// Texts agents asked to have delivered later, and the last one's id (`schedules.rs`).
+    pub(crate) schedules: Vec<schedules::Schedule>,
+    pub(crate) next_schedule: u64,
+    /// The look at the schedules runs (`schedules.rs`).
+    scheduling: bool,
     /// Draws the next frame while a dot travels along a wire in view (`wires::DOT_FRAME`).
     _dot_frame: Task<()>,
     _wake: Task<()>,
@@ -1516,6 +1522,9 @@ impl Workspace {
             last_chime: None,
             next_task: 0,
             notices: Vec::new(),
+            schedules: Vec::new(),
+            next_schedule: 0,
+            scheduling: false,
             _dot_frame: Task::ready(()),
             _wake: wake,
         };

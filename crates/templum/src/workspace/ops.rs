@@ -224,4 +224,25 @@ impl Workspace {
         self.agent_changed(list);
         true
     }
+
+    /// Keeps `schedule`, to be delivered at its time (`schedules.rs`); its id, counting from 1.
+    pub(super) fn schedule_add(
+        &mut self,
+        mut schedule: super::schedules::Schedule,
+        cx: &mut Context<Self>,
+    ) -> u64 {
+        self.next_schedule += 1;
+        schedule.id = self.next_schedule;
+        self.schedules.push(schedule);
+        self.look_at_schedules(cx);
+        cx.notify();
+        self.next_schedule
+    }
+
+    /// Drops schedule `id`; false when there is none.
+    pub(super) fn schedule_cancel(&mut self, id: u64) -> bool {
+        let before = self.schedules.len();
+        self.schedules.retain(|s| s.id != id);
+        self.schedules.len() < before
+    }
 }

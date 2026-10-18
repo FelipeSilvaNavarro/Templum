@@ -21,7 +21,7 @@ fn said_twice(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) {
 
 /// The startup terminal at (40, 100), 400 × 300, the camera at 100% on the origin, and Claude Code
 /// and Codex started as `cat` in front of the new terminals' shells (`agent_cat`).
-fn spawner(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, BlockId) {
+pub(super) fn spawner(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, BlockId) {
     let (handle, ws) = open(cx);
     let mine = first_id(&ws, cx);
     ws.update(cx, |ws, _| {

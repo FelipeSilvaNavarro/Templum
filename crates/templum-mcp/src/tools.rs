@@ -148,6 +148,18 @@ pub enum Call {
         title: Option<String>,
         timeout: Option<u64>,
     },
+    /// `text` delivered to `block` (or the caller) later: at a time, after some minutes, and
+    /// again every `every` minutes.
+    Schedule {
+        block: String,
+        text: String,
+        when: When,
+        every: Option<u64>,
+    },
+    /// Cancels one of the caller's schedules, `s3` or `3`.
+    CancelSchedule {
+        schedule: String,
+    },
     /// Ends what runs in a terminal the caller opened, and what it left running.
     StopAgent {
         block: String,
@@ -198,6 +210,18 @@ pub struct Spawn {
     /// call.
     pub args: Option<String>,
 }
+
+/// When a schedule first goes: at a time of the computer's clock (`HH:MM`, the next time it
+/// shows it), after some minutes, or (`None`) `every` minutes from now.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum When {
+    At { hour: u8, minute: u8 },
+    After { minutes: u64 },
+    None,
+}
+
+/// The most minutes `schedule`'s `after` and `every` take: a week.
+pub const MAX_MINUTES: u64 = 10080;
 
 /// The kinds of block `create_block` opens.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -299,6 +323,8 @@ pub fn list() -> Value {
     let none = json!({ "type": "object", "properties": {} });
     let item =
         json!({ "type": "integer", "description": "An item's id, as read_checklist shows it." });
+    let minutes = json!({ "type": "integer", "minimum": 1, "maximum": MAX_MINUTES });
+
     let items_text = json!({
         "type": "string",
         "description": "A checklist's items, one per line; a leading - or *, then [ ] or [x], is dropped.",
@@ -376,6 +402,117 @@ pub fn list() -> Value {
             "multiSelect": { "type": "boolean", "default": false },
         },
         "required": ["question"],
+    });
+    let stop_agent = json!({
+        "name": "stop_agent",
+        "description": "Ends the agent, or the command, that runs in a terminal you opened (spawn_agent, \
+                        create_block), and every process it started, background ones included; its shell \
+                        stays. Only the person stops a block you didn't open.",
+        "inputSchema": { "type": "object", "properties": { "block": block }, "required": ["block"] },
+    });
+    let create_block = json!({
+        "name": "create_block",
+        "description": "Opens a block beside yours, connected to you: a note with text, a checklist (your own \
+                        plan for work of several steps: check its items as you go), or a terminal in a folder \
+                        (yours when left out) with a command typed and run in it, such as a dev server; \
+                        wait_for with a pattern waits for its line, stop_agent ends it. The person closes it \
+                        with Ctrl+Z.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": { "type": "string", "enum": ["note", "checklist", "terminal"] },
+                "text": { "type": "string", "description": "A note's text." },
+                "name": { "type": "string", "description": "A checklist's name." },
+                "items": items_text,
+                "folder": { "type": "string", "description": "A terminal's folder, relative to yours." },
+                "command": command,
+            },
+            "required": ["kind"],
+        },
+    });
+    let propose_plan = json!({
+        "name": "propose_plan",
+        "description": "Shows the person a plan in Markdown, in a balloon on your block, with Approve, Reject and \
+                        a comment; waits for their decision (it may take minutes). Approved is a result, \
+                        Rejected an error, each with their comment when they wrote one. Use it before work \
+                        the person should agree to.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "plan": { "type": "string", "description": "The plan, in Markdown (at most 256 KB)." },
+                "title": { "type": "string", "description": "A short title, shown up to 60 characters." },
+                "timeout": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_WAIT,
+                    "description": "Seconds to wait before giving up; none waits until the person answers.",
+                },
+            },
+            "required": ["plan"],
+        },
+    });
+    let replace_note = json!({
+        "name": "replace_note",
+        "description": "Replaces the text of the note a note block connected to you shows; with old, only \
+                        that passage, which must be in the note once (blank text deletes it). The person sees \
+                        it at once and can take it back.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "block": block,
+                "text": { "type": "string" },
+                "old": { "type": "string", "description": "The one passage to replace, exactly as in the note." },
+            },
+            "required": ["block", "text"],
+        },
+    });
+    let edit_item = json!({
+        "name": "edit_item",
+        "description": "Changes the text of an item of the checklist a checklist block connected to you \
+                        shows. The person sees it at once and can take it back.",
+        "inputSchema": {
+            "type": "object",
+            "properties": { "block": block, "item": item, "text": { "type": "string" } },
+            "required": ["block", "item", "text"],
+        },
+    });
+    let delete_item = json!({
+        "name": "delete_item",
+        "description": "Deletes an item of the checklist a checklist block connected to you shows. The \
+                        person sees it at once and can take it back.",
+        "inputSchema": {
+            "type": "object",
+            "properties": { "block": block, "item": item },
+            "required": ["block", "item"],
+        },
+    });
+    let schedule = json!({
+        "name": "schedule",
+        "description": "Delivers a text later: to an agent connected to you as a task (its end comes back to \
+                        you), typed with Enter into a terminal running no agent, or to yourself (your own \
+                        block) as a reminder typed into your terminal. at (HH:MM, the computer's local time, \
+                        the next time the clock shows it), after (minutes), or every (minutes, again until \
+                        cancelled, at most 7 days). Says its id; the person sees your schedules on your block.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "block": block,
+                "text": { "type": "string" },
+                "at": { "type": "string", "description": "HH:MM, 24-hour." },
+                "after": minutes,
+                "every": minutes,
+            },
+            "required": ["block", "text"],
+        },
+    });
+    let cancel_schedule = json!({
+        "name": "cancel_schedule",
+        "description": "Cancels one of your schedules, by its id (s3).",
+        "inputSchema": {
+            "type": "object",
+            "properties": { "schedule": { "type": "string" } },
+            "required": ["schedule"],
+        },
     });
     json!({ "tools": [
         {
@@ -673,21 +810,7 @@ pub fn list() -> Value {
                 "required": ["block", "text"],
             },
         },
-        {
-            "name": "replace_note",
-            "description": "Replaces the text of the note a note block connected to you shows; with old, only \
-                            that passage, which must be in the note once (blank text deletes it). The person sees \
-                            it at once and can take it back.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "block": block,
-                    "text": { "type": "string" },
-                    "old": { "type": "string", "description": "The one passage to replace, exactly as in the note." },
-                },
-                "required": ["block", "text"],
-            },
-        },
+        replace_note,
         {
             "name": "read_checklist",
             "description": "The checklist a checklist block connected to you shows: its name and progress, \
@@ -719,46 +842,9 @@ pub fn list() -> Value {
                 "required": ["block", "text"],
             },
         },
-        {
-            "name": "edit_item",
-            "description": "Changes the text of an item of the checklist a checklist block connected to you \
-                            shows. The person sees it at once and can take it back.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "block": block, "item": item, "text": { "type": "string" } },
-                "required": ["block", "item", "text"],
-            },
-        },
-        {
-            "name": "delete_item",
-            "description": "Deletes an item of the checklist a checklist block connected to you shows. The \
-                            person sees it at once and can take it back.",
-            "inputSchema": {
-                "type": "object",
-                "properties": { "block": block, "item": item },
-                "required": ["block", "item"],
-            },
-        },
-        {
-            "name": "create_block",
-            "description": "Opens a block beside yours, connected to you: a note with text, a checklist (your own \
-                            plan for work of several steps: check its items as you go), or a terminal in a folder \
-                            (yours when left out) with a command typed and run in it, such as a dev server; \
-                            wait_for with a pattern waits for its line, stop_agent ends it. The person closes it \
-                            with Ctrl+Z.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "kind": { "type": "string", "enum": ["note", "checklist", "terminal"] },
-                    "text": { "type": "string", "description": "A note's text." },
-                    "name": { "type": "string", "description": "A checklist's name." },
-                    "items": items_text,
-                    "folder": { "type": "string", "description": "A terminal's folder, relative to yours." },
-                    "command": command,
-                },
-                "required": ["kind"],
-            },
-        },
+        edit_item,
+        delete_item,
+        create_block,
         {
             "name": "open_file",
             "description": "Shows a file, at a line, in the editor connected to you whose folder holds it; with \
@@ -795,27 +881,9 @@ pub fn list() -> Value {
                 "required": ["block", "keys"],
             },
         },
-        {
-            "name": "propose_plan",
-            "description": "Shows the person a plan in Markdown, in a balloon on your block, with Approve, Reject and \
-                            a comment; waits for their decision (it may take minutes). Approved is a result, \
-                            Rejected an error, each with their comment when they wrote one. Use it before work \
-                            the person should agree to.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "plan": { "type": "string", "description": "The plan, in Markdown (at most 256 KB)." },
-                    "title": { "type": "string", "description": "A short title, shown up to 60 characters." },
-                    "timeout": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "maximum": MAX_WAIT,
-                        "description": "Seconds to wait before giving up; none waits until the person answers.",
-                    },
-                },
-                "required": ["plan"],
-            },
-        },
+        propose_plan,
+        schedule,
+        cancel_schedule,
         {
             "name": "interrupt",
             "description": "Presses Esc once in an agent connected to you while it works or waits for its person, \
@@ -823,13 +891,7 @@ pub fn list() -> Value {
                             screen after. Refused while it is idle or on another agent's task.",
             "inputSchema": { "type": "object", "properties": { "block": block }, "required": ["block"] },
         },
-        {
-            "name": "stop_agent",
-            "description": "Ends the agent, or the command, that runs in a terminal you opened (spawn_agent, \
-                            create_block), and every process it started, background ones included; its shell \
-                            stays. Only the person stops a block you didn't open.",
-            "inputSchema": { "type": "object", "properties": { "block": block }, "required": ["block"] },
-        },
+        stop_agent,
         {
             "name": "close_block",
             "description": "Closes a block you opened with spawn_agent and are still connected to, without asking \
@@ -1220,6 +1282,53 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
                 timeout: timeout()?,
             }
         }
+        "schedule" => {
+            let minutes = |key: &str| match &args[key] {
+                Value::Null => Ok(None),
+                value => value
+                    .as_u64()
+                    .filter(|m| (1..=MAX_MINUTES).contains(m))
+                    .map(Some)
+                    .ok_or_else(|| {
+                        format!("\"after\" and \"every\" are minutes from 1 to {MAX_MINUTES}")
+                    }),
+            };
+            let at = match &args["at"] {
+                Value::Null => None,
+                value => Some(
+                    value
+                        .as_str()
+                        .and_then(|t| {
+                            let (h, m) = t.trim().split_once(':')?;
+                            let (hour, minute) = (h.parse::<u8>().ok()?, m.parse::<u8>().ok()?);
+                            (hour < 24 && minute < 60 && m.len() == 2).then_some((hour, minute))
+                        })
+                        .ok_or("\"at\" is HH:MM, 00:00 to 23:59")?,
+                ),
+            };
+            let (after, every) = (minutes("after")?, minutes("every")?);
+            let when = match (at, after) {
+                (Some(_), Some(_)) => return Err("\"at\" and \"after\" go apart".into()),
+                (Some((hour, minute)), None) => When::At { hour, minute },
+                (None, Some(minutes)) => When::After { minutes },
+                (None, None) if every.is_some() => When::None,
+                (None, None) => return Err(format!("{name} needs at, after or every")),
+            };
+            let (block, said) = (text("block")?, text("text")?);
+            if said.trim().is_empty() {
+                return Err("\"text\" is blank".into());
+            }
+            Call::Schedule {
+                block,
+                text: said,
+                when,
+                every,
+            }
+        }
+        "cancel_schedule" => Call::CancelSchedule {
+            schedule: named("schedule")?
+                .ok_or_else(|| format!("{name} needs \"schedule\", its id (s3)"))?,
+        },
         "stop_agent" => Call::StopAgent {
             block: text("block")?,
         },
@@ -1363,6 +1472,11 @@ mod tests {
                 "propose_plan",
                 json!({ "plan": "## Steps\n1. Replace the reader threads", "title": "Move the bus to tokio" }),
             ),
+            (
+                "schedule",
+                json!({ "block": "k9x1d", "text": "check the build", "at": "15:00", "every": 10 }),
+            ),
+            ("cancel_schedule", json!({ "schedule": "s3" })),
             ("interrupt", json!({ "block": "k9x1d" })),
             ("stop_agent", json!({ "block": "k9x1d" })),
             ("close_block", json!({ "block": "k9x1d" })),
@@ -1730,6 +1844,67 @@ mod tests {
                 &json!({ "plan": "x".repeat(256 * 1024 + 1) })
             ),
             Err("\"plan\" is longer than 256 KB".into())
+        );
+    }
+
+    /// schedule takes at, after or every, at with every or after with every, and names a bad one.
+    #[test]
+    fn schedule_takes_a_time_and_refuses_a_bad_one() {
+        let at = |when: Value| {
+            let mut args = json!({ "block": "b", "text": "go" });
+            for (k, v) in when.as_object().unwrap() {
+                args[k] = v.clone();
+            }
+            parse("schedule", &args)
+        };
+        let ok = |when, every| {
+            Ok(Call::Schedule {
+                block: "b".into(),
+                text: "go".into(),
+                when,
+                every,
+            })
+        };
+        assert_eq!(
+            at(json!({ "at": "09:05" })),
+            ok(When::At { hour: 9, minute: 5 }, None)
+        );
+        assert_eq!(
+            at(json!({ "after": 30, "every": 10 })),
+            ok(When::After { minutes: 30 }, Some(10))
+        );
+        assert_eq!(at(json!({ "every": 1 })), ok(When::None, Some(1)));
+        for (when, why) in [
+            (json!({}), "schedule needs at, after or every"),
+            (
+                json!({ "at": "09:05", "after": 3 }),
+                "\"at\" and \"after\" go apart",
+            ),
+            (json!({ "at": "24:00" }), "\"at\" is HH:MM, 00:00 to 23:59"),
+            (json!({ "at": "9am" }), "\"at\" is HH:MM, 00:00 to 23:59"),
+            (
+                json!({ "after": 0 }),
+                "\"after\" and \"every\" are minutes from 1 to 10080",
+            ),
+            (
+                json!({ "every": 10081 }),
+                "\"after\" and \"every\" are minutes from 1 to 10080",
+            ),
+        ] {
+            assert_eq!(at(when.clone()), Err(why.to_string()), "{when}");
+        }
+        assert_eq!(
+            parse(
+                "schedule",
+                &json!({ "block": "b", "text": " ", "after": 1 })
+            ),
+            Err("\"text\" is blank".into())
+        );
+        assert_eq!(
+            parse("cancel_schedule", &json!({ "schedule": 3 })),
+            Ok(Call::CancelSchedule {
+                schedule: "3".into()
+            })
         );
     }
 

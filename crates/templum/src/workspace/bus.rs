@@ -341,6 +341,29 @@ impl Workspace {
         }
     }
 
+    /// Types `text` into the terminal `terminal`, then Enter ENTER_AFTER later, as a task's: an
+    /// agent may take keys that come in one burst for a paste, where Enter is a new line. True once
+    /// Enter went; false when the terminal closed first.
+    pub(super) fn type_then_enter(
+        &self,
+        terminal: String,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<bool> {
+        if let Some(pane) = self.pane(&terminal) {
+            pane.term.type_in(text);
+        }
+        cx.spawn(async move |ws, cx| {
+            cx.background_executor().timer(ENTER_AFTER).await;
+            ws.update(cx, |ws, _| {
+                ws.pane(&terminal)
+                    .map(|pane| pane.term.write(&b"\r"[..]))
+                    .is_some()
+            })
+            .unwrap_or(false)
+        })
+    }
+
     /// The block whose terminal is `terminal` (its `TEMPLUM_TERMINAL`): its workspace's id and
     /// its id. Looked up at each call: a block moved to another workspace keeps its terminal.
     pub(super) fn caller(&self, terminal: &str) -> Option<(String, BlockId)> {
@@ -395,6 +418,11 @@ impl Workspace {
                     text.push_str(&format!("folder: {}\n", folder.display()));
                 }
                 text.push_str(&format!("workspace: {}", space.name));
+                let uid = space.uids.get(&me).cloned().unwrap_or_default();
+                for line in self.schedule_lines(terminal, &uid) {
+                    text.push('\n');
+                    text.push_str(&line);
+                }
                 Reply::ok(text)
             }
             Call::ListBlocks => Reply::ok(self.block_lines(space, me, cx).join("\n")),
@@ -433,22 +461,15 @@ impl Workspace {
                 let Some(pane) = space.terminal(id) else {
                     return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
                 };
-                pane.term.type_in(&text);
                 if !enter {
+                    pane.term.type_in(&text);
                     return Outcome::Now(Reply::ok(format!("Typed into {block}.")));
                 }
-                // As a task's: an agent may take keys that come in one burst for a paste, where
-                // Enter is a new line. Answered after it: a caller that waits for each answer
-                // (a script's `templum send` twice) gets its texts and Enters in order.
-                let terminal = pane.term.id().to_string();
-                return Outcome::Later(cx.spawn(async move |ws, cx| {
-                    cx.background_executor().timer(ENTER_AFTER).await;
-                    let entered = ws.update(cx, |ws, _| {
-                        ws.pane(&terminal)
-                            .map(|pane| pane.term.write(&b"\r"[..]))
-                            .is_some()
-                    });
-                    if entered.unwrap_or(false) {
+                // Answered after its Enter: a caller that waits for each answer (a script's
+                // `templum send` twice) gets its texts and Enters in order.
+                let entered = self.type_then_enter(pane.term.id().to_string(), &text, cx);
+                return Outcome::Later(cx.spawn(async move |_, _| {
+                    if entered.await {
                         Reply::ok(format!("Typed into {block}."))
                     } else {
                         Reply::err(format!("{block} was closed before its Enter."))
@@ -468,7 +489,14 @@ impl Workspace {
                 task,
                 wait,
                 timeout,
-            } => return self.delegate(terminal, &block, &task, wait, timeout, cx),
+            } => return self.delegate(terminal, &block, &task, wait, timeout, None, cx),
+            Call::Schedule {
+                block,
+                text,
+                when,
+                every,
+            } => self.schedule(terminal, &block, &text, when, every, cx),
+            Call::CancelSchedule { schedule } => self.cancel_schedule(terminal, &schedule),
             Call::ReplyTo { block, text } => self.reply_to(terminal, &block, &text, cx),
             Call::WaitForIdle { block, timeout } => {
                 return self.wait_for_idle(terminal, &block, timeout);
