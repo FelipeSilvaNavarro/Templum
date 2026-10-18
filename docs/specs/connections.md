@@ -3,7 +3,8 @@
 - **Date:** 2026-10-15
 - **Status:** Batches 1 to 8, [agents typed in a terminal](#agents-typed-in-a-terminal),
   [every agent that can take it](#every-agent-that-can-take-it) (kanban card 44) and
-  [cards for an agent](#cards-for-an-agent) (kanban card 40) implemented
+  [cards for an agent](#cards-for-an-agent) (kanban card 40) implemented; [agent tools](#agent-tools-card-35) (kanban
+  card 35) planned
 - **Builds on:** [agents.md](agents.md) (opening agents), [usage.md](usage.md) (the `--settings` Templum types for
   Claude Code), [shell-integration.md](shell-integration.md) (command marks, notifications),
   [persistence.md](persistence.md), [kanban.md](kanban.md) and [cockpit.md](cockpit.md) (notes, the editor, drawing)
@@ -527,6 +528,16 @@ runs "any X" when its agent is X or runs X's program (the first word of their co
 - **The command line:** `templum kanban add` takes `--priority`, `--for` and `--checklist`; `templum kanban edit <card>`
   takes `--priority`, `--for`, `--add <text>`, and `--check <item>` and `--uncheck <item>`, each as many times as
   wanted.
+
+### Agent tools (card 35)
+
+*Planned (kanban card 35): [agent-tools.md](agent-tools.md), [its plan](../plans/2026-10-18-agent-tools.md).*
+
+`stop_agent` (an agent and what it left running), `wait_for` with a `pattern` (a printed line, as "Ready in"),
+`create_block` (an agent's own note, checklist, or a terminal running a command), `replace_note`, `edit_item` and
+`delete_item`, `spawn_agent` with `fork` and `role`, `propose_plan`, `schedule` and `cancel_schedule`, and
+`remove_worktree` and `merge_worktree`. Each batch adds its rows to the [Tools](#tools) table above and its verbs to
+[the command line](#the-templum-command-line) as it lands.
 
 ## Hooks and agent state
 
