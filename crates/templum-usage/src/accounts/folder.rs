@@ -151,6 +151,11 @@ fn aside(path: &Path) -> PathBuf {
         .expect("a free name")
 }
 
+/// Whether `a` and `b` are one file or folder, links followed.
+fn same(a: &Path, b: &Path) -> bool {
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
 fn own_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(".own");
@@ -208,7 +213,10 @@ fn apply_with(
                 files,
                 &mut report,
             ) {
-                report.problems.push(format!("{}: {e}", item.label));
+                let problem = format!("{}: {e}", item.label);
+                if !report.problems.contains(&problem) {
+                    report.problems.push(problem);
+                }
             }
         }
     }
@@ -261,6 +269,15 @@ fn apply_path(
             return Err(io::Error::other(NO_FILE_LINKS));
         }
         return Ok(());
+    }
+    // Never a link to itself: the account's folder, or the item, is the source's through a link.
+    if path.parent().is_some_and(|p| same(p, from))
+        || matches!(here, At::Real) && same(path, &source)
+    {
+        return Err(io::Error::other(format!(
+            "it is {}'s own through a link, so it isn't linked to itself",
+            from.display()
+        )));
     }
     match here {
         At::Missing => link(&source, path, dir),
@@ -651,6 +668,46 @@ mod tests {
         assert!(fs::symlink_metadata(chosen.join("agents")).is_err());
         assert!(chosen.join("agents.own").is_dir());
         t.logins_intact();
+    }
+
+    /// Templum's folder for an account that is a link to the folder it shares from: nothing is
+    /// kept aside there, nor linked to itself.
+    #[test]
+    fn a_folder_linked_to_its_source_isnt_linked_to_itself() {
+        let t = Two::new();
+        fs::create_dir_all(t.src.join("skills")).unwrap();
+        fs::write(t.src.join("skills/a"), "mine").unwrap();
+        fs::write(t.src.join("settings.json"), "mine").unwrap();
+        let linked = t.root.join("linked");
+        std::os::unix::fs::symlink(&t.src, &linked).unwrap();
+        let shares = [t.share("skills"), t.share("settings")].concat();
+        let report = apply(
+            &FAKE,
+            &linked,
+            &shares,
+            std::slice::from_ref(&t.src),
+            When::Saved,
+            true,
+        );
+        untouched(&t.src);
+        let itself = |label| {
+            format!(
+                "{label}: it is {}'s own through a link, so it isn't linked to itself",
+                t.src.display()
+            )
+        };
+        assert_eq!(report.problems, [itself("Skills"), itself("Settings")]);
+        assert!(report.kept.is_empty());
+
+        // An item of the source that is a link to the account's own one.
+        fs::remove_dir_all(t.src.join("skills")).unwrap();
+        fs::create_dir_all(t.acc.join("skills")).unwrap();
+        fs::write(t.acc.join("skills/a"), "mine").unwrap();
+        std::os::unix::fs::symlink(t.acc.join("skills"), t.src.join("skills")).unwrap();
+        let report = t.apply(&t.share("skills"), When::Saved);
+        assert_eq!(fs::read(t.acc.join("skills/a")).unwrap(), b"mine");
+        assert!(!is_link(&t.acc.join("skills")) && !t.acc.join("skills.own").exists());
+        assert_eq!(report.problems, [itself("Skills")]);
     }
 
     #[test]

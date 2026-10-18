@@ -222,6 +222,9 @@ What the account's choices say is applied when the dialog saves it, and again ea
 - **Shared item, a real file or folder there, in a folder the person chose:** left as it is, at Save and at a start
   alike, and one notification names them: "Claude Code 2 keeps its own projects: Templum never moves files in a
   folder you chose (~/Documents)."
+- **Never a link to itself:** a share whose item already is the source's, through a link (Templum's folder for the
+  account made a link to `~/.claude`, or the source's item a link to the account's), is left, and the problem
+  notification says so: "Skills: it is /home/me/.claude's own through a link, so it isn't linked to itself".
 - **Own item, a link Templum would make there:** the link is removed (never what it points at), and in Templum's
   folder `<item>.own` comes back when it is there. Otherwise the item stays missing and the agent starts it fresh.
 - **Own item, a real one there:** left as it is.
@@ -470,7 +473,7 @@ Each goes to [docs/minors.md](../minors.md) under **Agent accounts** with the co
 **Unit (`templum-usage`'s `accounts`):** no agent's item is or holds one of its login's names; every key is unique per agent; a
 shared item becomes a link to the other folder's item, a missing source folder is made, a missing source file isn't
 linked; a real item is kept aside on save (`.own`, then `.own-2`) and left at a start (reported), and never moved
-in a folder the person chose; own again removes
+in a folder the person chose; a folder that is a link to its source isn't linked to itself; own again removes
 only the link and brings `.own` back; a link the person made elsewhere is never replaced nor removed, and a folder
 set up by hand is read back as choices; a chain links to the middle account's item; the login file is never touched
 by any of these; deleting removes the folder's links before the folder and leaves their targets; Windows: a folder is a
