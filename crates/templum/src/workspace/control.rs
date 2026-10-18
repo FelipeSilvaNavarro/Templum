@@ -95,7 +95,7 @@ impl Workspace {
     ) {
         let (outcome, target) = self.control_call(parsed, args, window, cx);
         if let Some(target) = target {
-            self.templum_agent.conversation.touched(name, args, target);
+            self.touch(name, args, target, cx);
         }
         match outcome {
             Outcome::Now(done) => {
@@ -113,6 +113,26 @@ impl Workspace {
                 let _ = reply.send(tools::tool_result(&id, &refused));
             }
         }
+    }
+
+    /// What a call touched: its row in the chat shows it, and its block glows.
+    pub(super) fn touch(
+        &mut self,
+        tool: &str,
+        args: &Value,
+        target: Target,
+        cx: &mut Context<Self>,
+    ) {
+        let now = cx.background_executor().now();
+        let agent = &mut self.templum_agent;
+        agent
+            .glow
+            .retain(|_, at| crate::chat::glow(*at, now).is_some());
+        if let Some(uid) = &target.block {
+            agent.glow.insert(uid.clone(), now);
+        }
+        agent.conversation.touched(tool, args, target);
+        cx.notify();
     }
 
     /// A control call: its answer, and what it touched for the chat's row.
@@ -570,13 +590,12 @@ impl Workspace {
                 &space, &entry, None, folder, &spawn, place, &wire_to, opener, window, cx,
             );
             if let Some(uid) = uid {
-                let conversation = &mut ws.templum_agent.conversation;
-                conversation.own.blocks.push(uid.clone());
+                ws.templum_agent.conversation.own.blocks.push(uid.clone());
                 let target = Target {
                     workspace: Some(space),
                     block: Some(uid),
                 };
-                conversation.touched("open_agent", &args, target);
+                ws.touch("open_agent", &args, target, cx);
             }
             done
         };

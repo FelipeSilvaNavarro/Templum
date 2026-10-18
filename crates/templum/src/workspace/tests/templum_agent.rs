@@ -1821,3 +1821,80 @@ fn a_background_window_gets_a_notification(cx: &mut TestAppContext) {
         "and its sound"
     );
 }
+
+#[gpui_kit::test]
+fn its_blocks_wear_its_mark(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
+    let shown = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let (_, text) = control(
+        handle,
+        &ws,
+        cx,
+        "add_block",
+        json!({"workspace": shown, "kind": "terminal"}),
+    );
+    let uid = id_in(&text);
+    let mark = format!("agent-mark-{uid}");
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 1.0)
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(mark.clone()).is_some(), "at the Full level");
+    })
+    .unwrap();
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 0.2);
+        ws.space.rest = 0.2;
+        ws.space.focused = None;
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(mark.clone()).is_none(), "not at Card");
+    })
+    .unwrap();
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    let (handle, again) = open_in(cx, None, Some(dir.path().to_path_buf()));
+    again.update(cx, |ws, _| {
+        ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 1.0);
+        ws.space.rest = 1.0;
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(mark.clone()).is_some(), "after a restart");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_touch_glows_for_a_moment(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let shown = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let (_, text) = control(
+        handle,
+        &ws,
+        cx,
+        "add_block",
+        json!({"workspace": shown, "kind": "note"}),
+    );
+    let uid = id_in(&text);
+    let now = cx.executor().now();
+    ws.read_with(cx, |ws, _| {
+        let at = ws.templum_agent.glow.get(&uid).copied().expect("it glows");
+        assert!(crate::chat::glow(at, now).is_some());
+        assert!(
+            crate::chat::glow(at, at + std::time::Duration::from_millis(1300)).is_none(),
+            "and stops"
+        );
+        // Twice over 1.2 s: lit, dark between, lit again.
+        let at_ms = |ms| crate::chat::glow(at, at + std::time::Duration::from_millis(ms)).unwrap();
+        assert!(
+            at_ms(300) > 0.9 && at_ms(600) < 0.1 && at_ms(900) > 0.9,
+            "{} {} {}",
+            at_ms(300),
+            at_ms(600),
+            at_ms(900)
+        );
+    });
+}

@@ -2,7 +2,8 @@
 //! builds and runs the canvas, and its state on the workspace.
 
 use std::cell::Cell;
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
@@ -63,6 +64,8 @@ pub(crate) struct TemplumAgent {
     /// The rows the chat drew last, and whether some came below the view since.
     pub seen: Cell<usize>,
     pub unseen: Cell<bool>,
+    /// The blocks it just touched, by id, and when: their border glows for GLOW.
+    pub glow: HashMap<String, Instant>,
     /// The approval's keyboard, and its field for the person's words, made with the first one.
     pub approval_focus: Option<FocusHandle>,
     pub words: Option<Entity<InputState>>,
@@ -101,6 +104,7 @@ impl Default for TemplumAgent {
             scroll: ScrollHandle::new(),
             seen: Cell::new(0),
             unseen: Cell::new(false),
+            glow: HashMap::new(),
             approval_focus: None,
             words: None,
             _words: None,
@@ -155,6 +159,16 @@ impl TemplumAgent {
         }
         templum_terminal::installed("claude")
     }
+}
+
+/// How long a block the Templum Agent touched glows.
+pub(crate) const GLOW: Duration = Duration::from_millis(1200);
+
+/// How lit a glow that started `at` is `now`, 0 to 1: its border goes to the accent twice over
+/// GLOW; None once it is over.
+pub(crate) fn glow(at: Instant, now: Instant) -> Option<f32> {
+    let t = now.checked_duration_since(at)?.as_secs_f32() / GLOW.as_secs_f32();
+    (t < 1.0).then(|| (1.0 - (t * 4.0 * std::f32::consts::PI).cos()) / 2.0)
 }
 
 /// The placeholder of the pill's field.

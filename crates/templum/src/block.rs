@@ -42,6 +42,8 @@ const EDGE: f32 = 6.0;
 /// dot in it is this wide: screen pixels, never zoomed.
 const LABEL_IN: f32 = 4.0;
 const DOT: f32 = 8.0;
+/// The Templum Agent's mark before a title, world units.
+const MARK: f32 = 10.0;
 
 /// `look` scales the block around its center (it is drawn at zoom × scale) and fades it.
 /// A block that isn't `live` is a ghost fading out: no controls, and clicks go through it.
@@ -148,6 +150,36 @@ pub(crate) fn render(
     // Below Full the title is a label: never scaled, at the card's top-left corner, over the
     // header and the top of the body (docs/specs/level-of-detail.md, section 2).
     let labeled = templum_canvas::level(TITLE_FONT, ws.space.rest) != Level::Full;
+    // The Templum Agent's blocks wear its mark before their title, at the Full level.
+    let uid = ws.space.uids.get(&id).map_or("", String::as_str);
+    let mark = match body {
+        Body::Terminal(pane)
+            if !labeled && pane.opened_by.as_deref() == Some(templum_agent::ASKER) =>
+        {
+            Some(
+                div()
+                    .id(SharedString::from(format!("agent-mark-{uid}")))
+                    .flex_none()
+                    .child(
+                        Icon::new(IconName::Sparkles)
+                            .size(px(MARK * z))
+                            .text_color(ui.accent),
+                    )
+                    .test_support(),
+            )
+        }
+        _ => None,
+    };
+    // A block it just touched: its border goes to the accent twice.
+    let now = cx.background_executor().now();
+    let glow = ws
+        .templum_agent
+        .glow
+        .get(uid)
+        .and_then(|at| crate::chat::glow(*at, now));
+    if glow.is_some() {
+        window.request_animation_frame();
+    }
     let title_text = div()
         .id(("title-text", n))
         .truncate()
@@ -268,6 +300,8 @@ pub(crate) fn render(
             .px(px(if chip.is_some() { 120.0 } else { 52.0 } * z))
             .gap(px(6.0 * z))
             .overflow_hidden()
+            .gap(px(4.0 * z))
+            .children(mark)
             .child(title_text)
             .children(clock)
     }
@@ -652,7 +686,8 @@ pub(crate) fn render(
         .border_color(if marked {
             ui.accent
         } else {
-            ui.hairline.lerp(&ui.hover_border, lift)
+            let border = ui.hairline.lerp(&ui.hover_border, lift);
+            glow.map_or(border, |k| border.lerp(&ui.accent, k))
         })
         .bg(bg)
         .shadow(shadows)
