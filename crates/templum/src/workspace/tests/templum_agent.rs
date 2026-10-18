@@ -1299,6 +1299,33 @@ fn an_allow_after_another_dialog_in_the_same_words_asks_again(cx: &mut TestAppCo
     });
 }
 
+/// Claude Code's subagents ask for their commands at once: a dialog asked while one shows waits
+/// behind it, with no hook of its own. The person answers the one the approval showed, the next
+/// shows in the same words, and Allow presses nothing on it.
+#[gpui_kit::test]
+fn an_allow_after_a_dialog_queued_behind_it_asks_again(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    let terminal = ws.read_with(cx, |ws, _| {
+        ws.space.terminal(busy).unwrap().term.id().to_string()
+    });
+    let asks = json!({ "event": "needs_you", "message": "Allow Bash?" });
+    super::bus::event(handle, &ws, cx, &terminal, asks.clone());
+    let answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "send_keys",
+        json!({"block": uid, "keys": ["1"]}),
+    );
+    super::bus::event(handle, &ws, cx, &terminal, asks);
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    super::bus::after(cx, 1_000);
+    assert!(answers.try_recv().is_err(), "it still waits");
+    assert!(ws.read_with(cx, |ws, _| ws.templum_agent.approvals[0].changed));
+}
+
 /// A block closed and brought back with Ctrl+Z keeps its id, with another terminal in it: an Allow
 /// given to the one the person saw presses nothing in the other, also when it asks the same.
 #[gpui_kit::test]
