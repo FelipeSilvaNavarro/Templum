@@ -783,6 +783,34 @@ mod tests {
         t.logins_intact();
     }
 
+    /// The same kind when Templum's folder itself is the link and the subfolder in its target is
+    /// real (a Gemini account's folder linked to the person's home).
+    #[test]
+    fn a_folder_linked_to_a_home_moves_nothing_in_its_state_folder() {
+        const STATE: Kind = Kind {
+            state: Some(".fake"),
+            ..FAKE
+        };
+        let t = Two::new();
+        let home = t.root.join("home");
+        theirs(&home.join(".fake"));
+        let linked = t.root.join("linked");
+        std::os::unix::fs::symlink(&home, &linked).unwrap();
+        fs::write(t.src.join("settings.json"), "{}").unwrap();
+        let shares = [t.share("skills"), t.share("settings")].concat();
+        let report = apply(
+            &STATE,
+            &linked,
+            &shares,
+            std::slice::from_ref(&t.src),
+            When::Saved,
+            true,
+        );
+        untouched(&home.join(".fake"));
+        assert_eq!(report.left, ["skills", "settings"], "said");
+        t.logins_intact();
+    }
+
     #[test]
     fn a_link_templum_didnt_make_is_left() {
         let t = Two::new();

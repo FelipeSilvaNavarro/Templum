@@ -1425,3 +1425,13 @@ Left by the data-safety fixes after that review; line numbers are those of `deve
   missing shared items stay: with claude5's folder a link to `~/.claude` sharing `agents` from claude3, `claude`
   keeps claude3's agents after claude5 is deleted, and a link to nothing once claude3 is. Fix: pass `delete` the
   account's sources and remove there only the links `at` says are Templum's.
+- [ ] **A `..` after a link that follows a folder not made yet is still read as text.** `resolved`
+  (`crates/templum/src/config.rs:668-679`) follows only the part of the path that exists, so with `~/w/l` a link to
+  `<data>/accounts/claude3`, the folder `~/w/new/../l/../claude9` resolves to `~/w/claude9` and is accepted; once
+  `new` is made, the system puts it in `<data>/accounts/claude9`, beside another account. Fix: resolve one part at a
+  time, canonicalizing each new part once it exists and dropping the last on `..`.
+- [ ] **Deleting an account whose Templum folder is a link is refused for an account inside the link's target.**
+  `delete_account` (`crates/templum/src/workspace/preferences.rs:163-170`) compares resolved paths, so with claude2's
+  folder a link to `~/.claude` and claude5 on `~/.claude/work`, deleting claude2 says "Claude Code 5's folder is in
+  Claude Code (claude2)'s: change it first", though deleting would only remove the link. Found by reading. Fix: skip
+  the check when the account's folder is itself a link.
