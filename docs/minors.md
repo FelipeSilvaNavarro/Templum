@@ -1091,8 +1091,3 @@ those of `development` at de530a6.
   one by one, a busy one after "Close the terminal?", and the next start shows an empty canvas. Ctrl+Z brings them
   back, but few know. Fix, a product choice: ask before closing the last terminal, or leave nothing focused after a
   close by shortcut.
-- [ ] **Two Templums on one data folder keep the canvas the last one wrote.** The snapshot and the save on quit
-  compare with their own last write (`space.saved`, `crates/templum/src/workspace/persist.rs:495`), not the file: a
-  second Templum (a second launch from the Start menu, another copy of the app) writes over the first's canvas, and
-  the first never writes it back while its own canvas doesn't change, not even on quit. Whatever the second had last
-  (blocks closed there) opens next time. Fix: one Templum per data folder (a second one shows the first and exits).

@@ -45,6 +45,7 @@ mod wires;
 mod workspace;
 
 use gpui_kit::component::TitleBar;
+use gpui_kit::component::notification::Notification;
 use gpui_kit::{
     AppContext as _, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
     WindowDecorations, WindowOptions, px, size,
@@ -85,6 +86,22 @@ fn main() {
     // At sign-out and shutdown the canvas is saved while its terminals still run.
     #[cfg(windows)]
     templum_terminal::quit_before_terminals();
+    let dirs = move |dir: Option<std::path::PathBuf>| if dev { dir.map(session::dev) } else { dir };
+    // The bench starts from one terminal and must not touch the user's saved canvas.
+    let data_dir = if bench { None } else { dirs(session::dir()) };
+    let config_dir = dirs(config::dir());
+    // One Templum per data folder: a second would restore the same canvas, resume the same
+    // agents and write over the first's files. It keeps nothing instead.
+    let lock = data_dir.as_deref().map(session::lock);
+    let second = match &lock {
+        Some(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => true,
+        Some(Err(e)) => {
+            eprintln!("templum: couldn't lock the data folder: {e}");
+            false
+        }
+        _ => false,
+    };
+    let data_dir = data_dir.filter(|_| !second);
     gpui_kit::application()
         // Every Lucide icon, by name: the toolbar and the notes use ones outside the default set.
         .with_assets(gpui_kit::assets::AllAssets)
@@ -115,12 +132,12 @@ fn main() {
                 },
                 ..TitleBar::window_options()
             };
-            let dirs =
-                |dir: Option<std::path::PathBuf>| if dev { dir.map(session::dev) } else { dir };
-            // The bench starts from one terminal and must not touch the user's saved canvas.
-            let data_dir = if bench { None } else { dirs(session::dir()) };
-            let config_dir = dirs(config::dir());
             let (window, ws) = gpui_kit::open_window(options, cx, |window, cx| {
+                if second {
+                    let message = "Templum is already open in another window: this one starts \
+                                   empty and keeps nothing, so the other's canvas stays as it is";
+                    workspace::show_notification(window, cx, Notification::warning(message));
+                }
                 cx.new(|cx| Workspace::new(config_dir, data_dir, window, cx))
             })
             .expect("failed to open window");
@@ -136,6 +153,8 @@ fn main() {
             cx.on_window_closed(|cx, _| cx.quit()).detach();
             cx.activate(true);
         });
+    // Free before an installer starts the next Templum.
+    drop(lock);
     // Restart into an installer (Windows): it replaces Templum, so it starts once Templum is done.
     let installer = update::INSTALLER
         .lock()

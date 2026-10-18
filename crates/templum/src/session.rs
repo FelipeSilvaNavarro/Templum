@@ -36,6 +36,20 @@ pub(crate) fn dir() -> Option<PathBuf> {
     )
 }
 
+/// Takes the data folder `dir` for this Templum while the file returned stays open
+/// (docs/specs/persistence.md, One Templum per data folder): `WouldBlock` when another Templum
+/// has it. The system lets go when Templum ends, also when it crashes.
+pub(crate) fn lock(dir: &Path) -> io::Result<std::fs::File> {
+    std::fs::create_dir_all(dir)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("templum.lock"))?;
+    file.try_lock()?;
+    Ok(file)
+}
+
 /// `dir` for `--dev`: its sibling `<name>-dev` (`~/.local/share/templum-dev`).
 pub(crate) fn dev(dir: PathBuf) -> PathBuf {
     let mut name = dir.file_name().unwrap_or_default().to_os_string();
@@ -1669,6 +1683,16 @@ mod tests {
         assert!(!path(d.path(), "w2").exists());
         assert!(path(d.path(), "w2").with_extension("json.bak").exists());
         set_aside(d.path(), "never-saved").unwrap();
+    }
+
+    #[test]
+    fn one_templum_holds_a_data_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let first = lock(d.path()).unwrap();
+        let second = lock(d.path()).unwrap_err();
+        assert_eq!(second.kind(), io::ErrorKind::WouldBlock);
+        drop(first);
+        lock(d.path()).expect("free once the first Templum ends");
     }
 
     #[cfg(unix)]

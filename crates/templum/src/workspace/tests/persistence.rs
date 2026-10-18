@@ -266,6 +266,24 @@ fn closing_the_window_saves_the_canvas(cx: &mut TestAppContext) {
     assert!(text.contains("-500.0"), "{text}");
 }
 
+/// Quitting writes the canvas even when it looks unchanged: the file may hold an older one
+/// written since (a snapshot still in flight).
+#[gpui_kit::test]
+fn quitting_writes_the_canvas_even_when_it_looks_unchanged(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    let path = crate::session::path(data.path(), crate::session::DEFAULT_ID);
+    let ours = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[]}"#,
+    )
+    .unwrap();
+    ws.update(cx, |ws, cx| ws.save_canvas_now(cx));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), ours);
+}
+
 #[gpui_kit::test]
 fn without_a_data_folder_nothing_is_kept(cx: &mut TestAppContext) {
     let (_, ws) = open(cx);

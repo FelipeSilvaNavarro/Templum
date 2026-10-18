@@ -507,9 +507,8 @@ impl Workspace {
                 continue;
             }
             let (saved, _) = space.layout(known.clone(), cx).snapshot(Some(&dir));
-            if space.saved.as_ref() == Some(&saved) {
-                continue;
-            }
+            // Written even when it looks unchanged: a snapshot in flight may have written an
+            // older one.
             match session::save(&dir, &space.id, &saved, generation) {
                 Ok(()) => space.saved = Some(saved),
                 Err(err) => eprintln!("templum: couldn't save the canvas: {err}"),

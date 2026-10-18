@@ -60,6 +60,7 @@ What doesn't come back: the text that was on screen, and programs other than the
 | A saved canvas with no blocks (the user closed them all) | The empty canvas and its hint. |
 | A saved file Templum can't read ([Errors](#errors)) | As on a first run, without the welcome. |
 | `--bench` | As on a first run, without the welcome. Nothing is read or written. |
+| Another Templum is open on the same data folder ([One Templum per data folder](#one-templum-per-data-folder)) | The same as `--bench`, with a notice. |
 
 ## Agents
 
@@ -156,7 +157,7 @@ What doesn't come back: the text that was on screen, and programs other than the
   from the last one written. A move, a resize, a pan, a `cd` or an agent opening all show up in the next snapshot,
   with no event for each.
 - **On quit:** when the window closes or Templum quits, a last snapshot is written at once, next to the pending
-  `config.toml` save.
+  `config.toml` save, also when it looks unchanged: the file may hold an older one a snapshot still running wrote.
 - **At sign-out, restart and shutdown:** that last snapshot must still find every terminal running. A block whose
   shell ended closes, so a save taken after the system ended the shells would write a canvas without them. Windows
   ends programs by level, and every process starts at the same one (0x280), in any order: Templum takes a higher one
@@ -168,6 +169,20 @@ What doesn't come back: the text that was on screen, and programs other than the
   same work runs at once, before Templum exits.
 - **Safely:** the write goes through the temporary file and rename that `config.toml` uses, so a crash never leaves
   half a file. Writes take turns, so a quit during a background write can't mix the two.
+
+## One Templum per data folder
+
+- **The lock:** while it runs, Templum holds a lock on `templum.lock` in its data folder (the system's file lock,
+  which the system lets go of when Templum ends, also when it crashes).
+- **A second Templum** on the same data folder (a second click on the Start menu shortcut, another copy of the app)
+  can't take it. It starts as `--bench` does: one terminal, nothing of the data folder read or written (no canvas,
+  boards, notes or bus), and a notice says Templum is already open in another window. Otherwise it would restore
+  the same canvas, resume the same agents a second time, and write over the first one's file: what the person closed
+  in either would be what the next start finds.
+- **Why it doesn't bring the first window forward:** GPUI can't do that reliably everywhere. Wayland compositors
+  refuse a window that asks to come forward without the launcher's activation token, which GPUI doesn't take.
+- **`--dev`** has its own data folder, so it still runs beside an installed Templum.
+- **No lock:** when it can't be made (a read-only data folder, a file system without locks), Templum starts as usual.
 
 ## Errors
 
