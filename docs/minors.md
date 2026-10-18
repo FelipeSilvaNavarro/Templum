@@ -516,6 +516,13 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   `parse_items` finds no item and nothing else was asked, so the answer lists nothing (`edit_card`,
   `crates/templum/src/workspace/content.rs`). Fix: refuse with the "needs something to change" sentence when nothing
   is left to do.
+- [ ] **An agent refused a card for another agent can free it, then claim it.** `claim_card` refuses a card "for any
+  Codex" to a Claude Code block, but its `edit_card` with `for: anyone` passes (the gate checks only a card another
+  block holds, or a `for` naming the caller), and a second `claim_card` then takes it: the person sees a card they
+  gave to Codex done by Claude (`edit_card`, `crates/templum/src/workspace/content.rs`, the `held || names_caller`
+  check). Allowed on purpose for now, so an orchestrator can hand cards out again and Ctrl+Z undoes it, but it
+  weakens decision 3 of kanban.md's version 2. Fix if wanted: refuse a `for` on a card meant for an agent the caller
+  doesn't run, with `claim_card`'s "is for any …" sentence.
 - [ ] **A drag move over a board asks for a redraw GPUI already makes.** `on_edge` calls `window.refresh()`, and GPUI
   refreshes on every mouse move during a drag (`crates/templum/src/kanban.rs`); nobody sees a difference. Fix: delete
   the call.

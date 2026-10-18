@@ -388,7 +388,9 @@ now hold:
   "comments": [] }
 ```
 
-An older Templum shows `agent:codex` as an assignee it can't find, and refuses claims on it.
+An older Templum shows `agent:codex` as an assignee it can't find, and refuses claims on it. It reads the file, but
+its next save drops every priority and checklist (it keeps only the keys it knows): going back to it, then forward
+again, loses them.
 
 ### Calls made for card 40
 
