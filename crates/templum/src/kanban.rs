@@ -1018,6 +1018,8 @@ pub(crate) fn open_card(
         let author = |by: &str| {
             if by == "you" {
                 "You".to_string()
+            } else if by == templum_agent::ASKER {
+                "Templum Agent".to_string()
             } else {
                 ws_now.uid_title(by, cx).unwrap_or_else(|| by.to_string())
             }

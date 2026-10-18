@@ -102,6 +102,67 @@ impl Workspace {
                 Some((space, id)) => self.note_text((&space, id), &block, cx),
                 None => no_block(&block),
             },
+            ControlCall::Block(Call::ListCards { board, card }) => {
+                let board = match card {
+                    Some(card) => self
+                        .boards
+                        .find_card(card)
+                        .map(|(board, _)| board)
+                        .ok_or_else(|| {
+                            Reply::err(format!("There's no card {card}: list_cards lists them."))
+                        }),
+                    None => self.board_or_only(board.as_deref()),
+                };
+                match board {
+                    Ok(board) => self.cards_of(board, card, None, cx),
+                    Err(refused) => refused,
+                }
+            }
+            ControlCall::Block(Call::CreateCard(new)) => {
+                let board = match self.board_or_only(new.board.as_deref()) {
+                    Ok(board) => board,
+                    Err(refused) => return (Outcome::Now(refused), None),
+                };
+                return match self.card_new(board, new, cx) {
+                    Ok(card) => {
+                        self.templum_agent.conversation.own.cards.push(card);
+                        let target = self.board_shown(board);
+                        (
+                            Outcome::Now(Reply::ok(format!("Created card {card}."))),
+                            target,
+                        )
+                    }
+                    Err(refused) => (Outcome::Now(refused), None),
+                };
+            }
+            ControlCall::Block(Call::EditCard(edit)) => {
+                let target = self.card_shown(edit.card);
+                return (Outcome::Now(self.card_edit(edit, None, cx)), target);
+            }
+            ControlCall::Block(Call::MoveCard { card, column }) => {
+                let target = self.card_shown(card);
+                return (Outcome::Now(self.card_move(card, &column, cx)), target);
+            }
+            ControlCall::Block(Call::CommentCard { card, text }) => {
+                let target = self.card_shown(card);
+                let done = self.card_comment(card, &text, templum_agent::ASKER, cx);
+                return (Outcome::Now(done), target);
+            }
+            ControlCall::Block(Call::AppendNote { block, text }) => {
+                return self.on_block(&block, |ws, at| {
+                    ws.note_append(at, &block, &text, window, cx)
+                });
+            }
+            ControlCall::Block(Call::ReadChecklist { block }) => match self.find_block(&block) {
+                Some((space, id)) => self.checklist_text((&space, id), &block),
+                None => no_block(&block),
+            },
+            ControlCall::Block(Call::AddItems { block, text }) => {
+                return self.on_block(&block, |ws, at| ws.items_add(at, &block, &text, cx));
+            }
+            ControlCall::Block(Call::CheckItem { block, item, done }) => {
+                return self.on_block(&block, |ws, at| ws.item_check(at, &block, item, done, cx));
+            }
             ControlCall::Block(Call::Notify { text }) => {
                 let notification = Notification::new()
                     .title("Templum Agent")
@@ -113,6 +174,63 @@ impl Workspace {
             _ => Reply::err("Templum doesn't serve that tool to the Templum Agent yet."),
         };
         (Outcome::Now(reply), None)
+    }
+
+    /// `f` on the block `uid` names, in any workspace; its answer, and the block for the row.
+    fn on_block(
+        &mut self,
+        uid: &str,
+        f: impl FnOnce(&mut Self, (&str, BlockId)) -> Reply,
+    ) -> (Outcome, Option<Target>) {
+        let Some((space, id)) = self.find_block(uid) else {
+            return (Outcome::Now(no_block(uid)), None);
+        };
+        let done = f(self, (&space, id));
+        let target = (!done.is_error).then(|| Target {
+            workspace: Some(space),
+            block: Some(uid.to_string()),
+        });
+        (Outcome::Now(done), target)
+    }
+
+    /// The board `name` names, or the only one when it is left out.
+    fn board_or_only(&self, name: Option<&str>) -> Result<u64, Reply> {
+        match (name, self.boards.boards.as_slice()) {
+            (Some(name), _) => self.board_named(name),
+            (None, [one]) => Ok(one.id),
+            (None, []) => Err(Reply::err(
+                "There are no boards: add_block a kanban with a board first.",
+            )),
+            (None, _) => Err(Reply::err(format!(
+                "There are several boards: {}. Name one with board.",
+                self.boards
+                    .boards
+                    .iter()
+                    .map(|b| format!("{:?} ({})", clean_title(&b.name), b.id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))),
+        }
+    }
+
+    /// A kanban block that shows `board`, for an action's row: the shown workspace's first.
+    fn board_shown(&self, board: u64) -> Option<Target> {
+        self.order().into_iter().find_map(|space| {
+            let id = space
+                .canvas
+                .blocks()
+                .iter()
+                .find(|b| space.kanban(b.id).and_then(|k| k.board) == Some(board))?
+                .id;
+            Some(Target {
+                workspace: Some(space.id.clone()),
+                block: space.uids.get(&id).cloned(),
+            })
+        })
+    }
+
+    fn card_shown(&self, card: u64) -> Option<Target> {
+        self.board_shown(self.boards.find_card(card)?.0)
     }
 
     /// The block `uid` names, in any workspace: its workspace's id and its id.

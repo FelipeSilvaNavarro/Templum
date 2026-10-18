@@ -4,15 +4,19 @@
 
 use std::path::{Path, PathBuf};
 
-use gpui_kit::{App, Context, Task, Window};
+use gpui_kit::component::input::EditorState;
+use gpui_kit::{App, Context, Entity, Task, Window};
 use templum_canvas::{BlockId, chrome};
 use templum_mcp::{Reply, tools};
 use templum_terminal::Pattern;
 
+use super::bus::flat;
+use super::content::Caller;
 use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Workspace};
+use crate::board::{Assignee, Card, Comment, Priority};
 use crate::checklist::{self, Checklist};
 use crate::note::{self, Note};
-use crate::notes;
+use crate::{checklists, notes};
 
 /// A block [`Workspace::add_block_in`] opens.
 pub(crate) enum NewBlock {
@@ -366,18 +370,498 @@ impl Workspace {
         }
     }
 
-    /// The text of the note a note block shows, `read_note`'s answer.
-    pub(super) fn note_text(&self, (space, id): (&str, BlockId), block: &str, cx: &App) -> Reply {
+    /// The editor of the note a note block shows.
+    pub(super) fn note_editor(
+        &self,
+        (space, id): (&str, BlockId),
+        block: &str,
+    ) -> Result<Entity<EditorState>, Reply> {
         let Some(note) = self
             .space_named(space)
             .and_then(|s| s.blocks.get(&id))
             .and_then(|b| b.note())
         else {
-            return Reply::err(format!("{block} isn't a note."));
+            return Err(Reply::err(format!("{block} isn't a note.")));
         };
-        match note.tab() {
-            Some(tab) => Reply::ok(tools::tail(&tab.editor.read(cx).value(), tools::MAX_TEXT)),
-            None => Reply::err(format!("{block} shows no note.")),
+        note.tab()
+            .map(|t| t.editor.clone())
+            .ok_or_else(|| Reply::err(format!("{block} shows no note.")))
+    }
+
+    /// The text of the note a note block shows, `read_note`'s answer.
+    pub(super) fn note_text(&self, at: (&str, BlockId), block: &str, cx: &App) -> Reply {
+        match self.note_editor(at, block) {
+            Ok(editor) => Reply::ok(tools::tail(&editor.read(cx).value(), tools::MAX_TEXT)),
+            Err(refused) => refused,
+        }
+    }
+
+    /// Any board, by its id or its name in either case.
+    pub(super) fn board_named(&self, name: &str) -> Result<u64, Reply> {
+        let lower = name.trim().to_lowercase();
+        let boards = &self.boards.boards;
+        boards
+            .iter()
+            .find(|b| b.id.to_string() == name.trim())
+            .or_else(|| {
+                boards
+                    .iter()
+                    .find(|b| b.name.trim().to_lowercase() == lower)
+            })
+            .map(|b| b.id)
+            .ok_or_else(|| {
+                let names: Vec<String> = boards
+                    .iter()
+                    .map(|b| format!("\"{}\" ({})", flat(&b.name), b.id))
+                    .collect();
+                Reply::err(format!(
+                    "There's no board {name}. Boards: {}.",
+                    if names.is_empty() {
+                        "none".to_string()
+                    } else {
+                        names.join(", ")
+                    }
+                ))
+            })
+    }
+
+    pub(super) fn no_column(&self, board: u64, column: &str) -> Reply {
+        let titles: Vec<String> = self
+            .boards
+            .board(board)
+            .map(|b| b.columns.iter().map(|c| flat(&c.title)).collect())
+            .unwrap_or_default();
+        Reply::err(format!(
+            "There's no column {column}. Its columns: {}.",
+            titles.join(", ")
+        ))
+    }
+
+    /// `list_cards`' answer: the board's columns and cards, or one card whole. `viewer` is the
+    /// block that asks, whose cards say "(you)"; None for the Templum Agent.
+    pub(super) fn cards_of(
+        &self,
+        board: u64,
+        card: Option<u64>,
+        viewer: Option<&Caller>,
+        cx: &App,
+    ) -> Reply {
+        if let Some(card) = card {
+            return Reply::ok(tools::tail(
+                &self.card_whole(board, card, viewer, cx),
+                tools::MAX_TEXT,
+            ));
+        }
+        let Some(b) = self.boards.board(board) else {
+            return Reply::err("That board was deleted.");
+        };
+        let mut text = format!("Board \"{}\" ({})", flat(&b.name), b.id);
+        for column in &b.columns {
+            text.push_str(&format!("\n{} ({}):", flat(&column.title), column.id));
+            if column.cards.is_empty() {
+                text.push_str(" no cards");
+            }
+            for c in &column.cards {
+                text.push_str(&format!("\n  {}", self.card_line(c, viewer, cx)));
+            }
+        }
+        Reply::ok(tools::tail(&text, tools::MAX_TEXT))
+    }
+
+    /// `5  Fix login  [red, green]  priority high  assignee b7k2m "Codex"  checklist 2/5  2 comments`
+    fn card_line(&self, c: &Card, viewer: Option<&Caller>, cx: &App) -> String {
+        let mut line = format!("{}  {}", c.id, flat(&c.title));
+        if !c.labels.is_empty() {
+            let names: Vec<&str> = c.labels.iter().map(|l| l.name()).collect();
+            line.push_str(&format!("  [{}]", names.join(", ")));
+        }
+        if let Some(p) = c.priority {
+            line.push_str(&format!("  priority {}", p.name()));
+        }
+        match &c.assignee {
+            Some(Assignee::Block(uid)) => {
+                line.push_str(&format!("  assignee {}", self.who(uid, cx)))
+            }
+            Some(Assignee::Agent(id)) => line.push_str(&format!("  for any {id}")),
+            None => {}
+        }
+        if let (Some(a), Some(viewer)) = (&c.assignee, viewer)
+            && self.is_callers(a, viewer)
+        {
+            line.push_str(" (you)");
+        }
+        if !c.checklist.is_empty() {
+            let (done, all) = c.progress();
+            line.push_str(&format!("  checklist {done}/{all}"));
+        }
+        match c.comments.len() {
+            0 => {}
+            1 => line.push_str("  1 comment"),
+            n => line.push_str(&format!("  {n} comments")),
+        }
+        line
+    }
+
+    fn card_whole(&self, board: u64, card: u64, viewer: Option<&Caller>, cx: &App) -> String {
+        let (Some(b), Some(c)) = (self.boards.board(board), self.boards.card(board, card)) else {
+            return String::new();
+        };
+        let column = b
+            .columns
+            .iter()
+            .find(|col| col.cards.iter().any(|x| x.id == card));
+        let indent = |text: &str| {
+            text.lines()
+                .map(|l| format!("  {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut text = format!(
+            "Card {} on board \"{}\" ({}), column \"{}\"\n{}",
+            c.id,
+            flat(&b.name),
+            b.id,
+            column.map(|col| flat(&col.title)).unwrap_or_default(),
+            self.card_line(c, viewer, cx)
+        );
+        if !c.description.trim().is_empty() {
+            text.push_str(&format!("\ndescription:\n{}", indent(&c.description)));
+        }
+        if !c.checklist.is_empty() {
+            text.push_str("\nchecklist:");
+            for item in &c.checklist {
+                let mark = if item.done { 'x' } else { ' ' };
+                text.push_str(&format!("\n  {} [{mark}] {}", item.id, flat(&item.text)));
+            }
+        }
+        let now = notes::now();
+        for comment in &c.comments {
+            text.push_str(&format!(
+                "\ncomment by {}, {}:\n{}",
+                self.who(&comment.by, cx),
+                notes::ago(comment.at, now),
+                indent(&comment.text)
+            ));
+        }
+        text
+    }
+
+    /// Adds the card `new` describes to `board`: its id.
+    pub(super) fn card_new(
+        &mut self,
+        board: u64,
+        new: tools::NewCard,
+        cx: &mut Context<Self>,
+    ) -> Result<u64, Reply> {
+        if new.title.trim().is_empty() {
+            return Err(Reply::err("A card needs a title."));
+        }
+        let assignee = match new.who.as_deref().map(|w| self.resolve_for(w)) {
+            Some(Ok(who)) => who,
+            Some(Err(refused)) => return Err(refused),
+            None => None,
+        };
+        let priority = new.priority.as_deref().and_then(Priority::named);
+        let items = new
+            .checklist
+            .as_deref()
+            .map(checklists::parse_items)
+            .unwrap_or_default();
+        let column = match new.column.as_deref() {
+            Some(name) => match self.boards.column_named(board, name) {
+                Some(c) => c,
+                None => return Err(self.no_column(board, name)),
+            },
+            None => match self.boards.board(board).and_then(|b| b.columns.first()) {
+                Some(c) => c.id,
+                None => return Err(Reply::err("That board has no columns.")),
+            },
+        };
+        let title = new.title.trim().to_string();
+        let id = self.edit_boards(|b| {
+            let id = b.add_card(board, column)?;
+            b.edit_card(board, id, |c| {
+                c.title = title;
+                c.description = new.description.unwrap_or_default();
+                c.priority = priority;
+                c.assignee = assignee;
+            });
+            b.add_items(board, id, &items);
+            Some(id)
+        });
+        cx.notify();
+        id.ok_or_else(|| Reply::err("That column is gone."))
+    }
+
+    /// The board holding `card`, in any workspace.
+    fn board_of(&self, card: u64) -> Result<u64, Reply> {
+        self.boards
+            .find_card(card)
+            .map(|(board, _)| board)
+            .ok_or_else(|| Reply::err(format!("There's no card {card}: list_cards lists them.")))
+    }
+
+    /// Sets a card's priority and who it is for, adds items, checks and unchecks them: every
+    /// part is checked first, then all apply as one Ctrl+Z step. `caller`, a block, may only
+    /// take or hand on a card as `claim_card` lets it; the Templum Agent (None) may.
+    pub(super) fn card_edit(
+        &mut self,
+        edit: tools::CardEdit,
+        caller: Option<&Caller>,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let card = edit.card;
+        let board = match self.board_of(card) {
+            Ok(b) => b,
+            Err(refused) => return refused,
+        };
+        let assignee = match edit.who.as_deref().map(|w| self.resolve_for(w)) {
+            Some(Ok(who)) => Some(who),
+            Some(Err(refused)) => return refused,
+            None => None,
+        };
+        // Its `for` follows claim_card: never a card another block holds freed or handed on,
+        // nor one for another agent given to the caller.
+        if let (Some(who), Some(caller)) = (&assignee, caller)
+            && let Some(c) = self.boards.card(board, card)
+        {
+            let held = matches!(&c.assignee, Some(Assignee::Block(uid)) if *uid != caller.0);
+            let names_caller = who.as_ref().is_some_and(|w| self.is_callers(w, caller));
+            if (held || names_caller)
+                && let Err(refused) = self.may_take(c, caller, cx)
+            {
+                return refused;
+            }
+        }
+        let has = |item: &u64| {
+            self.boards
+                .card(board, card)
+                .is_some_and(|c| c.checklist.iter().any(|i| i.id == *item))
+        };
+        if let Some(item) = edit.check.iter().chain(&edit.uncheck).find(|i| !has(i)) {
+            return Reply::err(format!(
+                "Card {card} has no item {item}: list_cards with card shows its items."
+            ));
+        }
+        let priority = edit.priority.as_deref().map(Priority::named);
+        let items = edit
+            .add_items
+            .as_deref()
+            .map(checklists::parse_items)
+            .unwrap_or_default();
+        let added = self.edit_boards(|b| {
+            b.edit_card(board, card, |c| {
+                if let Some(p) = priority {
+                    c.priority = p;
+                }
+                if let Some(who) = assignee.clone() {
+                    c.assignee = who;
+                }
+            });
+            for (ids, done) in [(&edit.check, true), (&edit.uncheck, false)] {
+                for item in ids {
+                    b.set_item_done(board, card, *item, done);
+                }
+            }
+            b.add_items(board, card, &items)
+        });
+        cx.notify();
+        let list = |ids: &[u64]| {
+            ids.iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut said = Vec::new();
+        if let Some(p) = priority {
+            said.push(format!("priority {}", p.map_or("none", |p| p.name())));
+        }
+        match &assignee {
+            Some(None) => said.push("for anyone".into()),
+            Some(Some(Assignee::Agent(id))) => said.push(format!("for any {id}")),
+            Some(Some(Assignee::Block(uid))) => said.push(format!("for {}", self.who(uid, cx))),
+            None => {}
+        }
+        match added.as_slice() {
+            [] => {}
+            [one] => said.push(format!("added item {one}")),
+            more => said.push(format!("added items {}", list(more))),
+        }
+        if !edit.check.is_empty() {
+            said.push(format!("checked {}", list(&edit.check)));
+        }
+        if !edit.uncheck.is_empty() {
+            said.push(format!("unchecked {}", list(&edit.uncheck)));
+        }
+        Reply::ok(format!("Card {card}: {}.", said.join("; ")))
+    }
+
+    /// Moves a card to the end of a column of its board.
+    pub(super) fn card_move(&mut self, card: u64, column: &str, cx: &mut Context<Self>) -> Reply {
+        let board = match self.board_of(card) {
+            Ok(b) => b,
+            Err(refused) => return refused,
+        };
+        let Some(to) = self.boards.column_named(board, column) else {
+            return self.no_column(board, column);
+        };
+        self.edit_boards(|b| b.move_card(board, card, to, None));
+        cx.notify();
+        Reply::ok(format!("Moved card {card} to {column}."))
+    }
+
+    /// Adds a comment to a card, by `by`: a block's id, or the Templum Agent's word.
+    pub(super) fn card_comment(
+        &mut self,
+        card: u64,
+        text: &str,
+        by: &str,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let board = match self.board_of(card) {
+            Ok(b) => b,
+            Err(refused) => return refused,
+        };
+        if text.trim().is_empty() {
+            return Reply::err("A comment needs text.");
+        }
+        let comment = Comment {
+            by: by.to_string(),
+            text: text.trim_end().to_string(),
+            at: notes::now(),
+        };
+        self.edit_boards(|b| b.edit_card(board, card, |c| c.comments.push(comment)));
+        cx.notify();
+        Reply::ok(format!("Commented on card {card}."))
+    }
+
+    /// Adds `text` at the end of the note a note block shows, after a blank line, as one step of
+    /// the note's own Ctrl+Z; the person's caret and selection stay where they were.
+    pub(super) fn note_append(
+        &mut self,
+        at: (&str, BlockId),
+        block: &str,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let editor = match self.note_editor(at, block) {
+            Ok(editor) => editor,
+            Err(refused) => return refused,
+        };
+        if text.trim().is_empty() {
+            return Reply::err("There's nothing to add.");
+        }
+        editor.update(cx, |e, cx| {
+            let value = e.value();
+            let sep = if value.is_empty() || value.ends_with("\n\n") {
+                ""
+            } else if value.ends_with('\n') {
+                "\n"
+            } else {
+                "\n\n"
+            };
+            let (kept, end) = (e.selected_range(), value.len());
+            e.set_selected_range(end..end, cx);
+            e.insert(format!("{sep}{}", text.trim_end()), window, cx);
+            e.set_selected_range(kept, cx);
+        });
+        Reply::ok(format!("Added to the note in {block}."))
+    }
+
+    /// The checklist a checklist block shows.
+    pub(super) fn list_of(&self, (space, id): (&str, BlockId), block: &str) -> Result<u64, Reply> {
+        let Some(checklist) = self
+            .space_named(space)
+            .and_then(|s| s.blocks.get(&id))
+            .and_then(|b| b.checklist())
+        else {
+            return Err(Reply::err(format!("{block} isn't a checklist.")));
+        };
+        checklist
+            .list
+            .filter(|list| self.checklists.get(*list).is_some())
+            .ok_or_else(|| Reply::err(format!("{block} shows no checklist.")))
+    }
+
+    /// The checklist's name and progress, then a line per item: its id, [x] or [ ], its text.
+    pub(super) fn checklist_text(&self, at: (&str, BlockId), block: &str) -> Reply {
+        let list = match self.list_of(at, block) {
+            Ok(list) => list,
+            Err(refused) => return refused,
+        };
+        let Some(list) = self.checklists.get(list) else {
+            return Reply::err(format!("{block} shows no checklist."));
+        };
+        let (done, all) = list.progress();
+        let mut text = format!("{} ({done}/{all})", list.name_shown());
+        for item in &list.items {
+            let mark = if item.done { 'x' } else { ' ' };
+            text.push_str(&format!("\n{} [{mark}] {}", item.id, item.text));
+        }
+        Reply::ok(tools::tail(&text, tools::MAX_TEXT))
+    }
+
+    /// "There's no item 99 in "Plan"…": the checklist `list` has no item `item`.
+    pub(super) fn no_item(&self, list: u64, item: u64) -> Reply {
+        let name = self.checklists.get(list).map_or("", |l| l.name_shown());
+        Reply::err(format!(
+            "There's no item {item} in \"{name}\". read_checklist shows its items."
+        ))
+    }
+
+    /// Checks (or unchecks) an item of the checklist a block shows: one Ctrl+Z step.
+    pub(super) fn item_check(
+        &mut self,
+        at: (&str, BlockId),
+        block: &str,
+        item: u64,
+        done: bool,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let list = match self.list_of(at, block) {
+            Ok(list) => list,
+            Err(refused) => return refused,
+        };
+        if !self.edit_checklist(list, |c| c.set_done(list, item, done, notes::now())) {
+            return self.no_item(list, item);
+        }
+        self.agent_changed(list);
+        cx.notify();
+        let state = if done { "checked" } else { "unchecked" };
+        Reply::ok(format!("Item {item} is {state}."))
+    }
+
+    /// Adds an item per line of `text` at the end of the checklist a block shows: one Ctrl+Z
+    /// step.
+    pub(super) fn items_add(
+        &mut self,
+        at: (&str, BlockId),
+        block: &str,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let list = match self.list_of(at, block) {
+            Ok(list) => list,
+            Err(refused) => return refused,
+        };
+        let items = checklists::parse_items(text);
+        if items.is_empty() {
+            return Reply::err("There's nothing to add.");
+        }
+        let now = notes::now();
+        let ids: Vec<String> = self.edit_checklist(list, |c| {
+            items
+                .iter()
+                .filter_map(|(text, done)| c.add_item(list, None, text, *done, now))
+                .map(|id| id.to_string())
+                .collect()
+        });
+        self.agent_changed(list);
+        cx.notify();
+        match ids.as_slice() {
+            [one] => Reply::ok(format!("Added item {one}.")),
+            many => Reply::ok(format!("Added items {}.", many.join(", "))),
         }
     }
 }

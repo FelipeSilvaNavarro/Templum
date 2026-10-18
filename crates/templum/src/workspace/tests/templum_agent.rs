@@ -190,3 +190,152 @@ fn the_reads_need_no_wire(cx: &mut TestAppContext) {
     let (failed, text) = control(handle, &ws, cx, "list_agents", json!({}));
     assert!(!failed && text.contains("claude"), "{text}");
 }
+
+#[gpui_kit::test]
+fn cards_go_on_any_board_and_comments_are_signed_templum_agent(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let board = ws.update(cx, |ws, _| {
+        let board = ws.edit_boards(crate::board::Boards::add_board);
+        ws.edit_boards(|b| b.rename_board(board, "Sprint"));
+        board
+    });
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "create_card",
+        json!({"board": "sprint", "title": "Login", "checklist": "One\nTwo"}),
+    );
+    assert!(!failed, "{text}");
+    let card: u64 = text
+        .strip_prefix("Created card ")
+        .and_then(|t| t.strip_suffix('.'))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.boards.find_card(card).map(|(b, _)| b)),
+        Some(board)
+    );
+    let last = ws.read_with(cx, |ws, _| {
+        ws.boards
+            .board(board)
+            .unwrap()
+            .columns
+            .last()
+            .unwrap()
+            .title
+            .clone()
+    });
+    assert_eq!(
+        control(
+            handle,
+            &ws,
+            cx,
+            "move_card",
+            json!({"card": card, "column": last})
+        ),
+        (false, format!("Moved card {card} to {last}.")),
+        "no comment asked of the Templum Agent"
+    );
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "comment_card",
+        json!({"card": card, "text": "Done by Codex."}),
+    );
+    assert!(!failed, "{text}");
+    let by = ws.read_with(cx, |ws, _| {
+        ws.boards.card(board, card).unwrap().comments[0].by.clone()
+    });
+    assert_eq!(by, ::templum_agent::ASKER);
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "edit_card",
+        json!({"card": card, "priority": "high"}),
+    );
+    assert!(!failed, "{text}");
+    let (failed, whole) = control(handle, &ws, cx, "list_cards", json!({"card": card}));
+    assert!(!failed, "{whole}");
+    assert!(
+        whole.contains("comment by Templum Agent") && whole.contains("priority high"),
+        "{whole}"
+    );
+    let (failed, text) = control(handle, &ws, cx, "list_cards", json!({}));
+    assert!(
+        !failed && text.starts_with("Board \"Sprint\""),
+        "the only board: {text}"
+    );
+    ws.update(cx, |ws, _| ws.edit_boards(crate::board::Boards::add_board));
+    let (failed, text) = control(handle, &ws, cx, "list_cards", json!({}));
+    assert!(failed && text.contains("Name one with board"), "{text}");
+    let (failed, text) = control(handle, &ws, cx, "list_cards", json!({"board": board}));
+    assert!(!failed && text.starts_with("Board \"Sprint\""), "{text}");
+}
+
+#[gpui_kit::test]
+fn notes_and_checklists_take_writes_without_a_wire(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, note, _) = three_blocks(handle, &ws, cx);
+    let note_uid = ws.read_with(cx, |ws, _| ws.space.uids[&note].clone());
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "append_note",
+        json!({"block": note_uid, "text": "plan"}),
+    );
+    assert!(!failed, "{text}");
+    cx.run_until_parked();
+    let shown = ws.read_with(cx, |ws, cx| {
+        ws.space.blocks[&note]
+            .note()
+            .unwrap()
+            .tab()
+            .unwrap()
+            .editor
+            .read(cx)
+            .value()
+            .to_string()
+    });
+    assert_eq!(shown, "hello\n\nplan");
+    cx.update_window(handle, |_, window, cx| {
+        window.activate_window();
+        window.render_frame(cx);
+        window.click("tool-checklist", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let list = ws.read_with(cx, |ws, _| {
+        let id = ws.space.canvas.top().unwrap();
+        (
+            ws.space.uids[&id].clone(),
+            ws.space.blocks[&id].checklist().unwrap().list.unwrap(),
+        )
+    });
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "add_items",
+        json!({"block": list.0, "text": "One\nTwo"}),
+    );
+    assert!(!failed, "{text}");
+    let first = ws.read_with(cx, |ws, _| ws.checklists.get(list.1).unwrap().items[0].id);
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "check_item",
+        json!({"block": list.0, "item": first}),
+    );
+    assert!(!failed, "{text}");
+    let (failed, text) = control(handle, &ws, cx, "read_checklist", json!({"block": list.0}));
+    assert!(
+        !failed && text.contains("(1/2)") && text.contains("[x] One"),
+        "{text}"
+    );
+}
