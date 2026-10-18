@@ -11,6 +11,7 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
     ws.update(cx, |ws, _| {
         let agent = |id: &str| ws.agents.iter().find(|a| a.id == id).cloned();
         let (claude, codex, copilot) = (agent("claude"), agent("codex"), agent("copilot"));
+        let qwen = agent("qwen");
         let typed = |name: &str| {
             templum_usage::claude::typed_path(
                 &data.path().join(name).to_string_lossy(),
@@ -71,10 +72,18 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
             ws.typed(copilot.as_ref(), "copilot --session-id 0d5e"),
             format!("copilot --session-id 0d5e {words}")
         );
+        // Qwen Code: its server, its one `--mcp-config` last.
+        let qwen_words = templum_usage::qwen::args(data.path(), cfg!(windows)).unwrap();
+        let qwen_mcp = templum_usage::claude::typed_path(&qwen_words[0], cfg!(windows)).unwrap();
+        assert_eq!(
+            ws.typed(qwen.as_ref(), "qwen --resume 0d5e"),
+            format!("qwen --resume 0d5e {qwen_mcp}")
+        );
         // Without `<data>/bin` on the terminal's PATH, the files' program can't be found.
         let env = ws.bus_env.clone();
         ws.bus_env.retain(|(k, _)| k != "PATH");
         assert_eq!(ws.typed(copilot.as_ref(), "copilot"), "copilot");
+        assert_eq!(ws.typed(qwen.as_ref(), "qwen"), "qwen");
         ws.bus_env = env;
         // Windows PowerShell 5.1 passes `args=["mcp"]` on as `args=[mcp]`; pwsh 7 doesn't.
         let shell = ws.config.shell.program.clone();
@@ -104,6 +113,7 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
         );
         assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex");
         assert_eq!(ws.typed(copilot.as_ref(), "copilot"), "copilot");
+        assert_eq!(ws.typed(qwen.as_ref(), "qwen"), "qwen");
         ws.config.usage.claude_limits = false;
         assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
         // Connections without the status line: the hooks still need the settings file.
@@ -164,11 +174,21 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
         let opencode = templum_usage::opencode::config(&data, cfg!(windows)).unwrap();
         assert_eq!(word(ws, "TEMPLUM_OPENCODE_CONFIG"), opencode);
         assert_eq!(word(ws, "TEMPLUM_KILO_CONFIG"), opencode);
+        let qwen = templum_usage::qwen::args(&data, cfg!(windows)).unwrap();
+        assert_eq!(word(ws, "TEMPLUM_QWEN_ARGS"), qwen.join("\n"));
+        let system = templum_usage::qwen::system_file();
+        let settings = match templum_usage::qwen::settings(&data, cfg!(windows), &system) {
+            Some(file) => file.to_string_lossy().into_owned(),
+            None => String::new(),
+        };
+        assert_eq!(word(ws, "TEMPLUM_QWEN_SETTINGS"), settings);
         ws.config.connections.enabled = false;
         assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), "");
         assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), "");
         assert_eq!(word(ws, "TEMPLUM_OPENCODE_CONFIG"), "");
         assert_eq!(word(ws, "TEMPLUM_KILO_CONFIG"), "");
+        assert_eq!(word(ws, "TEMPLUM_QWEN_ARGS"), "");
+        assert_eq!(word(ws, "TEMPLUM_QWEN_SETTINGS"), "");
         assert_eq!(
             word(ws, "TEMPLUM_CLAUDE_ARGS"),
             format!("--settings\n{}", p("claude-statusline.json"))
@@ -205,6 +225,8 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
                 ("TEMPLUM_COPILOT_ARGS".to_string(), String::new()),
                 ("TEMPLUM_OPENCODE_CONFIG".to_string(), String::new()),
                 ("TEMPLUM_KILO_CONFIG".to_string(), String::new()),
+                ("TEMPLUM_QWEN_ARGS".to_string(), String::new()),
+                ("TEMPLUM_QWEN_SETTINGS".to_string(), String::new()),
                 ("TEMPLUM_HOOKED".to_string(), String::new()),
             ]
         );
@@ -567,6 +589,20 @@ fn blocks_templum_opens_get_their_agents_variable(cx: &mut TestAppContext) {
             [("KILO_CONFIG_CONTENT".to_string(), config)]
         );
         assert_eq!(ws.agent_vars(claude.as_ref(), &unset), []);
+        // Qwen Code: its system settings file moved to Templum's, unless its own exists.
+        let qwen = agent("qwen");
+        let system = templum_usage::qwen::system_file();
+        let want: Vec<(String, String)> =
+            templum_usage::qwen::settings(data.path(), cfg!(windows), &system)
+                .map(|file| {
+                    let file = file.to_string_lossy().into_owned();
+                    ("QWEN_CODE_SYSTEM_SETTINGS_PATH".to_string(), file)
+                })
+                .into_iter()
+                .collect();
+        assert_eq!(ws.agent_vars(qwen.as_ref(), &unset), want);
+        let theirs = |name: &str| name == "QWEN_CODE_SYSTEM_SETTINGS_PATH";
+        assert_eq!(ws.agent_vars(qwen.as_ref(), &theirs), []);
         assert_eq!(ws.agent_vars(None, &unset), []);
         // The person's own wins.
         let theirs = |name: &str| name == "OPENCODE_CONFIG_CONTENT";

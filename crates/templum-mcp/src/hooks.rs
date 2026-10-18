@@ -180,6 +180,15 @@ pub fn copilot(event: &str, input: &Value) -> Option<AgentEvent> {
     })
 }
 
+/// A Qwen Code hook's input: Claude Code's hooks (as of Qwen Code 0.25.2, from its docs and
+/// source), its prompt taken once a turn takes it (assumed, as Codex's: not checked).
+pub fn qwen(input: &Value) -> Option<AgentEvent> {
+    match input["hook_event_name"].as_str()? {
+        "UserPromptSubmit" => Some(AgentEvent::Submitted { at_enter: false }),
+        _ => claude(input),
+    }
+}
+
 /// A line of Templum's OpenCode plugin (Kilo Code's too): `{"type": <event type, or
 /// "chat.message">, "properties": {…}, "answer": <the session's last text on its idle>}`, of the
 /// main session only. None for what Templum doesn't follow.
@@ -727,6 +736,65 @@ mod tests {
         for kind in ["session.created", "message.updated", "nope"] {
             assert_eq!(event(kind, json!({}), none.clone()), None, "{kind}");
         }
+    }
+
+    #[test]
+    fn qwens_hooks_become_events() {
+        let event = |input: Value| qwen(&input);
+        assert_eq!(
+            event(json!({ "hook_event_name": "SessionStart", "source": "startup" })),
+            Some(AgentEvent::Started)
+        );
+        assert_eq!(
+            event(json!({ "hook_event_name": "SessionStart", "source": "compact" })),
+            None
+        );
+        assert_eq!(
+            event(json!({ "hook_event_name": "UserPromptSubmit", "prompt": "hi" })),
+            Some(AgentEvent::Submitted { at_enter: false })
+        );
+        assert_eq!(
+            event(
+                json!({ "hook_event_name": "PermissionRequest", "tool_name": "run_shell_command" })
+            ),
+            Some(AgentEvent::NeedsYou {
+                message: Some("Allow run_shell_command?".into())
+            })
+        );
+        assert_eq!(
+            event(json!({ "hook_event_name": "PostToolUse" })),
+            Some(AgentEvent::Working)
+        );
+        assert_eq!(
+            event(json!({
+                "hook_event_name": "Stop",
+                "last_assistant_message": "Done.",
+                "transcript_path": "/q/t.jsonl"
+            })),
+            Some(AgentEvent::Stopped {
+                message: Some("Done.".into()),
+                transcript: Some("/q/t.jsonl".into())
+            })
+        );
+        assert_eq!(
+            event(json!({ "hook_event_name": "StopFailure" })),
+            Some(AgentEvent::Stopped {
+                message: None,
+                transcript: None
+            })
+        );
+        assert_eq!(
+            event(json!({ "hook_event_name": "Notification", "notification_type": "idle_prompt" })),
+            Some(AgentEvent::Stopped {
+                message: None,
+                transcript: None
+            })
+        );
+        assert_eq!(
+            event(json!({ "hook_event_name": "SessionEnd" })),
+            Some(AgentEvent::Ended)
+        );
+        assert_eq!(event(json!({ "hook_event_name": "PreToolUse" })), None);
     }
 
     #[test]

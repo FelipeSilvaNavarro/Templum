@@ -131,4 +131,18 @@ if ($null -eq $Global:__TemplumPrompt) {
             } else { __TemplumAgent kilo '' KILO_CONFIG_CONTENT $config $args }
         }
     }
+    # Qwen Code: its server as a word, its hooks in the settings file its variable moves. It takes
+    # one --mcp-config: a person's own means none of Templum's.
+    if ($env:TEMPLUM_QWEN_ARGS -and -not (Test-Path Function:\qwen)) {
+        function Global:qwen {
+            $words = $env:TEMPLUM_QWEN_ARGS
+            foreach ($a in $args) {
+                if ("$a" -eq '--mcp-config' -or "$a" -like '--mcp-config=*') { $words = '' }
+            }
+            $settings = $env:TEMPLUM_QWEN_SETTINGS
+            if ($MyInvocation.ExpectingInput) {
+                $input | __TemplumAgent qwen $words QWEN_CODE_SYSTEM_SETTINGS_PATH $settings $args
+            } else { __TemplumAgent qwen $words QWEN_CODE_SYSTEM_SETTINGS_PATH $settings $args }
+        }
+    }
 }

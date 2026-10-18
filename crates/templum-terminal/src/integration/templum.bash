@@ -109,4 +109,15 @@ if [[ -z "${__templum_installed-}" ]]; then
             __templum_agent kilo "" KILO_CONFIG_CONTENT "${TEMPLUM_KILO_CONFIG-}" "$@"
         }
     fi
+    # Qwen Code: its server as a word, its hooks in the settings file its variable moves. It takes
+    # one --mcp-config: a person's own means none of Templum's.
+    if [[ -n "${TEMPLUM_QWEN_ARGS-}" ]] && ! builtin declare -F qwen > /dev/null; then
+        function qwen {
+            builtin local w="${TEMPLUM_QWEN_ARGS-}" a
+            for a in "$@"; do
+                case "$a" in --mcp-config | --mcp-config=*) w= ;; esac
+            done
+            __templum_agent qwen "$w" QWEN_CODE_SYSTEM_SETTINGS_PATH "${TEMPLUM_QWEN_SETTINGS-}" "$@"
+        }
+    fi
 fi

@@ -387,6 +387,7 @@ impl Agent {
     pub const GEMINI: Agent = Agent(2);
     pub const COPILOT: Agent = Agent(3);
     pub const OPENCODE: Agent = Agent(5);
+    pub const QWEN: Agent = Agent(8);
     pub const KILO: Agent = Agent(17);
 
     /// Every agent, in the order menus list them.
@@ -966,6 +967,7 @@ mod tests {
             (Agent::GEMINI, "gemini"),
             (Agent::COPILOT, "copilot"),
             (Agent::OPENCODE, "opencode"),
+            (Agent::QWEN, "qwen"),
             (Agent::KILO, "kilo"),
         ] {
             assert_eq!(agent.name(), id);

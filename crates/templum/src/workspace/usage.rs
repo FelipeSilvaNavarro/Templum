@@ -38,6 +38,13 @@ struct Gives {
     on_path: bool,
 }
 
+/// Qwen Code's settings file with Templum's hooks, for its variable; None when its own system file
+/// exists.
+fn qwen_settings(data: &Path, windows: bool) -> Option<String> {
+    let system = templum_usage::qwen::system_file();
+    templum_usage::qwen::settings(data, windows, &system).map(|f| f.to_string_lossy().into_owned())
+}
+
 /// Templum's own environment has `name`, not empty: the person's, which an agent's variable
 /// doesn't replace (`Workspace::agent_vars`).
 pub(super) fn in_env(name: &str) -> bool {
@@ -86,11 +93,14 @@ impl Workspace {
                 templum_mcp::codex_flags(&gives.exe.to_string_lossy(), windows, gives.on_path)
         {
             line.push_str(&flags);
-        } else if builtin == Some(Agent::COPILOT)
-            && gives.connected
-            && gives.on_path
-            && let Some(words) = templum_usage::copilot::args(&gives.data, windows)
-                .and_then(|w| typed_words(&w, windows))
+        } else if let Some(words) = (gives.connected && gives.on_path)
+            .then(|| match builtin {
+                Some(Agent::COPILOT) => templum_usage::copilot::args(&gives.data, windows),
+                Some(Agent::QWEN) => templum_usage::qwen::args(&gives.data, windows),
+                _ => None,
+            })
+            .flatten()
+            .and_then(|w| typed_words(&w, windows))
         {
             line.push_str(&words);
         }
@@ -104,50 +114,48 @@ impl Workspace {
     /// one's on.
     pub(super) fn agent_env(&self) -> Vec<(String, String)> {
         let windows = cfg!(windows);
-        let (claude, codex, copilot, opencode) = match self.gives() {
-            Some(gives) => {
-                let limits = self.config.usage.claude_limits;
-                let claude = claude_args(&gives.data, &gives.exe, windows, limits, gives.connected);
-                let codex = gives
-                    .codex
-                    .then(|| {
-                        templum_mcp::codex_args(
-                            &gives.exe.to_string_lossy(),
-                            windows,
-                            gives.on_path,
-                        )
-                    })
-                    .flatten()
-                    .unwrap_or_default();
-                // Their files run `<data>/bin/templum`: only where that is on the PATH.
-                let on_path = gives.connected && gives.on_path;
-                let copilot = on_path
-                    .then(|| templum_usage::copilot::args(&gives.data, windows))
-                    .flatten()
-                    .unwrap_or_default();
-                let opencode = on_path
-                    .then(|| templum_usage::opencode::config(&gives.data, windows))
-                    .flatten()
-                    .unwrap_or_default();
-                (
-                    claude.join("\n"),
-                    codex.join("\n"),
-                    copilot.join("\n"),
-                    opencode,
-                )
-            }
-            None => Default::default(),
-        };
-        vec![
-            ("TEMPLUM_CLAUDE_ARGS".to_string(), claude),
-            ("TEMPLUM_CODEX_ARGS".to_string(), codex),
-            ("TEMPLUM_COPILOT_ARGS".to_string(), copilot),
-            // The JSON `OPENCODE_CONFIG_CONTENT` and `KILO_CONFIG_CONTENT` take.
-            ("TEMPLUM_OPENCODE_CONFIG".to_string(), opencode.clone()),
-            ("TEMPLUM_KILO_CONFIG".to_string(), opencode),
+        let gives = self.gives();
+        let claude = gives.as_ref().map(|g| {
+            let limits = self.config.usage.claude_limits;
+            claude_args(&g.data, &g.exe, windows, limits, g.connected)
+        });
+        let codex = gives
+            .as_ref()
+            .filter(|g| g.codex)
+            .and_then(|g| templum_mcp::codex_args(&g.exe.to_string_lossy(), windows, g.on_path));
+        // The others' files run `<data>/bin/templum`: only where that is on the PATH.
+        let data = gives
+            .as_ref()
+            .filter(|g| g.connected && g.on_path)
+            .map(|g| g.data.as_path());
+        let qwen = data.and_then(|d| templum_usage::qwen::args(d, windows));
+        let words = |args: Option<Vec<String>>| args.unwrap_or_default().join("\n");
+        // The JSON `OPENCODE_CONFIG_CONTENT` and `KILO_CONFIG_CONTENT` take.
+        let opencode = data
+            .and_then(|d| templum_usage::opencode::config(d, windows))
+            .unwrap_or_default();
+        // Empty when Qwen Code's own system settings file exists.
+        let qwen_settings = data
+            .filter(|_| qwen.is_some())
+            .and_then(|d| qwen_settings(d, windows))
+            .unwrap_or_default();
+        [
+            ("TEMPLUM_CLAUDE_ARGS", words(claude)),
+            ("TEMPLUM_CODEX_ARGS", words(codex)),
+            (
+                "TEMPLUM_COPILOT_ARGS",
+                words(data.and_then(|d| templum_usage::copilot::args(d, windows))),
+            ),
+            ("TEMPLUM_OPENCODE_CONFIG", opencode.clone()),
+            ("TEMPLUM_KILO_CONFIG", opencode),
+            ("TEMPLUM_QWEN_ARGS", words(qwen)),
+            ("TEMPLUM_QWEN_SETTINGS", qwen_settings),
             // An OpenCode or a Pi run here reports for its block, and sets it for what it starts.
-            ("TEMPLUM_HOOKED".to_string(), String::new()),
+            ("TEMPLUM_HOOKED", String::new()),
         ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect()
     }
 
     /// The variables the shell of a block Templum opens for `agent` gets (docs/specs/connections.md,
@@ -159,9 +167,11 @@ impl Workspace {
         agent: Option<&AgentEntry>,
         set: &dyn Fn(&str) -> bool,
     ) -> Vec<(String, String)> {
-        let name = match agent.and_then(|a| a.builtin) {
+        let builtin = agent.and_then(|a| a.builtin);
+        let name = match builtin {
             Some(Agent::OPENCODE) => "OPENCODE_CONFIG_CONTENT",
             Some(Agent::KILO) => "KILO_CONFIG_CONTENT",
+            Some(Agent::QWEN) => "QWEN_CODE_SYSTEM_SETTINGS_PATH",
             _ => return Vec::new(),
         };
         let Some(gives) = self.gives().filter(|g| g.connected && g.on_path) else {
@@ -170,8 +180,13 @@ impl Workspace {
         if set(name) {
             return Vec::new();
         }
-        templum_usage::opencode::config(&gives.data, cfg!(windows))
-            .map(|config| vec![(name.to_string(), config)])
+        let windows = cfg!(windows);
+        let value = match builtin {
+            Some(Agent::QWEN) => qwen_settings(&gives.data, windows),
+            _ => templum_usage::opencode::config(&gives.data, windows),
+        };
+        value
+            .map(|value| vec![(name.to_string(), value)])
             .unwrap_or_default()
     }
 

@@ -868,7 +868,9 @@ new one's can't be chosen, so OpenCode and Kilo Code keep coming back on the fol
 
 ### Qwen Code
 
-From Qwen Code's docs and source at 0.25.2 (not installed here: the plan checks what it can without it).
+From Qwen Code's docs and source at 0.25.2, and its current docs for the hooks' `timeout` (seconds). Not checked by
+hand: not installed here ([minors](../minors.md#connections)). `templum_usage::qwen` writes both files; the hooks
+reach `hooks::qwen`, Claude Code's parser but for the prompt, taken once a turn takes it.
 
 - **The server:** `--mcp-config=<data>/qwen/mcp.json`, servers that are never asked about and load in its safe mode.
   Its stdio servers inherit the environment. A tool call's `timeout` is in ms (10 minutes unless set):
@@ -897,7 +899,8 @@ From Qwen Code's docs and source at 0.25.2 (not installed here: the plan checks 
 | `Notification` `permission_prompt` | waiting for the person (the dialog `PermissionRequest` said); `idle_prompt` done without an answer, as Claude Code's |
 | `SessionEnd` | ended |
 
-- **The blocks Templum opens** get the words and the variable, as OpenCode's do. Programs Qwen Code starts inherit
+- **The blocks Templum opens** get the words (`Workspace::typed`) and the variable (`Workspace::agent_vars`), as
+  OpenCode's do. Programs Qwen Code starts inherit
   the variable (it passes it on by design), so a `qwen -p` its shell tool runs would speak for the block
   ([minors](../minors.md#connections)).
 - **Its session:** unchanged, by its files (`qwen --resume <id>`).

@@ -27,18 +27,10 @@ const HOOKED: [&str; 8] = [
 pub fn args(data: &Path, windows: bool) -> Option<Vec<String>> {
     let folder = data.join("copilot");
     let (mcp, plugin) = (folder.join("mcp.json"), folder.join("plugin"));
-    let word = |path: &Path| {
-        let path = path.to_string_lossy();
-        if windows {
-            path.replace('\\', "/")
-        } else {
-            path.into_owned()
-        }
-    };
     let words = vec![
         "--allow-all-mcp-server-instructions".to_string(),
-        format!("--additional-mcp-config=@{}", word(&mcp)),
-        format!("--plugin-dir={}", word(&plugin)),
+        format!("--additional-mcp-config=@{}", crate::slashed(&mcp, windows)),
+        format!("--plugin-dir={}", crate::slashed(&plugin, windows)),
     ];
     if words.iter().any(|w| typed_path(w, windows).is_none()) {
         return None;

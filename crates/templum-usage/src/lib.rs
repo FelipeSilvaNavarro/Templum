@@ -11,6 +11,7 @@ pub mod codex;
 pub mod copilot;
 pub mod gemini;
 pub mod opencode;
+pub mod qwen;
 mod watch;
 
 pub use watch::{Event, REACHED, Watch};
@@ -52,6 +53,16 @@ pub const MCP_TIMEOUT_MS: u64 = 604_800_000;
 pub fn bin(data: &Path, windows: bool) -> PathBuf {
     data.join("bin")
         .join(if windows { "templum.exe" } else { "templum" })
+}
+
+/// `path` as a word an agent gets: Windows' `\` written `/`, which every shell keeps.
+pub fn slashed(path: &Path, windows: bool) -> String {
+    let path = path.to_string_lossy();
+    if windows {
+        path.replace('\\', "/")
+    } else {
+        path.into_owned()
+    }
 }
 
 /// `bin hook <words>`, as an agent runs a hook: through bash on Unix, PowerShell on Windows, with

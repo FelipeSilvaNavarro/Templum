@@ -87,4 +87,18 @@ if status is-interactive; and not set -q __templum_installed
             __templum_agent kilo '' KILO_CONFIG_CONTENT "$TEMPLUM_KILO_CONFIG" $argv
         end
     end
+    # Qwen Code: its server as a word, its hooks in the settings file its variable moves. It takes
+    # one --mcp-config: a person's own means none of Templum's.
+    if test -n "$TEMPLUM_QWEN_ARGS"; and not functions -q qwen
+        function qwen
+            set -l w "$TEMPLUM_QWEN_ARGS"
+            for a in $argv
+                switch $a
+                    case --mcp-config '--mcp-config=*'
+                        set w ''
+                end
+            end
+            __templum_agent qwen "$w" QWEN_CODE_SYSTEM_SETTINGS_PATH "$TEMPLUM_QWEN_SETTINGS" $argv
+        end
+    end
 end
