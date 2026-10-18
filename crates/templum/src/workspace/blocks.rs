@@ -628,6 +628,7 @@ impl Workspace {
                         resuming: None,
                         account: None,
                         role: None,
+                        quit: None,
                     })),
                 );
                 self.added(id);

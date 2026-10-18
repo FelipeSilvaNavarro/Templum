@@ -966,6 +966,67 @@ fn stop_agent_ends_what_the_caller_opened_and_what_it_left_running(cx: &mut Test
     );
 }
 
+/// What an agent left running in a session of its own (as Claude Code's Bash tool does) still ends
+/// with `stop_agent` once a snapshot found that agent gone, until the person types at the prompt.
+#[gpui_kit::test]
+fn stop_agent_ends_what_an_agent_that_quit_left_running(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let dir = tempfile::tempdir().unwrap();
+    let flag = dir.path().join("f");
+    // Its "agent" (`cat`) leaves a job a second later (start times are whole seconds), then quits
+    // at Ctrl+D; the shell waits in a builtin `read`.
+    ws.update(cx, |ws, _| {
+        ws.command = Some(jobs(&format!(
+            "sh -c 'sleep 1.2; (setsid sh -c \"sleep 3 && touch {}\" &); exec cat'; \
+             while read -r x; do :; done",
+            flag.display()
+        )))
+    });
+    let spawn = json!({ "agent": "codex", "folder": dir.path() });
+    assert!(!call(handle, &ws, cx, &terminal, "spawn_agent", spawn).0);
+    let new = spawned(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, new);
+    in_front(&ws, cx, new, true);
+    let p = ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().term.processes());
+    let cat = templum_terminal::Detect {
+        id: "codex".into(),
+        names: vec!["sh".into(), "cat".into()],
+        packages: Vec::new(),
+    };
+    let seen = templum_terminal::inspect(&[p], &[cat]).pop().unwrap();
+    assert!(seen.started.is_some(), "{seen:?}");
+    snapshot(handle, &ws, cx, new, seen);
+    std::thread::sleep(Duration::from_millis(1500));
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(new).unwrap().term.write(&b"\x04"[..])
+    });
+    in_front(&ws, cx, new, false);
+    snapshot(handle, &ws, cx, new, Default::default());
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "stop_agent",
+        json!({ "block": them }),
+    );
+    assert!(!failed, "{text}");
+    assert!(
+        text.starts_with(&format!("Stopped {them}: ended ")) && text.contains("left running"),
+        "{text}"
+    );
+    std::thread::sleep(Duration::from_millis(3000));
+    assert!(!flag.exists(), "its job wrote its file");
+    // Once the person typed at the prompt, what runs there is theirs.
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(new).unwrap();
+        assert!(pane.agent_since().is_some());
+        pane.person_typed();
+        assert_eq!(pane.agent_since(), None);
+    });
+}
+
 #[gpui_kit::test]
 fn stop_agent_refuses_its_own_block_and_one_it_didnt_open(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);

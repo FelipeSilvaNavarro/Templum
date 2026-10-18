@@ -256,6 +256,10 @@ pub(crate) struct Pane {
     pub account: Option<String>,
     /// The role `spawn_agent` opened it as (docs/specs/agent-tools.md, Roles), kept with it.
     pub role: Option<String>,
+    /// When its last agent started, and when a snapshot found that agent gone: `stop_agent` still
+    /// ends what it left (docs/specs/agent-tools.md#stop_agent), until the person types into it
+    /// or a snapshot finds another agent there.
+    pub quit: Option<(u64, Instant)>,
 }
 
 impl Pane {
@@ -297,6 +301,16 @@ impl Pane {
             .folder
             .as_ref()
             .is_some_and(|f| f.starts_with(root))
+    }
+
+    /// When the agent `stop_agent` ends what was left after started: the one the last snapshot
+    /// found, else the last one, gone, while the person hasn't typed into it since.
+    pub fn agent_since(&self) -> Option<u64> {
+        let typed_after = |gone| self.keyed.get().is_some_and(|at| at > gone);
+        self.seen.started.or(self
+            .quit
+            .filter(|(_, gone)| !typed_after(*gone))
+            .map(|(started, _)| started))
     }
 }
 
@@ -838,6 +852,12 @@ impl Space {
                 let left = pane.seen.pid.is_some() && seen.agent.is_none();
                 if other || left {
                     (pane.model, pane.effort, pane.flags_for) = (None, None, None);
+                }
+                // What the agent that left started after it is still its own for `stop_agent`.
+                if left {
+                    pane.quit = pane.seen.started.map(|started| (started, now));
+                } else if seen.agent.is_some() {
+                    pane.quit = None;
                 }
                 // Its agent is gone (one that crashed says no SessionEnd): what its hooks said
                 // mustn't come back with the next agent started there by hand.

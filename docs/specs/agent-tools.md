@@ -106,7 +106,8 @@ as every tool's ([connections.md](connections.md#the-mcp-server)). "Wired" check
     Code's Bash tool runs its shell as the leader of a session of its own, so a `( sleep 60 && touch f ) &` it leaves
     is reparented to init (or `systemd --user`) in that session: neither below the terminal's shell nor in its session,
     but it carries the variable (checked by hand on 2026-10-18). Only one started after the program (its start time
-    in a later second; with no program in front, after its agent's, as the last snapshot found it; neither known,
+    in a later second; with no program in front, after its agent's, as the last snapshot found it, or as the one
+    before found the agent that has since quit, until the person types into the block (`Pane::quit`); neither known,
     none): a daemon the shell's startup files or the person started before it (an `ssh-agent`, a tmux server, a
     browser a dev server opened before) stays;
   - **never** the shell: the terminal's process, and on macOS, where that is `login`, the shell it runs (its child), and
