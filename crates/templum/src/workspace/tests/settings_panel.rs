@@ -684,6 +684,9 @@ fn add_claude_account(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut 
         ));
     })
     .unwrap();
+    // The dialog slides in for a quarter of a second: a click while it moves can miss.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    frame(handle, cx);
     let claude = ws.read_with(cx, |ws, _| {
         crate::settings::accounts::agent_choices(&ws.agents)
             .iter()
