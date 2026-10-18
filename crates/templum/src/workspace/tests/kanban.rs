@@ -869,3 +869,101 @@ fn dragging_a_card_near_the_boards_right_edge_scrolls_its_columns(cx: &mut TestA
     assert!(now < left, "the columns scrolled left: {now:?} {left:?}");
     release(handle, cx, to);
 }
+
+#[gpui_kit::test]
+fn lines_pasted_into_add_an_item_make_an_item_each(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (_, board, card) = board_with_a_card(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let current = ws.boards.card(board, card).cloned().unwrap();
+            crate::kanban::open_card(board, current, false, window, cx)
+        });
+        window.render_frame(cx);
+        window.click("card-item-field", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+        "- Build\n- [x] Test\nShip".into(),
+    ));
+    cx.update_window(handle, |_, window, cx| {
+        window.press(PASTE, cx);
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx));
+    })
+    .unwrap();
+    let items = ws.read_with(cx, |ws, _| {
+        let c = ws.boards.card(board, card).unwrap();
+        c.checklist
+            .iter()
+            .map(|i| (i.text.clone(), i.done))
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        items,
+        [
+            ("Build".to_string(), false),
+            ("Test".to_string(), true),
+            ("Ship".to_string(), false)
+        ]
+    );
+}
+
+#[gpui_kit::test]
+fn the_assignee_menu_lists_a_gone_block_first_and_every_agent_in_its_submenu(
+    cx: &mut TestAppContext,
+) {
+    use crate::board::Assignee;
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let main = first_id(&ws, cx);
+    let uid = ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(main).unwrap().seen.agent = Some("claude".into());
+        ws.space.uids[&main].clone()
+    });
+    let (_, board, card) = board_with_a_card(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| {
+            b.edit_card(board, card, |c| {
+                c.assignee = Some(Assignee::Block("zzzzz".into()))
+            })
+        })
+    });
+    let assignee = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.boards.card(board, card).unwrap().assignee.clone()
+        })
+    };
+    let choose = |cx: &mut TestAppContext, pick: &dyn Fn(&mut Window, &mut gpui_kit::App)| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let current = ws.boards.card(board, card).cloned().unwrap();
+                crate::kanban::open_card(board, current, false, window, cx)
+            });
+            window.render_frame(cx);
+            window.click("card-assignee", cx);
+            window.render_frame(cx);
+            pick(window, cx);
+            window.render_frame(cx);
+            window.click("card-done", cx);
+            window.render_frame(cx);
+        })
+        .unwrap()
+    };
+    // Anyone, a separator, "Sessions", the gone block, then the one session.
+    choose(cx, &|window, cx| {
+        window.within("popup-menu").click(4usize, cx)
+    });
+    assert_eq!(assignee(cx), Some(Assignee::Block(uid)));
+    // Then "Any session of" (a separator before it has no index), whose submenu lists every
+    // agent in order.
+    let second = ws.read_with(cx, |ws, _| ws.agents[1].id.clone());
+    choose(cx, &|window, cx| {
+        window.within("popup-menu").hover(5usize, cx);
+        window.render_frame(cx);
+        window.within("submenu").click(1usize, cx);
+    });
+    assert_eq!(assignee(cx), Some(Assignee::Agent(second)));
+}

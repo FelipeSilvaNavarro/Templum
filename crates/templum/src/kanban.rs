@@ -14,11 +14,11 @@ use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, BoxShadow, ClickEvent, Context, DragMoveEvent, ElementId, Entity, FontWeight,
-    MouseButton, MouseDownEvent, Render, ScrollHandle, ScrollWheelEvent, SharedString,
-    TestSupportExt, Window, div, point, px, relative,
+    AnyElement, App, BoxShadow, ClickEvent, ClipboardItem, Context, DragMoveEvent, ElementId,
+    Entity, FontWeight, MouseButton, MouseDownEvent, Render, ScrollHandle, ScrollWheelEvent,
+    SharedString, TestSupportExt, Window, div, point, px, relative,
 };
-use templum_canvas::{BlockId, Point, Rect, Size, edge_scroll};
+use templum_canvas::{BlockId, EDGE_ZONE, Point, Rect, Size, edge_scroll};
 
 use crate::board::{Assignee, Board, Boards, Card, Column, Comment, Label, Priority};
 use crate::checklists;
@@ -106,19 +106,20 @@ impl Render for DragPreview {
 /// How fast a drag at `pointer` scrolls a container at `bounds` (both in pixels) along its
 /// axis, in world units a second, positive toward the end: the canvas's edge rule measured in
 /// world units, so the zone and the speed scale with the zoom `z`. Zero when the pointer is
-/// outside the container across the axis (over another column).
+/// outside the container across the axis (over another column), or more than a zone past its
+/// ends: every container hears every drag, another block's too.
 pub(crate) fn drag_speed(pointer: Point, bounds: Rect, vertical: bool, z: f32) -> f32 {
     let local = Point::new((pointer.x - bounds.x) / z, (pointer.y - bounds.y) / z);
     let size = Size {
         w: bounds.w / z,
         h: bounds.h / z,
     };
-    let (across, length) = if vertical {
-        (local.x, size.w)
+    let ((across, width), (along, length)) = if vertical {
+        ((local.x, size.w), (local.y, size.h))
     } else {
-        (local.y, size.h)
+        ((local.y, size.h), (local.x, size.w))
     };
-    if !(0.0..=length).contains(&across) {
+    if !(0.0..=width).contains(&across) || !(-EDGE_ZONE..=length + EDGE_ZONE).contains(&along) {
         return 0.0;
     }
     let speed = edge_scroll(local, size);
@@ -153,8 +154,8 @@ fn edge_scroll_state(
 
 /// One frame of scrolling while a drag is near an edge: the offset moves by the speed × `z` ×
 /// the time since the last frame (at most 0.05 s, so a stalled frame doesn't jump; none the
-/// first time), within the container's ends. True while it scrolls. A drag that ended, or a
-/// pointer out of the zone, stops it at once.
+/// first time), within the container's ends. True while it scrolls. A drag that ended, a
+/// pointer out of the zone, or an end reached stops it at once.
 fn step(
     edge: &Entity<EdgeScroll>,
     vertical: bool,
@@ -180,7 +181,8 @@ fn step(
             point((offset.x - by).clamp(-max.x, px(0.0)), offset.y)
         };
         e.handle.set_offset(moved);
-        true
+        // At an end it stops, asking for no more frames until the pointer moves again.
+        dt == 0.0 || moved != offset
     })
 }
 
@@ -807,6 +809,26 @@ fn assignee_menu(
         })
 }
 
+/// A paste into "Add an item": several lines are an item each, added at once (the field is
+/// one line); a single line is pasted into it as usual.
+fn paste_items(
+    ws: Entity<Workspace>,
+    board: u64,
+    card: u64,
+) -> impl Fn(&ClipboardItem, &mut Window, &mut App) -> bool + 'static {
+    move |clip, _, cx| {
+        let Some(text) = clip.text().filter(|t| t.contains('\n')) else {
+            return false;
+        };
+        let items = checklists::parse_items(&text);
+        ws.update(cx, |ws, cx| {
+            ws.edit_boards(|b| b.add_items(board, card, &items));
+            cx.notify();
+        });
+        true
+    }
+}
+
 /// A click that gives the card to `to`.
 fn give(
     ws: Entity<Workspace>,
@@ -1293,7 +1315,11 @@ pub(crate) fn open_card(
                                             .mt(px(4.0))
                                             // Enter adds the item: it mustn't confirm (close) the dialog.
                                             .on_action(|_: &Confirm, _, cx| cx.stop_propagation())
-                                            .child(Input::new(&item))
+                                            .child(Input::new(&item).on_paste(paste_items(
+                                                ws.clone(),
+                                                board,
+                                                card,
+                                            )))
                                             .test_support(),
                                     )
                                     .test_support(),
@@ -1351,9 +1377,20 @@ mod tests {
             "faster nearer"
         );
         assert_eq!(
-            drag_speed(at(230.0, 600.0), column, true, 1.0),
+            drag_speed(at(230.0, 470.0), column, true, 1.0),
             EDGE_SPEED,
-            "past the edge"
+            "just past the edge"
+        );
+        // Every container hears a drag: one far past its edge (another block's) stays still.
+        assert_eq!(
+            drag_speed(at(230.0, 600.0), column, true, 1.0),
+            0.0,
+            "far past the edge"
+        );
+        assert_eq!(
+            drag_speed(at(230.0, 520.0), column, true, 2.0),
+            EDGE_SPEED,
+            "the zone past it is in world units too"
         );
         assert_eq!(
             drag_speed(at(230.0, 60.0), column, true, 1.0),
@@ -1376,5 +1413,27 @@ mod tests {
         // A list shorter than both zones (a small block far away) stays still at its middle.
         let short = Rect { h: 60.0, ..column };
         assert_eq!(drag_speed(at(230.0, 80.0), short, true, 1.0), 0.0);
+    }
+
+    #[gpui_kit::test]
+    fn a_drag_held_at_a_lists_end_or_ended_asks_for_no_more_frames(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let edge = cx.new(|_| EdgeScroll {
+                speed: 500.0,
+                ..EdgeScroll::default()
+            });
+            let t0 = Instant::now();
+            let later = t0 + std::time::Duration::from_millis(16);
+            assert!(
+                step(&edge, true, 1.0, true, t0, cx),
+                "the first frame starts the clock"
+            );
+            // An unlaid list has nothing to scroll: it is at its end, and stops there.
+            assert!(!step(&edge, true, 1.0, true, later, cx), "at the end");
+            assert!(!step(&edge, true, 1.0, false, later, cx), "the drag ended");
+            assert_eq!(edge.read(cx).speed, 0.0);
+        });
     }
 }

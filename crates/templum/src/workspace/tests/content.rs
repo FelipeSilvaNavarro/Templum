@@ -1360,6 +1360,15 @@ fn claim_card_follows_who_a_card_is_for(cx: &mut TestAppContext) {
         json!({ "card": card, "for": "anyone" }),
     );
     assert!(failed && text.contains("taken by zzzzz"), "{text}");
+    let (_, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "move_card",
+        json!({ "card": card, "column": "To do" }),
+    );
+    assert!(text.ends_with(" It is for zzzzz, not you."), "{text}");
     assert!(
         !call(
             handle,

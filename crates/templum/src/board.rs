@@ -132,8 +132,10 @@ impl Priority {
 
 /// A priority by its name; one Templum doesn't know is none (a typo mustn't lose the file).
 fn known_priority<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Priority>, D::Error> {
-    let name = Option::<String>::deserialize(d)?;
-    Ok(name.and_then(|n| Priority::ALL.into_iter().find(|p| p.name() == n)))
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(value
+        .as_str()
+        .and_then(|n| Priority::ALL.into_iter().find(|p| p.name() == n)))
 }
 
 /// A comment on a card: by an agent's block id, or `"you"` for the person; `at` in Unix seconds.
@@ -753,6 +755,19 @@ mod tests {
             (card.priority, card.checklist.len()),
             (None, 0),
             "an unknown priority is none"
+        );
+        // Nor a priority that isn't a word: the file still loads.
+        let odd = r#"{"version":1,"boards":[{"id":1,"name":"B","columns":[{"id":2,"title":"T",
+            "cards":[{"id":3,"title":"x","priority":2},{"id":4,"title":"y","priority":null}]}]}]}"#;
+        std::fs::write(path(d.path()), odd).unwrap();
+        let Loaded::Saved(odd) = load(d.path()) else {
+            panic!("a priority of 2 set the file aside")
+        };
+        assert!(
+            odd.boards[0].columns[0]
+                .cards
+                .iter()
+                .all(|c| c.priority.is_none())
         );
         let mut fresh = read.clone();
         fresh.boards[0].columns[0].cards[0].assignee = None;
