@@ -369,6 +369,53 @@ impl Workspace {
         }
     }
 
+    /// A Gemini CLI just opened (`entry`) without Templum's extension, while connections are on:
+    /// once per run, a notice whose click asks to install it.
+    pub(super) fn tell_gemini(
+        &mut self,
+        entry: Option<&AgentEntry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let gemini = entry.is_some_and(|e| e.builtin == Some(Agent::GEMINI));
+        if !gemini || self.gemini_told || !self.gives().is_some_and(|g| g.connected) {
+            return;
+        }
+        let Some(data) = &self.data_dir else {
+            return;
+        };
+        let installed = templum_usage::Dirs::of(data)
+            .gemini
+            .is_some_and(|dir| templum_usage::gemini::installed(&dir));
+        if installed {
+            return;
+        }
+        self.gemini_told = true;
+        let ws = cx.entity().downgrade();
+        let notification = Notification::new()
+            .with_type(NotificationType::Warning)
+            .title("Gemini CLI has no Templum tools or status dot")
+            .message(
+                "Click to install Templum's extension: every Gemini CLI you open after gets them.",
+            )
+            .delivery(self.delivery(window))
+            .on_click(move |_, window, cx| {
+                let ws = ws.clone();
+                let (title, text, ok) = crate::settings::connections::INSTALL;
+                crate::prompt::confirm(
+                    title,
+                    text,
+                    ok,
+                    move |_, cx| {
+                        ws.update(cx, |ws, cx| ws.setup_gemini(true, cx)).ok();
+                    },
+                    window,
+                    cx,
+                );
+            });
+        show_notification(window, cx, notification);
+    }
+
     /// Settings ▸ Connections ▸ Gemini CLI: installs Templum's extension (`install`) or removes
     /// it, in the background; Settings shows what went wrong, if anything did.
     pub(crate) fn setup_gemini(&mut self, install: bool, cx: &mut Context<Self>) {

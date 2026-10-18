@@ -384,6 +384,7 @@ pub struct Agent(usize);
 impl Agent {
     pub const CLAUDE: Agent = Agent(0);
     pub const CODEX: Agent = Agent(1);
+    pub const GEMINI: Agent = Agent(2);
 
     /// Every agent, in the order menus list them.
     pub fn all() -> impl Iterator<Item = Agent> {
@@ -956,6 +957,13 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), SPECS.len(), "ids are unique");
+        for (agent, id) in [
+            (Agent::CLAUDE, "claude"),
+            (Agent::CODEX, "codex"),
+            (Agent::GEMINI, "gemini"),
+        ] {
+            assert_eq!(agent.name(), id);
+        }
         for agent in Agent::all() {
             let spec = agent.spec();
             assert_eq!(Agent::from_name(spec.id), Some(agent));

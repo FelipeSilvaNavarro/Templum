@@ -19,7 +19,7 @@ use crate::prompt;
 use crate::workspace::{TryIt, Workspace, templum_in};
 
 /// The questions Install and Remove ask: title, text, button.
-const INSTALL: (&str, &str, &str) = (
+pub(crate) const INSTALL: (&str, &str, &str) = (
     "Install Templum in Gemini CLI?",
     "Templum runs gemini extensions link with its extension. Every Gemini CLI you open then starts \
      Templum's server and hooks; outside Templum the server shows as disconnected. Remove takes it \

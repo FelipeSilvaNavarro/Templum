@@ -1125,6 +1125,8 @@ pub struct Workspace {
     pub(crate) message_try: Option<TryIt>,
     /// Settings ▸ Connections ▸ Gemini CLI: Install or Remove running, or what went wrong.
     pub(crate) gemini_job: Option<TryIt>,
+    /// A Gemini CLI opened without Templum's extension said so this run (`tell_gemini`).
+    pub(super) gemini_told: bool,
     /// The bus the programs in Templum's terminals talk to (docs/specs/connections.md); None
     /// without a data folder.
     pub(crate) bus: Option<templum_mcp::Bus>,
@@ -1453,6 +1455,7 @@ impl Workspace {
             git_version: None,
             message_try: None,
             gemini_job: None,
+            gemini_told: false,
             config,
             keymap,
             agents: effective_agents,

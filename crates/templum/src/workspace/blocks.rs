@@ -348,6 +348,7 @@ impl Workspace {
         pane.seen.agent = agent;
         self.cover_start(id, title, cx);
         remember(&mut self.space.recent, folder.to_path_buf());
+        self.tell_gemini(entry, window, cx);
         Some(id)
     }
 

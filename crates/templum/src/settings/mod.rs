@@ -22,7 +22,7 @@ use crate::workspace::Workspace;
 
 mod agents;
 mod colors;
-mod connections;
+pub(crate) mod connections;
 mod edits;
 mod fields;
 mod fonts;

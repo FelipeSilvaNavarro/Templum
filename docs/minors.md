@@ -1147,9 +1147,9 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   can't. Fix: the pane follows the session id of the first hook that speaks for it and drops another session's
   events, a new session counting only from a `SessionStart` that isn't `compact`.
 - [ ] **Gemini CLI's notice about its extension comes back at every run.** Left by the plan of card 44 (task 3,
-  `crates/templum/src/workspace/blocks.rs`): a person who doesn't want Templum's extension sees "Gemini CLI has no
-  Templum tools or status dot" the first time they open a Gemini CLI after each start of Templum. Fix: a "Don't
-  ask again" on it, kept in `config.toml` (`[connections] gemini_notice = false`).
+  `tell_gemini`, `crates/templum/src/workspace/usage.rs`): a person who doesn't want Templum's extension sees
+  "Gemini CLI has no Templum tools or status dot" the first time they open a Gemini CLI after each start of
+  Templum. Fix: a "Don't ask again" on it, kept in `config.toml` (`[connections] gemini_notice = false`).
 
 ## Keeping the canvas
 

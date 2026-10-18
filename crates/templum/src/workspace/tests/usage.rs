@@ -447,3 +447,59 @@ fn gemini_cli_links_the_extension_or_says_why_not() {
     let why = gemini_run(None, data.path(), true).unwrap_err();
     assert!(why.contains("didn't find Gemini CLI"), "{why}");
 }
+
+/// A Gemini CLI opened without Templum's extension says so once per run, never on a restore
+/// (docs/specs/connections.md, Gemini CLI without its extension).
+#[gpui_kit::test]
+fn a_gemini_cli_without_the_extension_is_told_once(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let installed = std::env::home_dir()
+        .is_some_and(|home| templum_usage::gemini::installed(&home.join(".gemini")));
+    let open = |id: &str, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let entry = ws.agents.iter().find(|a| a.id == id).cloned().unwrap();
+                let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+                ws.start_agent(
+                    Some(&entry),
+                    &entry.command,
+                    "",
+                    folder.path(),
+                    rect,
+                    window,
+                    cx,
+                )
+                .unwrap();
+            })
+        })
+        .unwrap();
+    };
+    let before = notification_count(handle, cx);
+    open("claude", cx);
+    assert_eq!(notification_count(handle, cx), before, "Claude Code");
+    // A restored Gemini CLI says nothing.
+    let item: crate::session::Item = serde_json::from_value(serde_json::json!({
+        "kind": "terminal",
+        "rect": { "x": 0.0, "y": 400.0, "w": 400.0, "h": 300.0 },
+        "folder": folder.path(),
+        "agent": "gemini",
+    }))
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.add_saved(&item, window, cx).unwrap());
+    })
+    .unwrap();
+    assert_eq!(notification_count(handle, cx), before, "restored");
+    // Connections off: nothing to install it for.
+    ws.update(cx, |ws, _| ws.config.connections.enabled = false);
+    open("gemini", cx);
+    assert_eq!(notification_count(handle, cx), before, "off");
+    ws.update(cx, |ws, _| ws.config.connections.enabled = true);
+    open("gemini", cx);
+    let told = usize::from(!installed);
+    assert_eq!(notification_count(handle, cx), before + told, "once");
+    open("gemini", cx);
+    assert_eq!(notification_count(handle, cx), before + told, "not twice");
+}
