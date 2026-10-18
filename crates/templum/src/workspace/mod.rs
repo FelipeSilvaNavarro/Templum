@@ -251,6 +251,12 @@ pub(crate) struct Pane {
 }
 
 impl Pane {
+    /// The agent it runs, by id: the one Templum sees running in it, else the one Templum
+    /// started there (before the first snapshot read it).
+    pub fn agent(&self) -> Option<&str> {
+        self.seen.agent.as_deref().or(self.flags_for.as_deref())
+    }
+
     /// Its saved item at `rect`, with the block id `uid`: its folder and agent as last seen (a
     /// snapshot reads them in the background), no session (pasted, it resumes no agent).
     pub fn item(&self, rect: templum_canvas::Rect, uid: String) -> session::TerminalItem {

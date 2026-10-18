@@ -9,10 +9,11 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::Confirm;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, FontWeight, MouseButton,
+    AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Entity, FontWeight, MouseButton,
     MouseDownEvent, Render, ScrollWheelEvent, SharedString, TestSupportExt, Window, div, point, px,
     relative,
 };
@@ -624,6 +625,85 @@ fn edit_typed(ws: &mut Workspace, typed: &Cell<bool>, f: impl FnOnce(&mut Boards
     }
 }
 
+/// The open card's assignee button, showing `who`: its menu gives the card to anyone, one
+/// agent session running now, or any session of an agent. Each choice is one Ctrl+Z step.
+fn assignee_menu(
+    ws: &Entity<Workspace>,
+    board: u64,
+    card: u64,
+    current: Option<Assignee>,
+    who: String,
+) -> impl IntoElement {
+    let ws = ws.clone();
+    Button::new("card-assignee")
+        .small()
+        .outline()
+        .dropdown_caret(true)
+        .label(who)
+        .dropdown_menu(move |menu, window, cx| {
+            let set = |to| give(ws.clone(), board, card, to);
+            let ws_now = ws.read(cx);
+            let mut sessions = ws_now.agent_sessions(cx);
+            // The current block first when it runs no agent now (closed, or its agent quit).
+            if let Some(Assignee::Block(uid)) = &current
+                && !sessions.iter().any(|(s, _)| s == uid)
+            {
+                let label = assignee_label(ws_now, &Assignee::Block(uid.clone()), cx);
+                sessions.insert(0, (uid.clone(), label));
+            }
+            let agents: Vec<(String, String)> = ws_now
+                .agents
+                .iter()
+                .map(|a| (a.id.clone(), a.title.clone()))
+                .collect();
+            let mut menu = menu.item(
+                PopupMenuItem::new("Anyone")
+                    .checked(current.is_none())
+                    .on_click(set(None)),
+            );
+            if !sessions.is_empty() {
+                menu = menu.separator().label("Sessions");
+                for (uid, label) in sessions {
+                    let to = Assignee::Block(uid);
+                    menu = menu.item(
+                        PopupMenuItem::new(label)
+                            .checked(current.as_ref() == Some(&to))
+                            .on_click(set(Some(to))),
+                    );
+                }
+            }
+            let (ws, current) = (ws.clone(), current.clone());
+            menu.separator()
+                .submenu("Any session of", window, cx, move |mut menu, _, _| {
+                    for (id, title) in &agents {
+                        let to = Assignee::Agent(id.clone());
+                        menu = menu.item(
+                            PopupMenuItem::new(title.clone())
+                                .checked(current.as_ref() == Some(&to))
+                                .on_click(give(ws.clone(), board, card, Some(to))),
+                        );
+                    }
+                    menu
+                })
+        })
+}
+
+/// A click that gives the card to `to`.
+fn give(
+    ws: Entity<Workspace>,
+    board: u64,
+    card: u64,
+    to: Option<Assignee>,
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+    move |_, _, cx| {
+        let to = to.clone();
+        ws.update(cx, |ws, cx| {
+            ws.edit_boards(|b| b.edit_card(board, card, |c| c.assignee = to));
+            cx.notify();
+        })
+    }
+}
+
 /// Where a card is, as its dialog says it: "In {column} on {board}".
 fn place(boards: &Boards, board: u64, card: u64) -> String {
     let Some(b) = boards.board(board) else {
@@ -1045,7 +1125,13 @@ pub(crate) fn open_card(
                             .gap(px(8.0))
                             .child(
                                 property("Assignee")
-                                    .child(div().text_size(px(13.0)).child(who))
+                                    .child(assignee_menu(
+                                        &ws,
+                                        board,
+                                        card,
+                                        shown.assignee.clone(),
+                                        who,
+                                    ))
                                     .children(unassign),
                             )
                             .child(

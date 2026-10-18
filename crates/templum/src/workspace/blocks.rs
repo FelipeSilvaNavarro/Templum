@@ -92,6 +92,28 @@ impl Workspace {
         }
     }
 
+    /// Every terminal running an agent, as (block id, label), for a card's assignee menu: the
+    /// active workspace first, then the others in the sidebar's order, each back to front. The
+    /// label is its title as agents see it, with " — {workspace}" outside the active one.
+    pub(crate) fn agent_sessions(&self, cx: &App) -> Vec<(String, String)> {
+        self.spaces()
+            .flat_map(|space| {
+                let active = std::ptr::eq(space, &self.space);
+                space.canvas.blocks().iter().filter_map(move |b| {
+                    space.terminal(b.id)?.agent()?;
+                    let uid = space.uids.get(&b.id)?.clone();
+                    let title = self.about(&space.blocks[&b.id], cx).1;
+                    let label = if active {
+                        title
+                    } else {
+                        format!("{title} — {}", space.name)
+                    };
+                    Some((uid, label))
+                })
+            })
+            .collect()
+    }
+
     /// Changes the boards with `f`, keeping them as they were for Ctrl+Z (when it changed
     /// them).
     pub(crate) fn edit_boards<R>(&mut self, f: impl FnOnce(&mut Boards) -> R) -> R {
