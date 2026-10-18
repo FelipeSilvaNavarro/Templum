@@ -191,6 +191,9 @@ fn for_it(tool: &Value) -> Value {
     serde_json::from_str(&text).expect("JSON")
 }
 
+/// The longest `reason`, in bytes: the approval draws it whole above its buttons.
+const MAX_REASON: usize = 500;
+
 /// `reason`, on every tool that may wait for the person.
 fn reason() -> Value {
     json!({ "type": "string", "description": "Why, in a few words: the person sees it in the approval." })
@@ -457,10 +460,13 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
         }
         _ => return Err(format!("Unknown tool: {name}")),
     };
-    Ok(Parsed {
-        call,
-        reason: optional("reason")?,
-    })
+    let reason = optional("reason")?;
+    if reason.as_ref().is_some_and(|r| r.len() > MAX_REASON) {
+        return Err(format!(
+            "\"reason\" is at most {MAX_REASON} bytes: a few words."
+        ));
+    }
+    Ok(Parsed { call, reason })
 }
 
 /// What a tool does, as its action row says while it runs (followed by `…`).
@@ -607,6 +613,14 @@ mod tests {
             .reason
             .as_deref(),
             Some("r")
+        );
+        let reasoned =
+            |reason: String| parse("close_block", &json!({"block": "b", "reason": reason}));
+        assert!(reasoned("x".repeat(MAX_REASON)).is_ok());
+        assert!(
+            reasoned("x".repeat(MAX_REASON + 1))
+                .unwrap_err()
+                .contains("\"reason\" is at most 500 bytes")
         );
         assert_eq!(
             parse(

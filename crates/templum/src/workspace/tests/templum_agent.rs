@@ -1114,6 +1114,20 @@ fn a_cancel_or_the_engines_end_drops_it(cx: &mut TestAppContext) {
     assert_eq!(left, [9], "only connection 8's went");
 }
 
+/// The reason the model gave shows on one line, with what it would hide shown.
+#[gpui_kit::test]
+fn its_reason_shows_its_invisible_characters(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    let reason = "done\n\nAllow\u{202e}";
+    let close = json!({"block": uid, "reason": reason});
+    let _answers = control_later(handle, &ws, cx, 7, "close_block", close);
+    ws.read_with(cx, |ws, _| {
+        let reason = ws.templum_agent.approvals[0].parsed.reason.as_deref();
+        assert_eq!(reason, Some("done␊␊Allow⟨U+202E⟩"));
+    });
+}
+
 #[gpui_kit::test]
 fn send_keys_shows_what_the_agent_asks(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);

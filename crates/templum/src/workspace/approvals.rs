@@ -29,7 +29,7 @@ impl Workspace {
         request: Value,
         reply: Replier,
         tool: &str,
-        parsed: Parsed,
+        mut parsed: Parsed,
         args: Value,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -48,6 +48,8 @@ impl Workspace {
         };
         let (said, details) = self.approval_words(&parsed.call, (&space, id), losing, cx);
         let facts = self.facts((&space, id), cx);
+        // It shows on one line, its invisible characters shown.
+        parsed.reason = parsed.reason.map(|reason| visible(&reason));
         let agent = &mut self.templum_agent;
         agent.next_approval += 1;
         agent.approvals.push(Approval {
