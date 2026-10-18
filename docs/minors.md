@@ -1169,6 +1169,41 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   `crates/templum/src/workspace/usage.rs`): the headless test counts the notice, but the click asking Install's
   question and installing wasn't tried in a window. A person may click it and see nothing. Fix: without the extension,
   open Gemini CLI from the menu, click the notice, answer Install: Settings ▸ Connections shows it installed.
+- [ ] **`opencode`, `kilo` and `qwen` typed in PowerShell under `Set-StrictMode` lose Templum's variable.** Left by
+  the final review of card 44 (`crates/templum-terminal/src/integration/templum.ps1:73`): `(Get-Item "Env:$var"
+  -ErrorAction Ignore).Value` throws when the variable is unset, so a person with `Set-StrictMode -Version Latest`
+  sees a red error and the agent starts without Templum's server (today the whole integration already doesn't
+  install under strict mode: the entry above). Fix: `-not [Environment]::GetEnvironmentVariable($var)`.
+- [ ] **Qwen Code's hooks on Windows name no shell.** Left by the final review of card 44
+  (`crates/templum-usage/src/qwen.rs:52`): each hook is `& '<bin>' hook qwen`, PowerShell's syntax, with no `"shell"`;
+  Qwen Code's hooks take `"shell": "bash" | "powershell"`, and if its default on Windows isn't PowerShell a person sees
+  a Qwen Code whose dot never moves. Fix: write `"shell": "powershell"` on Windows (`"bash"` elsewhere) once checked
+  that Qwen Code 0.25 accepts the key.
+- [ ] **A Templum started from an OpenCode, Kilo Code or Qwen Code block keeps the first one's variable.** Left by the
+  final review of card 44 (`in_env`, `crates/templum/src/workspace/usage.rs:50`, and the shells' "already set"
+  check): `OPENCODE_CONFIG_CONTENT`, `KILO_CONFIG_CONTENT` or `QWEN_CODE_SYSTEM_SETTINGS_PATH` inherited from the first
+  Templum's block counts as the person's own, so the second Templum's agents run the first one's plugin and program
+  (still reporting to the second's bus). A developer testing a plugin change runs the old one. Fix: when Templum's
+  environment has `TEMPLUM_BUS`, don't count a value naming `/opencode/templum.js` or `/qwen/settings.json` as the
+  person's.
+- [ ] **Copilot CLI's `agentStop` hook may wait 3 seconds for nothing.** Left by the final review of card 44
+  (`copilot_answer`, `crates/templum-mcp/src/cli.rs:473`): the transcript is polled before the bus is tried, so with
+  Templum gone, connections off, or a turn that ends on an empty message, the hook takes its full 3 seconds, which
+  Copilot may wait for before its next prompt. Fix: open the bus first and return at once when it fails; stop polling
+  once an `assistant.turn_end` follows the last prompt.
+- [ ] **Copilot CLI's answer could be the last turn's on a very fast turn.** Left by the final review of card 44
+  (`hooks::copilot_answer`): the answer is the last `assistant.message` after the last `user.message`; if Copilot
+  hasn't written this turn's `user.message` when its `agentStop` hook runs, the previous turn's answer comes back. Not
+  seen (the hand check's turns were written in time). Fix: match the turn by the `sessionId` and timestamp of the
+  hook's payload, or wait for an `assistant.turn_end` written after the hook started.
+- [ ] **OpenCode's plugin reads the whole session at each turn's end.** Left by the final review of card 44
+  (`crates/templum-usage/src/opencode.js:42`): `client.session.messages` without a limit, so a long session's end
+  of turn moves megabytes of JSON before the dot turns idle. Fix: pass a small `query.limit` once checked that OpenCode
+  returns the newest messages with it.
+- [ ] **OpenCode's plugin keeps message ids in its set of subagent sessions.** Left by the final review of card 44
+  (`crates/templum-usage/src/opencode.js:60`): an assistant message carries a `parentID` too, so the set grows by one
+  id per message for the whole run. Harmless to the dot. Fix: add to it only on `session.created` and
+  `session.updated`.
 - [ ] **Gemini CLI's notice about its extension comes back at every run.** Left by the plan of card 44 (task 3,
   `tell_gemini`, `crates/templum/src/workspace/usage.rs`): a person who doesn't want Templum's extension sees
   "Gemini CLI has no Templum tools or status dot" the first time they open a Gemini CLI after each start of
