@@ -500,6 +500,29 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   gpui-fast repaints every scrolled frame of a list whose offset `render` read. A person sees nothing; scrolling a long
   diff costs what it did before. Fix: pick the sticky header's file in a `canvas` prepaint instead of in `render`.
 
+## Kanban
+
+- [ ] **A short card list scrolls from anywhere but its exact middle while a card is dragged over it.** A list
+  shorter than its two edge zones (80 world units: a block resized near its smallest whose cards overflow) is in both
+  zones at once, and `edge_scroll` gives (2 × at − length) / 40 × 900: 10 units off its middle scrolls at 450 a
+  second (`drag_speed`, `crates/templum/src/kanban.rs`). Fix: when the length is under three zones, shrink the zone
+  to a third of it, so the middle third stays still.
+- [ ] **A column scrolled out of the board may scroll its cards while a card is dragged just past the block.** Its
+  list is still laid out and hears every drag: a pointer within a zone past the block's right edge, level with that
+  hidden list's top or bottom, scrolls it, and the column comes into view already scrolled (`on_edge`,
+  `crates/templum/src/kanban.rs`). Fix: pass the columns row's visible bounds to the column lists' listeners and
+  ignore a pointer outside them.
+- [ ] **`edit_card` can answer "Card 40: ."** when its `add_items` holds only blank lines or bare markers (`"- "`):
+  `parse_items` finds no item and nothing else was asked, so the answer lists nothing (`edit_card`,
+  `crates/templum/src/workspace/content.rs`). Fix: refuse with the "needs something to change" sentence when nothing
+  is left to do.
+- [ ] **A label that isn't a word sets `boards.json` aside.** `known_labels` (`crates/templum/src/board.rs`) reads
+  strings, so `"labels": [2]` in a hand-edited file fails the whole file, which is set aside with every board (a
+  priority reads any value since card 40). Fix: read `serde_json::Value`s and keep the known strings.
+- [ ] **A drag move over a board asks for a redraw GPUI already makes.** `on_edge` calls `window.refresh()`, and GPUI
+  refreshes on every mouse move during a drag (`crates/templum/src/kanban.rs`); nobody sees a difference. Fix: delete
+  the call.
+
 ## Connections
 
 Left by batch 1 (the bus) of `docs/specs/connections.md`; line numbers are those of `development` at 2c3c809.

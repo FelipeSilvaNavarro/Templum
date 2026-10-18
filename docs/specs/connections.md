@@ -1,8 +1,9 @@
 # Connections: blocks that talk to each other
 
 - **Date:** 2026-10-15
-- **Status:** Batches 1 to 8, [agents typed in a terminal](#agents-typed-in-a-terminal) and
-  [every agent that can take it](#every-agent-that-can-take-it) (kanban card 44) implemented
+- **Status:** Batches 1 to 8, [agents typed in a terminal](#agents-typed-in-a-terminal),
+  [every agent that can take it](#every-agent-that-can-take-it) (kanban card 44) and
+  [cards for an agent](#cards-for-an-agent) (kanban card 40) implemented
 - **Builds on:** [agents.md](agents.md) (opening agents), [usage.md](usage.md) (the `--settings` Templum types for
   Claude Code), [shell-integration.md](shell-integration.md) (command marks, notifications),
   [persistence.md](persistence.md), [kanban.md](kanban.md) and [cockpit.md](cockpit.md) (notes, the editor, drawing)
@@ -476,7 +477,7 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 
 ### Cards for an agent
 
-*Planned (kanban card 40, [kanban.md](kanban.md#version-2-kanban-card-40)):
+*Implemented (kanban card 40, [kanban.md](kanban.md#version-2-kanban-card-40)):
 [docs/plans/2026-10-18-kanban-v2.md](../plans/2026-10-18-kanban-v2.md).*
 
 A card's assignee is none (anyone), **any session of an agent** (by the agent's id: `claude`, `codex`, an `[agents]`

@@ -201,7 +201,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   are moved or resized (`templum-canvas`'s `snap.rs`). The toolbar (`toolbar.rs`) holds the tools;
   `workspace::Tool` is the active one. Kanban boards are app-wide (`Workspace::boards`,
   `board.rs`, saved in `boards.json` with the snapshot); `kanban.rs` draws a block's board at the zoom, with GPUI's
-  drag and drop ([specs/kanban.md](specs/kanban.md)). Note blocks draw their tabs with `tab_strip.rs`. Note and checklist blocks
+  drag and drop, a card's priority, checklist and who it is for; a column or the board scrolls while a card is dragged
+  near its edge ([specs/kanban.md](specs/kanban.md)). Note blocks draw their tabs with `tab_strip.rs`. Note and checklist blocks
   share their dialog's body (`list_dialog.rs`: the rows a search finds, open, delete on a second click, new).
 - The canvas is saved by `crates/templum/src/session.rs`: one JSON file per workspace in the data folder. Every
   5 s the workspace takes a `Layout` (rects and process ids, cheap) and a background task reads the processes

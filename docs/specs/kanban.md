@@ -2,7 +2,7 @@
 
 - **Date:** 2026-10-10
 - **Status:** Implemented; [version 2](#version-2-kanban-card-40) (who a card is for, priority, a checklist, the
-  card's id, scrolling while dragging, the open card redone) planned
+  card's id, scrolling while dragging, the open card redone) implemented
 - **Builds on:** [workspaces.md](workspaces.md) and [persistence.md](persistence.md)
 
 ## Goal
@@ -175,7 +175,8 @@ column.
 
 ## Version 2 (kanban card 40)
 
-*Planned: [docs/plans/2026-10-18-kanban-v2.md](../plans/2026-10-18-kanban-v2.md).* The card, as the person wrote it:
+*Implemented (kanban card 40): [docs/plans/2026-10-18-kanban-v2.md](../plans/2026-10-18-kanban-v2.md).* The card, as
+the person wrote it:
 
 > aprimorar sistema kanban, tipo quero poder ter tarefas para o claude e tarefas para o codex, delegar tarefas para
 > agentes específicos, ou caso tarefa não tiver nenhum agente, qualquer um pode pegar ela, ou sistema de sessão
@@ -298,7 +299,8 @@ While a card is dragged, a container under it scrolls when the pointer is near i
 - **How fast:** the canvas's own edge rule for a marquee (`templum_canvas::edge_scroll`: a 40-unit zone, faster the
   nearer the edge, 900 a second at the edge or past it), measured in **world units**: zone and speed scale with the
   zoom like everything in the block, so the board moves the same at zoom 0.25 and 2 (only resizing changes a board's
-  layout, never the zoom). The pointer may leave the container on that side: full speed.
+  layout, never the zoom). The pointer may leave the container on that side, by up to
+  one zone: full speed; further off (another block, the canvas) it stops, since every container hears every drag.
 - It runs each frame while the pointer holds still (a frame asked for while it moves), from the time since the last
   frame, at most 0.05 s, so a stalled frame doesn't jump; it stops at the ends and when the drag ends or the pointer
   leaves the zone. Drop targets follow what scrolled under the pointer.
@@ -406,6 +408,13 @@ The person was away; each can be changed.
    read better than an id at the start of each title.
 9. **The assignee menu's agents in a submenu:** Templum knows 20 and more agents; the sessions running now are what
    the person picks most.
+12. **`templum kanban edit`'s `--add` may come more than once**, an item each, like `--check` and `--uncheck`.
+13. **A dialog's own Ctrl+Z is the board's:** what the dialog changes (a chip, a box, an item, the menu) is one step
+    of the kanban's Ctrl+Z, which keeps `next_id` (an undone item's id is never given out again).
+14. **Several lines pasted into "Add an item" are added at once,** an item each: the field is one line, so they
+    can't wait there for Enter.
+15. **Past an edge, one zone at most:** a drag further off scrolls nothing, so a card dragged in one block never
+    scrolls another block's board.
 
 ### Considered and left out
 
