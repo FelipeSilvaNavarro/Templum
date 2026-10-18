@@ -11,6 +11,9 @@ if ($null -eq $Global:__TemplumPrompt) {
 
     function Global:prompt {
         $ok = $global:?
+        # An agent's function (below) leaves `$?` true whatever its program's exit code.
+        if ($Global:__TemplumAgentExit) { $ok = $false }
+        $Global:__TemplumAgentExit = $null
         Set-StrictMode -Off
         $code = $global:LASTEXITCODE
         $esc = [char]27
@@ -42,6 +45,40 @@ if ($null -eq $Global:__TemplumPrompt) {
                 [Console]::Write("$([char]27)]133;C$([char]7)")
             }
             $line
+        }
+    }
+
+    # A `claude` or `codex` typed here gets Templum's MCP server and hooks: the words of
+    # TEMPLUM_CLAUDE_ARGS or TEMPLUM_CODEX_ARGS, one per line, before the person's, unless they
+    # name Templum's already (docs/specs/connections.md, "Agents typed in a terminal"). Not over
+    # the person's own function of that name; their alias comes before any function anyway. The
+    # program is the first application or script of that name (npm's claude.ps1 included):
+    # several on PATH make an array `&` can't run.
+    function Global:__TemplumAgent($name, $words, $given) {
+        $program = Get-Command $name -CommandType Application, ExternalScript |
+            Select-Object -First 1
+        if (-not $program) { return }
+        $words = @($words -split "`n" | Where-Object { $_ })
+        & $program @words @given
+        $Global:__TemplumAgentExit = $LASTEXITCODE
+    }
+    if ($env:TEMPLUM_CLAUDE_ARGS -and -not (Test-Path Function:\claude)) {
+        function Global:claude {
+            $words = $env:TEMPLUM_CLAUDE_ARGS
+            foreach ($a in $args) {
+                if ("$a" -in '--settings', '--mcp-config' -or "$a" -like '--settings=*' -or
+                    "$a" -like '--mcp-config=*') { $words = '' }
+            }
+            __TemplumAgent claude $words $args
+        }
+    }
+    if ($env:TEMPLUM_CODEX_ARGS -and -not (Test-Path Function:\codex)) {
+        function Global:codex {
+            $words = $env:TEMPLUM_CODEX_ARGS
+            foreach ($a in $args) {
+                if ("$a" -like 'mcp_servers.templum.*') { $words = '' }
+            }
+            __TemplumAgent codex $words $args
         }
     }
 }

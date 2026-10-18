@@ -806,6 +806,82 @@ mod tests {
         }
 
         #[test]
+        fn fish_gives_typed_agents_templums_words() {
+            let home = Home::new();
+            home.write(
+                ".config/fish/config.fish",
+                format!("cd '{}'\n", home.start()),
+            );
+            let path = home.fake_agents();
+            if let Some(term) = home.spawn_with("fish", &[], &with_agents(&path)) {
+                typed_agents(&term, &home, "set -e TEMPLUM_CLAUDE_ARGS", true);
+            }
+        }
+
+        /// fish's `alias` makes a function: the person's, which runs instead of Templum's.
+        #[test]
+        fn fish_keeps_the_persons_function() {
+            let home = Home::new();
+            home.write(
+                ".config/fish/config.fish",
+                format!(
+                    "function codex; command codex mine $argv; end\n\
+                     alias claude 'claude --model opus'\n\
+                     cd '{}'\n",
+                    home.start()
+                ),
+            );
+            let path = home.fake_agents();
+            let Some(term) = home.spawn_with("fish", &[], &with_agents(&path)) else {
+                return;
+            };
+            type_first(&term, &home, "codex hi", "codex");
+            wait_args(&term, &home, "codex", &["mine", "hi"]);
+            term.write(&b"claude hi\r"[..]);
+            wait_args(&term, &home, "claude", &["--model", "opus", "hi"]);
+        }
+
+        /// The agent's exit code reaches the prompt's mark, though a function's caller sees `$?`
+        /// true.
+        #[test]
+        fn powershell_gives_typed_agents_templums_words() {
+            let home = Home::new();
+            home.write(
+                ".config/powershell/Microsoft.PowerShell_profile.ps1",
+                format!("Set-Location '{}'\n", home.start()),
+            );
+            let path = home.fake_agents();
+            if let Some(term) = home.spawn_with("pwsh", &["-NoLogo"], &with_agents(&path)) {
+                typed_agents(&term, &home, "Remove-Item Env:TEMPLUM_CLAUDE_ARGS", true);
+            }
+        }
+
+        /// In PowerShell an alias comes before any function: the person's wins too.
+        #[test]
+        fn powershell_keeps_the_persons_function_and_alias() {
+            let home = Home::new();
+            home.write(
+                ".config/powershell/Microsoft.PowerShell_profile.ps1",
+                format!(
+                    "function codex {{ & (Get-Command codex -CommandType Application | \
+                     Select-Object -First 1) mine @args }}\n\
+                     Set-Alias claude '{}'\n\
+                     Set-Location '{}'\n",
+                    home.dir.path().join("bin").join("claude").display(),
+                    home.start()
+                ),
+            );
+            let path = home.fake_agents();
+            let Some(term) = home.spawn_with("pwsh", &["-NoLogo"], &with_agents(&path)) else {
+                return;
+            };
+            type_first(&term, &home, "codex hi", "codex");
+            wait_args(&term, &home, "codex", &["mine", "hi"]);
+            term.write(&b"claude hi\r"[..]);
+            wait_args(&term, &home, "claude", &["hi"]);
+        }
+
+        #[test]
         fn powershell() {
             let home = Home::new();
             home.write(

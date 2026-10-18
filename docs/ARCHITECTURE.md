@@ -42,7 +42,10 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
 - **Shell integration:** the reader thread reads the PTY through a scanner (`templum-terminal`'s `tap.rs`) that
   hears the sequences vte drops: a command's start and end (OSC 133), the folder (OSC 7, 9;9), notifications (OSC 9,
   777). It passes every byte on. The UI reads what it heard each frame; a command's end or a call for attention wakes
-  the UI even in a hidden workspace. See [specs/shell-integration.md](specs/shell-integration.md).
+  the UI even in a hidden workspace. See [specs/shell-integration.md](specs/shell-integration.md). The scripts also
+  define a `claude` and a `codex` function that put the words of `TEMPLUM_CLAUDE_ARGS` and `TEMPLUM_CODEX_ARGS`,
+  which every new terminal gets (`Workspace::agent_env`), before the person's
+  ([specs/connections.md](specs/connections.md#agents-typed-in-a-terminal)).
 - **Painting never waits on a terminal.** Each frame re-arms the terminals it paints and copies the rows
   alacritty reports as changed into a per-terminal snapshot (nothing when nothing changed); if the PTY
   thread holds the lock, the previous snapshot is drawn and a frame is asked for. After 100 ms it waits,
@@ -155,8 +158,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
 
 - `config.toml` is read into a typed `Config` (`crates/templum/src/config.rs`) and polled every 0.5 s. A reload
   applies only what changed; an invalid file keeps the last valid config and shows a notification.
-  `[connections] enabled` decides whether the Claude Code and Codex Templum opens get its MCP server and hooks
-  ([specs/connections.md](specs/connections.md)); the bus runs either way.
+  `[connections] enabled` decides whether the Claude Code and Codex Templum opens, or that are typed in its
+  terminals, get its MCP server and hooks ([specs/connections.md](specs/connections.md)); the bus runs either way.
 - Shortcuts are Templum's own keymap (`crates/templum/src/keys.rs`), matched in the workspace's key handler, so a
   reload can replace them. GPUI key bindings are only used to keep Tab for the shell. Commands that only make sense
   in an editor (`save`, `close_tab`, `go_to_line`) are dropped by `effective` when no editor block has the focus, so

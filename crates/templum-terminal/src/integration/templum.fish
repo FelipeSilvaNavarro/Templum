@@ -13,4 +13,33 @@ if status is-interactive; and not set -q __templum_installed
     function __templum_prompt --on-event fish_prompt
         printf '\e]7;file://%s%s\a\e]133;A\a' $hostname (string replace -a '%' '%25' -- $PWD)
     end
+
+    # A `claude` or `codex` typed here gets Templum's MCP server and hooks: the words of
+    # TEMPLUM_CLAUDE_ARGS or TEMPLUM_CODEX_ARGS, one per line, before the person's, unless they
+    # name Templum's already (docs/specs/connections.md, "Agents typed in a terminal"). Not over
+    # the person's own function (an alias, an autoloaded one): fish read their config before this.
+    if test -n "$TEMPLUM_CLAUDE_ARGS"; and not functions -q claude
+        function claude
+            set -l words (string split --no-empty \n -- "$TEMPLUM_CLAUDE_ARGS")
+            for a in $argv
+                switch $a
+                    case --settings '--settings=*' --mcp-config '--mcp-config=*'
+                        set words
+                end
+            end
+            command claude $words $argv
+        end
+    end
+    if test -n "$TEMPLUM_CODEX_ARGS"; and not functions -q codex
+        function codex
+            set -l words (string split --no-empty \n -- "$TEMPLUM_CODEX_ARGS")
+            for a in $argv
+                switch $a
+                    case 'mcp_servers.templum.*'
+                        set words
+                end
+            end
+            command codex $words $argv
+        end
+    end
 end

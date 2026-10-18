@@ -1,7 +1,7 @@
 # Connections: blocks that talk to each other
 
 - **Date:** 2026-10-15
-- **Status:** Batches 1 to 8 implemented; [agents typed in a terminal](#agents-typed-in-a-terminal) planned
+- **Status:** Batches 1 to 8 and [agents typed in a terminal](#agents-typed-in-a-terminal) implemented
 - **Builds on:** [agents.md](agents.md) (opening agents), [usage.md](usage.md) (the `--settings` Templum types for
   Claude Code), [shell-integration.md](shell-integration.md) (command marks, notifications),
   [persistence.md](persistence.md), [kanban.md](kanban.md) and [cockpit.md](cockpit.md) (notes, the editor, drawing)
@@ -36,7 +36,7 @@ agents without MCP, scripts and hooks.
    runs, answers its dialogs with real keys, stops it, and closes the blocks it opened.
 10. A `claude` or `codex` a person types in a Templum terminal (bash, zsh, fish, PowerShell) gets what the ones
     Templum opens get, without Templum writing anything outside its own folder
-    ([Agents typed in a terminal](#agents-typed-in-a-terminal), planned).
+    ([Agents typed in a terminal](#agents-typed-in-a-terminal)).
 
 ## Out of scope
 
@@ -527,8 +527,8 @@ Claude Code merges hooks from every settings source, so the person's own hooks s
 Only for an agent Templum opens (the canvas menu, `spawn_agent`, and resuming on restore), when `[connections]` is
 on, there is a bus, the shell isn't WSL, and every path is typeable (`typed_path` of [usage.md](usage.md); when
 one isn't, the agent starts without connections, and a notification says so once per session; the notification is
-deferred: [minors](../minors.md#connections)). A `claude` typed by hand gets nothing yet:
-[Agents typed in a terminal](#agents-typed-in-a-terminal) (planned) gives it the same.
+deferred: [minors](../minors.md#connections)). A `claude` or `codex` typed by hand gets the same through
+[Agents typed in a terminal](#agents-typed-in-a-terminal).
 
 **Claude Code:** `claude --settings <data>/claude-statusline.json --mcp-config <data>/mcp.json`. The settings file
 keeps the status line of [usage.md](usage.md) when `usage.claude_limits` is on, and gains the hooks. The server
@@ -605,7 +605,7 @@ otherwise the running executable, without the ` (deleted)` an upgrade leaves on 
 
 ## Agents typed in a terminal
 
-*Planned (kanban card 42): [docs/plans/2026-10-18-agents-in-any-terminal.md](../plans/2026-10-18-agents-in-any-terminal.md).*
+*Implemented (kanban card 42): [docs/plans/2026-10-18-agents-in-any-terminal.md](../plans/2026-10-18-agents-in-any-terminal.md).*
 
 A person opens a terminal block and types `claude` or `codex`: that agent gets what one Templum opens gets, its MCP
 server, its hooks (the status dot, delegating to it, `wait_for_idle`) and, for Claude Code, the status line of
@@ -655,8 +655,8 @@ front of the person's:
   an alias of the same name doesn't break its definition.
 - `command claude`, a path (`~/.local/bin/claude`), `npx`, `sudo` or a script: the program alone, as outside Templum.
 - The exit status: the agent's, in every shell (PowerShell's prompt is told it: a function's caller would see `$?`
-  true). In PowerShell the function passes `--` and `-p:x` on as PowerShell parses them (`--` dropped, `-p:` and `x`
-  apart; [minors](../minors.md#connections)).
+  true). In PowerShell the function passes `--` and `-p:x` on as PowerShell parses them (`--` dropped, `-p:x`
+  reaching the agent as `x`; [minors](../minors.md#connections)).
 
 **Where it doesn't reach** (the agent runs as outside Templum; the canvas menu still opens a connected one):
 
@@ -908,7 +908,7 @@ and not while a call waits for the task, and a balloon isn't told; a change from
 restarts its timeout, none goes before a spawn's prompt, and another agent is still refused; a task past its timeout
 comes back only at its end; a task handed with `wait` gets no notice of its timeout.
 
-**Agents typed in a terminal (planned):** the raw words are what is typed, unquoted (a path with a space is one
+**Agents typed in a terminal:** the raw words are what is typed, unquoted (a path with a space is one
 word), with `--mcp-config=`; a new terminal's variables follow the switch, the status line, WSL, cmd and Windows
 PowerShell 5.1 as `typed` does; in bash, zsh, fish and PowerShell started as Templum starts them, with a fake `claude`
 and `codex` on PATH that write down their arguments and exit 3: `claude hi` runs with Templum's words then `hi` (its

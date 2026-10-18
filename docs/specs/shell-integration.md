@@ -72,9 +72,10 @@ Each script changes nothing but this:
 - fish: handlers for `fish_preexec`, `fish_postexec` and `fish_prompt`.
 - PowerShell: the prompt function is wrapped; the prompt it wraps still sees `$?` and `$LASTEXITCODE`. With
   PSReadLine, reading the command line is wrapped to send C; without it, prompts and the folder are reported.
-- All four (planned, [connections.md](connections.md#agents-typed-in-a-terminal)): with `TEMPLUM_CLAUDE_ARGS` or
+- All four ([connections.md](connections.md#agents-typed-in-a-terminal)): with `TEMPLUM_CLAUDE_ARGS` or
   `TEMPLUM_CODEX_ARGS` set, a function `claude` or `codex` that puts Templum's arguments before the person's, unless
-  the person has a function of that name.
+  the person has a function of that name. In PowerShell the prompt reports the agent's exit code, which `$?` after a
+  function doesn't tell, and the prompt it wraps sees `$?` false when it isn't 0.
 
 Prompts themselves (`PS1` and the like) aren't changed: A is sent just before the shell draws one.
 
