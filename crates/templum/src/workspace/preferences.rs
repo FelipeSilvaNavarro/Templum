@@ -146,6 +146,36 @@ impl Workspace {
         })
     }
 
+    /// Deletes the account `id` (docs/specs/accounts.md, Deleting an account), unless
+    /// `account_in_use` says why not: its entry, and the folder Templum made for it, its links
+    /// first (what they point at stays). A folder the person chose stays.
+    pub(crate) fn delete_account(
+        &mut self,
+        id: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if let Some(why) = self.account_in_use(id) {
+            return Err(why);
+        }
+        let Some(entry) = self.agents.iter().find(|a| a.id == id).cloned() else {
+            return Err(format!("Templum has no account {id}"));
+        };
+        let Some(account) = entry.account else {
+            return Err(format!("{} isn't an account", entry.title));
+        };
+        if !account.chosen {
+            match templum_usage::accounts::delete(account.kind, &account.folder) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(format!("Couldn't delete {}: {e}", account.folder.display()));
+                }
+            }
+        }
+        self.remove_agent(id, cx);
+        Ok(())
+    }
+
     /// One of Templum's agents back to its defaults, or one of the user's deleted.
     pub(crate) fn remove_agent(&mut self, id: &str, cx: &mut Context<Self>) {
         let key = id.to_string();

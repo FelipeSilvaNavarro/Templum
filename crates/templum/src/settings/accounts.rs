@@ -127,6 +127,18 @@ fn account_row(ws: &Workspace, entity: &Entity<Workspace>, entry: &AgentEntry) -
             .active(move |s| s.bg(ui.pressed))
             .child(label)
     };
+    let log_in = {
+        let (e, id) = (entity.clone(), id.clone());
+        pill(format!("log-in-{id}"), "Log in")
+            .on_click(move |_: &ClickEvent, window, cx| {
+                let id = id.clone();
+                e.update(cx, |ws, cx| {
+                    ws.close_settings(window, cx);
+                    ws.log_in(&id, window, cx);
+                })
+            })
+            .test_support()
+    };
     let edit = {
         let (e, entry) = (entity.clone(), entry.clone());
         pill(format!("edit-account-{id}"), "Edit")
@@ -144,6 +156,7 @@ fn account_row(ws: &Workspace, entity: &Entity<Workspace>, entry: &AgentEntry) -
                 .items_center()
                 .gap(px(8.0))
                 .child(show)
+                .child(log_in)
                 .child(edit),
         )
 }
@@ -182,12 +195,15 @@ pub(crate) struct Form {
     theirs: BTreeMap<&'static str, PathBuf>,
     /// The name a chosen agent gives, put in its field at the next render.
     named: Option<String>,
+    ws: gpui_kit::WeakEntity<Workspace>,
+    red: gpui_kit::Hsla,
     _folder_change: Subscription,
 }
 
 impl Form {
     fn new(
         ws: &Workspace,
+        owner: gpui_kit::WeakEntity<Workspace>,
         entry: Option<&AgentEntry>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -226,6 +242,8 @@ impl Form {
             share: draft.map(|d| d.share).unwrap_or_default(),
             theirs: BTreeMap::new(),
             named: None,
+            ws: owner,
+            red: crate::grid::hsla(ws.theme.palette.ansi[1], 1.0),
             _folder_change,
         };
         form.read_links(false, cx);
@@ -563,10 +581,79 @@ impl Render for Form {
         if let Some(text) = kind.note {
             column = column.child(note(text.to_string()));
         }
-        column.child(note(
+        let column = column.child(note(
             "Its login is never shared: log in to it with Log in.".to_string(),
-        ))
+        ));
+        let Some(id) = self.id.clone() else {
+            return column;
+        };
+        let (ws, red) = (self.ws.clone(), self.red);
+        column.child(
+            div()
+                .id("delete-account")
+                .mt(px(8.0))
+                .px(px(10.0))
+                .py(px(4.0))
+                .rounded(px(6.0))
+                .text_size(px(12.0))
+                .text_color(red)
+                .cursor_pointer()
+                .hover(move |s| s.bg(ui.hover))
+                .child("Delete this account")
+                .on_click(move |_: &ClickEvent, window, cx| {
+                    ask_delete(&ws, &id, window, cx);
+                })
+                .test_support(),
+        )
     }
+}
+
+/// Asks before deleting the account `id` (docs/specs/accounts.md, Deleting an account), then
+/// deletes it and closes its dialog, or says why it can't.
+fn ask_delete(ws: &gpui_kit::WeakEntity<Workspace>, id: &str, window: &mut Window, cx: &mut App) {
+    let Some(entry) = ws
+        .upgrade()
+        .and_then(|ws| ws.read(cx).agents.iter().find(|a| a.id == id).cloned())
+    else {
+        return;
+    };
+    let Some(account) = &entry.account else {
+        return;
+    };
+    let mut lines = vec![if account.chosen {
+        format!("Its folder {} stays.", tilde(&account.folder))
+    } else {
+        "Its folder is deleted: its login and everything it doesn't share. What it shares stays \
+         where it is."
+            .to_string()
+    }];
+    let keychain = match account.kind.keychain {
+        templum_usage::accounts::Keychain::Always => true,
+        templum_usage::accounts::Keychain::MacOs => cfg!(target_os = "macos"),
+        templum_usage::accounts::Keychain::Never => false,
+    };
+    if keychain {
+        lines.push(
+            "Its login stays in the system's keychain: run /logout in it first to remove it."
+                .to_string(),
+        );
+    }
+    let (ws, id) = (ws.clone(), id.to_string());
+    crate::prompt::confirm(
+        format!("Delete {}?", entry.title),
+        lines.join(" "),
+        "Delete",
+        move |window, cx| {
+            let deleted = ws.update(cx, |ws, cx| ws.delete_account(&id, cx));
+            match deleted {
+                Ok(Ok(())) => window.close_all_dialogs(cx),
+                Ok(Err(why)) => show_notification(window, cx, Notification::warning(why)),
+                Err(_) => {}
+            }
+        },
+        window,
+        cx,
+    );
 }
 
 /// Editing an account (`entry`), or adding one (None), in a dialog; Save writes its entry and
@@ -577,7 +664,8 @@ pub(crate) fn account_dialog(
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
-    let form = cx.new(|cx| Form::new(ws, entry.as_ref(), window, cx));
+    let owner = cx.weak_entity();
+    let form = cx.new(|cx| Form::new(ws, owner, entry.as_ref(), window, cx));
     let entity = cx.entity();
     let title = match &entry {
         Some(entry) => format!("Edit {}", entry.title),

@@ -445,6 +445,7 @@ pub(super) fn with_agents(ws: &Entity<Workspace>, cx: &mut TestAppContext, text:
     ws.update(cx, |ws, _| {
         let config = crate::config::parse(text).unwrap();
         ws.agents = crate::agents::effective(&config.agents, &[], ws.data_dir.as_deref());
+        ws.config.agents = config.agents;
     });
 }
 

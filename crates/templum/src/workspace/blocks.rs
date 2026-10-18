@@ -379,6 +379,42 @@ impl Workspace {
         Some(id)
     }
 
+    /// Settings ▸ Agents ▸ Accounts ▸ Log in: a terminal of the account `id` at the view's
+    /// center, in the home folder, with its agent's login command typed and sent; the person logs
+    /// in there (docs/specs/accounts.md, Log in). Templum never reads nor writes the login.
+    pub(crate) fn log_in(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<BlockId> {
+        let entry = self
+            .agents
+            .iter()
+            .find(|a| a.id == id && a.account.is_some())
+            .cloned()?;
+        let kind = entry.account.as_ref()?.kind;
+        self.prepare_account(&entry, window, cx);
+        let vars = self.agent_vars(Some(&entry), &super::usage::in_env);
+        let rect = self.new_terminal_rect(window);
+        let block = self.spawn_block_with(rect, std::env::home_dir(), vars, window, cx)?;
+        let pane = self.space.terminal_mut(block)?;
+        // The shell reads it once it is ready.
+        pane.term
+            .write(format!("{}\r", kind.login_command).into_bytes());
+        pane.account = Some(entry.id.clone());
+        if let Some(hint) = kind.login_hint {
+            let agent = entry.builtin.map_or(kind.agent, |a| a.title());
+            show_notification(
+                window,
+                cx,
+                Notification::info(format!("Type {hint} in {agent} to log in.")),
+            );
+        }
+        window.focus(&self.focus_handle, cx);
+        Some(block)
+    }
+
     /// Applies the account `entry`'s choices to its folder as it starts (docs/specs/accounts.md,
     /// Making and changing it), and says what went wrong; nothing for an agent.
     pub(crate) fn prepare_account(

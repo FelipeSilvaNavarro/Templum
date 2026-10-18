@@ -884,3 +884,201 @@ fn a_folder_change_waits_for_the_blocks_and_keeps_the_old_one(cx: &mut TestAppCo
     assert!(new.is_dir(), "its choices applied in the new folder");
     assert!(old.is_dir(), "the old one, with its login, stays");
 }
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn log_in_opens_a_block_of_the_account(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let script = "echo \"dir=$CLAUDE_CONFIG_DIR;\"; exec cat";
+    let command = ("sh".to_string(), vec!["-c".to_string(), script.to_string()]);
+    let (handle, ws) = open_as(cx, Some(command), None, Some(data.path().to_path_buf()));
+    super::agents::with_agents(&ws, cx, super::agents::CLAUDE2);
+    let id = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.log_in("claude2", window, cx))
+        })
+        .unwrap()
+        .expect("a block");
+    let account = data.path().join("accounts").join("claude2");
+    super::bus::screen_with(&ws, cx, id, &format!("dir={};", account.display()));
+    // The test's shell echoes it: no agent ever runs here.
+    super::bus::screen_with(&ws, cx, id, "claude auth login");
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.space.terminal(id).unwrap().account.as_deref(),
+            Some("claude2")
+        );
+    });
+}
+
+/// Deletes the account `id`, as its dialog's Delete does once asked.
+fn delete(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: &str) -> Result<(), String> {
+    ws.update(cx, |ws, cx| ws.delete_account(id, cx))
+}
+
+#[gpui_kit::test]
+fn deleting_an_account_removes_its_folder_only(cx: &mut TestAppContext) {
+    let own = tempfile::tempdir().unwrap();
+    crate::agents::OWN_FOLDERS.set(Some(own.path().to_path_buf()));
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    super::agents::with_agents(
+        &ws,
+        cx,
+        "[agents.claude2]\nof = \"claude\"\nshare = { skills = \"claude\" }\n",
+    );
+    let folder = tempfile::tempdir().unwrap();
+    let block = super::agents::launch(handle, &ws, cx, "claude2", folder.path());
+    ws.update(cx, |ws, cx| {
+        ws.space.blocks.remove(&block);
+        ws.space.canvas.remove(block);
+        cx.notify();
+    });
+    let keep = own.path().join("claude").join("skills").join("keep");
+    std::fs::write(&keep, "mine").unwrap();
+    let account = data.path().join("accounts").join("claude2");
+    assert!(account.join("skills").is_symlink());
+    assert_eq!(delete(&ws, cx, "claude2"), Ok(()));
+    assert!(!account.exists(), "its folder goes");
+    assert_eq!(
+        std::fs::read(&keep).unwrap(),
+        b"mine",
+        "what it shared stays"
+    );
+    ws.read_with(cx, |ws, _| {
+        let agents = &ws.pending.as_ref().unwrap_or(&ws.config).agents;
+        assert!(!agents.contains_key("claude2"));
+    });
+}
+
+#[gpui_kit::test]
+fn an_account_in_use_or_shared_isnt_deleted(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    super::agents::with_agents(
+        &ws,
+        cx,
+        concat!(
+            "[agents.claude2]\nof = \"claude\"\nname = \"Claude Code 2\"\n",
+            "[agents.claude4]\nof = \"claude\"\nname = \"Claude Code 4\"\n",
+            "share = { skills = \"claude2\" }\n",
+        ),
+    );
+    let folder = tempfile::tempdir().unwrap();
+    let running = super::agents::launch(handle, &ws, cx, "claude2", folder.path());
+    // Its agent quit there: only its shell, still the account's.
+    let shell = super::agents::launch(handle, &ws, cx, "claude2", folder.path());
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(shell).unwrap().seen.agent = None
+    });
+    assert_eq!(
+        delete(&ws, cx, "claude2"),
+        Err("Claude Code 2 has 2 blocks: close them first".to_string())
+    );
+    ws.update(cx, |ws, cx| {
+        for block in [running, shell] {
+            ws.space.blocks.remove(&block);
+            ws.space.canvas.remove(block);
+        }
+        cx.notify();
+    });
+    assert_eq!(
+        delete(&ws, cx, "claude2"),
+        Err("Claude Code 4 shares Claude Code 2's skills: change it first".to_string())
+    );
+    assert!(
+        data.path().join("accounts").join("claude2").is_dir(),
+        "nothing deleted"
+    );
+}
+
+#[gpui_kit::test]
+fn a_chosen_folder_stays(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let chosen = tempfile::tempdir().unwrap();
+    let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    super::agents::with_agents(
+        &ws,
+        cx,
+        &format!(
+            "[agents.claude2]\nof = \"claude\"\nfolder = \"{}\"\n",
+            chosen.path().display()
+        ),
+    );
+    assert_eq!(delete(&ws, cx, "claude2"), Ok(()));
+    assert!(
+        chosen.path().is_dir(),
+        "a folder the person chose is theirs"
+    );
+}
+
+/// The row's Log in opens a block of the account; its dialog's Delete asks, then deletes it.
+#[gpui_kit::test]
+fn an_accounts_row_logs_in_and_its_dialog_deletes_it(cx: &mut TestAppContext) {
+    let (config, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    std::fs::write(
+        config.path().join(crate::config::FILE),
+        super::agents::CLAUDE2,
+    )
+    .unwrap();
+    let (handle, ws) = open_in(
+        cx,
+        Some(config.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    open_accounts(handle, cx);
+    let blocks = ws.read_with(cx, |ws, _| ws.space.blocks.len());
+    cx.update_window(handle, |_, window, cx| {
+        window.click("log-in-claude2", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let logged = ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.blocks.len(), blocks + 1);
+        ws.space
+            .terminals()
+            .find(|(_, p)| p.account.as_deref() == Some("claude2"))
+            .map(|(id, _)| id)
+            .expect("a block of the account")
+    });
+    ws.update(cx, |ws, cx| {
+        ws.space.blocks.remove(&logged);
+        ws.space.canvas.remove(logged);
+        cx.notify();
+    });
+    open_accounts(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("edit-account-claude2", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    frame(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        // Below the items: the dialog scrolls.
+        window.scroll(
+            "account-name",
+            ScrollDelta::Pixels(point(px(0.), px(-2000.))),
+            cx,
+        );
+        window.render_frame(cx);
+        window.click("delete-account", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    frame(handle, cx);
+    let account = data.path().join("accounts").join("claude2");
+    assert!(account.is_dir(), "asked first");
+    cx.update_window(handle, |_, window, cx| {
+        // The question, over the account's dialog.
+        window.within("dialog-1").click("ok", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(!account.exists());
+    ws.read_with(cx, |ws, _| {
+        let agents = &ws.pending.as_ref().unwrap_or(&ws.config).agents;
+        assert!(!agents.contains_key("claude2"));
+    });
+}
