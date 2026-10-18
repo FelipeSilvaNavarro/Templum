@@ -139,10 +139,6 @@ impl Card {
     }
 
     /// Its checklist's (done, all).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the kanban shows them from the next commits")
-    )]
     pub fn progress(&self) -> (usize, usize) {
         let done = self.checklist.iter().filter(|i| i.done).count();
         (done, self.checklist.len())

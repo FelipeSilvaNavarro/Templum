@@ -16,7 +16,7 @@ use gpui_kit::{
 };
 use templum_canvas::{BlockId, Size};
 
-use crate::board::{Assignee, Board, Boards, Card, Column, Comment, Label};
+use crate::board::{Assignee, Board, Boards, Card, Column, Comment, Label, Priority};
 use crate::grid::hsla;
 use crate::menu::Target;
 use crate::notes;
@@ -418,6 +418,101 @@ fn column_view(
         .into_any_element()
 }
 
+/// Who `assignee` is, as a card and its dialog show it: a block's title (its id when no
+/// workspace has it), or "Any Codex".
+pub(crate) fn assignee_label(ws: &Workspace, assignee: &Assignee, cx: &App) -> String {
+    match assignee {
+        Assignee::Block(uid) => ws.uid_title(uid, cx).unwrap_or_else(|| uid.clone()),
+        Assignee::Agent(id) => format!("Any {}", ws.agent_title(id)),
+    }
+}
+
+/// A priority's signal icon, in its color.
+fn priority_icon(ws: &Workspace, priority: Priority, size: f32) -> Icon {
+    let palette = ws.theme.palette;
+    let (icon, color) = match priority {
+        Priority::Low => (IconName::SignalLow, ws.ui.title_dim),
+        Priority::Medium => (IconName::SignalMedium, hsla(palette.ansi[3], 1.0)),
+        Priority::High => (IconName::SignalHigh, hsla(palette.ansi[1], 1.0)),
+    };
+    Icon::new(icon).size(px(size)).text_color(color)
+}
+
+/// A card's meta row, on every card: its id, priority, checklist, description, comments and,
+/// at the right, who it is for.
+fn meta_row(ws: &Workspace, n: usize, card: &Card, z: f32, cx: &App) -> impl IntoElement {
+    let ui = ws.ui;
+    let id = card.id;
+    let (done, all) = card.progress();
+    let count = card.comments.len();
+    let icon = |name: IconName| Icon::new(name).size(px(12.0 * z)).text_color(ui.title_dim);
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.0 * z))
+        .text_size(px(11.0 * z))
+        .text_color(ui.title_dim)
+        .child(
+            div()
+                .id(name("card-id", n, id))
+                .child(format!("#{id}"))
+                .test_support(),
+        )
+        .when_some(card.priority, |el, p| {
+            el.child(
+                div()
+                    .id(name("priority", n, id))
+                    .flex()
+                    .child(priority_icon(ws, p, 12.0 * z))
+                    .test_support(),
+            )
+        })
+        .when(all > 0, |el| {
+            let color = if done == all { ui.accent } else { ui.title_dim };
+            el.child(
+                div()
+                    .id(name("checklist", n, id))
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0 * z))
+                    .text_color(color)
+                    .child(
+                        Icon::new(IconName::ListChecks)
+                            .size(px(12.0 * z))
+                            .text_color(color),
+                    )
+                    .child(format!("{done}/{all}"))
+                    .test_support(),
+            )
+        })
+        .when(!card.description.is_empty(), |el| {
+            el.child(icon(IconName::FileText))
+        })
+        .when(count > 0, |el| {
+            el.child(
+                div()
+                    .id(name("comments", n, id))
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0 * z))
+                    .child(icon(IconName::MessageSquare))
+                    .child(count.to_string())
+                    .test_support(),
+            )
+        })
+        .when_some(card.assignee.as_ref(), |el, a| {
+            el.child(
+                div()
+                    .id(name("assignee", n, id))
+                    .ml_auto()
+                    .min_w_0()
+                    .truncate()
+                    .child(assignee_label(ws, a, cx))
+                    .test_support(),
+            )
+        })
+}
+
 fn card_view(
     ws: &Workspace,
     n: usize,
@@ -467,54 +562,7 @@ fn card_view(
             )
         })
         .child(div().text_size(px(13.0 * z)).child(title))
-        .when(
-            !card.description.is_empty() || !card.comments.is_empty() || card.assignee.is_some(),
-            |el| {
-                let count = card.comments.len();
-                let who = card.assignee.as_ref().map(|a| match a {
-                    Assignee::Block(uid) => ws.uid_title(uid, cx).unwrap_or_else(|| uid.clone()),
-                    Assignee::Agent(id) => format!("Any {}", ws.agent_title(id)),
-                });
-                el.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0 * z))
-                        .text_size(px(11.0 * z))
-                        .text_color(ui.title_dim)
-                        .when(!card.description.is_empty(), |el| {
-                            el.child(
-                                Icon::new(IconName::FileText)
-                                    .size(px(12.0 * z))
-                                    .text_color(ui.title_dim),
-                            )
-                        })
-                        .when(count > 0, |el| {
-                            el.child(
-                                div()
-                                    .id(name("comments", n, id))
-                                    .child(if count == 1 {
-                                        "1 comment".to_string()
-                                    } else {
-                                        format!("{count} comments")
-                                    })
-                                    .test_support(),
-                            )
-                        })
-                        .when_some(who, |el, who| {
-                            el.child(
-                                div()
-                                    .id(name("assignee", n, id))
-                                    .ml_auto()
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(who)
-                                    .test_support(),
-                            )
-                        }),
-                )
-            },
-        )
+        .child(meta_row(ws, n, card, z, cx))
         .drag_over::<CardDrag>(move |s, _, _, _| s.border_color(ui.accent))
         .on_drag(CardDrag { board, card: id }, move |_, _, _, cx| {
             let text = preview_title.clone();
@@ -673,13 +721,7 @@ pub(crate) fn open_card(
                 ws_now.uid_title(by, cx).unwrap_or_else(|| by.to_string())
             }
         };
-        let assignee = assignee.map(|a| {
-            let who = match &a {
-                Assignee::Block(uid) => author(uid),
-                Assignee::Agent(id) => format!("Any {}", ws_now.agent_title(id)),
-            };
-            (who, ws.clone())
-        });
+        let assignee = assignee.map(|a| (assignee_label(ws_now, &a, cx), ws.clone()));
         let comments: Vec<_> = comments
             .iter()
             .map(|c| {

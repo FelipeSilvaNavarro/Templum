@@ -450,3 +450,44 @@ fn the_open_card_adds_a_comment_and_frees_its_assignee(cx: &mut TestAppContext) 
         Some(crate::board::Assignee::Block("zzzzz".into()))
     );
 }
+
+#[gpui_kit::test]
+fn a_card_shows_its_id_always_and_its_priority_and_checklist_when_it_has_them(
+    cx: &mut TestAppContext,
+) {
+    use crate::board::{Assignee, Priority};
+    let (handle, ws) = open(cx);
+    let terminal = first_id(&ws, cx);
+    let (block, board, card) = board_with_a_card(handle, &ws, cx);
+    let shown = |cx: &mut TestAppContext, what: &str| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let id = gpui_kit::ElementId::Name(format!("{what}-{}-{card}", block.0).into());
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    };
+    assert!(shown(cx, "card-id"));
+    assert!(!shown(cx, "priority") && !shown(cx, "checklist"));
+    ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| {
+            b.edit_card(board, card, |c| c.priority = Some(Priority::High));
+            b.add_items(board, card, &[("a".into(), false), ("b".into(), true)]);
+        })
+    });
+    assert!(shown(cx, "priority") && shown(cx, "checklist"));
+    ws.read_with(cx, |ws, cx| {
+        let uid = ws.space.uids[&terminal].clone();
+        let label = |a: Assignee| crate::kanban::assignee_label(ws, &a, cx);
+        assert_eq!(label(Assignee::Agent("codex".into())), "Any Codex");
+        assert_eq!(
+            label(Assignee::Block("zzzzz".into())),
+            "zzzzz",
+            "no workspace has it"
+        );
+        assert_eq!(
+            label(Assignee::Block(uid.clone())),
+            ws.uid_title(&uid, cx).unwrap()
+        );
+    });
+}
