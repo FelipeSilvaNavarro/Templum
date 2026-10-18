@@ -386,7 +386,7 @@ impl Render for Form {
                     "account-agent",
                     options,
                     current,
-                    true,
+                    false,
                     move |id, cx| f.update(cx, |f, cx| f.choose(&id, cx)),
                 ))
             }

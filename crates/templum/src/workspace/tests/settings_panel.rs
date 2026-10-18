@@ -667,11 +667,8 @@ fn open_accounts(handle: AnyWindowHandle, cx: &mut TestAppContext) {
 fn pick(handle: AnyWindowHandle, cx: &mut TestAppContext, id: &'static str, index: usize) {
     cx.update_window(handle, |_, window, cx| {
         window.click(id, cx);
-        // A scrollable menu is laid out over two frames.
-        window.render_frame(cx);
         window.render_frame(cx);
         window.within("popup-menu").click(index, cx);
-        window.render_frame(cx);
         window.render_frame(cx);
     })
     .unwrap();
