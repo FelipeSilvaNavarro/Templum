@@ -1,8 +1,8 @@
 # Connections: blocks that talk to each other
 
 - **Date:** 2026-10-15
-- **Status:** Batches 1 to 8 and [agents typed in a terminal](#agents-typed-in-a-terminal) implemented;
-  [every agent that can take it](#every-agent-that-can-take-it) planned (kanban card 44)
+- **Status:** Batches 1 to 8, [agents typed in a terminal](#agents-typed-in-a-terminal) and
+  [every agent that can take it](#every-agent-that-can-take-it) (kanban card 44) implemented
 - **Builds on:** [agents.md](agents.md) (opening agents), [usage.md](usage.md) (the `--settings` Templum types for
   Claude Code), [shell-integration.md](shell-integration.md) (command marks, notifications),
   [persistence.md](persistence.md), [kanban.md](kanban.md) and [cockpit.md](cockpit.md) (notes, the editor, drawing)
@@ -724,7 +724,7 @@ its extension; a typed agent's identity left to the snapshot.
 
 ## Every agent that can take it
 
-*Planned (kanban card 44): [docs/plans/2026-10-18-agent-parity.md](../plans/2026-10-18-agent-parity.md). The
+*Implemented (kanban card 44): [docs/plans/2026-10-18-agent-parity.md](../plans/2026-10-18-agent-parity.md). The
 audit it closes: [agent-parity.md](agent-parity.md).*
 
 Card 42 gave a `claude` or `codex` typed by hand what the ones Templum opens get. Card 44 gives the same to every
@@ -798,7 +798,7 @@ copilot --allow-all-mcp-server-instructions --additional-mcp-config=@<data>/copi
 | `postToolUse`, `postToolUseFailure` | working (again, after a permission) |
 | `notification`, `notification_type` `permission_prompt` | waiting for the person, with its `message` ("Run command: touch x.txt"). Not `permissionRequest`: it comes before Copilot's own rules, for calls they allow too (an `echo`) |
 | `notification`, `elicitation_dialog` | waiting for the person (its own `ask_user`), with its `message` |
-| `agentStop` | done, with its last answer: the payload has none, only `transcriptPath` (`events.jsonl`), whose last `assistant.message` line's `data.content` `templum hook copilot` reads (its last 256 KB) |
+| `agentStop` | done, with its last answer: the payload has none, only `transcriptPath` (`events.jsonl`), whose last `assistant.message` after the last `user.message` `templum hook copilot` reads (its last 256 KB; Copilot writes the file in batches, so the hook waits up to 3 seconds for it; a turn that ends on an empty message has none) |
 | `errorOccurred` with `recoverable` false | done, without an answer |
 | `sessionEnd` | ended |
 
@@ -1007,7 +1007,10 @@ OpenCode, Kilo Code or Pi quiet, while a nested Qwen Code stays a minor; Qwen Co
 exists, and none when the person gives their own `--mcp-config`; Copilot CLI's words never before a subcommand (AWS's
 `copilot`); the files run `<data>/bin/templum`, not Templum's program path; Pi's extension gives the server only where
 Pi has MCP; the switch off cuts agents already running and leaves the calls that wait; Gemini CLI's notice once per
-run, never on restore; a generic dialog reader left out.
+run, never on restore; a generic dialog reader left out. Made while implementing it: Pi's turn ends at
+`agent_settled`, not `agent_end`; Pi's words never before one of its commands; Copilot's answer waited for up to 3
+seconds after its `agentStop` (it writes its transcript in batches); a Copilot `sessionStart` with an `initialPrompt`
+is no event; OpenCode's question shows its text.
 
 **Considered and left out:**
 
@@ -1268,6 +1271,17 @@ with a model and an effort, hands it a task without waiting, changes it while it
 with its time and tokens; Codex's trust question for Templum's hooks asked once and answered with `send_keys ["2"]`,
 nothing left in Codex's input, "answered by" shown; a still Codex dialog turning yellow as stuck; `interrupt`, then
 `close_block`, then Ctrl+Z.
+
+**Manual, card 44** (2026-10-18, a `--dev` Templum driven with the `templum` command line against its bus): Copilot
+CLI from `spawn_agent` gets its words and `--session-id`, `/mcp` lists `templum`; a task delegated with `--wait`
+comes back with its answer ("ping", read from its transcript); a `touch` it asks to run turns the block "waiting for
+its person: Run command: touch …", allowed it ends "Done."; its call of `templum/whoami` asks first, then answers
+the block's id; a `copilot` typed in the person's own bash gets the three words; a restart brings it back with
+`copilot --session-id <its id>`. OpenCode from `spawn_agent` (a free model) shows two MCP servers, a delegated task
+comes back with its answer, a restart brings it back with `OPENCODE_CONFIG_CONTENT` in its environment. Connections
+turned off in `config.toml`: `templum mcp`'s `initialize` and a tool call get the off sentences, `templum whoami`
+answers; on again, the tool answers. Not checked by hand: Gemini CLI's notice clicked, Qwen Code and Kilo Code (not
+installed), Pi answering (no model), OpenCode's dialogs ([minors](../minors.md#connections)).
 
 ## Delivery
 

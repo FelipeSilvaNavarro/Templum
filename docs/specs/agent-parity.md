@@ -1,10 +1,11 @@
 # Agent parity: what each agent gets of Templum
 
 - **Date:** 2026-10-18
-- **Status:** Audit (kanban card 44, "Melhorias task: Integrar MCP claude no terminal também"); the design that
-  closes its gaps is [connections.md](connections.md#every-agent-that-can-take-it), planned in
+- **Status:** Implemented (kanban card 44, "Melhorias task: Integrar MCP claude no terminal também"): the audit
+  below is of the code before the card; the design that closes its gaps is
+  [connections.md](connections.md#every-agent-that-can-take-it), done with
   [docs/plans/2026-10-18-agent-parity.md](../plans/2026-10-18-agent-parity.md); [After card 44](#after-card-44) says
-  what closes and what stays
+  what closed and what stays
 - **Builds on:** [agents.md](agents.md) (the agents), [connections.md](connections.md) (the server, the hooks, what
   is typed, agents typed in a terminal), [usage.md](usage.md), [ask-user.md](ask-user.md) and
   [persistence.md](persistence.md#agents)

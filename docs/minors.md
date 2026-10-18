@@ -1158,6 +1158,17 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   quiet, and the server `registerMcpServer` gives (Pi 0.99 and later) are from Pi's docs. A person may get a task's
   end without its answer, or a dot that stays green at a dialog. Fix: with a model, delegate a task to a Pi block and
   read its answer; open an extension's `ctx.ui.confirm`; on Pi 0.99 or later, run `/mcp` and call `whoami`.
+- [ ] **Qwen Code and Kilo Code weren't run with Templum's server and hooks.** Left by the plan of card 44 (tasks 9 and
+  11; `crates/templum-usage/src/qwen.rs`, `opencode.rs`): neither is installed here, so their words, files and
+  variables are from their docs and sources (Qwen Code 0.25.2, Kilo Code 7.8), checked only with fakes. A person may
+  see Qwen Code refuse `--mcp-config` or ignore the system settings file, or Kilo Code ignore `KILO_CONFIG_CONTENT`.
+  Fix: install each, open it from the menu and typed in bash: `/mcp` lists `templum`, a delegated task comes back
+  with its answer, a permission turns the dot yellow; for Qwen Code also with `/etc/qwen-code/settings.json` present
+  (the server only).
+- [ ] **Gemini CLI's notice wasn't clicked by hand.** Left by the plan of card 44 (task 3, `tell_gemini`,
+  `crates/templum/src/workspace/usage.rs`): the headless test counts the notice, but the click asking Install's
+  question and installing wasn't tried in a window. A person may click it and see nothing. Fix: without the extension,
+  open Gemini CLI from the menu, click the notice, answer Install: Settings ▸ Connections shows it installed.
 - [ ] **Gemini CLI's notice about its extension comes back at every run.** Left by the plan of card 44 (task 3,
   `tell_gemini`, `crates/templum/src/workspace/usage.rs`): a person who doesn't want Templum's extension sees
   "Gemini CLI has no Templum tools or status dot" the first time they open a Gemini CLI after each start of
