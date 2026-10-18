@@ -297,7 +297,23 @@ impl Workspace {
                 "This block is yours: send_keys presses keys in another block.",
             ));
         }
-        let Some(pane) = space.terminal(to) else {
+        let by = self.signature(space, me, cx);
+        self.keys_in(from, &by, (&space_id, to), block, keys, cx)
+    }
+
+    /// The body of `send_keys`, for any asker (a terminal's `TEMPLUM_TERMINAL`, or the Templum
+    /// Agent's word): `keys` pressed as `by` in the terminal block `to` of `space`, never into an
+    /// agent on another agent's task while it works.
+    pub(super) fn keys_in(
+        &mut self,
+        asker: &str,
+        by: &str,
+        (space_id, to): (&str, BlockId),
+        block: &str,
+        keys: Vec<String>,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
+        let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
         if let Some(bad) = keys.iter().find(|k| named_key(k).is_none()) {
@@ -306,19 +322,18 @@ impl Workspace {
             )));
         }
         let asks = matches!(pane.state, Some(AgentState::NeedsYou(_)));
-        if pane.task(Instant::now()).is_some_and(|h| h.by != from) && !asks {
+        if pane.task(Instant::now()).is_some_and(|h| h.by != asker) && !asks {
             return Outcome::Now(Reply::err(format!(
                 "{block} is on a task another agent handed it: only that agent presses keys in it \
                  while it works. wait_for_idle(\"{block}\") waits for its end."
             )));
         }
         let worker = pane.term.id().to_string();
-        let by = self.signature(space, me, cx);
         let said = match keys.len() {
             1 => format!("Pressed 1 key in {block}."),
             n => format!("Pressed {n} keys in {block}."),
         };
-        Outcome::Later(self.press_keys(worker, by, keys, said, cx))
+        Outcome::Later(self.press_keys(worker, by.to_string(), keys, said, cx))
     }
 
     /// `interrupt` from the terminal `from`: Esc once in the agent `block` while it works or waits

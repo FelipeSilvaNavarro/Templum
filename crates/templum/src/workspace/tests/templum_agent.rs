@@ -1141,6 +1141,39 @@ fn send_keys_shows_what_the_agent_asks(cx: &mut TestAppContext) {
 /// The person answered the dialog themselves and the agent asks something else: Allow, given to
 /// what the approval showed, presses nothing; the approval says what it asks now and waits for a
 /// new click.
+/// An agent at work on a task another agent handed it takes no keys from the Templum Agent, as
+/// from a block: only that agent presses keys in it while it works.
+#[gpui_kit::test]
+fn send_keys_leaves_an_agent_on_another_agents_task_alone(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        let pane = ws.space.terminal_mut(busy).unwrap();
+        pane.state = Some(crate::workspace::AgentState::Working);
+        pane.handed = Some(crate::workspace::Handed::new(
+            "another-terminal",
+            std::time::Duration::from_secs(600),
+        ));
+    });
+    let answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "send_keys",
+        json!({"block": uid, "keys": ["escape"]}),
+    );
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert!(
+        failed && text.contains("on a task another agent handed it"),
+        "{text}"
+    );
+    assert!(ws.read_with(cx, |ws, _| {
+        ws.space.terminal(busy).unwrap().keys_from.is_none()
+    }));
+}
+
 #[gpui_kit::test]
 fn an_allow_after_the_dialog_changed_asks_again(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);

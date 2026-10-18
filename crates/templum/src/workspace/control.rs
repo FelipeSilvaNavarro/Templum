@@ -207,7 +207,10 @@ impl Workspace {
                 };
             }
             ControlCall::Block(Call::SendKeys { block, keys }) => {
-                return self.keys_for_agent(&block, keys, cx);
+                return self.on_task(&block, |ws, at| {
+                    let by = "Templum Agent";
+                    ws.keys_in(templum_agent::ASKER, by, at, &block, keys, cx)
+                });
             }
             ControlCall::Block(Call::Delegate {
                 block,
@@ -670,45 +673,6 @@ impl Workspace {
             done
         };
         self.in_worktree(folder, worktree, open, window, cx)
-    }
-
-    /// `send_keys`: the keys pressed in a terminal, once the person allowed it.
-    fn keys_for_agent(
-        &mut self,
-        block: &str,
-        keys: Vec<String>,
-        cx: &mut Context<Self>,
-    ) -> (Outcome, Option<Target>) {
-        let Some((space, id)) = self.find_block(block) else {
-            return (Outcome::Now(no_block(block)), None);
-        };
-        let Some(pane) = self.space_named(&space).and_then(|s| s.terminal(id)) else {
-            return (
-                Outcome::Now(Reply::err(format!("{block} isn't a terminal."))),
-                None,
-            );
-        };
-        if let Some(bad) = keys
-            .iter()
-            .find(|k| templum_terminal::named_key(k).is_none())
-        {
-            let why = format!(
-                "{bad:?} isn't a key Templum knows. Keys: {}.",
-                templum_terminal::KEY_NAMES
-            );
-            return (Outcome::Now(Reply::err(why)), None);
-        }
-        let worker = pane.term.id().to_string();
-        let said = match keys.len() {
-            1 => format!("Pressed 1 key in {block}."),
-            n => format!("Pressed {n} keys in {block}."),
-        };
-        let pressed = self.press_keys(worker, "Templum Agent".into(), keys, said, cx);
-        let target = Target {
-            workspace: Some(space),
-            block: Some(block.to_string()),
-        };
-        (Outcome::Later(pressed), Some(target))
     }
 
     /// `connect` (`on`) and `disconnect`: a wire between two blocks of one workspace, a step of
