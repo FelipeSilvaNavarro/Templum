@@ -1,5 +1,5 @@
-//! The tab strip of note and checklist blocks: a tab per open note or checklist, the one on
-//! screen underlined; a click shows one, its × closes it, + opens a new one in a new tab.
+//! The tab strip of note blocks: a tab per open note, the one on screen underlined; a click shows
+//! one, its × closes it, + opens a new one in a new tab.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
@@ -18,13 +18,12 @@ pub(crate) const TABS_H: f32 = 28.0;
 pub(crate) type TabAction =
     fn(&mut Workspace, BlockId, usize, &mut Window, &mut Context<Workspace>);
 
-/// The tabs `titles` of `block`, `active` on screen, at zoom `z`; their element ids start with
-/// `prefix` (`{prefix}-tab-{n}-{i}`, `{prefix}-tab-close-{n}-{i}`, `({prefix}-tab-new, n)`).
+/// The tabs `titles` of `block`, `active` on screen, at zoom `z`; their element ids are
+/// `note-tab-{n}-{i}`, `note-tab-close-{n}-{i}` and `(note-tab-new, n)`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn tab_strip(
     ws: &Workspace,
     block: BlockId,
-    prefix: &'static str,
     titles: Vec<SharedString>,
     active: usize,
     z: f32,
@@ -35,7 +34,7 @@ pub(crate) fn tab_strip(
 ) -> AnyElement {
     let ui = ws.ui;
     let n = block.0 as usize;
-    let name = |what: &str, i: usize| ElementId::Name(format!("{prefix}-{what}-{n}-{i}").into());
+    let name = |what: &str, i: usize| ElementId::Name(format!("note-{what}-{n}-{i}").into());
     let tabs: Vec<AnyElement> =
         titles
             .into_iter()
@@ -86,7 +85,7 @@ pub(crate) fn tab_strip(
             })
             .collect();
     let plus = div()
-        .id((SharedString::from(format!("{prefix}-tab-new")), n))
+        .id(("note-tab-new", n))
         .flex_shrink_0()
         .flex()
         .items_center()
@@ -104,7 +103,7 @@ pub(crate) fn tab_strip(
         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| new(ws, block, window, cx)))
         .test_support();
     div()
-        .id((SharedString::from(format!("{prefix}-tabs")), n))
+        .id(("note-tabs", n))
         .flex_shrink_0()
         .h(px(TABS_H * z))
         .flex()

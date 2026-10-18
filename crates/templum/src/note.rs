@@ -139,7 +139,6 @@ pub(crate) fn body(
         tab_strip(
             ws,
             id,
-            "note",
             titles,
             note.active,
             z,
