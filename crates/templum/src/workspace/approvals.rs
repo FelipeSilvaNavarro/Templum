@@ -1,9 +1,5 @@
 //! The gate (docs/specs/templum-agent.md#the-gate): the control calls that wait for the person's
 //! click, the grants "Allow for this conversation" gives, and the answers.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the pill and the chat call it (chat/)")
-)]
 
 use gpui_kit::{App, Context, Window};
 use serde_json::Value;

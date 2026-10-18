@@ -1375,3 +1375,198 @@ fn a_turn_that_wont_stop_has_its_process_ended(cx: &mut TestAppContext) {
         );
     });
 }
+
+#[cfg(target_os = "macos")]
+const AGENT: &str = "cmd-shift-space";
+#[cfg(not(target_os = "macos"))]
+const AGENT: &str = "ctrl-shift-space";
+
+/// Whether the pill's field has the keyboard.
+fn pill_has_keys(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) -> bool {
+    cx.update_window(handle, |_, window, cx| {
+        ws.read(cx)
+            .templum_agent
+            .input
+            .as_ref()
+            .is_some_and(|i| gpui_kit::Focusable::focus_handle(i.read(cx), cx).is_focused(window))
+    })
+    .unwrap()
+}
+
+fn pill_text(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> String {
+    ws.read_with(cx, |ws, cx| {
+        ws.templum_agent
+            .input
+            .as_ref()
+            .map(|i| i.read(cx).value().to_string())
+            .unwrap_or_default()
+    })
+}
+
+#[gpui_kit::test]
+fn the_shortcut_takes_the_keyboard_and_esc_gives_it_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(first, window, cx));
+        window.render_frame(cx);
+        window.press(AGENT, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        pill_has_keys(handle, &ws, cx),
+        "the pill takes the keyboard"
+    );
+    cx.update_window(handle, |_, window, cx| window.input("ls", cx))
+        .unwrap();
+    assert_eq!(
+        pill_text(&ws, cx),
+        "ls",
+        "the keys go to the pill, not the terminal"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(!pill_has_keys(handle, &ws, cx));
+    cx.update_window(handle, |_, window, cx| {
+        let ws = ws.read(cx);
+        assert_eq!(ws.space.focused, Some(first));
+        assert!(
+            ws.focus_handle.is_focused(window),
+            "the terminal has the keyboard again"
+        );
+    })
+    .unwrap();
+    assert_eq!(pill_text(&ws, cx), "ls", "the text stays");
+    // The shortcut again, while the pill has the keyboard, gives it back too.
+    cx.update_window(handle, |_, window, cx| {
+        window.press(AGENT, cx);
+        window.render_frame(cx);
+        window.press(AGENT, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(!pill_has_keys(handle, &ws, cx));
+}
+
+#[gpui_kit::test]
+fn enter_sends_and_shift_enter_is_a_new_line(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(AGENT, cx);
+        window.render_frame(cx);
+        window.input("hi", cx);
+        window.press("shift-enter", cx);
+        window.input("there", cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let rows = rows_until(&ws, cx, ended);
+    assert_eq!(
+        rows[0],
+        ::templum_agent::Row::Person {
+            text: "hi\nthere".into(),
+            queued: false
+        }
+    );
+    assert_eq!(pill_text(&ws, cx), "", "the field is cleared");
+    assert!(
+        ws.read_with(cx, |ws, _| ws.templum_agent.open),
+        "sending opens the chat"
+    );
+}
+
+#[gpui_kit::test]
+fn the_pill_is_hidden_when_turned_off(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("agent-pill").is_some(), "shown by default");
+    })
+    .unwrap();
+    ws.update(cx, |ws, cx| {
+        ws.edit(
+            Edit::set("templum_agent", "pill", false),
+            |c| c.templum_agent.pill = false,
+            cx,
+        )
+    });
+    frame(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("agent-pill").is_none());
+        window.press(AGENT, cx);
+        window.render_frame(cx);
+        assert!(
+            window.try_find("agent-pill").is_some(),
+            "the shortcut opens it"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn not_installed_says_so(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| ws.templum_agent.installed = Some(false));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("agent-missing").is_some());
+        assert_eq!(
+            crate::chat::pill::rest(ws.read(cx)),
+            "Claude Code isn't installed"
+        );
+        window.click("agent-pill", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(panel_open(&ws, cx), "a click opens Settings");
+    ws.update(cx, |ws, _| ws.templum_agent.installed = Some(true));
+    assert_eq!(
+        ws.read_with(cx, |ws, _| crate::chat::pill::rest(ws)),
+        "Ask Templum"
+    );
+}
+
+#[gpui_kit::test]
+fn the_pill_says_what_it_does_what_it_asks_and_that_something_is_new(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        let c = &mut ws.templum_agent.conversation;
+        c.person("go");
+        c.apply(::templum_agent::ChatEvent::ToolStarted {
+            id: "t1".into(),
+            name: "mcp__templum-control__open_agent".into(),
+        });
+        ws.templum_agent.unread = true;
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("agent-working").is_some());
+        assert!(window.try_find("agent-unread").is_some(), "something new");
+        assert_eq!(crate::chat::pill::doing(ws.read(cx)), "Opening an agent…");
+    })
+    .unwrap();
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    let _answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("agent-asks").is_some(),
+            "it asks, over its work"
+        );
+        window.click("agent-review", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(pill_has_keys(handle, &ws, cx));
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.templum_agent.open && !ws.templum_agent.unread)
+    });
+}

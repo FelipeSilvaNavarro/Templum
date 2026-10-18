@@ -552,7 +552,7 @@ impl Workspace {
             Command::ThemePicker => self.toggle_theme_picker(cx),
             Command::OpenConfig => self.open_config(window, cx),
             Command::Settings => self.toggle_settings(window, cx),
-            Command::Agent => {}
+            Command::Agent => self.toggle_agent(window, cx),
             Command::NewKanban => self.new_kanban(window, cx),
             Command::NewNote => self.new_note(window, cx),
             Command::NewEditor => self.new_editor(window, cx),

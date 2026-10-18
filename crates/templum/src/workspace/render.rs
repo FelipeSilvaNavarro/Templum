@@ -682,6 +682,21 @@ impl Render for Workspace {
                 .h(px(h))
                 .child(git_block::popup(self, g, w, h, cx))
         });
+        // Window chrome over the canvas's bottom center, above the toolbar: the zoom never scales it.
+        let agent = (!tiled)
+            .then(|| crate::chat::pill::render(self, vp.w, window, cx))
+            .flatten()
+            .map(|pill| {
+                let left = if self.sidebar { sidebar::WIDTH } else { 0.0 };
+                div()
+                    .absolute()
+                    .left(px(left))
+                    .right_0()
+                    .bottom(px(toolbar::above(self)))
+                    .flex()
+                    .justify_center()
+                    .child(pill)
+            });
         let screen = self
             .screen
             .as_ref()
@@ -718,6 +733,7 @@ impl Render for Workspace {
                     .child(area),
             )
             .children(git)
+            .children(agent)
             // Under what the title bar opens: the settings, the theme picker, the screen.
             .children(welcome)
             .children(panel)

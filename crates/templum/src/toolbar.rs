@@ -22,6 +22,15 @@ const BUTTON: f32 = 32.0;
 const MARGIN: f32 = 12.0;
 /// The strip at the bottom of the canvas the toolbar covers.
 pub(crate) const SPACE: f32 = BUTTON + 8.0 + MARGIN;
+/// The height of the pill of options above it (the shapes, the stroke options).
+const OPTIONS: f32 = 32.0;
+
+/// How far above the canvas's bottom what floats over the toolbar sits (the Templum Agent's
+/// pill): 8 px above it, or above its options while they show.
+pub(crate) fn above(ws: &Workspace) -> f32 {
+    let options = ws.shapes_open || (ws.tool.draws() && ws.tool != Tool::Eraser);
+    SPACE + 8.0 + if options { OPTIONS + 8.0 } else { 0.0 }
+}
 
 pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
     let ui = ws.ui;
@@ -326,7 +335,7 @@ fn pill(id: &'static str, ui: Ui) -> Stateful<Div> {
         .items_center()
         .gap(px(6.0))
         .px(px(10.0))
-        .h(px(32.0))
+        .h(px(OPTIONS))
         .rounded(px(12.0))
         .bg(ui.surface)
         .border_1()
