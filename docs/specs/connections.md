@@ -454,7 +454,8 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
   current. The result is at most 256 KB.
 - Agents may stop waiting on long tool calls. Claude Code gives up on a call that sends nothing for 1800 s, its idle
   timeout for stdio servers, unless the server's own `timeout` is longer (seen 2026-10-17: `MCP server "templum"
-  tool "wait_for_idle" sent no response or progress for 1800s; aborting`); the `mcp.json` Templum gives it sets
+  tool "wait_for_idle" sent no response or progress for 1800s; aborting`; that `timeout` lifts it from Claude Code
+  v2.1.203, the version that brought the idle timeout to stdio servers); the `mcp.json` Templum gives it sets
   seven days on Templum's server, for every one of its tools (`wait_for_idle`, `wait_for`, `delegate` with `wait`,
   `ask_user`). It also moves a call past 2 minutes to the background, where it keeps waiting by its documentation
   (not checked by hand). The descriptions of the tools that wait say they may take minutes.
