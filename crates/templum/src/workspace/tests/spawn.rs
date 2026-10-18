@@ -1660,3 +1660,42 @@ fn a_merge_allowed_into_a_branch_isnt_made_into_another(cx: &mut TestAppContext)
         "one\n"
     );
 }
+
+/// Where the worktree goes back has a detached HEAD: neither removed (its commits would count as
+/// merged into a HEAD a checkout leaves behind) nor merged.
+#[gpui_kit::test]
+fn a_worktree_going_back_to_a_detached_head_is_refused(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "h"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::write(wt.join("a.txt"), "new\n").unwrap();
+    git_run(&wt, &["commit", "-qam", "change"]);
+    // The person's tree detached at the worktree's commit: nothing looks unmerged there.
+    git_run(&root, &["checkout", "-q", "--detach", "h"]);
+    let refused = format!(
+        "{} has a detached HEAD: check out the branch h goes back to first.",
+        root.display()
+    );
+    for tool in ["remove_worktree", "merge_worktree"] {
+        let args = json!({ "worktree": "h", "folder": root });
+        assert_eq!(
+            call(handle, &ws, cx, &terminal, tool, args),
+            (true, refused.clone()),
+            "{tool}"
+        );
+    }
+    assert!(wt.exists());
+}

@@ -83,16 +83,29 @@ impl Workspace {
         }
         // Its commits, or another branch checked out there, would be lost or left out.
         match state.branch.as_deref() {
-            Some(branch) if branch == name => Ok((repo, state)),
-            Some(other) => Err(Reply::err(format!(
-                "The worktree {name} is on {other} now, not on its branch {name}: check out {name} \
-                 there first."
-            ))),
-            None => Err(Reply::err(format!(
-                "The worktree {name} has a detached HEAD, not its branch {name}: check out {name} \
-                 there first."
-            ))),
+            Some(branch) if branch == name => {}
+            Some(other) => {
+                return Err(Reply::err(format!(
+                    "The worktree {name} is on {other} now, not on its branch {name}: check out \
+                     {name} there first."
+                )));
+            }
+            None => {
+                return Err(Reply::err(format!(
+                    "The worktree {name} has a detached HEAD, not its branch {name}: check out \
+                     {name} there first."
+                )));
+            }
         }
+        // Where it goes back has no branch: its commits would be merged into, or counted as merged
+        // by, a HEAD that checking out a branch leaves behind.
+        if state.into == "HEAD" {
+            return Err(Reply::err(format!(
+                "{} has a detached HEAD: check out the branch {name} goes back to first.",
+                repo.root.display()
+            )));
+        }
+        Ok((repo, state))
     }
 
     /// `remove_worktree` from the terminal `from`: at once when the worktree has no changes and
@@ -171,11 +184,6 @@ fn merge_refusal(
     } else if state.into_changed > 0 {
         Some(format!(
             "{into} has changes not committed in {}: commit or stash them first.",
-            repo.root.display()
-        ))
-    } else if into == "HEAD" {
-        Some(format!(
-            "{} has a detached HEAD: check out the branch to merge into first.",
             repo.root.display()
         ))
     } else if state.busy {

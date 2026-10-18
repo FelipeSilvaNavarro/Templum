@@ -391,7 +391,8 @@ conversation.
   feature-x in this repository: git worktree list shows them."
 - **Into:** the branch checked out in `folder`'s working tree, where the caller works, not the main working tree's: a
   worktree spawned from a worktree branched from that one's HEAD, so it goes back there. "Merged" means merged into
-  that branch.
+  that branch. With no branch there (a detached HEAD) both are refused: "/home/u/app has a detached HEAD: check out
+  the branch feature-x goes back to first."
 - **Nobody may work in it:** a terminal block whose folder is in it refuses both: "k9x1d works in it: stop_agent or
   close_block it first." (any workspace).
 - **`remove_worktree`** (`worktree`, `folder`, `discard` false unless given): with no changes and its branch merged into the
