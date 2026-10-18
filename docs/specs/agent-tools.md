@@ -356,7 +356,8 @@ conversation.
     handed), doesn't take it: "k9x1d is on a task (t7): a schedule hands a task only to an agent that has none.";
   - to a terminal running no agent: typed with Enter, as `send_to_terminal` with `enter`, only while its shell waits at
     an empty prompt: shell integration drew a prompt since anyone (the person with any key, an agent) last typed
-    there, no command started since, and on Unix its shell leads the foreground. Else (vim, `ssh`, a password's
+    there, no command started since, and its shell leads the foreground (on Windows, which can't tell who is in front:
+    nothing runs below it, as `ssh`, whose remote shell may draw prompts of its own). Else (vim, `ssh`, a password's
     prompt in front, a line half typed, no shell integration, as cmd.exe) "k9x1d's shell isn't waiting at an empty
     prompt: a schedule types into a terminal only then.". A line typed and then erased (Backspace, Tab, the history)
     still counts until the shell prompts again, after Enter or Ctrl+C: Templum can't see what the line holds, and a
