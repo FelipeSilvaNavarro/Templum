@@ -240,6 +240,16 @@ impl Workspace {
                 templum_terminal::installed,
             );
         }
+        // Off: every agent's state is read from its screen again; its hooks are dropped.
+        if old.connections.enabled && !self.config.connections.enabled {
+            for space in std::iter::once(&mut self.space).chain(&mut self.others) {
+                for body in space.blocks.values_mut() {
+                    if let Some(pane) = body.terminal_mut() {
+                        pane.speaks = false;
+                    }
+                }
+            }
+        }
         if self.config.keys != old.keys {
             let (keymap, warnings) = Keymap::new(&self.config.keys, cfg!(target_os = "macos"))
                 .expect("config::parse validated the shortcuts");

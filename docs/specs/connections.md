@@ -686,14 +686,14 @@ snapshot it isn't an agent to `delegate` ([minors](../minors.md#connections)). A
 `--session-id` resumes its folder's latest session ([agents.md](agents.md#the-agents)), as today.
 
 **The switch.** `[connections] enabled` covers typed agents too; Settings ▸ Connections names it **Agents in
-Templum** ("Claude Code and Codex opened from the canvas or typed in a terminal get Templum's server and hooks: they
-read and type into the blocks wired to them"), and `config.toml`'s comment says "The Claude Code and Codex Templum
-opens, or that are typed in its terminals, get its MCP server and hooks". Off, a new terminal's `TEMPLUM_CODEX_ARGS`
+Templum** ("Agents opened from the canvas or typed in a terminal get Templum's server and hooks: they read and type
+into the blocks wired to them"), and `config.toml`'s comment says "The agents Templum opens, or that are typed in its
+terminals, get its MCP server and hooks". Off, a new terminal's `TEMPLUM_CODEX_ARGS`
 is empty, and its `TEMPLUM_CLAUDE_ARGS` holds only `--settings` and its file when the status line asks for it
 (`usage.claude_limits`), as what is typed. A terminal keeps the variables it started with: the switch reaches new terminals, as
 `shell.integration` does. No switch of its own: nothing outside Templum changes, and `command claude` runs the bare
-agent. (Card 44 makes these words name every agent and the switch reach agents already running: [The switch reaches
-every agent](#the-switch-reaches-every-agent).)
+agent. Card 44 made these words name every agent and the switch reach agents already running: [The switch reaches every
+agent](#the-switch-reaches-every-agent).
 
 **Calls made for card 42** (the person was away; each can be changed): on by default under the existing switch, no
 switch of its own; functions in the shell integration, nothing on PATH and nothing in the agents' files; Templum's
@@ -937,7 +937,7 @@ the exit status kept, what is piped in passed on), with one helper per shell for
 
 ### The switch reaches every agent
 
-`[connections] enabled` off now reaches every agent at once, Gemini CLI's extension included: the bus answers a
+`[connections] enabled` off reaches every agent at once, Gemini CLI's extension included: the bus answers a
 `templum mcp` and a `templum hook` from any terminal as from a terminal it doesn't have. `initialize` says "Connections
 are off in Templum's settings: Templum's tools won't work here."; every tool call fails with "Connections are off:
 turn on Agents in Templum (Settings ▸ Connections) to use Templum's tools."; events are dropped, and every agent's
@@ -1040,8 +1040,8 @@ output reaches a pipe (`templum blocks | more`) but not a console directly.
 
 ```toml
 [connections]
-## The Claude Code and Codex Templum opens, or that are typed in its terminals, get its MCP
-## server and hooks: they can read and type into the blocks wired to them (docs/specs/connections.md).
+## The agents Templum opens, or that are typed in its terminals, get its MCP server and
+## hooks: they can read and type into the blocks wired to them (docs/specs/connections.md).
 # enabled = true
 ## How long an agent's question waits for your answer, in minutes; 0 waits until you answer.
 # question_timeout = 0
@@ -1049,7 +1049,8 @@ output reaches a pipe (`templum blocks | more`) but not a console directly.
 # sound = true
 ```
 
-Off, nothing is typed into agents; the bus still serves the command line. **Settings ▸ Connections** (batch 5) has
+Off, nothing is typed into agents, and the bus answers no agent's server or hooks ([The switch reaches every
+agent](#the-switch-reaches-every-agent)); it still serves the command line. **Settings ▸ Connections** (batch 5) has
 the switch, Questions wait and Sound ([ask-user.md](ask-user.md#settings)), the server's command for other agents with
 a Copy button, and Gemini CLI's Install and Remove.
 

@@ -16,11 +16,24 @@ fn ask(
     method: &str,
     params: Value,
 ) -> Value {
+    ask_as(handle, ws, cx, terminal, "cli", method, params)
+}
+
+/// `ask`, by `client` (`cli`, `mcp`).
+fn ask_as(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    terminal: &str,
+    client: &str,
+    method: &str,
+    params: Value,
+) -> Value {
     let (reply, answers) = std::sync::mpsc::channel();
     let message = Message {
         hello: Hello {
             terminal: terminal.into(),
-            client: "cli".into(),
+            client: client.into(),
         },
         conn: 0,
         incoming: Incoming::Request {
@@ -851,4 +864,91 @@ fn a_title_is_cleaned_before_an_agent_reads_it() {
     assert_eq!(long.chars().count(), 60, "{long}");
     assert!(long.ends_with("é…"), "{long}");
     assert_eq!(clean_title(&"a".repeat(60)), "a".repeat(60));
+}
+
+#[gpui_kit::test]
+fn the_switch_off_cuts_every_agent_but_not_the_command_line(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let id = first_id(&ws, cx);
+    let (terminal, uid) = me(&ws, cx, id);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into())
+    });
+    event(handle, &ws, cx, &terminal, json!({ "event": "submitted" }));
+    let switch = |on: bool, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let mut config = ws.config.clone();
+                config.connections.enabled = on;
+                ws.apply_config(config, window, cx);
+            })
+        })
+        .unwrap();
+    };
+    let pane = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let pane = ws.space.terminal(id).unwrap();
+            (pane.state.clone(), pane.speaks)
+        })
+    };
+    assert_eq!(pane(cx), (Some(AgentState::Working), true));
+    switch(false, cx);
+    assert_eq!(
+        pane(cx),
+        (Some(AgentState::Working), false),
+        "read from its screen"
+    );
+    let init = ask_as(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "mcp",
+        "initialize",
+        json!({ "protocolVersion": "2025-06-18" }),
+    );
+    assert_eq!(
+        init["result"]["instructions"],
+        "Connections are off in Templum's settings: Templum's tools won't work here."
+    );
+    let whoami = |client: &str, cx: &mut TestAppContext| {
+        let answer = ask_as(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            client,
+            "tools/call",
+            json!({ "name": "whoami", "arguments": {} }),
+        );
+        let result = &answer["result"];
+        (
+            result["isError"] == true,
+            result["content"][0]["text"].as_str().unwrap().to_string(),
+        )
+    };
+    assert_eq!(
+        whoami("mcp", cx),
+        (
+            true,
+            "Connections are off: turn on Agents in Templum (Settings ▸ Connections) to use \
+             Templum's tools."
+                .to_string()
+        )
+    );
+    event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({ "event": "stopped", "message": "Done." }),
+    );
+    assert_eq!(pane(cx), (Some(AgentState::Working), false), "dropped");
+    let (failed, text) = whoami("cli", cx);
+    assert!(!failed && text.contains(&format!("id: {uid}")), "{text}");
+    switch(true, cx);
+    let (failed, text) = whoami("mcp", cx);
+    assert!(!failed && text.contains(&format!("id: {uid}")), "{text}");
 }

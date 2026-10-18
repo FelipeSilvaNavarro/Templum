@@ -252,8 +252,8 @@ Settings ▸ Connections, two rows after the switch for the agents Templum opens
 
 ```toml
 [connections]
-## The Claude Code and Codex Templum opens get its MCP server and hooks: they can read and
-## type into the blocks wired to them (docs/specs/connections.md).
+## The agents Templum opens, or that are typed in its terminals, get its MCP server and
+## hooks: they can read and type into the blocks wired to them (docs/specs/connections.md).
 # enabled = true
 ## How long an agent's question waits for your answer, in minutes; 0 waits until you answer.
 # question_timeout = 0

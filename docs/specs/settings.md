@@ -127,7 +127,7 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
 
 | Field | Control | Option |
 |---|---|---|
-| Agents in Templum | Switch, on by default: the Claude Code and Codex opened from the canvas or typed in a terminal get Templum's server and hooks | `connections.enabled` |
+| Agents in Templum | Switch, on by default: agents opened from the canvas or typed in a terminal get Templum's server and hooks; off, the bus answers none of them, those already running included | `connections.enabled` |
 | Questions wait | Number 0–1440 minutes, step 5: how long an agent's question waits for an answer; 0 waits until it is answered | `connections.question_timeout` |
 | Sound | Switch, on by default: a short sound when an agent asks something | `connections.sound` |
 

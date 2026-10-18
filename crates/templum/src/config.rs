@@ -279,8 +279,8 @@ impl Default for UpdatesConfig {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct ConnectionsConfig {
-    /// The Claude Code and Codex Templum opens, or that are typed in its terminals, get its MCP
-    /// server and hooks.
+    /// The agents Templum opens, or that are typed in its terminals, get its MCP server and hooks;
+    /// off, the bus answers no agent (docs/specs/connections.md, The switch reaches every agent).
     pub enabled: bool,
     /// How long an agent's question waits for its answer, minutes, 0 to 1440; 0: until answered
     /// (docs/specs/ask-user.md).
@@ -885,9 +885,8 @@ pub(crate) fn template(macos: bool) -> String {
         "## asks before restarting into it.\n",
         "# check = true\n\n",
         "[connections]\n",
-        "## The Claude Code and Codex Templum opens, or that are typed in its terminals, get its MCP\n",
-        "## server and hooks: they can read and type into the blocks wired to them\n",
-        "## (docs/specs/connections.md).\n",
+        "## The agents Templum opens, or that are typed in its terminals, get its MCP server and\n",
+        "## hooks: they can read and type into the blocks wired to them (docs/specs/connections.md).\n",
         "# enabled = true\n",
         "## How long an agent's question waits for your answer, in minutes; 0 waits until you answer.\n",
         "# question_timeout = 0\n",

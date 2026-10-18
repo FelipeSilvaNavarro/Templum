@@ -45,8 +45,8 @@ pub(super) fn rows(
     let mut rows = vec![
         Row::new("connections.enabled", "Agents in Templum")
             .description(
-                "Claude Code and Codex opened from the canvas or typed in a terminal get Templum's \
-                 server and hooks: they read and type into the blocks wired to them",
+                "Agents opened from the canvas or typed in a terminal get Templum's server and \
+                 hooks: they read and type into the blocks wired to them",
             )
             .control(Switch::new("connections-switch").checked(on).on_click(
                 move |on: &bool, _, cx| {
@@ -102,9 +102,9 @@ pub(super) fn rows(
     rows.push(
         Row::new("connections.command", "Other agents")
             .description(
-                "Grok Build, Pi, OpenCode or your own: add this command to their MCP servers. It \
-                 finds its block from the terminal it runs in; an agent that hands a server only \
-                 the variables it names needs TEMPLUM_BUS and TEMPLUM_TERMINAL",
+                "Grok Build, Cursor CLI, Kimi Code or your own: add this command to their MCP \
+                 servers. It finds its block from the terminal it runs in; an agent that hands a \
+                 server only the variables it names needs TEMPLUM_BUS and TEMPLUM_TERMINAL",
             )
             .control(Clipboard::new("connections-copy").value(command.clone()))
             .below(

@@ -16,6 +16,13 @@ use super::delegate::ENTER_AFTER;
 use super::waits::{Asked, Waiting, deadline};
 use super::{AgentState, Body, Pane, Space, Workspace, show_notification};
 
+/// A tool call's answer while connections are off.
+pub(super) const CONNECTIONS_OFF: &str = "Connections are off: turn on Agents in Templum (Settings ▸ Connections) to use Templum's tools.";
+
+/// `initialize`'s instructions while connections are off.
+const OFF_INSTRUCTIONS: &str =
+    "Connections are off in Templum's settings: Templum's tools won't work here.";
+
 /// Starts the bus in the data folder, and the task that hands its messages to the workspace.
 /// Without a data folder (the bench), or when the socket can't be made, there is none.
 pub(super) fn start(
@@ -149,15 +156,22 @@ impl Workspace {
             incoming,
             reply,
         } = message;
+        // Connections off: an agent's server and hooks get nothing, the command line works.
+        let off = !self.config.connections.enabled && hello.client != "cli";
         match incoming {
             Incoming::Request { id, method, params } => {
                 let answer = match method.as_str() {
                     "initialize" => {
-                        let instructions = self.instructions(&hello.terminal, cx);
+                        let instructions = if off {
+                            OFF_INSTRUCTIONS.to_string()
+                        } else {
+                            self.instructions(&hello.terminal, cx)
+                        };
                         rpc::result(&id, tools::initialize_result(&params, &instructions))
                     }
                     "ping" => rpc::result(&id, json!({})),
                     "tools/list" => rpc::result(&id, tools::list()),
+                    "tools/call" if off => tools::tool_result(&id, &Reply::err(CONNECTIONS_OFF)),
                     "tools/call" => {
                         let name = params["name"].as_str().unwrap_or_default();
                         if hello.client == "mcp" {
@@ -198,6 +212,8 @@ impl Workspace {
                 };
                 let _ = reply.send(answer);
             }
+            Incoming::Notification { method, .. }
+                if off && method == templum_mcp::hooks::METHOD => {}
             Incoming::Notification { method, params } if method == templum_mcp::hooks::METHOD => {
                 if let Ok(event) = serde_json::from_value(params) {
                     self.agent_event(&hello.terminal, event, cx);
