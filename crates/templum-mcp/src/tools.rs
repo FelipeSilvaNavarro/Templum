@@ -244,12 +244,12 @@ pub fn list() -> Value {
         "description": "Checklist items, one per line; a leading - or *, then [ ] or [x], is dropped ([x] \
                         adds it checked).",
     });
+    // A list only in the schema (no `anyOf`, which not every client's model API takes); one id
+    // is taken all the same.
     let item_ids = json!({
-        "anyOf": [
-            { "type": "integer" },
-            { "type": "array", "items": { "type": "integer" } },
-        ],
-        "description": "An item's id, or a list of them, as list_cards with card shows them.",
+        "type": "array",
+        "items": { "type": "integer" },
+        "description": "Items' ids, as list_cards with card shows them.",
     });
     // Claude Code shows these whole from the start, beside its own Agent tool, where the others
     // wait behind its tool search by name only.
@@ -1216,6 +1216,13 @@ mod tests {
                 .unwrap()
                 .starts_with("Asks the person in a dialog on your block, as AskUserQuestion does")
         );
+    }
+
+    /// No schema has an `anyOf`, which not every client's model API takes.
+    #[test]
+    fn no_tool_schema_has_an_any_of() {
+        let tools = list().to_string();
+        assert!(!tools.contains("anyOf"), "{tools}");
     }
 
     /// The events tools/list offers are the ones wait_for takes; any other is refused, naming them.

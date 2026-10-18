@@ -489,7 +489,8 @@ runs "any X" when its agent is X or runs X's program (the first word of their co
 - **`for`** (in `create_card` and `edit_card`) names who: `anyone`; an agent's id or title in either case (`codex`,
   `Claude Code`); or a terminal block's id, in any workspace. Agents are matched first. Anything else is refused:
   `There's no agent or terminal block {for}. Agents: claude, codex, …; or a terminal's block id, or anyone.`
-- **`priority`** is `low`, `medium`, `high` or `none`, in either case; another word is refused by the server:
+- **`priority`** is `low`, `medium`, `high` or `none`: the schema lists them so (an enum), and the server takes them
+  in either case too (the command line's `--priority High`); another word is refused by the server:
   `"priority" is low, medium, high or none`.
 - **`list_cards`** lines, in this order after the id and title: the labels, `priority high`, the assignee
   (`assignee b7k2m "Claude Code · api"` for a block, `for any codex` for an agent; ` (you)` after it when it is the
@@ -498,7 +499,8 @@ runs "any X" when its agent is X or runs X's program (the first word of their co
 - **`create_card`** also takes `priority`, `for` and `checklist` (text, an item per line, read as `add_items` reads
   it). Its answer is unchanged: `Created card 40.`
 - **`edit_card`** takes `card` and at least one of `priority`, `for`, `add_items` (text, as `add_items`), `check` and
-  `uncheck` (an item's id, or a list of them). The server refuses a call with none: `edit_card needs something to
+  `uncheck` (a list of item ids; the schema declares only the list, with no `anyOf`, but one id, a number or its text,
+  is taken too). The server refuses a call with none: `edit_card needs something to
   change: priority, for, add_items, check or uncheck`. An item id the card doesn't have refuses the whole call before
   anything changes: `Card 40 has no item 99: list_cards with card shows its items.` What it does is one Ctrl+Z step,
   and its answer says it: `Card 40: priority high; for any codex; added items 43, 44; checked 41; unchecked 42.`
