@@ -208,6 +208,34 @@ pub(crate) fn render(
         },
         _ => None,
     };
+    // After the title, at Full: a clock and how many schedules its agent set, which its tooltip
+    // lists (docs/specs/agent-tools.md, What the person sees).
+    let clock = match body {
+        Body::Terminal(pane) if live && !labeled => {
+            let uid = ws.space.uids.get(&id).cloned().unwrap_or_default();
+            let lines = ws.schedule_lines(pane.term.id(), &uid);
+            (!lines.is_empty()).then(|| {
+                let (count, tip) = (lines.len(), lines.join("\n"));
+                div()
+                    .id(ElementId::Name(format!("schedules-{n}").into()))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0 * z))
+                    .text_size(px(11.0 * z))
+                    .text_color(ui.title_dim)
+                    .child(
+                        Icon::new(IconName::Clock)
+                            .size(px(11.0 * z))
+                            .text_color(ui.title_dim),
+                    )
+                    .child(count.to_string())
+                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                    .test_support()
+            })
+        }
+        _ => None,
+    };
     let title = if labeled {
         div()
             .id(("title", n))
@@ -238,8 +266,10 @@ pub(crate) fn render(
             // Clear of the fullscreen and close buttons on the right (and of a terminal's chip
             // on the left), and centered.
             .px(px(if chip.is_some() { 120.0 } else { 52.0 } * z))
+            .gap(px(6.0 * z))
             .overflow_hidden()
             .child(title_text)
+            .children(clock)
     }
     // The title is where the block is held to move it: an open hand over it, a closed one
     // while it moves (CSS's grab and grabbing).

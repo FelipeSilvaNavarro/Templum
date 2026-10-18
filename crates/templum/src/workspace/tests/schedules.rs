@@ -235,3 +235,56 @@ fn a_schedule_that_cant_go_says_so_and_a_closed_caller_ends_its_schedules(cx: &m
     look(cx);
     assert_eq!(ids(&ws, cx), Vec::<u64>::new());
 }
+
+/// The block's menu, item `index`, then item `sub` of its submenu.
+fn pick(handle: AnyWindowHandle, cx: &mut TestAppContext, id: BlockId, index: usize, sub: usize) {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.right_click(("title", id.0 as usize), cx);
+        window.render_frame(cx);
+        window.within("popup-menu").click(index, cx);
+        window.render_frame(cx);
+        window.within("submenu").within("popup-menu").click(sub, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+/// Whether the clock of the schedules of block `id` is drawn.
+fn clock(handle: AnyWindowHandle, cx: &mut TestAppContext, id: BlockId) -> bool {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find(gpui_kit::ElementId::Name(
+                format!("schedules-{}", id.0).into(),
+            ))
+            .is_some()
+    })
+    .unwrap()
+}
+
+/// The caller's block shows a clock while it has schedules, and its menu's Cancel schedules ▸
+/// cancels one, or All (docs/specs/agent-tools.md, What the person sees).
+#[gpui_kit::test]
+fn the_callers_block_shows_its_schedules_and_its_menu_cancels_them(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let plain = wired_plain(handle, &ws, cx, mine);
+    let (_, them) = me(&ws, cx, plain);
+    assert!(!clock(handle, cx, mine), "none yet");
+    for args in [
+        json!({ "block": them, "text": "go", "every": 10 }),
+        json!({ "block": uid, "text": "look", "after": 60 }),
+    ] {
+        assert!(!call(handle, &ws, cx, &terminal, "schedule", args).0);
+    }
+    assert!(clock(handle, cx, mine));
+    assert!(!clock(handle, cx, plain), "only on the asker's block");
+    // Copy, Paste, —, Fullscreen, Disconnect from ▸, Cancel schedules ▸ (s1, s2, All).
+    pick(handle, cx, mine, 5, 0);
+    assert_eq!(ids(&ws, cx), [2]);
+    // Cancel schedules ▸ (s2, All).
+    pick(handle, cx, mine, 5, 1);
+    assert_eq!(ids(&ws, cx), Vec::<u64>::new());
+    assert!(!clock(handle, cx, mine));
+}

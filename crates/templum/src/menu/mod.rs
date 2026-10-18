@@ -248,9 +248,16 @@ impl Workspace {
                 } else {
                     vec![block]
                 };
+                let terminal = body.terminal().map(|p| p.term.id().to_string());
+                let uid = self.space.uids.get(&block).cloned().unwrap_or_default();
+                let schedules = terminal
+                    .as_deref()
+                    .map_or_else(Vec::new, |t| self.schedules_of(t, &uid));
                 Items::Block {
                     block,
                     inner: Box::new(inner),
+                    schedules,
+                    terminal,
                     moving,
                     spaces: self
                         .others
@@ -513,6 +520,10 @@ enum Items {
         /// The other workspaces, by id and name, and whether they take blocks (not a stopped
         /// one, nor one whose file isn't written).
         spaces: Vec<(String, String, bool)>,
+        /// The schedules its agent asked for, by id and as Cancel schedules ▸ lists them, and
+        /// its terminal (`TEMPLUM_TERMINAL`).
+        schedules: Vec<(u64, String)>,
+        terminal: Option<String>,
     },
     Canvas {
         at: Point,

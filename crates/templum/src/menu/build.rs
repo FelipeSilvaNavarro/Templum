@@ -205,6 +205,42 @@ fn wiring(
     )
 }
 
+/// Cancel schedules ▸ each schedule the block's agent asked for, and All; nothing when there are
+/// none (docs/specs/agent-tools.md, What the person sees).
+fn cancelling(
+    ws: &Entity<Workspace>,
+    menu: PopupMenu,
+    schedules: Vec<(u64, String)>,
+    terminal: Option<String>,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    let Some(terminal) = terminal.filter(|_| !schedules.is_empty()) else {
+        return menu;
+    };
+    let ws = ws.clone();
+    menu.submenu_with_icon(
+        Some(Icon::new(IconName::Clock)),
+        "Cancel schedules",
+        window,
+        cx,
+        move |menu, _, _| {
+            let terminal = terminal.clone();
+            schedules
+                .iter()
+                .fold(menu, |menu, (id, about)| {
+                    let id = *id;
+                    menu.item(item(&ws, about.clone(), None, move |ws, _, cx| {
+                        ws.cancel_schedule_now(id, cx)
+                    }))
+                })
+                .item(item(&ws, "All", None, move |ws, _, cx| {
+                    ws.cancel_schedules_of(&terminal, cx)
+                }))
+        },
+    )
+}
+
 /// What deleting `n` cards along with their board or column says.
 fn cards(n: usize) -> String {
     if n == 1 {
@@ -231,6 +267,8 @@ impl Items {
                 close,
                 moving,
                 spaces,
+                schedules,
+                terminal,
             } => {
                 let menu = inner.build(ws, menu, window, cx).separator();
                 let menu = match tail {
@@ -253,7 +291,8 @@ impl Items {
                             },
                         ));
                         let menu = wiring(ws, menu, block, connect, true, window, cx);
-                        wiring(ws, menu, block, disconnect, false, window, cx)
+                        let menu = wiring(ws, menu, block, disconnect, false, window, cx);
+                        cancelling(ws, menu, schedules, terminal, window, cx)
                     }
                     Tail::Tile {
                         flip,

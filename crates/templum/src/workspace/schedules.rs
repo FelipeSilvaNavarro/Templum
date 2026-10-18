@@ -143,17 +143,29 @@ impl Workspace {
         }
     }
 
-    /// `whoami`'s lines for the terminal `from`'s schedules: `schedule s3: to k9x1d every 10 min,
-    /// next 15:10: <its text's first line>`.
-    pub(super) fn schedule_lines(&self, from: &str, me: &str) -> Vec<String> {
+    /// The schedules the terminal `by` asked for, oldest first, each said as its block's menu
+    /// says it: `s3: to k9x1d every 10 min`, its asker's block `me` being "you".
+    pub(crate) fn schedules_of(&self, by: &str, me: &str) -> Vec<(u64, String)> {
         self.schedules
             .iter()
-            .filter(|s| s.by == from)
+            .filter(|s| s.by == by)
             .map(|s| {
                 let to = if s.to == me { "you" } else { s.to.as_str() };
                 let every = s.every.map_or(String::new(), |e| {
                     format!(" every {} min", e.as_secs() / 60)
                 });
+                (s.id, format!("s{}: to {to}{every}", s.id))
+            })
+            .collect()
+    }
+
+    /// `whoami`'s lines for the terminal `by`'s schedules, and its clock's tooltip's: `schedule
+    /// s3: to k9x1d every 10 min, next 15:10: <its text's first line>`.
+    pub(crate) fn schedule_lines(&self, by: &str, me: &str) -> Vec<String> {
+        self.schedules_of(by, me)
+            .into_iter()
+            .zip(self.schedules.iter().filter(|s| s.by == by))
+            .map(|((_, about), s)| {
                 let line: String = s
                     .text
                     .lines()
@@ -162,13 +174,21 @@ impl Workspace {
                     .chars()
                     .take(TEXT_CHARS)
                     .collect();
-                format!(
-                    "schedule s{}: to {to}{every}, next {}: {line}",
-                    s.id,
-                    clock(s.next, false)
-                )
+                format!("schedule {about}, next {}: {line}", clock(s.next, false))
             })
             .collect()
+    }
+
+    /// The person cancels every schedule the terminal `by` asked for (its block's menu).
+    pub(crate) fn cancel_schedules_of(&mut self, by: &str, cx: &mut Context<Self>) {
+        self.schedules.retain(|s| s.by != by);
+        cx.notify();
+    }
+
+    /// The person cancels schedule `id` (its asker's block's menu).
+    pub(crate) fn cancel_schedule_now(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.schedule_cancel(id);
+        cx.notify();
     }
 
     /// Looks at the schedules every SCHEDULE_LOOK until there are none; started by the first.
