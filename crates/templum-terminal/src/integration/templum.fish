@@ -101,4 +101,20 @@ if status is-interactive; and not set -q __templum_installed
             __templum_agent qwen "$w" QWEN_CODE_SYSTEM_SETTINGS_PATH "$TEMPLUM_QWEN_SETTINGS" $argv
         end
     end
+    # Pi: its extension. Not before one of its commands, which it reads only as the first word.
+    if test -n "$TEMPLUM_PI_ARGS"; and not functions -q pi
+        function pi
+            set -l w "$TEMPLUM_PI_ARGS"
+            if set -q argv[1]; and contains -- $argv[1] install remove uninstall update list config auth
+                set w ''
+            end
+            set -l last (string split \n -- "$w")[-1]
+            for a in $argv
+                if test "$a" = "$last"
+                    set w ''
+                end
+            end
+            __templum_agent pi "$w" '' '' $argv
+        end
+    end
 end

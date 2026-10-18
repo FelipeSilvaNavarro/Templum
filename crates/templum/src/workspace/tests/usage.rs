@@ -12,6 +12,7 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
         let agent = |id: &str| ws.agents.iter().find(|a| a.id == id).cloned();
         let (claude, codex, copilot) = (agent("claude"), agent("codex"), agent("copilot"));
         let qwen = agent("qwen");
+        let pi = agent("pi");
         let typed = |name: &str| {
             templum_usage::claude::typed_path(
                 &data.path().join(name).to_string_lossy(),
@@ -79,9 +80,17 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
             ws.typed(qwen.as_ref(), "qwen --resume 0d5e"),
             format!("qwen --resume 0d5e {qwen_mcp}")
         );
+        // Pi: its extension, `-e` and the file.
+        let pi_words = templum_usage::pi::args(data.path(), cfg!(windows)).unwrap();
+        let file = templum_usage::claude::typed_path(&pi_words[1], cfg!(windows)).unwrap();
+        assert_eq!(
+            ws.typed(pi.as_ref(), "pi --session-id 0d5e"),
+            format!("pi --session-id 0d5e -e {file}")
+        );
         // Without `<data>/bin` on the terminal's PATH, the files' program can't be found.
         let env = ws.bus_env.clone();
         ws.bus_env.retain(|(k, _)| k != "PATH");
+        assert_eq!(ws.typed(pi.as_ref(), "pi"), "pi");
         assert_eq!(ws.typed(copilot.as_ref(), "copilot"), "copilot");
         assert_eq!(ws.typed(qwen.as_ref(), "qwen"), "qwen");
         ws.bus_env = env;
@@ -182,7 +191,10 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
             None => String::new(),
         };
         assert_eq!(word(ws, "TEMPLUM_QWEN_SETTINGS"), settings);
+        let pi = templum_usage::pi::args(&data, cfg!(windows)).unwrap();
+        assert_eq!(word(ws, "TEMPLUM_PI_ARGS"), pi.join("\n"));
         ws.config.connections.enabled = false;
+        assert_eq!(word(ws, "TEMPLUM_PI_ARGS"), "");
         assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), "");
         assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), "");
         assert_eq!(word(ws, "TEMPLUM_OPENCODE_CONFIG"), "");
@@ -227,6 +239,7 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
                 ("TEMPLUM_KILO_CONFIG".to_string(), String::new()),
                 ("TEMPLUM_QWEN_ARGS".to_string(), String::new()),
                 ("TEMPLUM_QWEN_SETTINGS".to_string(), String::new()),
+                ("TEMPLUM_PI_ARGS".to_string(), String::new()),
                 ("TEMPLUM_HOOKED".to_string(), String::new()),
             ]
         );

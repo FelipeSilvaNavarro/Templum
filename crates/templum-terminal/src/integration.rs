@@ -425,6 +425,7 @@ mod tests {
                     "TEMPLUM_KILO_CONFIG",
                     "TEMPLUM_QWEN_ARGS",
                     "TEMPLUM_QWEN_SETTINGS",
+                    "TEMPLUM_PI_ARGS",
                 ] {
                     if !env.iter().any(|(k, _)| *k == key) {
                         command.push(format!("{key}="));
@@ -456,7 +457,7 @@ mod tests {
                 Some(term)
             }
 
-            /// Agents in `<home>/bin` (`claude`, `codex`, `copilot`, `opencode`, `kilo`, `qwen`) that write
+            /// Agents in `<home>/bin` (`claude`, `codex`, `copilot`, `opencode`, `kilo`, `qwen`, `pi`) that write
             /// their arguments, one per line, to `<home>/<name>.args` (at once: moved there), and
             /// exit 3 (`$FAKE_EXIT` when set). What is piped into them, not typed, goes to
             /// `<home>/<name>.in` first; the variable an agent takes from its environment (`AGENT_VARS`)
@@ -464,7 +465,9 @@ mod tests {
             fn fake_agents(&self) -> String {
                 use std::os::unix::fs::PermissionsExt as _;
                 let bin = self.dir.path().join("bin");
-                for name in ["claude", "codex", "copilot", "opencode", "kilo", "qwen"] {
+                for name in [
+                    "claude", "codex", "copilot", "opencode", "kilo", "qwen", "pi",
+                ] {
                     let args = self.dir.path().join(format!("{name}.args"));
                     let env = match AGENT_VARS.iter().find(|(n, _)| *n == name) {
                         Some((_, var)) => format!(
@@ -511,6 +514,8 @@ mod tests {
         /// file for its variable.
         const QWEN_WORDS: &str = "--mcp-config=/tmp/Templum Data/qwen/mcp.json";
         const QWEN_SETTINGS: &str = "/tmp/Templum Data/qwen/settings.json";
+        /// What Templum gives a terminal for a `pi` typed in it.
+        const PI_WORDS: &str = "-e\n/tmp/Templum Data/pi/templum.ts";
 
         /// The agents that take something of Templum's from a variable of their environment.
         const AGENT_VARS: [(&str, &str); 3] = [
@@ -521,7 +526,7 @@ mod tests {
 
         /// The environment of a shell whose agents are `fake_agents`' on `path`, with Templum's
         /// words for each.
-        fn with_agents(path: &str) -> [(&str, &str); 8] {
+        fn with_agents(path: &str) -> [(&str, &str); 9] {
             [
                 ("PATH", path),
                 ("TEMPLUM_CLAUDE_ARGS", CLAUDE_WORDS),
@@ -531,6 +536,7 @@ mod tests {
                 ("TEMPLUM_KILO_CONFIG", OPENCODE_CONFIG),
                 ("TEMPLUM_QWEN_ARGS", QWEN_WORDS),
                 ("TEMPLUM_QWEN_SETTINGS", QWEN_SETTINGS),
+                ("TEMPLUM_PI_ARGS", PI_WORDS),
             ]
         }
 
@@ -758,6 +764,34 @@ mod tests {
             wait_args(term, home, "copilot", &["x"]);
         }
 
+        /// A `pi` typed at the prompt of a shell started `with_agents`: Templum's words first,
+        /// none when the person's words hold its file or start with one of Pi's commands (which
+        /// it reads only as the first word), none once `unset` empties the variable.
+        fn typed_pi(term: &Terminal, home: &Home, unset: &str) {
+            let words: Vec<&str> = PI_WORDS.lines().collect();
+            let file = words[1];
+            let lines = [
+                ("pi".to_string(), words.clone()),
+                (
+                    "pi -p 'hi there'".to_string(),
+                    [&words[..], &["-p", "hi there"]].concat(),
+                ),
+                (
+                    "pi -e mine.ts".to_string(),
+                    [&words[..], &["-e", "mine.ts"]].concat(),
+                ),
+                (format!("pi -e '{file}'"), vec!["-e", file]),
+                ("pi list".to_string(), vec!["list"]),
+                ("pi install npm:x".to_string(), vec!["install", "npm:x"]),
+            ];
+            for (line, want) in lines {
+                term.write(format!("{line}\r").into_bytes());
+                wait_args(term, home, "pi", &want);
+            }
+            term.write(format!("{unset}\rpi x\r").into_bytes());
+            wait_args(term, home, "pi", &["x"]);
+        }
+
         use std::sync::Arc;
 
         fn same(a: Option<PathBuf>, b: &Path) -> bool {
@@ -922,6 +956,7 @@ mod tests {
                     typed_with_variable(&term, &home, &POSIX);
                 }
                 typed_qwen(&term, &home, &POSIX);
+                typed_pi(&term, &home, "unset TEMPLUM_PI_ARGS");
             }
         }
 
@@ -950,6 +985,7 @@ mod tests {
             typed_copilot(&term, &home, "unset TEMPLUM_COPILOT_ARGS", true);
             typed_with_variable(&term, &home, &POSIX);
             typed_qwen(&term, &home, &POSIX);
+            typed_pi(&term, &home, "unset TEMPLUM_PI_ARGS");
         }
 
         /// The person's alias and function, read before Templum defines its own (bash) or after
@@ -1124,6 +1160,7 @@ mod tests {
                 typed_copilot(&term, &home, "set -e TEMPLUM_COPILOT_ARGS", true);
                 typed_with_variable(&term, &home, &FISH);
                 typed_qwen(&term, &home, &FISH);
+                typed_pi(&term, &home, "set -e TEMPLUM_PI_ARGS");
             }
         }
 
@@ -1167,6 +1204,7 @@ mod tests {
             typed_copilot(&term, &home, "Remove-Item Env:TEMPLUM_COPILOT_ARGS", true);
             typed_with_variable(&term, &home, &PWSH);
             typed_qwen(&term, &home, &PWSH);
+            typed_pi(&term, &home, "Remove-Item Env:TEMPLUM_PI_ARGS");
             // What is piped into an agent reaches it, as `git diff | claude -p review`; one not
             // piped into keeps the terminal.
             let piped = |name: &str| {

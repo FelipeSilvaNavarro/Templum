@@ -189,6 +189,33 @@ pub fn qwen(input: &Value) -> Option<AgentEvent> {
     }
 }
 
+/// A line of Templum's Pi extension: `{"type": <Pi's event>, "answer"?: <its last text>,
+/// "title"?: <a dialog's title>, "reason"?: <why a session ends>}`. None for what Templum doesn't
+/// follow.
+pub fn pi(input: &Value) -> Option<AgentEvent> {
+    let text = |key: &str| input[key].as_str().map(str::to_string);
+    Some(match input["type"].as_str()? {
+        "session_start" => AgentEvent::Started,
+        "agent_start" => AgentEvent::Submitted { at_enter: false },
+        "tool_result" => AgentEvent::Working,
+        // Pi won't go on by itself: the turn is over.
+        "agent_settled" => AgentEvent::Stopped {
+            message: text("answer"),
+            transcript: None,
+        },
+        // An extension's dialog: Pi has no permission prompts.
+        "ui_prompt_start" => AgentEvent::NeedsYou {
+            message: Some(text("title").unwrap_or_else(|| "Pi asks you something".to_string())),
+        },
+        "ui_prompt_end" => AgentEvent::Working,
+        // Not `/new` and the like, where another session starts at once.
+        "session_shutdown" if matches!(input["reason"].as_str(), None | Some("quit")) => {
+            AgentEvent::Ended
+        }
+        _ => return None,
+    })
+}
+
 /// A line of Templum's OpenCode plugin (Kilo Code's too): `{"type": <event type, or
 /// "chat.message">, "properties": {…}, "answer": <the session's last text on its idle>}`, of the
 /// main session only. None for what Templum doesn't follow.
@@ -795,6 +822,67 @@ mod tests {
             Some(AgentEvent::Ended)
         );
         assert_eq!(event(json!({ "hook_event_name": "PreToolUse" })), None);
+    }
+
+    #[test]
+    fn pis_events_become_events() {
+        let event = |input: Value| pi(&input);
+        assert_eq!(
+            event(json!({ "type": "session_start" })),
+            Some(AgentEvent::Started)
+        );
+        assert_eq!(
+            event(json!({ "type": "agent_start" })),
+            Some(AgentEvent::Submitted { at_enter: false })
+        );
+        assert_eq!(
+            event(json!({ "type": "tool_result" })),
+            Some(AgentEvent::Working)
+        );
+        assert_eq!(
+            event(json!({ "type": "agent_settled", "answer": "Done." })),
+            Some(AgentEvent::Stopped {
+                message: Some("Done.".into()),
+                transcript: None
+            })
+        );
+        assert_eq!(
+            event(json!({ "type": "agent_settled" })),
+            Some(AgentEvent::Stopped {
+                message: None,
+                transcript: None
+            })
+        );
+        assert_eq!(
+            event(json!({ "type": "ui_prompt_start", "title": "Pick a file" })),
+            Some(AgentEvent::NeedsYou {
+                message: Some("Pick a file".into())
+            })
+        );
+        assert_eq!(
+            event(json!({ "type": "ui_prompt_start" })),
+            Some(AgentEvent::NeedsYou {
+                message: Some("Pi asks you something".into())
+            })
+        );
+        assert_eq!(
+            event(json!({ "type": "ui_prompt_end" })),
+            Some(AgentEvent::Working)
+        );
+        assert_eq!(
+            event(json!({ "type": "session_shutdown", "reason": "quit" })),
+            Some(AgentEvent::Ended)
+        );
+        assert_eq!(
+            event(json!({ "type": "session_shutdown" })),
+            Some(AgentEvent::Ended)
+        );
+        // `/new` and the like: another session starts at once.
+        assert_eq!(
+            event(json!({ "type": "session_shutdown", "reason": "new" })),
+            None
+        );
+        assert_eq!(event(json!({ "type": "agent_end" })), None);
     }
 
     #[test]

@@ -97,6 +97,7 @@ impl Workspace {
             .then(|| match builtin {
                 Some(Agent::COPILOT) => templum_usage::copilot::args(&gives.data, windows),
                 Some(Agent::QWEN) => templum_usage::qwen::args(&gives.data, windows),
+                Some(Agent::PI) => templum_usage::pi::args(&gives.data, windows),
                 _ => None,
             })
             .flatten()
@@ -150,6 +151,10 @@ impl Workspace {
             ("TEMPLUM_KILO_CONFIG", opencode),
             ("TEMPLUM_QWEN_ARGS", words(qwen)),
             ("TEMPLUM_QWEN_SETTINGS", qwen_settings),
+            (
+                "TEMPLUM_PI_ARGS",
+                words(data.and_then(|d| templum_usage::pi::args(d, windows))),
+            ),
             // An OpenCode or a Pi run here reports for its block, and sets it for what it starts.
             ("TEMPLUM_HOOKED", String::new()),
         ]

@@ -738,7 +738,7 @@ shells' functions). Nothing is written outside Templum's data folder, as for Cla
 | OpenCode | `OPENCODE_CONFIG_CONTENT`, merged with the person's config | a JS plugin named in the same variable | `opencode` | 1.19.0, `opencode serve` with a probe plugin, `opencode run` with Templum's plugin by hand; not its TUI |
 | Kilo Code | `KILO_CONFIG_CONTENT` (an OpenCode fork) | the same plugin | `kilo` | from its source (7.8.x); not installed here |
 | Qwen Code | `--mcp-config=<data>/qwen/mcp.json` | its system settings file moved to `<data>/qwen/settings.json` (`QWEN_CODE_SYSTEM_SETTINGS_PATH`) | `qwen` | from its docs and source (0.25.2); not installed here |
-| Pi | an extension, `-e <data>/pi/templum.ts`, that registers the server when Pi has MCP (0.99 and later) | the same extension's events | `pi` | 0.85.1 (no MCP: its events only); the server from 1.3.0's docs |
+| Pi | an extension, `-e <data>/pi/templum.ts`, that registers the server when Pi has MCP (0.99 and later) | the same extension's events | `pi` | 0.85.1 (no MCP: its events only; a probe extension by hand, without a model); the server from 1.3.0's docs |
 
 Gemini CLI keeps its extension; it is asked for once ([below](#gemini-cli-without-its-extension)). The others stay as
 they are: [agent-parity.md](agent-parity.md#after-card-44) says why for each.
@@ -920,12 +920,21 @@ Templum's, `<data>/pi/templum.ts`:
 | `session_start` | started |
 | `agent_start` | took a prompt: working (`at_enter` false) |
 | `tool_result` | working |
-| `agent_end` | done, with its last assistant text (from the event's messages) |
-| `ui_prompt_start` | waiting for the person, with its title (an extension's dialog: Pi has no permission prompts) |
+| `agent_settled` | done, with the last assistant text of the run's `agent_end` (from its messages). Not `agent_end` itself: Pi may still retry, compact and retry, or take a queued message after it; `agent_settled` (Pi 0.80.4 and later) says it won't go on by itself |
+| `ui_prompt_start` | waiting for the person, with its title (an extension's dialog: Pi has no permission prompts; Pi 0.84.4 and later) |
 | `ui_prompt_end` | working |
-| `session_shutdown` | ended |
+| `session_shutdown` | ended, when its `reason` is `quit` (`/new`, `/resume`, a fork start another session at once) |
 
-The words after its command are `-e` and the file. Its session is unchanged (`--session-id`).
+The words after its command are `-e` and the file (`templum_usage::pi::args`), opened or typed, but never before one
+of Pi's commands (`install`, `remove`, `uninstall`, `update`, `list`, `config`, `auth`): Pi reads one only as its
+first word, and `pi -e <file> list` takes `list` for a prompt (checked with 0.85.1). Its session is unchanged
+(`--session-id`).
+
+Checked by hand on 2026-10-18 with Pi 0.85.1 (a probe extension, `pi -ne -e <probe> -p "say hi"`; Pi had no model it
+could use here, so each run ended in an error): the events come in the order `session_start`, `input`,
+`before_agent_start`, `agent_start`, `turn_start`, `turn_end`, `agent_end`, `agent_settled`, `session_shutdown`;
+`pi.registerMcpServer` is undefined; `-e` asked nothing. Not checked by hand: an answer's text, a dialog, a nested
+`pi -p`, and Pi with MCP ([minors](../minors.md#connections)).
 
 ### Typed by hand: the shells
 
@@ -948,6 +957,7 @@ the exit status kept, what is piped in passed on), with one helper per shell for
   which only Templum types (into the ones it opens). A person's own `--plugin-dir`, `--additional-mcp-config` or `-e`
   adds to Templum's: Copilot CLI and Pi take several. Qwen Code takes one `--mcp-config` (a second is a fatal error),
   so a person's own `--mcp-config`, alone or with `=…`, means no words for it, as Claude Code's rule is.
+- **Pi never before one of its commands** (`pi list`, `pi install …`): [above](#pi).
 - **Copilot CLI only when it starts a session:** its words go only when the person's first word is none or an
   option (`copilot`, `copilot -p …`, `copilot --model …`), never before a subcommand (`copilot plugin list`, `copilot
   login`), which needs none: AWS's Copilot CLI is also `copilot`, and every use of it starts with a subcommand

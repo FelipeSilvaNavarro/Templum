@@ -145,4 +145,16 @@ if ($null -eq $Global:__TemplumPrompt) {
             } else { __TemplumAgent qwen $words QWEN_CODE_SYSTEM_SETTINGS_PATH $settings $args }
         }
     }
+    # Pi: its extension. Not before one of its commands, which it reads only as the first word.
+    if ($env:TEMPLUM_PI_ARGS -and -not (Test-Path Function:\pi)) {
+        function Global:pi {
+            $words = $env:TEMPLUM_PI_ARGS
+            $commands = 'install', 'remove', 'uninstall', 'update', 'list', 'config', 'auth'
+            if ($args.Count -and "$($args[0])" -in $commands) { $words = '' }
+            $last = ($words -split "`n")[-1]
+            foreach ($a in $args) { if ("$a" -eq $last) { $words = '' } }
+            if ($MyInvocation.ExpectingInput) { $input | __TemplumAgent pi $words '' '' $args }
+            else { __TemplumAgent pi $words '' '' $args }
+        }
+    }
 }

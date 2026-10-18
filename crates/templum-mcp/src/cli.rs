@@ -461,6 +461,8 @@ fn hook_event(args: &[String], stdin: &mut dyn Read) -> Option<hooks::AgentEvent
         // Templum's plugin, in OpenCode and Kilo Code.
         "opencode" => hooks::opencode(&on_stdin()?),
         "qwen" => hooks::qwen(&on_stdin()?),
+        // Templum's extension in Pi.
+        "pi" => hooks::pi(&on_stdin()?),
         _ => None,
     }
 }

@@ -120,4 +120,16 @@ if [[ -z "${__templum_installed-}" ]]; then
             __templum_agent qwen "$w" QWEN_CODE_SYSTEM_SETTINGS_PATH "${TEMPLUM_QWEN_SETTINGS-}" "$@"
         }
     fi
+    # Pi: its extension. Not before one of its commands, which it reads only as the first word.
+    if [[ -n "${TEMPLUM_PI_ARGS-}" ]] && ! builtin declare -F pi > /dev/null; then
+        function pi {
+            builtin local w="${TEMPLUM_PI_ARGS-}" nl=$'\n' last a
+            case "${1-}" in install | remove | uninstall | update | list | config | auth) w= ;; esac
+            last="${w##*$nl}"
+            for a in "$@"; do
+                case "$a" in "$last") w= ;; esac
+            done
+            __templum_agent pi "$w" "" "" "$@"
+        }
+    fi
 fi

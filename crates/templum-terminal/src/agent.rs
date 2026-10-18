@@ -389,6 +389,7 @@ impl Agent {
     pub const OPENCODE: Agent = Agent(5);
     pub const QWEN: Agent = Agent(8);
     pub const KILO: Agent = Agent(17);
+    pub const PI: Agent = Agent(19);
 
     /// Every agent, in the order menus list them.
     pub fn all() -> impl Iterator<Item = Agent> {
@@ -969,6 +970,7 @@ mod tests {
             (Agent::OPENCODE, "opencode"),
             (Agent::QWEN, "qwen"),
             (Agent::KILO, "kilo"),
+            (Agent::PI, "pi"),
         ] {
             assert_eq!(agent.name(), id);
         }

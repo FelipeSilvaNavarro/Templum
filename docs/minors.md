@@ -1152,6 +1152,12 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   `session.error` comes with a `session.idle` after it, and what Esc fires are from OpenCode's types, not seen. A
   person may see a green dot while OpenCode asks. Fix: in the TUI, run a `bash` command that asks, answer once and
   refuse once, ask its question tool, press Esc during a turn, and compare the lines the plugin hands the hook.
+- [ ] **Pi with Templum's extension wasn't seen answering.** Left by the plan of card 44 (task 12,
+  `crates/templum-usage/src/pi.ts`): Pi 0.85.1 had no model it could use here, so only the order of its events was
+  seen; the answer read from `agent_end`'s messages, a `ui_prompt_start` dialog, a `pi -p` its shell tool runs staying
+  quiet, and the server `registerMcpServer` gives (Pi 0.99 and later) are from Pi's docs. A person may get a task's
+  end without its answer, or a dot that stays green at a dialog. Fix: with a model, delegate a task to a Pi block and
+  read its answer; open an extension's `ctx.ui.confirm`; on Pi 0.99 or later, run `/mcp` and call `whoami`.
 - [ ] **Gemini CLI's notice about its extension comes back at every run.** Left by the plan of card 44 (task 3,
   `tell_gemini`, `crates/templum/src/workspace/usage.rs`): a person who doesn't want Templum's extension sees
   "Gemini CLI has no Templum tools or status dot" the first time they open a Gemini CLI after each start of

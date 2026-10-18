@@ -678,3 +678,17 @@ plugin with a fake `templum` appending its stdin; the TUI not driven):
 - The first run hung for 120 s with no line at all; the same command ran in 2 s at once after, plugin or not: not
   reproduced.
 - Not seen: `permission.asked` (`opencode run` asked nothing), `question.asked`, `session.error`, Esc, the TUI.
+
+**S3, Pi 0.85.1** (2026-10-18; a probe extension appending each event's name and keys, `pi -ne -e <probe> -p "say
+hi"`; `-ne` because the person's own `cbmem.ts` fails to load in `-p`; Pi had no model it could use: the ChatGPT
+account refuses `gpt-5.5` and `gpt-5.4-mini`, so each run ended in an error):
+
+- Events, in order: `session_start` (`reason`), `input`, `before_agent_start`, `agent_start`, `turn_start`,
+  `turn_end`, `agent_end` (`messages`), `agent_settled`, `session_shutdown` (`reason`).
+- `pi.registerMcpServer` is `undefined` in 0.85.1. `-e` asked nothing (no trust question under `-p`).
+- Pi's docs: `agent_end` "fires when that run ends, but Pi may still auto-retry, auto-compact and retry, or continue
+  with queued follow-up messages. Use `agent_settled` for status integrations" (since 0.80.4). **Changes Task 12:** the
+  extension keeps `agent_end`'s last text and reports it at `agent_settled`.
+- Pi's commands (`install`, `remove`, `uninstall`, `update`, `list`, `config`, `auth`) are read only as the first
+  word: `pi -ne -e <probe> list` sent `list` to the model as a prompt. **Changes Task 12:** no words before them.
+- Not seen: an answer's text (no model), `ui_prompt_start`, the shell tool's `TEMPLUM_HOOKED`.
