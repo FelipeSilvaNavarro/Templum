@@ -754,7 +754,8 @@ output reaches a pipe (`templum blocks | more`) but not a console directly.
 
 ```toml
 [connections]
-## Templum's MCP server and hooks are given to the Claude Code and Codex it opens.
+## The Claude Code and Codex Templum opens, or that are typed in its terminals, get its MCP
+## server and hooks: they can read and type into the blocks wired to them (docs/specs/connections.md).
 # enabled = true
 ## How long an agent's question waits for your answer, in minutes; 0 waits until you answer.
 # question_timeout = 0

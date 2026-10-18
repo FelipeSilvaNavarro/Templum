@@ -43,10 +43,10 @@ pub(super) fn rows(
     let e = entity.clone();
     let s = entity.clone();
     let mut rows = vec![
-        Row::new("connections.enabled", "Agents Templum opens")
+        Row::new("connections.enabled", "Agents in Templum")
             .description(
-                "Claude Code and Codex opened from the canvas get Templum's server and hooks: they \
-                 read and type into the blocks wired to them",
+                "Claude Code and Codex opened from the canvas or typed in a terminal get Templum's \
+                 server and hooks: they read and type into the blocks wired to them",
             )
             .control(Switch::new("connections-switch").checked(on).on_click(
                 move |on: &bool, _, cx| {

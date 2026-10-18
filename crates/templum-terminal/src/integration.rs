@@ -393,6 +393,18 @@ mod tests {
 
             /// `program` started as Templum starts it, with HOME (and the config folder) here.
             fn spawn(&self, program: &str, a: &[&str]) -> Option<Terminal> {
+                self.spawn_with(program, a, &[])
+            }
+
+            /// `spawn` with `env` in the shell's environment. The variables every Templum
+            /// terminal gets for typed agents are empty unless `env` gives them: a `cargo test`
+            /// run in a Templum terminal would hand the shell its own.
+            fn spawn_with(
+                &self,
+                program: &str,
+                a: &[&str],
+                env: &[(&str, &str)],
+            ) -> Option<Terminal> {
                 let dirs = std::env::split_paths(&std::env::var_os("PATH")?).collect::<Vec<_>>();
                 let Some(path) = crate::agent::find_program(program, &dirs) else {
                     eprintln!("skipped: {program} isn't installed");
@@ -405,6 +417,12 @@ mod tests {
                     format!("HOME={}", home.display()),
                     format!("XDG_CONFIG_HOME={}", home.join(".config").display()),
                 ];
+                for key in ["TEMPLUM_CLAUDE_ARGS", "TEMPLUM_CODEX_ARGS"] {
+                    if !env.iter().any(|(k, _)| *k == key) {
+                        command.push(format!("{key}="));
+                    }
+                }
+                command.extend(env.iter().map(|(k, v)| format!("{k}={v}")));
                 command.extend(injection.env.iter().map(|(k, v)| format!("{k}={v}")));
                 command.push(path);
                 command.extend(injection.args.unwrap_or_else(|| args(a)));
@@ -425,6 +443,118 @@ mod tests {
                 .unwrap();
                 Some(term)
             }
+
+            /// A `claude` and a `codex` in `<home>/bin` that write their arguments, one per
+            /// line, to `<home>/<name>.args` (at once: moved there), and exit 3. Returns a PATH
+            /// with them first.
+            fn fake_agents(&self) -> String {
+                use std::os::unix::fs::PermissionsExt as _;
+                let bin = self.dir.path().join("bin");
+                for name in ["claude", "codex"] {
+                    let args = self.dir.path().join(format!("{name}.args"));
+                    self.write(
+                        &format!("bin/{name}"),
+                        format!(
+                            "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{0}.part'\n\
+                             mv '{0}.part' '{0}'\nexit 3\n",
+                            args.display()
+                        ),
+                    );
+                    let mode = std::fs::Permissions::from_mode(0o755);
+                    std::fs::set_permissions(bin.join(name), mode).unwrap();
+                }
+                let path = std::env::var_os("PATH").unwrap_or_default();
+                let dirs = std::iter::once(bin).chain(std::env::split_paths(&path));
+                std::env::join_paths(dirs).unwrap().into_string().unwrap()
+            }
+        }
+
+        /// What Templum gives a terminal for a `claude` typed in it, a path with a space included
+        /// (macOS's `Application Support`).
+        const CLAUDE_WORDS: &str = "--settings\n/tmp/Templum Data/claude-statusline.json\n--mcp-config=/tmp/Templum Data/mcp.json";
+        /// What Templum gives a terminal for a `codex` typed in it (two of its flags).
+        const CODEX_WORDS: &str = "-c\nmcp_servers.templum.command=\"/opt/templum\"\n-c\nhooks.Stop=[{hooks=[{type=\"command\",command=\"templum hook codex\",timeout=5}]}]";
+
+        /// The environment of a shell whose `claude` and `codex` are `fake_agents`' on `path`,
+        /// with Templum's words for both.
+        fn with_agents(path: &str) -> [(&str, &str); 3] {
+            [
+                ("PATH", path),
+                ("TEMPLUM_CLAUDE_ARGS", CLAUDE_WORDS),
+                ("TEMPLUM_CODEX_ARGS", CODEX_WORDS),
+            ]
+        }
+
+        /// Waits until the fake `name` ran, and checks it got `want`, then deletes what it wrote.
+        fn wait_args(term: &Terminal, home: &Home, name: &str, want: &[&str]) {
+            let file = home.dir.path().join(format!("{name}.args"));
+            let text: String = want.iter().map(|w| format!("{w}\n")).collect();
+            // Moved there whole: once there, it is all the fake got.
+            wait(term, &format!("{name} to run"), |_| {
+                std::fs::read_to_string(&file).is_ok_and(|got| {
+                    assert_eq!(got, text, "{name}'s arguments");
+                    true
+                })
+            });
+            std::fs::remove_file(&file).unwrap();
+        }
+
+        /// Once the startup file's folder is reported, types `line`, which runs the fake `name`,
+        /// pressing Enter again until it ran: PowerShell can drop the first Enter.
+        fn type_first(term: &Terminal, home: &Home, line: &str, name: &str) {
+            wait(term, "the startup file's folder", |t| {
+                same(t.processes().reported, home.start.path())
+            });
+            term.write(format!("{line}\r").into_bytes());
+            let file = home.dir.path().join(format!("{name}.args"));
+            wait_pressing(term, "the first line to run", Some(b"\r"), |_| {
+                file.exists()
+            });
+        }
+
+        /// A `claude` and a `codex` typed at the prompt of a shell started `with_agents`: Templum's
+        /// words come first, an empty argument stays, none comes twice, and none once `unset`
+        /// empties the variable (docs/specs/connections.md, Agents typed in a terminal). With
+        /// `status`, the agent's exit code is the command's.
+        fn typed_agents(term: &Terminal, home: &Home, unset: &str, status: bool) {
+            let claude: Vec<&str> = CLAUDE_WORDS.lines().collect();
+            let codex: Vec<&str> = CODEX_WORDS.lines().collect();
+            type_first(term, home, "claude", "claude");
+            wait_args(term, home, "claude", &claude);
+            if status {
+                wait(term, "claude's exit code", |t| {
+                    t.status().last.map(|o| o.code) == Some(Some(3))
+                });
+            }
+            let lines = [
+                (
+                    "claude hi \"\"",
+                    "claude",
+                    [&claude[..], &["hi", ""]].concat(),
+                ),
+                ("claude --settings x", "claude", vec!["--settings", "x"]),
+                (
+                    "claude --mcp-config=y hi",
+                    "claude",
+                    vec!["--mcp-config=y", "hi"],
+                ),
+                (
+                    "codex resume --last",
+                    "codex",
+                    [&codex[..], &["resume", "--last"]].concat(),
+                ),
+                (
+                    "codex -c 'mcp_servers.templum.command=\"z\"'",
+                    "codex",
+                    vec!["-c", "mcp_servers.templum.command=\"z\""],
+                ),
+            ];
+            for (line, name, want) in lines {
+                term.write(format!("{line}\r").into_bytes());
+                wait_args(term, home, name, &want);
+            }
+            term.write(format!("{unset}\rclaude hi\r").into_bytes());
+            wait_args(term, home, "claude", &["hi"]);
         }
 
         use std::sync::Arc;
@@ -561,18 +691,106 @@ mod tests {
             }
         }
 
+        /// A zsh outside /usr (unpacked for a test run) finds its line editor through this: zsh
+        /// doesn't take MODULE_PATH from the environment.
+        fn zsh_modules(home: &Home) {
+            if let Ok(modules) = std::env::var("MODULE_PATH") {
+                home.write(".zshenv", format!("module_path=('{modules}')\n"));
+            }
+        }
+
         #[test]
         fn zsh() {
             let home = Home::new();
             home.write(".zshrc", format!("cd '{}'\n", home.start()));
-            // A zsh outside /usr (unpacked for a test run) finds its line editor through this:
-            // zsh doesn't take MODULE_PATH from the environment.
-            if let Ok(modules) = std::env::var("MODULE_PATH") {
-                home.write(".zshenv", format!("module_path=('{modules}')\n"));
-            }
+            zsh_modules(&home);
             if let Some(term) = home.spawn("zsh", &[]) {
                 check(term, &home, true);
             }
+        }
+
+        #[test]
+        fn bash_gives_typed_agents_templums_words() {
+            let home = Home::new();
+            home.write(".bashrc", format!("cd '{}'\n", home.start()));
+            let path = home.fake_agents();
+            if let Some(term) = home.spawn_with("bash", &[], &with_agents(&path)) {
+                typed_agents(&term, &home, "unset TEMPLUM_CLAUDE_ARGS", bash_has_ps0());
+            }
+        }
+
+        #[test]
+        fn zsh_gives_typed_agents_templums_words() {
+            let home = Home::new();
+            home.write(".zshrc", format!("cd '{}'\n", home.start()));
+            zsh_modules(&home);
+            let path = home.fake_agents();
+            if let Some(term) = home.spawn_with("zsh", &[], &with_agents(&path)) {
+                typed_agents(&term, &home, "unset TEMPLUM_CLAUDE_ARGS", true);
+            }
+        }
+
+        /// The person's alias and function, read before Templum defines its own (bash) or after
+        /// (zsh's .zshrc): the alias adds its words after Templum's; the function runs instead.
+        fn keeps_the_persons_alias_and_function(program: &str, file: &str) {
+            let home = Home::new();
+            home.write(
+                file,
+                format!(
+                    "alias claude='claude --model opus'\n\
+                     codex() {{ command codex mine \"$@\"; }}\n\
+                     cd '{}'\n",
+                    home.start()
+                ),
+            );
+            if program == "zsh" {
+                zsh_modules(&home);
+            }
+            let path = home.fake_agents();
+            let Some(term) = home.spawn_with(program, &[], &with_agents(&path)) else {
+                return;
+            };
+            type_first(&term, &home, "claude hi", "claude");
+            let claude: Vec<&str> = CLAUDE_WORDS.lines().collect();
+            wait_args(
+                &term,
+                &home,
+                "claude",
+                &[&claude[..], &["--model", "opus", "hi"]].concat(),
+            );
+            term.write(&b"codex hi\r"[..]);
+            wait_args(&term, &home, "codex", &["mine", "hi"]);
+        }
+
+        #[test]
+        fn bash_keeps_the_persons_alias_and_function() {
+            keeps_the_persons_alias_and_function("bash", ".bashrc");
+        }
+
+        #[test]
+        fn zsh_keeps_the_persons_alias_and_function() {
+            keeps_the_persons_alias_and_function("zsh", ".zshrc");
+        }
+
+        /// Started without Templum's words, the shell has no `claude` of Templum's: words set
+        /// later reach no one.
+        #[test]
+        fn bash_without_the_variables_has_no_function() {
+            let home = Home::new();
+            home.write(".bashrc", format!("cd '{}'\n", home.start()));
+            let path = home.fake_agents();
+            let Some(term) = home.spawn_with("bash", &[], &[("PATH", &path)]) else {
+                return;
+            };
+            type_first(
+                &term,
+                &home,
+                "export TEMPLUM_CLAUDE_ARGS=--x TEMPLUM_CODEX_ARGS=--y; claude hi",
+                "claude",
+            );
+            wait_args(&term, &home, "claude", &["hi"]);
+            term.write(&b"codex hi\r"[..]);
+            wait_args(&term, &home, "codex", &["hi"]);
         }
 
         #[test]

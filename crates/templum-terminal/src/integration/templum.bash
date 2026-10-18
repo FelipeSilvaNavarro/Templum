@@ -44,4 +44,37 @@ if [[ -z "${__templum_installed-}" ]]; then
     else
         PROMPT_COMMAND="__templum_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
     fi
+
+    # A `claude` or `codex` typed here gets Templum's MCP server and hooks: the words of
+    # TEMPLUM_CLAUDE_ARGS or TEMPLUM_CODEX_ARGS, one per line, before the person's, unless they
+    # name Templum's already (docs/specs/connections.md, "Agents typed in a terminal"). Not over
+    # the person's own function; `function` keeps an alias of that name from breaking this.
+    __templum_agent() {
+        builtin local name="$1" w="$2" words
+        builtin shift 2
+        if [[ -z "$w" ]]; then
+            builtin command "$name" "$@"
+        else
+            IFS=$'\n' builtin read -r -d '' -a words <<< "$w"
+            builtin command "$name" "${words[@]}" "$@"
+        fi
+    }
+    if [[ -n "${TEMPLUM_CLAUDE_ARGS-}" ]] && ! builtin declare -F claude > /dev/null; then
+        function claude {
+            builtin local w="${TEMPLUM_CLAUDE_ARGS-}" a
+            for a in "$@"; do
+                case "$a" in --settings | --settings=* | --mcp-config | --mcp-config=*) w= ;; esac
+            done
+            __templum_agent claude "$w" "$@"
+        }
+    fi
+    if [[ -n "${TEMPLUM_CODEX_ARGS-}" ]] && ! builtin declare -F codex > /dev/null; then
+        function codex {
+            builtin local w="${TEMPLUM_CODEX_ARGS-}" a
+            for a in "$@"; do
+                case "$a" in mcp_servers.templum.*) w= ;; esac
+            done
+            __templum_agent codex "$w" "$@"
+        }
+    fi
 fi
