@@ -1563,8 +1563,10 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **Stopping or interrupting what would refuse anyway asks first.** `stop_agent` on the person's idle shell and
   `interrupt` on the person's idle agent (the gate in `crates/templum/src/workspace/approvals.rs`, `gate`) show the
   approval, and only after Allow answer "Nothing runs" or "is idle: there's nothing to interrupt.": the person is
-  asked for nothing. Fix: before asking, run the target's own refusals (`stop_in`'s nothing-runs check,
-  `interrupt_in`'s idle and no-agent checks) and answer at once when they refuse.
+  asked for nothing. So do `send_keys` into an agent on another agent's task ("on a task another agent handed it")
+  and `delegate` into an agent that waits for its person or is on another agent's task: asked, then refused after
+  Allow. Fix: before asking, run the target's own refusals (`stop_in`'s nothing-runs check, `interrupt_in`'s idle
+  and no-agent checks, `send_keys`' and `delegate`'s busy checks) and answer at once when they refuse.
 - [ ] **Parallel `open_agent` with a `worktree` can pass Agents at once.** `control_call`'s `OpenAgent`
   (`crates/templum/src/workspace/control.rs`) checks `too_many_tasks` before git makes the worktree, but the task is
   counted only once the agent opens (`open_agent_in`), so several calls in one turn all pass while their worktrees
