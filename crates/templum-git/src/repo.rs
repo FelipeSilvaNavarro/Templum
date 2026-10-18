@@ -68,13 +68,14 @@ pub const DIFF_LIMIT: usize = 4 * 1024 * 1024;
 pub struct WorktreeState {
     /// Its folder.
     pub path: PathBuf,
-    /// Its branch.
-    pub branch: String,
+    /// The branch checked out in it: its own (`name`) as `add_worktree` made it, another one an
+    /// agent checked out there, or None on a detached HEAD.
+    pub branch: Option<String>,
     /// The branch of the working tree it goes back to.
     pub into: String,
     /// Its files with changes, untracked ones included.
     pub changed: usize,
-    /// Its branch's commits `into` doesn't have.
+    /// Its HEAD's commits `into` doesn't have.
     pub unmerged: u32,
     /// The files with changes not committed where it goes back, tracked ones only.
     pub into_changed: usize,
@@ -533,8 +534,10 @@ impl Repo {
         let branch = entry
             .lines()
             .find_map(|l| l.strip_prefix("branch refs/heads/"))
-            .unwrap_or(name)
-            .to_string();
+            .map(str::to_string);
+        let Some(head) = entry.lines().find_map(|l| l.strip_prefix("HEAD ")) else {
+            return Ok(None);
+        };
         let Some(tree) = Repo::discover(&self.program, &path)? else {
             return Ok(None);
         };
@@ -545,7 +548,7 @@ impl Repo {
             .trim()
             .to_string();
         let unmerged = self
-            .text(&["rev-list", "--count", &format!("HEAD..refs/heads/{branch}")])?
+            .text(&["rev-list", "--count", &format!("HEAD..{head}")])?
             .trim()
             .parse()
             .unwrap_or(0);
@@ -562,14 +565,23 @@ impl Repo {
     }
 
     /// Removes the worktree `add_worktree(name)` made, then its branch: with `force`, its changes
-    /// and its commits not merged are lost; without, git refuses to lose them.
+    /// and its commits not merged are lost; without, git refuses to lose them. Refused while it
+    /// isn't on its own branch: a detached HEAD's commits, or another branch, would go with it.
     pub fn remove_worktree(&self, name: &str, force: bool) -> Result<(), GitError> {
-        let state = self.worktree_state(name)?.ok_or_else(|| GitError {
+        let refused = |why: String| GitError {
             command: shown(&self.program, &["worktree", "remove", name]),
             code: None,
-            stderr: format!("fatal: there's no worktree {name}"),
+            stderr: format!("fatal: {why}"),
             missing: false,
-        })?;
+        };
+        let state = self
+            .worktree_state(name)?
+            .ok_or_else(|| refused(format!("there's no worktree {name}")))?;
+        if state.branch.as_deref() != Some(name) {
+            return Err(refused(format!(
+                "the worktree {name} isn't on its branch {name}"
+            )));
+        }
         let path = state.path.to_string_lossy().into_owned();
         let mut args = vec!["worktree", "remove"];
         if force {
@@ -577,7 +589,7 @@ impl Repo {
         }
         args.push(&path);
         self.run(&args)?;
-        self.delete_branch(&state.branch, force)
+        self.delete_branch(name, force)
     }
 
     /// Merges `branch` into this working tree's branch: Ok(Err(files)) when it would conflict

@@ -1466,3 +1466,58 @@ fn remove_worktree_with_work_in_it_asks_before_discarding_and_keep_keeps_it(
         "ours\n"
     );
 }
+
+/// A worktree an agent took off its branch (a detached HEAD, another branch) is neither removed
+/// nor merged: its commits, or that other branch, would be lost or left out.
+#[gpui_kit::test]
+fn a_worktree_off_its_branch_is_refused(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "x"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    git_run(&wt, &["checkout", "-q", "--detach"]);
+    std::fs::write(wt.join("a.txt"), "detached\n").unwrap();
+    git_run(&wt, &["commit", "-qam", "detached"]);
+    let refused = "The worktree x has a detached HEAD, not its branch x: check out x there first.";
+    for tool in ["remove_worktree", "merge_worktree"] {
+        let args = json!({ "worktree": "x", "folder": root, "discard": true });
+        let args = if tool == "merge_worktree" {
+            json!({ "worktree": "x", "folder": root })
+        } else {
+            args
+        };
+        assert_eq!(
+            call(handle, &ws, cx, &terminal, tool, args),
+            (true, refused.to_string()),
+            "{tool}"
+        );
+    }
+    git_run(&wt, &["checkout", "-q", "-b", "other"]);
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "merge_worktree",
+            json!({ "worktree": "x", "folder": root })
+        ),
+        (
+            true,
+            "The worktree x is on other now, not on its branch x: check out x there first.".into()
+        )
+    );
+    assert!(wt.exists());
+}

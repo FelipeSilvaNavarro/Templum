@@ -2048,14 +2048,14 @@ fn a_worktrees_state_counts_its_changes_and_its_commits_not_merged() {
     let state = repo.worktree_state("w").unwrap().unwrap();
     assert_eq!(
         (
-            state.branch.as_str(),
+            state.branch.as_deref(),
             state.into.as_str(),
             state.changed,
             state.unmerged,
             state.into_changed,
             state.busy
         ),
-        ("w", "main", 0, 0, 0, false)
+        (Some("w"), "main", 0, 0, 0, false)
     );
     assert_eq!(
         state.path.canonicalize().unwrap(),
@@ -2128,4 +2128,25 @@ fn merging_a_worktree_back_takes_a_clean_commit_and_aborts_a_conflict() {
         std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
         "ours\n"
     );
+}
+
+/// A worktree whose HEAD left its branch (detached, or another branch checked out there) says so,
+/// and isn't removed: its commits, or the other branch, would be lost.
+#[test]
+fn a_worktree_off_its_branch_says_so_and_isnt_removed() {
+    let (_dir, repo) = committed();
+    let path = repo.add_worktree("w").unwrap();
+    let w = Repo::discover("git", &path).unwrap().unwrap();
+    w.run(&["checkout", "-q", "--detach"]).unwrap();
+    commit_in(&w, &path, "d.txt", "d\n", "On a detached HEAD");
+    let state = repo.worktree_state("w").unwrap().unwrap();
+    assert_eq!(state.branch, None, "detached");
+    assert_eq!(state.unmerged, 1, "its HEAD's commits count");
+    assert!(repo.remove_worktree("w", true).is_err());
+    assert!(path.exists(), "kept");
+    w.run(&["checkout", "-q", "-b", "other"]).unwrap();
+    let state = repo.worktree_state("w").unwrap().unwrap();
+    assert_eq!(state.branch.as_deref(), Some("other"));
+    assert!(repo.remove_worktree("w", true).is_err());
+    assert!(branch_exists(&repo, "other") && branch_exists(&repo, "w"));
 }
