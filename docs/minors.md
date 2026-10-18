@@ -1116,3 +1116,19 @@ Left by the review of its fixes; line numbers are those of `development` at 94ed
   a Templum without a data folder and its notice; only `session::lock` is tested. A change there that, say, keeps
   the data folder on `WouldBlock` would pass CI. Fix: move the choice into a function of `session` (the lock's result
   in, the data folder and whether to warn out) and test it.
+
+Left by the third review of its fixes; line numbers are those of `development` at eafb5ed.
+
+- [ ] **Typing ahead turns the protection off.** A key pressed in a restored terminal before its shell ends as it
+  starts sets `had_input` (`crates/templum/src/workspace/persist.rs:550`): Enter pressed while the window comes up,
+  or a `templum send` from an agent, makes the shell look ended by the person, so its block closes and the next
+  snapshot saves the canvas without it. Fix: don't count input before the shell first draws a prompt (with shell
+  integration) or within its first ~500 ms.
+- [ ] **A real second Templum takes 3 s to show its window.** `session::lock(dir, QUITTING)`
+  (`crates/templum/src/main.rs:94-97`) waits for the lock before the window opens, so a second click on the shortcut
+  while Templum runs gives no feedback for 3 seconds. Fix: the quitting Templum writes "quitting" into
+  `templum.lock` before its quit save; the starter waits only when it reads that, and fails at once otherwise.
+- [ ] **A Templum that takes over 3 s to quit still makes the reopened one a second instance.** With a slow quit
+  save (Windows), the reopened Templum gives up on the lock after `QUITTING` (`crates/templum/src/session.rs:41`)
+  and starts without a data folder, with the notice. Fix: the same "quitting" marker, with no fixed limit while the
+  holder says it is quitting.
