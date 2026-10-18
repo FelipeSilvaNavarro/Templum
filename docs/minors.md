@@ -1056,3 +1056,23 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   and Gemini CLI each asking with `questions`, then Esc in Claude Code and an answer typed back, weren't seen. A
   person may meet misaligned marks or a pane that crowds the options. Fix: run `cargo run -p templum -- --dev`, ask
   with the spec's example from each agent and from `templum ask`, and correct what looks wrong.
+- [ ] **A withdrawn request leaves its alert.** `tell_asking` (`crates/templum/src/workspace/waits.rs`) gives the
+  block an "Asks you: …" alert that only answering clears (`seen_asking`); after the agent quits or the deadline
+  passes, the workspace's tile stays lit and Ctrl+Shift+A leads to a block with no dialog. Fix: clear that alert
+  when a Question or Connect wait is removed in `expire`, `closed` and `drop_orphans`.
+- [ ] **A preview keeps a stray character of some escape sequences.** `clean_preview`
+  (`crates/templum-mcp/src/ask.rs`) drops one character after ESC, so `\x1b(B` (tput `sgr0`, ncurses output) shows a
+  "B". Fix: skip the intermediate bytes 0x20–0x2F, then the final byte.
+- [ ] **The preview is cleaned on every frame.** `balloon::preview` (`crates/templum/src/balloon.rs`) calls
+  `clean_preview` each time the dialog draws; a large preview costs that much per frame. Fix: clean it once in
+  `ask::choice` when parsing, which also lets the headless tests cover it.
+- [ ] **Clicking Other's radio only puts the keyboard in its field.** After picking an option, a click on Other's
+  mark (`crates/templum/src/balloon.rs`, `q<q>-other-mark`) leaves the option picked though Other's text is still in
+  the field, so Send answers the option. Fix: on that click, also `form.typed(ask, q, <the field's text>)`.
+- [ ] **After Esc, hovering still highlights a row.** The highlight is drawn and set by hover
+  (`crates/templum/src/balloon.rs`) while `away`, though keys go to the terminal: Enter on a highlighted option goes
+  to the agent's prompt. Fix: neither draw nor set the highlight while the question is `away`.
+- [ ] **A question withdrawn while its field has the keyboard leaves no one with it.** When the agent quits, the
+  deadline passes or the block closes while an Other field or the note is focused, the focus stays on a dropped
+  handle and keys go nowhere until a click (traced in GPUI's `window.rs`, not run). Fix: give the workspace the
+  keyboard when a wait whose field had it is removed (`answer`, `closed`).

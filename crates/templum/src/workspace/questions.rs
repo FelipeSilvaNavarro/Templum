@@ -62,8 +62,9 @@ fn field(
                     ws.other_typed(key, q, &text, cx);
                 }
             }
-            InputEvent::PressEnter { .. } => ws.question_enter(key, window, cx),
-            InputEvent::Focus | InputEvent::Blur => {}
+            // Enter also goes on to the workspace's keys (`question_key`): answered there, once.
+            InputEvent::PressEnter { .. } | InputEvent::Blur => {}
+            InputEvent::Focus => ws.question_field_focused(key, window, cx),
         },
     );
     (input, events)
@@ -194,11 +195,14 @@ impl Workspace {
             ("space" | "enter" | "escape", false) => None,
             _ => return false,
         };
+        // In a field, the highlight is its row, and Space types.
+        let typing = self.typing_row(wait, window, cx);
+        if typing.is_some() && keystroke.key == "space" {
+            return false;
+        }
         if wait.too_soon(cx) {
             return true;
         }
-        // In a field, the highlight is its row.
-        let typing = self.typing_row(wait, window, cx);
         let Some((ask, form)) = self.form_of(key) else {
             return false;
         };
@@ -300,6 +304,31 @@ impl Workspace {
             Some((input, _)) => input.update(cx, |input, cx| input.focus(window, cx)),
             None => window.focus(&self.focus_handle, cx),
         }
+    }
+
+    /// A field of the question `key` took the keyboard (a press in it): its block is the one
+    /// worked in now, so the keys stay its dialog's once the highlight leaves the field. The
+    /// field keeps GPUI's focus.
+    fn question_field_focused(&mut self, key: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(from) = self
+            .waits
+            .iter()
+            .find(|w| w.key == key)
+            .map(|w| w.from.clone())
+        else {
+            return;
+        };
+        let Some((space, id)) = self.caller(&from) else {
+            return;
+        };
+        if space != self.space.id || self.space.focused == Some(id) {
+            return;
+        }
+        if let Some(had) = self.space.focused {
+            self.stop_editing(had, window, cx);
+        }
+        self.space.focused = Some(id);
+        cx.notify();
     }
 
     /// A press on the dialog of the question `key`: it takes the keyboard again after Esc.

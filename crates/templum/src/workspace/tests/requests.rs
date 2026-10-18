@@ -1146,9 +1146,11 @@ fn keys_in_the_balloons_field_never_reach_the_terminal(cx: &mut TestAppContext) 
         window.render_frame(cx);
         window.input("Ada", cx);
         window.press("ctrl-l", cx);
-        window.press("enter", cx);
     })
     .unwrap();
+    // A key of its own, as the platform sends it: what was typed is heard first.
+    cx.update_window(handle, |_, window, cx| window.press("enter", cx))
+        .unwrap();
     assert_eq!(answered(&answers), (false, "Ada".to_string()));
     // `cat`'s tty would have echoed Ctrl+L as ^L.
     std::thread::sleep(std::time::Duration::from_millis(300));
@@ -1739,4 +1741,93 @@ fn keys_never_reach_the_terminal_while_the_dialog_has_them(cx: &mut TestAppConte
         "{shown:?}"
     );
     assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "it waits");
+}
+
+/// Space types in the dialog's fields: a free answer and the note keep their spaces.
+#[gpui_kit::test]
+fn space_types_in_a_field(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let asked = json!({ "questions": [{ "question": "Why?" }] });
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    let key = last_wait(&ws, cx);
+    focus_dialog(handle, &ws, cx, mine);
+    press(
+        handle,
+        cx,
+        &["tab", "a", "space", "b", "tab", "c", "space", "d"],
+    );
+    let texts = ws.read_with(cx, |ws, cx| {
+        let text = |field| field_of(ws, key, field).read(cx).value().to_string();
+        (text(Some(0)), text(None))
+    });
+    assert_eq!(texts, ("a b".to_string(), "c d".to_string()));
+}
+
+/// Enter in a field acts once: with a question still unanswered it moves there, and sends nothing.
+#[gpui_kit::test]
+fn enter_in_a_field_moves_on_once(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", singles(2));
+    let key = last_wait(&ws, cx);
+    focus_dialog(handle, &ws, cx, mine);
+    type_into(handle, &ws, cx, key, Some(0), "X");
+    press(handle, cx, &["enter"]);
+    assert_eq!(
+        answers.try_recv(),
+        Err(TryRecvError::Empty),
+        "Q1 unanswered"
+    );
+    assert_eq!(
+        highlight(&ws, cx),
+        Some(templum_mcp::ask::Row::Option(1, 0))
+    );
+}
+
+/// Enter in the note, no question answered: the highlight goes to the question; nothing is
+/// picked nor sent.
+#[gpui_kit::test]
+fn enter_in_the_note_moves_on_once(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", singles(1));
+    let key = last_wait(&ws, cx);
+    focus_dialog(handle, &ws, cx, mine);
+    type_into(handle, &ws, cx, key, None, "n");
+    press(handle, cx, &["enter"]);
+    assert_eq!(
+        answers.try_recv(),
+        Err(TryRecvError::Empty),
+        "Q0 unanswered"
+    );
+    assert_eq!(
+        highlight(&ws, cx),
+        Some(templum_mcp::ask::Row::Option(0, 0))
+    );
+}
+
+/// A press in the dialog's field of a block that hadn't the keyboard: its block takes it, so the
+/// keys stay the dialog's once the highlight leaves the field.
+#[gpui_kit::test]
+fn a_field_that_takes_the_keyboard_brings_its_block(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    super::terminals::set_active(handle, true, cx);
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", singles(1));
+    let key = last_wait(&ws, cx);
+    focus_dialog(handle, &ws, cx, kanban);
+    type_into(handle, &ws, cx, key, Some(0), "X");
+    frame(handle, cx);
+    ws.read_with(cx, |ws, _| assert_eq!(ws.space.focused, Some(mine)));
+    // Out of the field, onto B, picked; then sent.
+    press(handle, cx, &["shift-tab", "space", "enter"]);
+    assert_eq!(
+        json_of(&answered(&answers).1),
+        json!({ "answers": { "Q0": "B" } })
+    );
 }
