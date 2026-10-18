@@ -377,3 +377,42 @@ fn a_watch_without_wait_types_its_match_back_once(cx: &mut TestAppContext) {
         assert_eq!(ws.space.terminal(third).unwrap().term.watching(), 0);
     });
 }
+
+/// A schedule set for an agent never types its text into the shell that agent left: it comes back
+/// refused, and the shell runs nothing.
+#[gpui_kit::test]
+fn a_schedule_for_an_agent_that_quit_isnt_typed_into_its_shell(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    agent_without_notices(&ws, cx, mine);
+    let other = wired_plain(handle, &ws, cx, mine);
+    let (_, them) = me(&ws, cx, other);
+    in_front(&ws, cx, other, true);
+    found(&ws, cx, other);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(other).unwrap().seen.agent = Some("codex".into())
+    });
+    let every = json!({ "block": them, "text": "echo ran-in-the-shell", "every": 1 });
+    assert!(!call(handle, &ws, cx, &terminal, "schedule", every).0);
+    // Its agent quits: a snapshot finds none there.
+    ws.update(cx, |ws, _| {
+        let pane = ws.space.terminal_mut(other).unwrap();
+        (pane.seen.agent, pane.seen.pid) = (None, None);
+    });
+    due_now(&ws, cx, 1);
+    look(cx);
+    assert_eq!(
+        notices(&ws, cx),
+        [format!(
+            "[schedule s1 to {them} didn't go: {them} runs no agent now: a schedule for an agent \
+             never types into its shell.]"
+        )]
+    );
+    after(
+        cx,
+        crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    let shown = ws.read_with(cx, |ws, _| ws.space.terminal(other).unwrap().screen());
+    assert!(!shown.contains("ran-in-the-shell"), "{shown}");
+}

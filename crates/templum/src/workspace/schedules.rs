@@ -21,11 +21,13 @@ const LASTS: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const TEXT_CHARS: usize = 60;
 
 /// A text the terminal `by` asked to have delivered to the block `to` (its block id: the asker's
-/// own, or one wired to it) at `next`, and again every `every` until `until`.
+/// own, or one wired to it) at `next`, and again every `every` until `until`. `agent`: `to` ran an
+/// agent when it was set, so its text never goes to a shell there.
 pub(crate) struct Schedule {
     pub id: u64,
     pub by: String,
     pub to: String,
+    pub agent: bool,
     pub text: String,
     pub next: SystemTime,
     pub every: Option<Duration>,
@@ -100,6 +102,9 @@ impl Workspace {
         if to != me && space.terminal(to).is_none() {
             return Reply::err(format!("{block} isn't a terminal."));
         }
+        let agent = space
+            .terminal(to)
+            .is_some_and(|pane| pane.seen.agent.is_some() && !pane.shell_in_front());
         let now = SystemTime::now();
         let every = every.map(|m| Duration::from_secs(m * 60));
         let next = match when {
@@ -113,6 +118,7 @@ impl Workspace {
                 id: 0,
                 by: from.to_string(),
                 to: block.to_string(),
+                agent: to != me && agent,
                 text: text.to_string(),
                 next,
                 every,
@@ -281,7 +287,7 @@ impl Workspace {
     /// running no agent. Err: why not, and whether its block was closed (which ends it).
     fn deliver(&mut self, id: u64, cx: &mut Context<Self>) -> Result<(), (String, bool)> {
         let s = self.schedules.iter().find(|s| s.id == id).expect("due");
-        let (by, uid, text) = (s.by.clone(), s.to.clone(), s.text.clone());
+        let (by, uid, text, agent) = (s.by.clone(), s.to.clone(), s.text.clone(), s.agent);
         let (space_id, me) = self
             .caller(&by)
             .ok_or_else(|| ("Your block was closed.".to_string(), true))?;
@@ -296,6 +302,16 @@ impl Workspace {
             .terminal(to)
             .ok_or_else(|| (format!("{uid} isn't a terminal."), false))?;
         if pane.seen.agent.is_none() || pane.shell_in_front() {
+            // Its agent quit: the text would run as a command.
+            if agent {
+                return Err((
+                    format!(
+                        "{uid} runs no agent now: a schedule for an agent never types into its \
+                         shell."
+                    ),
+                    false,
+                ));
+            }
             let terminal = pane.term.id().to_string();
             self.type_then_enter(terminal, &text, cx).detach();
             return Ok(());
