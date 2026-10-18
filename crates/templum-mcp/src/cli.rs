@@ -32,6 +32,7 @@ const VERBS: &[&str] = &[
     "keys",
     "interrupt",
     "stop",
+    "new",
     "close",
 ];
 const READ: &str = "read <block> [-n <lines>] [--last] [--json]";
@@ -48,6 +49,8 @@ const KANBAN: &str = "kanban list [<board>] [--card <card>] | add <title> [--col
                       [--check <item>]… [--uncheck <item>]… | move <card> <column> | comment <card> <text> \
                       | claim <card> [--json]";
 const NOTE: &str = "note read <block> | note append <block> <text> [--json]";
+const NEW: &str = "new note [<text>] | new checklist <name> [--items <text>] \
+                   | new terminal [--folder <folder>] [--command <command>] [--json]";
 const CHECKLIST: &str = "checklist read <block> | add <block> <text> | check <block> <item> \
                          | uncheck <block> <item> [--json]";
 
@@ -367,6 +370,37 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("interrupt", [block]) => ("interrupt", json!({ "block": block })),
         ("close", [block]) => ("close_block", json!({ "block": block })),
         ("stop", [block]) => ("stop_agent", json!({ "block": block })),
+        ("new", ["note", text @ ..]) => {
+            let mut arguments = json!({ "kind": "note" });
+            if !text.is_empty() {
+                arguments["text"] = json!(text.join(" "));
+            }
+            ("create_block", arguments)
+        }
+        ("new", ["checklist", name, more @ ..]) => {
+            let arguments = match more {
+                [] => json!({ "kind": "checklist", "name": name }),
+                ["--items", items] => json!({ "kind": "checklist", "name": name, "items": items }),
+                _ => return Err(NEW),
+            };
+            ("create_block", arguments)
+        }
+        ("new", ["terminal", more @ ..]) => {
+            let mut arguments = json!({ "kind": "terminal" });
+            let mut more = more.iter();
+            while let Some(flag) = more.next() {
+                let value = *more.next().ok_or(NEW)?;
+                match *flag {
+                    // From the folder the command runs in, as `spawn --folder`.
+                    "--folder" => {
+                        arguments["folder"] = json!(absolute(value, std::env::current_dir().ok()))
+                    }
+                    "--command" => arguments["command"] = json!(value),
+                    _ => return Err(NEW),
+                }
+            }
+            ("create_block", arguments)
+        }
         ("whoami", _) => return Err("whoami [--json]"),
         ("blocks", _) => return Err("blocks [--json]"),
         ("read", _) => return Err(READ),
@@ -385,6 +419,7 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("interrupt", _) => return Err("interrupt <block> [--json]"),
         ("close", _) => return Err("close <block> [--json]"),
         ("stop", _) => return Err("stop <block> [--json]"),
+        ("new", _) => return Err(NEW),
         _ => return Err("notify <text> [--json]"),
     };
     Ok(CallArgs {
@@ -808,6 +843,25 @@ mod tests {
                 json!({ "name": "wait_for", "arguments": { "block": "k9x1d", "timeout": 60, "event": "command_finished" } }),
             ),
             (
+                &["new", "note", "first", "notes"][..],
+                json!({ "name": "create_block", "arguments": { "kind": "note", "text": "first notes" } }),
+            ),
+            (
+                &["new", "checklist", "Plan", "--items", "- [ ] Read"][..],
+                json!({ "name": "create_block", "arguments": { "kind": "checklist", "name": "Plan", "items": "- [ ] Read" } }),
+            ),
+            (
+                &[
+                    "new",
+                    "terminal",
+                    "--folder",
+                    "web",
+                    "--command",
+                    "npm run dev",
+                ][..],
+                json!({ "name": "create_block", "arguments": { "kind": "terminal", "folder": std::env::current_dir().unwrap().join("web"), "command": "npm run dev" } }),
+            ),
+            (
                 &["wait", "t4q8p", "--match", "ERROR", "--lines", "5"][..],
                 json!({ "name": "wait_for", "arguments": { "block": "t4q8p", "pattern": "ERROR", "lines": 5 } }),
             ),
@@ -845,6 +899,11 @@ mod tests {
             run_with(&["wait", "k9x1d", "--for"], &env(&bus), "").0,
             2,
             "no event"
+        );
+        assert_eq!(
+            run_with(&["new", "kanban"], &env(&bus), "").0,
+            2,
+            "no such kind"
         );
         assert_eq!(
             run_with(&["wait", "k9x1d", "--timeout", "soon"], &env(&bus), "").0,

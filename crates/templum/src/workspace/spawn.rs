@@ -1,7 +1,7 @@
 //! `spawn_agent` (docs/specs/connections.md, Spawning): a new agent block beside the caller, wired
 //! to it, in its folder, another, or a new Git worktree; its prompt typed once it is ready.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui_kit::{Context, Window};
@@ -53,27 +53,10 @@ impl Workspace {
         }
         let (space_id, me) = self.caller(from).expect("call found the caller");
         let space = self.space_named(&space_id).expect("the caller's workspace");
-        let here = space.blocks[&me]
-            .folder()
-            .or_else(|| space.terminal(me)?.seen.folder.clone());
-        let folder = match (spawn.folder.as_deref(), here) {
-            (Some(named), here) => {
-                let named = crate::launcher::expand(named);
-                match here {
-                    Some(here) if named.is_relative() => here.join(named),
-                    _ => named,
-                }
-            }
-            (None, Some(here)) => here,
-            (None, None) => {
-                return Outcome::Now(Reply::err(
-                    "Templum doesn't know your folder yet: name one with folder.",
-                ));
-            }
+        let folder = match space.folder_for(me, spawn.folder.as_deref()) {
+            Ok(folder) => folder,
+            Err(refused) => return Outcome::Now(Reply::err(refused)),
         };
-        if !folder.is_dir() {
-            return Outcome::Now(Reply::err(format!("{} isn't a folder.", folder.display())));
-        }
         let Some(name) = spawn.worktree.clone() else {
             return Outcome::Now(self.open_agent(from, &entry, &folder, &spawn, window, cx));
         };
@@ -310,9 +293,35 @@ impl Workspace {
 }
 
 impl Space {
+    /// The folder `named` gives, relative to the folder of block `me` (`~` expanded), else that
+    /// folder: where `spawn_agent` and `create_block` open. Why not, when it isn't a folder or
+    /// Templum doesn't know `me`'s.
+    pub(super) fn folder_for(&self, me: BlockId, named: Option<&str>) -> Result<PathBuf, String> {
+        let here = self.blocks[&me]
+            .folder()
+            .or_else(|| self.terminal(me)?.seen.folder.clone());
+        let folder = match (named, here) {
+            (Some(named), here) => {
+                let named = crate::launcher::expand(named);
+                match here {
+                    Some(here) if named.is_relative() => here.join(named),
+                    _ => named,
+                }
+            }
+            (None, Some(here)) => here,
+            (None, None) => {
+                return Err("Templum doesn't know your folder yet: name one with folder.".into());
+            }
+        };
+        if !folder.is_dir() {
+            return Err(format!("{} isn't a folder.", folder.display()));
+        }
+        Ok(folder)
+    }
+
     /// A spot for a block of `size` beside block `id` that overlaps nothing, drawn toward the
     /// blocks wired to it (`room_beside`). None when `id` isn't on the canvas.
-    fn room_near(&self, id: BlockId, size: Size) -> Option<Rect> {
+    pub(super) fn room_near(&self, id: BlockId, size: Size) -> Option<Rect> {
         let home = |id| Some(self.home(self.canvas.get(id)?));
         let wired = self.wires.iter().filter(|w| w.touches(id));
         let anchors: Vec<Rect> = std::iter::once(home(id)?)

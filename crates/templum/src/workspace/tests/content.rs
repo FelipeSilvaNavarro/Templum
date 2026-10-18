@@ -6,7 +6,7 @@ use gpui_kit::component::input::EditorState;
 use serde_json::json;
 use templum_canvas::Wire;
 
-use super::bus::{call, me};
+use super::bus::{call, me, screen_with};
 use super::*;
 
 /// The startup terminal wired to a kanban block on a new board with one card ("New card") in To do:
@@ -379,7 +379,8 @@ fn the_instructions_say_what_to_do_with_a_kanban_and_a_note(cx: &mut TestAppCont
              you finish them (edit_card); when you are done, comment on it what you did and what the \
              next agent needs to know (comment_card), then move it to Review (Done when the board has \
              no Review); write what the next agent needs to know in the connected note too, and check \
-             the items of a connected checklist as you finish them."
+             the items of a connected checklist as you finish them. For work of several steps, open \
+             your own checklist with create_block and check its items as you go."
         ),
         "{text}"
     );
@@ -1427,5 +1428,145 @@ fn a_card_for_an_account_is_its_own(cx: &mut TestAppContext) {
         claim(cx),
         (false, format!("Card {card} is yours.")),
         "any Claude Code: its accounts run it"
+    );
+}
+
+/// The block at the other end of `mine`'s newest wire.
+fn newest_block(ws: &Entity<Workspace>, cx: &mut TestAppContext, mine: BlockId) -> BlockId {
+    ws.read_with(cx, |ws, _| {
+        let wire = ws
+            .space
+            .wires
+            .iter()
+            .rfind(|w| w.touches(mine))
+            .expect("wired to the caller");
+        if wire.a == mine { wire.b } else { wire.a }
+    })
+}
+
+/// `create_block` opens a note, a checklist or a terminal running a command beside the caller,
+/// wired to it, the keyboard and the camera kept; one Ctrl+Z closes it (docs/specs/agent-tools.md,
+/// create_block).
+#[gpui_kit::test]
+fn create_block_opens_each_kind_beside_the_caller_wired_to_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let mine = first_id(&ws, cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let kept = ws.read_with(cx, |ws, _| (ws.space.focused, ws.space.canvas.camera));
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "create_block",
+        json!({ "kind": "checklist", "name": "Plan", "items": "- [ ] Read\n- [x] Plan" }),
+    );
+    assert!(
+        !failed
+            && text.starts_with("Opened a checklist as ")
+            && text.ends_with(", connected to you."),
+        "{text}"
+    );
+    let list = newest_block(&ws, cx, mine);
+    ws.read_with(cx, |ws, _| {
+        let shown = ws.space.blocks[&list].checklist().unwrap().list.unwrap();
+        let l = ws.checklists.get(shown).unwrap();
+        assert_eq!(l.name_shown(), "Plan");
+        let items: Vec<(&str, bool)> = l.items.iter().map(|i| (i.text.as_str(), i.done)).collect();
+        assert_eq!(items, [("Read", false), ("Plan", true)]);
+        assert!(ws.space.wired(mine, list));
+        assert_eq!(
+            (ws.space.focused, ws.space.canvas.camera),
+            kept,
+            "keyboard and camera stay"
+        );
+        let (a, b) = (
+            ws.space.canvas.get(mine).unwrap().rect,
+            ws.space.canvas.get(list).unwrap().rect,
+        );
+        assert!(!a.intersects(&b), "beside, covering nothing");
+    });
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "create_block",
+        json!({ "kind": "note", "text": "notes" }),
+    );
+    assert!(!failed && text.starts_with("Opened a note as "), "{text}");
+    let note = newest_block(&ws, cx, mine);
+    ws.read_with(cx, |ws, cx| {
+        let editor = ws.space.blocks[&note]
+            .note()
+            .unwrap()
+            .tab()
+            .unwrap()
+            .editor
+            .clone();
+        assert_eq!(editor.read(cx).value(), "notes");
+        assert_eq!(ws.space.focused, kept.0);
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "create_block",
+        json!({ "kind": "terminal", "folder": dir.path(), "command": "echo hello-from-create" }),
+    );
+    assert!(
+        !failed && text.contains("running \"echo hello-from-create\", connected to you."),
+        "{text}"
+    );
+    assert!(text.contains("stop_agent ends it."), "{text}");
+    let term = newest_block(&ws, cx, mine);
+    screen_with(&ws, cx, term, "hello-from-create");
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(term).unwrap();
+        assert_eq!(
+            pane.opened_by.as_deref(),
+            Some(uid.as_str()),
+            "the caller may stop and close it"
+        );
+    });
+    // One Ctrl+Z closes the newest block and its wire.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| assert!(ws.undo_canvas(false, window, cx)))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.canvas.get(term).is_none() && !ws.space.wired(mine, term));
+        assert!(ws.space.canvas.get(note).is_some(), "one step each");
+    });
+}
+
+#[gpui_kit::test]
+fn create_block_refuses_what_its_kind_doesnt_take(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let mine = first_id(&ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let blocks = ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len());
+    let missing = std::env::temp_dir().join("templum-no-such-folder");
+    for (args, says) in [
+        (
+            json!({ "kind": "terminal", "folder": missing }),
+            format!("{} isn't a folder.", missing.display()),
+        ),
+        (
+            json!({ "kind": "note", "items": "x" }),
+            "\"name\" and \"items\" are for a checklist".to_string(),
+        ),
+    ] {
+        assert_eq!(
+            call(handle, &ws, cx, &terminal, "create_block", args),
+            (true, says)
+        );
+    }
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len()),
+        blocks,
+        "nothing opened"
     );
 }

@@ -486,6 +486,7 @@ impl Workspace {
                 self.list_cards(terminal, board.as_deref(), card, cx)
             }
             Call::CreateCard(new) => self.create_card(terminal, new, cx),
+            Call::CreateBlock(args) => self.create_block(terminal, args, window, cx),
             Call::EditCard(edit) => self.edit_card(terminal, edit, cx),
             Call::MoveCard { card, column } => self.move_card(terminal, card, &column, cx),
             Call::CommentCard { card, text } => self.comment_card(terminal, card, &text, cx),
@@ -656,7 +657,8 @@ impl Workspace {
              comment on it what you did and what the next agent needs to know (comment_card), then \
              move it to Review (Done when the board has no Review); write what the next agent needs \
              to know in the connected note too, and check the items of a connected checklist as you \
-             finish them. A task you \
+             finish them. For work of several steps, open your own checklist with create_block and \
+             check its items as you go. A task you \
              hand over without wait comes back typed into your terminal as [task …]: it isn't the \
              person writing.",
             space.name,

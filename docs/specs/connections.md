@@ -403,6 +403,7 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
   > items as you finish them (edit_card); when you are done, comment on it what you did and what the next agent
   > needs to know (comment_card), then move it to Review (Done when the board has no Review); write what the next
   > agent needs to know in the connected note too, and check the items of a connected checklist as you finish them.
+  > For work of several steps, open your own checklist with create_block and check its items as you go.
 
   The first sentence comes first because Claude Code shows its own Agent tool whole and Templum's tools only by name
   until it searches them, so "start an agent" would otherwise open a subagent the person never sees; Codex weighs
@@ -445,7 +446,7 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `wait_for_idle` | `block`, `timeout` (300 s) | Waits until the agent finishes its turn, and for the answer to a task the caller handed it, past `delegate`'s timeout too; its last answer | wired | 3 |
 | `ask_user` | `questions` (each `question`, `header`, `options` with `label`, `description`, `preview`, `multiSelect`), or `question` and `options` (strings); `timeout` (none) | Questions in a balloon ([Requests](#requests-from-agents), [ask-user.md](ask-user.md)); the answers as JSON, or with `question` the answer as text | — | 3 |
 | `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, priority, assignee (`(you)` on the caller's), checklist progress and comment count; with `card`, that card whole: its description, checklist items and comments ([Cards for an agent](#cards-for-an-agent)) | wired kanban | 4, card 40 |
-| `create_card` | `board`, `column`, `title`, `description`, `priority`, `for`, `checklist` | A new card at the column's end (the board's first column when left out); its id | wired kanban | 4, card 40 |
+| `create_card` | `board`, `column`, `title`, `description`, `priority`, `for`, `checklist` | A new card at the column's end (the board's first column when left out); its id. Its description tells an agent a review's findings are a card each (card 35) | wired kanban | 4, card 40 |
 | `edit_card` | `card`, `priority`, `for`, `add_items`, `check`, `uncheck` | Sets the card's priority and who it is for, adds checklist items, checks and unchecks them: one Ctrl+Z step ([Cards for an agent](#cards-for-an-agent)) | wired kanban | card 40 |
 | `move_card` | `card`, `column` | Moves a card to the end of a column; into the board's last column or one titled Review (either case), unless the card's newest comment is the caller's, its answer asks for one: "Say on it what you did and what the next one needs to know: comment_card." | wired kanban | 4 |
 | `comment_card` | `card`, `text` | Adds a comment signed with the caller's id: what it did on the card, and what the next one needs to know, when it finishes it | wired kanban | 4 |
@@ -455,6 +456,7 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `read_checklist` | `block` | The checklist the block shows: its name and progress, then one line per item: its id, `[x]` or `[ ]`, its text ([checklist.md](checklist.md#agents)) | wired checklist | — |
 | `check_item` | `block`, `item`, `done` (true) | Checks the item (unchecks it with `done: false`); one Ctrl+Z step | wired checklist | — |
 | `add_items` | `block`, `text` | Each line with text becomes an item at the end; a leading `- ` or `* `, then `[ ]` or `[x]`, is dropped (`[x]` adds it checked); the new items' ids; one Ctrl+Z step | wired checklist | — |
+| `create_block` | `kind` (`note`, `checklist`, `terminal`), `text`, `name`, `items`, `folder`, `command` | A note, a checklist or a terminal running `command` beside the caller, wired to it; one Ctrl+Z closes it ([agent-tools.md](agent-tools.md#create_block)) | — | card 35 |
 | `open_file` | `path`, `line` | Opens the file at the line in the wired editor block whose folder holds it; with none, in a new editor block beside the caller, wired to it. Neither the keyboard nor the camera moves | — | 4 |
 | `wait_for` | `block`, `event` (`idle`, `needs_you`, `command_finished`, `output`, `attention`), `pattern`, `lines` (0), `timeout` | Waits for the event in the block: `idle` as `wait_for_idle`; `needs_you`, its agent or its balloon asking the person (at once when it already does), with what it asks and, from batch 7, the last 20 lines of its screen; `command_finished`, the next command to finish there, with its output (needs [shell integration](shell-integration.md)); `output` (which `pattern` implies), the next line printed there that matches `pattern`, with the line and its last 20 lines, from its last `lines` too ([agent-tools.md](agent-tools.md#wait_for-with-a-pattern)); `attention`, its next bell or notification | wired | 5, card 35 |
 | `send_keys` | `block`, `keys` (1 to 16) | Presses the keys ([Keys](#keys-stopping-and-closing)); the screen after them | wired | 6 |
@@ -1133,6 +1135,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum kanban list [<board>] [--card <card>] \| add <title> [--column <c>] [--description <d>] [--board <b>] [--priority <p>] [--for <who>] [--checklist <text>] \| edit <card> [--priority <p>] [--for <who>] [--add <text>] [--check <item>]… [--uncheck <item>]… \| move <card> <column> \| comment <card> <text> \| claim <card>` | the kanban tools (`edit` and the new options: card 40) | 4, card 40 |
 | `templum note read\|append <block> [text]` | `read_note`, `append_note` | 4 |
 | `templum checklist read <block> \| add <block> <text> \| check\|uncheck <block> <item>` | `read_checklist`, `add_items`, `check_item` | — |
+| `templum new note [<text>] \| new checklist <name> [--items <text>] \| new terminal [--folder <f>] [--command <c>]` | `create_block` | card 35 |
 | `templum open <path>[:<line>]` | `open_file` | 4 |
 | `templum keys <block> <key>…` | `send_keys` | 6 |
 | `templum interrupt <block>` | `interrupt` | 6 |

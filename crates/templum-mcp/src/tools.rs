@@ -81,6 +81,8 @@ pub enum Call {
         card: Option<u64>,
     },
     CreateCard(NewCard),
+    /// A note, a checklist or a terminal beside the caller, wired to it.
+    CreateBlock(NewBlockArgs),
     EditCard(CardEdit),
     MoveCard {
         card: u64,
@@ -168,6 +170,30 @@ pub struct Spawn {
     pub effort: Option<String>,
 }
 
+/// The kinds of block `create_block` opens.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BlockKind {
+    Note,
+    Checklist,
+    Terminal,
+}
+
+/// What `create_block` opens: a note's `text`; a checklist's `name` and `items` (an item per line,
+/// as `add_items` reads them); a terminal's `folder` (the caller's when left out, relative to it)
+/// and the `command` typed and run in it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NewBlockArgs {
+    pub kind: BlockKind,
+    pub text: Option<String>,
+    pub name: Option<String>,
+    pub items: Option<String>,
+    pub folder: Option<String>,
+    pub command: Option<String>,
+}
+
+/// The longest command `create_block` types into a terminal, in bytes.
+pub const MAX_COMMAND: usize = 4096;
+
 /// What `create_card` adds. `priority` is lowercased, one of low, medium, high or none; `who`
 /// (the key `for`) is checked by the app; `checklist` is items' text, a line each.
 #[derive(Clone, Debug, PartialEq)]
@@ -242,6 +268,15 @@ pub fn list() -> Value {
     let column =
         json!({ "type": "string", "description": "A column's title (either case) or id." });
     let none = json!({ "type": "object", "properties": {} });
+    let items_text = json!({
+        "type": "string",
+        "description": "A checklist's items, one per line; a leading - or *, then [ ] or [x], is dropped.",
+    });
+    let command = json!({
+        "type": "string",
+        "maxLength": MAX_COMMAND,
+        "description": "One line a terminal's shell runs, as the person would type it.",
+    });
     let pattern = json!({
         "type": "string",
         "description": "A regular expression (Rust's regex syntax, as grep -E writes most of it): Ready in, \
@@ -526,7 +561,8 @@ pub fn list() -> Value {
         {
             "name": "create_card",
             "description": "Adds a card at the end of a column (the board's first when left out) of a board shown \
-                            by a kanban connected to you. Says its id.",
+                            by a kanban connected to you. Says its id. A review's findings: one card each, its \
+                            priority by severity, file:line and what fails in its description.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -628,6 +664,26 @@ pub fn list() -> Value {
                 "type": "object",
                 "properties": { "block": block, "text": { "type": "string" } },
                 "required": ["block", "text"],
+            },
+        },
+        {
+            "name": "create_block",
+            "description": "Opens a block beside yours, connected to you: a note with text, a checklist (your own \
+                            plan for work of several steps: check its items as you go), or a terminal in a folder \
+                            (yours when left out) with a command typed and run in it, such as a dev server; \
+                            wait_for with a pattern waits for its line, stop_agent ends it. The person closes it \
+                            with Ctrl+Z.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": { "type": "string", "enum": ["note", "checklist", "terminal"] },
+                    "text": { "type": "string", "description": "A note's text." },
+                    "name": { "type": "string", "description": "A checklist's name." },
+                    "items": items_text,
+                    "folder": { "type": "string", "description": "A terminal's folder, relative to yours." },
+                    "command": command,
+                },
+                "required": ["kind"],
             },
         },
         {
@@ -884,6 +940,41 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             board: named("board")?,
             card: id("card", "list_cards")?,
         },
+        "create_block" => {
+            let kind = match args["kind"].as_str() {
+                Some("note") => BlockKind::Note,
+                Some("checklist") => BlockKind::Checklist,
+                Some("terminal") => BlockKind::Terminal,
+                _ => return Err("kind is note, checklist or terminal".into()),
+            };
+            let given = |keys: &[&str]| keys.iter().any(|k| !args[*k].is_null());
+            if kind != BlockKind::Note && given(&["text"]) {
+                return Err("\"text\" is for a note".into());
+            }
+            if kind != BlockKind::Checklist && given(&["name", "items"]) {
+                return Err("\"name\" and \"items\" are for a checklist".into());
+            }
+            if kind != BlockKind::Terminal && given(&["folder", "command"]) {
+                return Err("\"folder\" and \"command\" are for a terminal".into());
+            }
+            let command = optional("command")?;
+            if command
+                .as_ref()
+                .is_some_and(|c| c.len() > MAX_COMMAND || c.contains(['\n', '\r']))
+            {
+                return Err(format!(
+                    "\"command\" is one line of at most {MAX_COMMAND} bytes"
+                ));
+            }
+            Call::CreateBlock(NewBlockArgs {
+                kind,
+                text: optional("text")?,
+                name: optional("name")?,
+                items: optional("items")?,
+                folder: optional("folder")?,
+                command,
+            })
+        }
         "create_card" => Call::CreateCard(NewCard {
             board: named("board")?,
             column: named("column")?,
@@ -1101,6 +1192,10 @@ mod tests {
             (
                 "add_items",
                 json!({ "block": "4qm2a", "text": "- [ ] Build\n- [ ] Test" }),
+            ),
+            (
+                "create_block",
+                json!({ "kind": "checklist", "name": "Plan", "items": "- [ ] Read\n- [ ] Build" }),
             ),
             ("open_file", json!({ "path": "src/main.rs", "line": 12 })),
             (
@@ -1382,6 +1477,81 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// create_block takes what its kind does, and names what it doesn't.
+    #[test]
+    fn create_block_takes_what_its_kind_does() {
+        let none = NewBlockArgs {
+            kind: BlockKind::Note,
+            text: None,
+            name: None,
+            items: None,
+            folder: None,
+            command: None,
+        };
+        assert_eq!(
+            parse("create_block", &json!({ "kind": "note", "text": "notes" })),
+            Ok(Call::CreateBlock(NewBlockArgs {
+                text: Some("notes".into()),
+                ..none.clone()
+            }))
+        );
+        assert_eq!(
+            parse(
+                "create_block",
+                &json!({ "kind": "checklist", "name": "Plan", "items": "- [ ] Read" })
+            ),
+            Ok(Call::CreateBlock(NewBlockArgs {
+                kind: BlockKind::Checklist,
+                name: Some("Plan".into()),
+                items: Some("- [ ] Read".into()),
+                ..none.clone()
+            }))
+        );
+        assert_eq!(
+            parse(
+                "create_block",
+                &json!({ "kind": "terminal", "folder": "web", "command": "npm run dev" })
+            ),
+            Ok(Call::CreateBlock(NewBlockArgs {
+                kind: BlockKind::Terminal,
+                folder: Some("web".into()),
+                command: Some("npm run dev".into()),
+                ..none
+            }))
+        );
+        let kinds = "kind is note, checklist or terminal";
+        for (args, why) in [
+            (json!({}), kinds),
+            (json!({ "kind": "kanban" }), kinds),
+            (
+                json!({ "kind": "checklist", "text": "x" }),
+                "\"text\" is for a note",
+            ),
+            (
+                json!({ "kind": "note", "items": "x" }),
+                "\"name\" and \"items\" are for a checklist",
+            ),
+            (
+                json!({ "kind": "terminal", "name": "x" }),
+                "\"name\" and \"items\" are for a checklist",
+            ),
+            (
+                json!({ "kind": "note", "command": "x" }),
+                "\"folder\" and \"command\" are for a terminal",
+            ),
+            (
+                json!({ "kind": "terminal", "command": "a\nb" }),
+                "\"command\" is one line of at most 4096 bytes",
+            ),
+            (
+                json!({ "kind": "terminal", "command": "a".repeat(4097) }),
+                "\"command\" is one line of at most 4096 bytes",
+            ),
+        ] {
+            assert_eq!(parse("create_block", &args), Err(why.to_string()), "{args}");
+        }
     }
 
     /// send_keys takes 1 to 16 keys, as strings; their names are the app's to check.

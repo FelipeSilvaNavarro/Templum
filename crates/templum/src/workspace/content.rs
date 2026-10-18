@@ -8,6 +8,7 @@ use gpui_kit::{App, Context, Entity, Window};
 use templum_mcp::{Reply, tools};
 
 use super::bus::{flat, target};
+use super::ops::{NewBlock, Place};
 use super::{BlockId, Body, Space, Workspace};
 use crate::board::{Assignee, Card, Comment, Priority};
 use crate::checklists;
@@ -739,6 +740,76 @@ impl Workspace {
             [one] => Reply::ok(format!("Added item {one}.")),
             many => Reply::ok(format!("Added items {}.", many.join(", "))),
         }
+    }
+
+    /// `create_block` from the terminal `from`: a note, a checklist or a terminal running a
+    /// command beside the caller, wired to it (docs/specs/agent-tools.md, create_block).
+    pub(super) fn create_block(
+        &mut self,
+        from: &str,
+        args: tools::NewBlockArgs,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let (space, me) = self.caller_space(from);
+        let space_id = space.id.clone();
+        let opener = space.uids.get(&me).cloned();
+        let (new, kind) = match args.kind {
+            tools::BlockKind::Note => (
+                NewBlock::Note {
+                    text: args.text.unwrap_or_default(),
+                },
+                "a note",
+            ),
+            tools::BlockKind::Checklist => (
+                NewBlock::Checklist {
+                    name: args.name.unwrap_or_default(),
+                    items: checklists::parse_items(args.items.as_deref().unwrap_or_default()),
+                },
+                "a checklist",
+            ),
+            tools::BlockKind::Terminal => match space.folder_for(me, args.folder.as_deref()) {
+                Ok(folder) => (
+                    NewBlock::Terminal {
+                        folder,
+                        command: args.command.clone(),
+                    },
+                    "a terminal",
+                ),
+                Err(refused) => return Reply::err(refused),
+            },
+        };
+        let folder = match &new {
+            NewBlock::Terminal { folder, .. } => Some(folder.clone()),
+            _ => None,
+        };
+        let id = match self.add_block_in(&space_id, new, Place::Near(me), opener, window, cx) {
+            Ok(id) => id,
+            Err(refused) => return Reply::err(refused),
+        };
+        let uid = self
+            .in_space(&space_id, |ws| {
+                ws.space.add_wire(me, id);
+                ws.space.uids.get(&id).cloned()
+            })
+            .flatten()
+            .unwrap_or_default();
+        cx.notify();
+        let mut said = format!("Opened {kind} as {uid}");
+        if let Some(folder) = folder {
+            said.push_str(&format!(" in {}", folder.display()));
+        }
+        if let Some(command) = &args.command {
+            said.push_str(&format!(", running {command:?}"));
+        }
+        said.push_str(", connected to you.");
+        if args.command.is_some() {
+            said.push_str(&format!(
+                " wait_for(block: \"{uid}\", pattern: …, lines: 50) waits for its line; stop_agent \
+                 ends it."
+            ));
+        }
+        Reply::ok(said)
     }
 
     /// `open_file` from `from`: the front-most wired editor whose folder holds the file, else a
