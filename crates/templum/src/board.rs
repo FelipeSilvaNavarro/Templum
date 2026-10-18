@@ -113,6 +113,14 @@ impl Priority {
         }
     }
 
+    /// The priority `name` names, trimmed, in either case; none for another word ("none").
+    pub fn named(name: &str) -> Option<Priority> {
+        let name = name.trim();
+        Priority::ALL
+            .into_iter()
+            .find(|p| p.name().eq_ignore_ascii_case(name))
+    }
+
     pub fn title(self) -> &'static str {
         match self {
             Priority::Low => "Low",

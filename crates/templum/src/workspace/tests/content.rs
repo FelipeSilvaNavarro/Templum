@@ -1132,3 +1132,132 @@ fn undoing_typing_after_an_agents_add_brings_back_no_empty_item(cx: &mut TestApp
     .unwrap();
     assert_eq!(texts(cx), ["Build", "Run the tests"]);
 }
+
+#[gpui_kit::test]
+fn create_and_edit_card_set_priority_who_and_checklist(cx: &mut TestAppContext) {
+    use crate::board::{Assignee, Priority};
+    let (handle, ws) = open(cx);
+    let (me, uid, _, board, _) = wired_board(handle, &ws, cx);
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "create_card",
+        json!({ "title": "v2", "priority": "High", "for": "codex", "checklist": "- Model\n- [x] Tools" }),
+    );
+    assert!(!failed, "{text}");
+    let card: u64 = text
+        .trim_start_matches("Created card ")
+        .trim_end_matches('.')
+        .parse()
+        .unwrap();
+    let (model, tools) = ws.read_with(cx, |ws, _| {
+        let c = ws.boards.card(board, card).unwrap();
+        assert_eq!(
+            (c.priority, c.assignee.clone()),
+            (Some(Priority::High), Some(Assignee::Agent("codex".into())))
+        );
+        (c.checklist[0].id, c.checklist[1].id)
+    });
+    let (_, list) = call(handle, &ws, cx, &me, "list_cards", json!({}));
+    assert!(
+        list.contains(&format!(
+            "{card}  v2  priority high  for any codex  checklist 1/2"
+        )),
+        "{list}"
+    );
+    let (_, whole) = call(handle, &ws, cx, &me, "list_cards", json!({ "card": card }));
+    assert!(
+        whole.contains(&format!(
+            "checklist:\n  {model} [ ] Model\n  {tools} [x] Tools"
+        )),
+        "{whole}"
+    );
+    let before = ws.read_with(cx, |ws, _| ws.boards.clone());
+    for (args, says) in [
+        (
+            json!({ "card": card, "for": "nobody" }),
+            "There's no agent or terminal block nobody".to_string(),
+        ),
+        (
+            json!({ "card": card, "check": 99_999 }),
+            format!("Card {card} has no item 99999"),
+        ),
+    ] {
+        let (failed, text) = call(handle, &ws, cx, &me, "edit_card", args);
+        assert!(failed && text.contains(&says), "{text}");
+    }
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.boards.clone()),
+        before,
+        "a refusal changes nothing"
+    );
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "edit_card",
+        json!({ "card": card, "priority": "none", "for": "claude code", "add_items": "Docs",
+                "check": model, "uncheck": [tools] }),
+    );
+    assert!(!failed, "{text}");
+    let docs = ws.read_with(cx, |ws, _| {
+        ws.boards.card(board, card).unwrap().checklist[2].id
+    });
+    assert_eq!(
+        text,
+        format!(
+            "Card {card}: priority none; for any claude; added item {docs}; checked {model}; unchecked {tools}."
+        )
+    );
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    // Ctrl+Z keeps next_id: ids are never given out twice.
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.boards.boards.clone()),
+        before.boards,
+        "one Ctrl+Z step"
+    );
+    let (failed, _) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "edit_card",
+        json!({ "card": card, "for": "Anyone" }),
+    );
+    assert!(!failed);
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws
+            .boards
+            .card(board, card)
+            .unwrap()
+            .assignee
+            .clone()),
+        None
+    );
+    // A block's id names that block (creating is never gated: Task 7 gates edit_card's `for`).
+    let (_, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "create_card",
+        json!({ "title": "mine", "for": uid }),
+    );
+    let mine: u64 = text
+        .trim_start_matches("Created card ")
+        .trim_end_matches('.')
+        .parse()
+        .unwrap();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws
+            .boards
+            .card(board, mine)
+            .unwrap()
+            .assignee
+            .clone()),
+        Some(Assignee::Block(uid.clone()))
+    );
+}

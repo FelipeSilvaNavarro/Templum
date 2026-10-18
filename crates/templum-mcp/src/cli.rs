@@ -42,7 +42,9 @@ const SPAWN: &str = "spawn <agent> [--folder <folder>] [--worktree <name>] [--pr
                      [--model <model>] [--effort <effort>] [--json]";
 const KEYS: &str = "keys <block> <key>… [--json]";
 const KANBAN: &str = "kanban list [<board>] [--card <card>] | add <title> [--column <column>] \
-                      [--description <text>] [--board <board>] | move <card> <column> | comment <card> <text> \
+                      [--description <text>] [--board <board>] [--priority <priority>] [--for <who>] \
+                      [--checklist <text>] | edit <card> [--priority <priority>] [--for <who>] [--add <text>] \
+                      [--check <item>]… [--uncheck <item>]… | move <card> <column> | comment <card> <text> \
                       | claim <card> [--json]";
 const NOTE: &str = "note read <block> | note append <block> <text> [--json]";
 const CHECKLIST: &str = "checklist read <block> | add <block> <text> | check <block> <item> \
@@ -262,6 +264,9 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
                     "--column" => "column",
                     "--description" => "description",
                     "--board" => "board",
+                    "--priority" => "priority",
+                    "--for" => "for",
+                    "--checklist" => "checklist",
                     word => {
                         title.push(word);
                         continue;
@@ -274,6 +279,35 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
             }
             arguments["title"] = json!(title.join(" "));
             ("create_card", arguments)
+        }
+        ("kanban", ["edit", card, more @ ..]) if !more.is_empty() => {
+            let mut arguments = json!({ "card": card });
+            let mut more = more.iter();
+            while let Some(option) = more.next() {
+                let value = json!(more.next().ok_or(KANBAN)?);
+                match *option {
+                    "--priority" => arguments["priority"] = value,
+                    "--for" => arguments["for"] = value,
+                    // Each --add is an item more.
+                    "--add" => {
+                        arguments["add_items"] = match arguments["add_items"].as_str() {
+                            Some(before) => {
+                                json!(format!("{before}\n{}", value.as_str().unwrap_or("")))
+                            }
+                            None => value,
+                        }
+                    }
+                    "--check" | "--uncheck" => {
+                        let key = &option[2..];
+                        if arguments.get(key).is_none() {
+                            arguments[key] = json!([]);
+                        }
+                        arguments[key].as_array_mut().expect("a list").push(value);
+                    }
+                    _ => return Err(KANBAN),
+                }
+            }
+            ("edit_card", arguments)
         }
         ("kanban", ["move", card, column @ ..]) if !column.is_empty() => (
             "move_card",
@@ -1109,6 +1143,43 @@ mod tests {
                 json!({ "name": "create_card", "arguments": { "title": "Fix login", "column": "Doing", "description": "It 500s." } }),
             ),
             (
+                &[
+                    "kanban",
+                    "add",
+                    "Fix",
+                    "--priority",
+                    "high",
+                    "--for",
+                    "codex",
+                    "--checklist",
+                    "a",
+                ][..],
+                json!({ "name": "create_card", "arguments": { "title": "Fix", "priority": "high", "for": "codex", "checklist": "a" } }),
+            ),
+            (
+                &[
+                    "kanban",
+                    "edit",
+                    "12",
+                    "--check",
+                    "3",
+                    "--check",
+                    "4",
+                    "--priority",
+                    "low",
+                    "--add",
+                    "Docs",
+                    "--add",
+                    "Notes",
+                    "--uncheck",
+                    "5",
+                    "--for",
+                    "anyone",
+                ][..],
+                json!({ "name": "edit_card", "arguments": { "card": "12", "check": ["3", "4"], "priority": "low",
+                        "add_items": "Docs\nNotes", "uncheck": ["5"], "for": "anyone" } }),
+            ),
+            (
                 &["kanban", "move", "12", "In", "review"][..],
                 json!({ "name": "move_card", "arguments": { "card": "12", "column": "In review" } }),
             ),
@@ -1176,6 +1247,11 @@ mod tests {
                 "usage: templum kanban",
             ),
             (&["kanban", "move", "12"][..], "usage: templum kanban"),
+            (&["kanban", "edit", "12"][..], "usage: templum kanban"),
+            (
+                &["kanban", "edit", "12", "--check"][..],
+                "usage: templum kanban",
+            ),
             (&["kanban", "list", "--card"][..], "usage: templum kanban"),
             (&["note", "append", "4qm2a"][..], "usage: templum note"),
             (

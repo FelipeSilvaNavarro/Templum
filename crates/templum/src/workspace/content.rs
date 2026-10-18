@@ -9,7 +9,7 @@ use templum_mcp::{Reply, tools};
 
 use super::bus::{flat, target};
 use super::{BlockId, Body, Space, Workspace};
-use crate::board::{Assignee, Card, Comment};
+use crate::board::{Assignee, Card, Comment, Priority};
 use crate::checklists;
 use crate::editor::{Content, Editor};
 use crate::notes;
@@ -163,12 +163,15 @@ impl Workspace {
         Reply::ok(tools::tail(&text, tools::MAX_TEXT))
     }
 
-    /// `5  Fix login  [red, green]  assignee b7k2m "Codex"  2 comments`
+    /// `5  Fix login  [red, green]  priority high  assignee b7k2m "Codex"  checklist 2/5  2 comments`
     fn card_line(&self, c: &Card, cx: &App) -> String {
         let mut line = format!("{}  {}", c.id, flat(&c.title));
         if !c.labels.is_empty() {
             let names: Vec<&str> = c.labels.iter().map(|l| l.name()).collect();
             line.push_str(&format!("  [{}]", names.join(", ")));
+        }
+        if let Some(p) = c.priority {
+            line.push_str(&format!("  priority {}", p.name()));
         }
         match &c.assignee {
             Some(Assignee::Block(uid)) => {
@@ -176,6 +179,10 @@ impl Workspace {
             }
             Some(Assignee::Agent(id)) => line.push_str(&format!("  for any {id}")),
             None => {}
+        }
+        if !c.checklist.is_empty() {
+            let (done, all) = c.progress();
+            line.push_str(&format!("  checklist {done}/{all}"));
         }
         match c.comments.len() {
             0 => {}
@@ -210,6 +217,13 @@ impl Workspace {
         if !c.description.trim().is_empty() {
             text.push_str(&format!("\ndescription:\n{}", indent(&c.description)));
         }
+        if !c.checklist.is_empty() {
+            text.push_str("\nchecklist:");
+            for item in &c.checklist {
+                let mark = if item.done { 'x' } else { ' ' };
+                text.push_str(&format!("\n  {} [{mark}] {}", item.id, flat(&item.text)));
+            }
+        }
         let now = notes::now();
         for comment in &c.comments {
             text.push_str(&format!(
@@ -222,24 +236,61 @@ impl Workspace {
         text
     }
 
+    /// Who `text` names for a card: anyone (None); an agent by its id or title in either case,
+    /// matched first; or a terminal block by its id, in any workspace.
+    fn resolve_for(&self, text: &str) -> Result<Option<Assignee>, Reply> {
+        let text = text.trim();
+        if text.eq_ignore_ascii_case("anyone") {
+            return Ok(None);
+        }
+        if let Some(agent) = self
+            .agents
+            .iter()
+            .find(|a| a.id.eq_ignore_ascii_case(text) || a.title.eq_ignore_ascii_case(text))
+        {
+            return Ok(Some(Assignee::Agent(agent.id.clone())));
+        }
+        let terminal = self.spaces().any(|s| {
+            s.block_by_uid(text)
+                .is_some_and(|id| s.terminal(id).is_some())
+        });
+        if terminal {
+            return Ok(Some(Assignee::Block(text.to_string())));
+        }
+        let ids: Vec<&str> = self.agents.iter().map(|a| a.id.as_str()).collect();
+        Err(Reply::err(format!(
+            "There's no agent or terminal block {text}. Agents: {}; or a terminal's block id, or \
+             anyone.",
+            ids.join(", ")
+        )))
+    }
+
     pub(super) fn create_card(
         &mut self,
         from: &str,
-        board: Option<&str>,
-        column: Option<&str>,
-        title: &str,
-        description: Option<String>,
+        new: tools::NewCard,
         cx: &mut Context<Self>,
     ) -> Reply {
         let (space, me) = self.caller_space(from);
-        let board = match self.board_for(space, me, board) {
+        let board = match self.board_for(space, me, new.board.as_deref()) {
             Ok(b) => b,
             Err(refused) => return refused,
         };
-        if title.trim().is_empty() {
+        if new.title.trim().is_empty() {
             return Reply::err("A card needs a title.");
         }
-        let column = match column {
+        let assignee = match new.who.as_deref().map(|w| self.resolve_for(w)) {
+            Some(Ok(who)) => who,
+            Some(Err(refused)) => return refused,
+            None => None,
+        };
+        let priority = new.priority.as_deref().and_then(Priority::named);
+        let items = new
+            .checklist
+            .as_deref()
+            .map(checklists::parse_items)
+            .unwrap_or_default();
+        let column = match new.column.as_deref() {
             Some(name) => match self.boards.column_named(board, name) {
                 Some(c) => c,
                 None => return self.no_column(board, name),
@@ -249,13 +300,16 @@ impl Workspace {
                 None => return Reply::err("That board has no columns."),
             },
         };
-        let title = title.trim().to_string();
+        let title = new.title.trim().to_string();
         let id = self.edit_boards(|b| {
             let id = b.add_card(board, column)?;
             b.edit_card(board, id, |c| {
                 c.title = title;
-                c.description = description.unwrap_or_default();
+                c.description = new.description.unwrap_or_default();
+                c.priority = priority;
+                c.assignee = assignee;
             });
+            b.add_items(board, id, &items);
             Some(id)
         });
         cx.notify();
@@ -263,6 +317,88 @@ impl Workspace {
             Some(id) => Reply::ok(format!("Created card {id}.")),
             None => Reply::err("That column is gone."),
         }
+    }
+
+    /// Sets a card's priority and who it is for, adds items, checks and unchecks them: every
+    /// part is checked first, then all apply as one Ctrl+Z step.
+    pub(super) fn edit_card(
+        &mut self,
+        from: &str,
+        edit: tools::CardEdit,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let (space, me) = self.caller_space(from);
+        let card = edit.card;
+        let board = match self.card_board(space, me, card) {
+            Ok(b) => b,
+            Err(refused) => return refused,
+        };
+        let assignee = match edit.who.as_deref().map(|w| self.resolve_for(w)) {
+            Some(Ok(who)) => Some(who),
+            Some(Err(refused)) => return refused,
+            None => None,
+        };
+        let has = |item: &u64| {
+            self.boards
+                .card(board, card)
+                .is_some_and(|c| c.checklist.iter().any(|i| i.id == *item))
+        };
+        if let Some(item) = edit.check.iter().chain(&edit.uncheck).find(|i| !has(i)) {
+            return Reply::err(format!(
+                "Card {card} has no item {item}: list_cards with card shows its items."
+            ));
+        }
+        let priority = edit.priority.as_deref().map(Priority::named);
+        let items = edit
+            .add_items
+            .as_deref()
+            .map(checklists::parse_items)
+            .unwrap_or_default();
+        let added = self.edit_boards(|b| {
+            b.edit_card(board, card, |c| {
+                if let Some(p) = priority {
+                    c.priority = p;
+                }
+                if let Some(who) = assignee.clone() {
+                    c.assignee = who;
+                }
+            });
+            for (ids, done) in [(&edit.check, true), (&edit.uncheck, false)] {
+                for item in ids {
+                    b.set_item_done(board, card, *item, done);
+                }
+            }
+            b.add_items(board, card, &items)
+        });
+        cx.notify();
+        let list = |ids: &[u64]| {
+            ids.iter()
+                .map(u64::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut said = Vec::new();
+        if let Some(p) = priority {
+            said.push(format!("priority {}", p.map_or("none", |p| p.name())));
+        }
+        match &assignee {
+            Some(None) => said.push("for anyone".into()),
+            Some(Some(Assignee::Agent(id))) => said.push(format!("for any {id}")),
+            Some(Some(Assignee::Block(uid))) => said.push(format!("for {}", self.who(uid, cx))),
+            None => {}
+        }
+        match added.as_slice() {
+            [] => {}
+            [one] => said.push(format!("added item {one}")),
+            more => said.push(format!("added items {}", list(more))),
+        }
+        if !edit.check.is_empty() {
+            said.push(format!("checked {}", list(&edit.check)));
+        }
+        if !edit.uncheck.is_empty() {
+            said.push(format!("unchecked {}", list(&edit.uncheck)));
+        }
+        Reply::ok(format!("Card {card}: {}.", said.join("; ")))
     }
 
     pub(super) fn move_card(

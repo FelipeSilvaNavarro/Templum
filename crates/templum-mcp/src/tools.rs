@@ -77,12 +77,8 @@ pub enum Call {
         board: Option<String>,
         card: Option<u64>,
     },
-    CreateCard {
-        board: Option<String>,
-        column: Option<String>,
-        title: String,
-        description: Option<String>,
-    },
+    CreateCard(NewCard),
+    EditCard(CardEdit),
     MoveCard {
         card: u64,
         column: String,
@@ -163,6 +159,30 @@ pub struct Spawn {
     pub effort: Option<String>,
 }
 
+/// What `create_card` adds. `priority` is lowercased, one of low, medium, high or none; `who`
+/// (the key `for`) is checked by the app; `checklist` is items' text, a line each.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NewCard {
+    pub board: Option<String>,
+    pub column: Option<String>,
+    pub title: String,
+    pub description: Option<String>,
+    pub priority: Option<String>,
+    pub who: Option<String>,
+    pub checklist: Option<String>,
+}
+
+/// What `edit_card` changes on `card`: at least one of the others.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CardEdit {
+    pub card: u64,
+    pub priority: Option<String>,
+    pub who: Option<String>,
+    pub add_items: Option<String>,
+    pub check: Vec<u64>,
+    pub uncheck: Vec<u64>,
+}
+
 /// What a tool answers: its text, and whether it is a refusal or a failure.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Reply {
@@ -213,6 +233,24 @@ pub fn list() -> Value {
     let column =
         json!({ "type": "string", "description": "A column's title (either case) or id." });
     let none = json!({ "type": "object", "properties": {} });
+    let priority = json!({ "type": "string", "enum": ["low", "medium", "high", "none"] });
+    let who = json!({
+        "type": "string",
+        "description": "Who it is for: anyone, an agent's id (claude, codex, …) for any of its sessions, or a \
+                        terminal block's id for that session.",
+    });
+    let items = json!({
+        "type": "string",
+        "description": "Checklist items, one per line; a leading - or *, then [ ] or [x], is dropped ([x] \
+                        adds it checked).",
+    });
+    let item_ids = json!({
+        "anyOf": [
+            { "type": "integer" },
+            { "type": "array", "items": { "type": "integer" } },
+        ],
+        "description": "An item's id, or a list of them, as list_cards with card shows them.",
+    });
     // Claude Code shows these whole from the start, beside its own Agent tool, where the others
     // wait behind its tool search by name only.
     let always_load = json!({ "anthropic/alwaysLoad": true });
@@ -455,8 +493,8 @@ pub fn list() -> Value {
         {
             "name": "list_cards",
             "description": "A board shown by a kanban connected to you: its columns, and each card's id, title, \
-                            labels, assignee and comment count. With card, that card whole: its description and \
-                            comments too.",
+                            labels, priority, assignee ((you) on yours), checklist progress and comment count. \
+                            With card, that card whole: its description, checklist items and comments too.",
             "inputSchema": { "type": "object", "properties": { "board": board, "card": card } },
         },
         {
@@ -470,8 +508,28 @@ pub fn list() -> Value {
                     "column": column,
                     "title": { "type": "string" },
                     "description": { "type": "string" },
+                    "priority": priority,
+                    "for": who,
+                    "checklist": items,
                 },
                 "required": ["title"],
+            },
+        },
+        {
+            "name": "edit_card",
+            "description": "Sets a card's priority and who it is for, adds checklist items, checks and unchecks \
+                            them: one step of the person's Ctrl+Z. Check an item as you finish it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "card": card,
+                    "priority": priority,
+                    "for": who,
+                    "add_items": items,
+                    "check": item_ids,
+                    "uncheck": item_ids,
+                },
+                "required": ["card"],
             },
         },
         {
@@ -661,6 +719,32 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
     };
     let card =
         || id("card", "list_cards")?.ok_or_else(|| format!("{name} needs \"card\", a card's id"));
+    let priority = || match optional("priority")? {
+        Some(p) => {
+            let p = p.trim().to_lowercase();
+            ["low", "medium", "high", "none"]
+                .contains(&p.as_str())
+                .then_some(Some(p))
+                .ok_or_else(|| "\"priority\" is low, medium, high or none".to_string())
+        }
+        None => Ok(None),
+    };
+    // One item's id (a number or its text), or a list of them.
+    let item_ids = |key: &str| {
+        let one = |v: &Value| match v {
+            Value::Number(n) => n.as_u64(),
+            Value::String(s) => s.trim().parse().ok(),
+            _ => None,
+        };
+        match &args[key] {
+            Value::Null => Some(Vec::new()),
+            Value::Array(ids) => ids.iter().map(one).collect(),
+            v => one(v).map(|id| vec![id]),
+        }
+        .ok_or_else(|| {
+            format!("\"{key}\" is an item's id, or a list of them, as list_cards shows them")
+        })
+    };
     Ok(match name {
         "whoami" => Call::Whoami,
         "list_blocks" => Call::ListBlocks,
@@ -733,12 +817,37 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             board: named("board")?,
             card: id("card", "list_cards")?,
         },
-        "create_card" => Call::CreateCard {
+        "create_card" => Call::CreateCard(NewCard {
             board: named("board")?,
             column: named("column")?,
             title: text("title")?,
             description: optional("description")?,
-        },
+            priority: priority()?,
+            who: optional("for")?,
+            checklist: optional("checklist")?,
+        }),
+        "edit_card" => {
+            let edit = CardEdit {
+                card: card()?,
+                priority: priority()?,
+                who: optional("for")?,
+                add_items: optional("add_items")?,
+                check: item_ids("check")?,
+                uncheck: item_ids("uncheck")?,
+            };
+            if edit.priority.is_none()
+                && edit.who.is_none()
+                && edit.add_items.is_none()
+                && edit.check.is_empty()
+                && edit.uncheck.is_empty()
+            {
+                return Err(
+                    "edit_card needs something to change: priority, for, add_items, check or uncheck"
+                        .into(),
+                );
+            }
+            Call::EditCard(edit)
+        }
         "move_card" => Call::MoveCard {
             card: card()?,
             column: named("column")?
@@ -898,7 +1007,13 @@ mod tests {
             ("list_cards", json!({ "board": "Sprint", "card": 12 })),
             (
                 "create_card",
-                json!({ "board": "1", "column": "To do", "title": "Fix login", "description": "It 500s." }),
+                json!({ "board": "1", "column": "To do", "title": "Fix login", "description": "It 500s.",
+                        "priority": "high", "for": "codex", "checklist": "- [ ] Build" }),
+            ),
+            (
+                "edit_card",
+                json!({ "card": 12, "priority": "low", "for": "anyone", "add_items": "Docs", "check": 13,
+                        "uncheck": [14] }),
             ),
             ("move_card", json!({ "card": 12, "column": "Doing" })),
             ("comment_card", json!({ "card": 12, "text": "On it." })),
@@ -1265,6 +1380,91 @@ mod tests {
     }
 
     #[test]
+    fn create_and_edit_card_take_a_priority_who_and_checklist_items() {
+        assert_eq!(
+            parse(
+                "create_card",
+                &json!({ "title": "v2", "priority": " High", "for": "codex", "checklist": "- a" })
+            ),
+            Ok(Call::CreateCard(NewCard {
+                board: None,
+                column: None,
+                title: "v2".into(),
+                description: None,
+                priority: Some("high".into()),
+                who: Some("codex".into()),
+                checklist: Some("- a".into()),
+            }))
+        );
+        let edit = |args: Value| parse("edit_card", &args);
+        let only = |check: Vec<u64>, uncheck: Vec<u64>| {
+            Ok(Call::EditCard(CardEdit {
+                card: 12,
+                priority: None,
+                who: None,
+                add_items: None,
+                check,
+                uncheck,
+            }))
+        };
+        assert_eq!(
+            edit(json!({ "card": 12, "check": 3 })),
+            only(vec![3], vec![])
+        );
+        assert_eq!(
+            edit(json!({ "card": "12", "check": ["3", 4] })),
+            only(vec![3, 4], vec![])
+        );
+        assert_eq!(
+            edit(json!({ "card": 12, "uncheck": [5] })),
+            only(vec![], vec![5])
+        );
+        assert_eq!(
+            edit(json!({ "card": 12, "priority": "NONE", "for": "anyone", "add_items": "x" })),
+            Ok(Call::EditCard(CardEdit {
+                card: 12,
+                priority: Some("none".into()),
+                who: Some("anyone".into()),
+                add_items: Some("x".into()),
+                check: vec![],
+                uncheck: vec![],
+            }))
+        );
+        for (tool, args, says) in [
+            (
+                "create_card",
+                json!({ "title": "x", "priority": "urgent" }),
+                "\"priority\" is low, medium, high or none",
+            ),
+            (
+                "edit_card",
+                json!({ "card": 1, "check": "x" }),
+                "\"check\" is an item's id, or a list of them, as list_cards shows them",
+            ),
+            (
+                "edit_card",
+                json!({ "card": 1, "uncheck": [true] }),
+                "\"uncheck\" is an item's id, or a list of them, as list_cards shows them",
+            ),
+            (
+                "edit_card",
+                json!({ "card": 1 }),
+                "edit_card needs something to change: priority, for, add_items, check or uncheck",
+            ),
+        ] {
+            assert_eq!(parse(tool, &args), Err(says.to_string()), "{args}");
+        }
+        let tools = list();
+        let edit_card = tools["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == "edit_card")
+            .unwrap();
+        assert_eq!(edit_card["inputSchema"]["required"], json!(["card"]));
+    }
+
+    #[test]
     fn the_content_tools_take_names_or_ids_and_leave_out_what_they_may() {
         assert_eq!(
             parse("list_cards", &json!({})),
@@ -1282,12 +1482,15 @@ mod tests {
         );
         assert_eq!(
             parse("create_card", &json!({ "title": "x" })),
-            Ok(Call::CreateCard {
+            Ok(Call::CreateCard(NewCard {
                 board: None,
                 column: None,
                 title: "x".into(),
-                description: None
-            })
+                description: None,
+                priority: None,
+                who: None,
+                checklist: None,
+            }))
         );
         assert_eq!(
             parse("move_card", &json!({ "card": 3, "column": 4 })),

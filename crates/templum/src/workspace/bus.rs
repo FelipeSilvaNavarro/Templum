@@ -483,19 +483,8 @@ impl Workspace {
             Call::ListCards { board, card } => {
                 self.list_cards(terminal, board.as_deref(), card, cx)
             }
-            Call::CreateCard {
-                board,
-                column,
-                title,
-                description,
-            } => self.create_card(
-                terminal,
-                board.as_deref(),
-                column.as_deref(),
-                &title,
-                description,
-                cx,
-            ),
+            Call::CreateCard(new) => self.create_card(terminal, new, cx),
+            Call::EditCard(edit) => self.edit_card(terminal, edit, cx),
             Call::MoveCard { card, column } => self.move_card(terminal, card, &column, cx),
             Call::CommentCard { card, text } => self.comment_card(terminal, card, &text, cx),
             Call::ClaimCard { card } => self.claim_card(terminal, card, cx),
