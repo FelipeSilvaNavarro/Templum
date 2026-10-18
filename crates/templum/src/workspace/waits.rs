@@ -570,7 +570,7 @@ impl Workspace {
 
     /// A request's short sound, unless `[connections] sound` is off or one played under
     /// `chime::GAP` ago.
-    fn chime(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn chime(&mut self, cx: &mut Context<Self>) {
         let now = cx.background_executor().now();
         let recent = self
             .last_chime

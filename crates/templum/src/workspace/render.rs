@@ -684,24 +684,41 @@ impl Render for Workspace {
         });
         // Window chrome over the canvas's bottom center, above the toolbar: the zoom never scales it.
         let open = self.templum_agent.open;
-        let agent = (!tiled || open)
+        let waiting = self.templum_agent.approvals.len();
+        let approval = self.templum_agent.approvals.first().map(|a| {
+            let width = 640.0_f32.min(vp.w - 32.0);
+            crate::chat::approval::render(self, a, (1, waiting), width, window, cx)
+        });
+        let pill = (!tiled || open)
             .then(|| crate::chat::pill::render(self, vp.w, open, window, cx))
-            .flatten()
-            .and_then(|pill| match open {
-                true => crate::chat::panel::render(self, (vp.w, vp.h), pill, window, cx),
-                false => Some(pill),
-            })
-            .map(|pill| {
-                let left = if self.sidebar { sidebar::WIDTH } else { 0.0 };
+            .flatten();
+        let agent = match (open, pill) {
+            (true, Some(pill)) => {
+                crate::chat::panel::render(self, (vp.w, vp.h), pill, approval, window, cx)
+            }
+            (_, pill) if pill.is_some() || approval.is_some() => Some(
                 div()
-                    .absolute()
-                    .left(px(left))
-                    .right_0()
-                    .bottom(px(toolbar::above(self)))
                     .flex()
-                    .justify_center()
-                    .child(pill)
-            });
+                    .flex_col()
+                    .items_center()
+                    .gap(px(8.0))
+                    .children(approval)
+                    .children(pill)
+                    .into_any_element(),
+            ),
+            _ => None,
+        }
+        .map(|pill| {
+            let left = if self.sidebar { sidebar::WIDTH } else { 0.0 };
+            div()
+                .absolute()
+                .left(px(left))
+                .right_0()
+                .bottom(px(toolbar::above(self)))
+                .flex()
+                .justify_center()
+                .child(pill)
+        });
         let screen = self
             .screen
             .as_ref()

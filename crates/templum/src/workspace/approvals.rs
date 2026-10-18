@@ -1,6 +1,7 @@
 //! The gate (docs/specs/templum-agent.md#the-gate): the control calls that wait for the person's
 //! click, the grants "Allow for this conversation" gives, and the answers.
 
+use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, Window};
 use serde_json::Value;
 use templum_canvas::BlockId;
@@ -8,7 +9,7 @@ use templum_mcp::control::{self, ControlCall, Level, Parsed};
 use templum_mcp::{Call, Replier, Reply, tools};
 
 use super::bus::clean_title;
-use super::{AgentState, Workspace};
+use super::{AgentState, Workspace, show_notification};
 use crate::chat::{Answer, Approval};
 
 /// A denied call's answer.
@@ -30,6 +31,7 @@ impl Workspace {
         tool: &str,
         parsed: Parsed,
         args: Value,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<(Value, Replier, Parsed, Value)> {
         let target = called_block(&parsed.call).and_then(|uid| self.find_block(uid));
@@ -47,7 +49,7 @@ impl Workspace {
         let level = control::rule(&parsed.call).level(own, losing.is_some());
         let granted = level == Some(Level::Ask) && self.templum_agent.grants.contains(tool);
         // A call on a block that isn't there runs, and says so.
-        let (Some(_), false, Some((space, id))) = (level, granted, target) else {
+        let (Some(level), false, Some((space, id))) = (level, granted, target) else {
             return Some((request, reply, parsed, args));
         };
         let (said, details) = self.approval_words(&parsed.call, (&space, id), losing, cx);
@@ -61,12 +63,56 @@ impl Workspace {
             parsed,
             args,
             tool: tool.to_string(),
+            level,
+            shown: Default::default(),
             said,
             details,
         });
         agent.unread = true;
+        // It takes the keyboard only from the pill or the chat, never from a terminal.
+        let had_keys = self.agent_has_keys(window, cx);
+        self.approval_ui(window, cx);
+        if had_keys {
+            self.focus_approval(window, cx);
+        }
+        self.tell_approval(window, cx);
         cx.notify();
         None
+    }
+
+    /// The person may not see the approval (the window in the background; the pill hidden by the
+    /// workspaces screen, the welcome, its switch or grid mode): a notification says what it
+    /// asks, clicking it opens the chat at it; and the balloon's short sound plays.
+    fn tell_approval(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pill = self.config.templum_agent.pill || self.agent_has_keys(window, cx);
+        let seen = window.is_window_active()
+            && pill
+            && self.screen.is_none()
+            && self.welcome.is_none()
+            && (self.space.grid.is_none() || self.templum_agent.open);
+        if seen {
+            return;
+        }
+        let said = self
+            .templum_agent
+            .approvals
+            .last()
+            .map(|a| a.said.clone())
+            .unwrap_or_default();
+        let ws = cx.entity().downgrade();
+        let notification = Notification::new()
+            .title("Templum Agent")
+            .message(format!("Templum Agent asks: {said}"))
+            .delivery(self.delivery(window))
+            .on_click(move |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    window.activate_window();
+                    ws.review_agent(window, cx)
+                })
+                .ok();
+            });
+        show_notification(window, cx, notification);
+        self.chime(cx);
     }
 
     /// What the approval says of a call, from the call and its target: the action, and exactly

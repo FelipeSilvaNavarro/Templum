@@ -1565,7 +1565,12 @@ fn the_pill_says_what_it_does_what_it_asks_and_that_something_is_new(cx: &mut Te
         window.render_frame(cx);
     })
     .unwrap();
-    assert!(pill_has_keys(handle, &ws, cx));
+    cx.update_window(handle, |_, window, cx| {
+        let ws = ws.read(cx);
+        let focus = ws.templum_agent.approval_focus.as_ref().unwrap();
+        assert!(focus.is_focused(window), "the approval has the keyboard");
+    })
+    .unwrap();
     ws.read_with(cx, |ws, _| {
         assert!(ws.templum_agent.open && !ws.templum_agent.unread)
     });
@@ -1702,4 +1707,117 @@ fn suggestions_fill_the_field(cx: &mut TestAppContext) {
     })
     .unwrap();
     assert_eq!(pill_text(&ws, cx), "Catch me up: what's going on?");
+}
+
+#[gpui_kit::test]
+fn the_popup_answers_with_its_buttons_and_keys(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    let answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("approval-conversation").is_some());
+        window.click("approval-once", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert!(!failed, "{text}");
+    assert!(ws.read_with(cx, |ws, _| ws.space.canvas.get(busy).is_none()));
+    // The pill has the keyboard: the next approval takes it, and its keys wait half a second.
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press(AGENT, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let answers = control_later(handle, &ws, cx, 8, "close_block", json!({"block": uid}));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("3", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(answers.try_recv().is_err(), "too soon after it showed");
+    super::bus::after(cx, 600);
+    cx.update_window(handle, |_, window, cx| {
+        window.press("3", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert!(
+        failed && text.starts_with("The person denied this."),
+        "{text}"
+    );
+}
+
+#[gpui_kit::test]
+fn it_never_takes_a_terminals_keyboard(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(first, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    super::bus::after(cx, 600);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            ws.read(cx).focus_handle.is_focused(window),
+            "the terminal keeps the keyboard"
+        );
+        window.press("1", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        answers.try_recv().is_err(),
+        "a 1 for the shell answers nothing"
+    );
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.templum_agent.approvals.len()),
+        1
+    );
+}
+
+#[gpui_kit::test]
+fn the_words_field_denies_with_them(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    let answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("approval-words", cx);
+        window.render_frame(cx);
+        window.input("not now", cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert!(failed && text.ends_with("They said: not now"), "{text}");
+}
+
+#[gpui_kit::test]
+fn a_background_window_gets_a_notification(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    super::terminals::set_active(handle, true, cx);
+    frame(handle, cx);
+    let before = notification_count(handle, cx);
+    let _seen = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    assert_eq!(notification_count(handle, cx), before, "the pill shows it");
+    super::terminals::set_active(handle, false, cx);
+    let _away = control_later(handle, &ws, cx, 8, "close_block", json!({"block": uid}));
+    assert_eq!(notification_count(handle, cx), before + 1);
+    assert!(
+        ws.read_with(cx, |ws, _| ws.last_chime.is_some()),
+        "and its sound"
+    );
 }

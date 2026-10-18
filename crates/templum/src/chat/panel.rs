@@ -35,6 +35,7 @@ pub(crate) fn render(
     ws: &Workspace,
     (canvas_w, canvas_h): (f32, f32),
     footer: AnyElement,
+    approval: Option<AnyElement>,
     _window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> Option<AnyElement> {
@@ -218,6 +219,8 @@ pub(crate) fn render(
                 )
                 .children(new_below),
         )
+        // An approval is pinned over its field.
+        .children(approval.map(|a| div().flex_none().px(px(8.0)).pt(px(8.0)).child(a)))
         .child(
             div()
                 .flex_none()

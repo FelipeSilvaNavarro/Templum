@@ -4,20 +4,22 @@
 use std::cell::Cell;
 use std::collections::{BTreeSet, VecDeque};
 
-use gpui_kit::component::input::{InputEvent, TextareaState};
+use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Context, Entity, Focusable as _, KeyDownEvent, ScrollHandle, Subscription, Task, Window,
+    Context, Entity, FocusHandle, Focusable as _, KeyDownEvent, ScrollHandle, Subscription, Task,
+    Window,
 };
 use serde_json::Value;
 use templum_agent::{Conversation, Engine};
 use templum_canvas::BlockId;
 use templum_mcp::Replier;
-use templum_mcp::control::Parsed;
+use templum_mcp::control::{Level, Parsed};
 
 use crate::keys::Command;
 use crate::workspace::Workspace;
 
+pub(crate) mod approval;
 pub(crate) mod panel;
 pub(crate) mod pill;
 mod rows;
@@ -61,6 +63,10 @@ pub(crate) struct TemplumAgent {
     /// The rows the chat drew last, and whether some came below the view since.
     pub seen: Cell<usize>,
     pub unseen: Cell<bool>,
+    /// The approval's keyboard, and its field for the person's words, made with the first one.
+    pub approval_focus: Option<FocusHandle>,
+    pub words: Option<Entity<InputState>>,
+    _words: Option<Subscription>,
     /// Whether Claude Code is installed, as the tests say it.
     #[cfg(test)]
     pub installed: Option<bool>,
@@ -95,6 +101,9 @@ impl Default for TemplumAgent {
             scroll: ScrollHandle::new(),
             seen: Cell::new(0),
             unseen: Cell::new(false),
+            approval_focus: None,
+            words: None,
+            _words: None,
             #[cfg(test)]
             installed: None,
             #[cfg(test)]
@@ -117,15 +126,18 @@ pub(crate) struct Approval {
     /// The call's arguments as the engine sent them: its row in the chat.
     pub args: Value,
     pub tool: String,
+    /// Ask, or Ask each time (no "Allow for this conversation").
+    pub level: Level,
+    /// When it first showed at the front, by the executor's clock: keys before KEYS_AFTER are
+    /// ignored.
+    pub shown: Cell<Option<std::time::Instant>>,
     /// The action in one sentence: `Close "Codex · api"`.
     pub said: String,
     /// Exactly what will happen: the text to type, the keys, what stops.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the approval popup shows it"))]
     pub details: String,
 }
 
 /// The person's answer to an approval.
-#[cfg_attr(not(test), expect(dead_code, reason = "the approval popup answers it"))]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Answer {
     Once,
@@ -163,6 +175,7 @@ impl Workspace {
         let input = self.agent_input(window, cx);
         self.templum_agent.back = self.space.focused;
         input.update(cx, |input, cx| input.focus(window, cx));
+        self.focus_approval(window, cx);
         let agent = &mut self.templum_agent;
         if !agent.conversation.rows.is_empty() {
             agent.open = true;
@@ -179,6 +192,7 @@ impl Workspace {
             self.templum_agent.back = self.space.focused;
             input.update(cx, |input, cx| input.focus(window, cx));
         }
+        self.focus_approval(window, cx);
         self.templum_agent.open = true;
         self.templum_agent.unread = false;
         cx.notify();
@@ -200,12 +214,123 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Whether the pill's field has the keyboard.
+    /// Whether the pill's field, or an approval of the Templum Agent, has the keyboard.
     pub(crate) fn agent_has_keys(&self, window: &Window, cx: &gpui_kit::App) -> bool {
-        self.templum_agent
+        let agent = &self.templum_agent;
+        agent
             .input
             .as_ref()
             .is_some_and(|i| i.read(cx).focus_handle(cx).is_focused(window))
+            || agent
+                .approval_focus
+                .as_ref()
+                .is_some_and(|f| f.contains_focused(window, cx))
+    }
+
+    /// The front approval takes the keyboard, when one waits.
+    pub(crate) fn focus_approval(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.templum_agent.approvals.is_empty() {
+            return;
+        }
+        let focus = self.approval_ui(window, cx);
+        window.focus(&focus, cx);
+    }
+
+    /// The approval's focus and its field, made the first time one shows.
+    pub(crate) fn approval_ui(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> FocusHandle {
+        if let Some(focus) = &self.templum_agent.approval_focus {
+            return focus.clone();
+        }
+        let focus = cx.focus_handle();
+        let words =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Or tell it what to do instead"));
+        let enter = cx.subscribe_in(
+            &words,
+            window,
+            |ws, words, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    let text = words.read(cx).value().to_string();
+                    words.update(cx, |w, cx| w.set_value("", window, cx));
+                    if let Some(id) = ws.templum_agent.approvals.first().map(|a| a.id) {
+                        ws.answer_approval(id, Answer::Deny(Some(text)), window, cx);
+                        ws.after_approval(window, cx);
+                    }
+                }
+            },
+        );
+        let agent = &mut self.templum_agent;
+        agent.approval_focus = Some(focus.clone());
+        agent.words = Some(words);
+        agent._words = Some(enter);
+        focus
+    }
+
+    /// An approval was answered from its popup: the next one keeps the keyboard, else the pill
+    /// has it again.
+    pub(crate) fn after_approval(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.templum_agent.approvals.is_empty() {
+            self.focus_approval(window, cx);
+        } else if let Some(input) = self.templum_agent.input.clone() {
+            input.update(cx, |input, cx| input.focus(window, cx));
+        }
+    }
+
+    /// A button of the popup: the front approval answered.
+    pub(crate) fn answer_front(
+        &mut self,
+        answer: Answer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(id) = self.templum_agent.approvals.first().map(|a| a.id) {
+            self.answer_approval(id, answer, window, cx);
+            self.after_approval(window, cx);
+        }
+    }
+
+    /// Keys while the approval itself has the keyboard: `1` Allow once, `2` Allow for this
+    /// conversation (not for one that asks each time), `3` or Esc Deny; none within KEYS_AFTER
+    /// of it showing, as the balloon's. Templum's shortcuts run.
+    pub(crate) fn on_approval_key(
+        &mut self,
+        e: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focused = self
+            .templum_agent
+            .approval_focus
+            .as_ref()
+            .is_some_and(|f| f.is_focused(window));
+        let Some(front) = self.templum_agent.approvals.first() else {
+            return;
+        };
+        let k = &e.keystroke;
+        if !focused || k.modifiers.modified() {
+            return;
+        }
+        let now = cx.background_executor().now();
+        let early = front
+            .shown
+            .get()
+            .is_none_or(|at| now.duration_since(at) < approval::KEYS_AFTER);
+        let answer = match k.key.as_str() {
+            "1" => Some(Answer::Once),
+            "2" if front.level == Level::Ask => Some(Answer::Conversation),
+            "3" | "escape" => Some(Answer::Deny(None)),
+            _ => None,
+        };
+        let Some(answer) = answer else {
+            return;
+        };
+        cx.stop_propagation();
+        if !early {
+            self.answer_front(answer, window, cx);
+        }
     }
 
     /// The pill's field: 1 to 8 lines, Enter sends, Shift+Enter is a new line.

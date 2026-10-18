@@ -65,7 +65,7 @@ impl Workspace {
                         Ok(parsed) => {
                             let args = arguments.clone();
                             if let Some((id, reply, parsed, args)) =
-                                self.gate(conn, id, reply, name, parsed, args, cx)
+                                self.gate(conn, id, reply, name, parsed, args, window, cx)
                             {
                                 self.run_control(id, reply, name, parsed, &args, window, cx);
                             }
