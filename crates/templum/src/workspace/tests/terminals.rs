@@ -220,6 +220,25 @@ fn tab_reaches_the_shell(cx: &mut TestAppContext) {
     );
 }
 
+/// Letters the keyboard types count as the person's input, as a key does: a shell that ends after
+/// them was ended, it didn't fail to start (`Pane::died_starting`).
+#[gpui_kit::test]
+fn typed_letters_count_as_input(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let had_input = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().term.had_input())
+    };
+    assert!(!had_input(cx));
+    cx.simulate_input(handle, "x");
+    assert!(had_input(cx));
+}
+
 #[gpui_kit::test]
 fn focus_does_not_shift_the_terminal(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);

@@ -42,8 +42,8 @@ one exception: it needs the agent's own flag ([Every agent](#every-agent)).
    `spawn_agent(role: "reviewer", prompt: …)`.
 7. `propose_plan` shows a long Markdown plan in the balloon with Approve, Reject and a comment, and returns the
    person's decision.
-8. `schedule` hands a text to a wired agent, types it into a terminal, or reminds the caller, at a time or every few
-   minutes, until it is cancelled; the person sees the caller's schedules on its block and can cancel them.
+8. `schedule` hands a text to a wired agent or reminds the caller, at a time or every few minutes, until it is
+   cancelled; the person sees the caller's schedules on its block and can cancel them.
 9. `remove_worktree` removes a worktree Templum made (asking the person when it would lose work), and
    `merge_worktree` merges its branch back after the person allows it.
 10. Every check of [Testing](#testing) passes on the three OS; the batches that paint or touch `templum-terminal`
@@ -344,26 +344,20 @@ conversation.
 
 *Batch 4.* Claude Code's ScheduleWakeup and CronCreate: Templum already types into agents; this adds the clock.
 
-- **`schedule` arguments:** `block` (a wired block, or the caller's own), `text` (not blank), and when: `at` (`HH:MM`,
-  24-hour, the computer's local time: the next time the clock shows it, today or tomorrow), `after` (minutes, 1 to
-  10080), `every` (minutes, 1 to 10080). One of `at` and `after`, or `every` alone, which first comes `every` minutes
-  from now; `every` with `at` or `after` repeats from that first time. Neither is refused ("schedule needs at, after
-  or every"), and so are `at` with `after`.
+- **`schedule` arguments:** `block` (a wired block running an agent, or the caller's own), `text` (not blank), and when:
+  `at` (`HH:MM`, 24-hour, the computer's local time: the next time the clock shows it, today or tomorrow), `after`
+  (minutes, 1 to 10080), `every` (minutes, 1 to 10080). One of `at` and `after`, or `every` alone, which first comes
+  `every` minutes from now; `every` with `at` or `after` repeats from that first time. Neither is refused ("schedule
+  needs at, after or every"), and so are `at` with `after`. A wired block running no agent is refused: "k9x1d runs no
+  agent: schedules go to agents. To run a command, open a terminal with create_block's command." Templum already knows
+  when an agent takes a task; a shell never says when a line typed into it would run as the person meant.
 - **When it comes** Templum delivers `text`, from the caller, as if the caller sent it then:
-  - to an agent: a new task, as `delegate` without `wait` types one (its first line
-    `[from Claude Code · api (b7k2m), task t9, scheduled s3]`), whose end comes back to the caller typed. A schedule
-    never changes a task: an agent still on a task, the caller's included (one an earlier time of this schedule
-    handed), doesn't take it: "k9x1d is on a task (t7): a schedule hands a task only to an agent that has none.";
-  - to a terminal running no agent: typed with Enter, as `send_to_terminal` with `enter`, only while its shell waits at
-    an empty prompt: shell integration drew a prompt since anyone (the person with any key, an agent) last typed
-    there, no command started since, and its shell leads the foreground (on Windows, which can't tell who is in front:
-    nothing runs below it, as `ssh`, whose remote shell may draw prompts of its own). Else (vim, `ssh`, a password's
-    prompt in front, a line half typed, no shell integration, as cmd.exe) "k9x1d's shell isn't waiting at an empty
-    prompt: a schedule types into a terminal only then.". A line typed and then erased (Backspace, Tab, the history)
-    still counts until the shell prompts again, after Enter or Ctrl+C: Templum can't see what the line holds, and a
-    schedule that waits is safer than one typed after the person's letters. Never when an agent ran there as it was
-    set, or Templum started one there, whose quitting would leave the text to run as a command (refused: "k9x1d runs
-    no agent now: a schedule for an agent never types into its shell.");
+  - to an agent: a new task, as `delegate` without `wait` types one (its first line `[from Claude Code · api (b7k2m),
+    task t9, scheduled s3]`), whose end comes back to the caller typed. A schedule never changes a task: an agent still
+    on a task, the caller's included (one an earlier time of this schedule handed), doesn't take it: "k9x1d is on a task
+    (t7): a schedule hands a task only to an agent that has none." Nor the shell its agent left (a snapshot finds none
+    there, or its shell is in front), where the text would run as a command: "k9x1d runs no agent now: a schedule for an
+    agent never types into its shell.";
   - to the caller's own block: a notice, `[scheduled s3] Its text is in the pasted text.` and the text, typed once the
     caller takes typing ([connections.md](connections.md#delegating) 10).
   It goes through the same checks as the tool it stands for, at that moment: a block no longer wired, an agent waiting
@@ -452,7 +446,7 @@ the blocks wired to it; what a block opened on its own the caller may close; wha
 | `replace_note`, `edit_item`, `delete_item` | a wired note or checklist | no: one Ctrl+Z step |
 | `spawn_agent` with `fork` or `role` | a new block, as `spawn_agent` | no |
 | `propose_plan` | the caller's own balloon | it is the person's answer |
-| `schedule` | a wired block or its own, checked again when it goes | no: shown on its block, cancelled from its menu |
+| `schedule` | a wired block running an agent, or its own; checked again when it goes | no: shown on its block, cancelled from its menu |
 | `cancel_schedule` | the caller's own schedules | no |
 | `remove_worktree` | a worktree no block works in | only with `discard` |
 | `merge_worktree` | the same | always |
@@ -593,10 +587,10 @@ command; `replace_note` (whole, a passage, not found, twice) and Ctrl+Z; `edit_i
 types Claude Code's and Codex's fork command with the snapshot's session, refuses without one, without a prompt and
 for another agent; a role types
 its model, effort and words, its instructions with the prompt, and again on restore without the instructions;
-`propose_plan`'s Approve, Reject with a comment, keys, a cancel typed back; a schedule goes at its time to an agent, a
-terminal and the caller, a refusal comes back (an agent on a task included), `every` repeats and ends after 7 days, a
-time missed while asleep goes once, a cancel, the clock on the block
-and its menu; `remove_worktree` and `merge_worktree` with the balloon's buttons, their refusals, a conflict aborted.
+`propose_plan`'s Approve, Reject with a comment, keys, a cancel typed back; a schedule goes at its time to an agent and
+the caller, one to a terminal running no agent is refused, a refusal comes back (an agent on a task included),
+`every` repeats and ends after 7 days, a time missed while asleep goes once, a cancel, the clock on the block and its
+menu; `remove_worktree` and `merge_worktree` with the balloon's buttons, their refusals, a conflict aborted.
 
 **By hand:** Claude Code stopping a spawned Codex that left `sleep 60 && touch ~/x &` running (no `~/x`); a dev server
 from `create_block` and a `wait_for` on "ready"; Claude Code forking itself, the fork knowing the conversation; a
@@ -635,6 +629,7 @@ work), each in [the plan](../plans/2026-10-18-agent-tools.md):
 | Claude Code can't find a session from another folder | Checked by hand first; refused there if so |
 | A role's `args` break the agent's command line | They are the person's words, typed as an `[agents]` command is; the agent says what is wrong in its block |
 | A schedule types into an agent at a bad moment | The same checks as `delegate` at that moment; a refusal comes back to its caller; never into a dialog |
+| A schedule's text runs as a command in a shell, at a moment nobody chose | Schedules go only to agents: one to a terminal running none is refused when it is set, and one whose agent left is refused when it comes, never typed into the shell |
 | Schedules pile up unseen | The clock on the caller's block, its menu, `whoami`; 7 days at most; none survive a restart |
 | A merge into the person's branch | Asked every time in the balloon; refused while the worktree, or the working tree it merges into, has uncommitted changes; a conflict is aborted, never left half done |
 | Card 43 and card 35 change the same code at once | [Shared operations](#shared-operations) names who adds what; tasks look on `development` first and favor `ops.rs` |
@@ -664,8 +659,9 @@ The person was away and asked for the recommended option each time; each can be 
   prompt. The call's own agent, model and effort win.
 - **`propose_plan` is `ask_user`'s dialog** with a Markdown body, Approve and Reject; Reject is an error result, so a
   script's `templum plan … &&` stops.
-- **Schedules:** `at` (`HH:MM`), `after` and `every` in minutes, no cron; delivered as the tool they stand for would at
-  that moment; 7 days at most; not saved; the person sees and cancels them on the caller's block.
+- **Schedules:** `at` (`HH:MM`), `after` and `every` in minutes, no cron; only to agents and the caller, delivered as
+  the tool they stand for would at that moment; 7 days at most; not saved; the person sees and cancels them on the
+  caller's block.
 - **Worktrees:** removing a clean, merged worktree runs at once; discarding work and merging ask the person every
   time; a merge goes into the branch of the caller's folder (or `folder`'s), never over changes not committed there,
   and a conflict is aborted.

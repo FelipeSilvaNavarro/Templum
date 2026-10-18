@@ -21,13 +21,11 @@ const LASTS: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const TEXT_CHARS: usize = 60;
 
 /// A text the terminal `by` asked to have delivered to the block `to` (its block id: the asker's
-/// own, or one wired to it) at `next`, and again every `every` until `until`. `agent`: `to` ran an
-/// agent when it was set, so its text never goes to a shell there.
+/// own, or one wired to it running an agent) at `next`, and again every `every` until `until`.
 pub(crate) struct Schedule {
     pub id: u64,
     pub by: String,
     pub to: String,
-    pub agent: bool,
     pub text: String,
     pub next: SystemTime,
     pub every: Option<Duration>,
@@ -83,7 +81,7 @@ pub(crate) struct Watch {
 
 impl Workspace {
     /// `schedule` from the terminal `from`: `text` to the block `block` (its own, or one wired to
-    /// it) at its time, and every `every` minutes after.
+    /// it running an agent) at its time, and every `every` minutes after.
     pub(super) fn schedule(
         &mut self,
         from: &str,
@@ -99,14 +97,19 @@ impl Workspace {
             Ok(to) => to,
             Err(refused) => return refused,
         };
-        if to != me && space.terminal(to).is_none() {
-            return Reply::err(format!("{block} isn't a terminal."));
+        if to != me {
+            let Some(pane) = space.terminal(to) else {
+                return Reply::err(format!("{block} isn't a terminal."));
+            };
+            // Also one Templum started there that no snapshot found yet (`spawn_agent` a moment
+            // ago, its shell still in front), and one that quit the last snapshot still has.
+            if pane.agent().is_none() {
+                return Reply::err(format!(
+                    "{block} runs no agent: schedules go to agents. To run a command, open a \
+                     terminal with create_block's command."
+                ));
+            }
         }
-        // Also one Templum started there that no snapshot found yet (`spawn_agent` a moment ago,
-        // its shell still in front), and one that quit the last snapshot still has.
-        let agent = space
-            .terminal(to)
-            .is_some_and(|pane| pane.agent().is_some());
         let now = SystemTime::now();
         let every = every.map(|m| Duration::from_secs(m * 60));
         let next = match when {
@@ -120,7 +123,6 @@ impl Workspace {
                 id: 0,
                 by: from.to_string(),
                 to: block.to_string(),
-                agent: to != me && agent,
                 text: text.to_string(),
                 next,
                 every,
@@ -285,12 +287,11 @@ impl Workspace {
     }
 
     /// Schedule `id` goes now, as the tool it stands for would from its asker: a notice to the
-    /// asker's own block, a task to an agent that has none, the text and Enter to a terminal
-    /// running no agent whose shell waits at an empty prompt. Err: why not, and whether its block
+    /// asker's own block, a task to an agent that has none. Err: why not, and whether its block
     /// was closed (which ends it).
     fn deliver(&mut self, id: u64, cx: &mut Context<Self>) -> Result<(), (String, bool)> {
         let s = self.schedules.iter().find(|s| s.id == id).expect("due");
-        let (by, uid, text, agent) = (s.by.clone(), s.to.clone(), s.text.clone(), s.agent);
+        let (by, uid, text) = (s.by.clone(), s.to.clone(), s.text.clone());
         let (space_id, me) = self
             .caller(&by)
             .ok_or_else(|| ("Your block was closed.".to_string(), true))?;
@@ -304,37 +305,14 @@ impl Workspace {
         let pane = space
             .terminal(to)
             .ok_or_else(|| (format!("{uid} isn't a terminal."), false))?;
+        // Its agent quit: the text would run as a command.
         if pane.seen.agent.is_none() || pane.shell_in_front() {
-            // Its agent quit: the text would run as a command.
-            if agent {
-                return Err((
-                    format!(
-                        "{uid} runs no agent now: a schedule for an agent never types into its \
-                         shell."
-                    ),
-                    false,
-                ));
-            }
-            // Else it would go to what runs there (vim, ssh, a password's prompt), or after a line
-            // half typed: also one whose keys the person pressed since the prompt, whatever of
-            // them reached the shell yet (a dead key, an IME composing).
-            let prompted = pane.term.status().prompted;
-            let keyed = pane
-                .keyed
-                .get()
-                .is_some_and(|at| prompted.is_none_or(|p| at > p));
-            if keyed || !pane.term.at_empty_prompt() {
-                return Err((
-                    format!(
-                        "{uid}'s shell isn't waiting at an empty prompt: a schedule types into a \
-                         terminal only then."
-                    ),
-                    false,
-                ));
-            }
-            let terminal = pane.term.id().to_string();
-            self.type_then_enter(terminal, &text, cx).detach();
-            return Ok(());
+            return Err((
+                format!(
+                    "{uid} runs no agent now: a schedule for an agent never types into its shell."
+                ),
+                false,
+            ));
         }
         // A schedule never changes a task: one still under way, the asker's included.
         if let Some(handed) = &pane.handed {

@@ -47,14 +47,6 @@ fn wired_plain(
     .unwrap()
 }
 
-/// A shell of its own with shell integration (`A` before each prompt, `C` and `D` around each
-/// command), which prints each line it reads back.
-fn prompting() -> (String, Vec<String>) {
-    let script = "while printf '\\033]133;A\\007$ '; IFS= read -r l; do \
-                  printf '\\033]133;C\\007%s\\n\\033]133;D;0\\007' \"$l\"; done";
-    ("sh".into(), vec!["-c".into(), script.into()])
-}
-
 fn notices(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Vec<String> {
     ws.read_with(cx, |ws, _| {
         ws.notices.iter().map(|n| n.text.clone()).collect()
@@ -73,7 +65,7 @@ fn agent_without_notices(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: Bl
 }
 
 #[gpui_kit::test]
-fn a_schedule_goes_at_its_time_to_the_caller_and_a_terminal(cx: &mut TestAppContext) {
+fn a_schedule_goes_at_its_time_to_the_caller_never_to_a_plain_terminal(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
     let (terminal, uid) = me(&ws, cx, mine);
     agent_without_notices(&ws, cx, mine);
@@ -100,36 +92,39 @@ fn a_schedule_goes_at_its_time_to_the_caller_and_a_terminal(cx: &mut TestAppCont
         ["[scheduled s1] Its text is in the pasted text.\ncheck the build"]
     );
     assert_eq!(ids(&ws, cx), Vec::<u64>::new(), "a one-time schedule ends");
-    // A wired terminal running no agent, at its prompt, every minute: typed with Enter each time.
-    ws.update(cx, |ws, _| ws.command = Some(prompting()));
+    // A wired terminal running no agent: refused, a command typed there could run at any moment.
     let plain = wired_plain(handle, &ws, cx, mine);
     let (_, them) = me(&ws, cx, plain);
+    let once = json!({ "block": them, "text": "echo tick", "after": 1 });
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "schedule", once),
+        (
+            true,
+            format!(
+                "{them} runs no agent: schedules go to agents. To run a command, open a terminal \
+                 with create_block's command."
+            )
+        )
+    );
+    assert_eq!(ids(&ws, cx), Vec::<u64>::new());
+    // Every minute: delivered each time.
     let (failed, text) = call(
         handle,
         &ws,
         cx,
         &terminal,
         "schedule",
-        json!({ "block": them, "text": "echo tick", "every": 1 }),
+        json!({ "block": uid, "text": "tick", "every": 1 }),
     );
     assert!(!failed, "{text}");
     assert!(
-        text.starts_with(&format!(
-            "Scheduled s2: to {them} in 1 minute, then every 1 minute until "
-        )),
+        text.starts_with("Scheduled s2: to you in 1 minute, then every 1 minute until "),
         "{text}"
     );
-    for times in [2, 4] {
+    for times in [1, 2] {
         due_now(&ws, cx, 2);
         look(cx);
-        after(
-            cx,
-            crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
-        );
-        // The terminal echoes it, and the shell prints it back once Enter came.
-        screen_until(&ws, cx, plain, |shown| {
-            shown.matches("echo tick").count() >= times
-        });
+        assert_eq!(notices(&ws, cx).len(), 1 + times);
     }
     assert_eq!(ids(&ws, cx), [2], "a repeating schedule stays");
     assert_eq!(
@@ -163,6 +158,9 @@ fn a_schedule_that_cant_go_says_so_and_a_closed_caller_ends_its_schedules(cx: &m
     agent_without_notices(&ws, cx, mine);
     let other = wired_plain(handle, &ws, cx, mine);
     let (worker, them) = me(&ws, cx, other);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(other).unwrap().seen.agent = Some("codex".into())
+    });
     let every = json!({ "block": them, "text": "go on", "every": 1 });
     assert!(!call(handle, &ws, cx, &terminal, "schedule", every.clone()).0);
     // Unwired: refused at its time, and the caller hears so; it tries again at its next.
@@ -278,8 +276,11 @@ fn clock(handle: AnyWindowHandle, cx: &mut TestAppContext, id: BlockId) -> bool 
 fn the_callers_block_shows_its_schedules_and_its_menu_cancels_them(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
     let (terminal, uid) = me(&ws, cx, mine);
-    let plain = wired_plain(handle, &ws, cx, mine);
-    let (_, them) = me(&ws, cx, plain);
+    let other = wired_plain(handle, &ws, cx, mine);
+    let (_, them) = me(&ws, cx, other);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(other).unwrap().seen.agent = Some("codex".into())
+    });
     assert!(!clock(handle, cx, mine), "none yet");
     for args in [
         json!({ "block": them, "text": "go", "every": 10 }),
@@ -288,7 +289,7 @@ fn the_callers_block_shows_its_schedules_and_its_menu_cancels_them(cx: &mut Test
         assert!(!call(handle, &ws, cx, &terminal, "schedule", args).0);
     }
     assert!(clock(handle, cx, mine));
-    assert!(!clock(handle, cx, plain), "only on the asker's block");
+    assert!(!clock(handle, cx, other), "only on the asker's block");
     // Copy, Paste, —, Fullscreen, Disconnect from ▸, Cancel schedules ▸ (s1, s2, All).
     pick(handle, cx, mine, 5, 0);
     assert_eq!(ids(&ws, cx), [2]);
@@ -469,92 +470,4 @@ fn a_schedule_set_right_after_spawn_agent_never_types_into_its_shell(cx: &mut Te
     std::thread::sleep(Duration::from_millis(300));
     let shown = ws.read_with(cx, |ws, _| ws.space.terminal(other).unwrap().screen());
     assert!(!shown.contains("ran-in-the-shell"), "{shown}");
-}
-
-/// A schedule types into a terminal running no agent only while its shell waits at an empty
-/// prompt: not into a program in front of it (vim, ssh, a password's prompt), nor after a line the
-/// person half typed, nor after a key of theirs whose text hasn't reached the shell yet.
-#[gpui_kit::test]
-fn a_schedule_types_into_a_terminal_only_at_its_empty_prompt(cx: &mut TestAppContext) {
-    let (handle, ws, mine) = spawner(cx);
-    let (terminal, _) = me(&ws, cx, mine);
-    agent_without_notices(&ws, cx, mine);
-    // `cat` in front of its shell, as a program the person runs there.
-    let busy = wired_plain(handle, &ws, cx, mine);
-    let (_, them) = me(&ws, cx, busy);
-    in_front(&ws, cx, busy, true);
-    let once = json!({ "block": them, "text": "echo ran-in-a-program", "after": 1 });
-    assert!(!call(handle, &ws, cx, &terminal, "schedule", once).0);
-    due_now(&ws, cx, 1);
-    look(cx);
-    let refused = |uid: &str| {
-        format!(
-            "{uid}'s shell isn't waiting at an empty prompt: a schedule types into a terminal only \
-             then."
-        )
-    };
-    assert_eq!(
-        notices(&ws, cx),
-        [format!(
-            "[schedule s1 to {them} didn't go: {}]",
-            refused(&them)
-        )]
-    );
-    // A shell at its prompt, a line half typed there with the keyboard.
-    ws.update(cx, |ws, _| {
-        ws.command = Some(prompting());
-        ws.notices.clear();
-    });
-    let shell = wired_plain(handle, &ws, cx, mine);
-    let (_, theirs) = me(&ws, cx, shell);
-    screen_until(&ws, cx, shell, |shown| shown.contains('$'));
-    cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.focus_block(shell, window, cx));
-        window.render_frame(cx);
-    })
-    .unwrap();
-    cx.simulate_input(handle, "rm -rf build/");
-    screen_until(&ws, cx, shell, |shown| shown.contains("$ rm -rf build/"));
-    let once = json!({ "block": theirs, "text": "echo after-half-a-line", "after": 1 });
-    assert!(!call(handle, &ws, cx, &terminal, "schedule", once).0);
-    due_now(&ws, cx, 2);
-    look(cx);
-    assert_eq!(
-        notices(&ws, cx),
-        [format!(
-            "[schedule s2 to {theirs} didn't go: {}]",
-            refused(&theirs)
-        )]
-    );
-    // Enter sends the line, and the shell prompts again; then the person presses a key whose text
-    // the platform hasn't handed over yet (a dead key, an IME composing).
-    ws.update(cx, |ws, _| ws.notices.clear());
-    cx.update_window(handle, |_, window, cx| window.press("enter", cx))
-        .unwrap();
-    screen_until(&ws, cx, shell, |shown| shown.matches('$').count() >= 2);
-    ws.read_with(cx, |ws, _| ws.space.terminal(shell).unwrap().person_typed());
-    let once = json!({ "block": theirs, "text": "echo after-a-dead-key", "after": 1 });
-    assert!(!call(handle, &ws, cx, &terminal, "schedule", once).0);
-    due_now(&ws, cx, 3);
-    look(cx);
-    assert_eq!(
-        notices(&ws, cx),
-        [format!(
-            "[schedule s3 to {theirs} didn't go: {}]",
-            refused(&theirs)
-        )]
-    );
-    after(
-        cx,
-        crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
-    );
-    std::thread::sleep(Duration::from_millis(300));
-    for (id, text) in [
-        (busy, "ran-in-a-program"),
-        (shell, "after-half-a-line"),
-        (shell, "after-a-dead-key"),
-    ] {
-        let shown = ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().screen());
-        assert!(!shown.contains(text), "{shown}");
-    }
 }

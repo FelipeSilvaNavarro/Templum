@@ -503,8 +503,8 @@ pub fn list() -> Value {
     let schedule = json!({
         "name": "schedule",
         "description": "Delivers a text later: to an agent connected to you as a task (its end comes back to \
-                        you), typed with Enter into a terminal running no agent, or to yourself (your own \
-                        block) as a reminder typed into your terminal. at (HH:MM, the computer's local time, \
+                        you), or to yourself (your own block) as a reminder typed into your terminal; never to \
+                        a terminal running no agent. at (HH:MM, the computer's local time, \
                         the next time the clock shows it), after (minutes), or every (minutes, again until \
                         cancelled, at most 7 days). Says its id; the person sees your schedules on your block.",
         "inputSchema": {

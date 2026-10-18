@@ -1314,13 +1314,6 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   remove` goes, then `git branch -d` refuses ("not fully merged"), and the agent hears "Couldn't remove x: …" while
   the worktree is gone and only its branch stays. Fix: when the branch alone stays, answer "Removed the worktree x;
   its branch stays: <git's line>".
-- [ ] **A schedule to a block whose agent, spawned without a prompt, never started is refused for good.** Left by
-  the second review of card 35's fixes (`Workspace::see`, `crates/templum/src/workspace/mod.rs`, and `schedule` in
-  `schedules.rs`): `flags_for` goes once a snapshot finds that agent leave, or another one, or once a prompt waited
-  `STARTS_WITHIN` for it; a `spawn_agent` without a prompt whose agent never started (command not found, quit before a
-  snapshot) keeps it, so each schedule set to that block is taken for one to an agent and refused ("k9x1d runs no
-  agent now: …") though its shell waits at a prompt. Fix: keep when the spawn happened on the `Pane`, and drop
-  `flags_for` (with the model and the effort) once no snapshot found its agent `STARTS_WITHIN` after it.
 - [ ] **Pi and Grok Build can't be forked.** Left by card 35 (`fork_id` in `crates/templum-terminal/src/agent.rs`):
   `spawn_agent` with `fork` from one of them says it can't, though `pi --fork <id>` and `grok --resume <id>
   --fork-session` exist, since Templum couldn't find the fork's own session to resume it after a restart. Fix: give a

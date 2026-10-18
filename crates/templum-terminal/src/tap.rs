@@ -34,9 +34,6 @@ pub struct Status {
     /// When it last printed: stamped before each read's sequences, so a command's own output
     /// comes after its `running`.
     pub output: Option<Instant>,
-    /// When its last prompt started (OSC 133;A): with shell integration, its shell waits there
-    /// until a command starts (`running`).
-    pub prompted: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -297,7 +294,6 @@ impl Scanner {
                 // A prompt starts: its cells, and the command typed after it, get its mark.
                 Some(b'A') if self.prompt.is_some() && self.same_line => {}
                 Some(b'A') => {
-                    shared.status.lock().unwrap().prompted = Some(Instant::now());
                     self.same_line = true;
                     let id = self.next;
                     self.next = self.next.wrapping_add(1);

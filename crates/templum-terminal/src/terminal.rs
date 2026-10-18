@@ -822,8 +822,8 @@ pub struct Terminal {
     /// Unique among the terminals of every Templum running; its programs see it as
     /// `TEMPLUM_TERMINAL`.
     id: String,
-    /// When someone last typed into it ([`Terminal::had_input`]).
-    input: Mutex<Option<Instant>>,
+    /// Someone typed into it ([`Terminal::had_input`]).
+    input: AtomicBool,
 }
 
 impl Terminal {
@@ -919,7 +919,7 @@ impl Terminal {
             rows: opts.rows,
             shell_name,
             id,
-            input: Mutex::new(None),
+            input: AtomicBool::new(false),
         })
     }
 
@@ -1088,7 +1088,7 @@ impl Terminal {
     /// Once the shell ended, input reaches nothing and ends nothing: it doesn't count.
     fn input(&self, bytes: impl Into<Cow<'static, [u8]>>) {
         if !self.exited() {
-            *self.input.lock().unwrap() = Some(Instant::now());
+            self.input.store(true, Ordering::Relaxed);
         }
         self.write(bytes);
     }
@@ -1097,28 +1097,7 @@ impl Terminal {
     /// (`key`, `press`, `text`, `paste`, `type_in`): a shell that ends then was ended, it didn't
     /// fail to start. What the app itself writes (`write`) doesn't count.
     pub fn had_input(&self) -> bool {
-        self.input.lock().unwrap().is_some()
-    }
-
-    /// Its shell waits at an empty prompt, where a command typed runs: shell integration drew a
-    /// prompt since anyone last typed into it, and no command started since; its shell also
-    /// leads the foreground (bash before 4.4 doesn't say when a command starts), on Windows,
-    /// which can't tell who is in front, nothing runs below it (`ssh`'s remote shell draws
-    /// prompts of its own). False without shell integration.
-    pub fn at_empty_prompt(&self) -> bool {
-        let typed = *self.input.lock().unwrap();
-        let status = self.status();
-        let prompted = status
-            .prompted
-            .is_some_and(|at| typed.is_none_or(|typed| typed < at));
-        prompted && status.running.is_none() && {
-            let shells = self.shells();
-            if cfg!(windows) {
-                !shells.is_empty() && self.program(&shells, None).is_none()
-            } else {
-                self.foreground().is_some_and(|f| shells.contains(&f))
-            }
-        }
+        self.input.load(Ordering::Relaxed)
     }
 
     /// Sends a key press. Returns false for printable text, which must come through the
