@@ -735,7 +735,7 @@ shells' functions). Nothing is written outside Templum's data folder, as for Cla
 | Agent | Templum's server | Hooks (the status dot, a task's end) | Typed by hand | Checked |
 |---|---|---|---|---|
 | GitHub Copilot CLI | `--additional-mcp-config=@<data>/copilot/mcp.json` | a plugin, `--plugin-dir=<data>/copilot/plugin` | `copilot` | 1.0.95's `--help`, its SDK's types, a run by hand with a sign-in (its hooks) |
-| OpenCode | `OPENCODE_CONFIG_CONTENT`, merged with the person's config | a JS plugin named in the same variable | `opencode` | 1.19.0, `opencode serve` with a probe plugin; the TUI by hand in the plan |
+| OpenCode | `OPENCODE_CONFIG_CONTENT`, merged with the person's config | a JS plugin named in the same variable | `opencode` | 1.19.0, `opencode serve` with a probe plugin, `opencode run` with Templum's plugin by hand; not its TUI |
 | Kilo Code | `KILO_CONFIG_CONTENT` (an OpenCode fork) | the same plugin | `kilo` | from its source (7.8.x); not installed here |
 | Qwen Code | `--mcp-config=<data>/qwen/mcp.json` | its system settings file moved to `<data>/qwen/settings.json` (`QWEN_CODE_SYSTEM_SETTINGS_PATH`) | `qwen` | from its docs and source (0.25.2); not installed here |
 | Pi | an extension, `-e <data>/pi/templum.ts`, that registers the server when Pi has MCP (0.99 and later) | the same extension's events | `pi` | 0.85.1 (no MCP: its events only); the server from 1.3.0's docs |
@@ -837,22 +837,31 @@ under `opencode serve`; Kilo Code from its source):
 - **The blocks Templum opens** for one of them (the menu, `spawn_agent`, a restore) get the variable in their shell's
   environment; Templum types the command alone. A person's own `OPENCODE_CONFIG_CONTENT` (in Templum's environment)
   wins: Templum then adds nothing.
-- **The plugin**, `<data>/opencode/templum.js`, plain JavaScript (no `package.json`, no install), hands each event
-  as one JSON line to `<data>/bin/templum hook opencode` and waits for it (`spawnSync`, so events stay in order; the hook
-  exits within a second when Templum is gone). It reports only the main session: a subagent's session (one with a
-  `parentID`) is never this block's turn. It sets `TEMPLUM_HOOKED` to its process id when it is empty, and says
+- **The plugin**, `<data>/opencode/templum.js` (`templum_usage::opencode`, written when an agent or a terminal opens),
+  plain JavaScript (no `package.json`, no install), hands each event of the table below as one JSON line to
+  `<data>/bin/templum hook opencode` and waits for it (`spawnSync` with a 3-second limit, so events stay in order; the
+  hook exits within a second when Templum is gone, and a missing program throws nothing). Only those events: OpenCode
+  streams many more (`message.part.updated` at each piece of text), each of which would start a process. It reports
+  only the main session: a subagent's session (one with a `parentID`) is never this block's turn. It sets `TEMPLUM_HOOKED` to its process id when it is empty, and says
   nothing when it finds another process's: an `opencode run` an OpenCode in Templum starts from its shell tool
   inherits the variable, and must not speak for the block. Every Templum terminal gets an empty `TEMPLUM_HOOKED`.
 
 | What the plugin hears | Event |
 |---|---|
 | its `chat.message` hook (a prompt taken) | took a prompt: working (`at_enter` false) |
-| `session.status` `busy` | working |
-| `session.idle` | done, with the session's last assistant text, which the plugin reads with `client.session.messages` |
+| `session.status` `busy` | working (it comes again at each step of a turn) |
+| `session.idle` | done, with the session's last assistant text, which the plugin reads with `client.session.messages` (its answer's `data`) |
 | `session.error` | done, without an answer |
 | `permission.asked` | waiting for the person: "Allow *permission*?" |
 | `question.asked` | waiting for the person, with its question |
 | `permission.replied`, `question.replied`, `question.rejected` | working |
+
+Checked by hand on 2026-10-18 with OpenCode 1.19.0 (`opencode run` on a free model, the plugin with a fake
+`templum`): `chat.message` once per prompt, then `session.status` busy at each step, idle, and `session.idle` with
+the answer; a subagent's session (the task tool) said nothing; the agent's shell tool saw `TEMPLUM_HOOKED` set to
+OpenCode's process id, so an `opencode run` it starts stays quiet; a plugin path with a space, `%20` in its URL,
+loads; `opencode mcp list` showed `templum` connected beside the person's own servers. Not checked by hand: its
+permission and question dialogs, Esc, and the TUI ([minors](../minors.md#connections)); Kilo Code (not installed).
 
 Ended: the snapshot (it has no event for quitting), as Codex's. **Its session:** `-s` takes only an existing id, and a
 new one's can't be chosen, so OpenCode and Kilo Code keep coming back on the folder's latest (`--continue`).

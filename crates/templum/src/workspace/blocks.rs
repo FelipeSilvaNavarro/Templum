@@ -330,7 +330,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
-        let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx)?;
+        let vars = self.agent_vars(entry, &super::usage::in_env);
+        let id = self.spawn_block_with(rect, Some(folder.to_path_buf()), vars, window, cx)?;
         let command = entry.map_or_else(
             || command.to_string(),
             |a| a.start_command(&uuid::Uuid::new_v4().to_string()),
@@ -398,6 +399,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
+        self.spawn_block_with(rect, folder, Vec::new(), window, cx)
+    }
+
+    /// `spawn_block`, with `vars` in its shell's environment (`agent_vars`).
+    pub(super) fn spawn_block_with(
+        &mut self,
+        rect: Rect,
+        folder: Option<PathBuf>,
+        vars: Vec<(String, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<BlockId> {
         let (cols, rows) = chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
         let command = self.command.clone().or_else(|| {
             let shell = &self.config.shell;
@@ -427,6 +440,7 @@ impl Workspace {
                 };
                 // For a `claude` or `codex` typed there, always (empty: not that Templum's either).
                 env.extend(self.agent_env());
+                env.extend(vars);
                 env
             },
         };

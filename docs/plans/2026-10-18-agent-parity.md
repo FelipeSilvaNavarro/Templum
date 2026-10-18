@@ -661,3 +661,20 @@ another, refused with Esc; `/exit`):
   prompt the driver typed.
 - Not seen: `elicitation_dialog`, `errorOccurred`, whether `userPromptSubmitted` comes at the Enter for a prompt typed
   during a turn (kept `at_enter: false`).
+
+**S2, OpenCode 1.19.0** (2026-10-18; `opencode run -m opencode/deepseek-v4.1-flash-free` in a scratch folder, Templum's
+plugin with a fake `templum` appending its stdin; the TUI not driven):
+
+- Lines, in order: `chat.message` (once), `session.status` busy (once per step: two for a one-step answer),
+  `session.status` idle, `session.idle` with `"answer": "Hi"`. `client.session.messages({ path: { id } })` answers
+  `{ data: [...] }` (the SDK's fields style), each message `{ info: { role }, parts }`.
+- A subagent (the task tool, `general`): no line of its session reached the hook; its `session.created` carries the
+  `parentID` before its prompt.
+- `TEMPLUM_HOOKED`: the shell tool's `echo $TEMPLUM_HOOKED` printed OpenCode's process id, so a nested `opencode run`
+  stays quiet. (The hook's own process didn't see it: Bun's `spawnSync` keeps the environment it started with.
+  Nothing depends on that.)
+- A plugin in a folder named `Templum Data`, its URL with `%20`, loaded. `OPENCODE_CONFIG_CONTENT` with Templum's
+  server: `opencode mcp list` showed `templum` connected, beside the person's own `caveman`.
+- The first run hung for 120 s with no line at all; the same command ran in 2 s at once after, plugin or not: not
+  reproduced.
+- Not seen: `permission.asked` (`opencode run` asked nothing), `question.asked`, `session.error`, Esc, the TUI.

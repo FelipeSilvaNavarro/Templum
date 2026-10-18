@@ -598,6 +598,7 @@ fn terminals_get_the_bus_and_this_templum_first_on_their_path(cx: &mut TestAppCo
 fn without_a_bus_terminals_name_none(cx: &mut TestAppContext) {
     let script = "printf 'claude=%s;\\n' \"${TEMPLUM_CLAUDE_ARGS-unset}\"; \
                   printf 'copilot=%s;\\n' \"${TEMPLUM_COPILOT_ARGS-unset}\"; \
+                  printf 'hooked=%s;\\n' \"${TEMPLUM_HOOKED-unset}\"; \
                   printf 'bus=%s;\\n' \"${TEMPLUM_BUS-unset}\"; exec cat";
     let command = ("sh".to_string(), vec!["-c".to_string(), script.to_string()]);
     let (_, ws) = open_as(cx, Some(command), None, None);
@@ -606,6 +607,60 @@ fn without_a_bus_terminals_name_none(cx: &mut TestAppContext) {
     assert!(shown.contains("bus=;"), "{shown}");
     assert!(shown.contains("claude=;"), "{shown}");
     assert!(shown.contains("copilot=;"), "{shown}");
+    assert!(shown.contains("hooked=;"), "{shown}");
+}
+
+/// The OpenCode Templum opens gets `OPENCODE_CONFIG_CONTENT` in its shell's environment; a plain
+/// terminal doesn't.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_opencode_block_gets_its_config_in_its_environment(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let script = "case \"$OPENCODE_CONFIG_CONTENT\" in *templum.js*) echo oc=yes;; *) echo oc=no;; esac; \
+                  exec cat";
+    let command = ("sh".to_string(), vec!["-c".to_string(), script.to_string()]);
+    let (handle, ws) = open_as(cx, Some(command), None, Some(data.path().to_path_buf()));
+    let first = first_id(&ws, cx);
+    screen_with(&ws, cx, first, "oc=no");
+    let id = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let entry = ws
+                    .agents
+                    .iter()
+                    .find(|a| a.id == "opencode")
+                    .cloned()
+                    .unwrap();
+                let rect = templum_canvas::Rect::new(0.0, 600.0, 400.0, 300.0);
+                ws.start_agent(
+                    Some(&entry),
+                    &entry.command,
+                    "",
+                    folder.path(),
+                    rect,
+                    window,
+                    cx,
+                )
+                .unwrap()
+            })
+        })
+        .unwrap();
+    screen_with(&ws, cx, id, "oc=yes");
+    // Restored in its folder, it resumes with it too.
+    let item: crate::session::Item = serde_json::from_value(json!({
+        "kind": "terminal",
+        "rect": { "x": 500.0, "y": 600.0, "w": 400.0, "h": 300.0 },
+        "folder": folder.path(),
+        "agent": "opencode",
+    }))
+    .unwrap();
+    let restored = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.add_saved(&item, window, cx).unwrap())
+        })
+        .unwrap();
+    screen_with(&ws, cx, restored, "oc=yes");
 }
 
 /// An empty PATH entry is the current folder: Templum's folder goes first and adds none.

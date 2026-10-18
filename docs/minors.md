@@ -1146,6 +1146,12 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   to the block ends with that run's answer. OpenCode's and Pi's plugins avoid it with `TEMPLUM_HOOKED`; a hook command
   can't. Fix: the pane follows the session id of the first hook that speaks for it and drops another session's
   events, a new session counting only from a `SessionStart` that isn't `compact`.
+- [ ] **OpenCode's dialogs and its TUI weren't seen with Templum's plugin.** Left by the plan of card 44 (task 9,
+  `crates/templum-usage/src/opencode.js`, `hooks::opencode`): only `opencode run` was checked by hand, so whether
+  `permission.asked` and `question.asked` turn the dot yellow (their `permission` and `questions` keys), whether
+  `session.error` comes with a `session.idle` after it, and what Esc fires are from OpenCode's types, not seen. A
+  person may see a green dot while OpenCode asks. Fix: in the TUI, run a `bash` command that asks, answer once and
+  refuse once, ask its question tool, press Esc during a turn, and compare the lines the plugin hands the hook.
 - [ ] **Gemini CLI's notice about its extension comes back at every run.** Left by the plan of card 44 (task 3,
   `tell_gemini`, `crates/templum/src/workspace/usage.rs`): a person who doesn't want Templum's extension sees
   "Gemini CLI has no Templum tools or status dot" the first time they open a Gemini CLI after each start of

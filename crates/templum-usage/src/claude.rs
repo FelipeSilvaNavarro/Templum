@@ -123,7 +123,7 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_digit() || c == '-')
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = path.parent().expect("a file in a folder");
     std::fs::create_dir_all(dir)?;
     let name = path.file_name().expect("a file name").to_string_lossy();

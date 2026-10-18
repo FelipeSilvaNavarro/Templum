@@ -221,7 +221,14 @@ impl Workspace {
                 let folder = t.folder.as_ref().map(PathBuf::from).filter(|f| f.is_dir());
                 // An agent resumes the folder's latest conversation: anywhere else, it's another one.
                 let in_its_folder = folder.is_some();
-                let id = self.spawn_block(rect, folder, window, cx)?;
+                // The agent it resumes gets its variable, as the one it opened did.
+                let agent = t
+                    .agent
+                    .as_deref()
+                    .and_then(|a| self.agents.iter().find(|known| known.id == a))
+                    .filter(|_| in_its_folder);
+                let vars = self.agent_vars(agent, &super::usage::in_env);
+                let id = self.spawn_block_with(rect, folder, vars, window, cx)?;
                 self.restore_terminal(id, t, in_its_folder, cx);
                 Some(id)
             }

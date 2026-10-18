@@ -38,6 +38,12 @@ struct Gives {
     on_path: bool,
 }
 
+/// Templum's own environment has `name`, not empty: the person's, which an agent's variable
+/// doesn't replace (`Workspace::agent_vars`).
+pub(super) fn in_env(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|v| !v.is_empty())
+}
+
 /// The agent of `pane` as the last snapshot found it, for a read of its session.
 pub(super) fn proc_of(pane: &Pane) -> Option<Proc> {
     let seen = &pane.seen;
@@ -126,7 +132,34 @@ impl Workspace {
             ("TEMPLUM_CLAUDE_ARGS".to_string(), claude),
             ("TEMPLUM_CODEX_ARGS".to_string(), codex),
             ("TEMPLUM_COPILOT_ARGS".to_string(), copilot),
+            // An OpenCode or a Pi run here reports for its block, and sets it for what it starts.
+            ("TEMPLUM_HOOKED".to_string(), String::new()),
         ]
+    }
+
+    /// The variables the shell of a block Templum opens for `agent` gets (docs/specs/connections.md,
+    /// OpenCode and Kilo Code): its server and plugin, for an agent that takes them only from its
+    /// environment, as `typed` says; none where `set(name)` says the person's environment already
+    /// has a non-empty one, which wins.
+    pub(super) fn agent_vars(
+        &self,
+        agent: Option<&AgentEntry>,
+        set: &dyn Fn(&str) -> bool,
+    ) -> Vec<(String, String)> {
+        let name = match agent.and_then(|a| a.builtin) {
+            Some(Agent::OPENCODE) => "OPENCODE_CONFIG_CONTENT",
+            Some(Agent::KILO) => "KILO_CONFIG_CONTENT",
+            _ => return Vec::new(),
+        };
+        let Some(gives) = self.gives().filter(|g| g.connected && g.on_path) else {
+            return Vec::new();
+        };
+        if set(name) {
+            return Vec::new();
+        }
+        templum_usage::opencode::config(&gives.data, cfg!(windows))
+            .map(|config| vec![(name.to_string(), config)])
+            .unwrap_or_default()
     }
 
     /// What Templum gives the agents it opens or a person types, as `typed` says; None without a

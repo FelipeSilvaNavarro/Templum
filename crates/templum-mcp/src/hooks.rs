@@ -180,6 +180,42 @@ pub fn copilot(event: &str, input: &Value) -> Option<AgentEvent> {
     })
 }
 
+/// A line of Templum's OpenCode plugin (Kilo Code's too): `{"type": <event type, or
+/// "chat.message">, "properties": {…}, "answer": <the session's last text on its idle>}`, of the
+/// main session only. None for what Templum doesn't follow.
+pub fn opencode(input: &Value) -> Option<AgentEvent> {
+    let properties = &input["properties"];
+    Some(match input["type"].as_str()? {
+        // Its prompt hook, once per prompt.
+        "chat.message" => AgentEvent::Submitted { at_enter: false },
+        "session.status" if properties["status"]["type"] == "busy" => AgentEvent::Working,
+        "session.idle" => AgentEvent::Stopped {
+            message: input["answer"].as_str().map(str::to_string),
+            transcript: None,
+        },
+        "session.error" => AgentEvent::Stopped {
+            message: None,
+            transcript: None,
+        },
+        "permission.asked" => AgentEvent::NeedsYou {
+            message: Some(match properties["permission"].as_str() {
+                Some(permission) => format!("Allow {permission}?"),
+                None => "Allow a tool?".to_string(),
+            }),
+        },
+        "question.asked" => AgentEvent::NeedsYou {
+            message: Some(
+                properties["questions"][0]["question"]
+                    .as_str()
+                    .unwrap_or("OpenCode asks you a question")
+                    .to_string(),
+            ),
+        },
+        "permission.replied" | "question.replied" | "question.rejected" => AgentEvent::Working,
+        _ => return None,
+    })
+}
+
 /// The last answer in a Copilot CLI transcript (`events.jsonl`, or its end): the text of its last
 /// `assistant.message` that has some. A broken line (a write under way) is skipped.
 pub fn copilot_answer(transcript: &str) -> Option<String> {
@@ -609,6 +645,88 @@ mod tests {
             None
         );
         assert_eq!(copilot_answer(""), None);
+    }
+
+    #[test]
+    fn opencodes_events_become_events() {
+        let event = |kind: &str, properties: Value, answer: Value| {
+            opencode(&json!({ "type": kind, "properties": properties, "answer": answer }))
+        };
+        let none = Value::Null;
+        assert_eq!(
+            event("chat.message", json!({ "sessionID": "s" }), none.clone()),
+            Some(AgentEvent::Submitted { at_enter: false })
+        );
+        assert_eq!(
+            event(
+                "session.status",
+                json!({ "sessionID": "s", "status": { "type": "busy" } }),
+                none.clone()
+            ),
+            Some(AgentEvent::Working)
+        );
+        assert_eq!(
+            event(
+                "session.status",
+                json!({ "sessionID": "s", "status": { "type": "idle" } }),
+                none.clone()
+            ),
+            None
+        );
+        assert_eq!(
+            event("session.idle", json!({ "sessionID": "s" }), json!("Done.")),
+            Some(AgentEvent::Stopped {
+                message: Some("Done.".into()),
+                transcript: None
+            })
+        );
+        assert_eq!(
+            event("session.error", json!({ "sessionID": "s" }), none.clone()),
+            Some(AgentEvent::Stopped {
+                message: None,
+                transcript: None
+            })
+        );
+        assert_eq!(
+            event(
+                "permission.asked",
+                json!({ "sessionID": "s", "permission": "bash" }),
+                none.clone()
+            ),
+            Some(AgentEvent::NeedsYou {
+                message: Some("Allow bash?".into())
+            })
+        );
+        assert_eq!(
+            event("question.asked", json!({ "sessionID": "s" }), none.clone()),
+            Some(AgentEvent::NeedsYou {
+                message: Some("OpenCode asks you a question".into())
+            })
+        );
+        assert_eq!(
+            event(
+                "question.asked",
+                json!({ "questions": [{ "question": "Which file?" }] }),
+                none.clone()
+            ),
+            Some(AgentEvent::NeedsYou {
+                message: Some("Which file?".into())
+            })
+        );
+        for kind in [
+            "permission.replied",
+            "question.replied",
+            "question.rejected",
+        ] {
+            assert_eq!(
+                event(kind, json!({ "sessionID": "s" }), none.clone()),
+                Some(AgentEvent::Working),
+                "{kind}"
+            );
+        }
+        for kind in ["session.created", "message.updated", "nope"] {
+            assert_eq!(event(kind, json!({}), none.clone()), None, "{kind}");
+        }
     }
 
     #[test]

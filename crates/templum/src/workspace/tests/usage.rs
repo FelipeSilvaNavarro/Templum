@@ -197,6 +197,7 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
                 ("TEMPLUM_CLAUDE_ARGS".to_string(), String::new()),
                 ("TEMPLUM_CODEX_ARGS".to_string(), String::new()),
                 ("TEMPLUM_COPILOT_ARGS".to_string(), String::new()),
+                ("TEMPLUM_HOOKED".to_string(), String::new()),
             ]
         );
     });
@@ -536,4 +537,45 @@ fn a_gemini_cli_without_the_extension_is_told_once(cx: &mut TestAppContext) {
     assert_eq!(notification_count(handle, cx), before + told, "once");
     open("gemini", cx);
     assert_eq!(notification_count(handle, cx), before + told, "not twice");
+}
+
+/// The OpenCode and Kilo Code Templum opens get their variable in their shell's environment,
+/// unless the person has their own (docs/specs/connections.md, OpenCode and Kilo Code).
+#[gpui_kit::test]
+fn blocks_templum_opens_get_their_agents_variable(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    ws.update(cx, |ws, _| {
+        let agent = |id: &str| ws.agents.iter().find(|a| a.id == id).cloned();
+        let (opencode, kilo, claude) = (agent("opencode"), agent("kilo"), agent("claude"));
+        let unset = |_: &str| false;
+        let config = templum_usage::opencode::config(data.path(), cfg!(windows)).unwrap();
+        assert_eq!(
+            ws.agent_vars(opencode.as_ref(), &unset),
+            [("OPENCODE_CONFIG_CONTENT".to_string(), config.clone())]
+        );
+        assert_eq!(
+            ws.agent_vars(kilo.as_ref(), &unset),
+            [("KILO_CONFIG_CONTENT".to_string(), config)]
+        );
+        assert_eq!(ws.agent_vars(claude.as_ref(), &unset), []);
+        assert_eq!(ws.agent_vars(None, &unset), []);
+        // The person's own wins.
+        let theirs = |name: &str| name == "OPENCODE_CONFIG_CONTENT";
+        assert_eq!(ws.agent_vars(opencode.as_ref(), &theirs), []);
+        assert_eq!(ws.agent_vars(kilo.as_ref(), &theirs).len(), 1);
+        // Without `<data>/bin` on the terminal's PATH, the plugin's program can't be found.
+        let env = ws.bus_env.clone();
+        ws.bus_env.retain(|(k, _)| k != "PATH");
+        assert_eq!(ws.agent_vars(opencode.as_ref(), &unset), []);
+        ws.bus_env = env;
+        ws.config.connections.enabled = false;
+        assert_eq!(ws.agent_vars(opencode.as_ref(), &unset), []);
+        // Every terminal gets an empty `TEMPLUM_HOOKED`: not a Templum's it was started from.
+        let hooked = ws
+            .agent_env()
+            .into_iter()
+            .find(|(k, _)| k == "TEMPLUM_HOOKED");
+        assert_eq!(hooked, Some(("TEMPLUM_HOOKED".to_string(), String::new())));
+    });
 }

@@ -386,6 +386,8 @@ impl Agent {
     pub const CODEX: Agent = Agent(1);
     pub const GEMINI: Agent = Agent(2);
     pub const COPILOT: Agent = Agent(3);
+    pub const OPENCODE: Agent = Agent(5);
+    pub const KILO: Agent = Agent(17);
 
     /// Every agent, in the order menus list them.
     pub fn all() -> impl Iterator<Item = Agent> {
@@ -963,6 +965,8 @@ mod tests {
             (Agent::CODEX, "codex"),
             (Agent::GEMINI, "gemini"),
             (Agent::COPILOT, "copilot"),
+            (Agent::OPENCODE, "opencode"),
+            (Agent::KILO, "kilo"),
         ] {
             assert_eq!(agent.name(), id);
         }

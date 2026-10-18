@@ -458,6 +458,8 @@ fn hook_event(args: &[String], stdin: &mut dyn Read) -> Option<hooks::AgentEvent
             }),
             event => Some(event),
         },
+        // Templum's plugin, in OpenCode and Kilo Code.
+        "opencode" => hooks::opencode(&on_stdin()?),
         _ => None,
     }
 }
@@ -882,6 +884,19 @@ mod tests {
         assert_eq!(
             run_with(&["hook", "copilot"], &env(&bus), &ended),
             (0, String::new(), String::new())
+        );
+        // Templum's plugin in OpenCode and Kilo Code.
+        let idle = r#"{"type":"session.idle","properties":{"sessionID":"s"},"answer":"Ok."}"#;
+        assert_eq!(
+            run_with(&["hook", "opencode"], &env(&bus), idle),
+            (0, String::new(), String::new())
+        );
+        assert_eq!(
+            events.recv_timeout(LIMIT).unwrap().1,
+            Incoming::Notification {
+                method: "templum/event".into(),
+                params: json!({ "event": "stopped", "message": "Ok." }),
+            }
         );
         // Outside Templum, and with what Templum doesn't follow: nothing, quietly.
         assert_eq!(
