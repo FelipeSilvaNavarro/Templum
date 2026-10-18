@@ -156,17 +156,17 @@ const SHARED_WORDS: [(&str, &str); 18] = [
     ),
     (
         "Only the person stops a block you didn't open.",
-        "The person allows it first, unless you opened the block.",
+        "The person allows it first, unless you opened it in this conversation.",
     ),
     (
         "waits for its person or is on another agent's task.",
         "waits for its person or is on another agent's task. The person allows it first, unless \
-         you opened the block.",
+         you opened it in this conversation.",
     ),
     (
         "Refused while it is idle or on another agent's task.",
         "Refused while it is idle or on another agent's task. The person allows it first, unless \
-         you opened the block.",
+         you opened it in this conversation.",
     ),
     // Its tasks' ends and watches come back into its chat; it has no reply of its own.
     (
@@ -720,8 +720,9 @@ mod tests {
                 .clone();
             let words = tool["description"].as_str().unwrap();
             assert!(
-                words.contains("The person allows it first, unless you opened the block.")
-                    && !words.contains("you opened ("),
+                words.contains(
+                    "The person allows it first, unless you opened it in this conversation."
+                ) && !words.contains("you opened ("),
                 "{words}"
             );
             assert!(tool["inputSchema"]["properties"]["reason"].is_object());
