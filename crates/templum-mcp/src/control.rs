@@ -10,7 +10,7 @@ use crate::tools::{self, Call, Spawn};
 pub const SERVER: &str = "templum-control";
 
 /// The block server's tools the control server serves as they are, on any block or board.
-pub const SHARED: [&str; 14] = [
+pub const SHARED: [&str; 17] = [
     "read_terminal",
     "list_cards",
     "read_note",
@@ -25,6 +25,9 @@ pub const SHARED: [&str; 14] = [
     "send_to_terminal",
     "send_keys",
     "notify",
+    "delegate",
+    "wait_for",
+    "interrupt",
 ];
 
 /// A block `add_block` opens.
@@ -169,7 +172,10 @@ pub fn list() -> Value {
                 text = text.replace(from, to);
             }
             let mut tool: Value = serde_json::from_str(&text).expect("JSON");
-            if t["name"] == "send_to_terminal" || t["name"] == "send_keys" {
+            if ["send_to_terminal", "send_keys", "interrupt"]
+                .iter()
+                .any(|name| t["name"] == *name)
+            {
                 tool["inputSchema"]["properties"]["reason"] = reason();
             }
             tool
@@ -428,6 +434,9 @@ pub fn title(name: &str) -> &'static str {
         "send_to_terminal" => "Typing into a terminal",
         "send_keys" => "Pressing keys",
         "notify" => "Notifying you",
+        "delegate" => "Handing a task",
+        "wait_for" => "Waiting for an agent",
+        "interrupt" => "Interrupting an agent",
         _ => "",
     }
 }
@@ -437,6 +446,7 @@ pub fn rule(call: &ControlCall) -> Rule {
     match call {
         ControlCall::Block(Call::SendToTerminal { .. } | Call::SendKeys { .. }) => Rule::Ask,
         ControlCall::CloseBlock { .. } => Rule::AskOwnWhenLosing,
+        ControlCall::Block(Call::Interrupt { .. }) => Rule::AskOwn,
         _ => Rule::Free,
     }
 }
@@ -498,6 +508,9 @@ mod tests {
             ("add_items", json!({"block": "c1", "text": "a\nb"})),
             ("check_item", json!({"block": "c1", "item": 2})),
             ("notify", json!({"text": "done"})),
+            ("delegate", json!({"block": "b7k2m", "task": "Take card 4"})),
+            ("wait_for", json!({"block": "b7k2m", "event": "idle"})),
+            ("interrupt", json!({"block": "b7k2m", "reason": "stuck"})),
         ];
         let listed = list()["tools"].as_array().unwrap().len();
         assert_eq!(listed, examples.len(), "every listed tool has an example");
@@ -577,12 +590,10 @@ mod tests {
             "list_blocks",
             "spawn_agent",
             "connect",
-            "delegate",
             "reply",
             "wait_for_idle",
             "ask_user",
             "open_file",
-            "interrupt",
             "wire",
             "claim_card",
         ] {
@@ -633,6 +644,14 @@ mod tests {
         );
         assert_eq!(
             rule_of("create_card", json!({"board": "S", "title": "x"})),
+            Rule::Free
+        );
+        assert_eq!(
+            rule_of("interrupt", json!({"block": "b", "reason": "ok"})),
+            Rule::AskOwn
+        );
+        assert_eq!(
+            rule_of("delegate", json!({"block": "b", "task": "t"})),
             Rule::Free
         );
         assert_eq!(Rule::AskOwnWhenLosing.level(false, true), Some(Level::Ask));

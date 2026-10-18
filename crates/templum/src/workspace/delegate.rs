@@ -326,7 +326,6 @@ impl Workspace {
     /// with the prompt a spawn still keeps for it: typed later, it would start work no one awaits.
     /// The caller isn't told of that end: it knows (docs/specs/connections.md, Delegating 12).
     pub(super) fn interrupt(&mut self, from: &str, block: &str, cx: &mut Context<Self>) -> Outcome {
-        let now = Instant::now();
         let (space_id, me) = self.caller(from).expect("call found the caller");
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let to = match target(space, me, block) {
@@ -338,7 +337,23 @@ impl Workspace {
                 "This block is yours: interrupt stops another agent.",
             ));
         }
-        let Some(pane) = space.terminal(to) else {
+        let by = self.signature(space, me, cx);
+        self.interrupt_in(from, &by, (&space_id, to), block, cx)
+    }
+
+    /// The body of `interrupt`, for any asker: Esc once in the agent of block `to` of `space`,
+    /// pressed as `by`; `asker`'s task there ends first.
+    pub(super) fn interrupt_in(
+        &mut self,
+        asker: &str,
+        by: &str,
+        (space_id, to): (&str, BlockId),
+        block: &str,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
+        let now = Instant::now();
+        let from = asker;
+        let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
         if pane.seen.agent.is_none() || pane.shell_in_front() {
@@ -359,7 +374,7 @@ impl Workspace {
             )));
         }
         let worker = pane.term.id().to_string();
-        let by = self.signature(space, me, cx);
+        let by = by.to_string();
         let said = if mine {
             if let Some(pane) = self.pane_mut(&worker) {
                 pane.handed = None;
@@ -646,7 +661,6 @@ impl Workspace {
         scheduled: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Outcome {
-        let now = Instant::now();
         let (space_id, me) = self.caller(from).expect("call found the caller");
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let to = match target(space, me, block) {
@@ -658,7 +672,30 @@ impl Workspace {
                 "This block is yours: hand the task to another agent.",
             ));
         }
-        let Some(pane) = space.terminal(to) else {
+        let by = self.signature(space, me, cx);
+        let at = (space_id.as_str(), to);
+        self.hand_task(from, &by, at, block, task, wait, timeout, scheduled, cx)
+    }
+
+    /// The body of `delegate`, for any asker: the task typed into the agent of block `to` of
+    /// `space` under a line signed `by`, handed over by `asker` (a terminal's `TEMPLUM_TERMINAL`,
+    /// or the Templum Agent's word), who hears its end; `scheduled` as `delegate` takes it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn hand_task(
+        &mut self,
+        asker: &str,
+        by: &str,
+        (space_id, to): (&str, BlockId),
+        block: &str,
+        task: &str,
+        wait: bool,
+        timeout: u64,
+        scheduled: Option<u64>,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
+        let now = Instant::now();
+        let from = asker;
+        let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
         if let Err(refused) = pane.takes_handing(block) {
@@ -681,7 +718,6 @@ impl Workspace {
         }
         let worker = pane.term.id().to_string();
         let usage = pane.usage.clone();
-        let by = self.signature(space, me, cx);
         let id = mine.unwrap_or_else(|| {
             self.next_task += 1;
             self.next_task
@@ -808,7 +844,20 @@ impl Workspace {
         if to == me {
             return Outcome::Now(Reply::err("This block is yours: wait for another agent."));
         }
-        let Some(pane) = space.terminal(to) else {
+        self.idle_wait(from, (&space_id, to), block, timeout)
+    }
+
+    /// The body of `wait_for_idle`, for any asker: the turn of the agent in block `to` of
+    /// `space`, waited for when it works or runs `asker`'s task.
+    pub(super) fn idle_wait(
+        &self,
+        asker: &str,
+        (space_id, to): (&str, BlockId),
+        block: &str,
+        timeout: u64,
+    ) -> Outcome {
+        let from = asker;
+        let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
         if pane.seen.agent.is_none() {

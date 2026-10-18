@@ -12,6 +12,7 @@ use templum_mcp::{Call, Hello, Incoming, Replier, Reply, rpc, tools};
 use super::bus::{Outcome, agent_state, clean_title};
 use super::ops::{NewBlock, Place};
 use super::spawn::Opener;
+use super::waits::Asked;
 use super::{Space, Workspace, show_notification};
 
 /// What a control client hears when its secret isn't the engine's.
@@ -34,9 +35,11 @@ impl Workspace {
             Incoming::Request { id, method, params } => (id, method, params),
             // The engine gave up on a call, or its connection ended: what waits goes.
             Incoming::Notification { method, params } if method == "notifications/cancelled" => {
+                self.cancel(conn, &params["requestId"], cx);
                 return self.drop_approval(conn, &params["requestId"], cx);
             }
             Incoming::Notification { method, .. } if method == templum_mcp::bus::CLOSED => {
+                self.closed(conn, cx);
                 return self.drop_approvals_of(conn, cx);
             }
             Incoming::Notification { .. } | Incoming::Response => return,
@@ -67,7 +70,8 @@ impl Workspace {
                             if let Some((id, reply, parsed, args)) =
                                 self.gate(conn, id, reply, name, parsed, args, window, cx)
                             {
-                                self.run_control(id, reply, name, parsed, &args, window, cx);
+                                let asked = (conn, id, reply);
+                                self.run_control(asked, name, parsed, &args, window, cx);
                             }
                             return;
                         }
@@ -82,11 +86,9 @@ impl Workspace {
 
     /// Runs a control call past its gate and answers it, now or when it is done; what it
     /// touched goes to its row in the chat.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn run_control(
         &mut self,
-        id: Value,
-        reply: Replier,
+        (conn, id, reply): (u64, Value, Replier),
         name: &str,
         parsed: Parsed,
         args: &Value,
@@ -108,9 +110,14 @@ impl Workspace {
                 })
                 .detach();
             }
-            Outcome::Wait(..) => {
-                let refused = Reply::err("Templum can't wait on that for the Templum Agent yet.");
-                let _ = reply.send(tools::tool_result(&id, &refused));
+            Outcome::Wait(what, seconds) => {
+                let asked = Asked {
+                    conn,
+                    id,
+                    reply,
+                    from: templum_agent::ASKER.to_string(),
+                };
+                self.wait(asked, *what, seconds, window, cx);
             }
         }
     }
@@ -196,6 +203,48 @@ impl Workspace {
             }
             ControlCall::Block(Call::SendKeys { block, keys }) => {
                 return self.keys_for_agent(&block, keys, cx);
+            }
+            ControlCall::Block(Call::Delegate {
+                block,
+                task,
+                wait,
+                timeout,
+            }) => {
+                return self.on_task(&block, |ws, at| {
+                    let by = "Templum Agent";
+                    ws.hand_task(
+                        templum_agent::ASKER,
+                        by,
+                        at,
+                        &block,
+                        &task,
+                        wait,
+                        timeout,
+                        None,
+                        cx,
+                    )
+                });
+            }
+            ControlCall::Block(Call::WaitFor {
+                block,
+                event,
+                timeout,
+                ..
+            }) => {
+                return self.on_task(&block, |ws, at| match event {
+                    templum_mcp::tools::Event::Idle => {
+                        ws.idle_wait(templum_agent::ASKER, at, &block, timeout)
+                    }
+                    event => {
+                        let by = templum_agent::ASKER;
+                        ws.event_wait(by, at, &block, event, timeout, None, 0, true, cx)
+                    }
+                });
+            }
+            ControlCall::Block(Call::Interrupt { block }) => {
+                return self.on_task(&block, |ws, at| {
+                    ws.interrupt_in(templum_agent::ASKER, "Templum Agent", at, &block, cx)
+                });
             }
             ControlCall::Block(Call::ListCards { board, card }) => {
                 let board = match card {
@@ -697,6 +746,23 @@ impl Workspace {
             block: Some(uid.to_string()),
         });
         (Outcome::Now(done), target)
+    }
+
+    /// `f` on the block `uid` names, in any workspace, for a call that may wait or answer later.
+    fn on_task(
+        &mut self,
+        uid: &str,
+        f: impl FnOnce(&mut Self, (&str, BlockId)) -> Outcome,
+    ) -> (Outcome, Option<Target>) {
+        let Some((space, id)) = self.find_block(uid) else {
+            return (Outcome::Now(no_block(uid)), None);
+        };
+        let outcome = f(self, (&space, id));
+        let target = Target {
+            workspace: Some(space),
+            block: Some(uid.to_string()),
+        };
+        (outcome, Some(target))
     }
 
     /// The board `name` names, or the only one when it is left out.

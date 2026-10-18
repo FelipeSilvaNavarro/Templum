@@ -2006,3 +2006,136 @@ fn waiting_for_its_person_is_told_once(cx: &mut TestAppContext) {
         [(::templum_agent::NoticeLevel::Waiting, Some(uid))]
     );
 }
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn delegate_hands_a_task_under_the_templum_agents_line(cx: &mut TestAppContext) {
+    let (handle, ws, _, theirs) = super::delegate::two_agents(cx);
+    let (_, them) = me(&ws, cx, theirs);
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "delegate",
+        json!({"block": them, "task": "fix the tests"}),
+    );
+    assert_eq!(
+        (failed, text),
+        (false, format!("Handed to {them} as task t1."))
+    );
+    let by = ws.read_with(cx, |ws, _| {
+        ws.space
+            .terminal(theirs)
+            .unwrap()
+            .handed
+            .as_ref()
+            .unwrap()
+            .by
+            .clone()
+    });
+    assert_eq!(by, ::templum_agent::ASKER);
+    screen_with(&ws, cx, theirs, "fix the tests");
+    super::bus::after(
+        cx,
+        crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
+    );
+    screen_with(&ws, cx, theirs, "[from Templum Agent, task t1]");
+    // With wait, the call waits for its end, which answers it.
+    let (worker, _) = me(&ws, cx, theirs);
+    ws.update(cx, |ws, cx| {
+        ws.end_turn(&worker, templum_mcp::Reply::ok("Done."), cx)
+    });
+    let answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "delegate",
+        json!({"block": them, "task": "and push", "wait": true}),
+    );
+    assert!(answers.try_recv().is_err(), "it waits for the task's end");
+    ws.update(cx, |ws, cx| {
+        ws.end_turn(&worker, templum_mcp::Reply::ok("Pushed."), cx)
+    });
+    cx.run_until_parked();
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert_eq!((failed, text.as_str()), (false, "Pushed."));
+}
+
+#[gpui_kit::test]
+fn wait_for_answers_needs_you(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(busy).unwrap().state = Some(crate::workspace::AgentState::NeedsYou(
+            Some("Allow Edit?".into()),
+        ));
+    });
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "wait_for",
+        json!({"block": uid, "event": "needs_you"}),
+    );
+    assert!(!failed && text.contains("Allow Edit?"), "{text}");
+    // Idle, with no task of its: answered at once.
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(busy).unwrap().state = Some(crate::workspace::AgentState::Idle);
+    });
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "wait_for",
+        json!({"block": uid, "event": "idle"}),
+    );
+    assert!(!failed && text.contains("idle"), "{text}");
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn interrupting_the_persons_agent_asks_its_own_doesnt(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(busy).unwrap().state = Some(crate::workspace::AgentState::Working);
+    });
+    let _answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "interrupt",
+        json!({"block": uid, "reason": "stuck"}),
+    );
+    ws.read_with(cx, |ws, _| {
+        let approvals = &ws.templum_agent.approvals;
+        assert_eq!(approvals.len(), 1, "the person's agent: it asks");
+        assert_eq!(approvals[0].said, "Interrupt \"Claude Code\"");
+    });
+    // Its own runs an agent in front of its shell, as a snapshot found it.
+    ws.update(cx, |ws, _| ws.command = Some(agent_cat()));
+    let (own, own_uid) = busy_terminal(handle, &ws, cx);
+    in_front(&ws, cx, own, true);
+    super::delegate::found(&ws, cx, own);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(own).unwrap().state = Some(crate::workspace::AgentState::Working);
+        ws.templum_agent
+            .conversation
+            .own
+            .blocks
+            .push(own_uid.clone());
+    });
+    let answers = control_later(handle, &ws, cx, 8, "interrupt", json!({"block": own_uid}));
+    super::bus::after(cx, 2_000);
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert!(
+        !failed && text.starts_with(&format!("Pressed Esc in {own_uid}")),
+        "{text}"
+    );
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.templum_agent.approvals.len()),
+        1
+    );
+}

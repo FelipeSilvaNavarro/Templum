@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::input::InputState;
 use gpui_kit::{App, Context, Entity, Focusable as _, Subscription, Window};
 use serde_json::Value;
-use templum_canvas::Level;
+use templum_canvas::{BlockId, Level};
 use templum_mcp::ask::{Ask, Form};
 use templum_mcp::tools::Event;
 use templum_mcp::{Replier, Reply, tools};
@@ -338,7 +338,8 @@ impl Workspace {
 
     /// Why `wait` can't be answered any more, if so.
     fn orphaned(&self, wait: &Wait) -> Option<Reply> {
-        if self.caller(&wait.from).is_none() {
+        // The Templum Agent asks from no block.
+        if wait.from != templum_agent::ASKER && self.caller(&wait.from).is_none() {
             return Some(Reply::err(
                 "Your block was closed; the request was withdrawn.",
             ));
@@ -653,7 +654,26 @@ impl Workspace {
         if to == me {
             return Outcome::Now(Reply::err("This block is yours: wait for another block."));
         }
-        let Some(pane) = space.terminal(to) else {
+        let at = (space_id.as_str(), to);
+        self.event_wait(from, at, block, event, timeout, pattern, lines, wait, cx)
+    }
+
+    /// The body of `wait_for` but `idle`, for any asker `by` (a terminal's `TEMPLUM_TERMINAL`, or
+    /// the Templum Agent's word): `event` in the terminal block `to` of `space`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn event_wait(
+        &mut self,
+        by: &str,
+        (space_id, to): (&str, BlockId),
+        block: &str,
+        event: Event,
+        timeout: u64,
+        pattern: Option<String>,
+        lines: usize,
+        wait: bool,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
+        let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
         let of = pane.term.id().to_string();
@@ -691,7 +711,7 @@ impl Workspace {
             let until = cx.background_executor().now() + Duration::from_secs(timeout);
             let watch = super::schedules::Watch {
                 id: 0,
-                by: from.to_string(),
+                by: by.to_string(),
                 of,
                 uid: block.to_string(),
                 pattern: pattern.clone(),

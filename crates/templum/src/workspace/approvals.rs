@@ -157,6 +157,10 @@ impl Workspace {
                 };
                 (format!("Press keys in {title:?}"), details)
             }
+            ControlCall::Block(Call::Interrupt { .. }) => (
+                format!("Interrupt {title:?}"),
+                "Esc once: its turn stops where it is.".to_string(),
+            ),
             _ => (String::new(), String::new()),
         }
     }
@@ -186,6 +190,7 @@ impl Workspace {
         });
         cx.notify();
         let Approval {
+            conn: approval_conn,
             request,
             reply,
             parsed,
@@ -214,7 +219,8 @@ impl Workspace {
                     let _ = reply.send(tools::tool_result(&request, &gone));
                     return;
                 }
-                self.run_control(request, reply, &tool, parsed, &args, window, cx);
+                let asked = (approval_conn, request, reply);
+                self.run_control(asked, &tool, parsed, &args, window, cx);
             }
         }
     }
@@ -246,9 +252,11 @@ impl Workspace {
 fn called_block(call: &ControlCall) -> Option<&str> {
     match call {
         ControlCall::CloseBlock { block }
-        | ControlCall::Block(Call::SendToTerminal { block, .. } | Call::SendKeys { block, .. }) => {
-            Some(block)
-        }
+        | ControlCall::Block(
+            Call::SendToTerminal { block, .. }
+            | Call::SendKeys { block, .. }
+            | Call::Interrupt { block },
+        ) => Some(block),
         _ => None,
     }
 }

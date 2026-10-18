@@ -13,7 +13,9 @@ use super::*;
 
 /// Two terminals side by side and wired: mine at (40, 100) and theirs at (900, 100), 700 × 300
 /// each, theirs running Codex as far as Templum knows; the camera at 100% on the origin.
-fn two_agents(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, BlockId, BlockId) {
+pub(super) fn two_agents(
+    cx: &mut TestAppContext,
+) -> (AnyWindowHandle, Entity<Workspace>, BlockId, BlockId) {
     agents_running(cx, None)
 }
 
