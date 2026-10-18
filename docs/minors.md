@@ -1280,6 +1280,34 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   `status`, `rev-list`, `diff`) run before the call answers or the balloon asks; in a big repository the window may
   stall for a moment. Fix: read it on the background executor, the call an `Outcome::Later` that opens the request
   once read.
+- [ ] **A repeating schedule drifts later.** Left by the final review of card 35
+  (`look_schedules`, `crates/templum/src/workspace/schedules.rs`): its next time is `now + every`, so each run comes
+  up to 15 s (a look) plus a timer's lateness after the last; over 7 days an `every: 1440` at 09:00 lands a minute or
+  two later. Fix: `next + every`, falling back to `now + every` only when that time was missed (asleep).
+- [ ] **`next_at` has no test.** Left by the final review of card 35 (`schedules.rs`): `at`'s today-or-tomorrow and
+  its daylight-saving gap and repeated hour are untested. Fix: pass `now` and the time zone in, and test with
+  `chrono::FixedOffset` and a zone with a DST change.
+- [ ] **"stop_agent or close_block it first" can't be followed with stop_agent.** Left by the final review of card 35
+  (`worktree_for`, `crates/templum/src/workspace/worktrees.rs`): a terminal whose shell stays in the worktree after
+  `stop_agent` still works in it (`works_in` reads its folder), so the agent that follows the advice is refused again.
+  Fix: say "close_block it first", here and in agent-tools.md.
+- [ ] **On Windows `stop_agent` may take the wrong process for the program.** Left by the final review of card 35
+  (`Terminal::program`, `crates/templum-terminal/src/terminal.rs`): with no snapshot's pid it takes the shell's first
+  descendant in a hash map's order (maybe a job the person started), and a snapshot's pid isn't checked to be still
+  below the shell (a pid taken again). Fix: check `seen.pid` is in `descendants(shell)` with its `seen.started`, and
+  pick the oldest child.
+- [ ] **`stop_agent` reads the process table on the UI thread.** Left by the final review of card 35 (`stop_in`,
+  `crates/templum/src/workspace/ops.rs`): up to three full refreshes, one reading every process's environment, before
+  it answers; on a busy machine the window may hitch. Fix: one refresh, on the background executor.
+- [ ] **A schedule's text isn't flattened where the person reads it.** Left by the final review of card 35
+  (`schedule_lines`, `schedules.rs`): the clock's tooltip and `whoami` show an agent's text as written, invisible or
+  direction characters included. Fix: `bus::flat` it there.
+- [ ] **A role over another agent types the role's model and words for it.** Left by the final review of card 35
+  (`Role::spawn`, `crates/templum/src/config.rs`): `spawn_agent(role: "reviewer", agent: "codex")` with a Claude Code
+  role still gets the role's `--model` and `args`, which Codex may refuse; `fork` with a role over another agent is
+  refused as "leave agent out". Fix: apply a role's model, effort and args only to its own agent.
+- [ ] **`stop_agent`'s count includes processes it couldn't end.** Left by the final review of card 35 (`stop_in`):
+  a root child under `sudo` or a zombie counts as "ended". Fix: count what `terminate` signalled.
 - [ ] **Pi and Grok Build can't be forked.** Left by card 35 (`fork_id` in `crates/templum-terminal/src/agent.rs`):
   `spawn_agent` with `fork` from one of them says it can't, though `pi --fork <id>` and `grok --resume <id>
   --fork-session` exist, since Templum couldn't find the fork's own session to resume it after a restart. Fix: give a

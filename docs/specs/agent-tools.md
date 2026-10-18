@@ -252,7 +252,9 @@ conversation.
 - **Spike results** (by hand, 2026-10-18, Claude Code 2.1.286 and Codex 0.154, in scratch folders):
   1. `claude --resume <id> --fork-session` opens the conversation from a worktree of the session's repository and
      from a folder outside it: the fork answered a word told to the original.
-  2. Forking while the original is mid-turn wasn't checked.
+  2. Forking while the original is mid-turn, as a fork always is (its caller waits in `spawn_agent`): a Claude Code
+     session whose last entry was a running tool call forked and answered a word told to the original. Codex takes
+     options after `codex fork -C . <id>` (`-c …` parsed, an unknown flag refused), so Templum's flags may follow.
   3. `codex fork <id>` from another folder shows "Choose working directory to fork this session" (the session's or the
      current one; Enter keeps the session's); `codex fork -C . <id>` opens the conversation in the current folder at
      once. Templum types the second.
