@@ -86,14 +86,22 @@ impl Workspace {
             return Err("An account needs Templum's data folder".to_string());
         };
         let account = entry.account.as_ref().expect("an account");
-        let moved = self
+        let old = self
             .agents
             .iter()
             .find(|a| a.id == id)
-            .and_then(|a| a.account.as_ref())
-            .is_some_and(|old| old.folder != account.folder);
+            .and_then(|a| a.account.as_ref());
+        let moved = old.is_some_and(|old| old.folder != account.folder);
         if moved && let Some(why) = self.account_in_use(&id) {
             return Err(format!("{why} to change its folder"));
+        }
+        let new = old.is_none_or(|old| old.folder != account.folder);
+        if account.chosen && new && !templum_usage::accounts::fits(account.kind, &account.folder) {
+            let agent = entry.builtin.map_or(account.kind.agent, |a| a.title());
+            return Err(format!(
+                "{} already holds files and isn't a {agent} folder: choose a new or empty folder",
+                agents::tilde(&account.folder)
+            ));
         }
         let key = id.clone();
         self.edit(

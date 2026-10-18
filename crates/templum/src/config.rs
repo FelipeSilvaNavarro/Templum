@@ -610,6 +610,11 @@ pub(crate) fn check_account(
                 "{FILE}: agents.{id}.folder: {folder} is {of}'s own folder"
             ));
         }
+        if std::env::home_dir().is_some_and(|home| home == path) {
+            return Err(format!(
+                "{FILE}: agents.{id}.folder: {folder} is your home folder: choose a folder of its own"
+            ));
+        }
         let taken = agents.iter().find(|(other, a)| {
             *other != id
                 && a.of.is_some()
@@ -1782,6 +1787,20 @@ scrollback = 500
         }
         let text = "[agents.claude2]\nof = \"claude\"\nfolder = \"~/templum-data/w\"\n";
         parse_in(text, Some(&data)).unwrap();
+    }
+
+    #[test]
+    fn an_account_folder_isnt_the_home_folder() {
+        for folder in ["~", "~/"] {
+            let text = format!("[agents.claude2]\nof = \"claude\"\nfolder = \"{folder}\"\n");
+            let err = parse(&text).unwrap_err();
+            assert!(
+                err.contains(&format!(
+                    "agents.claude2.folder: {folder} is your home folder"
+                )),
+                "{err}"
+            );
+        }
     }
 
     #[test]

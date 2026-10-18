@@ -188,7 +188,7 @@ share = { settings = "claude3", instructions = "claude3", rules = "claude3", ski
 - `folder`: `~` is the home folder. It is a full path (`/…` or `~/…`; `C:\…` on Windows): a relative one would be each
   block's working folder. It can't be the agent's own folder, nor another account's, nor in Templum's folder for
   accounts (`<data>/accounts`, whose folders go with their account: "that is Templum's folder for accounts: leave
-  Folder empty").
+  Folder empty"), nor the home folder.
 - The id of an account added in Settings is its agent's id and the first free number from 2: `claude2`, `claude3`,
   `codex2`; a number whose `<data>/accounts/<id>` is still there (an old folder kept by a change of folder, with its
   login) is taken. It never changes; the name does. One written by hand may be any free id (`work`).
@@ -201,9 +201,13 @@ share = { settings = "claude3", instructions = "claude3", rules = "claude3", ski
 What the account's choices say is applied when the dialog saves it, and again each time it starts (the menu,
 `spawn_agent`, a restore, Log in), so a link that went missing is made again:
 
-- **The folder** is made when missing (0700 on Unix). One the person chose that already has files is taken as it is,
-  and the dialog reads its links when it is chosen: a link to the same item of the agent's own folder or of an
-  account becomes that item's choice, so a folder set up by hand keeps its sharing.
+- **The folder** is made when missing (0700 on Unix). One the person chooses must be new, empty or already the
+  agent's: its login there, or a link at one of its items. Save refuses any other, whose real items it would keep
+  aside ("~/Documents already holds files and isn't a Claude Code folder: choose a new or empty folder"), when the
+  folder is new to the account; the home folder is never one ("~ is your home folder: choose a folder of its own").
+  One that already has files is taken as it is, and the dialog reads its links when it is chosen: a link to the same
+  item of the agent's own folder or of an account becomes that item's choice, so a folder set up by hand keeps its
+  sharing.
 - **Shared item, nothing there:** a link to the same item of who it is shared with. That item is a folder Templum
   makes (empty) when missing, so a link never points at nothing; a file that doesn't exist there yet isn't linked, and
   is linked at a later start once the agent made it (its settings file, written at its first change).

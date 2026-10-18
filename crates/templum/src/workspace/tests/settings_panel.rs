@@ -1057,6 +1057,38 @@ fn an_account_folder_in_templums_folder_for_accounts_is_refused(cx: &mut TestApp
     );
 }
 
+#[gpui_kit::test]
+fn a_folder_of_other_files_isnt_taken_for_an_account(cx: &mut TestAppContext) {
+    let own = tempfile::tempdir().unwrap();
+    crate::agents::OWN_FOLDERS.set(Some(own.path().to_path_buf()));
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    // Like a home folder: its own projects/, which sharing sessions would keep aside.
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join("projects").join("app")).unwrap();
+    let draft = crate::agents::AccountDraft {
+        of: "claude".to_string(),
+        show: true,
+        folder: Some(home.path().display().to_string()),
+        share: [("sessions".to_string(), "claude".to_string())].into(),
+        ..Default::default()
+    };
+    let saved = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.save_account(None, &draft, window, cx))
+        })
+        .unwrap();
+    assert_eq!(
+        saved,
+        Err(format!(
+            "{} already holds files and isn't a Claude Code folder: choose a new or empty folder",
+            crate::agents::tilde(home.path())
+        ))
+    );
+    assert!(home.path().join("projects").join("app").is_dir());
+    assert!(!home.path().join("projects.own").exists(), "nothing moved");
+}
+
 /// The row's Log in opens a block of the account; its dialog's Delete asks, then deletes it.
 #[gpui_kit::test]
 fn an_accounts_row_logs_in_and_its_dialog_deletes_it(cx: &mut TestAppContext) {

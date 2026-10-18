@@ -295,6 +295,24 @@ pub fn read(kind: &Kind, folder: &Path, sources: &[PathBuf]) -> Vec<(&'static st
         .collect()
 }
 
+/// Whether the person may choose `folder` for an account: its state folder new or empty, or
+/// already the agent's (its login there, or a link at one of its items). Save would keep aside
+/// any other's real items (a home folder's `projects/`).
+pub fn fits(kind: &Kind, folder: &Path) -> bool {
+    let state = kind.state_dir(folder);
+    let Ok(mut entries) = std::fs::read_dir(&state) else {
+        return true;
+    };
+    let there = |path: &&str| std::fs::symlink_metadata(state.join(name(path).0));
+    entries.next().is_none()
+        || kind.login.iter().any(|p| there(p).is_ok())
+        || kind
+            .items
+            .iter()
+            .flat_map(|i| i.paths)
+            .any(|p| there(p).is_ok_and(|m| m.file_type().is_symlink()))
+}
+
 /// Deletes an account's `folder`: its items' links first (only the links), then the folder,
 /// which never follows a link. A folder that is a link itself: only that link.
 pub fn delete(kind: &Kind, folder: &Path) -> io::Result<()> {
@@ -583,6 +601,22 @@ mod tests {
             "the person's own link in its target stays"
         );
         t.logins_intact();
+    }
+
+    #[test]
+    fn a_folder_fits_when_new_empty_or_the_agents() {
+        let t = Two::new();
+        let folder = t.root.join("chosen");
+        assert!(fits(&FAKE, &folder), "new");
+        fs::create_dir_all(&folder).unwrap();
+        assert!(fits(&FAKE, &folder), "empty");
+        fs::create_dir_all(folder.join("skills")).unwrap();
+        fs::write(folder.join("notes.txt"), "mine").unwrap();
+        assert!(!fits(&FAKE, &folder), "someone else's files");
+        fs::remove_dir(folder.join("skills")).unwrap();
+        std::os::unix::fs::symlink(t.src.join("skills"), folder.join("skills")).unwrap();
+        assert!(fits(&FAKE, &folder), "an item linked: set up by hand");
+        assert!(fits(&FAKE, &t.acc), "its login there");
     }
 
     #[test]
