@@ -96,7 +96,7 @@ What doesn't come back: the text that was on screen, and programs other than the
   shell that takes the typed line) saves the block's saved folder, agent and session, for a minute at most
   (`STARTS_WITHIN`), so quitting meanwhile resumes it at the next start. Once a snapshot finds an agent there, what
   it finds is saved.
-- **Accounts** (planned, [accounts.md](accounts.md#its-block)): a terminal's item also keeps the account its shell
+- **Accounts** ([accounts.md](accounts.md#its-block)): a terminal's item also keeps the account its shell
   was opened for (`"account"`), whose variable its shell gets back.
 - **Safety:** the file stores only the agent's name and its session's id, never a command. A `"agent"` value other
   than `"claude"` or `"codex"` is ignored, and a `"session"` is typed only when it is letters, digits and `-`, so an

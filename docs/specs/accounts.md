@@ -1,7 +1,7 @@
 # Agent accounts
 
 - **Date:** 2026-10-18
-- **Status:** Planned (kanban card 37, "Múltiplas contas do claude"):
+- **Status:** Implemented (kanban card 37, "Múltiplas contas do claude"):
   [docs/plans/2026-10-18-agent-accounts.md](../plans/2026-10-18-agent-accounts.md)
 - **Builds on:** [agents.md](agents.md) (the agents, Settings ▸ Agents, `[agents]`), [settings.md](settings.md),
   [usage.md](usage.md) (limits are an account's), [connections.md](connections.md) (`spawn_agent`, what is typed into
@@ -120,8 +120,8 @@ several paths shares them together: they only make sense as one.
 - **Grok Build:** `config` Settings (`config.toml`); `instructions` Instructions (`AGENTS.md`); `rules` Rules
   (`rules/`); `skills` Skills (`skills/`); `agents` Agents (`agents/`); `commands` Commands (`commands/`); `plugins`
   Plugins (`plugins/`, `installed-plugins/`); `sessions` Sessions (`sessions/`). Not `hooks/`: its sandbox refuses
-  links among its hooks' paths. Whether it follows a link inside its folder is unconfirmed: checked by hand with the
-  plan's last task, and an item that doesn't work leaves the table.
+  links among its hooks' paths. It follows a link inside its folder (checked with 1.0.50 on a temporary home:
+  `grok inspect` lists a skill of a `skills/` linked to another folder's).
 - **Kimi Code:** `config` Settings (`config.toml`); `instructions` Instructions (`AGENTS.md`); `mcp` MCP servers
   (`mcp.json`); `skills` Skills (`skills/`); `plugins` Plugins (`plugins/`); `sessions` Sessions (`sessions/`).
 - **Crush:** none. Its login and the settings it writes are one file, `crush.json`: an account of Crush is a login of
@@ -441,19 +441,19 @@ Each goes to [docs/minors.md](../minors.md) under **Agent accounts** with the co
 
 | File | Change |
 |---|---|
-| `crates/templum-accounts` (new, no UI) | Each agent's variable, own folder, items and login (`kinds.rs`); applying an account's choices to its folder, reading a folder's links back, keeping items aside, deleting a folder without following links (`folder.rs`); junctions on Windows |
+| `templum-usage/src/accounts.rs`, `accounts/folder.rs` (no UI; a module of the crate that already knows each agent's folders, not a crate of its own) | Each agent's variable, own folder, items and login; applying an account's choices to its folder, reading a folder's links back, keeping items aside, deleting a folder without following links; junctions on Windows |
 | `templum/src/config.rs` | `of`, `folder`, `share` in `[agents.<id>]`, validated (cycles, targets, keys) |
 | `templum/src/agents.rs` | Accounts among the agents in effect (`AgentEntry::account`), their variable, their id; left out of detection |
 | `templum/src/workspace/blocks.rs`, `usage.rs` | An account's variable in its block's shell, its choices applied at each start, Log in |
 | `templum/src/workspace/mod.rs`, `persist.rs`, `session.rs` | `Pane::account`; the snapshot's agent is the account; `"account"` in the canvas file; restore |
 | `templum-usage` | A process's account folder (`Proc::home`), the relay's `templum_config_dir`, limits per account |
 | `templum/src/workspace/content.rs` | A card for an account |
-| `templum/src/settings/accounts.rs` (new) | The Accounts rows and dialog |
+| `templum/src/settings/accounts.rs` (new) | The Accounts rows and dialog, Log in, Delete |
 | `templum-git/src/message.rs` | Generate runs with an account's variable |
 
 ## Testing
 
-**Unit (`templum-accounts`):** no agent's item is or holds one of its login's names; every key is unique per agent; a
+**Unit (`templum-usage`'s `accounts`):** no agent's item is or holds one of its login's names; every key is unique per agent; a
 shared item becomes a link to the other folder's item, a missing source folder is made, a missing source file isn't
 linked; a real item is kept aside on save (`.own`, then `.own-2`) and left at a start (reported); own again removes
 only the link and brings `.own` back; a link the person made elsewhere is never replaced nor removed, and a folder

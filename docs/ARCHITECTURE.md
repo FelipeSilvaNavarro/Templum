@@ -212,7 +212,9 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   agent's resume command typed into its block); a file it can't read is set aside as `.bak`. Each item carries its
   block's `uid` (`Space::uids`: five letters and digits, what agents name blocks by), kept by a restart, an undo and
   a move to another workspace; a missing, taken or malformed one is replaced; the canvas's `wires` name their blocks
-  by it. A terminal's item also keeps the block that opened it (`opened_by`) and its agent's model and effort.
+  by it. A terminal's item also keeps the block that opened it (`opened_by`), its agent's model and effort, and the
+  account its shell was opened for (`Pane::account`, saved as `account`): the shell gets that account's variable
+  back, and its agent found there is the account ([specs/accounts.md](specs/accounts.md)).
   The workspace's Git is the file's optional `git` object (`SavedGit`: folder, tab, the commit message draft, the
   left column folded, Split); an older file's Git block item is read into it, and no block.
 

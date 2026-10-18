@@ -6,8 +6,8 @@
   agents) and [workspaces.md](workspaces.md)
 - **Parity:** what each agent below gets of Templum's server, hooks, usage and flags, and what is missing:
   [agent-parity.md](agent-parity.md)
-- **Accounts** (planned, kanban card 37): several logins of one agent (`claude2`), each on its own folder, sharing
-  what the person chooses: [accounts.md](accounts.md)
+- **Accounts** (kanban card 37): several logins of one agent (`claude2`), each on its own folder, sharing what the
+  person chooses: [accounts.md](accounts.md)
 
 ## Goal
 

@@ -280,8 +280,8 @@ dropped, and its task ends with the last 20 lines of its screen. From batch 7 it
 `[from <caller>, task t8]`. The result names the new block and its folder, and from batch 8 ends "Its prompt is
 typed once it is ready, as task t8."
 
-`spawn_agent` also opens an account of an agent by its id (`claude2`, [accounts.md](accounts.md#opening-it),
-planned). It takes a `model` and an `effort` (batch 6), typed after the agent's command and before what Templum
+`spawn_agent` also opens an account of an agent by its id (`claude2`, [accounts.md](accounts.md#opening-it)). It
+takes a `model` and an `effort` (batch 6), typed after the agent's command and before what Templum
 adds (Claude Code's `--mcp-config` takes every word after it):
 
 | Agent | `model` | `effort` |

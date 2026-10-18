@@ -133,7 +133,7 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
 
 **Agents** lists the agents ([agents.md](agents.md#changing-ours-adding-yours)), and under them their **Accounts**:
 another login of an agent on its own folder, and what it shares with the others
-([accounts.md](accounts.md#settings--agents--accounts), planned).
+([accounts.md](accounts.md#settings--agents--accounts)).
 
 **Shortcuts**
 

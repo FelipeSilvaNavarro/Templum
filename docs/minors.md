@@ -1330,3 +1330,48 @@ Left by the third review of its fixes; line numbers are those of `development` a
   save (Windows), the reopened Templum gives up on the lock after `QUITTING` (`crates/templum/src/session.rs:41`)
   and starts without a data folder, with the notice. Fix: the same "quitting" marker, with no fixed limit while the
   holder says it is quitting.
+
+## Agent accounts
+
+The known limits of [specs/accounts.md](specs/accounts.md#known-limits), and what kanban card 37's run couldn't check
+by hand (a second real login, macOS, Windows). Line numbers are those of `development` at 173017d.
+
+- [ ] **A shell that sets the agent's variable again runs the agent in that folder.** An account's block gets its
+  variable from Templum (`agent_vars`, `crates/templum/src/workspace/usage.rs:180`); an `export
+  CLAUDE_CONFIG_DIR=…` in the person's `.bashrc` replaces it, so `claude` there runs on that folder while the block
+  still names the account. Fix: read the agent process's environment in the snapshot (sysinfo's `environ`) and name
+  the block by the folder found.
+- [ ] **An agent that rewrites a shared file by a rename stops sharing it until the next start.** Templum notices a
+  link the agent replaced only when the account starts (`apply`, `When::Starting`,
+  `crates/templum-usage/src/accounts/folder.rs:246`): until then the two accounts' settings drift apart. Fix: also
+  check the account's links at each snapshot of a block of it.
+- [ ] **A card for a deleted account keeps its id.** `delete_account` (`crates/templum/src/workspace/preferences.rs:152`)
+  leaves `agent:claude2` on its cards: no block takes them until the person changes them. Fix: offer to give them
+  to its agent ("Any Claude Code") in the delete question.
+- [ ] **Claude Code's synced skills and plugins are shared too.** Two accounts sharing `skills` or `plugins` share
+  `skills/synced/` and `plugins/synced/` (the claude.ai account's), and each sign-in syncs its own over them
+  (`KINDS`, `crates/templum-usage/src/accounts.rs:63`). Fix: link the items' entries one by one, leaving `synced/`
+  each account's own.
+- [ ] **Some logins are every folder's.** Claude Code's Console sign-ins without a key (`~/.config/anthropic`) and
+  Codex's MCP servers' OAuth logins (the keyring, by server) are one for every account; nothing in the dialog says
+  so. Fix: say it in their agents' notes (`KINDS`, `crates/templum-usage/src/accounts.rs`).
+- [ ] **Gemini CLI reads `advanced.autoConfigureMemory` from the account's folder, not its `.gemini/`.** Its issue
+  27421: the setting saved in an account's `.gemini/settings.json` is ignored. Fix: none on Templum's side until
+  Gemini CLI fixes it.
+- [ ] **A folder chosen for an account may be another account's default one.** `check_account`
+  (`crates/templum/src/config.rs:516`) compares chosen folders only, so `folder = "<data>/accounts/claude3"` on
+  claude2 isn't refused while claude3 uses that default: both run on one folder. Fix: compare with each account's
+  folder in effect (`agents::effective` has them).
+- [ ] **Crush's own folder is Linux's default.** `own: ".local/share/crush"` (`crates/templum-usage/src/accounts.rs:284`)
+  misses `XDG_DATA_HOME` and Windows' `%LOCALAPPDATA%\crush`, so a Crush account chosen on that folder isn't
+  refused as Crush's own. Fix: `own_folder` follows them for Crush.
+- [ ] **Not checked by hand: two real Claude Code logins.** No second login was made in card 37's run: each account's
+  own limits in the meter, `/status` naming the other account in a claude2 block, and claude2 resuming one of
+  claude's sessions with `/resume` are covered by tests only (`crates/templum/src/workspace/tests/settings_panel.rs`,
+  `persistence.rs`). Fix: check them by hand with two accounts, and on macOS that a claude2 login lands in the
+  Keychain under its folder's own name.
+- [ ] **Not checked by hand: Windows.** Junctions for folders and the Developer Mode refusal for files
+  (`files_share`, `crates/templum-usage/src/accounts/folder.rs:291`) are tested by CI's `#[cfg(windows)]` test only.
+  Fix: share `skills` from a Windows account by hand and check the agent reads it.
+- [ ] **Not checked by hand: Codex with its own login.** codex2 logged in with its own account (`codex login` in its
+  block) wasn't run. Fix: check by hand that its limits row is its own.
