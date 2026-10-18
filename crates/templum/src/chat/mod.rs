@@ -157,6 +157,9 @@ pub(crate) struct Approval {
     pub said: String,
     /// Exactly what will happen: the text to type, the keys, what stops.
     pub details: String,
+    /// What the person saw of its block, written with its words: an Allow after it changed is
+    /// asked again.
+    pub facts: String,
     /// Its box of details, and whether it was seen to its end: until then, nothing allows it.
     pub scroll: ScrollHandle,
     pub read: Cell<bool>,

@@ -1138,6 +1138,62 @@ fn send_keys_shows_what_the_agent_asks(cx: &mut TestAppContext) {
     });
 }
 
+/// The person answered the dialog themselves and the agent asks something else: Allow, given to
+/// what the approval showed, presses nothing; the approval says what it asks now and waits for a
+/// new click.
+#[gpui_kit::test]
+fn an_allow_after_the_dialog_changed_asks_again(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    let asks = |ws: &Entity<Workspace>, cx: &mut TestAppContext, what: &str| {
+        ws.update(cx, |ws, _| {
+            ws.space.terminal_mut(busy).unwrap().state =
+                Some(crate::workspace::AgentState::NeedsYou(Some(what.into())));
+        })
+    };
+    asks(&ws, cx, "Allow Bash(ls)?");
+    let answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "send_keys",
+        json!({"block": uid, "keys": ["1"]}),
+    );
+    let long_ago = cx.executor().now() - std::time::Duration::from_secs(60);
+    ws.read_with(cx, |ws, _| {
+        let approval = &ws.templum_agent.approvals[0];
+        approval.read.set(true);
+        approval.shown.set(Some(long_ago));
+    });
+    asks(&ws, cx, "Allow Bash(rm -rf build)?");
+    answer(handle, &ws, cx, crate::chat::Answer::Conversation);
+    assert!(answers.try_recv().is_err(), "it still waits");
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            ws.space.terminal(busy).unwrap().keys_from.is_none(),
+            "no key"
+        );
+        let agent = &ws.templum_agent;
+        assert!(agent.grants.is_empty());
+        let approval = &agent.approvals[0];
+        assert_eq!(approval.details, "It asks: Allow Bash(rm -rf build)?\n1");
+        assert_ne!(approval.shown.get(), Some(long_ago), "shown anew");
+        assert!(
+            !agent
+                .conversation
+                .rows
+                .iter()
+                .any(|r| matches!(r, ::templum_agent::Row::Approval { .. }))
+        );
+    });
+    // Unchanged since, the next Allow presses it.
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    super::bus::after(cx, 1_000);
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert!(!failed && text.starts_with("Pressed 1 key"), "{text}");
+}
+
 #[test]
 #[ignore = "the fake engine the Templum Agent's tests start"]
 fn fake_engine() {

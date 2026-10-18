@@ -34,13 +34,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<(Value, Replier, Parsed, Value)> {
-        // A wire's danger is the terminal of the person's it would reach.
-        let uid = match &parsed.call {
-            ControlCall::Connect { .. } | ControlCall::OpenAgent(_) => {
-                self.wired_terminals(&parsed.call).into_iter().next()
-            }
-            call => called_block(call).map(str::to_owned),
-        };
+        let uid = self.asked_about(&parsed.call);
         let target = uid.as_deref().and_then(|uid| self.find_block(uid));
         let own = uid.as_deref().is_some_and(|uid| self.own_block(uid));
         let losing = target
@@ -53,6 +47,7 @@ impl Workspace {
             return Some((request, reply, parsed, args));
         };
         let (said, details) = self.approval_words(&parsed.call, (&space, id), losing, cx);
+        let facts = self.facts((&space, id), cx);
         let agent = &mut self.templum_agent;
         agent.next_approval += 1;
         agent.approvals.push(Approval {
@@ -68,6 +63,7 @@ impl Workspace {
             keys: Default::default(),
             said,
             details,
+            facts,
             scroll: Default::default(),
             read: Default::default(),
         });
@@ -112,6 +108,71 @@ impl Workspace {
             });
         show_notification(window, cx, notification);
         self.chime(cx);
+    }
+
+    /// The block a call's approval is about: the one it aims at; for a wire, the person's
+    /// terminal it would reach.
+    fn asked_about(&self, call: &ControlCall) -> Option<String> {
+        match call {
+            ControlCall::Connect { .. } | ControlCall::OpenAgent(_) => {
+                self.wired_terminals(call).into_iter().next()
+            }
+            call => called_block(call).map(str::to_owned),
+        }
+    }
+
+    /// What the person saw of block `at` when asked, to tell whether it changed since: its
+    /// title, what runs in it (its agent, or its command by when it started: one started since
+    /// is another; its shell back in front), what its agent asks, an editor's unsaved files.
+    fn facts(&self, (space, id): (&str, BlockId), cx: &App) -> String {
+        let Some(home) = self.space_named(space) else {
+            return String::new();
+        };
+        let title = home.blocks.get(&id).map(|b| self.about(b, cx).1);
+        let runs = match home.terminal(id) {
+            Some(pane) => {
+                let asks = match &pane.state {
+                    Some(AgentState::NeedsYou(what)) => Some(what),
+                    _ => None,
+                };
+                format!(
+                    "{:?} {:?} {asks:?} {} {}",
+                    self.agent_name(pane),
+                    pane.term.status().running,
+                    pane.shell_in_front(),
+                    pane.term.exited()
+                )
+            }
+            None => home.unsaved(Some(id)).join("\n"),
+        };
+        format!("{title:?}\n{runs}")
+    }
+
+    /// The approval at `at` was written from its block as the person saw it. When that changed
+    /// since (another dialog, another program in it), its words are written again and it waits
+    /// for a new click, once seen, as a new one would: an Allow never answers what the person
+    /// didn't see. True when it changed.
+    fn asked_again(&mut self, at: usize, cx: &mut Context<Self>) -> bool {
+        let call = &self.templum_agent.approvals[at].parsed.call;
+        let Some((space, id)) = self.asked_about(call).and_then(|uid| self.find_block(&uid)) else {
+            return false;
+        };
+        let facts = self.facts((&space, id), cx);
+        if facts == self.templum_agent.approvals[at].facts {
+            return false;
+        }
+        let losing = self.would_lose((&space, id));
+        let (said, details) = self.approval_words(call, (&space, id), losing, cx);
+        let approval = &mut self.templum_agent.approvals[at];
+        approval.said = said;
+        approval.details = details;
+        approval.facts = facts;
+        approval.shown.set(None);
+        approval.keys.set(None);
+        approval.read.set(false);
+        approval.scroll = Default::default();
+        cx.notify();
+        true
     }
 
     /// The block `uid` is the Templum Agent's own, made in this conversation.
@@ -251,6 +312,10 @@ impl Workspace {
         let Some(at) = agent.approvals.iter().position(|a| a.id == id) else {
             return;
         };
+        if !matches!(answer, Answer::Deny(_)) && self.asked_again(at, cx) {
+            return;
+        }
+        let agent = &mut self.templum_agent;
         let approval = agent.approvals.remove(at);
         let word = match &answer {
             Answer::Once => "Allowed once",
