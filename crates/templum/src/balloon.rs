@@ -57,7 +57,7 @@ pub(crate) fn render(
             ask, form, scroll, ..
         } if ask.plan.is_some() => plan(ws, wait, ask, form, scroll, id, z, cx),
         Waiting::Question { ask, form, .. } => question(ws, wait, ask, form, n, z, cx),
-        Waiting::Connect { .. } => connect(ws, wait, n, z, cx),
+        Waiting::Allow { then } => allow(ws, wait, then.buttons(), n, z, cx),
         Waiting::Turn { .. } | Waiting::Event { .. } => return None,
     };
     let head = div()
@@ -535,10 +535,12 @@ fn mark(multi: bool, picked: bool, ui: Ui, z: f32) -> Div {
         .when(picked, |el| el.bg(ui.accent))
 }
 
-/// A request to connect: what it asks, Allow and Deny.
-fn connect(
+/// A request with two buttons: what it asks, its yes and its no (Allow and Deny for a request to
+/// connect).
+fn allow(
     ws: &Workspace,
     wait: &Wait,
+    (yes, no): (&'static str, &'static str),
     n: usize,
     z: f32,
     cx: &mut Context<Workspace>,
@@ -550,20 +552,20 @@ fn connect(
         .items_center()
         .gap(px(6.0 * z))
         .child(
-            button(part(n, "allow"), "Allow", ui, z)
-                .on_click(cx.listener(once(move |ws, _, cx| ws.answer_connect(key, true, cx))))
+            button(part(n, "allow"), yes, ui, z)
+                .on_click(cx.listener(once(move |ws, _, cx| ws.answer_allow(key, true, cx))))
                 .test_support(),
         )
         .child(
-            button(part(n, "deny"), "Deny", ui, z)
-                .on_click(cx.listener(once(move |ws, _, cx| ws.answer_connect(key, false, cx))))
+            button(part(n, "deny"), no, ui, z)
+                .on_click(cx.listener(once(move |ws, _, cx| ws.answer_allow(key, false, cx))))
                 .test_support(),
         );
     div()
         .flex()
         .flex_col()
         .gap(px(10.0 * z))
-        .child(div().child(ws.connect_line(wait, cx)))
+        .child(div().child(ws.allow_line(wait, cx)))
         .child(buttons)
         .into_any_element()
 }

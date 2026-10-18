@@ -540,6 +540,16 @@ impl Workspace {
             Call::SendKeys { block, keys } => return self.send_keys(terminal, &block, keys, cx),
             Call::Interrupt { block } => return self.interrupt(terminal, &block, cx),
             Call::StopAgent { block } => self.stop_agent(terminal, &block, cx),
+            Call::RemoveWorktree {
+                worktree,
+                folder,
+                discard,
+            } => {
+                return self.remove_worktree(terminal, &worktree, folder.as_deref(), discard, cx);
+            }
+            Call::MergeWorktree { worktree, folder } => {
+                return self.merge_worktree(terminal, &worktree, folder.as_deref());
+            }
             Call::CloseBlock { block } => self.close_block(terminal, &block, window, cx),
             Call::ProposePlan {
                 plan,

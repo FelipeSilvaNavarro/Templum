@@ -1,10 +1,11 @@
 //! The workspace operations both MCP servers call, each taking its target, never a caller
 //! (docs/specs/agent-tools.md#shared-operations).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use gpui_kit::{Context, Window};
+use gpui_kit::{Context, Task, Window};
 use templum_canvas::{BlockId, chrome};
+use templum_mcp::Reply;
 use templum_terminal::Pattern;
 
 use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Workspace};
@@ -258,5 +259,75 @@ impl Workspace {
         self.watches.push(watch);
         self.look_at_watches(cx);
         self.next_watch
+    }
+
+    /// The worktree `name` that `spawn_agent` made in the repository of `folder`, against
+    /// `folder`'s working tree (where it goes back), and that repository; why not.
+    // ponytail: read on the UI thread (a few git commands); on the background executor if a big
+    // repository makes it slow.
+    pub(super) fn worktree_state(
+        &self,
+        folder: &Path,
+        name: &str,
+    ) -> Result<(templum_git::Repo, templum_git::WorktreeState), String> {
+        let program = self.config.git.program();
+        let repo = match templum_git::Repo::discover(program, folder) {
+            Ok(Some(repo)) => repo,
+            Ok(None) => return Err(format!("{} isn't in a Git repository.", folder.display())),
+            Err(e) => return Err(format!("Couldn't run git: {}", e.first_line())),
+        };
+        match repo.worktree_state(name) {
+            Ok(Some(state)) => Ok((repo, state)),
+            Ok(None) => Err(format!(
+                "There's no worktree {name} in this repository: git worktree list shows them."
+            )),
+            Err(e) => Err(format!("Couldn't read the worktree: {}", e.first_line())),
+        }
+    }
+
+    /// Removes the worktree `name` of `repo` and its branch on the background executor; with
+    /// `discard`, its changes and commits not merged are lost.
+    pub(super) fn worktree_remove(
+        &self,
+        repo: templum_git::Repo,
+        name: String,
+        discard: bool,
+        cx: &mut Context<Self>,
+    ) -> Task<Reply> {
+        cx.background_executor().spawn(async move {
+            match repo.remove_worktree(&name, discard) {
+                Ok(()) => Reply::ok(format!("Removed the worktree {name} and its branch.")),
+                Err(e) => Reply::err(format!("Couldn't remove {name}: {}", e.first_line())),
+            }
+        })
+    }
+
+    /// Merges the worktree `name`'s `unmerged` commits into `into`, the branch of `repo`'s working
+    /// tree, on the background executor; a conflict is aborted, naming its files.
+    pub(super) fn worktree_merge(
+        &self,
+        repo: templum_git::Repo,
+        name: String,
+        into: String,
+        unmerged: u32,
+        cx: &mut Context<Self>,
+    ) -> Task<Reply> {
+        cx.background_executor().spawn(async move {
+            let commits = match unmerged {
+                1 => "1 commit".to_string(),
+                n => format!("{n} commits"),
+            };
+            match repo.merge_from(&name) {
+                Ok(Ok(())) => Reply::ok(format!(
+                    "Merged {name} into {into} ({commits}). remove_worktree removes it."
+                )),
+                Ok(Err(files)) => Reply::err(format!(
+                    "The merge would conflict in {}: merge {into} into {name} and resolve them \
+                     there, then merge again.",
+                    files.join(", ")
+                )),
+                Err(e) => Reply::err(format!("Couldn't merge {name}: {}", e.first_line())),
+            }
+        })
     }
 }

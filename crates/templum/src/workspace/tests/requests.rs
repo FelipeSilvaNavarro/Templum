@@ -799,7 +799,7 @@ fn allow_wires_the_blocks_and_deny_refuses(cx: &mut TestAppContext) {
         Some(format!("Waiting for you: connect to {k}"))
     );
     let key = last_wait(&ws, cx);
-    ws.update(cx, |ws, cx| ws.answer_connect(key, true, cx));
+    ws.update(cx, |ws, cx| ws.answer_allow(key, true, cx));
     assert_eq!(answered(&answers), (false, format!("Connected to {k}.")));
     ws.read_with(cx, |ws, _| assert!(ws.space.wired(mine, kanban)));
     // Wired as by hand: Ctrl+Z takes it back.
@@ -818,7 +818,7 @@ fn allow_wires_the_blocks_and_deny_refuses(cx: &mut TestAppContext) {
         json!({ "block": n }),
     );
     let key = last_wait(&ws, cx);
-    ws.update(cx, |ws, cx| ws.answer_connect(key, false, cx));
+    ws.update(cx, |ws, cx| ws.answer_allow(key, false, cx));
     let (failed, text) = answered(&answers);
     assert!(failed && text.contains("didn't connect you"), "{text}");
     ws.read_with(cx, |ws, _| assert!(!ws.space.wired(mine, note)));
@@ -839,7 +839,7 @@ fn allow_refuses_a_block_moved_to_another_workspace(cx: &mut TestAppContext) {
         ws.update(cx, |ws, cx| ws.move_blocks(vec![kanban], None, window, cx))
     })
     .unwrap();
-    ws.update(cx, |ws, cx| ws.answer_connect(key, true, cx));
+    ws.update(cx, |ws, cx| ws.answer_allow(key, true, cx));
     let (failed, text) = answered(&answers);
     assert!(failed && text.contains("isn't in your workspace"), "{text}");
     ws.read_with(cx, |ws, _| {

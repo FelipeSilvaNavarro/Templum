@@ -40,6 +40,7 @@ mod usage;
 mod view;
 mod waits;
 mod wires;
+mod worktrees;
 
 pub(crate) use bus::templum_in;
 pub(crate) use find::FindBar;

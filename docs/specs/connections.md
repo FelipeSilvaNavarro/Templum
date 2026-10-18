@@ -467,6 +467,8 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `interrupt` | `block` | Esc in its agent; ends the task the caller handed it | wired, an agent | 6 |
 | `schedule` | `block`, `text`, `at` (`HH:MM`), `after`, `every` (minutes, 1 to 10080) | Delivers `text` later, from the caller: a task to an agent (`[from …, task t9, scheduled s3]`), typed with Enter into a terminal running no agent, a notice to the caller's own block; again every `every` minutes for 7 days at most ([agent-tools.md](agent-tools.md#schedule-and-cancel_schedule)); its id | wired, or the caller's own | card 35 |
 | `cancel_schedule` | `schedule` (`s3`) | Cancels one of the caller's schedules; `whoami` lists them | — | card 35 |
+| `remove_worktree` | `worktree`, `folder`, `discard` (false) | Removes a worktree `spawn_agent` made and its branch: at once when clean and merged; with `discard`, once the person says Delete ([agent-tools.md](agent-tools.md#remove_worktree-and-merge_worktree)) | none works in it | card 35 |
+| `merge_worktree` | `worktree`, `folder` | Merges its branch into the branch of `folder`'s working tree once the person says Merge; a conflict is aborted | none works in it | card 35 |
 | `stop_agent` | `block` | Ends the program in the terminal (its agent, or the command `create_block` started), everything below it and what it left running; its shell stays ([agent-tools.md](agent-tools.md#stop_agent)); ends the task the caller handed it | wired, opened by the caller | card 35 |
 | `close_block` | `block` | Closes a block the caller opened | wired, opened by the caller | 6 |
 
@@ -1150,6 +1152,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum interrupt <block>` | `interrupt` | 6 |
 | `templum close <block>` | `close_block` | 6 |
 | `templum stop <block>` | `stop_agent` | card 35 |
+| `templum worktree remove <name> [--folder <f>] [--discard] \| merge <name> [--folder <f>]` | `remove_worktree`, `merge_worktree` | card 35 |
 | `templum schedule <block> <text> [--at HH:MM] [--after <min>] [--every <min>]`, `templum unschedule <id>` | `schedule`, `cancel_schedule` | card 35 |
 | `templum wire <a> <b>` | wires two blocks of the workspace of the terminal it runs in, a step of Ctrl+Z; not a tool (an agent's MCP server never lists it); it asks no one, so an agent's shell tool can wire its own block (the person's choice) | 5 |
 

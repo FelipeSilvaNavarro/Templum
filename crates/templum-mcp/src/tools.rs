@@ -162,6 +162,18 @@ pub enum Call {
     CancelSchedule {
         schedule: String,
     },
+    /// Removes a worktree `spawn_agent` made: at once when it is clean and merged; with
+    /// `discard`, after the person allows losing its work.
+    RemoveWorktree {
+        worktree: String,
+        folder: Option<String>,
+        discard: bool,
+    },
+    /// Merges a worktree's branch back, once the person allows it.
+    MergeWorktree {
+        worktree: String,
+        folder: Option<String>,
+    },
     /// Ends what runs in a terminal the caller opened, and what it left running.
     StopAgent {
         block: String,
@@ -514,6 +526,41 @@ pub fn list() -> Value {
             "type": "object",
             "properties": { "schedule": { "type": "string" } },
             "required": ["schedule"],
+        },
+    });
+    let worktree = json!({
+        "type": "string",
+        "description": "The name spawn_agent's worktree was given: .worktrees/<worktree> of the repository.",
+    });
+    let repository = json!({
+        "type": "string",
+        "description": "A folder of the repository, relative to yours; yours when left out. It merges into the branch \
+                        checked out there.",
+    });
+    let remove_worktree = json!({
+        "name": "remove_worktree",
+        "description": "Removes a worktree spawn_agent made, and its branch: at once when it has no changes and its \
+                        commits are merged; with discard, after the person allows losing them. Refused while a block \
+                        works in it.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "worktree": worktree,
+                "folder": repository,
+                "discard": { "type": "boolean" },
+            },
+            "required": ["worktree"],
+        },
+    });
+    let merge_worktree = json!({
+        "name": "merge_worktree",
+        "description": "Merges a worktree spawn_agent made back into the branch of your folder (or folder's), once the \
+                        person allows it; a conflict is aborted, naming the files. Refused while a block works in it \
+                        or with changes not committed.",
+        "inputSchema": {
+            "type": "object",
+            "properties": { "worktree": worktree, "folder": repository },
+            "required": ["worktree"],
         },
     });
     json!({ "tools": [
@@ -891,6 +938,8 @@ pub fn list() -> Value {
         propose_plan,
         schedule,
         cancel_schedule,
+        remove_worktree,
+        merge_worktree,
         {
             "name": "interrupt",
             "description": "Presses Esc once in an agent connected to you while it works or waits for its person, \
@@ -1344,6 +1393,15 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             schedule: named("schedule")?
                 .ok_or_else(|| format!("{name} needs \"schedule\", its id (s3)"))?,
         },
+        "remove_worktree" => Call::RemoveWorktree {
+            worktree: text("worktree")?,
+            folder: optional("folder")?,
+            discard: flag("discard")?,
+        },
+        "merge_worktree" => Call::MergeWorktree {
+            worktree: text("worktree")?,
+            folder: optional("folder")?,
+        },
         "stop_agent" => Call::StopAgent {
             block: text("block")?,
         },
@@ -1492,6 +1550,11 @@ mod tests {
                 json!({ "block": "k9x1d", "text": "check the build", "at": "15:00", "every": 10 }),
             ),
             ("cancel_schedule", json!({ "schedule": "s3" })),
+            (
+                "remove_worktree",
+                json!({ "worktree": "fix-login", "folder": "../api", "discard": true }),
+            ),
+            ("merge_worktree", json!({ "worktree": "fix-login" })),
             ("interrupt", json!({ "block": "k9x1d" })),
             ("stop_agent", json!({ "block": "k9x1d" })),
             ("close_block", json!({ "block": "k9x1d" })),
@@ -1938,6 +2001,29 @@ mod tests {
                 schedule: "3".into()
             })
         );
+    }
+
+    #[test]
+    fn the_worktree_tools_take_a_name_and_a_folder() {
+        assert_eq!(
+            parse("remove_worktree", &json!({ "worktree": "w" })),
+            Ok(Call::RemoveWorktree {
+                worktree: "w".into(),
+                folder: None,
+                discard: false
+            })
+        );
+        assert_eq!(
+            parse(
+                "merge_worktree",
+                &json!({ "worktree": "w", "folder": "api" })
+            ),
+            Ok(Call::MergeWorktree {
+                worktree: "w".into(),
+                folder: Some("api".into())
+            })
+        );
+        assert!(parse("merge_worktree", &json!({})).is_err());
     }
 
     /// create_block takes what its kind does, and names what it doesn't.

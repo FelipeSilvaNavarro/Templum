@@ -1213,3 +1213,256 @@ fn a_role_opens_its_agent_with_its_words_and_its_instructions_go_with_the_prompt
         (true, "There's no role tester. Roles: reviewer.".into())
     );
 }
+
+/// Opens an agent in the worktree `name` of `repo`, as `spawn_agent` does: its block, its uid,
+/// and the worktree's folder.
+fn in_worktree(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    (terminal, mine): (&str, BlockId),
+    repo: &std::path::Path,
+    (conn, name): (u64, &str),
+) -> (BlockId, String, std::path::PathBuf) {
+    let spawn = json!({ "agent": "codex", "folder": repo, "worktree": name });
+    let answers = call_later(handle, ws, cx, terminal, conn, "spawn_agent", spawn);
+    let (failed, text) = answer_soon(cx, &answers);
+    assert!(!failed, "{text}");
+    let worker = spawned(ws, cx, mine);
+    let (_, them) = me(ws, cx, worker);
+    (worker, them, repo.join(".worktrees").join(name))
+}
+
+/// The balloon of block `mine` drawn, long enough ago for presses to count; then its yes (allow)
+/// or its no (deny) pressed.
+fn press_balloon(handle: AnyWindowHandle, cx: &mut TestAppContext, mine: BlockId, what: &str) {
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    after(cx, 600);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(crate::balloon::part(mine.0 as usize, what), cx);
+    })
+    .unwrap();
+}
+
+/// `merge_worktree` refuses while an agent works in the worktree or the person's branch has
+/// changes, asks the person, then merges; `remove_worktree` removes a merged one at once
+/// (docs/specs/agent-tools.md, remove_worktree and merge_worktree).
+#[gpui_kit::test]
+fn merge_worktree_asks_the_person_then_merges_and_remove_worktree_removes_it(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "w"));
+    std::fs::write(wt.join("a.txt"), "new\n").unwrap();
+    git_run(&wt, &["commit", "-qam", "change"]);
+    let merge = json!({ "worktree": "w", "folder": root });
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "merge_worktree", merge.clone()),
+        (
+            true,
+            format!("{them} works in it: stop_agent or close_block it first.")
+        )
+    );
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::write(root.join("a.txt"), "the person's\n").unwrap();
+    let (failed, text) = call(handle, &ws, cx, &terminal, "merge_worktree", merge.clone());
+    assert!(
+        failed && text.starts_with("main has changes not committed in "),
+        "{text}"
+    );
+    git_run(&root, &["checkout", "--", "a.txt"]);
+    let answers = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        5,
+        "merge_worktree",
+        merge.clone(),
+    );
+    assert!(answers.try_recv().is_err(), "it waits for the person");
+    let line = ws.read_with(cx, |ws, cx| {
+        ws.allow_line(ws.balloon(&terminal).unwrap().0, cx)
+    });
+    assert!(
+        line.ends_with(" wants to merge w (1 commits) into main."),
+        "{line}"
+    );
+    press_balloon(handle, cx, mine, "allow");
+    let (failed, text) = answer_soon(cx, &answers);
+    assert_eq!(
+        (failed, text.as_str()),
+        (
+            false,
+            "Merged w into main (1 commit). remove_worktree removes it."
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("a.txt")).unwrap(),
+        "new\n"
+    );
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "merge_worktree", merge),
+        (true, "w has nothing main doesn't.".into())
+    );
+    let remove = json!({ "worktree": "w", "folder": root });
+    let answers = call_later(handle, &ws, cx, &terminal, 6, "remove_worktree", remove);
+    assert_eq!(
+        answer_soon(cx, &answers),
+        (false, "Removed the worktree w and its branch.".into())
+    );
+    assert!(!wt.exists());
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "remove_worktree",
+            json!({ "worktree": "w", "folder": root })
+        ),
+        (
+            true,
+            "There's no worktree w in this repository: git worktree list shows them.".into()
+        )
+    );
+}
+
+/// Work in a worktree is lost only once the person says Delete; Keep keeps it; a merge that
+/// would conflict is aborted; a request waits its turn after the others of its block.
+#[gpui_kit::test]
+fn remove_worktree_with_work_in_it_asks_before_discarding_and_keep_keeps_it(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "d"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::write(wt.join("b.txt"), "work\n").unwrap();
+    let remove = |discard: bool| json!({ "worktree": "d", "folder": root, "discard": discard });
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "remove_worktree", remove(false)),
+        (
+            true,
+            "d has 1 changed files and 0 commits not merged into main: merge_worktree merges \
+             them, discard: true loses them."
+                .into()
+        )
+    );
+    // A question first: the request waits its turn, "1 of 2".
+    let question = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        4,
+        "ask_user",
+        json!({ "question": "Ready?", "options": ["Yes"] }),
+    );
+    let answers = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        5,
+        "remove_worktree",
+        remove(true),
+    );
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.balloon(&terminal).map(|(_, n)| n)),
+        Some(2)
+    );
+    press_balloon(handle, cx, mine, "q0-option-0");
+    assert_eq!(answer_soon(cx, &question), (false, "Yes".into()));
+    let line = ws.read_with(cx, |ws, cx| {
+        ws.allow_line(ws.balloon(&terminal).unwrap().0, cx)
+    });
+    assert!(
+        line.ends_with(
+            " wants to delete the worktree d, with 1 changed files and 0 commits not merged."
+        ),
+        "{line}"
+    );
+    press_balloon(handle, cx, mine, "deny");
+    assert_eq!(
+        answer_soon(cx, &answers),
+        (true, "The person said no.".into())
+    );
+    assert!(wt.join("b.txt").exists(), "kept");
+    let answers = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        6,
+        "remove_worktree",
+        remove(true),
+    );
+    press_balloon(handle, cx, mine, "allow");
+    assert_eq!(
+        answer_soon(cx, &answers),
+        (false, "Removed the worktree d and its branch.".into())
+    );
+    assert!(!wt.exists());
+    // A merge that would conflict is aborted, nothing left half done.
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (7, "c"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::write(wt.join("a.txt"), "theirs\n").unwrap();
+    git_run(&wt, &["commit", "-qam", "theirs"]);
+    std::fs::write(root.join("a.txt"), "ours\n").unwrap();
+    git_run(&root, &["commit", "-qam", "ours"]);
+    let merge = json!({ "worktree": "c", "folder": root });
+    let answers = call_later(handle, &ws, cx, &terminal, 8, "merge_worktree", merge);
+    press_balloon(handle, cx, mine, "allow");
+    assert_eq!(
+        answer_soon(cx, &answers),
+        (
+            true,
+            "The merge would conflict in a.txt: merge main into c and resolve them there, then \
+             merge again."
+                .into()
+        )
+    );
+    assert!(!root.join(".git/MERGE_HEAD").exists());
+    assert_eq!(
+        std::fs::read_to_string(root.join("a.txt")).unwrap(),
+        "ours\n"
+    );
+}

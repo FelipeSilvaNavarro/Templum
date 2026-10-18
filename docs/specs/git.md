@@ -281,6 +281,14 @@ on it. A clone that wants credentials fails with **Run in a terminal**, as other
   History, from a chosen commit).
 - **Right-click:** **Compare with `main`**, Merge into *current*…, Rename…, Delete…, Publish, Copy name.
 
+### Worktrees an agent made
+
+`spawn_agent`'s `worktree` makes `.worktrees/<name>` on a branch of that name (connections.md). An agent removes it
+with `remove_worktree` (at once when it has no changes and its commits are merged; losing work only once the person
+says Delete in its balloon) and merges it back with `merge_worktree` (into the branch of its own folder, once the
+person says Merge; a conflict is aborted, naming the files): [agent-tools.md](agent-tools.md#remove_worktree-and-merge_worktree).
+Neither runs while a terminal block works in the worktree.
+
 ### Comparison
 
 - **Compare** (in the Branches tab: its column becomes the comparison's commits, the panel its diff, a ← goes back)

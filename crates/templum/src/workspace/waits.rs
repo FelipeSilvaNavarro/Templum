@@ -66,9 +66,9 @@ pub(crate) enum Waiting {
         /// A plan's Markdown frame's scroll (`propose_plan`).
         scroll: crate::markdown::PreviewScroll,
     },
-    /// `connect`: the person's Allow or Deny to wiring the asking block to block `to` (its block
-    /// id).
-    Connect { to: String },
+    /// The person's yes or no to what an agent asks to do (docs/specs/agent-tools.md, Asking the
+    /// person): `then`, done once they said yes.
+    Allow { then: Approved },
     /// `delegate` with `wait`, `wait_for_idle`: the end of the turn of the agent in the terminal
     /// `of` (the block `uid`).
     Turn { of: String, uid: String },
@@ -83,6 +83,39 @@ pub(crate) enum Waiting {
         since: (u64, u64),
         watch: Option<(u64, String)>,
     },
+}
+
+/// What a request with two buttons does once the person says yes.
+pub(crate) enum Approved {
+    /// `connect`: wires the asking block to the block `to` (its block id). Allow, Deny.
+    Connect { to: String },
+    /// `remove_worktree` with `discard`: removes the worktree `name` of `repo`, losing its
+    /// `changed` files and `unmerged` commits. Delete, Keep.
+    RemoveWorktree {
+        repo: templum_git::Repo,
+        name: String,
+        changed: usize,
+        unmerged: u32,
+    },
+    /// `merge_worktree`: merges the worktree `name`'s `unmerged` commits into `into`, the branch
+    /// of `repo`'s working tree. Merge, Cancel.
+    MergeWorktree {
+        repo: templum_git::Repo,
+        name: String,
+        unmerged: u32,
+        into: String,
+    },
+}
+
+impl Approved {
+    /// Its two buttons' words: yes, then no.
+    pub(crate) fn buttons(&self) -> (&'static str, &'static str) {
+        match self {
+            Approved::Connect { .. } => ("Allow", "Deny"),
+            Approved::RemoveWorktree { .. } => ("Delete", "Keep"),
+            Approved::MergeWorktree { .. } => ("Merge", "Cancel"),
+        }
+    }
 }
 
 /// A tool call that waits, as `serve` hands it over: where its answer goes.
@@ -105,7 +138,15 @@ impl Wait {
     pub fn summary(&self) -> String {
         match &self.what {
             Waiting::Question { ask, .. } => ask.summary(),
-            Waiting::Connect { to } => format!("connect to {to}"),
+            Waiting::Allow {
+                then: Approved::Connect { to },
+            } => format!("connect to {to}"),
+            Waiting::Allow {
+                then: Approved::RemoveWorktree { name, .. },
+            } => format!("delete the worktree {name}"),
+            Waiting::Allow {
+                then: Approved::MergeWorktree { name, .. },
+            } => format!("merge {name}"),
             Waiting::Turn { .. } | Waiting::Event { .. } => String::new(),
         }
     }
@@ -157,10 +198,7 @@ impl Workspace {
                 ..
             }
         );
-        if matches!(
-            wait.what,
-            Waiting::Question { .. } | Waiting::Connect { .. }
-        ) {
+        if matches!(wait.what, Waiting::Question { .. } | Waiting::Allow { .. }) {
             self.tell_asking(&wait, window, cx);
             self.chime(cx);
             // Its block waits for its person now. The agent that handed it a task hears nothing:
@@ -202,7 +240,7 @@ impl Workspace {
             tools::tail(&lines, tools::MAX_TEXT).to_string()
         };
         let reply = match &wait.what {
-            Waiting::Question { .. } | Waiting::Connect { .. } => Reply::err(format!(
+            Waiting::Question { .. } | Waiting::Allow { .. } => Reply::err(format!(
                 "No one answered within {seconds} seconds; the request was withdrawn."
             )),
             Waiting::Turn { of, uid } => Reply::err(format!(
@@ -305,7 +343,9 @@ impl Workspace {
             ));
         }
         match &wait.what {
-            Waiting::Connect { to } if !self.uid_taken(to) => Some(Reply::err(format!(
+            Waiting::Allow {
+                then: Approved::Connect { to },
+            } if !self.uid_taken(to) => Some(Reply::err(format!(
                 "{to} was closed; the request was withdrawn."
             ))),
             Waiting::Turn { of, uid } if self.pane(of).is_none() => {
@@ -315,7 +355,7 @@ impl Workspace {
                 Some(Reply::err(format!("{uid} was closed while you waited.")))
             }
             Waiting::Question { .. }
-            | Waiting::Connect { .. }
+            | Waiting::Allow { .. }
             | Waiting::Turn { .. }
             | Waiting::Event { .. } => None,
         }
@@ -342,48 +382,93 @@ impl Workspace {
         let asked = self
             .waits
             .iter()
-            .any(|w| w.from == from && matches!(&w.what, Waiting::Connect { to } if to == block));
+            .any(|w| {
+                w.from == from
+                    && matches!(&w.what, Waiting::Allow { then: Approved::Connect { to } } if to == block)
+            });
         if asked {
             return Outcome::Now(Reply::err(format!(
                 "You already asked to connect to {block}; the person hasn't answered yet."
             )));
         }
         Outcome::Wait(
-            Box::new(Waiting::Connect {
-                to: block.to_string(),
+            Box::new(Waiting::Allow {
+                then: Approved::Connect {
+                    to: block.to_string(),
+                },
             }),
             Some(timeout),
         )
     }
 
-    /// The person's Allow (`allow`) or Deny to the request to connect `key`. Allow wires the two
-    /// blocks, a step Ctrl+Z takes back, as wiring by hand is.
-    pub(crate) fn answer_connect(&mut self, key: u64, allow: bool, cx: &mut Context<Self>) {
-        let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
+    /// The person's yes (`yes`) or no to the request `key`: Allow wires the two blocks, a step
+    /// Ctrl+Z takes back, as wiring by hand is; Delete and Merge run on the background executor,
+    /// the request gone from the balloon at once, and answer once git is done.
+    pub(crate) fn answer_allow(&mut self, key: u64, yes: bool, cx: &mut Context<Self>) {
+        let Some(at) = self.waits.iter().position(|w| w.key == key) else {
             return;
         };
-        let Waiting::Connect { to } = &wait.what else {
+        let Waiting::Allow { then } = &self.waits[at].what else {
             return;
         };
-        let (to, from) = (to.clone(), wait.from.clone());
-        let reply = match self.caller(&from) {
-            _ if !allow => Reply::err(format!("The person didn't connect you to {to}.")),
-            None => Reply::err("Your block was closed; the request was withdrawn."),
-            Some((space_id, me)) => {
-                let other = self
-                    .space_named(&space_id)
-                    .and_then(|space| space.block_by_uid(&to));
-                match other {
-                    Some(other) => {
-                        self.in_space(&space_id, |ws| ws.connect(me, other, cx));
-                        Reply::ok(format!("Connected to {to}."))
-                    }
-                    None => Reply::err(format!("{to} isn't in your workspace any more.")),
-                }
+        let from = self.waits[at].from.clone();
+        let job = match (yes, then) {
+            (false, Approved::Connect { to }) => Err(Reply::err(format!(
+                "The person didn't connect you to {to}."
+            ))),
+            (false, _) => Err(Reply::err("The person said no.")),
+            (true, Approved::Connect { to }) => {
+                let to = to.clone();
+                Err(self.connect_for(&from, &to, cx))
             }
+            (true, Approved::RemoveWorktree { repo, name, .. }) => {
+                Ok(self.worktree_remove(repo.clone(), name.clone(), true, cx))
+            }
+            (
+                true,
+                Approved::MergeWorktree {
+                    repo,
+                    name,
+                    unmerged,
+                    into,
+                },
+            ) => Ok(self.worktree_merge(repo.clone(), name.clone(), into.clone(), *unmerged, cx)),
         };
-        self.answer(key, reply, cx);
         self.seen_asking(&from);
+        match job {
+            Err(reply) => {
+                self.answer(key, reply, cx);
+            }
+            Ok(job) => {
+                let Some(at) = self.waits.iter().position(|w| w.key == key) else {
+                    return;
+                };
+                let wait = self.waits.remove(at);
+                cx.notify();
+                cx.spawn(async move |_, _| {
+                    let reply = job.await;
+                    let _ = wait.reply.send(tools::tool_result(&wait.id, &reply));
+                })
+                .detach();
+            }
+        }
+    }
+
+    /// `connect`'s Allow: the terminal `from`'s block wired to the block `to` of its workspace.
+    fn connect_for(&mut self, from: &str, to: &str, cx: &mut Context<Self>) -> Reply {
+        let Some((space_id, me)) = self.caller(from) else {
+            return Reply::err("Your block was closed; the request was withdrawn.");
+        };
+        let other = self
+            .space_named(&space_id)
+            .and_then(|space| space.block_by_uid(to));
+        match other {
+            Some(other) => {
+                self.in_space(&space_id, |ws| ws.connect(me, other, cx));
+                Reply::ok(format!("Connected to {to}."))
+            }
+            None => Reply::err(format!("{to} isn't in your workspace any more.")),
+        }
     }
 
     /// The person answered a request of the terminal `from`: they saw its block, whose alert
@@ -394,10 +479,10 @@ impl Workspace {
         }
     }
 
-    /// "*Claude Code* wants to connect to *Dev server*": a request to connect as the person reads
-    /// it, the blocks by their titles.
-    pub(crate) fn connect_line(&self, wait: &Wait, cx: &App) -> String {
-        let Waiting::Connect { to } = &wait.what else {
+    /// "*Claude Code* wants to connect to *Dev server*": a request as the person reads it, the
+    /// blocks by their titles (docs/specs/agent-tools.md, Asking the person).
+    pub(crate) fn allow_line(&self, wait: &Wait, cx: &App) -> String {
+        let Waiting::Allow { then } = &wait.what else {
             return String::new();
         };
         let Some((space_id, me)) = self.caller(&wait.from) else {
@@ -406,16 +491,34 @@ impl Workspace {
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let title = |id| self.about(&space.blocks[&id], cx).1;
         let from = title(me);
-        let target = space.block_by_uid(to).map_or_else(|| to.clone(), title);
-        format!("{from} wants to connect to {target}")
+        match then {
+            Approved::Connect { to } => {
+                let target = space.block_by_uid(to).map_or_else(|| to.clone(), title);
+                format!("{from} wants to connect to {target}")
+            }
+            Approved::RemoveWorktree {
+                name,
+                changed,
+                unmerged,
+                ..
+            } => format!(
+                "{from} wants to delete the worktree {name}, with {changed} changed files and \
+                 {unmerged} commits not merged."
+            ),
+            Approved::MergeWorktree {
+                name,
+                unmerged,
+                into,
+                ..
+            } => format!("{from} wants to merge {name} ({unmerged} commits) into {into}."),
+        }
     }
 
     /// What the agent in terminal `terminal` asks the person, oldest first: the first, and how
     /// many.
     pub(crate) fn balloon(&self, terminal: &str) -> Option<(&Wait, usize)> {
         let mut asking = self.waits.iter().filter(|w| {
-            w.from == terminal
-                && matches!(w.what, Waiting::Question { .. } | Waiting::Connect { .. })
+            w.from == terminal && matches!(w.what, Waiting::Question { .. } | Waiting::Allow { .. })
         });
         let first = asking.next()?;
         Some((first, 1 + asking.count()))
@@ -491,7 +594,7 @@ impl Workspace {
                 0 => format!("Asks you: {}", ask.summary()),
                 more => format!("Asks you: {} (and {more} more)", ask.summary()),
             },
-            Waiting::Connect { .. } => self.connect_line(wait, cx),
+            Waiting::Allow { .. } => self.allow_line(wait, cx),
             Waiting::Turn { .. } | Waiting::Event { .. } => return,
         };
         if let Some(pane) = self.pane_mut(&wait.from) {

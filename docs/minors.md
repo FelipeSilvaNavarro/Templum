@@ -1275,6 +1275,11 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   (`crates/templum-terminal/src/tap.rs`, `Scanner::keep`): ConPTY sends Templum its redraw of the screen, so after a
   resize or a full redraw a line may come again (a second match for a new watch) or two lines joined. Fix: ConPTY's
   passthrough mode, once alacritty_terminal offers it.
+- [ ] **`remove_worktree` and `merge_worktree` read the worktree on the UI thread.** Left by card 35
+  (`Workspace::worktree_state`, `crates/templum/src/workspace/ops.rs`): a few git commands (`worktree list`,
+  `status`, `rev-list`, `diff`) run before the call answers or the balloon asks; in a big repository the window may
+  stall for a moment. Fix: read it on the background executor, the call an `Outcome::Later` that opens the request
+  once read.
 - [ ] **Pi and Grok Build can't be forked.** Left by card 35 (`fork_id` in `crates/templum-terminal/src/agent.rs`):
   `spawn_agent` with `fork` from one of them says it can't, though `pi --fork <id>` and `grok --resume <id>
   --fork-session` exist, since Templum couldn't find the fork's own session to resume it after a restart. Fix: give a

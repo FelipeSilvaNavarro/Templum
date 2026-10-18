@@ -211,7 +211,7 @@ pub(crate) fn render(
     // After the title, at Full: a clock and how many schedules its agent set, which its tooltip
     // lists (docs/specs/agent-tools.md, What the person sees).
     let clock = match body {
-        Body::Terminal(pane) if live && !labeled => {
+        Body::Terminal(pane) if live && !labeled && !ws.schedules.is_empty() => {
             let uid = ws.space.uids.get(&id).cloned().unwrap_or_default();
             let lines = ws.schedule_lines(pane.term.id(), &uid);
             (!lines.is_empty()).then(|| {

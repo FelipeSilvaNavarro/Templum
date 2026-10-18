@@ -32,6 +32,7 @@ const VERBS: &[&str] = &[
     "keys",
     "interrupt",
     "stop",
+    "worktree",
     "schedule",
     "unschedule",
     "plan",
@@ -55,6 +56,7 @@ const NOTE: &str = "note read <block> | note append <block> <text> \
                     | note replace <block> <text> [--old <text>] [--json]";
 const SCHEDULE: &str = "schedule <block> <text> [--at HH:MM] [--after <minutes>] \
                         [--every <minutes>] [--json]";
+const WORKTREE: &str = "worktree remove <name> [--folder <folder>] [--discard] | merge <name> [--folder <folder>] [--json]";
 const PLAN: &str = "plan <file> [--title <title>] [--json]";
 const NEW: &str = "new note [<text>] | new checklist <name> [--items <text>] \
                    | new terminal [--folder <folder>] [--command <command>] [--json]";
@@ -450,6 +452,29 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
             ("schedule", arguments)
         }
         ("unschedule", [id]) => ("cancel_schedule", json!({ "schedule": id })),
+        ("worktree", [how @ ("remove" | "merge"), name, more @ ..]) => {
+            let mut arguments = json!({ "worktree": name });
+            let mut more = more.iter();
+            while let Some(flag) = more.next() {
+                match *flag {
+                    // From the folder the command runs in, as `spawn --folder`.
+                    "--folder" => {
+                        let folder = more.next().ok_or(WORKTREE)?;
+                        arguments["folder"] = json!(absolute(folder, std::env::current_dir().ok()));
+                    }
+                    "--discard" if *how == "remove" => arguments["discard"] = json!(true),
+                    _ => return Err(WORKTREE),
+                }
+            }
+            (
+                if *how == "remove" {
+                    "remove_worktree"
+                } else {
+                    "merge_worktree"
+                },
+                arguments,
+            )
+        }
         // The file is read by `run`, which has the standard input `-` names.
         ("plan", [file]) => ("propose_plan", json!({ "plan": file })),
         ("plan", [file, "--title", title]) => {
@@ -506,6 +531,7 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("stop", _) => return Err("stop <block> [--json]"),
         ("schedule", _) => return Err(SCHEDULE),
         ("unschedule", _) => return Err("unschedule <id> [--json]"),
+        ("worktree", _) => return Err(WORKTREE),
         ("plan", _) => return Err(PLAN),
         ("new", _) => return Err(NEW),
         _ => return Err("notify <text> [--json]"),
@@ -982,6 +1008,14 @@ mod tests {
                     "schedule", "k9x1d", "check", "it", "--at", "15:00", "--every", "10",
                 ][..],
                 json!({ "name": "schedule", "arguments": { "block": "k9x1d", "text": "check it", "at": "15:00", "every": 10 } }),
+            ),
+            (
+                &["worktree", "remove", "w", "--discard"][..],
+                json!({ "name": "remove_worktree", "arguments": { "worktree": "w", "discard": true } }),
+            ),
+            (
+                &["worktree", "merge", "w", "--folder", "api"][..],
+                json!({ "name": "merge_worktree", "arguments": { "worktree": "w", "folder": std::env::current_dir().unwrap().join("api") } }),
             ),
             (
                 &["schedule", "k9x1d", "go", "--after", "5"][..],
