@@ -6811,6 +6811,7 @@ dependencies = [
 name = "templum-agent"
 version = "0.1.2"
 dependencies = [
+ "futures",
  "serde",
  "serde_json",
  "tempfile",
