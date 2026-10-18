@@ -642,3 +642,22 @@ Expected: FAIL (Copilot: "Templum doesn't give GitHub Copilot CLI a model or an 
 ## Spike results
 
 *Filled in by Tasks 5, 9 and 12.*
+
+**S1, Copilot CLI 1.0.95** (2026-10-18, signed in; a probe plugin in the scratchpad, `copilot --plugin-dir=<probe> -p
+"say hi"` in a Templum terminal, then the TUI driven through a pseudo-terminal: a prompt that runs `touch`, allowed;
+another, refused with Esc; `/exit`):
+
+- Hooks see `TEMPLUM_BUS` and `TEMPLUM_TERMINAL`: Task 6's hook entries need no `env`.
+- Order, `-p`: `userPromptSubmitted`, `sessionStart` (`source: "new"`, `initialPrompt`), `agentStop` (`transcriptPath`,
+  `stopReason: "end_turn"`), `sessionEnd` (`reason: "complete"`). The TUI is the same: its session starts with the
+  first prompt, after that prompt's `userPromptSubmitted`, so `sessionStart` with an `initialPrompt` is no event
+  (it would set the dot to Idle in the middle of the turn). **Changes Task 5's parser.**
+- `notification` at a permission dialog: `{"notification_type": "permission_prompt", "message": "Run command: touch
+  probe-y.txt", "title": "Permission needed", "hook_event_name": "Notification"}`, snake_case as the plan assumed;
+  `permissionRequest` came before it, and also for an `echo` its rules allowed (16 ms later, `postToolUse`).
+- Refused with Esc: no hook after `notification` (no `postToolUseFailure`, no `agentStop`).
+- `events.jsonl`'s last `assistant.message`'s `data.content` was the answer ("Hi!").
+- `--plugin-dir` asked nothing at start. Copilot asks to trust a new folder (its own question), which ate the first
+  prompt the driver typed.
+- Not seen: `elicitation_dialog`, `errorOccurred`, whether `userPromptSubmitted` comes at the Enter for a prompt typed
+  during a turn (kept `at_enter: false`).

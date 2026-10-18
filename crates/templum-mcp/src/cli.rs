@@ -448,8 +448,36 @@ fn hook_event(args: &[String], stdin: &mut dyn Read) -> Option<hooks::AgentEvent
         // which reading would steal the person's keys from.
         "codex" if args.len() > 1 => None,
         "codex" => hooks::codex(&on_stdin()?),
+        "copilot" => match hooks::copilot(args.get(1)?, &on_stdin()?)? {
+            hooks::AgentEvent::Stopped {
+                message: None,
+                transcript: Some(path),
+            } => Some(hooks::AgentEvent::Stopped {
+                message: tail(&path, 256 * 1024).and_then(|t| hooks::copilot_answer(&t)),
+                transcript: Some(path),
+            }),
+            event => Some(event),
+        },
         _ => None,
     }
+}
+
+/// The last `max` bytes of the file at `path`, from the first whole line in them.
+fn tail(path: &str, max: u64) -> Option<String> {
+    use std::io::{Seek as _, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(max))).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    Some(match len > max {
+        true => text
+            .split_once('\n')
+            .map_or("", |(_, rest)| rest)
+            .to_string(),
+        false => text.into_owned(),
+    })
 }
 
 /// Tells the bus about an agent's turn; nothing when Templum isn't there.
@@ -825,6 +853,36 @@ mod tests {
                 params: json!({ "event": "stopped", "message": "Done." }),
             }
         );
+        // Copilot CLI's names its event in its words, and its answer is in its transcript.
+        let dir = tempfile::tempdir().unwrap();
+        let transcript = dir.path().join("events.jsonl");
+        std::fs::write(
+            &transcript,
+            concat!(
+                r#"{"type":"user.message","data":{"content":"hi"}}"#,
+                "\n",
+                r#"{"type":"assistant.message","data":{"content":"Done."}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let ended = json!({ "transcriptPath": transcript }).to_string();
+        assert_eq!(
+            run_with(&["hook", "copilot", "agentStop"], &env(&bus), &ended),
+            (0, String::new(), String::new())
+        );
+        assert_eq!(
+            events.recv_timeout(LIMIT).unwrap().1,
+            Incoming::Notification {
+                method: "templum/event".into(),
+                params: json!({ "event": "stopped", "message": "Done.", "transcript": transcript }),
+            }
+        );
+        // Without its event: nothing.
+        assert_eq!(
+            run_with(&["hook", "copilot"], &env(&bus), &ended),
+            (0, String::new(), String::new())
+        );
         // Outside Templum, and with what Templum doesn't follow: nothing, quietly.
         assert_eq!(
             run_with(&["hook", "claude"], &Env::default(), stop),
@@ -834,6 +892,20 @@ mod tests {
             run_with(&["hook", "claude"], &env(&bus), "not json"),
             (0, String::new(), String::new())
         );
+    }
+
+    #[test]
+    fn a_files_tail_starts_at_a_whole_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t");
+        std::fs::write(&path, "first line\nsecond\nthird\n").unwrap();
+        let path = path.to_str().unwrap();
+        assert_eq!(tail(path, 10).as_deref(), Some("third\n"));
+        assert_eq!(
+            tail(path, 100).as_deref(),
+            Some("first line\nsecond\nthird\n")
+        );
+        assert_eq!(tail("/nonexistent/t", 10), None);
     }
 
     #[test]

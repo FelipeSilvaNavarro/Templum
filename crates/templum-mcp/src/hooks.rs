@@ -144,6 +144,52 @@ pub fn gemini(input: &Value) -> Option<AgentEvent> {
     })
 }
 
+/// A GitHub Copilot CLI hook's input (as of 1.0.95), its event named by the hook's command (its
+/// payload doesn't name it). None for what Templum doesn't follow. `agentStop` has no answer:
+/// `copilot_answer` reads it from the transcript.
+pub fn copilot(event: &str, input: &Value) -> Option<AgentEvent> {
+    let text = |key: &str| input[key].as_str().map(str::to_string);
+    Some(match event {
+        // It comes with the first prompt, after that prompt's `userPromptSubmitted`, which
+        // `initialPrompt` repeats: the turn is under way.
+        "sessionStart" if input["initialPrompt"].is_string() => return None,
+        "sessionStart" => AgentEvent::Started,
+        "userPromptSubmitted" => AgentEvent::Submitted { at_enter: false },
+        "postToolUse" | "postToolUseFailure" => AgentEvent::Working,
+        // Its dialog opened. Not `permissionRequest`: it comes for calls its rules allow too.
+        "notification"
+            if matches!(
+                input["notification_type"].as_str(),
+                Some("permission_prompt" | "elicitation_dialog")
+            ) =>
+        {
+            AgentEvent::NeedsYou {
+                message: text("message"),
+            }
+        }
+        "agentStop" => AgentEvent::Stopped {
+            message: None,
+            transcript: text("transcriptPath"),
+        },
+        "errorOccurred" if input["recoverable"] == false => AgentEvent::Stopped {
+            message: None,
+            transcript: None,
+        },
+        "sessionEnd" => AgentEvent::Ended,
+        _ => return None,
+    })
+}
+
+/// The last answer in a Copilot CLI transcript (`events.jsonl`, or its end): the text of its last
+/// `assistant.message` that has some. A broken line (a write under way) is skipped.
+pub fn copilot_answer(transcript: &str) -> Option<String> {
+    transcript.lines().rev().find_map(|line| {
+        let event: Value = serde_json::from_str(line).ok()?;
+        let content = event["data"]["content"].as_str()?;
+        (event["type"] == "assistant.message" && !content.is_empty()).then(|| content.to_string())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,6 +503,112 @@ mod tests {
             assert_eq!(event(json!({ "hook_event_name": other })), None, "{other}");
         }
         assert_eq!(event(json!("garbage")), None);
+    }
+
+    #[test]
+    fn copilots_hooks_become_events() {
+        let event = |name: &str, input: Value| copilot(name, &input);
+        // Its `sessionStart` comes with the first prompt, after that prompt's own hook.
+        assert_eq!(
+            event("sessionStart", json!({ "source": "new" })),
+            Some(AgentEvent::Started)
+        );
+        assert_eq!(
+            event(
+                "sessionStart",
+                json!({ "source": "new", "initialPrompt": "say hi" })
+            ),
+            None
+        );
+        assert_eq!(
+            event("userPromptSubmitted", json!({ "prompt": "say hi" })),
+            Some(AgentEvent::Submitted { at_enter: false })
+        );
+        for name in ["postToolUse", "postToolUseFailure"] {
+            assert_eq!(
+                event(name, json!({ "toolName": "bash" })),
+                Some(AgentEvent::Working),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            event(
+                "notification",
+                json!({ "notification_type": "permission_prompt", "message": "Allow shell?" })
+            ),
+            Some(AgentEvent::NeedsYou {
+                message: Some("Allow shell?".into())
+            })
+        );
+        assert_eq!(
+            event(
+                "notification",
+                json!({ "notification_type": "elicitation_dialog", "message": "Pick one" })
+            ),
+            Some(AgentEvent::NeedsYou {
+                message: Some("Pick one".into())
+            })
+        );
+        assert_eq!(
+            event(
+                "notification",
+                json!({ "notification_type": "idle_prompt", "message": "Waiting" })
+            ),
+            None
+        );
+        assert_eq!(
+            event("agentStop", json!({ "transcriptPath": "/s/events.jsonl" })),
+            Some(AgentEvent::Stopped {
+                message: None,
+                transcript: Some("/s/events.jsonl".into())
+            })
+        );
+        assert_eq!(
+            event("errorOccurred", json!({ "recoverable": false })),
+            Some(AgentEvent::Stopped {
+                message: None,
+                transcript: None
+            })
+        );
+        assert_eq!(event("errorOccurred", json!({ "recoverable": true })), None);
+        assert_eq!(
+            event("sessionEnd", json!({ "reason": "user_exit" })),
+            Some(AgentEvent::Ended)
+        );
+        for name in ["preToolUse", "permissionRequest", "subagentStop", "nope"] {
+            assert_eq!(event(name, json!({})), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn copilots_answer_is_its_transcripts_last_message() {
+        let line = |kind: &str, data: Value| json!({ "type": kind, "data": data }).to_string();
+        let three = [
+            line("assistant.message", json!({ "content": "first" })),
+            line("tool.execution_complete", json!({ "success": true })),
+            line(
+                "assistant.message",
+                json!({ "content": "Done.", "toolRequests": [] }),
+            ),
+        ]
+        .join("\n");
+        assert_eq!(copilot_answer(&three).as_deref(), Some("Done."));
+        // A message that only asks for tools has no text: the last one with some.
+        let tools = format!(
+            "{three}\n{}",
+            line(
+                "assistant.message",
+                json!({ "content": "", "toolRequests": [{}] })
+            )
+        );
+        assert_eq!(copilot_answer(&tools).as_deref(), Some("Done."));
+        let broken = format!("{three}\n{{\"type\":\"assistant.message\",\"da");
+        assert_eq!(copilot_answer(&broken).as_deref(), Some("Done."));
+        assert_eq!(
+            copilot_answer(&line("user.message", json!({ "content": "hi" }))),
+            None
+        );
+        assert_eq!(copilot_answer(""), None);
     }
 
     #[test]

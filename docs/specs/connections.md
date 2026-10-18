@@ -791,10 +791,10 @@ copilot --allow-all-mcp-server-instructions --additional-mcp-config=@<data>/copi
 
 | Hook | Event |
 |---|---|
-| `sessionStart` | started (any `source`: `startup`, `resume`, `new`) |
-| `userPromptSubmitted` | took a prompt: working; once a turn takes it (`at_enter` false) until the plan's spike shows it comes at the Enter |
+| `sessionStart` | started; nothing when it has an `initialPrompt`: Copilot starts its session with the first prompt (typed, or `-p`), after that prompt's `userPromptSubmitted`, and the turn is under way |
+| `userPromptSubmitted` | took a prompt: working; once a turn takes it (`at_enter` false: a prompt typed during a turn not checked) |
 | `postToolUse`, `postToolUseFailure` | working (again, after a permission) |
-| `notification`, `notification_type` `permission_prompt` | waiting for the person, with its `message`. Not `permissionRequest`: it comes before Copilot's own rules, for calls they allow too |
+| `notification`, `notification_type` `permission_prompt` | waiting for the person, with its `message` ("Run command: touch x.txt"). Not `permissionRequest`: it comes before Copilot's own rules, for calls they allow too (an `echo`) |
 | `notification`, `elicitation_dialog` | waiting for the person (its own `ask_user`), with its `message` |
 | `agentStop` | done, with its last answer: the payload has none, only `transcriptPath` (`events.jsonl`), whose last `assistant.message` line's `data.content` `templum hook copilot` reads (its last 256 KB) |
 | `errorOccurred` with `recoverable` false | done, without an answer |
@@ -802,6 +802,13 @@ copilot --allow-all-mcp-server-instructions --additional-mcp-config=@<data>/copi
 
 Esc, and a permission the person refuses, fire no `agentStop`: the person's keys and a still screen end Working after
 5 seconds, as an Esc while Claude Code writes does ([An agent's state](#an-agents-state)).
+
+Checked by hand on 2026-10-18 with Copilot CLI 1.0.95, signed in, in a terminal of Templum (a probe plugin, `-p`
+and the TUI driven through a pseudo-terminal): its hooks see `TEMPLUM_BUS` and `TEMPLUM_TERMINAL`, so `hooks.json`
+needs no `env`; the payloads are camelCase but `notification`'s (`notification_type`, `message`, `title`); a refused
+permission fires no hook after `notification`; the last `assistant.message` of `events.jsonl` is the turn's answer;
+`--plugin-dir` asks nothing at start (Copilot's own question about trusting a folder is unrelated). Not seen:
+`elicitation_dialog`, `errorOccurred`, a prompt typed during a turn.
 
 **Its session.** `--session-id <uuid>` starts a session with that id, or resumes it when there is one: the Copilot
 Templum opens gets one (`new_id`), restored with `copilot --session-id <id>` (`resume_id`), as Pi's
@@ -1012,7 +1019,8 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum mcp` | the MCP bridge | 1 |
 | `templum hook claude` / `templum hook codex <json>` | an agent's hook (`templum hook codex` reads its JSON on stdin from batch 7; an argument, an older Templum's `notify`, is ignored, and stdin, then Codex's terminal, isn't read) | 1, 7 |
 | `templum hook gemini` | Gemini CLI's hooks (JSON on stdin) | 5 |
-| `templum hook copilot <event>` / `templum hook opencode` / `templum hook qwen` / `templum hook pi` | Copilot CLI's hooks (the event named by its command), the OpenCode and Kilo Code plugin's events, Qwen Code's hooks, Pi's extension's events (JSON on stdin) | card 44 |
+| `templum hook copilot <event>` | Copilot CLI's hooks (JSON on stdin, the event named by the hook's command, as Copilot names its hook: `agentStop`); `agentStop`'s answer read from the end of its transcript | card 44 |
+| `templum hook opencode` / `templum hook qwen` / `templum hook pi` | the OpenCode and Kilo Code plugin's events, Qwen Code's hooks, Pi's extension's events (JSON on stdin) | card 44 |
 | `templum connect <block>` | `connect` | 3 |
 | `templum spawn <agent> [--folder <f>] [--worktree <name>] [--prompt <text>] [--model <m>] [--effort <e>]` | `spawn_agent` | 3, 6 |
 | `templum delegate <block> <task> [--wait]` | `delegate` (from batch 8 it prints the task's id; a script's terminal gets no notice: `templum wait` waits for its end) | 3, 8 |
