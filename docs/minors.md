@@ -1224,6 +1224,14 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   already so at 5579a05 (`crates/templum-terminal/src/integration/templum.fish`): under fish 3.1.2 the `shells::fish`
   test fails ("waited for cd to end") and the first prompt shows a last status of 1; CI doesn't install fish, so
   nothing catches it. Fix: run the integration under fish 3.1 and find the command that returns 1 at startup.
+- [ ] **`qwen hook …` and `qwen -d mcp list` typed in a terminal still get `--mcp-config`.** Left by the second review
+  of card 44 (the Qwen command lists in `crates/templum-terminal/src/integration/templum.bash:120`,
+  `zsh/.zshenv:106`, `templum.fish:99`, `templum.ps1:142`): `hook` is Qwen 0.25.2's one top-level alias (of
+  `hooks`), and a command after an option isn't looked for, so Qwen prints `Unknown arguments: mcp-config, mcpConfig`
+  and exits 1. Fix: add `hook` to the four lists; the option-first case can stay.
+- [ ] **In PowerShell, `qwen MCP list` or `pi LIST` loses Templum's words.** Left by the second review of card 44
+  (`crates/templum-terminal/src/integration/templum.ps1:142` and Pi's list beside it): `-in` ignores case, though
+  Qwen and Pi read those words as a prompt, so the agent starts without Templum's server and hooks. Fix: `-cin`.
 
 ## Keeping the canvas
 
