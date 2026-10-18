@@ -41,7 +41,7 @@ pub(super) fn spawner(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Works
 }
 
 /// The block spawned beside `mine`: the other end of its newest wire.
-fn spawned(ws: &Entity<Workspace>, cx: &mut TestAppContext, mine: BlockId) -> BlockId {
+pub(super) fn spawned(ws: &Entity<Workspace>, cx: &mut TestAppContext, mine: BlockId) -> BlockId {
     ws.read_with(cx, |ws, _| {
         let wire = ws
             .space

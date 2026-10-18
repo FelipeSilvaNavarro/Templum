@@ -8,7 +8,7 @@ use templum_canvas::Wire;
 
 use super::bus::{after, call, me, screen_until};
 use super::delegate::{found, prints};
-use super::spawn::spawner;
+use super::spawn::{spawned, spawner};
 use super::*;
 use crate::workspace::Handed;
 use crate::workspace::history::Then;
@@ -398,6 +398,51 @@ fn a_schedule_for_an_agent_that_quit_isnt_typed_into_its_shell(cx: &mut TestAppC
     ws.update(cx, |ws, _| {
         let pane = ws.space.terminal_mut(other).unwrap();
         (pane.seen.agent, pane.seen.pid) = (None, None);
+    });
+    due_now(&ws, cx, 1);
+    look(cx);
+    assert_eq!(
+        notices(&ws, cx),
+        [format!(
+            "[schedule s1 to {them} didn't go: {them} runs no agent now: a schedule for an agent \
+             never types into its shell.]"
+        )]
+    );
+    after(
+        cx,
+        crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    let shown = ws.read_with(cx, |ws, _| ws.space.terminal(other).unwrap().screen());
+    assert!(!shown.contains("ran-in-the-shell"), "{shown}");
+}
+
+/// A schedule set right after `spawn_agent`, before a snapshot found the agent (its shell still in
+/// front), is for that agent: once it leaves, its text isn't typed into the shell.
+#[gpui_kit::test]
+fn a_schedule_set_right_after_spawn_agent_never_types_into_its_shell(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    agent_without_notices(&ws, cx, mine);
+    // Its shell is what runs: in front, as before the agent typed there starts.
+    ws.update(cx, |ws, _| ws.command = Some(quiet()));
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "spawn_agent",
+        json!({ "agent": "codex" }),
+    );
+    assert!(!failed, "{text}");
+    let other = spawned(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, other);
+    in_front(&ws, cx, other, false);
+    let every = json!({ "block": them, "text": "echo ran-in-the-shell", "every": 1 });
+    assert!(!call(handle, &ws, cx, &terminal, "schedule", every).0);
+    // Its agent leaves before any snapshot found it: one finds none there.
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(other).unwrap().seen.agent = None
     });
     due_now(&ws, cx, 1);
     look(cx);

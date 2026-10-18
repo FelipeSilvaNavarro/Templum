@@ -102,9 +102,11 @@ impl Workspace {
         if to != me && space.terminal(to).is_none() {
             return Reply::err(format!("{block} isn't a terminal."));
         }
+        // Also one Templum started there that no snapshot found yet (`spawn_agent` a moment ago,
+        // its shell still in front), and one that quit the last snapshot still has.
         let agent = space
             .terminal(to)
-            .is_some_and(|pane| pane.seen.agent.is_some() && !pane.shell_in_front());
+            .is_some_and(|pane| pane.agent().is_some());
         let now = SystemTime::now();
         let every = every.map(|m| Duration::from_secs(m * 60));
         let next = match when {
