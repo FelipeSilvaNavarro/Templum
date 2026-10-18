@@ -226,7 +226,8 @@ What the account's choices say is applied when the dialog saves it, and again ea
 - **The login** ([the table](#which-agents)) is never made, linked, moved, read or deleted; an account's folder
   starts without it, and the agent's login writes it there.
 - **Chains** follow: a link points at the other account's item, not at what that one links to, so claude4's `skills`
-  is claude3's whatever claude3 decides later.
+  is claude3's whatever claude3 decides later. The accounts an account shares from get their choices first (as at
+  their start), so opening claude4 before claude3 never makes claude3's `skills` an empty folder of its own.
 
 A problem (a folder that can't be made, a link the OS refuses) is one notification naming the item and the reason, and
 the account still opens with what could be done.

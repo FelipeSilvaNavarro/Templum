@@ -111,13 +111,7 @@ impl Workspace {
             },
             cx,
         );
-        let report = templum_usage::accounts::apply(
-            account.kind,
-            &account.folder,
-            &entry.shares(&list),
-            &entry.sources(&list),
-            templum_usage::accounts::When::Saved,
-        );
+        let report = entry.apply(&list, templum_usage::accounts::When::Saved);
         self.tell_account(&entry, &report, window, cx);
         Ok(id)
     }

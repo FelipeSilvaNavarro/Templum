@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use templum_terminal::{Agent, Detect, program_name};
-use templum_usage::accounts::{Kind, Share};
+use templum_usage::accounts::{Kind, Report, Share, When};
 
 use crate::config::{AgentConfig, CommitMessage, valid_agent_id};
 
@@ -125,6 +125,35 @@ impl AgentEntry {
             .collect()
     }
 
+    /// Applies this account's choices to its folder (`when`), after those of the accounts it
+    /// shares from, directly or through them, as they start: a link of its own never makes one of
+    /// their shared items a real folder. Their own start tells what they met.
+    pub fn apply(&self, agents: &[AgentEntry], when: When) -> Report {
+        let Some(account) = &self.account else {
+            return Report::default();
+        };
+        let mut seen = vec![self.id.as_str()];
+        let mut first = Vec::new();
+        upstream(self, agents, &mut seen, &mut first);
+        for other in first {
+            let theirs = other.account.as_ref().expect("an account");
+            templum_usage::accounts::apply(
+                theirs.kind,
+                &theirs.folder,
+                &other.shares(agents),
+                &other.sources(agents),
+                When::Starting,
+            );
+        }
+        templum_usage::accounts::apply(
+            account.kind,
+            &account.folder,
+            &self.shares(agents),
+            &self.sources(agents),
+            when,
+        )
+    }
+
     /// Every state folder a share of this account may point at: its agent's own folder's, then
     /// each of its other accounts'.
     pub fn sources(&self, agents: &[AgentEntry]) -> Vec<PathBuf> {
@@ -210,6 +239,31 @@ impl AgentEntry {
             detect.names.push(program);
         }
         detect
+    }
+}
+
+/// The accounts `entry` shares from, through them too, the farthest first, each once (`seen`).
+// ponytail: whole accounts in one order; a loop across items (claude3's skills from claude4,
+// claude4's settings from claude3) applies one of them before the other's item is linked.
+fn upstream<'a>(
+    entry: &AgentEntry,
+    agents: &'a [AgentEntry],
+    seen: &mut Vec<&'a str>,
+    out: &mut Vec<&'a AgentEntry>,
+) {
+    for target in entry.account.iter().flat_map(|a| a.share.values()) {
+        let Some(other) = agents
+            .iter()
+            .find(|a| a.id == *target && a.account.is_some())
+        else {
+            continue;
+        };
+        if seen.contains(&other.id.as_str()) {
+            continue;
+        }
+        seen.push(&other.id);
+        upstream(other, agents, seen, out);
+        out.push(other);
     }
 }
 
@@ -960,6 +1014,31 @@ mod tests {
         assert_eq!(
             own_state_in(claude, var, Some(home), &list),
             Some(PathBuf::from("/elsewhere"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_accounts_shared_from_are_applied_first() {
+        let (own, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        OWN_FOLDERS.set(Some(own.path().to_path_buf()));
+        let text = concat!(
+            "[agents]\n",
+            "claude3 = { of = \"claude\", share = { skills = \"claude\", settings = \"claude4\" } }\n",
+            "claude4 = { of = \"claude\", share = { skills = \"claude3\" } }\n",
+        );
+        let list = effective(&parse(text).unwrap().agents, &[], Some(data.path()));
+        let report = by(&list, "claude4").apply(&list, When::Starting);
+        assert!(report.problems.is_empty(), "{:?}", report.problems);
+        let accounts = data.path().join("accounts");
+        assert_eq!(
+            std::fs::read_link(accounts.join("claude3/skills")).unwrap(),
+            own.path().join("claude/skills"),
+            "claude3 first: its skills a link, not an empty folder"
+        );
+        assert_eq!(
+            std::fs::read_link(accounts.join("claude4/skills")).unwrap(),
+            accounts.join("claude3/skills")
         );
     }
 

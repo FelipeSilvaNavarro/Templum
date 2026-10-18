@@ -423,16 +423,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(account) = &entry.account else {
+        if entry.account.is_none() {
             return;
-        };
-        let report = templum_usage::accounts::apply(
-            account.kind,
-            &account.folder,
-            &entry.shares(&self.agents),
-            &entry.sources(&self.agents),
-            templum_usage::accounts::When::Starting,
-        );
+        }
+        let report = entry.apply(&self.agents, templum_usage::accounts::When::Starting);
         self.tell_account(entry, &report, window, cx);
     }
 
