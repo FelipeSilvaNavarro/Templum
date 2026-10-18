@@ -1032,10 +1032,3 @@ Left by the ask_user dialog (kanban card 29).
   (`crates/templum/src/balloon.rs`), its first line too: a person who scrolls down a long question or many options
   no longer sees that the agent waits (the block's dot still says so). Fix: keep the first line out of the scrolled
   part (a column with the line, then a `min_h_0` part that scrolls), checked by hand that taffy shrinks it.
-
-Left by the corner dot (kanban card 32).
-
-- [ ] **A corner dot fading out vanishes at once when the pointer comes near another block's corner.** `Space::corner`
-  (`crates/templum/src/workspace/mod.rs`) remembers one corner: the pointer going from one block's corner to
-  another's within 120 ms takes the first dot away mid-fade. A person sees it blink off instead of fading. Fix: keep
-  the fading corner apart from the near one (two fields), and draw both.

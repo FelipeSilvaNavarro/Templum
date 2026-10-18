@@ -124,8 +124,7 @@ when it is that close, and lets go as soon as the pointer moves away.
   center; its top, bottom and vertical center to their top, bottom and vertical center. Each axis takes the
   candidate with the smallest distance within the threshold, independently.
 - **What snaps, resizing:** the dragged edges (any edge or corner of a block resizes it, like a window's: thin
-  strips along its edges, squares at its corners, where a dot shows while the pointer is near one:
-  [design-system.md](design-system.md)) to the others' left, right (and top, bottom) edges, and the
+  strips along its edges, squares at its corners) to the others' left, right (and top, bottom) edges, and the
   width or height to another block's width or height, so two blocks can be made the same size. The opposite
   edges stay put.
 - **Guides:** while a snap is in effect, a 1 px line in the `accent` color is drawn along the aligned edge (or
