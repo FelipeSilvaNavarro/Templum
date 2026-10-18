@@ -1898,3 +1898,111 @@ fn a_touch_glows_for_a_moment(cx: &mut TestAppContext) {
         );
     });
 }
+
+/// A terminal whose agent the Templum Agent handed task 1: its block, its uid, its terminal.
+fn handed_by_the_templum_agent(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> (BlockId, String, String) {
+    let (block, uid) = busy_terminal(handle, ws, cx);
+    let terminal = ws.update(cx, |ws, _| {
+        ws.next_task += 1;
+        let pane = ws.space.terminal_mut(block).unwrap();
+        pane.handed = Some(crate::workspace::Handed {
+            id: ws.next_task,
+            ..crate::workspace::Handed::new(
+                ::templum_agent::ASKER,
+                std::time::Duration::from_secs(600),
+            )
+        });
+        pane.term.id().to_string()
+    });
+    (block, uid, terminal)
+}
+
+fn notices(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> Vec<(::templum_agent::NoticeLevel, Option<String>)> {
+    ws.read_with(cx, |ws, _| {
+        ws.templum_agent
+            .conversation
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                ::templum_agent::Row::Notice { level, target, .. } => {
+                    Some((*level, target.as_ref().and_then(|t| t.block.clone())))
+                }
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+#[gpui_kit::test]
+fn a_tasks_end_wakes_the_templum_agent(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
+    let (_, uid, terminal) = handed_by_the_templum_agent(handle, &ws, cx);
+    ws.update(cx, |ws, cx| {
+        ws.end_turn(&terminal, templum_mcp::Reply::ok("Card 4 is done."), cx)
+    });
+    super::bus::after(
+        cx,
+        crate::workspace::delegate::SPENT_AFTER.as_millis() as u64,
+    );
+    assert_eq!(
+        notices(&ws, cx),
+        [(::templum_agent::NoticeLevel::Done, Some(uid))]
+    );
+    let sent = ws.read_with(cx, |ws, _| ws.templum_agent.sent.clone());
+    assert!(
+        sent.iter().any(|m| m.starts_with("[task t1 from ")),
+        "{sent:?}"
+    );
+    assert!(
+        sent.iter().any(|m| m.contains("Card 4 is done.")),
+        "{sent:?}"
+    );
+    rows_until(&ws, cx, ended);
+}
+
+#[gpui_kit::test]
+fn a_failed_task_is_red(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
+    let (_, uid, terminal) = handed_by_the_templum_agent(handle, &ws, cx);
+    ws.update(cx, |ws, cx| {
+        ws.end_turn(&terminal, templum_mcp::Reply::err("It broke."), cx)
+    });
+    super::bus::after(
+        cx,
+        crate::workspace::delegate::SPENT_AFTER.as_millis() as u64,
+    );
+    assert_eq!(
+        notices(&ws, cx),
+        [(::templum_agent::NoticeLevel::Failed, Some(uid))]
+    );
+}
+
+#[gpui_kit::test]
+fn waiting_for_its_person_is_told_once(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN, TEXT_TURN]);
+    let (_, uid, terminal) = handed_by_the_templum_agent(handle, &ws, cx);
+    for _ in 0..2 {
+        super::bus::event(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            json!({ "event": "needs_you", "message": "Allow Edit?" }),
+        );
+        super::bus::after(cx, 400);
+    }
+    assert_eq!(
+        notices(&ws, cx),
+        [(::templum_agent::NoticeLevel::Waiting, Some(uid))]
+    );
+}

@@ -54,6 +54,23 @@ pub enum Row {
     Failure { text: String },
     /// "Stopped by you.", "New conversation."
     Note { text: String },
+    /// A task it handed ended, or its agent waits for its person: the notice's first line, and
+    /// the block it is about.
+    Notice {
+        text: String,
+        level: NoticeLevel,
+        #[serde(default)]
+        target: Option<Target>,
+    },
+}
+
+/// What a notice tells: a task done, failed, or its agent waiting for its person.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeLevel {
+    Done,
+    Failed,
+    Waiting,
 }
 
 /// Where an action is.
@@ -315,6 +332,18 @@ impl Conversation {
         self.working = false;
     }
 
+    /// A notice from one of its tasks, given to the engine as a message: a turn answers it.
+    pub fn notice(&mut self, text: &str, level: NoticeLevel, target: Option<Target>) {
+        self.open_text = false;
+        let first = text.lines().next().unwrap_or_default();
+        self.rows.push(Row::Notice {
+            text: first.to_owned(),
+            level,
+            target,
+        });
+        self.working = true;
+    }
+
     pub fn note(&mut self, text: &str) {
         self.open_text = false;
         self.rows.push(Row::Note {
@@ -559,6 +588,29 @@ mod tests {
             matches!(&c.rows[1], Row::Action { state: ActionState::Denied, said, .. }
             if said == "You denied this.")
         );
+    }
+
+    #[test]
+    fn a_notice_is_its_first_line_and_starts_a_turn() {
+        let mut c = Conversation::new("claude");
+        let target = Target {
+            workspace: Some("w2".into()),
+            block: Some("b1".into()),
+        };
+        c.notice(
+            "[task t1 from Codex (b1): done in 3 s] Its answer.\nAll good.",
+            NoticeLevel::Done,
+            Some(target.clone()),
+        );
+        assert_eq!(
+            c.rows,
+            [Row::Notice {
+                text: "[task t1 from Codex (b1): done in 3 s] Its answer.".into(),
+                level: NoticeLevel::Done,
+                target: Some(target),
+            }]
+        );
+        assert!(c.working);
     }
 
     #[test]

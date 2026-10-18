@@ -79,6 +79,9 @@ pub(crate) struct TemplumAgent {
     /// The words of each start of the engine, as Claude Code would have got them.
     #[cfg(test)]
     pub launched: Vec<Vec<String>>,
+    /// The messages the engine was given.
+    #[cfg(test)]
+    pub sent: Vec<String>,
 }
 
 impl Default for TemplumAgent {
@@ -114,6 +117,8 @@ impl Default for TemplumAgent {
             launch: None,
             #[cfg(test)]
             launched: Vec::new(),
+            #[cfg(test)]
+            sent: Vec::new(),
         }
     }
 }
@@ -411,12 +416,18 @@ impl Workspace {
 
     /// A click on row `n`: what its action touched is shown, its workspace first.
     pub(crate) fn show_row(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(templum_agent::Row::Action {
-            target: Some(target),
-            ..
-        }) = self.templum_agent.conversation.rows.get(n).cloned()
-        else {
-            return;
+        let target = match self.templum_agent.conversation.rows.get(n).cloned() {
+            Some(
+                templum_agent::Row::Action {
+                    target: Some(target),
+                    ..
+                }
+                | templum_agent::Row::Notice {
+                    target: Some(target),
+                    ..
+                },
+            ) => target,
+            _ => return,
         };
         let block = target.block.as_deref().and_then(|uid| self.find_block(uid));
         match (block, target.workspace) {

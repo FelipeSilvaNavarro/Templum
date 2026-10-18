@@ -8,7 +8,7 @@ pub mod conversation;
 pub mod engine;
 pub mod fake;
 
-pub use conversation::{ActionState, Conversation, Load, Own, Row, Target};
+pub use conversation::{ActionState, Conversation, Load, NoticeLevel, Own, Row, Target};
 pub use engine::{Engine, EngineLine, Launch};
 
 /// The Templum Agent's word where a terminal's id would be: the asker of the tasks it hands and

@@ -10,7 +10,7 @@ use gpui_kit::{
     AnyElement, ClickEvent, Context, ElementId, SharedString, TestSupportExt, div, px, relative,
 };
 use serde_json::Value;
-use templum_agent::{ActionState, Row};
+use templum_agent::{ActionState, NoticeLevel, Row};
 
 use crate::grid::hsla;
 use crate::workspace::Workspace;
@@ -150,6 +150,30 @@ pub(crate) fn row(ws: &Workspace, n: usize, row: &Row, cx: &mut Context<Workspac
                 .child(text.clone()),
         ),
         Row::Note { text } => el.justify_center().child(small(text.clone(), ui.title_dim)),
+        Row::Notice {
+            text,
+            level,
+            target,
+        } => {
+            let color = match level {
+                NoticeLevel::Done => ui.accent,
+                NoticeLevel::Failed => red,
+                NoticeLevel::Waiting => hsla(ws.theme.palette.ansi[3], 1.0),
+            };
+            el.items_center()
+                .gap(px(8.0))
+                .when(target.is_some(), |el| {
+                    el.cursor_pointer().hover(move |s| s.bg(ui.hover)).on_click(
+                        cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                            ws.show_row(n, window, cx)
+                        }),
+                    )
+                })
+                .rounded(px(6.0))
+                .px(px(4.0))
+                .child(div().flex_none().size(px(8.0)).rounded_full().bg(color))
+                .child(small(notice_words(text), ui.title))
+        }
     };
     el.test_support().into_any_element()
 }
@@ -174,5 +198,32 @@ fn icon(tool: &str, input: &Value) -> IconName {
         "read_checklist" | "add_items" | "check_item" => IconName::ListChecks,
         "connect" | "disconnect" => IconName::Cable,
         _ => IconName::SquareTerminal,
+    }
+}
+
+/// A notice's first line as its row says it: `[task t7 from Codex · api (k9x1d): done in 31 s,
+/// $0.31] Its answer…` becomes `Codex · api (k9x1d): done in 31 s, $0.31`.
+fn notice_words(line: &str) -> String {
+    let inner = line
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once(']'))
+        .map_or(line, |(inner, _)| inner);
+    inner
+        .split_once(" from ")
+        .map_or(inner, |(_, rest)| rest)
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_notice_says_who_and_what() {
+        assert_eq!(
+            super::notice_words(
+                "[task t7 from Codex · api (k9x1d): done in 31 s, $0.31] Its answer is in the pasted text."
+            ),
+            "Codex · api (k9x1d): done in 31 s, $0.31"
+        );
+        assert_eq!(super::notice_words("plain"), "plain");
     }
 }

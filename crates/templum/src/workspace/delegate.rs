@@ -4,6 +4,7 @@
 use std::time::{Duration, Instant};
 
 use gpui_kit::{App, Context, Task};
+use templum_agent::NoticeLevel;
 use templum_canvas::BlockId;
 use templum_mcp::{Reply, tools};
 use templum_terminal::{KEY_NAMES, named_key};
@@ -874,10 +875,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let pane = self.pane(terminal);
-        let (word, lead) = if reply.is_error {
-            ("failed", FAILED_LEAD)
+        let (word, lead, level) = if reply.is_error {
+            ("failed", FAILED_LEAD, NoticeLevel::Failed)
         } else {
-            ("done", DONE_LEAD)
+            ("done", DONE_LEAD, NoticeLevel::Done)
         };
         let since = handed.since.elapsed().as_secs();
         let head = format!(
@@ -924,7 +925,8 @@ impl Workspace {
                 let spent = spent(from.as_ref(), now.as_ref())
                     .map(|s| format!(", {s}"))
                     .unwrap_or_default();
-                ws.queue_notice(to, format!("{head}{spent}{transcript}] {lead}\n{body}"), cx);
+                let text = format!("{head}{spent}{transcript}] {lead}\n{body}");
+                ws.notice_to(to, text, &terminal, level, cx);
             });
         })
         .detach();
@@ -956,7 +958,7 @@ impl Workspace {
             "[task t{id} from {} waits for its person{asks}] {SCREEN_LEAD}\n{screen}",
             self.signature_of(terminal, cx)
         );
-        self.queue_notice(by, text, cx);
+        self.notice_to(by, text, terminal, NoticeLevel::Waiting, cx);
     }
 
     /// Queues the notice `text` for the agent in the terminal `to`, then types what may go now.

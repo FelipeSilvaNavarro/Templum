@@ -8,7 +8,9 @@ use std::time::Duration;
 use futures::StreamExt as _;
 use gpui_kit::{Context, Window};
 use templum_agent::claude::{self, Session};
-use templum_agent::{ChatEvent, Conversation, Engine, EngineLine, Launch, Load};
+use templum_agent::{
+    ChatEvent, Conversation, Engine, EngineLine, Launch, Load, NoticeLevel, Target,
+};
 
 use super::Workspace;
 use super::approvals::STOPPED;
@@ -72,6 +74,12 @@ impl Workspace {
             self.answer_approval(id, Answer::Deny(Some(text.clone())), window, cx);
         }
         self.templum_agent.conversation.person(&text);
+        self.tell_engine(&text, cx);
+    }
+
+    /// The engine takes `text` as a message, started first when none runs; a refusal is the
+    /// turn's failure row.
+    fn tell_engine(&mut self, text: &str, cx: &mut Context<Self>) {
         if self.templum_agent.engine.is_none()
             && let Err(why) = self.start_engine(cx)
         {
@@ -80,11 +88,13 @@ impl Workspace {
             cx.notify();
             return;
         }
+        #[cfg(test)]
+        self.templum_agent.sent.push(text.to_string());
         let sent = self
             .templum_agent
             .engine
             .as_mut()
-            .map(|engine| engine.send(&claude::message(&text)));
+            .map(|engine| engine.send(&claude::message(text)));
         if let Some(Err(e)) = sent {
             self.kill_engine();
             let why = format!("Claude Code stopped: {e}. Your next message starts it again.");
@@ -93,6 +103,44 @@ impl Workspace {
             self.save_conversation();
         }
         cx.notify();
+    }
+
+    /// A notice for `to`, about the agent in `terminal`: the Templum Agent's goes to its chat
+    /// and wakes it; a terminal's is typed there (`queue_notice`).
+    pub(super) fn notice_to(
+        &mut self,
+        to: String,
+        text: String,
+        terminal: &str,
+        level: NoticeLevel,
+        cx: &mut Context<Self>,
+    ) {
+        if to != templum_agent::ASKER {
+            return self.queue_notice(to, text, cx);
+        }
+        let target = self.caller(terminal).map(|(space, id)| Target {
+            block: self
+                .space_named(&space)
+                .and_then(|s| s.uids.get(&id).cloned()),
+            workspace: Some(space),
+        });
+        self.agent_notice(text, target, level, cx);
+    }
+
+    /// A task of the Templum Agent's ended, or its agent waits for its person: a notice row, and
+    /// the notice as a message to the engine, which answers it at once when idle, else after its
+    /// turn.
+    pub(super) fn agent_notice(
+        &mut self,
+        text: String,
+        target: Option<Target>,
+        level: NoticeLevel,
+        cx: &mut Context<Self>,
+    ) {
+        let agent = &mut self.templum_agent;
+        agent.conversation.notice(&text, level, target);
+        agent.unread |= !agent.open;
+        self.tell_engine(&text, cx);
     }
 
     /// Starts the engine on the conversation's session (a new one when it has none), with the
