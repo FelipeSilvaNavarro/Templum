@@ -199,7 +199,7 @@ What doesn't come back: the text that was on screen, and programs other than the
 | Writing fails (disk full, read-only) | A notification the first time. Templum keeps trying every 5 seconds without new notifications, and says when a write works again. |
 | A block's folder no longer exists | The shell starts in the home folder. One notification lists those blocks. |
 | A block's shell can't start | The block is skipped, with the notification a new block already gives. The workspace's file isn't written for the rest of the session, and a notification says so: fixing the shell setting brings the canvas back. |
-| A restored block's shell ends as it starts (within 10 seconds, before running a command) | As when it can't start, but the block stays with what the shell printed, titled "The shell ended", so the person sees why. Closing it asks nothing. A shell ended later (`exit`) closes its block at once. |
+| A restored block's shell ends as it starts (within 10 seconds, before running a command, with nothing typed, pasted or pressed into it) | As when it can't start, but the block stays with what the shell printed, titled "The shell ended", so the person sees why. Closing it asks nothing. A shell ended later, or by the person or an agent (Ctrl+D, `exit`), closes its block at once. |
 
 ## Architecture
 

@@ -356,6 +356,44 @@ fn a_restored_shell_that_ends_at_once_leaves_the_saved_canvas_alone(cx: &mut Tes
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "kept");
 }
 
+/// A restored shell ended by the person, at once (Ctrl+D, or `exit` with no shell integration),
+/// did start: its block closes as any other's, and the workspace is saved as usual.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_restored_shell_the_person_ends_at_once_closes_its_block(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let folder = data.path().display().to_string();
+    write_canvas(
+        data.path(),
+        &format!(
+            r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+                  {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{folder}",
+                    "agent":"claude","session":"abc-1"}}]}}"#
+        ),
+    );
+    // `cat` is the shell: Ctrl+D, after the typed agent's line, ends it as it ends a prompt.
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let id = first_id(&ws, cx);
+    ws.read_with(cx, |ws, _| {
+        ws.space
+            .terminal(id)
+            .unwrap()
+            .term
+            .press(&templum_terminal::KeyInput {
+                key: "d",
+                key_char: Some("d"),
+                ctrl: true,
+                alt: false,
+                shift: false,
+            })
+    });
+    super::terminals::until("its block to close", handle, &ws, cx, |ws| {
+        ws.space.terminal(id).is_none()
+    });
+    ws.read_with(cx, |ws, _| assert!(!ws.space.frozen, "its canvas is saved"));
+    assert_eq!(notification_count(handle, cx), 0);
+}
+
 /// A snapshot taken before a restored agent is up (a slow shell, a question of its that took the
 /// typed line) keeps its saved folder, agent and session: the next start resumes it still. Once
 /// a snapshot finds an agent there, what it finds is saved.

@@ -628,6 +628,8 @@ pub struct Terminal {
     /// Unique among the terminals of every Templum running; its programs see it as
     /// `TEMPLUM_TERMINAL`.
     id: String,
+    /// Someone typed into it ([`Terminal::had_input`]).
+    input: AtomicBool,
 }
 
 impl Terminal {
@@ -723,6 +725,7 @@ impl Terminal {
             rows: opts.rows,
             shell_name,
             id,
+            input: AtomicBool::new(false),
         })
     }
 
@@ -811,13 +814,26 @@ impl Terminal {
         let _ = self.pty.send(Msg::Input(bytes.into()));
     }
 
+    /// `write`, for input someone gave: a key, a paste, typed text ([`Terminal::had_input`]).
+    fn input(&self, bytes: impl Into<Cow<'static, [u8]>>) {
+        self.input.store(true, Ordering::Relaxed);
+        self.write(bytes);
+    }
+
+    /// Someone, the person or an agent, pressed a key, pasted or typed text into it
+    /// (`key`, `press`, `paste`, `type_in`): a shell that ends then was ended, it didn't fail to
+    /// start. What the app itself writes (`write`) doesn't count.
+    pub fn had_input(&self) -> bool {
+        self.input.load(Ordering::Relaxed)
+    }
+
     /// Sends a key press. Returns false for printable text, which must come through the
     /// text-input path instead (IME, dead keys).
     pub fn key(&self, input: &KeyInput) -> bool {
         let mode = *self.term.0.lock_unfair().mode();
         match encode_key(input, mode) {
             Some(bytes) => {
-                self.write(bytes);
+                self.input(bytes);
                 true
             }
             None => false,
@@ -830,7 +846,7 @@ impl Terminal {
         if !self.key(key)
             && let Some(text) = key.key_char
         {
-            self.write(text.as_bytes().to_vec());
+            self.input(text.as_bytes().to_vec());
         }
     }
 
@@ -855,12 +871,12 @@ impl Terminal {
     }
 
     pub fn paste(&self, text: &str) {
-        self.write(paste_bytes(text, self.bracketed()));
+        self.input(paste_bytes(text, self.bracketed()));
     }
 
     /// Types `text` in for the person to send: never presses Enter (see [`typed_bytes`]).
     pub fn type_in(&self, text: &str) {
-        self.write(typed_bytes(text, self.bracketed()));
+        self.input(typed_bytes(text, self.bracketed()));
     }
 
     /// The program asked for pastes to be bracketed.

@@ -540,10 +540,11 @@ impl Workspace {
 const DIES_STARTING: Duration = Duration::from_secs(10);
 
 impl Pane {
-    /// Restored with its canvas, its shell ended as it started: it couldn't start
-    /// (docs/specs/persistence.md, Errors).
+    /// Restored with its canvas, its shell ended as it started, given no input: it couldn't
+    /// start (docs/specs/persistence.md, Errors). One ended by a Ctrl+D or an `exit` did.
     pub(crate) fn died_starting(&self) -> bool {
         self.restored
+            && !self.term.had_input()
             && self
                 .term
                 .lived()
