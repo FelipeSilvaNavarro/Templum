@@ -151,6 +151,11 @@ fn aside(path: &Path) -> PathBuf {
         .expect("a free name")
 }
 
+/// Whether `path` is a link (a junction too, on Windows).
+fn is_link(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+}
+
 /// Whether `a` and `b` are one file or folder, links followed.
 fn same(a: &Path, b: &Path) -> bool {
     matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
@@ -166,7 +171,8 @@ fn own_path(path: &Path) -> PathBuf {
 /// state folder it is shared with, or its own. `sources` are every state folder a share of this
 /// agent may point at: a link to one of them is Templum's, and only those are replaced or removed.
 /// `made`: Templum made `folder` (`<data>/accounts/<id>`), the only one where it moves a real item
-/// (aside on Save, back when its own again); in a folder the person chose it only links.
+/// (aside on Save, back when its own again), unless it or its state folder is a link; in a folder
+/// the person chose it only links.
 pub fn apply(
     kind: &Kind,
     folder: &Path,
@@ -194,6 +200,8 @@ fn apply_with(
         report.problems.push(format!("{}: {e}", state.display()));
         return report;
     }
+    // Made, but a link to a folder of the person's (`~/.claude`): theirs, as one they chose.
+    let made = made && !is_link(folder) && !is_link(&state);
     for item in kind.items {
         let from = shares
             .iter()
@@ -334,10 +342,12 @@ pub fn delete(kind: &Kind, folder: &Path) -> io::Result<()> {
         return unlink(folder, true);
     }
     let state = kind.state_dir(folder);
-    for path in kind.items.iter().flat_map(|i| i.paths) {
+    // A state folder that is a link (Gemini CLI's `.gemini` to `~/.gemini`): only the link goes.
+    let items = if is_link(&state) { &[][..] } else { kind.items };
+    for path in items.iter().flat_map(|i| i.paths) {
         let (name, dir) = name(path);
         let path = state.join(name);
-        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+        if is_link(&path) {
             unlink(&path, dir)?;
         }
     }
@@ -447,10 +457,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    fn is_link(path: &Path) -> bool {
-        fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
     }
 
     #[test]
@@ -708,6 +714,73 @@ mod tests {
         assert_eq!(fs::read(t.acc.join("skills/a")).unwrap(), b"mine");
         assert!(!is_link(&t.acc.join("skills")) && !t.acc.join("skills.own").exists());
         assert_eq!(report.problems, [itself("Skills")]);
+    }
+
+    /// A folder of the person's own, like `~/.claude`, with its items.
+    fn theirs(folder: &Path) {
+        fs::create_dir_all(folder.join("skills")).unwrap();
+        fs::write(folder.join("skills/a"), "mine").unwrap();
+        fs::write(folder.join("settings.json"), "mine").unwrap();
+    }
+
+    /// Templum's folder for an account that is a link to a folder of the person's: its real items
+    /// are left as in a folder they chose, and nothing kept aside comes back there.
+    #[test]
+    fn a_folder_linked_elsewhere_moves_nothing_there() {
+        let t = Two::new();
+        let dotclaude = t.root.join("dotclaude");
+        theirs(&dotclaude);
+        fs::write(t.src.join("settings.json"), "{}").unwrap();
+        let linked = t.root.join("linked");
+        std::os::unix::fs::symlink(&dotclaude, &linked).unwrap();
+        let shares = [t.share("skills"), t.share("settings")].concat();
+        let sources = std::slice::from_ref(&t.src);
+        for when in [When::Saved, When::Starting] {
+            let report = apply(&FAKE, &linked, &shares, sources, when, true);
+            untouched(&dotclaude);
+            assert_eq!(report.left, ["skills", "settings"], "said");
+            assert!(report.kept.is_empty() && report.replaced.is_empty());
+        }
+        fs::create_dir_all(dotclaude.join("agents.own")).unwrap();
+        std::os::unix::fs::symlink(t.src.join("agents"), dotclaude.join("agents")).unwrap();
+        apply(&FAKE, &linked, &[], sources, When::Saved, true);
+        assert!(fs::symlink_metadata(dotclaude.join("agents")).is_err());
+        assert!(dotclaude.join("agents.own").is_dir(), "never renamed back");
+        t.logins_intact();
+    }
+
+    /// The same for a kind whose files are in a subfolder (Gemini CLI's `.gemini`) that is a link:
+    /// and deleting the account removes only that link, never a link of the person's in it.
+    #[test]
+    fn a_state_folder_linked_elsewhere_moves_nothing_there() {
+        const STATE: Kind = Kind {
+            state: Some(".fake"),
+            ..FAKE
+        };
+        let t = Two::new();
+        let dotfake = t.root.join("dotfake");
+        theirs(&dotfake);
+        let dotfiles = t.root.join("dotfiles/agents");
+        fs::create_dir_all(&dotfiles).unwrap();
+        std::os::unix::fs::symlink(&dotfiles, dotfake.join("agents")).unwrap();
+        std::os::unix::fs::symlink(&dotfake, t.acc.join(".fake")).unwrap();
+        fs::write(t.src.join("settings.json"), "{}").unwrap();
+        let shares = [t.share("skills"), t.share("settings")].concat();
+        let report = apply(
+            &STATE,
+            &t.acc,
+            &shares,
+            std::slice::from_ref(&t.src),
+            When::Saved,
+            true,
+        );
+        untouched(&dotfake);
+        assert_eq!(report.left, ["skills", "settings"], "said");
+        delete(&STATE, &t.acc).unwrap();
+        assert!(!t.acc.exists());
+        untouched(&dotfake);
+        assert_eq!(fs::read_link(dotfake.join("agents")).unwrap(), dotfiles);
+        t.logins_intact();
     }
 
     #[test]

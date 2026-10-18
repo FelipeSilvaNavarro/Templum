@@ -205,8 +205,9 @@ What the account's choices say is applied when the dialog saves it, and again ea
 `spawn_agent`, a restore, Log in), so a link that went missing is made again:
 
 - **The folder** is made when missing (0700 on Unix). **Templum moves a real file or folder only in the folder it
-  made itself** (`<data>/accounts/<id>`); in a folder the person chose it only makes and removes its own links, so
-  one that already has files (~/Documents, another agent's) is taken as it is and nothing of it is renamed. The
+  made itself** (`<data>/accounts/<id>`), and not when that folder, or Gemini CLI's `.gemini` in it, is a link (to
+  `~/.claude`, say): then it is a folder the person chose. In one it only makes and removes its own links, so one
+  that already has files (~/Documents, another agent's) is taken as it is and nothing of it is renamed. The
   dialog reads its links when it is chosen: a link to the same item of the agent's own folder or of an account
   becomes that item's choice, so a folder set up by hand keeps its sharing.
 - **Shared item, nothing there:** a link to the same item of who it is shared with. That item is a folder Templum
@@ -261,7 +262,7 @@ the account still opens with what could be done.
 - A block of it that comes back later (Ctrl+Z, a stopped workspace started, a restore) is a plain terminal: an
   `"account"` Templum doesn't know gives no variable and no account, as in an older Templum.
 - **Its folder in Templum's data folder** is deleted with it, its links removed first (what they point at stays; a
-  folder that is itself a link: only that link): "Its
+  folder that is itself a link, or whose `.gemini` is: only that link): "Its
   folder is deleted: its login and everything it doesn't share. What it shares stays where it is." For an agent whose
   login is in the system's keychain (Claude Code on macOS, Copilot CLI everywhere), the question adds "Its login stays
   in the system's keychain: run /logout in it first to remove it."
@@ -476,7 +477,8 @@ Each goes to [docs/minors.md](../minors.md) under **Agent accounts** with the co
 **Unit (`templum-usage`'s `accounts`):** no agent's item is or holds one of its login's names; every key is unique per agent; a
 shared item becomes a link to the other folder's item, a missing source folder is made, a missing source file isn't
 linked; a real item is kept aside on save (`.own`, then `.own-2`) and left at a start (reported), and never moved
-in a folder the person chose; a folder that is a link to its source isn't linked to itself; own again removes
+in a folder the person chose, nor in Templum's folder (or its `.gemini`) that is a link elsewhere, which deleting
+removes alone; a folder that is a link to its source isn't linked to itself; own again removes
 only the link and brings `.own` back; a link the person made elsewhere is never replaced nor removed, and a folder
 set up by hand is read back as choices; a chain links to the middle account's item; the login file is never touched
 by any of these; deleting removes the folder's links before the folder and leaves their targets; Windows: a folder is a
