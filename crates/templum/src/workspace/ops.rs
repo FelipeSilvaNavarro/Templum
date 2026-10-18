@@ -156,4 +156,72 @@ impl Workspace {
             .flatten()
             .ok_or_else(|| "Couldn't open the block.".to_string())
     }
+
+    /// The note the note block `block` of the workspace `space` shows: its whole text becomes
+    /// `text`, or with `old`, its one occurrence of `old` does. One step of the note's Ctrl+Z; the
+    /// person's selection stays, within the new text.
+    pub(super) fn note_replace(
+        &mut self,
+        space: &str,
+        block: BlockId,
+        text: &str,
+        old: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let editor = self
+            .space_named(space)
+            .and_then(|s| {
+                s.blocks
+                    .get(&block)?
+                    .note()?
+                    .tab()
+                    .map(|t| t.editor.clone())
+            })
+            .ok_or("That block shows no note.")?;
+        let value = editor.read(cx).value().to_string();
+        let range = match old {
+            None if text.trim().is_empty() => {
+                return Err("That would empty the note: the person does that.".into());
+            }
+            None => 0..value.len(),
+            Some(old) => match value.matches(old).count() {
+                0 => return Err(format!("\"{old}\" isn't in the note: read_note shows it.")),
+                1 => {
+                    let at = value.find(old).unwrap_or_default();
+                    at..at + old.len()
+                }
+                n => {
+                    return Err(format!(
+                        "\"{old}\" is in the note {n} times: give more of the text around it."
+                    ));
+                }
+            },
+        };
+        editor.update(cx, |e, cx| {
+            let kept = e.selected_range();
+            e.set_selected_range(range, cx);
+            e.replace(text.to_string(), window, cx);
+            // Clipped to a character's boundary there.
+            let end = e.value().len();
+            e.set_selected_range(kept.start.min(end)..kept.end.min(end), cx);
+        });
+        Ok(())
+    }
+
+    /// The text of item `item` of the checklist `list` becomes `text`, as one step of its Ctrl+Z.
+    /// False when the checklist has no such item.
+    pub(super) fn item_edit(&mut self, list: u64, item: u64, text: &str) -> bool {
+        if self
+            .checklists
+            .get(list)
+            .and_then(|l| l.item(item))
+            .is_none()
+        {
+            return false;
+        }
+        self.edit_checklist(list, |c| c.set_text(list, item, text, notes::now()));
+        self.agent_changed(list);
+        true
+    }
 }

@@ -108,7 +108,7 @@ Opened by the header's button, **All checklists…** in the block's menu, **Chec
 
 ## Agents
 
-A checklist block wired to an agent ([connections.md](connections.md#tools)) gets three tools and their verbs. The
+A checklist block wired to an agent ([connections.md](connections.md#tools)) gets five tools and their verbs. The
 checklist is the block's; an item is named by its id, as `read_checklist` shows it.
 
 | Tool | Arguments | Does | Needs |
@@ -116,6 +116,8 @@ checklist is the block's; an item is named by its id, as `read_checklist` shows 
 | `read_checklist` | `block` | The checklist's name and progress, then one line per item: its id, `[x]` or `[ ]`, its text | wired checklist |
 | `check_item` | `block`, `item`, `done` (true) | Checks the item (unchecks it with `done: false`) | wired checklist |
 | `add_items` | `block`, `text` | Each line with text becomes an item at the end; a leading `- ` or `* `, then `[ ]` or `[x]`, is dropped (`[x]` adds it checked); the new items' ids | wired checklist |
+| `edit_item` | `block`, `item`, `text` | The item's text becomes `text` (blank is refused: "delete_item removes an item"); `Item 41 is now "Build".` (card 35, [agent-tools.md](agent-tools.md#fixing-a-note-or-a-checklist)) | wired checklist |
+| `delete_item` | `block`, `item` | Deletes the item, as its row's ×; `Deleted item 41.` (card 35) | wired checklist |
 
 - Results, as the other tools': `Deploy (2/5)\n12 [x] Build\n13 [ ] Run the tests`; `Item 13 is checked.`;
   `Added items 14, 15.`. Refusals say what to do next: `4qm2a isn't a checklist.`, `4qm2a shows no checklist.`,
@@ -125,7 +127,8 @@ checklist is the block's; an item is named by its id, as `read_checklist` shows 
 - The MCP instructions' kanban and note sentence gains: "check the items of a connected checklist as you finish
   them."
 - **Command line:** `templum checklist read <block>`, `templum checklist add <block> <text>` (its words joined with
-  spaces, as `templum note append`), `templum checklist check|uncheck <block> <item>`.
+  spaces, as `templum note append`), `templum checklist check|uncheck <block> <item>`, `templum checklist edit <block>
+  <item> <text>`, `templum checklist delete <block> <item>`.
 
 ## Files
 

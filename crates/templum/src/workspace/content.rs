@@ -653,6 +653,35 @@ impl Workspace {
         Reply::ok(format!("Added to the note in {block}."))
     }
 
+    /// `replace_note` from the terminal `from`: the note the wired note block `block` shows gets
+    /// `text`, whole or in place of its one passage `old`; one step of the note's Ctrl+Z.
+    pub(super) fn replace_note(
+        &mut self,
+        from: &str,
+        block: &str,
+        text: &str,
+        old: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        if let Err(refused) = self.wired_note(from, block) {
+            return refused;
+        }
+        let (space, _) = self.caller_space(from);
+        let (space_id, id) = (space.id.clone(), space.block_by_uid(block));
+        let Some(id) = id else {
+            return Reply::err(format!("{block} isn't a note."));
+        };
+        if let Err(refused) = self.note_replace(&space_id, id, text, old, window, cx) {
+            return Reply::err(refused);
+        }
+        cx.notify();
+        Reply::ok(match old {
+            Some(_) => format!("Replaced 1 passage of the note in {block}."),
+            None => format!("Replaced the note in {block}."),
+        })
+    }
+
     /// The checklist block `block` wired to the caller, and the checklist it shows.
     fn wired_checklist(&self, from: &str, block: &str) -> Result<u64, Reply> {
         let (space, me) = self.caller_space(from);
@@ -698,15 +727,70 @@ impl Workspace {
             Err(refused) => return refused,
         };
         if !self.edit_checklist(list, |c| c.set_done(list, item, done, notes::now())) {
-            let name = self.checklists.get(list).map_or("", |l| l.name_shown());
-            return Reply::err(format!(
-                "There's no item {item} in \"{name}\". read_checklist shows its items."
-            ));
+            return self.no_item(list, item);
         }
         self.agent_changed(list);
         cx.notify();
         let state = if done { "checked" } else { "unchecked" };
         Reply::ok(format!("Item {item} is {state}."))
+    }
+
+    /// "There's no item 99 in "Plan"…": the checklist `list` has no item `item`.
+    fn no_item(&self, list: u64, item: u64) -> Reply {
+        let name = self.checklists.get(list).map_or("", |l| l.name_shown());
+        Reply::err(format!(
+            "There's no item {item} in \"{name}\". read_checklist shows its items."
+        ))
+    }
+
+    /// `edit_item`: the text of an item of the checklist `block` shows; one Ctrl+Z step.
+    pub(super) fn edit_item(
+        &mut self,
+        from: &str,
+        block: &str,
+        item: u64,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let list = match self.wired_checklist(from, block) {
+            Ok(list) => list,
+            Err(refused) => return refused,
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            return Reply::err("delete_item removes an item");
+        }
+        if !self.item_edit(list, item, text) {
+            return self.no_item(list, item);
+        }
+        cx.notify();
+        Reply::ok(format!("Item {item} is now {text:?}."))
+    }
+
+    /// `delete_item`: an item of the checklist `block` shows, deleted as the row's × does; one
+    /// Ctrl+Z step.
+    pub(super) fn remove_item(
+        &mut self,
+        from: &str,
+        block: &str,
+        item: u64,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let list = match self.wired_checklist(from, block) {
+            Ok(list) => list,
+            Err(refused) => return refused,
+        };
+        if self
+            .checklists
+            .get(list)
+            .and_then(|l| l.item(item))
+            .is_none()
+        {
+            return self.no_item(list, item);
+        }
+        self.delete_item(list, item, cx);
+        self.agent_changed(list);
+        Reply::ok(format!("Deleted item {item}."))
     }
 
     /// Adds an item per line of `text` at the end of the checklist `block` shows: one Ctrl+Z

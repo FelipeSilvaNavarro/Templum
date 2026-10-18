@@ -102,6 +102,12 @@ pub enum Call {
         block: String,
         text: String,
     },
+    /// The note's whole text, or its one passage `old`, becomes `text`.
+    ReplaceNote {
+        block: String,
+        text: String,
+        old: Option<String>,
+    },
     ReadChecklist {
         block: String,
     },
@@ -113,6 +119,15 @@ pub enum Call {
     AddItems {
         block: String,
         text: String,
+    },
+    EditItem {
+        block: String,
+        item: u64,
+        text: String,
+    },
+    DeleteItem {
+        block: String,
+        item: u64,
     },
     OpenFile {
         path: String,
@@ -268,6 +283,8 @@ pub fn list() -> Value {
     let column =
         json!({ "type": "string", "description": "A column's title (either case) or id." });
     let none = json!({ "type": "object", "properties": {} });
+    let item =
+        json!({ "type": "integer", "description": "An item's id, as read_checklist shows it." });
     let items_text = json!({
         "type": "string",
         "description": "A checklist's items, one per line; a leading - or *, then [ ] or [x], is dropped.",
@@ -636,6 +653,21 @@ pub fn list() -> Value {
             },
         },
         {
+            "name": "replace_note",
+            "description": "Replaces the text of the note a note block connected to you shows; with old, only \
+                            that passage, which must be in the note once (blank text deletes it). The person sees \
+                            it at once and can take it back.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "block": block,
+                    "text": { "type": "string" },
+                    "old": { "type": "string", "description": "The one passage to replace, exactly as in the note." },
+                },
+                "required": ["block", "text"],
+            },
+        },
+        {
             "name": "read_checklist",
             "description": "The checklist a checklist block connected to you shows: its name and progress, \
                             then each item's id, [x] or [ ], and text.",
@@ -664,6 +696,26 @@ pub fn list() -> Value {
                 "type": "object",
                 "properties": { "block": block, "text": { "type": "string" } },
                 "required": ["block", "text"],
+            },
+        },
+        {
+            "name": "edit_item",
+            "description": "Changes the text of an item of the checklist a checklist block connected to you \
+                            shows. The person sees it at once and can take it back.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "block": block, "item": item, "text": { "type": "string" } },
+                "required": ["block", "item", "text"],
+            },
+        },
+        {
+            "name": "delete_item",
+            "description": "Deletes an item of the checklist a checklist block connected to you shows. The \
+                            person sees it at once and can take it back.",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "block": block, "item": item },
+                "required": ["block", "item"],
             },
         },
         {
@@ -1023,6 +1075,20 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             block: text("block")?,
             text: text("text")?,
         },
+        "replace_note" => Call::ReplaceNote {
+            block: text("block")?,
+            text: text("text")?,
+            old: match &args["old"] {
+                Value::Null => None,
+                value => Some(
+                    value
+                        .as_str()
+                        .filter(|o| !o.is_empty())
+                        .ok_or("\"old\" is the passage to replace, as in the note")?
+                        .to_string(),
+                ),
+            },
+        },
         "read_checklist" => Call::ReadChecklist {
             block: text("block")?,
         },
@@ -1040,6 +1106,17 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
         "add_items" => Call::AddItems {
             block: text("block")?,
             text: text("text")?,
+        },
+        "edit_item" => Call::EditItem {
+            block: text("block")?,
+            item: id("item", "read_checklist")?
+                .ok_or_else(|| format!("{name} needs \"item\", an item's id"))?,
+            text: text("text")?,
+        },
+        "delete_item" => Call::DeleteItem {
+            block: text("block")?,
+            item: id("item", "read_checklist")?
+                .ok_or_else(|| format!("{name} needs \"item\", an item's id"))?,
         },
         "open_file" => Call::OpenFile {
             path: text("path")?,
@@ -1184,6 +1261,10 @@ mod tests {
                 "append_note",
                 json!({ "block": "4qm2a", "text": "Next: the tests." }),
             ),
+            (
+                "replace_note",
+                json!({ "block": "4qm2a", "old": "- ship", "text": "- ship it" }),
+            ),
             ("read_checklist", json!({ "block": "4qm2a" })),
             (
                 "check_item",
@@ -1193,6 +1274,11 @@ mod tests {
                 "add_items",
                 json!({ "block": "4qm2a", "text": "- [ ] Build\n- [ ] Test" }),
             ),
+            (
+                "edit_item",
+                json!({ "block": "4qm2a", "item": 41, "text": "Build" }),
+            ),
+            ("delete_item", json!({ "block": "4qm2a", "item": "41" })),
             (
                 "create_block",
                 json!({ "kind": "checklist", "name": "Plan", "items": "- [ ] Read\n- [ ] Build" }),
@@ -1477,6 +1563,39 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn the_note_and_checklist_fixes_take_their_arguments() {
+        assert_eq!(
+            parse("replace_note", &json!({ "block": "b", "text": "All new" })),
+            Ok(Call::ReplaceNote {
+                block: "b".into(),
+                text: "All new".into(),
+                old: None
+            })
+        );
+        assert_eq!(
+            parse(
+                "edit_item",
+                &json!({ "block": "b", "item": "41", "text": "Build" })
+            ),
+            Ok(Call::EditItem {
+                block: "b".into(),
+                item: 41,
+                text: "Build".into()
+            })
+        );
+        assert_eq!(
+            parse("delete_item", &json!({ "block": "b", "item": 41 })),
+            Ok(Call::DeleteItem {
+                block: "b".into(),
+                item: 41
+            })
+        );
+        assert!(parse("replace_note", &json!({ "block": "b" })).is_err());
+        assert!(parse("edit_item", &json!({ "block": "b", "text": "x" })).is_err());
+        assert!(parse("delete_item", &json!({ "block": "b" })).is_err());
     }
 
     /// create_block takes what its kind does, and names what it doesn't.

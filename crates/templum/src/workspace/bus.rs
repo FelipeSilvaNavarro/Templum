@@ -500,6 +500,13 @@ impl Workspace {
                 self.check_item(terminal, &block, item, done, cx)
             }
             Call::AddItems { block, text } => self.add_items(terminal, &block, &text, cx),
+            Call::ReplaceNote { block, text, old } => {
+                self.replace_note(terminal, &block, &text, old.as_deref(), window, cx)
+            }
+            Call::EditItem { block, item, text } => {
+                self.edit_item(terminal, &block, item, &text, cx)
+            }
+            Call::DeleteItem { block, item } => self.remove_item(terminal, &block, item, cx),
             Call::OpenFile { path, line } => self.open_file_for(terminal, &path, line, window, cx),
             Call::SendKeys { block, keys } => return self.send_keys(terminal, &block, keys, cx),
             Call::Interrupt { block } => return self.interrupt(terminal, &block, cx),

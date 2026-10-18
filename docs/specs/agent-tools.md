@@ -1,7 +1,7 @@
 # Agent tools: what Claude Code does that Templum's agents couldn't
 
 - **Date:** 2026-10-18
-- **Status:** Planned (kanban card 35, "Aprimorando ferramentas do Templum"):
+- **Status:** Batch 1 implemented (kanban card 35, "Aprimorando ferramentas do Templum"):
   [docs/plans/2026-10-18-agent-tools.md](../plans/2026-10-18-agent-tools.md)
 - **Builds on:** [connections.md](connections.md) (the bus, the tools, tasks, the notices typed back, spawning, the
   balloon), [ask-user.md](ask-user.md) (the dialog `propose_plan` reuses), [agents.md](agents.md) (the agents, their

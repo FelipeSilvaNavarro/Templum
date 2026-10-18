@@ -1570,3 +1570,213 @@ fn create_block_refuses_what_its_kind_doesnt_take(cx: &mut TestAppContext) {
         "nothing opened"
     );
 }
+
+/// The person puts `text` in the note block `note` (its editor `editor` has the keyboard after).
+fn set_note(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    editor: &Entity<EditorState>,
+    note: BlockId,
+    cx: &mut TestAppContext,
+    text: &str,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(note, window, cx));
+        editor.update(cx, |e, cx| {
+            let end = e.value().len();
+            e.set_selected_range(0..end, cx);
+            e.replace(text.to_string(), window, cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+fn note_text(editor: &Entity<EditorState>, cx: &mut TestAppContext) -> String {
+    editor.read_with(cx, |e, _| e.value().to_string())
+}
+
+/// Ctrl+Z in the note that has the keyboard.
+fn undo_note(handle: AnyWindowHandle, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        window.press(UNDO, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+/// `replace_note` replaces the whole text, or its one passage `old`, as one step of the note's
+/// Ctrl+Z each (docs/specs/agent-tools.md, Fixing a note or a checklist).
+#[gpui_kit::test]
+fn replace_note_replaces_the_text_or_one_passage_and_ctrl_z_takes_it_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, note, uid) = wired_note(handle, &ws, cx);
+    let editor = note_editor(&ws, cx, note);
+    set_note(
+        handle,
+        &ws,
+        &editor,
+        note,
+        cx,
+        "Plan\n- build\n- build\n- ship",
+    );
+    let replace = |old: Option<&str>, text: &str| match old {
+        Some(old) => json!({ "block": uid, "old": old, "text": text }),
+        None => json!({ "block": uid, "text": text }),
+    };
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "replace_note",
+            replace(Some("- build"), "x")
+        ),
+        (
+            true,
+            "\"- build\" is in the note 2 times: give more of the text around it.".into()
+        )
+    );
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "replace_note",
+            replace(Some("nope"), "x")
+        ),
+        (
+            true,
+            "\"nope\" isn't in the note: read_note shows it.".into()
+        )
+    );
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "replace_note",
+            replace(Some("- ship"), "- ship it")
+        ),
+        (false, format!("Replaced 1 passage of the note in {uid}."))
+    );
+    assert_eq!(note_text(&editor, cx), "Plan\n- build\n- build\n- ship it");
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "replace_note",
+            replace(None, "All new")
+        ),
+        (false, format!("Replaced the note in {uid}."))
+    );
+    assert_eq!(note_text(&editor, cx), "All new");
+    assert_eq!(
+        call(handle, &ws, cx, &me, "replace_note", replace(None, " ")),
+        (
+            true,
+            "That would empty the note: the person does that.".into()
+        )
+    );
+    let id = ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&note].note().unwrap().tab().unwrap().id
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.notes.get(id).unwrap().text.clone()),
+        "All new",
+        "kept in the notes"
+    );
+    undo_note(handle, cx);
+    assert_eq!(note_text(&editor, cx), "Plan\n- build\n- build\n- ship it");
+    undo_note(handle, cx);
+    assert_eq!(note_text(&editor, cx), "Plan\n- build\n- build\n- ship");
+}
+
+/// `edit_item` and `delete_item` fix a checklist, one step of Ctrl+Z each.
+#[gpui_kit::test]
+fn edit_item_and_delete_item_fix_a_checklist_one_ctrl_z_step_each(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, _block, uid, list, build, tests) = wired_checklist(handle, &ws, cx);
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "edit_item",
+            json!({ "block": uid, "item": build, "text": "Build it" })
+        ),
+        (false, format!("Item {build} is now \"Build it\"."))
+    );
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "delete_item",
+            json!({ "block": uid, "item": tests })
+        ),
+        (false, format!("Deleted item {tests}."))
+    );
+    assert_eq!(items_of(&ws, cx, list), [("Build it".to_string(), true)]);
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "edit_item",
+            json!({ "block": uid, "item": 999, "text": "x" })
+        ),
+        (
+            true,
+            "There's no item 999 in \"Deploy\". read_checklist shows its items.".into()
+        )
+    );
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "delete_item",
+            json!({ "block": uid, "item": 999 })
+        ),
+        (
+            true,
+            "There's no item 999 in \"Deploy\". read_checklist shows its items.".into()
+        )
+    );
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "edit_item",
+            json!({ "block": uid, "item": build, "text": " " })
+        ),
+        (true, "delete_item removes an item".into())
+    );
+    ws.update(cx, |ws, cx| assert!(ws.undo_checklists(cx)));
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            ws.checklists.get(list).unwrap().item(tests).is_some(),
+            "the delete taken back"
+        )
+    });
+    ws.update(cx, |ws, cx| assert!(ws.undo_checklists(cx)));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.checklists.get(list).unwrap().item(build).unwrap().text,
+            "Build"
+        )
+    });
+}

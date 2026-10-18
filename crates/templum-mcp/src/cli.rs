@@ -48,11 +48,13 @@ const KANBAN: &str = "kanban list [<board>] [--card <card>] | add <title> [--col
                       [--checklist <text>] | edit <card> [--priority <priority>] [--for <who>] [--add <text>] \
                       [--check <item>]… [--uncheck <item>]… | move <card> <column> | comment <card> <text> \
                       | claim <card> [--json]";
-const NOTE: &str = "note read <block> | note append <block> <text> [--json]";
+const NOTE: &str = "note read <block> | note append <block> <text> \
+                    | note replace <block> <text> [--old <text>] [--json]";
 const NEW: &str = "new note [<text>] | new checklist <name> [--items <text>] \
                    | new terminal [--folder <folder>] [--command <command>] [--json]";
 const CHECKLIST: &str = "checklist read <block> | add <block> <text> | check <block> <item> \
-                         | uncheck <block> <item> [--json]";
+                         | uncheck <block> <item> | edit <block> <item> <text> | delete <block> <item> \
+                         [--json]";
 
 pub fn is_verb(arg: &str) -> bool {
     VERBS.contains(&arg)
@@ -332,7 +334,28 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
             "append_note",
             json!({ "block": block, "text": text.join(" ") }),
         ),
+        ("note", ["replace", block, rest @ ..]) => {
+            let (text, old) = match rest {
+                [text @ .., "--old", old] => (text, Some(old)),
+                text => (text, None),
+            };
+            if text.is_empty() {
+                return Err(NOTE);
+            }
+            let mut arguments = json!({ "block": block, "text": text.join(" ") });
+            if let Some(old) = old {
+                arguments["old"] = json!(old);
+            }
+            ("replace_note", arguments)
+        }
         ("checklist", ["read", block]) => ("read_checklist", json!({ "block": block })),
+        ("checklist", ["edit", block, item, text @ ..]) if !text.is_empty() => (
+            "edit_item",
+            json!({ "block": block, "item": item, "text": text.join(" ") }),
+        ),
+        ("checklist", ["delete", block, item]) => {
+            ("delete_item", json!({ "block": block, "item": item }))
+        }
         ("checklist", ["add", block, text @ ..]) if !text.is_empty() => (
             "add_items",
             json!({ "block": block, "text": text.join(" ") }),
@@ -841,6 +864,22 @@ mod tests {
                     "command_finished",
                 ][..],
                 json!({ "name": "wait_for", "arguments": { "block": "k9x1d", "timeout": 60, "event": "command_finished" } }),
+            ),
+            (
+                &["note", "replace", "4qm2a", "- ship it", "--old", "- ship"][..],
+                json!({ "name": "replace_note", "arguments": { "block": "4qm2a", "text": "- ship it", "old": "- ship" } }),
+            ),
+            (
+                &["note", "replace", "4qm2a", "All", "new"][..],
+                json!({ "name": "replace_note", "arguments": { "block": "4qm2a", "text": "All new" } }),
+            ),
+            (
+                &["checklist", "edit", "4qm2a", "41", "Build", "it"][..],
+                json!({ "name": "edit_item", "arguments": { "block": "4qm2a", "item": "41", "text": "Build it" } }),
+            ),
+            (
+                &["checklist", "delete", "4qm2a", "41"][..],
+                json!({ "name": "delete_item", "arguments": { "block": "4qm2a", "item": "41" } }),
             ),
             (
                 &["new", "note", "first", "notes"][..],

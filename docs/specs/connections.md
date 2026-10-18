@@ -453,10 +453,13 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `claim_card` | `card` | Makes the caller the card's assignee; refused when another block holds it, or (card 40) when the card is for another agent ([Cards for an agent](#cards-for-an-agent)) | wired kanban | 4, card 40 |
 | `read_note` | `block` | The text of the note the note block shows | wired note | 4 |
 | `append_note` | `block`, `text` | Adds the text at the note's end, after a blank line; the note shows it at once and Ctrl+Z takes it back | wired note | 4 |
+| `replace_note` | `block`, `text`, `old` | The note's whole text, or its one passage `old`, becomes `text`; one Ctrl+Z step ([agent-tools.md](agent-tools.md#fixing-a-note-or-a-checklist)) | wired note | card 35 |
 | `read_checklist` | `block` | The checklist the block shows: its name and progress, then one line per item: its id, `[x]` or `[ ]`, its text ([checklist.md](checklist.md#agents)) | wired checklist | — |
 | `check_item` | `block`, `item`, `done` (true) | Checks the item (unchecks it with `done: false`); one Ctrl+Z step | wired checklist | — |
 | `add_items` | `block`, `text` | Each line with text becomes an item at the end; a leading `- ` or `* `, then `[ ]` or `[x]`, is dropped (`[x]` adds it checked); the new items' ids; one Ctrl+Z step | wired checklist | — |
 | `create_block` | `kind` (`note`, `checklist`, `terminal`), `text`, `name`, `items`, `folder`, `command` | A note, a checklist or a terminal running `command` beside the caller, wired to it; one Ctrl+Z closes it ([agent-tools.md](agent-tools.md#create_block)) | — | card 35 |
+| `edit_item` | `block`, `item`, `text` | The item's text becomes `text`; one Ctrl+Z step | wired checklist | card 35 |
+| `delete_item` | `block`, `item` | Deletes the item, as its row's ×; one Ctrl+Z step | wired checklist | card 35 |
 | `open_file` | `path`, `line` | Opens the file at the line in the wired editor block whose folder holds it; with none, in a new editor block beside the caller, wired to it. Neither the keyboard nor the camera moves | — | 4 |
 | `wait_for` | `block`, `event` (`idle`, `needs_you`, `command_finished`, `output`, `attention`), `pattern`, `lines` (0), `timeout` | Waits for the event in the block: `idle` as `wait_for_idle`; `needs_you`, its agent or its balloon asking the person (at once when it already does), with what it asks and, from batch 7, the last 20 lines of its screen; `command_finished`, the next command to finish there, with its output (needs [shell integration](shell-integration.md)); `output` (which `pattern` implies), the next line printed there that matches `pattern`, with the line and its last 20 lines, from its last `lines` too ([agent-tools.md](agent-tools.md#wait_for-with-a-pattern)); `attention`, its next bell or notification | wired | 5, card 35 |
 | `send_keys` | `block`, `keys` (1 to 16) | Presses the keys ([Keys](#keys-stopping-and-closing)); the screen after them | wired | 6 |
@@ -1134,7 +1137,9 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum ask <question> [--option <o>]…` | `ask_user` | 3 |
 | `templum kanban list [<board>] [--card <card>] \| add <title> [--column <c>] [--description <d>] [--board <b>] [--priority <p>] [--for <who>] [--checklist <text>] \| edit <card> [--priority <p>] [--for <who>] [--add <text>] [--check <item>]… [--uncheck <item>]… \| move <card> <column> \| comment <card> <text> \| claim <card>` | the kanban tools (`edit` and the new options: card 40) | 4, card 40 |
 | `templum note read\|append <block> [text]` | `read_note`, `append_note` | 4 |
+| `templum note replace <block> <text> [--old <text>]` | `replace_note` | card 35 |
 | `templum checklist read <block> \| add <block> <text> \| check\|uncheck <block> <item>` | `read_checklist`, `add_items`, `check_item` | — |
+| `templum checklist edit <block> <item> <text> \| delete <block> <item>` | `edit_item`, `delete_item` | card 35 |
 | `templum new note [<text>] \| new checklist <name> [--items <text>] \| new terminal [--folder <f>] [--command <c>]` | `create_block` | card 35 |
 | `templum open <path>[:<line>]` | `open_file` | 4 |
 | `templum keys <block> <key>…` | `send_keys` | 6 |
