@@ -60,6 +60,8 @@ without the UI belongs in a library crate, where it is unit-tested headlessly.
   this Templum: a link to it on Unix, a hard link or a copy named `templum.exe` on Windows. `templum mcp`,
   `templum hook …` and the verbs are the same program run without a window (`main.rs`). Each connection has a number;
   when one ends the UI hears it (`templum/closed`) and drops what it waited for.
+  Planned (kanban card 43): a fourth kind of client, `control`, the MCP server only the Templum Agent's process gets,
+  with a per-start secret, and the chat that drives it ([specs/templum-agent.md](specs/templum-agent.md)).
 - **Zoom:** positions, sizes and font size are multiplied by the zoom factor and laid out again, so text is
   rasterized at its real size and stays sharp. Zoom snaps to fixed steps to keep the glyph cache bounded.
   Far away, each block is drawn at a level of detail picked by its text's size on screen at the zoom the camera

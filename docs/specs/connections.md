@@ -8,6 +8,8 @@
 - **Builds on:** [agents.md](agents.md) (opening agents), [usage.md](usage.md) (the `--settings` Templum types for
   Claude Code), [shell-integration.md](shell-integration.md) (command marks, notifications),
   [persistence.md](persistence.md), [kanban.md](kanban.md) and [cockpit.md](cockpit.md) (notes, the editor, drawing)
+- **A second server:** the Templum Agent's own, `templum control`, which no agent block gets
+  ([templum-agent.md](templum-agent.md#the-control-server), kanban card 43)
 
 ## Goal
 
@@ -386,7 +388,8 @@ Batch 6.
 ## The MCP server
 
 `templum mcp` is a bridge: it connects to the bus, sends its hello, then copies lines from its stdin to the bus and
-back to its stdout. Templum answers MCP's `initialize`, `ping`, `tools/list` and `tools/call` ([MCP 2025-11-25](
+back to its stdout. (The Templum Agent's process gets another server, `templum control`, a `control` client of the same
+bus: [templum-agent.md](templum-agent.md#the-control-server).) Templum answers MCP's `initialize`, `ping`, `tools/list` and `tools/call` ([MCP 2025-11-25](
 https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resources or prompts.
 
 - **`initialize`** answers the client's protocol version when Templum knows it (`2025-11-25`, `2025-06-18`,
