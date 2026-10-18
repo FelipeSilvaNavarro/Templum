@@ -403,13 +403,14 @@ conversation.
   there, which `git worktree remove` deletes, but for what a build or a test run fills again: the folders
   `node_modules`, `target`, `build`, `dist`, `out`, `.next`, `.nuxt`, `.svelte-kit`, `.angular`, `.turbo`,
   `.parcel-cache`, `.venv`, `venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.nox`,
-  `.hypothesis`, `coverage`, `htmlcov`, `.nyc_output`, `.gradle`, `.dart_tool`, `.cache` and `*.egg-info`, with all
-  inside them (a cache that ignores itself, as pytest's, included), the files `npm-debug.log`, `yarn-error.log`,
-  `yarn-debug.log`, `pnpm-debug.log`, `.eslintcache` and `.coverage`: "feature-x has files git ignores, which removing
-  it deletes: .env. discard: true deletes them." With `discard`, the person is asked in the balloon first ([Asking the
-  person](#asking-the-person)): "*Claude Code · api* wants to delete the worktree feature-x, with 2 changed files and 3
-  commits not merged, and files git ignores: .env." (the last part with such files only) **Delete** and **Keep**.
-  Deleted: `git worktree remove --force` then `git branch -D`.
+  `.hypothesis`, `coverage`, `htmlcov`, `.nyc_output`, `.gradle`, `.dart_tool`, `.cache` and `*.egg-info` git ignores
+  whole, and what is inside one that ignores itself with a `*` in its own `.gitignore` (pytest's, ruff's, a
+  virtualenv's), not what git ignores in a tracked folder of such a name (a `.env` in Go's `build/ci/`); the files
+  `npm-debug.log`, `yarn-error.log`, `yarn-debug.log`, `pnpm-debug.log`, `.eslintcache` and `.coverage`: "feature-x
+  has files git ignores, which removing it deletes: .env. discard: true deletes them." With `discard`, the person is
+  asked in the balloon first ([Asking the person](#asking-the-person)): "*Claude Code · api* wants to delete the
+  worktree feature-x, with 2 changed files and 3 commits not merged, and files git ignores: .env." (the last part with
+  such files only) **Delete** and **Keep**. Deleted: `git worktree remove --force` then `git branch -D`.
 - **`merge_worktree`** (`worktree`, `folder`): the person is asked first, always: "*Claude Code · api* wants to merge
   feature-x (3 commits) into development." **Merge** and **Cancel**. Allowed, and still the commits and the branch the
   person was told of ("/home/u/app is on main now, not on development as the person was told: ask again."), Templum runs

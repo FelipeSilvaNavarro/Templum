@@ -2131,7 +2131,8 @@ fn merging_a_worktree_back_takes_a_clean_commit_and_aborts_a_conflict() {
 }
 
 /// What git ignores in a worktree goes when it is removed: the state names it, but for what a
-/// build or a test run fills again, also a cache that ignores itself (pytest's, ruff's).
+/// build or a test run fills again, also a cache that ignores itself (pytest's, ruff's), not a
+/// tracked folder of the same name.
 #[test]
 fn a_worktrees_state_names_its_ignored_files_but_build_folders() {
     let (dir, repo) = committed();
@@ -2142,12 +2143,15 @@ fn a_worktrees_state_names_its_ignored_files_but_build_folders() {
         ".env\nnode_modules/\ntarget/\ncoverage/\n*.egg-info/\n*.log\n",
         "Ignore",
     );
+    // A tracked folder named as one a build fills (Go's `build/ci/`): what git ignores in it stays.
+    commit_in(&repo, dir.path(), "build/ci/deploy.sh", "deploy\n", "CI");
     let path = repo.add_worktree("w").unwrap();
     assert_eq!(
         repo.worktree_state("w").unwrap().unwrap().ignored,
         Vec::<String>::new()
     );
     write(&path, ".env", "SECRET=x\n");
+    write(&path, "build/ci/.env", "TOKEN=x\n");
     write(&path, "node_modules/x/i.js", "x\n");
     write(&path, "crates/a/target/o", "o\n");
     // A `*` in its own `.gitignore`: git lists what is inside, not the folder.
@@ -2161,7 +2165,7 @@ fn a_worktrees_state_names_its_ignored_files_but_build_folders() {
     let state = repo.worktree_state("w").unwrap().unwrap();
     assert_eq!(
         (state.ignored.as_slice(), state.changed),
-        (&[".env".to_string()][..], 0)
+        (&[".env".to_string(), "build/ci/.env".to_string()][..], 0)
     );
 }
 
