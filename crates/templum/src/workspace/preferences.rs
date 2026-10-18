@@ -367,6 +367,10 @@ impl Workspace {
                 self.data_dir.as_deref(),
             );
         }
+        let (agent, was) = (&self.config.templum_agent, &old.templum_agent);
+        if (&agent.agent, &agent.model, &agent.effort) != (&was.agent, &was.model, &was.effort) {
+            self.engine_settings_changed();
+        }
         if self.config.agents != old.agents
             || self.config.git.commit_message != old.git.commit_message
         {

@@ -1,5 +1,9 @@
 //! The gate (docs/specs/templum-agent.md#the-gate): the control calls that wait for the person's
 //! click, the grants "Allow for this conversation" gives, and the answers.
+#![cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the pill and the chat call it (chat/)")
+)]
 
 use gpui_kit::{App, Context, Window};
 use serde_json::Value;
@@ -12,8 +16,10 @@ use super::{AgentState, Workspace};
 use crate::chat::{Answer, Approval};
 
 /// A denied call's answer.
-#[cfg_attr(not(test), expect(dead_code, reason = "the approval popup answers it"))]
 const DENIED: &str = "The person denied this. Don't try it another way: ask them what they want.";
+
+/// A call's answer when Stop, New chat, the engine's end or quitting came before the person's.
+pub(super) const STOPPED: &str = "The person stopped you before answering.";
 
 impl Workspace {
     /// The gate before a control call: Some (the call back) when it runs now; None when it waits
@@ -115,7 +121,6 @@ impl Workspace {
 
     /// The person answered approval `id`: allowed, the call runs and is answered; denied, it is
     /// refused with their words. Either way the chat keeps a record.
-    #[cfg_attr(not(test), expect(dead_code, reason = "the approval popup answers it"))]
     pub(crate) fn answer_approval(
         &mut self,
         id: u64,
@@ -170,6 +175,15 @@ impl Workspace {
                 self.run_control(request, reply, &tool, parsed, &args, window, cx);
             }
         }
+    }
+
+    /// Stop, New chat, the engine's end or quitting: every call that waits is answered `why`.
+    pub(super) fn deny_waiting(&mut self, why: &str, cx: &mut Context<Self>) {
+        for approval in std::mem::take(&mut self.templum_agent.approvals) {
+            let answer = tools::tool_result(&approval.request, &Reply::err(why));
+            let _ = approval.reply.send(answer);
+        }
+        cx.notify();
     }
 
     /// The engine gave up on a call (`notifications/cancelled`): its approval goes, unanswered.

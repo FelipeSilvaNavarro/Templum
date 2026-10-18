@@ -1,6 +1,7 @@
 //! The main view: the canvas of terminal blocks.
 
 mod activity;
+mod agent;
 mod approvals;
 mod blocks;
 mod bus;
@@ -1427,11 +1428,13 @@ impl Workspace {
             cx.on_release(|ws, cx| {
                 ws.save();
                 ws.save_canvas_now(cx);
+                ws.save_conversation();
                 ws.finish_update();
             }),
             cx.on_app_quit(|ws, cx| {
                 ws.save();
                 ws.save_canvas_now(cx);
+                ws.save_conversation();
                 ws.finish_update();
                 async {}
             }),
@@ -1579,6 +1582,7 @@ impl Workspace {
                 .detach();
         }
         ws.load_spaces(window, cx);
+        ws.restore_conversation();
         ws
     }
 }

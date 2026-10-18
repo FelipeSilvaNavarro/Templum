@@ -1,10 +1,15 @@
 //! The Templum Agent (docs/specs/templum-agent.md): the chat the person has with an agent that
 //! builds and runs the canvas, and its state on the workspace.
+#![cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the pill and the chat call it (chat/)")
+)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 
+use gpui_kit::Task;
 use serde_json::Value;
-use templum_agent::Conversation;
+use templum_agent::{Conversation, Engine};
 use templum_mcp::Replier;
 use templum_mcp::control::Parsed;
 
@@ -21,6 +26,26 @@ pub(crate) struct TemplumAgent {
     pub next_approval: u64,
     /// It wrote something, or asks something, since the chat was last open.
     pub unread: bool,
+    /// The chat is open.
+    pub open: bool,
+    /// Its engine's process, while it runs.
+    pub engine: Option<Engine>,
+    /// Counts the engine's starts: lines of an engine already gone are dropped.
+    pub engine_gen: u64,
+    /// Reads the engine's lines on the UI thread.
+    pub lines: Option<Task<()>>,
+    /// The engine's last lines on stderr, for the failure row when it ends.
+    pub stderr: VecDeque<String>,
+    /// The person pressed Stop: the turn's end is theirs, not a failure.
+    pub stopping: bool,
+    /// The settings changed while it worked: its process ends at the turn's end.
+    pub restart: bool,
+    /// The fake engine the tests run instead of Claude Code.
+    #[cfg(test)]
+    pub launch: Option<templum_agent::Launch>,
+    /// The words of each start of the engine, as Claude Code would have got them.
+    #[cfg(test)]
+    pub launched: Vec<Vec<String>>,
 }
 
 impl Default for TemplumAgent {
@@ -32,6 +57,17 @@ impl Default for TemplumAgent {
             approvals: Vec::new(),
             next_approval: 0,
             unread: false,
+            open: false,
+            engine: None,
+            engine_gen: 0,
+            lines: None,
+            stderr: VecDeque::new(),
+            stopping: false,
+            restart: false,
+            #[cfg(test)]
+            launch: None,
+            #[cfg(test)]
+            launched: Vec::new(),
         }
     }
 }
@@ -39,7 +75,6 @@ impl Default for TemplumAgent {
 /// A dangerous call held until the person answers (docs/specs/templum-agent.md#approvals): its
 /// connection and request, to answer it; the call; and what the popup says of it, written by
 /// Templum from the call.
-#[cfg_attr(not(test), expect(dead_code, reason = "the approval popup answers it"))]
 pub(crate) struct Approval {
     pub id: u64,
     pub conn: u64,

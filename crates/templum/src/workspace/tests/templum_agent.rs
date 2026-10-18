@@ -1075,3 +1075,303 @@ fn send_keys_shows_what_the_agent_asks(cx: &mut TestAppContext) {
         assert_eq!(approval.details, "It asks: Allow Edit?\n2 enter");
     });
 }
+
+#[test]
+#[ignore = "the fake engine the Templum Agent's tests start"]
+fn fake_engine() {
+    if let Ok(script) = std::env::var(::templum_agent::fake::VAR) {
+        let script = std::fs::read_to_string(script).unwrap();
+        ::templum_agent::fake::run(&script, std::io::stdin().lock(), std::io::stdout().lock());
+    }
+}
+
+/// Claude Code's recorded text turn (Task 1's fixture).
+const TEXT_TURN: &str = include_str!("../../../../templum-agent/tests/fixtures/claude-text.jsonl");
+
+/// A workspace on the data folder `dir` whose Templum Agent runs the fake engine on `turns`.
+fn with_fake_engine(
+    cx: &mut TestAppContext,
+    dir: &std::path::Path,
+    turns: &[&str],
+) -> (AnyWindowHandle, Entity<Workspace>) {
+    let (handle, ws) = open_in(cx, None, Some(dir.to_path_buf()));
+    let script = dir.join("turns.jsonl");
+    std::fs::write(&script, turns.join("---\n")).unwrap();
+    let launch =
+        ::templum_agent::fake::launch("workspace::tests::templum_agent::fake_engine", &script, dir);
+    ws.update(cx, |ws, _| ws.templum_agent.launch = Some(launch));
+    (handle, ws)
+}
+
+fn send(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext, text: &str) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.send_to_agent(text.into(), window, cx))
+    })
+    .unwrap();
+}
+
+/// Waits, in real time, until the conversation's rows satisfy `done`: the engine's lines come
+/// from a process.
+#[track_caller]
+fn rows_until(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    done: impl Fn(&[::templum_agent::Row]) -> bool,
+) -> Vec<::templum_agent::Row> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        cx.run_until_parked();
+        let rows = ws.read_with(cx, |ws, _| ws.templum_agent.conversation.rows.clone());
+        if done(&rows) {
+            return rows;
+        }
+        assert!(std::time::Instant::now() < deadline, "{rows:#?}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn ended(rows: &[::templum_agent::Row]) -> bool {
+    rows.iter()
+        .any(|r| matches!(r, ::templum_agent::Row::End { .. }))
+}
+
+#[gpui_kit::test]
+fn a_message_starts_the_engine_and_its_turn_shows(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
+    send(handle, &ws, cx, "hi");
+    let rows = rows_until(&ws, cx, ended);
+    use ::templum_agent::Row;
+    assert!(
+        matches!(&rows[..], [Row::Person { text, queued: false }, Row::Text { text: said }, Row::End { cost_usd: Some(_), .. }]
+            if text == "hi" && said == "Hello there, nice meeting you!"),
+        "{rows:#?}"
+    );
+    let saved =
+        std::fs::read_to_string(dir.path().join("agent").join("conversation.json")).unwrap();
+    assert!(saved.contains("Hello there, nice meeting you!"), "{saved}");
+    ws.read_with(cx, |ws, _| {
+        let agent = &ws.templum_agent;
+        assert_eq!(
+            agent.conversation.session.as_deref(),
+            Some("d6441644-97b6-457b-a90e-ad9cf0b00e34")
+        );
+        let words = &agent.launched[0];
+        assert!(
+            words.windows(2).any(|w| w[0] == "--session-id"),
+            "{words:?}"
+        );
+        assert!(dir.path().join("agent").join("mcp.json").exists());
+    });
+}
+
+#[gpui_kit::test]
+fn the_conversation_comes_back_after_a_restart(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
+    send(handle, &ws, cx, "hi");
+    let rows = rows_until(&ws, cx, ended);
+    let (handle, again) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
+    again.read_with(cx, |ws, _| {
+        assert_eq!(ws.templum_agent.conversation.rows, rows);
+        assert!(ws.templum_agent.conversation.session.is_some());
+    });
+    send(handle, &again, cx, "more");
+    again.read_with(cx, |ws, _| {
+        let words = &ws.templum_agent.launched[0];
+        assert!(
+            words
+                .windows(2)
+                .any(|w| w == ["--resume", "d6441644-97b6-457b-a90e-ad9cf0b00e34"]),
+            "{words:?}"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn a_message_while_an_approval_waits_denies_it_with_the_message(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    let answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    send(handle, &ws, cx, "keep it open");
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert!(
+        failed && text.ends_with("They said: keep it open"),
+        "{text}"
+    );
+    let rows = rows_until(&ws, cx, ended);
+    assert!(
+        rows.iter().any(
+            |r| matches!(r, ::templum_agent::Row::Person { text, .. } if text == "keep it open")
+        )
+    );
+}
+
+#[gpui_kit::test]
+fn the_engine_ending_mid_turn_fails_the_turn_and_denies_what_waits(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let init = TEXT_TURN.lines().next().unwrap();
+    let tool = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t1","name":"mcp__templum-control__add_block","input":{}}}}"#;
+    let crash = format!("{init}\n{tool}\n{}\n", ::templum_agent::fake::EXIT);
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[&crash]);
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    send(handle, &ws, cx, "go");
+    let answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    let rows = rows_until(&ws, cx, |rows| {
+        rows.iter()
+            .any(|r| matches!(r, ::templum_agent::Row::Failure { .. }))
+    });
+    let Some(::templum_agent::Row::Failure { text }) = rows.last() else {
+        panic!("{rows:#?}")
+    };
+    assert!(
+        text.starts_with("Claude Code stopped: ")
+            && text.ends_with(". Your next message starts it again."),
+        "{text}"
+    );
+    assert!(matches!(
+        &rows[1],
+        ::templum_agent::Row::Action {
+            state: ::templum_agent::ActionState::Failed,
+            ..
+        }
+    ));
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert_eq!(
+        (failed, text.as_str()),
+        (true, "The person stopped you before answering.")
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.templum_agent.engine.is_none());
+        assert!(!ws.templum_agent.conversation.working);
+    });
+}
+
+#[gpui_kit::test]
+fn new_chat_forgets_the_session_grants_and_own_things(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
+    send(handle, &ws, cx, "hi");
+    rows_until(&ws, cx, ended);
+    ws.update(cx, |ws, cx| {
+        ws.templum_agent.grants.insert("send_to_terminal".into());
+        ws.templum_agent.conversation.own.blocks.push("b1".into());
+        ws.new_chat(cx);
+        let agent = &ws.templum_agent;
+        assert!(agent.engine.is_none() && agent.grants.is_empty());
+        assert_eq!(agent.conversation.session, None);
+        assert_eq!(agent.conversation.own, ::templum_agent::Own::default());
+        assert_eq!(
+            agent.conversation.rows,
+            [::templum_agent::Row::Note {
+                text: "New conversation.".into()
+            }]
+        );
+    });
+    let saved =
+        std::fs::read_to_string(dir.path().join("agent").join("conversation.json")).unwrap();
+    assert!(
+        saved.contains("New conversation.") && !saved.contains("Hello"),
+        "{saved}"
+    );
+}
+
+#[gpui_kit::test]
+fn a_settings_change_restarts_an_idle_engine(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN, TEXT_TURN]);
+    send(handle, &ws, cx, "hi");
+    rows_until(&ws, cx, ended);
+    ws.update(cx, |ws, cx| {
+        ws.edit(
+            Edit::set("templum_agent", "model", "opus"),
+            |c| c.templum_agent.model = "opus".into(),
+            cx,
+        )
+    });
+    frame(handle, cx);
+    assert!(
+        ws.read_with(cx, |ws, _| ws.templum_agent.engine.is_none()),
+        "an idle engine stops"
+    );
+    send(handle, &ws, cx, "again");
+    ws.read_with(cx, |ws, _| {
+        let words = ws.templum_agent.launched.last().unwrap();
+        assert!(
+            words.windows(2).any(|w| w == ["--model", "opus"]),
+            "{words:?}"
+        );
+        assert!(words.iter().any(|w| w == "--resume"), "{words:?}");
+    });
+}
+
+/// A turn that starts writing and never ends by itself.
+fn endless_turn() -> String {
+    let init = TEXT_TURN.lines().next().unwrap();
+    let delta = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Counting"}}}"#;
+    format!("{init}\n{delta}\n")
+}
+
+#[gpui_kit::test]
+fn stop_interrupts_the_turn_keeps_the_process_and_denies_what_waits(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    // The interrupt is the next line the fake reads: its turn is the interrupted turn's end.
+    let stopped =
+        r#"{"type":"result","subtype":"error_during_execution","is_error":true,"duration_ms":5}"#;
+    let (handle, ws) =
+        with_fake_engine(cx, dir.path(), &[&endless_turn(), &format!("{stopped}\n")]);
+    let (_, uid) = busy_terminal(handle, &ws, cx);
+    send(handle, &ws, cx, "count");
+    rows_until(&ws, cx, |rows| {
+        rows.iter()
+            .any(|r| matches!(r, ::templum_agent::Row::Text { .. }))
+    });
+    let answers = control_later(handle, &ws, cx, 7, "close_block", json!({"block": uid}));
+    ws.update(cx, |ws, cx| ws.stop_engine(cx));
+    let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+    assert_eq!(
+        (failed, text.as_str()),
+        (true, "The person stopped you before answering.")
+    );
+    let rows = rows_until(&ws, cx, ended);
+    use ::templum_agent::Row;
+    assert_eq!(
+        rows.last(),
+        Some(&Row::Note {
+            text: "Stopped by you.".into()
+        }),
+        "{rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|r| matches!(r, Row::Failure { .. })),
+        "{rows:#?}"
+    );
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.templum_agent.engine.is_some(), "the process stays");
+        assert!(!ws.templum_agent.conversation.working);
+    });
+}
+
+#[gpui_kit::test]
+fn a_turn_that_wont_stop_has_its_process_ended(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[&endless_turn()]);
+    send(handle, &ws, cx, "count");
+    rows_until(&ws, cx, |rows| {
+        rows.iter()
+            .any(|r| matches!(r, ::templum_agent::Row::Text { .. }))
+    });
+    ws.update(cx, |ws, cx| ws.stop_engine(cx));
+    super::bus::after(cx, 2_000);
+    ws.read_with(cx, |ws, _| {
+        let agent = &ws.templum_agent;
+        assert!(agent.engine.is_none(), "ended");
+        assert_eq!(
+            agent.conversation.rows.last(),
+            Some(&::templum_agent::Row::Note {
+                text: "Stopped by you.".into()
+            })
+        );
+    });
+}

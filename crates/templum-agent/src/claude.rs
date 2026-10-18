@@ -100,6 +100,17 @@ pub fn write_mcp(dir: &Path, exe: &Path) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
+/// The stream-json line that stops the turn under way and keeps the process (Checked in the
+/// spec): its `result` comes, `error_during_execution`.
+pub fn interrupt(request: &str) -> String {
+    let line = serde_json::json!({
+        "type": "control_request",
+        "request_id": request,
+        "request": { "subtype": "interrupt" },
+    });
+    format!("{line}\n")
+}
+
 /// The stream-json line that gives the engine a message of the person's.
 pub fn message(text: &str) -> String {
     let line = serde_json::json!({
@@ -381,6 +392,16 @@ mod tests {
             std::fs::metadata(&path).unwrap().modified().unwrap(),
             before
         );
+    }
+
+    #[test]
+    fn the_interrupt_is_one_control_request() {
+        let line = interrupt("stop-1");
+        assert!(line.ends_with('\n') && line.matches('\n').count() == 1);
+        let v: Value = serde_json::from_str(line.trim_end()).unwrap();
+        assert_eq!(v["type"], "control_request");
+        assert_eq!(v["request_id"], "stop-1");
+        assert_eq!(v["request"]["subtype"], "interrupt");
     }
 
     #[test]

@@ -283,6 +283,22 @@ impl Conversation {
 
     /// The engine is gone: what runs failed, and a failure row says why.
     pub fn ended(&mut self, why: &str) {
+        self.end_running();
+        self.rows.push(Row::Failure {
+            text: why.to_owned(),
+        });
+    }
+
+    /// The person stopped the turn: what runs failed, and a note says so.
+    pub fn stopped(&mut self) {
+        self.end_running();
+        self.rows.push(Row::Note {
+            text: "Stopped by you.".into(),
+        });
+    }
+
+    /// No turn runs any more: no Thinking, no action running, nothing working.
+    fn end_running(&mut self) {
         if self.rows.last() == Some(&Row::Thinking) {
             self.rows.pop();
         }
@@ -295,9 +311,6 @@ impl Conversation {
                 *state = ActionState::Failed;
             }
         }
-        self.rows.push(Row::Failure {
-            text: why.to_owned(),
-        });
         self.open_text = false;
         self.working = false;
     }
@@ -588,6 +601,28 @@ mod tests {
         ));
         assert_eq!(c.rows.last(), Some(&Row::Failure { text: why.into() }));
         assert!(!c.rows.contains(&Row::Thinking));
+        assert!(!c.working);
+    }
+
+    #[test]
+    fn a_stop_fails_what_runs_and_says_so_quietly() {
+        let mut c = Conversation::new("claude");
+        c.person("go");
+        c.apply(started("t1", "mcp__templum-control__add_block"));
+        c.stopped();
+        assert!(matches!(
+            &c.rows[1],
+            Row::Action {
+                state: ActionState::Failed,
+                ..
+            }
+        ));
+        assert_eq!(
+            c.rows.last(),
+            Some(&Row::Note {
+                text: "Stopped by you.".into()
+            })
+        );
         assert!(!c.working);
     }
 

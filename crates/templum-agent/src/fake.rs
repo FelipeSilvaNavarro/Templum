@@ -9,12 +9,18 @@ use crate::Launch;
 /// The variable that names the fake engine's script.
 pub const VAR: &str = "TEMPLUM_FAKE_ENGINE";
 
+/// A script's line that ends the fake engine where it is, as a crash would.
+pub const EXIT: &str = "<exit>";
+
 /// For each line read, writes the next turn of `script` (turns are separated by a line `---`),
-/// a line at a time; after the last turn, reads until the end.
+/// a line at a time; after the last turn, reads until the end. A line [`EXIT`] ends it at once.
 pub fn run(script: &str, input: impl BufRead, mut output: impl Write) {
     let mut turns = script.split("---\n");
     for _ in input.lines().map_while(Result::ok) {
         for line in turns.next().unwrap_or_default().lines() {
+            if line == EXIT {
+                return;
+            }
             if writeln!(output, "{line}")
                 .and_then(|()| output.flush())
                 .is_err()
@@ -52,5 +58,8 @@ mod tests {
         let mut out = Vec::new();
         super::run("a\n---\nb\nc\n", &b"x\ny\nz\n"[..], &mut out);
         assert_eq!(String::from_utf8(out).unwrap(), "a\nb\nc\n");
+        let mut out = Vec::new();
+        super::run("a\n<exit>\nb\n---\nc\n", &b"x\ny\n"[..], &mut out);
+        assert_eq!(String::from_utf8(out).unwrap(), "a\n", "it ends at <exit>");
     }
 }
