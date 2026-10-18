@@ -131,7 +131,10 @@ impl Workspace {
             };
             match &state {
                 AgentState::Idle => still.push(pane.term.id().to_string()),
-                AgentState::NeedsYou(_) => stuck.push(pane.term.id().to_string()),
+                AgentState::NeedsYou(_) => {
+                    pane.dialogs += 1;
+                    stuck.push(pane.term.id().to_string());
+                }
                 AgentState::Working => {}
             }
             pane.state = Some(state);

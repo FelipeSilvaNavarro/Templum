@@ -224,6 +224,9 @@ pub(crate) struct Pane {
     pub scrolled: Cell<bool>,
     /// How many prompts its agent took (`Submitted`): a task's Enter is confirmed by one more.
     pub submitted: u64,
+    /// How many times its agent began to wait for its person (a dialog, or it seemed stuck): two
+    /// dialogs in the same words ("Allow Bash?" for every command) are two.
+    pub dialogs: u64,
     /// Its agent's hooks say when a turn starts and when it asks its person (Claude Code's,
     /// Gemini CLI's, and Codex's once its person trusted them), not only when a turn ends: a
     /// dialog of it would be heard.

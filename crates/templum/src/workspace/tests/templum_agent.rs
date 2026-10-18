@@ -1248,6 +1248,80 @@ fn an_allow_after_the_dialog_changed_asks_again(cx: &mut TestAppContext) {
     assert!(!failed && text.starts_with("Pressed 1 key"), "{text}");
 }
 
+/// Claude Code asks "Allow Bash?" for every command: the person answers the dialog the approval
+/// showed, their agent opens another in the same words, and Allow presses nothing on it.
+#[gpui_kit::test]
+fn an_allow_after_another_dialog_in_the_same_words_asks_again(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    let terminal = ws.read_with(cx, |ws, _| {
+        ws.space.terminal(busy).unwrap().term.id().to_string()
+    });
+    let asks = json!({ "event": "needs_you", "message": "Allow Bash?" });
+    super::bus::event(handle, &ws, cx, &terminal, asks.clone());
+    let answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "send_keys",
+        json!({"block": uid, "keys": ["1"]}),
+    );
+    super::bus::event(handle, &ws, cx, &terminal, json!({ "event": "working" }));
+    super::bus::event(handle, &ws, cx, &terminal, asks);
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    super::bus::after(cx, 1_000);
+    assert!(answers.try_recv().is_err(), "it still waits");
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.terminal(busy).unwrap().keys_from.is_none());
+        assert!(ws.templum_agent.approvals[0].changed);
+    });
+}
+
+/// A block closed and brought back with Ctrl+Z keeps its id, with another terminal in it: an Allow
+/// given to the one the person saw presses nothing in the other, also when it asks the same.
+#[gpui_kit::test]
+fn an_allow_after_its_block_came_back_asks_again(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    let asks = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        let terminal = ws.read_with(cx, |ws, _| {
+            let id = ws.space.block_by_uid(&uid).unwrap();
+            ws.space.terminal(id).unwrap().term.id().to_string()
+        });
+        let asks = json!({ "event": "needs_you", "message": "Allow Bash?" });
+        super::bus::event(handle, ws, cx, &terminal, asks);
+    };
+    asks(&ws, cx);
+    let answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "send_keys",
+        json!({"block": uid, "keys": ["1"]}),
+    );
+    let before = ws.read_with(cx, |ws, _| {
+        ws.space.terminal(busy).unwrap().term.id().to_string()
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.close_now(&[busy], crate::workspace::history::Then::New, window, cx);
+            ws.undo_canvas(false, window, cx);
+            let back = ws.space.block_by_uid(&uid).unwrap();
+            let pane = ws.space.terminal_mut(back).unwrap();
+            assert_ne!(pane.term.id(), before, "another terminal");
+            pane.seen.agent = Some("claude".into());
+        })
+    })
+    .unwrap();
+    asks(&ws, cx);
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    super::bus::after(cx, 1_000);
+    assert!(answers.try_recv().is_err(), "it still waits");
+    assert!(ws.read_with(cx, |ws, _| ws.templum_agent.approvals[0].changed));
+}
+
 #[test]
 #[ignore = "the fake engine the Templum Agent's tests start"]
 fn fake_engine() {

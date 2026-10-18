@@ -125,8 +125,10 @@ impl Workspace {
     }
 
     /// What the person saw of block `at` when asked, to tell whether it changed since: its
-    /// title, what runs in it (its agent, or its command by when it started: one started since
-    /// is another; its shell back in front), what its agent asks, an editor's unsaved files.
+    /// title, a terminal's own (one brought back with Ctrl+Z is another), what runs in it (its
+    /// agent, or its command by when it started: one started since is another; its shell back in
+    /// front), what its agent asks and which of its waits that is (two dialogs in the same words
+    /// are two), an editor's unsaved files.
     fn facts(&self, (space, id): (&str, BlockId), cx: &App) -> String {
         let Some(home) = self.space_named(space) else {
             return String::new();
@@ -139,9 +141,11 @@ impl Workspace {
                     _ => None,
                 };
                 format!(
-                    "{:?} {:?} {asks:?} {} {}",
+                    "{} {:?} {:?} {asks:?} {} {} {}",
+                    pane.term.id(),
                     self.agent_name(pane),
                     pane.term.status().running,
+                    pane.dialogs,
                     pane.shell_in_front(),
                     pane.term.exited()
                 )

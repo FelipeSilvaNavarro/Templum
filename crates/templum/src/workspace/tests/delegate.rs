@@ -2488,8 +2488,10 @@ fn a_hooked_agent_gone_still_keeps_its_task_and_says_so(cx: &mut TestAppContext)
     let stuck = Some(AgentState::NeedsYou(Some(STUCK_TEXT.into())));
     assert_eq!(state_of(&ws, cx, theirs), stuck);
     ws.read_with(cx, |ws, _| {
-        let handed = &ws.space.terminal(theirs).unwrap().handed;
-        assert!(handed.is_some(), "its task stays handed over");
+        let pane = ws.space.terminal(theirs).unwrap();
+        assert!(pane.handed.is_some(), "its task stays handed over");
+        // Another wait: an approval written before it is asked again.
+        assert_eq!(pane.dialogs, 1);
     });
     let (failed, text) = answered(&needs_you);
     assert!(!failed && text.contains("it seems stuck"), "{text}");
