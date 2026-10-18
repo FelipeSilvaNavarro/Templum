@@ -473,7 +473,7 @@ fn a_schedule_set_right_after_spawn_agent_never_types_into_its_shell(cx: &mut Te
 
 /// A schedule types into a terminal running no agent only while its shell waits at an empty
 /// prompt: not into a program in front of it (vim, ssh, a password's prompt), nor after a line the
-/// person half typed.
+/// person half typed, nor after a key of theirs whose text hasn't reached the shell yet.
 #[gpui_kit::test]
 fn a_schedule_types_into_a_terminal_only_at_its_empty_prompt(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
@@ -500,7 +500,7 @@ fn a_schedule_types_into_a_terminal_only_at_its_empty_prompt(cx: &mut TestAppCon
             refused(&them)
         )]
     );
-    // A shell at its prompt, a line half typed there.
+    // A shell at its prompt, a line half typed there with the keyboard.
     ws.update(cx, |ws, _| {
         ws.command = Some(prompting());
         ws.notices.clear();
@@ -508,9 +508,13 @@ fn a_schedule_types_into_a_terminal_only_at_its_empty_prompt(cx: &mut TestAppCon
     let shell = wired_plain(handle, &ws, cx, mine);
     let (_, theirs) = me(&ws, cx, shell);
     screen_until(&ws, cx, shell, |shown| shown.contains('$'));
-    ws.read_with(cx, |ws, _| {
-        ws.space.terminal(shell).unwrap().term.type_in("rm -rf ")
-    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(shell, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.simulate_input(handle, "rm -rf build/");
+    screen_until(&ws, cx, shell, |shown| shown.contains("$ rm -rf build/"));
     let once = json!({ "block": theirs, "text": "echo after-half-a-line", "after": 1 });
     assert!(!call(handle, &ws, cx, &terminal, "schedule", once).0);
     due_now(&ws, cx, 2);
@@ -522,12 +526,34 @@ fn a_schedule_types_into_a_terminal_only_at_its_empty_prompt(cx: &mut TestAppCon
             refused(&theirs)
         )]
     );
+    // Enter sends the line, and the shell prompts again; then the person presses a key whose text
+    // the platform hasn't handed over yet (a dead key, an IME composing).
+    ws.update(cx, |ws, _| ws.notices.clear());
+    cx.update_window(handle, |_, window, cx| window.press("enter", cx))
+        .unwrap();
+    screen_until(&ws, cx, shell, |shown| shown.matches('$').count() >= 2);
+    ws.read_with(cx, |ws, _| ws.space.terminal(shell).unwrap().person_typed());
+    let once = json!({ "block": theirs, "text": "echo after-a-dead-key", "after": 1 });
+    assert!(!call(handle, &ws, cx, &terminal, "schedule", once).0);
+    due_now(&ws, cx, 3);
+    look(cx);
+    assert_eq!(
+        notices(&ws, cx),
+        [format!(
+            "[schedule s3 to {theirs} didn't go: {}]",
+            refused(&theirs)
+        )]
+    );
     after(
         cx,
         crate::workspace::delegate::ENTER_AFTER.as_millis() as u64,
     );
     std::thread::sleep(Duration::from_millis(300));
-    for (id, text) in [(busy, "ran-in-a-program"), (shell, "after-half-a-line")] {
+    for (id, text) in [
+        (busy, "ran-in-a-program"),
+        (shell, "after-half-a-line"),
+        (shell, "after-a-dead-key"),
+    ] {
         let shown = ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().screen());
         assert!(!shown.contains(text), "{shown}");
     }

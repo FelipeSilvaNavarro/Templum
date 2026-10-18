@@ -1094,8 +1094,8 @@ impl Terminal {
     }
 
     /// Someone, the person or an agent, pressed a key, pasted or typed text into it
-    /// (`key`, `press`, `paste`, `type_in`): a shell that ends then was ended, it didn't fail to
-    /// start. What the app itself writes (`write`) doesn't count.
+    /// (`key`, `press`, `text`, `paste`, `type_in`): a shell that ends then was ended, it didn't
+    /// fail to start. What the app itself writes (`write`) doesn't count.
     pub fn had_input(&self) -> bool {
         self.input.lock().unwrap().is_some()
     }
@@ -1159,6 +1159,11 @@ impl Terminal {
             }
             None => false,
         }
+    }
+
+    /// Sends what the keyboard typed as text (letters, an IME's, a dead key's), raw.
+    pub fn text(&self, text: &str) {
+        self.input(text.as_bytes().to_vec());
     }
 
     pub fn paste(&self, text: &str) {

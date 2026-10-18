@@ -770,4 +770,6 @@ fn a_shell_is_at_an_empty_prompt_until_something_is_typed_or_runs() {
     std::thread::sleep(Duration::from_millis(200));
     assert!(!term.at_empty_prompt(), "a command runs");
     until(true);
+    term.text("rm -rf build/");
+    assert!(!term.at_empty_prompt(), "typed as the keyboard does");
 }

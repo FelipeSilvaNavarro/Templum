@@ -1023,7 +1023,7 @@ impl EntityInputHandler for Workspace {
         }
         if let Some(pane) = self.space.focused_terminal() {
             pane.person_typed();
-            pane.term.write(text.as_bytes().to_vec());
+            pane.term.text(text);
         }
         cx.notify();
     }
