@@ -37,6 +37,11 @@ pub(crate) fn render(
     cx: &mut Context<Workspace>,
 ) -> Option<AnyElement> {
     let (wait, count) = ws.balloon(terminal)?;
+    // Presses count from TOO_SOON after it first shows.
+    if wait.shown.get().is_none() {
+        wait.shown.set(Some(cx.background_executor().now()));
+    }
+    let key = wait.key;
     let n = id.0 as usize;
     let ui = ws.ui;
     // The yellow of the dot of a block waiting for its person.
@@ -108,9 +113,12 @@ pub(crate) fn render(
                     // program there that asked for the mouse hears none, the block's menu doesn't
                     // open. The middle button still pans, as anywhere. Not
                     // `block_mouse_except_scroll`: the block would lose its hover.
-                    .on_any_mouse_down(cx.listener(|ws, e: &MouseDownEvent, _, cx| {
+                    .on_any_mouse_down(cx.listener(move |ws, e: &MouseDownEvent, _, cx| {
                         if e.button == MouseButton::Middle {
                             ws.begin_pan(e.position);
+                        } else {
+                            // It takes the keyboard back from the terminal after Esc.
+                            ws.press_on_question(key, cx);
                         }
                         cx.stop_propagation();
                     }))
@@ -163,6 +171,8 @@ fn question(
         .is_some_and(|(texts, _)| form.answers(ask, &texts).is_some());
     let send = small(part(n, "send"), "Send", ui, z)
         .when(!ready, |el| el.opacity(0.4))
+        .when(form.highlight == Some(Row::Send), |el| el.bg(ui.hover))
+        .on_hover(hover(key, Row::Send, cx))
         .on_click(cx.listener(once(move |ws, window, cx| {
             ws.send_question(key, window, cx)
         })))
@@ -220,7 +230,10 @@ fn question(
                 option(id, question.multi, form.picked(q, i), choice, ui, z)
             } else {
                 button(id, choice.label.clone(), ui, z).w_full()
-            };
+            }
+            .when(form.highlight == Some(Row::Option(q, i)), |el| {
+                el.bg(ui.hover)
+            });
             choices = choices.child(
                 row.on_click(cx.listener(once(move |ws, window, cx| {
                     ws.pick_option(key, q, i, window, cx)
@@ -236,7 +249,9 @@ fn question(
                 .flex()
                 .items_center()
                 .gap(px(8.0 * z))
-                .w_full();
+                .w_full()
+                .rounded(px(6.0 * z))
+                .when(form.highlight == Some(Row::Other(q)), |el| el.bg(ui.hover));
             if !question.options.is_empty() {
                 // A press on its mark or its name puts the keyboard in its field.
                 let focus = input.clone();
@@ -278,6 +293,8 @@ fn question(
             div()
                 .id(part(n, "note"))
                 .w_full()
+                .rounded(px(6.0 * z))
+                .when(form.highlight == Some(Row::Note), |el| el.bg(ui.hover))
                 .child(git_block::field(input, z).w_full())
                 .on_hover(hover(key, Row::Note, cx))
                 .test_support(),

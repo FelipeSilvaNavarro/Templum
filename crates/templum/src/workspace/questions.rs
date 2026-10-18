@@ -1,9 +1,9 @@
 //! An agent's question in its dialog (docs/specs/ask-user.md): its fields, what the person picks,
-//! Send and Dismiss.
+//! Send and Dismiss, its keys.
 
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Context, Window};
+use gpui_kit::{App, Context, Focusable as _, Keystroke, Window};
 use templum_mcp::Reply;
 use templum_mcp::ask::{Ask, Form, Row};
 
@@ -62,7 +62,7 @@ fn field(
                     ws.other_typed(key, q, &text, cx);
                 }
             }
-            InputEvent::PressEnter { .. } => ws.send_question(key, window, cx),
+            InputEvent::PressEnter { .. } => ws.question_enter(key, window, cx),
             InputEvent::Focus | InputEvent::Blur => {}
         },
     );
@@ -109,6 +109,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.question_too_soon(key, cx) {
+            return;
+        }
         let Some((ask, form)) = self.form_of(key) else {
             return;
         };
@@ -126,6 +129,9 @@ impl Workspace {
         let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
             return;
         };
+        if wait.too_soon(cx) {
+            return;
+        }
         let (Some((others, note)), Waiting::Question { ask, form, .. }) =
             (self.texts(wait, cx), &wait.what)
         else {
@@ -144,7 +150,163 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.close_question(key, Reply::err(DISMISSED), window, cx);
+        if !self.question_too_soon(key, cx) {
+            self.close_question(key, Reply::err(DISMISSED), window, cx);
+        }
+    }
+
+    /// The wait `key` was drawn under TOO_SOON ago, or not yet.
+    fn question_too_soon(&self, key: u64, cx: &App) -> bool {
+        self.waits
+            .iter()
+            .find(|w| w.key == key)
+            .is_none_or(|w| w.too_soon(cx))
+    }
+
+    /// The dialog's keys, while it has the keyboard (`balloon_keys`): ↑ ↓ Tab Shift+Tab move the
+    /// highlight, Space picks, Enter picks and sends or moves on, Esc gives the keyboard back to
+    /// the terminal. True: the dialog took the key.
+    pub(crate) fn question_key(
+        &mut self,
+        terminal: &str,
+        keystroke: &Keystroke,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((wait, _)) = self.balloon(terminal) else {
+            return false;
+        };
+        let key = wait.key;
+        let m = &keystroke.modifiers;
+        if m.control || m.alt || m.platform || m.function {
+            return false;
+        }
+        let by = match (keystroke.key.as_str(), m.shift) {
+            ("down", false) | ("tab", false) => Some(1),
+            ("up", false) | ("tab", true) => Some(-1),
+            ("space" | "enter" | "escape", false) => None,
+            _ => return false,
+        };
+        if wait.too_soon(cx) {
+            return true;
+        }
+        // In a field, the highlight is its row.
+        let typing = self.typing_row(wait, window, cx);
+        let Some((ask, form)) = self.form_of(key) else {
+            return false;
+        };
+        if typing.is_some() {
+            form.highlight = typing;
+        }
+        match (by, keystroke.key.as_str()) {
+            (Some(by), _) => {
+                form.step(ask, by);
+                self.focus_highlight(key, window, cx);
+            }
+            (None, "space") => {
+                if let Some(Row::Option(q, i)) = form.highlight {
+                    form.pick(ask, q, i);
+                }
+            }
+            (None, "enter") => {
+                if form.highlight.is_some() {
+                    self.question_enter(key, window, cx);
+                }
+            }
+            _ => {
+                if let Some(Waiting::Question { away, .. }) = self
+                    .waits
+                    .iter_mut()
+                    .find(|w| w.key == key)
+                    .map(|w| &mut w.what)
+                {
+                    *away = true;
+                }
+                window.focus(&self.focus_handle, cx);
+            }
+        }
+        cx.notify();
+        true
+    }
+
+    /// Enter on the question `key`: a single-select option highlighted is picked; then it is
+    /// sent once each question has an answer, else the highlight moves to the next without one.
+    fn question_enter(&mut self, key: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
+            return;
+        };
+        if wait.too_soon(cx) {
+            return;
+        }
+        let typing = self.typing_row(wait, window, cx);
+        let others = self.texts(wait, cx).map(|(o, _)| o).unwrap_or_default();
+        let Some((ask, form)) = self.form_of(key) else {
+            return;
+        };
+        if typing.is_some() {
+            form.highlight = typing;
+        }
+        if let Some(Row::Option(q, i)) = form.highlight
+            && !ask.questions[q].multi
+        {
+            form.pick(ask, q, i);
+        }
+        if form.answers(ask, &others).is_some() {
+            self.send_question(key, window, cx);
+        } else {
+            form.next_unanswered(ask, &others);
+            self.focus_highlight(key, window, cx);
+            cx.notify();
+        }
+    }
+
+    /// The row of the question's field that has the keyboard, if one does.
+    fn typing_row(&self, wait: &Wait, window: &Window, cx: &App) -> Option<Row> {
+        let Waiting::Question { others, note, .. } = &wait.what else {
+            return None;
+        };
+        let focused = |(input, _): &Field| input.read(cx).focus_handle(cx).is_focused(window);
+        if note.as_ref().is_some_and(focused) {
+            return Some(Row::Note);
+        }
+        others.iter().position(focused).map(Row::Other)
+    }
+
+    /// The highlight on an Other row or the note: its field takes the keyboard; elsewhere the
+    /// workspace has it again (the block stays focused).
+    fn focus_highlight(&mut self, key: u64, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
+            return;
+        };
+        let Waiting::Question {
+            form, others, note, ..
+        } = &wait.what
+        else {
+            return;
+        };
+        let field = match form.highlight {
+            Some(Row::Other(q)) => others.get(q),
+            Some(Row::Note) => note.as_ref(),
+            _ => None,
+        };
+        match field {
+            Some((input, _)) => input.update(cx, |input, cx| input.focus(window, cx)),
+            None => window.focus(&self.focus_handle, cx),
+        }
+    }
+
+    /// A press on the dialog of the question `key`: it takes the keyboard again after Esc.
+    pub(crate) fn press_on_question(&mut self, key: u64, cx: &mut Context<Self>) {
+        if let Some(Waiting::Question { away, .. }) = self
+            .waits
+            .iter_mut()
+            .find(|w| w.key == key)
+            .map(|w| &mut w.what)
+            && *away
+        {
+            *away = false;
+            cx.notify();
+        }
     }
 
     /// Answers the question `key` with `reply`; the keyboard goes back to the canvas when one of

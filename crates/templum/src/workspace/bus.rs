@@ -499,6 +499,7 @@ impl Workspace {
                     ask,
                     others: Vec::new(),
                     note: None,
+                    away: false,
                 };
                 let seconds = deadline(timeout, self.config.connections.question_timeout);
                 return Outcome::Wait(what, seconds);

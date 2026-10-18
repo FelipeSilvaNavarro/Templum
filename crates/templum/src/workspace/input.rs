@@ -644,12 +644,19 @@ impl Workspace {
             }
             return;
         }
-        // A balloon's field has the keyboard: what it leaves (shortcuts aside) never reaches the
-        // shell of the focused terminal.
-        if self.balloon_typing(window, cx).is_some() {
-            if let Some(command) = command.filter(|c| !matches!(c, Command::Copy | Command::Paste))
+        // A balloon's dialog has the keyboard (docs/specs/ask-user.md, Keyboard): its keys first;
+        // what it leaves (shortcuts aside) never reaches the shell of the focused terminal.
+        if let Some(terminal) = self.balloon_keys(window, cx).map(str::to_string) {
+            let typing = self.balloon_typing(window, cx).is_some();
+            if self.question_key(&terminal, &e.keystroke, window, cx) {
+                cx.stop_propagation();
+            } else if let Some(command) =
+                command.filter(|c| !matches!(c, Command::Copy | Command::Paste))
             {
                 self.command_key(e, Some(command), window, cx);
+                cx.stop_propagation();
+            } else if !typing {
+                // Nor its text, which would go to the terminal's input handler.
                 cx.stop_propagation();
             }
             return;
@@ -1001,10 +1008,13 @@ impl EntityInputHandler for Workspace {
         &mut self,
         _: Option<Range<usize>>,
         text: &str,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.marked = None;
+        if self.balloon_keys(window, cx).is_some() {
+            return;
+        }
         if let Some(pane) = self.space.focused_terminal() {
             pane.person_typed();
             pane.term.write(text.as_bytes().to_vec());

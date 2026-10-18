@@ -135,7 +135,9 @@ later starts with none.
     Allow wires them;
   - a request for a block already wired is answered at once; Allow is a step of Ctrl+Z, as wiring by hand is;
   - several requests from one block wait in turn: the balloon shows the oldest, with "1 of 3";
-  - while the balloon's field has the keyboard, no key reaches the terminal;
+  - a question's dialog has the keyboard while its block does, until Esc gives it back
+    ([ask-user.md](ask-user.md#keyboard)); meanwhile no key reaches the terminal, and presses within 0.5 s of it
+    showing are ignored;
   - when the person doesn't see the balloon (the block is in another workspace, outside the view, hidden by grid mode,
     or too small on screen for the Full level and not focused, or the window is in the background), a notification
     says what the agent asks, also the system's in the background; clicking it reveals the block;

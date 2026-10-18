@@ -2,7 +2,8 @@
 //! person. Each keeps its reply channel in `Workspace::waits` until it is answered, its deadline
 //! passes, its call is cancelled or its connection ends, or its block closes.
 
-use std::time::Duration;
+use std::cell::Cell;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::input::InputState;
 use gpui_kit::{App, Context, Entity, Focusable as _, Subscription, Window};
@@ -15,6 +16,9 @@ use templum_mcp::{Replier, Reply, tools};
 use super::bus::{Outcome, target};
 use super::{AgentState, Pane, Workspace};
 
+/// How long after the dialog first shows a question its keys and clicks are ignored: someone
+/// typing or clicking in the terminal as it appears doesn't answer it.
+pub(crate) const TOO_SOON: Duration = Duration::from_millis(500);
 /// The lines of an agent's screen a turn's wait that times out gives.
 pub(super) const LAST_LINES: usize = 40;
 /// How often a `wait_for` a command or an alert looks at its terminal's counters.
@@ -35,6 +39,8 @@ pub(crate) struct Wait {
     /// another workspace.
     pub from: String,
     pub what: Waiting,
+    /// When the balloon first drew it, by the executor's clock.
+    pub shown: Cell<Option<Instant>>,
 }
 
 /// A field of a question's dialog, and what it hears from it.
@@ -44,12 +50,13 @@ pub(crate) type Field = (Entity<InputState>, Subscription);
 pub(crate) enum Waiting {
     /// `ask_user` (docs/specs/ask-user.md): its questions, what the person picked, each
     /// question's Other field, and the note (asked with `questions` only). `wait` makes the
-    /// fields.
+    /// fields. `away`: Esc gave the keyboard back to the terminal, until a press on the dialog.
     Question {
         ask: Ask,
         form: Form,
         others: Vec<Field>,
         note: Option<Field>,
+        away: bool,
     },
     /// `connect`: the person's Allow or Deny to wiring the asking block to block `to` (its block
     /// id).
@@ -77,6 +84,13 @@ pub(super) struct Asked {
 }
 
 impl Wait {
+    /// Not drawn yet, or drawn under TOO_SOON ago: a press on it is ignored.
+    pub fn too_soon(&self, cx: &App) -> bool {
+        self.shown
+            .get()
+            .is_none_or(|at| cx.background_executor().now().duration_since(at) < TOO_SOON)
+    }
+
     /// What it asks the person, on one line: the dot's tooltip.
     pub fn summary(&self) -> String {
         match &self.what {
@@ -124,6 +138,7 @@ impl Workspace {
             reply: asked.reply,
             from: asked.from,
             what,
+            shown: Cell::new(None),
         };
         let looks = matches!(
             wait.what,
@@ -336,6 +351,21 @@ impl Workspace {
         });
         let first = asking.next()?;
         Some((first, 1 + asking.count()))
+    }
+
+    /// The terminal whose dialog has the keyboard: one of its fields has it, or its block does
+    /// (focused, the workspace holding the keyboard), its oldest request is a question, and Esc
+    /// didn't give the keyboard back.
+    pub(crate) fn balloon_keys(&self, window: &Window, cx: &App) -> Option<&str> {
+        if let Some(terminal) = self.balloon_typing(window, cx) {
+            return Some(terminal);
+        }
+        if !self.canvas_has_keys(window) {
+            return None;
+        }
+        let pane = self.space.focused_terminal()?;
+        let (wait, _) = self.balloon(pane.term.id())?;
+        matches!(wait.what, Waiting::Question { away: false, .. }).then_some(wait.from.as_str())
     }
 
     /// The terminal whose balloon's field has the keyboard, if one does: the keys are the field's.

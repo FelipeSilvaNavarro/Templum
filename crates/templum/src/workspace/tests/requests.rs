@@ -3,6 +3,7 @@
 
 use std::sync::mpsc::TryRecvError;
 
+use gpui_kit::Focusable as _;
 use gpui_kit::component::input::InputState;
 use serde_json::{Value, json};
 
@@ -32,10 +33,18 @@ fn pick(
     q: usize,
     i: usize,
 ) {
+    shown(handle, cx);
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| ws.pick_option(key, q, i, window, cx))
     })
     .unwrap();
+}
+
+/// The balloons drawn, and long enough ago for presses to count (`TOO_SOON`).
+fn shown(handle: AnyWindowHandle, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    after(cx, 600);
 }
 
 /// The field of the question `key`: question `q`'s Other field, or with None its note.
@@ -62,8 +71,8 @@ fn type_into(
     field: Option<usize>,
     text: &str,
 ) {
+    shown(handle, cx);
     cx.update_window(handle, |_, window, cx| {
-        window.render_frame(cx);
         let input = field_of(ws.read(cx), key, field);
         input.update(cx, |input, cx| input.focus(window, cx));
         window.render_frame(cx);
@@ -74,6 +83,7 @@ fn type_into(
 
 /// Clicks the balloon's element `what` on block `n`, drawn first and scrolled into view.
 fn click_part(handle: AnyWindowHandle, cx: &mut TestAppContext, n: usize, what: &str) {
+    shown(handle, cx);
     cx.update_window(handle, |_, window, cx| {
         scroll_to(window, cx, n, what);
         window.click(crate::balloon::part(n, what), cx);
@@ -680,6 +690,7 @@ fn the_balloons_buttons_answer_a_question_then_a_request(cx: &mut TestAppContext
         "connect",
         json!({ "block": k }),
     );
+    shown(handle, cx);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.try_find(part(n, "count")).is_some(), "1 of 2");
@@ -778,6 +789,7 @@ fn a_double_click_answers_one_request(cx: &mut TestAppContext) {
         let c = window.find(crate::balloon::part(n, what)).bounds().center();
         (f32::from(c.x), f32::from(c.y))
     };
+    shown(handle, cx);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         let yes = at(window, "q0-option-0");
@@ -835,6 +847,8 @@ fn a_press_on_a_withdrawn_requests_button_answers_no_other(cx: &mut TestAppConte
     .unwrap();
     let cancel = json!({ "requestId": 1 });
     bus_note(handle, &ws, cx, 1, "notifications/cancelled", cancel);
+    // Long enough for a press on the next one to count, were it a click on it.
+    shown(handle, cx);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         let position = yes(window);
@@ -871,7 +885,10 @@ fn keys_in_the_balloons_field_never_reach_the_terminal(cx: &mut TestAppContext) 
     );
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| ws.focus_block(mine, window, cx));
-        window.render_frame(cx);
+    })
+    .unwrap();
+    shown(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
         let key = ws.read(cx).waits[0].key;
         let input = field_of(ws.read(cx), key, Some(0));
         input.update(cx, |input, cx| input.focus(window, cx));
@@ -1222,4 +1239,253 @@ fn a_long_preview_scrolls_in_its_pane(cx: &mut TestAppContext) {
         );
         assert!(height >= 18.0 * 16.0 * zoom, "{height} at {zoom}");
     }
+}
+
+/// The asking block takes the keyboard, its dialog is drawn, and long enough ago for keys to
+/// count.
+fn focus_dialog(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx))
+    })
+    .unwrap();
+    shown(handle, cx);
+}
+
+/// The person presses `keys`, the window drawn after each.
+fn press(handle: AnyWindowHandle, cx: &mut TestAppContext, keys: &[&str]) {
+    cx.update_window(handle, |_, window, cx| {
+        for key in keys {
+            window.press(key, cx);
+            window.render_frame(cx);
+        }
+    })
+    .unwrap();
+}
+
+/// The highlight of the newest question.
+fn highlight(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> Option<templum_mcp::ask::Row> {
+    ws.read_with(cx, |ws, _| match &ws.waits.last().unwrap().what {
+        Waiting::Question { form, .. } => form.highlight,
+        _ => panic!("a question"),
+    })
+}
+
+/// A `questions` call of `n` single-select questions ("Q0", …) of two options ("A", "B").
+fn singles(n: usize) -> Value {
+    let questions: Vec<Value> = (0..n)
+        .map(|q| json!({ "question": format!("Q{q}"), "options": ["A", "B"] }))
+        .collect();
+    json!({ "questions": questions })
+}
+
+/// What the terminal of block `id` shows, once its program had time to echo.
+#[cfg(unix)]
+fn screen(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> String {
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    ws.read_with(cx, |ws, _| {
+        let mut snap = templum_terminal::Snapshot::default();
+        snap.refresh(
+            ws.space.terminal(id).unwrap().term.shared(),
+            &ws.theme.palette,
+        );
+        snap.text()
+    })
+}
+
+#[gpui_kit::test]
+fn the_keys_answer_a_question(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let asked = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    focus_dialog(handle, &ws, cx, mine);
+    press(handle, cx, &["down", "down", "enter"]);
+    assert_eq!(answered(&answers), (false, "No".to_string()));
+}
+
+/// No row is highlighted as the dialog opens: Space and Enter meant for the terminal answer
+/// nothing.
+#[gpui_kit::test]
+fn enter_with_nothing_highlighted_does_nothing(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let asked = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    focus_dialog(handle, &ws, cx, mine);
+    press(handle, cx, &["enter", "space"]);
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "it waits");
+    assert_eq!(highlight(&ws, cx), None);
+}
+
+#[gpui_kit::test]
+fn space_checks_and_enter_sends_once_all_are_answered(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", two_questions());
+    focus_dialog(handle, &ws, cx, mine);
+    // SQLite, then on to the second question.
+    press(handle, cx, &["down", "down", "enter"]);
+    assert_eq!(
+        highlight(&ws, cx),
+        Some(templum_mcp::ask::Row::Option(1, 0))
+    );
+    // Auth and Export.
+    press(handle, cx, &["space", "down", "down", "space"]);
+    assert_eq!(
+        answers.try_recv(),
+        Err(TryRecvError::Empty),
+        "Space never sends"
+    );
+    press(handle, cx, &["enter"]);
+    let (failed, text) = answered(&answers);
+    assert!(!failed, "{text}");
+    assert_eq!(
+        json_of(&text),
+        json!({ "answers": {
+            "Which database should the service use?": "SQLite",
+            "Which features go in the first release?": ["Auth", "Export"],
+        } })
+    );
+}
+
+#[gpui_kit::test]
+fn enter_moves_to_the_next_unanswered_question(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", singles(2));
+    focus_dialog(handle, &ws, cx, mine);
+    press(handle, cx, &["down", "enter"]);
+    assert_eq!(
+        highlight(&ws, cx),
+        Some(templum_mcp::ask::Row::Option(1, 0))
+    );
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "it waits");
+}
+
+#[gpui_kit::test]
+fn tab_reaches_other_and_the_note(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", singles(1));
+    let key = last_wait(&ws, cx);
+    focus_dialog(handle, &ws, cx, mine);
+    press(handle, cx, &["tab", "tab", "tab"]);
+    cx.update_window(handle, |_, window, cx| {
+        let other = field_of(ws.read(cx), key, Some(0));
+        assert!(
+            other.read(cx).focus_handle(cx).is_focused(window),
+            "Other's field has the keyboard"
+        );
+        window.input("Friday", cx);
+    })
+    .unwrap();
+    press(handle, cx, &["tab"]);
+    cx.update_window(handle, |_, window, cx| {
+        let note = field_of(ws.read(cx), key, None);
+        assert!(
+            note.read(cx).focus_handle(cx).is_focused(window),
+            "then the note's"
+        );
+    })
+    .unwrap();
+    press(handle, cx, &["enter"]);
+    assert_eq!(
+        json_of(&answered(&answers).1),
+        json!({ "answers": { "Q0": "Friday" } })
+    );
+}
+
+/// Esc gives the keyboard back to the terminal, also once the block loses it and takes it again;
+/// a click on the dialog takes it back.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn esc_gives_the_keyboard_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let asked = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    focus_dialog(handle, &ws, cx, mine);
+    press(handle, cx, &["escape"]);
+    cx.update_window(handle, |_, window, cx| window.input("ls", cx))
+        .unwrap();
+    assert!(screen(&ws, cx, mine).contains("ls"), "the terminal's");
+    focus_dialog(handle, &ws, cx, kanban);
+    focus_dialog(handle, &ws, cx, mine);
+    press(handle, cx, &["down"]);
+    assert!(
+        screen(&ws, cx, mine).contains("^[[B"),
+        "still the terminal's"
+    );
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "it waits");
+    assert_eq!(highlight(&ws, cx), None);
+    // A press on the dialog, not on a button.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(crate::balloon::part(n, "waiting"), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    press(handle, cx, &["down", "enter"]);
+    assert_eq!(answered(&answers), (false, "Yes".to_string()));
+}
+
+/// A key or click meant for the terminal as the dialog appears doesn't answer it.
+#[gpui_kit::test]
+fn keys_and_clicks_too_soon_do_nothing(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let asked = json!({ "question": "Ship it?", "options": ["Yes", "No"] });
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(mine, window, cx));
+        window.render_frame(cx);
+        window.press("down", cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+        window.click(crate::balloon::part(n, "q0-option-0"), cx);
+    })
+    .unwrap();
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "too soon");
+    after(cx, 600);
+    // The pointer on the option highlights it.
+    assert_eq!(
+        highlight(&ws, cx),
+        Some(templum_mcp::ask::Row::Option(0, 0))
+    );
+    press(handle, cx, &["enter"]);
+    assert_eq!(answered(&answers), (false, "Yes".to_string()));
+}
+
+/// While the dialog has the keyboard, its keys never reach the terminal: arrows, Space, Enter.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn keys_never_reach_the_terminal_while_the_dialog_has_them(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let answers = call_later(handle, &ws, cx, &terminal, 1, "ask_user", two_questions());
+    focus_dialog(handle, &ws, cx, mine);
+    press(handle, cx, &["down", "space", "x"]);
+    cx.update_window(handle, |_, window, cx| window.input("ls", cx))
+        .unwrap();
+    let shown = screen(&ws, cx, mine);
+    assert!(
+        !shown.contains("^[[B") && !shown.contains("ls") && !shown.contains('x'),
+        "{shown:?}"
+    );
+    assert_eq!(answers.try_recv(), Err(TryRecvError::Empty), "it waits");
 }
