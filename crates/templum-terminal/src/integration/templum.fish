@@ -65,13 +65,14 @@ if status is-interactive; and not set -q __templum_installed
     if test -n "$TEMPLUM_COPILOT_ARGS"; and not functions -q copilot
         function copilot
             set -l w "$TEMPLUM_COPILOT_ARGS"
-            # Not before a subcommand (`copilot plugin list`; AWS's `copilot` too).
+            # Not before a subcommand (`copilot plugin list`) nor for the help or the version: AWS's
+            # `copilot` takes those too, and refuses Templum's words.
             if set -q argv[1]; and not string match -q -- '-*' $argv[1]
                 set w ''
             end
             set -l last (string split \n -- "$w")[-1]
             for a in $argv
-                if test "$a" = "$last"
+                if test "$a" = "$last"; or contains -- "$a" -h --help -v --version
                     set w ''
                 end
             end

@@ -965,8 +965,10 @@ the exit status kept, what is piped in passed on), with one helper per shell for
   mcpConfig` and exited 1). Any other plain word is a prompt (`qwen [query..]`), so `qwen hi` gets it.
 - **Copilot CLI only when it starts a session:** its words go only when the person's first word is none or an
   option (`copilot`, `copilot -p …`, `copilot --model …`), never before a subcommand (`copilot plugin list`, `copilot
-  login`), which needs none: AWS's Copilot CLI is also `copilot`, and every use of it starts with a subcommand
-  (`copilot app deploy` runs as it is).
+  login`), nor when one of the person's words is `-h`, `--help`, `-v` or `--version`, which need none. AWS's Copilot
+  CLI is also `copilot`, and refuses Templum's words (`✘ unknown flag: --allow-all-mcp-server-instructions`, exit 1,
+  checked with v1.34.1): its subcommands, help and version run as they are (`copilot app deploy`, `copilot --help`),
+  but a bare `copilot` still gets them ([minors](../minors.md#connections)).
 - **A variable for that one command:** `OPENCODE_CONFIG_CONTENT`, `KILO_CONFIG_CONTENT` or
   `QWEN_CODE_SYSTEM_SETTINGS_PATH` is set for the agent only (bash and zsh `local -x`, fish `set -lx` outside any
   block, PowerShell set and removed after), unless the shell's environment already has a non-empty one (the block
@@ -1009,10 +1011,10 @@ reading a dialog off each agent's screen is guesswork, and a wrong yellow is wor
 `--allow-tool`; its last answer from the transcript, not its screen; OpenCode, Kilo Code and Qwen Code get their
 variable in the blocks Templum opens for them, and for that one command when typed; `TEMPLUM_HOOKED` keeps a nested
 OpenCode, Kilo Code or Pi quiet, while a nested Qwen Code stays a minor; Qwen Code gets no hooks when its own system file
-exists, and none when the person gives their own `--mcp-config`; Copilot CLI's words never before a subcommand (AWS's
-`copilot`); the files run `<data>/bin/templum`, not Templum's program path; Pi's extension gives the server only where
-Pi has MCP; the switch off cuts agents already running and leaves the calls that wait; Gemini CLI's notice once per
-run, never on restore; a generic dialog reader left out. Made while implementing it: Pi's turn ends at
+exists, and none when the person gives their own `--mcp-config`; Copilot CLI's words never before a subcommand nor with
+`--help` or `--version` (AWS's `copilot`); the files run `<data>/bin/templum`, not Templum's program path; Pi's
+extension gives the server only where Pi has MCP; the switch off cuts agents already running and leaves the calls that
+wait; Gemini CLI's notice once per run, never on restore; a generic dialog reader left out. Made while implementing it: Pi's turn ends at
 `agent_settled`, not `agent_end`; Pi's words never before one of its commands; Copilot's answer waited for up to 3
 seconds after its `agentStop` (it writes its transcript in batches); a Copilot `sessionStart` with an `initialPrompt`
 is no event; OpenCode's question shows its text.
@@ -1031,8 +1033,8 @@ is no event; OpenCode's question shows its text.
 - **Progress notifications** from Templum's server, which reset OpenCode's call timeout: a bus-wide change for one
   client, where its `timeout` does it.
 - **Telling an agent from another program of its name** (by its package's path, or its `--version`): only Copilot's
-  name is known to be shared (AWS's Copilot CLI), and its subcommand rule covers it; another `pi` would get `-e
-  <file>` (`command pi` runs it bare).
+  name is known to be shared (AWS's Copilot CLI), and its rules for subcommands, help and version cover all of it but
+  a bare `copilot`; another `pi` would get `-e <file>` (`command pi` runs it bare).
 - **Answering the calls that wait** when the switch goes off: they already end through the screen, the person or
   their timeout.
 

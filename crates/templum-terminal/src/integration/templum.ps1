@@ -106,10 +106,12 @@ if ($null -eq $Global:__TemplumPrompt) {
     if ($env:TEMPLUM_COPILOT_ARGS -and -not (Test-Path Function:\copilot)) {
         function Global:copilot {
             $words = $env:TEMPLUM_COPILOT_ARGS
-            # Not before a subcommand (`copilot plugin list`; AWS's `copilot` too).
+            # Not before a subcommand (`copilot plugin list`) nor for the help or the version: AWS's
+            # `copilot` takes those too, and refuses Templum's words.
             if ($args.Count -and -not "$($args[0])".StartsWith('-')) { $words = '' }
             $last = ($words -split "`n")[-1]
-            foreach ($a in $args) { if ("$a" -eq $last) { $words = '' } }
+            $asks = '-h', '--help', '-v', '--version'
+            foreach ($a in $args) { if ("$a" -eq $last -or "$a" -in $asks) { $words = '' } }
             if ($MyInvocation.ExpectingInput) { $input | __TemplumAgent copilot $words '' '' $args }
             else { __TemplumAgent copilot $words '' '' $args }
         }

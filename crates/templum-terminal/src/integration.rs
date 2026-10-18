@@ -719,10 +719,10 @@ mod tests {
         }
 
         /// A `copilot` typed at the prompt of a shell started `with_agents`, after `typed_agents`:
-        /// Templum's words first, none when the person's words hold the last of them or start
-        /// with a subcommand (AWS's `copilot`), none once `unset` empties the variable
-        /// (docs/specs/connections.md, Typed by hand: the shells). With `status`, its exit code is
-        /// the command's.
+        /// Templum's words first, none when the person's words hold the last of them, start
+        /// with a subcommand or ask for the help or the version (AWS's `copilot`), none once
+        /// `unset` empties the variable (docs/specs/connections.md, Typed by hand: the shells).
+        /// With `status`, its exit code is the command's.
         fn typed_copilot(term: &Terminal, home: &Home, unset: &str, status: bool) {
             let words: Vec<&str> = COPILOT_WORDS.lines().collect();
             if status {
@@ -758,6 +758,13 @@ mod tests {
                 (format!("copilot '{mine}'"), vec![mine]),
                 ("copilot plugin list".to_string(), vec!["plugin", "list"]),
                 ("copilot app deploy".to_string(), vec!["app", "deploy"]),
+                ("copilot --help".to_string(), vec!["--help"]),
+                ("copilot -h".to_string(), vec!["-h"]),
+                ("copilot -v".to_string(), vec!["-v"]),
+                (
+                    "copilot --model gpt-5.4 --version".to_string(),
+                    vec!["--model", "gpt-5.4", "--version"],
+                ),
             ];
             for (line, want) in lines {
                 term.write(format!("{line}\r").into_bytes());

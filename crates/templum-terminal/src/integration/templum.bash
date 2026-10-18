@@ -89,11 +89,12 @@ if [[ -z "${__templum_installed-}" ]]; then
     if [[ -n "${TEMPLUM_COPILOT_ARGS-}" ]] && ! builtin declare -F copilot > /dev/null; then
         function copilot {
             builtin local w="${TEMPLUM_COPILOT_ARGS-}" nl=$'\n' last a
-            # Not before a subcommand (`copilot plugin list`; AWS's `copilot` too).
+            # Not before a subcommand (`copilot plugin list`) nor for the help or the version: AWS's
+            # `copilot` takes those too, and refuses Templum's words.
             case "${1--}" in -*) ;; *) w= ;; esac
             last="${w##*$nl}"
             for a in "$@"; do
-                case "$a" in "$last") w= ;; esac
+                case "$a" in "$last" | -h | --help | -v | --version) w= ;; esac
             done
             __templum_agent copilot "$w" "" "" "$@"
         }
