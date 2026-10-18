@@ -20,7 +20,7 @@ fn ask(
 }
 
 /// `ask`, by `client` (`cli`, `mcp`).
-fn ask_as(
+pub(super) fn ask_as(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,

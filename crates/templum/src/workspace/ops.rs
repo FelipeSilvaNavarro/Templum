@@ -1,11 +1,12 @@
-//! The workspace operations both MCP servers call, each taking its target, never a caller
-//! (docs/specs/agent-tools.md#shared-operations).
+//! The workspace operations both MCP servers call (docs/specs/agent-tools.md#shared-operations,
+//! docs/specs/templum-agent.md#shared-operations): each takes its target, never a caller. The
+//! block server's tools check the caller's wires first; the control server's check the gate.
 
 use std::path::{Path, PathBuf};
 
-use gpui_kit::{Context, Task, Window};
+use gpui_kit::{App, Context, Task, Window};
 use templum_canvas::{BlockId, chrome};
-use templum_mcp::Reply;
+use templum_mcp::{Reply, tools};
 use templum_terminal::Pattern;
 
 use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Workspace};
@@ -335,5 +336,48 @@ impl Workspace {
                 Err(e) => Reply::err(format!("Couldn't merge {name}: {}", e.first_line())),
             }
         })
+    }
+
+    /// What a terminal shows, `read_terminal`'s answer: its last `lines`, or its last finished
+    /// command and that command's output. `block` names it in the answer.
+    pub(super) fn terminal_text(
+        &self,
+        (space, id): (&str, BlockId),
+        block: &str,
+        lines: usize,
+        last_command: bool,
+    ) -> Reply {
+        let Some(pane) = self.space_named(space).and_then(|s| s.terminal(id)) else {
+            return Reply::err(format!("{block} isn't a terminal."));
+        };
+        let shared = pane.term.shared();
+        if last_command {
+            match shared.last_command() {
+                Some(text) => Reply::ok(tools::tail(&text, tools::MAX_TEXT)),
+                None => Reply::err(format!(
+                    "No command has finished in {block} yet (it needs the shell's integration)."
+                )),
+            }
+        } else {
+            Reply::ok(tools::tail(
+                &shared.lines(lines).join("\n"),
+                tools::MAX_TEXT,
+            ))
+        }
+    }
+
+    /// The text of the note a note block shows, `read_note`'s answer.
+    pub(super) fn note_text(&self, (space, id): (&str, BlockId), block: &str, cx: &App) -> Reply {
+        let Some(note) = self
+            .space_named(space)
+            .and_then(|s| s.blocks.get(&id))
+            .and_then(|b| b.note())
+        else {
+            return Reply::err(format!("{block} isn't a note."));
+        };
+        match note.tab() {
+            Some(tab) => Reply::ok(tools::tail(&tab.editor.read(cx).value(), tools::MAX_TEXT)),
+            None => Reply::err(format!("{block} shows no note.")),
+        }
     }
 }

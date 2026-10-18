@@ -5,6 +5,7 @@ mod blocks;
 mod bus;
 mod checklist_blocks;
 mod content;
+mod control;
 mod delegate;
 mod drawing;
 mod file_tree;
@@ -1215,6 +1216,8 @@ pub struct Workspace {
     pub(crate) watches: Vec<schedules::Watch>,
     next_watch: u64,
     watching: bool,
+    /// The Templum Agent: its conversation, and its engine's secret (docs/specs/templum-agent.md).
+    pub(crate) templum_agent: crate::chat::TemplumAgent,
     /// Draws the next frame while a dot travels along a wire in view (`wires::DOT_FRAME`).
     _dot_frame: Task<()>,
     _wake: Task<()>,
@@ -1549,6 +1552,7 @@ impl Workspace {
             next_wait: 0,
             last_chime: None,
             next_task: 0,
+            templum_agent: Default::default(),
             notices: Vec::new(),
             schedules: Vec::new(),
             next_schedule: 0,

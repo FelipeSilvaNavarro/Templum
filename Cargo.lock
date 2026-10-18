@@ -6796,6 +6796,7 @@ dependencies = [
  "serde_json",
  "sha1_smol",
  "tempfile",
+ "templum-agent",
  "templum-canvas",
  "templum-git",
  "templum-mcp",

@@ -156,6 +156,9 @@ impl Workspace {
             incoming,
             reply,
         } = message;
+        if hello.client == "control" {
+            return self.serve_control(hello, incoming, reply, window, cx);
+        }
         // Connections off: an agent's server and hooks get nothing, the command line works.
         let off = !self.config.connections.enabled && hello.client != "cli";
         match incoming {
@@ -435,23 +438,7 @@ impl Workspace {
                     Ok(id) => id,
                     Err(reply) => return Outcome::Now(reply),
                 };
-                let Some(pane) = space.terminal(id) else {
-                    return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
-                };
-                let shared = pane.term.shared();
-                if last_command {
-                    match shared.last_command() {
-                        Some(text) => Reply::ok(tools::tail(&text, tools::MAX_TEXT)),
-                        None => Reply::err(format!(
-                            "No command has finished in {block} yet (it needs the shell's integration)."
-                        )),
-                    }
-                } else {
-                    Reply::ok(tools::tail(
-                        &shared.lines(lines).join("\n"),
-                        tools::MAX_TEXT,
-                    ))
-                }
+                self.terminal_text((&space_id, id), &block, lines, last_command)
             }
             Call::SendToTerminal { block, text, enter } => {
                 let id = match target(space, me, &block) {
@@ -655,19 +642,7 @@ impl Workspace {
                 } else {
                     "not connected"
                 };
-                let state = space
-                    .terminal(b.id)
-                    .filter(|pane| pane.seen.agent.is_some())
-                    .and_then(|pane| pane.state.as_ref())
-                    .map(|state| match state {
-                        AgentState::Working => ", working".to_string(),
-                        AgentState::Idle => ", idle".to_string(),
-                        AgentState::NeedsYou(Some(what)) if !what.is_empty() => {
-                            format!(", waiting for its person: {}", clean_title(what))
-                        }
-                        AgentState::NeedsYou(_) => ", waiting for its person".to_string(),
-                    })
-                    .unwrap_or_default();
+                let state = agent_state(space, b.id);
                 format!("{uid}  {kind}  {title}{folder}  {tie}{state}")
             })
             .collect()
@@ -746,6 +721,24 @@ impl Workspace {
             list(others),
         )
     }
+}
+
+/// The turn of the agent in block `id`, as `list_blocks` says it: `, working`, `, idle`, `,
+/// waiting for its person: <what>`; nothing for a block with no agent, or one not yet heard.
+pub(super) fn agent_state(space: &Space, id: BlockId) -> String {
+    space
+        .terminal(id)
+        .filter(|pane| pane.seen.agent.is_some())
+        .and_then(|pane| pane.state.as_ref())
+        .map(|state| match state {
+            AgentState::Working => ", working".to_string(),
+            AgentState::Idle => ", idle".to_string(),
+            AgentState::NeedsYou(Some(what)) if !what.is_empty() => {
+                format!(", waiting for its person: {}", clean_title(what))
+            }
+            AgentState::NeedsYou(_) => ", waiting for its person".to_string(),
+        })
+        .unwrap_or_default()
 }
 
 /// The most characters of a title an agent is told.

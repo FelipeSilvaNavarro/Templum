@@ -613,8 +613,9 @@ impl Workspace {
     }
 
     pub(super) fn read_note(&self, from: &str, block: &str, cx: &App) -> Reply {
-        match self.wired_note(from, block) {
-            Ok(editor) => Reply::ok(tools::tail(&editor.read(cx).value(), tools::MAX_TEXT)),
+        let (space, me) = self.caller_space(from);
+        match target(space, me, block) {
+            Ok(id) => self.note_text((&space.id, id), block, cx),
             Err(refused) => refused,
         }
     }

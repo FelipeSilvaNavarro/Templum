@@ -8,6 +8,7 @@ mod balloon;
 mod bench;
 mod block;
 mod board;
+mod chat;
 mod checklist;
 mod checklists;
 mod chime;
