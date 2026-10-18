@@ -1208,6 +1208,22 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   `tell_gemini`, `crates/templum/src/workspace/usage.rs`): a person who doesn't want Templum's extension sees
   "Gemini CLI has no Templum tools or status dot" the first time they open a Gemini CLI after each start of
   Templum. Fix: a "Don't ask again" on it, kept in `config.toml` (`[connections] gemini_notice = false`).
+- [ ] **A bare `copilot` still reaches AWS's Copilot CLI with Templum's words.** Left by the final review of card 44
+  (the `copilot` functions of `crates/templum-terminal/src/integration/templum.bash`, `zsh/.zshenv`, `templum.fish`
+  and `templum.ps1`): a person with AWS's Copilot CLI who types `copilot` alone in a Templum terminal sees
+  `✘ unknown flag: --allow-all-mcp-server-instructions` where AWS's CLI would print its help (its subcommands, help and
+  version already run as typed). Fix: tell the two programs apart by the path of the `copilot` found, or tell the
+  person to type `command copilot` for AWS's.
+- [ ] **Qwen Code won't start when the person turns on `tools.executionSandbox`.** Left by the final review of card 44
+  (`args`, `crates/templum-usage/src/qwen.rs`, and the `qwen` functions of the shell integration): Qwen Code 0.25.2
+  refuses `--mcp-config` with that setting ("tools.executionSandbox does not yet support ACP, worktree management,
+  LSP, MCP, extensions or provisional workspaces."; read in its bundled source, not run), so a Qwen Code opened from
+  the canvas or typed in a terminal exits with that error. Fix: leave the word out when Qwen's merged settings set
+  `tools.executionSandbox`, or document it in Settings ▸ Connections.
+- [ ] **fish 3.1 shows `[1]` at its first prompt in a Templum terminal.** Seen by the final review of card 44, and
+  already so at 5579a05 (`crates/templum-terminal/src/integration/templum.fish`): under fish 3.1.2 the `shells::fish`
+  test fails ("waited for cd to end") and the first prompt shows a last status of 1; CI doesn't install fish, so
+  nothing catches it. Fix: run the integration under fish 3.1 and find the command that returns 1 at startup.
 
 ## Keeping the canvas
 
