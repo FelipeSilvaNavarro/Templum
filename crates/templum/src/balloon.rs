@@ -9,7 +9,7 @@ use gpui_kit::{
     ScrollWheelEvent, SharedString, Stateful, TestSupportExt, Window, div, point, px, relative,
 };
 use templum_canvas::{BlockId, chrome};
-use templum_mcp::ask::{Ask, Choice, Form, Row};
+use templum_mcp::ask::{Ask, Choice, Form, Row, clean_preview};
 
 use crate::git_block::{self, widgets::small};
 use crate::grid::hsla;
@@ -20,8 +20,12 @@ use crate::workspace::{Wait, Waiting, Workspace};
 const SHARE: f32 = 0.8;
 /// Its text's size, world units: the questions and the options' labels.
 const TEXT: f32 = 14.0;
-/// The size of what is said about them, world units: descriptions, headers, "Pick any".
+/// The size of what is said about them, world units: descriptions, headers, "Pick any", the
+/// preview.
 const SMALL: f32 = 12.0;
+/// A preview's line height, world units, and the most lines it shows (it scrolls past them).
+const PREVIEW_LINE: f32 = 16.0;
+const PREVIEW_LINES: f32 = 18.0;
 
 /// The balloon of the terminal block `id`, whose terminal is `terminal`, at zoom `z`, centered on
 /// the terminal: None when its agent asks nothing.
@@ -208,6 +212,8 @@ fn question(
                             .child("Pick any"),
                     )
                 });
+        // Its options and Other; with a preview, a column beside it.
+        let mut choices = div().flex().flex_col().gap(px(6.0 * z));
         for (i, choice) in question.options.iter().enumerate() {
             let id = part(n, &format!("q{q}-option-{i}"));
             let row = if ask.json {
@@ -215,10 +221,11 @@ fn question(
             } else {
                 button(id, choice.label.clone(), ui, z).w_full()
             };
-            block = block.child(
+            choices = choices.child(
                 row.on_click(cx.listener(once(move |ws, window, cx| {
                     ws.pick_option(key, q, i, window, cx)
                 })))
+                .on_hover(hover(key, Row::Option(q, i), cx))
                 .test_support(),
             );
         }
@@ -253,8 +260,17 @@ fn question(
             if !ask.json {
                 other = other.children(send.take());
             }
-            block = block.child(other.test_support());
+            choices = choices.child(other.on_hover(hover(key, Row::Other(q), cx)).test_support());
         }
+        block = block.child(match ask.preview_of(q, form) {
+            None => choices,
+            Some(shown) => div()
+                .flex()
+                .items_start()
+                .gap(px(10.0 * z))
+                .child(choices.w(relative(0.45)).flex_shrink_0())
+                .child(preview(ws, shown, n, q, z)),
+        });
         body = body.child(block);
     }
     if let Some((input, _)) = note {
@@ -263,6 +279,7 @@ fn question(
                 .id(part(n, "note"))
                 .w_full()
                 .child(git_block::field(input, z).w_full())
+                .on_hover(hover(key, Row::Note, cx))
                 .test_support(),
         );
     }
@@ -278,6 +295,52 @@ fn question(
         .child(dismiss)
         .when(ask.json, |el| el.children(send.take()));
     body.child(foot).into_any_element()
+}
+
+/// Hovering a row of the question `key` highlights it.
+fn hover(
+    key: u64,
+    row: Row,
+    cx: &mut Context<Workspace>,
+) -> impl Fn(&bool, &mut Window, &mut gpui_kit::App) + 'static {
+    cx.listener(move |ws, hovered: &bool, _, cx| {
+        if *hovered {
+            ws.highlight_row(key, row, cx);
+        }
+    })
+}
+
+/// Question `q`'s preview pane: `shown` in the terminal's font, never wrapped, at most
+/// PREVIEW_LINES tall, scrolling both ways; None says "No preview".
+fn preview(ws: &Workspace, shown: Option<&str>, n: usize, q: usize, z: f32) -> impl IntoElement {
+    let ui = ws.ui;
+    let pad = 8.0 * z;
+    div()
+        .id(part(n, &format!("q{q}-preview")))
+        .flex_1()
+        .min_w_0()
+        .max_h(px(PREVIEW_LINES * PREVIEW_LINE * z + 2.0 * pad))
+        .overflow_scroll()
+        .p(px(pad))
+        .rounded(px(6.0 * z))
+        .border_1()
+        .border_color(ui.hairline)
+        .bg(ui.canvas)
+        .font_family(ws.cell.font.family.clone())
+        .text_size(px(SMALL * z))
+        .line_height(px(PREVIEW_LINE * z))
+        .whitespace_nowrap()
+        // The wheel scrolls it, not the dialog around it.
+        .on_scroll_wheel(|e: &ScrollWheelEvent, _, cx| {
+            if !e.modifiers.control {
+                cx.stop_propagation();
+            }
+        })
+        .child(match shown {
+            Some(text) => div().child(clean_preview(text)),
+            None => div().text_color(ui.title_dim).child("No preview"),
+        })
+        .test_support()
 }
 
 /// One of a question's options: its radio or checkbox, its label, and its description under it.

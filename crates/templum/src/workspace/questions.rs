@@ -5,7 +5,7 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Context, Window};
 use templum_mcp::Reply;
-use templum_mcp::ask::{Ask, Form};
+use templum_mcp::ask::{Ask, Form, Row};
 
 use super::Workspace;
 use super::waits::{Field, Wait, Waiting, field_focused};
@@ -85,6 +85,16 @@ impl Workspace {
     fn other_typed(&mut self, key: u64, q: usize, text: &str, cx: &mut Context<Self>) {
         if let Some((ask, form)) = self.form_of(key) {
             form.typed(ask, q, text);
+            cx.notify();
+        }
+    }
+
+    /// The pointer on `row` of the question `key`: the highlight goes there.
+    pub(crate) fn highlight_row(&mut self, key: u64, row: Row, cx: &mut Context<Self>) {
+        if let Some((_, form)) = self.form_of(key)
+            && form.highlight != Some(row)
+        {
+            form.highlight = Some(row);
             cx.notify();
         }
     }

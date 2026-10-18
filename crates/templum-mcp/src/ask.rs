@@ -207,6 +207,21 @@ impl Ask {
         answer.to_string()
     }
 
+    /// Question `q`'s preview: None when no option of it has one; else the highlighted option's,
+    /// or the picked one's, or the first one with a preview; `Some(None)`: "No preview".
+    pub fn preview_of(&self, q: usize, form: &Form) -> Option<Option<&str>> {
+        let options = &self.questions[q].options;
+        let first = options.iter().find_map(|c| c.preview.as_deref())?;
+        let at = match form.highlight {
+            Some(Row::Option(on, i)) if on == q => Some(i),
+            _ => (0..options.len()).find(|i| form.picked(q, *i)),
+        };
+        Some(match at {
+            Some(i) => options[i].preview.as_deref(),
+            None => Some(first),
+        })
+    }
+
     /// The line typed into the agent's terminal when its client stopped waiting for `answer`.
     pub fn notice(&self, answer: &str) -> String {
         format!(
@@ -221,6 +236,47 @@ impl Question {
     pub fn header_shown(&self) -> Option<String> {
         self.header.as_deref().map(|h| cut(h, HEADER_MAX))
     }
+}
+
+/// An agent's preview as clean text: its escape sequences dropped, `\r\n` and `\r` as new lines,
+/// tabs as 4 spaces, other control characters dropped.
+pub fn clean_preview(text: &str) -> String {
+    let mut clean = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => match chars.next() {
+                // CSI: parameters, then a final byte.
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: up to BEL or ESC \.
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' {
+                            break;
+                        }
+                        if c == '\x1b' {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // A two-character escape.
+                _ => {}
+            },
+            '\r' if chars.peek() == Some(&'\n') => {}
+            '\r' | '\n' => clean.push('\n'),
+            '\t' => clean.push_str("    "),
+            c if c.is_control() => {}
+            c => clean.push(c),
+        }
+    }
+    clean
 }
 
 /// A row of the dialog the highlight can be on.
@@ -687,5 +743,41 @@ mod tests {
             Some(Row::Option(0, 0)),
             "all answered: it stays"
         );
+    }
+
+    #[test]
+    fn a_preview_is_clean_text() {
+        assert_eq!(
+            clean_preview("a\tb\r\n\x1b[31mred\x1b[0m\x07"),
+            "a    b\nred"
+        );
+        assert_eq!(clean_preview("one\rtwo"), "one\ntwo");
+        assert_eq!(
+            clean_preview("\x1b]0;title\x07x\x1b]8;;http://a\x1b\\y\x1bcz"),
+            "xyz",
+            "OSC and two-character escapes go too"
+        );
+    }
+
+    #[test]
+    fn the_preview_follows_the_highlight() {
+        let ask = one(json!({ "question": "Which?", "options": [
+            { "label": "A", "preview": "zero" }, { "label": "B" }
+        ] }));
+        let mut form = Form::new(&ask);
+        form.highlight = Some(Row::Option(0, 1));
+        assert_eq!(ask.preview_of(0, &form), Some(None), "No preview");
+        form.highlight = Some(Row::Option(0, 0));
+        assert_eq!(ask.preview_of(0, &form), Some(Some("zero")));
+        form.highlight = Some(Row::Note);
+        assert_eq!(
+            ask.preview_of(0, &form),
+            Some(Some("zero")),
+            "nothing picked: the first with one"
+        );
+        form.pick(&ask, 0, 1);
+        assert_eq!(ask.preview_of(0, &form), Some(None), "the picked one's");
+        let plain = one(json!({ "question": "Which?", "options": ["A", "B"] }));
+        assert_eq!(plain.preview_of(0, &Form::new(&plain)), None);
     }
 }

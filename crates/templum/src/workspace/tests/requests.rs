@@ -94,7 +94,18 @@ fn scroll_to(window: &mut Window, cx: &mut gpui_kit::App, n: usize, what: &str) 
     } else {
         return;
     };
-    window.scroll(("balloon", n), ScrollDelta::Pixels(point(px(0.0), by)), cx);
+    // At its left edge: a preview pane, on the right, keeps its own wheel.
+    let at = (
+        f32::from(balloon.left()) + 4.0,
+        f32::from(balloon.center().y),
+    );
+    wheel(
+        window,
+        cx,
+        at,
+        ScrollDelta::Pixels(point(px(0.0), by)),
+        false,
+    );
     window.render_frame(cx);
 }
 
@@ -1137,4 +1148,78 @@ fn the_dialog_scales_with_the_zoom(cx: &mut TestAppContext) {
     let (option2, note2) = widths(cx, 2.0);
     assert!((option2 - 2.0 * option).abs() <= 4.0, "{option} {option2}");
     assert!((note2 - 2.0 * note).abs() <= 4.0, "{note} {note2}");
+}
+
+/// Hovering an option highlights it, and the preview beside the options is its own.
+#[gpui_kit::test]
+fn hovering_an_option_shows_its_preview(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", two_questions());
+    let preview = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| match &ws.waits[0].what {
+            Waiting::Question { ask, form, .. } => (
+                form.highlight,
+                ask.preview_of(0, form).map(|p| p.map(str::to_string)),
+            ),
+            _ => panic!("a question"),
+        })
+    };
+    assert!(drawn(handle, cx, n, "q0-preview"));
+    assert!(!drawn(handle, cx, n, "q1-preview"), "no previews there");
+    let (_, shown) = preview(cx);
+    assert!(
+        shown.flatten().unwrap().starts_with("DATABASE_URL"),
+        "the first one's"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        scroll_to(window, cx, n, "q0-option-1");
+        window.hover(crate::balloon::part(n, "q0-option-1"), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(
+        preview(cx),
+        (Some(templum_mcp::ask::Row::Option(0, 1)), Some(None)),
+        "No preview"
+    );
+}
+
+/// A preview of 2000 lines stays 18 lines tall, scrolling in its pane.
+#[gpui_kit::test]
+fn a_long_preview_scrolls_in_its_pane(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let n = mine.0 as usize;
+    let long: Vec<String> = (0..2000).map(|i| format!("line {i}")).collect();
+    let asked = json!({ "questions": [{ "question": "Which?", "options": [
+        { "label": "Long", "preview": long.join("\n") }, { "label": "Short" }
+    ] }] });
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    for zoom in [1.0, 2.0] {
+        ws.update(cx, |ws, _| {
+            ws.space.canvas.camera = Camera::at(Point::new(40.0, 400.0), zoom)
+        });
+        let height = cx
+            .update_window(handle, |_, window, cx| {
+                window.render_frame(cx);
+                f32::from(
+                    window
+                        .find(crate::balloon::part(n, "q0-preview"))
+                        .bounds()
+                        .size
+                        .height,
+                )
+            })
+            .unwrap();
+        // 18 lines of 16, its padding of 8 above and below, its 1 px frame.
+        assert!(
+            height <= (18.0 * 16.0 + 16.0) * zoom + 2.0,
+            "{height} at {zoom}"
+        );
+        assert!(height >= 18.0 * 16.0 * zoom, "{height} at {zoom}");
+    }
 }
