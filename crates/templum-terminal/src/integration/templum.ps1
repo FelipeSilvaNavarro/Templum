@@ -48,9 +48,9 @@ if ($null -eq $Global:__TemplumPrompt) {
         }
     }
 
-    # A `claude` or `codex` typed here gets Templum's MCP server and hooks: the words of
-    # TEMPLUM_CLAUDE_ARGS or TEMPLUM_CODEX_ARGS, one per line, before the person's, unless they
-    # name Templum's already (docs/specs/connections.md, "Agents typed in a terminal"). Not over
+    # A `claude`, `codex` or `copilot` typed here gets Templum's MCP server and hooks: the words of
+    # TEMPLUM_CLAUDE_ARGS, TEMPLUM_CODEX_ARGS or TEMPLUM_COPILOT_ARGS, one per line, before the
+    # person's, unless they name Templum's already (docs/specs/connections.md, "Agents typed in a terminal"). Not over
     # the person's own function of that name; their alias comes before any function anyway. The
     # program is the first application or script of that name (npm's claude.ps1 included):
     # several on PATH make an array `&` can't run. What is piped in is passed on (`git diff |
@@ -91,6 +91,19 @@ if ($null -eq $Global:__TemplumPrompt) {
             }
             if ($MyInvocation.ExpectingInput) { $input | __TemplumAgent codex $words $args }
             else { __TemplumAgent codex $words $args }
+        }
+    }
+    # The others' words end with a path in Templum's folder, which only Templum types: none when
+    # the person's words hold it (docs/specs/connections.md, "Typed by hand: the shells").
+    if ($env:TEMPLUM_COPILOT_ARGS -and -not (Test-Path Function:\copilot)) {
+        function Global:copilot {
+            $words = $env:TEMPLUM_COPILOT_ARGS
+            # Not before a subcommand (`copilot plugin list`; AWS's `copilot` too).
+            if ($args.Count -and -not "$($args[0])".StartsWith('-')) { $words = '' }
+            $last = ($words -split "`n")[-1]
+            foreach ($a in $args) { if ("$a" -eq $last) { $words = '' } }
+            if ($MyInvocation.ExpectingInput) { $input | __TemplumAgent copilot $words $args }
+            else { __TemplumAgent copilot $words $args }
         }
     }
 }

@@ -14,50 +14,63 @@ if status is-interactive; and not set -q __templum_installed
         printf '\e]7;file://%s%s\a\e]133;A\a' $hostname (string replace -a '%' '%25' -- $PWD)
     end
 
-    # A `claude` or `codex` typed here gets Templum's MCP server and hooks: the words of
-    # TEMPLUM_CLAUDE_ARGS or TEMPLUM_CODEX_ARGS, one per line, before the person's, unless they
-    # name Templum's already (docs/specs/connections.md, "Agents typed in a terminal"). Not over
-    # the person's own function (an alias, an autoloaded one): fish read their config before this.
+    # A `claude`, `codex` or `copilot` typed here gets Templum's MCP server and hooks: the words
+    # of TEMPLUM_CLAUDE_ARGS, TEMPLUM_CODEX_ARGS or TEMPLUM_COPILOT_ARGS, one per line, before the
+    # person's, unless they name Templum's already (docs/specs/connections.md, "Agents typed in a
+    # terminal"). Not over the person's own function (an alias, an autoloaded one): fish read
+    # their config before this.
+    function __templum_agent --argument-names name words
+        # As fish says it, not from inside this function (before 3.2, without its handler).
+        if not command -q $name
+            if functions -q fish_command_not_found
+                fish_command_not_found $name
+            else
+                echo "fish: Unknown command: $name" >&2
+            end
+            return 127
+        end
+        command $name (string split --no-empty \n -- $words) $argv[3..]
+    end
     if test -n "$TEMPLUM_CLAUDE_ARGS"; and not functions -q claude
         function claude
-            # As fish says it, not from inside this function (before 3.2, without its handler).
-            if not command -q claude
-                if functions -q fish_command_not_found
-                    fish_command_not_found claude
-                else
-                    echo "fish: Unknown command: claude" >&2
-                end
-                return 127
-            end
-            set -l words (string split --no-empty \n -- "$TEMPLUM_CLAUDE_ARGS")
+            set -l w "$TEMPLUM_CLAUDE_ARGS"
             for a in $argv
                 switch $a
                     case --settings '--settings=*' --mcp-config '--mcp-config=*'
-                        set words
+                        set w ''
                 end
             end
-            command claude $words $argv
+            __templum_agent claude "$w" $argv
         end
     end
     if test -n "$TEMPLUM_CODEX_ARGS"; and not functions -q codex
         function codex
-            # As fish says it, not from inside this function (before 3.2, without its handler).
-            if not command -q codex
-                if functions -q fish_command_not_found
-                    fish_command_not_found codex
-                else
-                    echo "fish: Unknown command: codex" >&2
-                end
-                return 127
-            end
-            set -l words (string split --no-empty \n -- "$TEMPLUM_CODEX_ARGS")
+            set -l w "$TEMPLUM_CODEX_ARGS"
             for a in $argv
                 switch $a
                     case 'mcp_servers.templum.*'
-                        set words
+                        set w ''
                 end
             end
-            command codex $words $argv
+            __templum_agent codex "$w" $argv
+        end
+    end
+    # The others' words end with a path in Templum's folder, which only Templum types: none when
+    # the person's words hold it (docs/specs/connections.md, "Typed by hand: the shells").
+    if test -n "$TEMPLUM_COPILOT_ARGS"; and not functions -q copilot
+        function copilot
+            set -l w "$TEMPLUM_COPILOT_ARGS"
+            # Not before a subcommand (`copilot plugin list`; AWS's `copilot` too).
+            if set -q argv[1]; and not string match -q -- '-*' $argv[1]
+                set w ''
+            end
+            set -l last (string split \n -- "$w")[-1]
+            for a in $argv
+                if test "$a" = "$last"
+                    set w ''
+                end
+            end
+            __templum_agent copilot "$w" $argv
         end
     end
 end

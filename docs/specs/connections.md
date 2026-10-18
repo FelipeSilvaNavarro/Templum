@@ -927,8 +927,7 @@ Each new terminal also gets, always set and empty when there is nothing to give 
 | `TEMPLUM_PI_ARGS` | `-e` and `<data>/pi/templum.ts` |
 | `TEMPLUM_HOOKED` | always empty ([above](#opencode-and-kilo-code)) |
 
-Bash and zsh define `copilot` (fish and PowerShell: next). The integration defines `copilot`, `opencode`, `kilo`,
-`qwen` and `pi` as it defines `claude` and `codex` (only while
+The integration defines `copilot`, `opencode`, `kilo`, `qwen` and `pi` as it defines `claude` and `codex` (only while
 its variable is set when the shell starts, never over the person's own function, the program the shell would run,
 the exit status kept, what is piped in passed on), with one helper per shell for all of them:
 

@@ -981,6 +981,7 @@ mod tests {
             let path = home.fake_agents();
             if let Some(term) = home.spawn_with("fish", &[], &with_agents(&path)) {
                 typed_agents(&term, &home, "set -e TEMPLUM_CLAUDE_ARGS", true);
+                typed_copilot(&term, &home, "set -e TEMPLUM_COPILOT_ARGS", true);
             }
         }
 
@@ -1021,6 +1022,7 @@ mod tests {
                 return;
             };
             typed_agents(&term, &home, "Remove-Item Env:TEMPLUM_CLAUDE_ARGS", true);
+            typed_copilot(&term, &home, "Remove-Item Env:TEMPLUM_COPILOT_ARGS", true);
             // What is piped into an agent reaches it, as `git diff | claude -p review`; one not
             // piped into keeps the terminal.
             let piped = |name: &str| {
