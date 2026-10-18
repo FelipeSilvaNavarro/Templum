@@ -1138,9 +1138,6 @@ fn send_keys_shows_what_the_agent_asks(cx: &mut TestAppContext) {
     });
 }
 
-/// The person answered the dialog themselves and the agent asks something else: Allow, given to
-/// what the approval showed, presses nothing; the approval says what it asks now and waits for a
-/// new click.
 /// An agent at work on a task another agent handed it takes no keys from the Templum Agent, as
 /// from a block: only that agent presses keys in it while it works.
 #[gpui_kit::test]
@@ -1174,6 +1171,9 @@ fn send_keys_leaves_an_agent_on_another_agents_task_alone(cx: &mut TestAppContex
     }));
 }
 
+/// The person answered the dialog themselves and the agent asks something else: Allow, given to
+/// what the approval showed, presses nothing; the approval says what it asks now and waits for a
+/// new click.
 #[gpui_kit::test]
 fn an_allow_after_the_dialog_changed_asks_again(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
