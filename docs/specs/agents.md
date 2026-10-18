@@ -6,6 +6,8 @@
   agents) and [workspaces.md](workspaces.md)
 - **Parity:** what each agent below gets of Templum's server, hooks, usage and flags, and what is missing:
   [agent-parity.md](agent-parity.md)
+- **Accounts** (planned, kanban card 37): several logins of one agent (`claude2`), each on its own folder, sharing
+  what the person chooses: [accounts.md](accounts.md)
 
 ## Goal
 
@@ -148,7 +150,8 @@ follows each finished command, with shell integration).
 
 ## Changing ours, adding yours
 
-**Settings ▸ Agents** lists every agent: Templum's, then the user's.
+**Settings ▸ Agents** lists every agent: Templum's, then the user's. Under them, **Accounts** lists the accounts of
+an agent ([accounts.md](accounts.md#settings--agents--accounts)), which aren't rows of this list.
 
 - **A row** shows the agent's name and its command (the user's say "Yours"). It has:
   - a switch: whether the canvas's menu lists it;

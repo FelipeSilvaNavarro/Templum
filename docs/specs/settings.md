@@ -131,6 +131,10 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
 | Questions wait | Number 0–1440 minutes, step 5: how long an agent's question waits for an answer; 0 waits until it is answered | `connections.question_timeout` |
 | Sound | Switch, on by default: a short sound when an agent asks something | `connections.sound` |
 
+**Agents** lists the agents ([agents.md](agents.md#changing-ours-adding-yours)), and under them their **Accounts**:
+another login of an agent on its own folder, and what it shares with the others
+([accounts.md](accounts.md#settings--agents--accounts), planned).
+
 **Shortcuts**
 
 - **Rows:** one per command, 12 in the [keys](config.md#the-file) order including `settings` and `quit`. Each row

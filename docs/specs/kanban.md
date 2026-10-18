@@ -212,7 +212,8 @@ A card's **assignee** says who does it. It is one field, as before, with one mor
 | a block | that block's agent does it: one session | its block's title ("Claude Code · api"), else its id | `"assignee": "b7k2m"` (its block id, as before) |
 
 - **An agent** is one of `Workspace::agents`: Templum's own and the person's `[agents]`, named by id (`claude`,
-  `codex`, an `[agents]` key) and shown by title.
+  `codex`, an `[agents]` key) and shown by title. An account of an agent (`claude2`) is one too; a card for it is
+  its own ([accounts.md](accounts.md#cards-for-it), planned).
 - **A block is one session.** A block keeps its id across restarts, Ctrl+Z and a move to another workspace, and its
   agent resumes its own session in it ([agents.md](agents.md#the-agents), "One session per block"), so a card for a
   block stays for that session. A card for a closed block keeps the id; the person changes it.
