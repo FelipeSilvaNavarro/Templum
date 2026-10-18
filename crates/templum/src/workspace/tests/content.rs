@@ -1683,6 +1683,21 @@ fn replace_note_replaces_the_text_or_one_passage_and_ctrl_z_takes_it_back(cx: &m
             "That would empty the note: the person does that.".into()
         )
     );
+    // The whole text as the passage: the same.
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "replace_note",
+            replace(Some("All new"), " ")
+        ),
+        (
+            true,
+            "That would empty the note: the person does that.".into()
+        )
+    );
     let id = ws.read_with(cx, |ws, _| {
         ws.space.blocks[&note].note().unwrap().tab().unwrap().id
     });

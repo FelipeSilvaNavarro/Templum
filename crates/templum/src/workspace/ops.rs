@@ -184,9 +184,6 @@ impl Workspace {
             .ok_or("That block shows no note.")?;
         let value = editor.read(cx).value().to_string();
         let range = match old {
-            None if text.trim().is_empty() => {
-                return Err("That would empty the note: the person does that.".into());
-            }
             None => 0..value.len(),
             Some(old) => match value.matches(old).count() {
                 0 => return Err(format!("\"{old}\" isn't in the note: read_note shows it.")),
@@ -201,6 +198,13 @@ impl Workspace {
                 }
             },
         };
+        // Also `old` the whole text, or all of it but blanks.
+        if value[..range.start].trim().is_empty()
+            && text.trim().is_empty()
+            && value[range.end..].trim().is_empty()
+        {
+            return Err("That would empty the note: the person does that.".into());
+        }
         editor.update(cx, |e, cx| {
             let kept = e.selected_range();
             e.set_selected_range(range, cx);

@@ -208,7 +208,7 @@ person sees.
 
 | Tool | Arguments | Does | Answer |
 |---|---|---|---|
-| `replace_note` | `block`, `text`, `old` | Without `old`: the note's whole text becomes `text` (a blank `text` is refused: "That would empty the note: the person does that."). With `old`: its one occurrence becomes `text` (blank deletes it); none, or more than one, is refused: "\"…\" isn't in the note: read_note shows it." / "\"…\" is in the note 3 times: give more of the text around it." | `Replaced the note in k2m9x.` / `Replaced 1 passage of the note in k2m9x.` |
+| `replace_note` | `block`, `text`, `old` | Without `old`: the note's whole text becomes `text` (a blank `text` is refused: "That would empty the note: the person does that."). With `old`: its one occurrence becomes `text` (blank deletes it, unless that leaves the note blank: refused the same); none, or more than one, is refused: "\"…\" isn't in the note: read_note shows it." / "\"…\" is in the note 3 times: give more of the text around it." | `Replaced the note in k2m9x.` / `Replaced 1 passage of the note in k2m9x.` |
 | `edit_item` | `block`, `item`, `text` | The item's text becomes `text`; blank is refused ("delete_item removes an item") | `Item 41 is now "Build".` |
 | `delete_item` | `block`, `item` | Removes the item (`Workspace::delete_item`, the row's ×) | `Deleted item 41.` |
 
