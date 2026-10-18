@@ -7,16 +7,19 @@ use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::dialog::Confirm;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, FontWeight, MouseButton,
     MouseDownEvent, Render, ScrollWheelEvent, SharedString, TestSupportExt, Window, div, point, px,
+    relative,
 };
 use templum_canvas::{BlockId, Size};
 
 use crate::board::{Assignee, Board, Boards, Card, Column, Comment, Label, Priority};
+use crate::checklists;
 use crate::grid::hsla;
 use crate::menu::Target;
 use crate::notes;
@@ -653,6 +656,26 @@ pub(crate) fn open_card(
             .default_value(current.description.clone())
     });
     let comment = cx.new(|cx| TextareaState::new(window, cx).rows(2));
+    let item = cx.new(|cx| InputState::new(window, cx).placeholder("Add an item"));
+    // Enter adds what is typed (a line per item) and empties the field; it needs the window.
+    {
+        let ws = ws.clone();
+        window
+            .subscribe(&item, cx, move |input, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    let items = checklists::parse_items(&input.read(cx).value());
+                    if items.is_empty() {
+                        return;
+                    }
+                    ws.update(cx, |ws, cx| {
+                        ws.edit_boards(|b| b.add_items(board, card, &items));
+                        cx.notify();
+                    });
+                    input.update(cx, |input, cx| input.set_value("", window, cx));
+                }
+            })
+            .detach();
+    }
     // Subscribed through the app: the workspace these update isn't leased, and they need no
     // window. Enter in the title confirms the dialog by itself. The dialog's typing is one undo
     // step for the board (its fields undo each key): taken at its first change.
@@ -899,6 +922,87 @@ pub(crate) fn open_card(
                 .test_support()
         });
         let count = shown.comments.len();
+        let (done, all) = shown.progress();
+        let items = shown.checklist.iter().map(|i| {
+            let (id, done) = (i.id, i.done);
+            let group = SharedString::from(format!("card-item-row-{id}"));
+            let check = div()
+                .id(ElementId::Name(format!("card-item-box-{id}").into()))
+                .flex_shrink_0()
+                .mt(px((13.0 * 1.5 - 14.0) / 2.0))
+                .size(px(14.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(3.0))
+                .border_1()
+                .border_color(if done { ui.accent } else { ui.title_dim })
+                .when(done, |el| {
+                    el.bg(ui.accent).child(
+                        Icon::new(IconName::Check)
+                            .size(px(10.0))
+                            .text_color(ui.surface),
+                    )
+                })
+                .cursor_pointer()
+                .on_click(edit(Rc::new(move |b| {
+                    b.set_item_done(board, card, id, !done);
+                })))
+                .test_support();
+            let delete = div()
+                .id(ElementId::Name(format!("card-item-delete-{id}").into()))
+                .flex_shrink_0()
+                .mt(px((13.0 * 1.5 - 16.0) / 2.0))
+                .size(px(16.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.0))
+                .opacity(0.0)
+                .group_hover(group.clone(), |s| s.opacity(1.0))
+                .cursor_pointer()
+                .hover(move |s| s.bg(ui.hover))
+                .child(
+                    Icon::new(IconName::Close)
+                        .size(px(10.0))
+                        .text_color(ui.title_dim),
+                )
+                .on_click(edit(Rc::new(move |b| b.remove_item(board, card, id))))
+                .test_support();
+            div()
+                .id(ElementId::Name(group.clone()))
+                .group(group)
+                .flex()
+                .items_start()
+                .gap(px(8.0))
+                .py(px(4.0))
+                .child(check)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .text_size(px(13.0))
+                        .line_height(relative(1.5))
+                        .when(done, |el| el.text_color(ui.title_dim).line_through())
+                        .child(i.text.clone()),
+                )
+                .child(delete)
+                .test_support()
+        });
+        let progress = (all > 0).then(|| {
+            div()
+                .h(px(4.0))
+                .mb(px(4.0))
+                .rounded_full()
+                .bg(ui.hover)
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(done as f32 / all as f32))
+                        .rounded_full()
+                        .bg(ui.accent),
+                )
+        });
         alert
             .title(
                 div()
@@ -967,8 +1071,28 @@ pub(crate) fn open_card(
                             .flex()
                             .flex_col()
                             .gap(px(6.0))
-                            .child(header("Checklist", None))
-                            .child(div().id("card-checklist").flex().flex_col().test_support()),
+                            .child(header(
+                                "Checklist",
+                                (all > 0).then(|| format!("{done}/{all}")),
+                            ))
+                            .child(
+                                div()
+                                    .id("card-checklist")
+                                    .flex()
+                                    .flex_col()
+                                    .children(progress)
+                                    .children(items)
+                                    .child(
+                                        div()
+                                            .id("card-item-field")
+                                            .mt(px(4.0))
+                                            // Enter adds the item: it mustn't confirm (close) the dialog.
+                                            .on_action(|_: &Confirm, _, cx| cx.stop_propagation())
+                                            .child(Input::new(&item))
+                                            .test_support(),
+                                    )
+                                    .test_support(),
+                            ),
                     )
                     .child(
                         div()

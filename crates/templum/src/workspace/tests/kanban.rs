@@ -592,3 +592,80 @@ fn a_long_open_card_keeps_its_footer_on_screen(cx: &mut TestAppContext) {
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+fn the_open_card_adds_checks_and_deletes_checklist_items(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (_, board, card) = board_with_a_card(handle, &ws, cx);
+    let items = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let c = ws.boards.card(board, card).unwrap();
+            c.checklist
+                .iter()
+                .map(|i| (i.id, i.text.clone(), i.done))
+                .collect::<Vec<_>>()
+        })
+    };
+    let el = |what: &str, id: u64| gpui_kit::ElementId::Name(format!("{what}-{id}").into());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let current = ws.boards.card(board, card).cloned().unwrap();
+            crate::kanban::open_card(board, current, false, window, cx)
+        });
+        window.render_frame(cx);
+        window.click("card-item-field", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.simulate_input(handle, "Build");
+    cx.update_window(handle, |_, window, cx| window.press("enter", cx))
+        .unwrap();
+    cx.simulate_input(handle, "Test");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("enter", cx);
+        assert!(window.has_active_dialog(cx), "Enter adds, it doesn't close");
+    })
+    .unwrap();
+    let now = items(cx);
+    assert_eq!(
+        now.iter()
+            .map(|(_, t, d)| (t.as_str(), *d))
+            .collect::<Vec<_>>(),
+        [("Build", false), ("Test", false)],
+        "the field empties after each"
+    );
+    let (build, test) = (now[0].0, now[1].0);
+    cx.update_window(handle, |_, window, cx| {
+        window.click(el("card-item-box", build), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(items(cx)[0].2);
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert!(!items(cx)[0].2, "one Ctrl+Z step");
+    // An agent's item shows while the dialog is open.
+    let theirs = ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| b.add_items(board, card, &[("Docs".into(), false)]))
+    })[0];
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(el("card-item-box", theirs)).is_some());
+        // The dialog grew and re-centred: the pointer, left on Build's box, may now be on Test.
+        window.hover("card-number", cx);
+        window.render_frame(cx);
+        assert!(
+            !window.find(el("card-item-delete", test)).visible(),
+            "under the pointer only"
+        );
+        window.hover(el("card-item-row", test), cx);
+        window.render_frame(cx);
+        window.click(el("card-item-delete", test), cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(
+        items(cx).iter().map(|i| i.0).collect::<Vec<_>>(),
+        [build, theirs]
+    );
+}

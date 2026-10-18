@@ -382,10 +382,6 @@ impl Boards {
     }
 
     /// Adds items at the end of the card's checklist; returns their new ids (none when it's gone).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the kanban shows them from the next commits")
-    )]
     pub fn add_items(&mut self, board: u64, card: u64, items: &[(String, bool)]) -> Vec<u64> {
         if self.card(board, card).is_none() {
             return Vec::new();
@@ -404,10 +400,6 @@ impl Boards {
     }
 
     /// Checks or unchecks an item; false when the card has no such item.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the kanban shows them from the next commits")
-    )]
     pub fn set_item_done(&mut self, board: u64, card: u64, item: u64, done: bool) -> bool {
         let mut found = false;
         self.edit_card(board, card, |c| {
@@ -419,10 +411,6 @@ impl Boards {
         found
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the kanban shows them from the next commits")
-    )]
     pub fn remove_item(&mut self, board: u64, card: u64, item: u64) {
         self.edit_card(board, card, |c| c.checklist.retain(|i| i.id != item));
     }
