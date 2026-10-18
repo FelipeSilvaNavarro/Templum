@@ -1074,6 +1074,19 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   dialog key, though the spec only blocks those that answer (options, Send, Dismiss). A person who presses Esc as the
   dialog appears keeps it and has to press again. Fix: check `too_soon` only for Space and Enter.
 
+- [ ] **An agent typed in a terminal isn't an agent to `delegate` for its first seconds.** Planned by
+  `docs/plans/2026-10-18-agents-in-any-terminal.md`: a `claude` typed by hand has its hooks at once, but
+  `pane.seen.agent` (`crates/templum/src/workspace/delegate.rs:216`, at 3924a70) comes from the 5-second snapshot, so
+  a `delegate` to it in that time is refused as not an agent, and `list_blocks` shows no agent. Fix: on the first hook
+  event of a terminal with no agent, take the agent from the hook (`templum hook claude` knows it) into
+  `pane.seen.agent`.
+- [ ] **PowerShell's `claude` function changes `--` and `-p:x`.** Planned by
+  `docs/plans/2026-10-18-agents-in-any-terminal.md` (`crates/templum-terminal/src/integration/templum.ps1`): a plain
+  function's `@args` drops a `--` and splits `-p:foo` into `-p:` and `foo` (seen with pwsh 7.6 by the plan's builder
+  check), so `claude -- …` typed in PowerShell reaches Claude Code differently than without the function. Fix: when
+  the words hold `--` or a `-x:y`, run the program with the line's own text after the name (`$MyInvocation.Line`),
+  else as today.
+
 ## Keeping the canvas
 
 Left by the investigation of canvases that came back empty on Windows and macOS (kanban card 41); line numbers are

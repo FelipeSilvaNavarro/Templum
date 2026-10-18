@@ -1,7 +1,7 @@
 # Connections: blocks that talk to each other
 
 - **Date:** 2026-10-15
-- **Status:** Batches 1 to 8 implemented
+- **Status:** Batches 1 to 8 implemented; [agents typed in a terminal](#agents-typed-in-a-terminal) planned
 - **Builds on:** [agents.md](agents.md) (opening agents), [usage.md](usage.md) (the `--settings` Templum types for
   Claude Code), [shell-integration.md](shell-integration.md) (command marks, notifications),
   [persistence.md](persistence.md), [kanban.md](kanban.md) and [cockpit.md](cockpit.md) (notes, the editor, drawing)
@@ -34,6 +34,9 @@ agents without MCP, scripts and hooks.
 9. Claude Code runs another agent as its own subagents run (batches 6 to 8): it picks the agent's model and effort,
    hands it a task and keeps working, hears its end typed back with its time and tokens, changes the task while it
    runs, answers its dialogs with real keys, stops it, and closes the blocks it opened.
+10. A `claude` or `codex` a person types in a Templum terminal (bash, zsh, fish, PowerShell) gets what the ones
+    Templum opens get, without Templum writing anything outside its own folder
+    ([Agents typed in a terminal](#agents-typed-in-a-terminal), planned).
 
 ## Out of scope
 
@@ -524,7 +527,8 @@ Claude Code merges hooks from every settings source, so the person's own hooks s
 Only for an agent Templum opens (the canvas menu, `spawn_agent`, and resuming on restore), when `[connections]` is
 on, there is a bus, the shell isn't WSL, and every path is typeable (`typed_path` of [usage.md](usage.md); when
 one isn't, the agent starts without connections, and a notification says so once per session; the notification is
-deferred: [minors](../minors.md#connections)). A `claude` typed by hand gets nothing.
+deferred: [minors](../minors.md#connections)). A `claude` typed by hand gets nothing yet:
+[Agents typed in a terminal](#agents-typed-in-a-terminal) (planned) gives it the same.
 
 **Claude Code:** `claude --settings <data>/claude-statusline.json --mcp-config <data>/mcp.json`. The settings file
 keeps the status line of [usage.md](usage.md) when `usage.claude_limits` is on, and gains the hooks. The server
@@ -598,6 +602,114 @@ with a Copy button. They know their block anyway: the server inherits `TEMPLUM_T
 
 **Templum's program** is the AppImage when `$APPIMAGE` is set (its mounted executable goes away when it quits),
 otherwise the running executable, without the ` (deleted)` an upgrade leaves on Linux. The status line uses it too.
+
+## Agents typed in a terminal
+
+*Planned (kanban card 42): [docs/plans/2026-10-18-agents-in-any-terminal.md](../plans/2026-10-18-agents-in-any-terminal.md).*
+
+A person opens a terminal block and types `claude` or `codex`: that agent gets what one Templum opens gets, its MCP
+server, its hooks (the status dot, delegating to it, `wait_for_idle`) and, for Claude Code, the status line of
+[usage.md](usage.md). Nothing is written outside Templum's data folder, and an agent run anywhere else is untouched.
+
+**How.** Each new terminal gets the arguments Templum would type after each agent's command, one per line, in a
+variable, and the [shell integration](shell-integration.md) defines a function of the agent's name that puts them in
+front of the person's:
+
+| Variable | Holds | Set when |
+|---|---|---|
+| `TEMPLUM_CLAUDE_ARGS` | `--settings`, `<data>/claude-statusline.json`, then `--mcp-config=<data>/mcp.json` when the settings carry the hooks | `typed` would give Claude Code `--settings` |
+| `TEMPLUM_CODEX_ARGS` | `-c` and each value of the [flags above](#what-templum-types-into-each-agent) (`mcp_servers.templum.command="<exe>"`, …, the hooks with `templum` on the terminal's PATH), without the single quotes | `typed` would give Codex its flags |
+
+- Same rules as what is typed: a variable is empty without a data folder or a bus (connections), under WSL, when a
+  path can't be typed safely, and Codex's when the shell is cmd or Windows PowerShell 5.1. Both are always set, empty
+  when there is nothing to give: a Templum started from another's terminal must not pass that one's on (as
+  `TEMPLUM_BUS`). The values are the raw words, not quoted for a shell; paths keep their spaces (macOS's
+  `Application Support`), Windows' `\` written `/`. The two files are written when a terminal opens, as when an agent
+  is opened (only when they changed).
+- **The function** (bash, zsh, fish, PowerShell), `claude` while `TEMPLUM_CLAUDE_ARGS` is set when the shell starts,
+  `codex` while `TEMPLUM_CODEX_ARGS` is: it runs the program the shell would run without it (`command claude`; in
+  PowerShell the first command of that name that is an application or an external script, `claude.ps1` of npm
+  included) with the variable's words first, then the person's. It reads the variable at each call: emptied
+  (`unset TEMPLUM_CLAUDE_ARGS`), it adds nothing.
+- **Nothing twice.** It adds nothing when the person's words already hold `--settings` or `--mcp-config` (alone or
+  with `=…`) for Claude Code, or a word starting with `mcp_servers.templum.` for Codex: Templum types those itself into
+  the agents it opens (the canvas menu, `spawn_agent`, a restore), which keep working as today, and a person's own
+  `--settings` would replace Templum's anyway (Claude Code keeps the last one).
+- **Why first, and `=`.** `--mcp-config` takes every word after it; `--mcp-config=<path>` takes one (checked
+  2026-10-18 with Claude Code 2.1.286: `claude --mcp-config=a.json b.json -p` took `b.json` for its prompt). In front,
+  subcommands keep working: `claude --settings … --mcp-config=… mcp list` (and `doctor`, `update`, `auth`), `codex -c
+  … resume` (and `mcp list`, `login status`) ran as without them (Claude Code 2.1.286, Codex 0.154, by hand).
+
+**What the person keeps:**
+
+- Their MCP servers and hooks: `--mcp-config` adds Templum's server to theirs (no `--strict-mcp-config`), Claude Code
+  merges hooks from every settings source and Codex its `-c` flags with its `config.toml` and `hooks.json`, as for the
+  agents Templum opens. Codex asks once to trust Templum's hooks, the same question as for the ones Templum opens (same
+  words, same trust).
+- Their own function named `claude` or `codex` wins and runs as it is: zsh reads the `.zshrc` after Templum's
+  `.zshenv`, so theirs replaces ours; bash, fish and PowerShell read the person's files first, and define ours only
+  when there is no function of that name (fish counts an autoloaded `functions/claude.fish`; in PowerShell an alias
+  of that name, which comes before any function, also wins). In bash and zsh their alias composes: `alias
+  claude='claude --model opus'` runs our function with `--model opus` after Templum's words; fish's `alias` makes a
+  function, which wins. Ours is defined with the `function` keyword, so
+  an alias of the same name doesn't break its definition.
+- `command claude`, a path (`~/.local/bin/claude`), `npx`, `sudo` or a script: the program alone, as outside Templum.
+- The exit status: the agent's, in every shell (PowerShell's prompt is told it: a function's caller would see `$?`
+  true). In PowerShell the function passes `--` and `-p:x` on as PowerShell parses them (`--` dropped, `-p:` and `x`
+  apart; [minors](../minors.md#connections)).
+
+**Where it doesn't reach** (the agent runs as outside Templum; the canvas menu still opens a connected one):
+
+- cmd, Nushell, WSL, `shell.integration` off, and a shell started from the first one (`bash` typed at a prompt): no
+  function.
+- tmux and screen run their own shells, without Templum's integration; their `TEMPLUM_TERMINAL` would name the
+  terminal that started their server, not the block the person sees. ssh: another computer.
+- An agent's own shell tool runs a non-interactive shell (Claude Code's snapshot of the shell reads the person's own
+  startup files, not Templum's), so a `claude -p` an agent runs is never taken for the block's agent.
+- Gemini CLI: nothing new. Once its [extension](#what-templum-types-into-each-agent) is installed, every Gemini CLI
+  has the server and the hooks, typed by hand or not. Grok Build, Pi and the others: unchanged.
+
+**The block's identity.** Nothing new: the 5-second snapshot finds a typed agent (`agent_of`), which gives its name in
+`list_blocks`, Shift+Enter, the question before closing, delegating to it, and its resume on restore, typed with
+Templum's flags ([persistence.md](persistence.md#agents)); its hooks move the dot from its first event. Until that
+snapshot it isn't an agent to `delegate` ([minors](../minors.md#connections)). A Gemini CLI typed without
+`--session-id` resumes its folder's latest session ([agents.md](agents.md#the-agents)), as today.
+
+**The switch.** `[connections] enabled` covers typed agents too; Settings ▸ Connections names it **Agents in
+Templum** ("Claude Code and Codex opened from the canvas or typed in a terminal get Templum's server and hooks: they
+read and type into the blocks wired to them"), and `config.toml`'s comment says "The Claude Code and Codex Templum
+opens, or that are typed in its terminals, get its MCP server and hooks". Off, a new terminal's `TEMPLUM_CODEX_ARGS`
+is empty, and its `TEMPLUM_CLAUDE_ARGS` holds only `--settings` and its file when the status line asks for it
+(`usage.claude_limits`), as what is typed. A terminal keeps the variables it started with: the switch reaches new terminals, as
+`shell.integration` does. No switch of its own: nothing outside Templum changes, and `command claude` runs the bare
+agent.
+
+**Calls made for card 42** (the person was away; each can be changed): on by default under the existing switch, no
+switch of its own; functions in the shell integration, nothing on PATH and nothing in the agents' files; Templum's
+words before the person's; the person's own function wins, an alias composes; nothing twice when `--settings`,
+`--mcp-config` or `mcp_servers.templum.` is already there; cmd, Nushell, tmux and ssh not covered; Gemini CLI left to
+its extension; a typed agent's identity left to the snapshot.
+
+**Considered and left out:**
+
+- **Registering Templum in the agents' own settings** (`claude mcp add -s user`, hooks in `~/.claude/settings.json`,
+  `[mcp_servers.templum]` in `~/.codex/config.toml`), a no-op outside Templum: it edits the person's files (out of
+  scope above); every Claude Code and Codex outside Templum shows a failed `templum` server (Claude Code's `${VAR}`
+  expansion gives an empty string, it can't leave a server out) and runs `templum hook` at each event; and the entries
+  break when Templum moves or is uninstalled.
+- **A `claude` program first on PATH** (`<data>/bin/claude`): every process in the terminal finds it, an agent's own
+  `claude -p` included, whose hooks would speak for the block's agent; a `.bashrc`'s usual `export
+  PATH="$HOME/.local/bin:$PATH"` puts the real one first again (on the maintainer's machine, `~/.local/bin` and mise's
+  folders, where `claude` and `codex` are, come before `<data>/bin` in a Templum terminal); on Windows `templum.exe` has no console, and a `.cmd`
+  or `.ps1` stand-in loses quotes through cmd or meets PowerShell's execution policy.
+- **Variables the agents read:** Claude Code has none for a settings file, an MCP file or a plugin (only `--settings`,
+  `--mcp-config`, `--plugin-dir`); Codex reads none but `CODEX_HOME`, which, like `CLAUDE_CONFIG_DIR`, moves the
+  person's login and history too.
+- **Claude Code's `--plugin-dir`** with a plugin of the server and the hooks: its tools would be named
+  `mcp__plugin_…`, not `mcp__templum__…` as the instructions and the permission checks name them, and a plugin can't
+  carry the status line.
+- **Seeing the agent once it runs:** Templum already does (identity, state from the screen); a running agent can't be
+  given an MCP server or hooks, and restarting it with them would cut its turn.
 
 ## The `templum` command line
 
@@ -708,6 +820,7 @@ a Copy button, and Gemini CLI's Install and Remove.
 | `templum/src/workspace/delegate.rs`, `spawn.rs`, `bus.rs`, `mod.rs`, `blocks.rs`, `persist.rs`, `selection.rs`; `session.rs`, `block.rs` | `send_keys`, `interrupt`, `close_block`; `opened_by`, `model` and `effort` saved and resumed; "answered by" | 6 |
 | `templum-mcp/src/hooks.rs`, `lib.rs`, `cli.rs`; `templum-terminal/src/terminal.rs`; `templum/src/workspace/bus.rs`, `delegate.rs`, `activity.rs`, `spawn.rs`, `waits.rs`, `input.rs`, `mod.rs` | Codex's hooks; a prompt taken (`Submitted`) confirms a task and decides which turn answers it; the first line as a paste of its own; a prompt waits for its agent's input (`Modes::typing`); seems stuck; dialogs as drawn | 7 |
 | `templum-mcp/src/hooks.rs`, `tools.rs`; `templum/src/workspace/delegate.rs`, `waits.rs`, `bus.rs`, `activity.rs`, `spawn.rs`, `blocks.rs`, `usage.rs`, `mod.rs` | task ids; the notices typed back (`Workspace::notices`, delivered as each look and each notice comes), with what the task spent read again a second after its end; changes to a task; a task's timeout; the transcript a turn's end names | 8 |
+| `templum-mcp/src/lib.rs`, `templum-usage/src/claude.rs`, `templum/src/workspace/usage.rs`, `blocks.rs`; `templum-terminal/src/integration/*` | the words typed as raw arguments (`codex_args`, `settings_file`, `mcp_file`, `claude_args`); `Workspace::agent_env` on each new terminal; the `claude` and `codex` functions ([Agents typed in a terminal](#agents-typed-in-a-terminal)) | card 42 |
 
 Every request reaches the main thread through a channel the bus's threads write to, drained by a task as the
 terminals' wake-ups are; the main thread never touches a socket. A request that waits keeps its reply channel in
@@ -794,6 +907,15 @@ and not while a call waits for the task, and a balloon isn't told; a change from
 restarts its timeout, none goes before a spawn's prompt, and another agent is still refused; a task past its timeout
 comes back only at its end; a task handed with `wait` gets no notice of its timeout.
 
+**Agents typed in a terminal (planned):** the raw words are what is typed, unquoted (a path with a space is one
+word), with `--mcp-config=`; a new terminal's variables follow the switch, the status line, WSL, cmd and Windows
+PowerShell 5.1 as `typed` does; in bash, zsh, fish and PowerShell started as Templum starts them, with a fake `claude`
+and `codex` on PATH that write down their arguments and exit 3: `claude hi` runs with Templum's words then `hi` (its
+exit code 3 reaches the prompt's mark), an alias adds
+its words after Templum's, the person's own function runs instead, `--settings x` (and Codex's
+`mcp_servers.templum.…`) passes as it is, an emptied variable adds nothing, and without the variable there is no
+function; a shell that isn't installed is skipped.
+
 **Manual (Hyprland):** Claude Code from the menu: `/mcp` lists `templum` connected, "list the blocks" and "read the
 last 30 lines of the dev server" work, the dot follows its turns and a permission prompt; Codex: `/mcp` lists it;
 `templum blocks` in a plain terminal; `templum mcp` in another terminal emulator exits 2; wiring by tool and menu,
@@ -828,6 +950,8 @@ One pull request per batch, each with its own plan in `docs/plans/`:
 7. **State:** Codex's hooks, `Submitted` confirming a task, a prompt waiting for its agent's input, seems stuck,
    dialogs as drawn.
 8. **Async:** task ids, the notices typed back with time and tokens, changes to a task, a task's timeout told.
+9. **Agents typed in a terminal** (kanban card 42, [its plan](../plans/2026-10-18-agents-in-any-terminal.md)): the
+   variables, the shells' functions, the switch's words. It types nothing into agents and paints nothing: no bench.
 
 Batches 2, 3 and 6 to 8 paint or type into agents, so their pull requests carry `--bench` and `--bench-mixed`. Batches 7
 and 8 start with checks by hand of the agents themselves (what Codex takes on its command line and the payloads of its
@@ -867,3 +991,7 @@ results](../plans/2026-10-16-connections-batch-8.md#spike-results)).
 | A hook slows the agent when Templum is gone | One-second connect limit, exit 0; each hook has a 5-second timeout |
 | Painting wires costs frames | One curve per wire per frame, below the blocks; cached per zoom step as drawings are if the benches ask for it |
 | A process of the same user names another terminal | The documented trust: it could already type into it |
+| A `claude` typed by hand gets Templum's words twice (the function, then what Templum types) | The function adds nothing when `--settings`, `--mcp-config` or `mcp_servers.templum.` is already there (tested) |
+| A person's own `claude` function or alias | Theirs wins (a function) or composes (an alias), tested in each shell; `command claude` is always the bare agent |
+| A newer Claude Code makes `--mcp-config=` take more than one word, or refuses root flags before a subcommand | Checked by hand on 2.1.286; the shells' tests run a fake `claude`, so a by-hand check at each card on connections (`/mcp` in a typed Claude Code) catches it |
+| A tmux pane's agent speaking for the block that started tmux's server | No function there: tmux's shells don't load Templum's integration |
