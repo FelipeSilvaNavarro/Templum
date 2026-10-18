@@ -304,7 +304,7 @@ named by its name, and its own **in the title bar** switch in Settings ▸ Usage
 - Notifications name the account: "Claude Code 2: 90% of the 5-hour limit used".
 - **Matched by folder:** a session whose relay names an account's folder counts for that account, whatever block it
   runs in (a person's own `CLAUDE_CONFIG_DIR=… claude` in a plain terminal, when that folder is an account's); a
-  folder no account has, and that isn't the agent's own, counts for none.
+  folder no account has counts for the agent's own (a shell's startup files may name one of the person's).
 
 ### Cards for it
 

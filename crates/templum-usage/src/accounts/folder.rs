@@ -31,6 +31,8 @@ pub struct Report {
     pub problems: Vec<String>,
     /// Shared items the agent replaced with its own copy (found at a start).
     pub replaced: Vec<&'static str>,
+    /// Real items kept aside on Save to make their links, and where they went.
+    pub kept: Vec<(&'static str, PathBuf)>,
     /// Items holding a link Templum didn't make, and where it points.
     pub theirs: Vec<(&'static str, PathBuf)>,
 }
@@ -111,10 +113,8 @@ fn link(source: &Path, path: &Path, dir: bool) -> io::Result<()> {
     {
         if dir {
             junction::create(source, path)
-        } else if files_share() {
-            std::os::windows::fs::symlink_file(source, path)
         } else {
-            Err(io::Error::other(NO_FILE_LINKS))
+            std::os::windows::fs::symlink_file(source, path)
         }
     }
 }
@@ -164,6 +164,18 @@ pub fn apply(
     sources: &[PathBuf],
     when: When,
 ) -> Report {
+    apply_with(kind, folder, shares, sources, when, files_share())
+}
+
+/// `apply`, where a file can be shared by a link (`files`) or stays its own.
+fn apply_with(
+    kind: &Kind,
+    folder: &Path,
+    shares: &[Share],
+    sources: &[PathBuf],
+    when: When,
+    files: bool,
+) -> Report {
     let mut report = Report::default();
     let state = kind.state_dir(folder);
     if let Err(e) = make_dir(&state) {
@@ -185,6 +197,7 @@ pub fn apply(
                 from,
                 sources,
                 when,
+                files,
                 &mut report,
             ) {
                 report.problems.push(format!("{}: {e}", item.label));
@@ -203,6 +216,7 @@ fn apply_path(
     from: Option<&Path>,
     sources: &[PathBuf],
     when: When,
+    files: bool,
     report: &mut Report,
 ) -> io::Result<()> {
     let here = at(path, name, sources);
@@ -231,6 +245,13 @@ fn apply_path(
     } else if std::fs::symlink_metadata(&source).is_err() {
         // Linked at a later start, once the agent wrote it.
         return Ok(());
+    } else if !files {
+        // It stays its own: Save says why, beside the item too; a start would say it every time.
+        let linked = matches!(&here, At::Ours(target) if *target == source);
+        if !linked && when == When::Saved {
+            return Err(io::Error::other(NO_FILE_LINKS));
+        }
+        return Ok(());
     }
     match here {
         At::Missing => link(&source, path, dir),
@@ -240,7 +261,9 @@ fn apply_path(
             link(&source, path, dir)
         }
         At::Real if when == When::Saved => {
-            std::fs::rename(path, aside(path))?;
+            let aside = aside(path);
+            std::fs::rename(path, &aside)?;
+            report.kept.push((item.key, aside));
             link(&source, path, dir)
         }
         At::Real => {
@@ -430,8 +453,13 @@ mod tests {
 
         fs::remove_file(t.acc.join("skills")).unwrap();
         fs::create_dir_all(t.acc.join("skills/b")).unwrap();
-        t.apply(&t.share("skills"), When::Saved);
+        let report = t.apply(&t.share("skills"), When::Saved);
         assert!(t.acc.join("skills.own-2/b").is_dir(), "skills.own is taken");
+        assert_eq!(
+            report.kept,
+            [("skills", t.acc.join("skills.own-2"))],
+            "said"
+        );
         assert!(t.acc.join("skills.own/a").is_dir());
 
         fs::write(t.src.join("settings.json"), "{}").unwrap();
@@ -440,6 +468,47 @@ mod tests {
         assert!(!is_link(&t.acc.join("settings.json")));
         assert_eq!(fs::read(t.acc.join("settings.json")).unwrap(), b"mine");
         assert_eq!(report.replaced, ["settings"]);
+    }
+
+    /// Without the privilege a file needs (Windows without Developer Mode), a shared file stays
+    /// its own: Save says why, a start says nothing (it would at every start).
+    #[test]
+    fn a_file_that_cant_be_linked_is_told_on_save_only() {
+        let t = Two::new();
+        fs::write(t.src.join("settings.json"), "{}").unwrap();
+        let sources = std::slice::from_ref(&t.src);
+        let report = apply_with(
+            &FAKE,
+            &t.acc,
+            &t.share("settings"),
+            sources,
+            When::Starting,
+            false,
+        );
+        assert!(report.problems.is_empty(), "{:?}", report.problems);
+        assert!(fs::symlink_metadata(t.acc.join("settings.json")).is_err());
+        let report = apply_with(
+            &FAKE,
+            &t.acc,
+            &t.share("settings"),
+            sources,
+            When::Saved,
+            false,
+        );
+        assert_eq!(report.problems, [format!("Settings: {NO_FILE_LINKS}")]);
+        assert!(fs::symlink_metadata(t.acc.join("settings.json")).is_err());
+        // Folders share without it.
+        let report = apply_with(
+            &FAKE,
+            &t.acc,
+            &t.share("skills"),
+            sources,
+            When::Starting,
+            false,
+        );
+        assert!(report.problems.is_empty());
+        assert!(is_link(&t.acc.join("skills")));
+        t.logins_intact();
     }
 
     #[test]

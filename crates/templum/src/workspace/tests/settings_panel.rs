@@ -1082,3 +1082,39 @@ fn an_accounts_row_logs_in_and_its_dialog_deletes_it(cx: &mut TestAppContext) {
         assert!(!agents.contains_key("claude2"));
     });
 }
+
+/// Typing a folder keeps the choices made: an empty folder (or `/` on the way to one) has no
+/// links to read, which isn't a choice to share nothing.
+#[gpui_kit::test]
+fn typing_a_folder_keeps_the_shares_chosen(cx: &mut TestAppContext) {
+    let own = tempfile::tempdir().unwrap();
+    crate::agents::OWN_FOLDERS.set(Some(own.path().to_path_buf()));
+    let folder = tempfile::tempdir().unwrap();
+    let (config, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (handle, ws) = open_in(
+        cx,
+        Some(config.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    open_accounts(handle, cx);
+    add_claude_account(handle, &ws, cx);
+    pick(handle, cx, "account-share-all", 0);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("account-folder", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.simulate_input(handle, &folder.path().display().to_string());
+    frame(handle, cx);
+    save_dialog(handle, cx);
+    ws.update(cx, |ws, _| ws.save());
+    let text = std::fs::read_to_string(config.path().join(crate::config::FILE)).unwrap();
+    let agents = crate::config::parse(&text).unwrap().agents;
+    let kind = templum_usage::accounts::kind("claude").unwrap();
+    assert_eq!(
+        agents["claude2"].share.as_ref().map(|s| s.len()),
+        Some(kind.items.len()),
+        "{text}"
+    );
+    assert!(folder.path().join("skills").is_symlink());
+}

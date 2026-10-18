@@ -161,6 +161,20 @@ fn account_row(ws: &Workspace, entity: &Entity<Workspace>, entry: &AgentEntry) -
         )
 }
 
+/// A line for each variable that wins over every account's login that Templum's environment
+/// has (`set`): the person's shell may set one too.
+fn override_notes(kind: &Kind, agent: &str, set: impl Fn(&str) -> bool) -> Vec<String> {
+    kind.overrides
+        .iter()
+        .filter(|name| set(name))
+        .map(|name| {
+            format!(
+                "{name} is set in your environment: {agent} uses it whatever this account's login."
+            )
+        })
+        .collect()
+}
+
 /// The agents an account can be of, installed first: their ids and titles.
 pub(crate) fn agent_choices(agents: &[AgentEntry]) -> Vec<(String, String)> {
     let mut choices: Vec<(bool, String, String)> = templum_usage::accounts::kinds()
@@ -246,7 +260,7 @@ impl Form {
             red: crate::grid::hsla(ws.theme.palette.ansi[1], 1.0),
             _folder_change,
         };
-        form.read_links(false, cx);
+        form.read_links(cx);
         form
     }
 
@@ -288,9 +302,9 @@ impl Form {
     }
 
     /// The choices a folder already holds: a link to the same item of one of its agent's
-    /// folders is that choice (all of them, when `whole`: a folder just chosen), one elsewhere
-    /// is the person's.
-    fn read_links(&mut self, whole: bool, cx: &App) {
+    /// folders becomes that choice, one elsewhere is the person's. Only links add choices: a
+    /// folder without one (an empty one, or `/` while its path is typed) changes none.
+    fn read_links(&mut self, cx: &App) {
         let (Some(kind), Some(folder)) = (self.kind, self.folder_path(cx)) else {
             return;
         };
@@ -311,9 +325,6 @@ impl Form {
                         self.share.insert(key.to_string(), id.clone());
                     }
                 }
-                Found::Own if whole => {
-                    self.share.remove(key);
-                }
                 Found::Own => {}
             }
         }
@@ -321,7 +332,7 @@ impl Form {
 
     /// The folder field changed: a folder set up by hand keeps its sharing.
     fn read_folder(&mut self, cx: &mut Context<Self>) {
-        self.read_links(true, cx);
+        self.read_links(cx);
         cx.notify();
     }
 
@@ -338,7 +349,7 @@ impl Form {
         let id = self.id().unwrap_or_default();
         let n = id.strip_prefix(kind.agent).unwrap_or_default();
         self.named = Some(format!("{} {n}", agent_title(&self.agents, kind)));
-        self.read_links(true, cx);
+        self.read_links(cx);
         cx.notify();
     }
 
@@ -578,6 +589,10 @@ impl Render for Form {
             );
         }
         column = column.child(items);
+        let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+        for line in override_notes(kind, &agent, set) {
+            column = column.child(note(line));
+        }
         if let Some(text) = kind.note {
             column = column.child(note(text.to_string()));
         }
@@ -697,4 +712,27 @@ pub(crate) fn account_dialog(
                 }
             })
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_variable_that_wins_over_the_login_is_named() {
+        let copilot = templum_usage::accounts::kind("copilot").unwrap();
+        let notes = override_notes(copilot, "Copilot CLI", |name| name == "GH_TOKEN");
+        assert_eq!(
+            notes,
+            [
+                "GH_TOKEN is set in your environment: Copilot CLI uses it whatever this account's login."
+            ]
+        );
+        let claude = templum_usage::accounts::kind("claude").unwrap();
+        assert!(override_notes(claude, "Claude Code", |_| false).is_empty());
+        assert_eq!(
+            override_notes(claude, "Claude Code", |_| true).len(),
+            claude.overrides.len()
+        );
+    }
 }

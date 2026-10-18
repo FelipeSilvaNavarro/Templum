@@ -453,6 +453,24 @@ impl Workspace {
             eprintln!("templum: {message}");
             show_notification(window, cx, Notification::warning(message));
         }
+        if !report.kept.is_empty() {
+            let kept: Vec<String> = report
+                .kept
+                .iter()
+                .filter_map(|(_, aside)| {
+                    let name = aside.file_name()?.to_string_lossy().into_owned();
+                    let shared = name.rsplit_once(".own").map(|(item, _)| item.to_string())?;
+                    Some(format!("{shared} as {name}"))
+                })
+                .collect();
+            let message = format!(
+                "{} kept its own aside to share them: {} (in {}).",
+                entry.title,
+                kept.join(", "),
+                crate::agents::tilde(&account.folder)
+            );
+            show_notification(window, cx, Notification::info(message));
+        }
         let agent = entry.builtin.map_or(account.kind.agent, |a| a.title());
         for key in &report.replaced {
             let Some(item) = account.kind.item(key) else {

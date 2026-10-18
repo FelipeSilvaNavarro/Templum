@@ -246,15 +246,15 @@ pub fn read(
     let mut limits = Vec::new();
     for home in homes {
         let found = match home.agent.as_str() {
-            // The agent's own: the relay files of a Claude Code on no folder of Templum's, or on
-            // the one Templum's own environment names.
-            "claude" if home.id == home.agent => [
-                claude::limits(&dirs.relay, None),
-                claude::limits(&dirs.relay, Some(&home.dir)),
-            ]
-            .into_iter()
-            .flatten()
-            .max_by_key(|l| l.at),
+            // The agent's own: the relay files of a Claude Code on no account's folder.
+            "claude" if home.id == home.agent => {
+                let accounts: Vec<&Path> = homes
+                    .iter()
+                    .filter(|h| h.agent == "claude" && h.id != h.agent)
+                    .map(|h| h.dir.as_path())
+                    .collect();
+                claude::own_limits(&dirs.relay, &accounts)
+            }
             "claude" => claude::limits(&dirs.relay, Some(&home.dir)),
             // Its own processes' rollouts: the folder's newest may be another account's.
             "codex" if home.sessions_shared => {

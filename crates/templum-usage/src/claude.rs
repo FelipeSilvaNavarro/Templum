@@ -409,6 +409,18 @@ fn project_folder(cwd: &Path) -> String {
 /// The plan limits in the newest relay file that has them, of the Claude Code on `config_dir`
 /// (None: one whose `CLAUDE_CONFIG_DIR` named none): they are its account's.
 pub fn limits(relay_dir: &Path, config_dir: Option<&Path>) -> Option<Limits> {
+    limits_where(relay_dir, |dir| dir == config_dir)
+}
+
+/// The plan limits of Claude Code's own folder: the newest relay file's of a Claude Code on no
+/// folder of `accounts` (the person's shell may name one of its own with `CLAUDE_CONFIG_DIR`).
+pub fn own_limits(relay_dir: &Path, accounts: &[&Path]) -> Option<Limits> {
+    limits_where(relay_dir, |dir| dir.is_none_or(|d| !accounts.contains(&d)))
+}
+
+/// The plan limits in the newest relay file that has them, of a Claude Code whose folder (None:
+/// none named) `wanted` takes.
+fn limits_where(relay_dir: &Path, wanted: impl Fn(Option<&Path>) -> bool) -> Option<Limits> {
     let mut files: Vec<(u64, PathBuf)> = std::fs::read_dir(relay_dir)
         .ok()?
         .flatten()
@@ -419,7 +431,7 @@ pub fn limits(relay_dir: &Path, config_dir: Option<&Path>) -> Option<Limits> {
     files.sort_by_key(|f| std::cmp::Reverse(f.0));
     files.into_iter().find_map(|(at, path)| {
         let status: Status = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
-        if status.templum_config_dir.as_deref() != config_dir {
+        if !wanted(status.templum_config_dir.as_deref()) {
             return None;
         }
         let rate = status.rate_limits?;
@@ -714,6 +726,35 @@ mod tests {
         relay(STATUS.as_bytes(), dir.path(), Some("1-3"), None, None);
         assert_eq!(used(None), Some(23.5));
         assert_eq!(used(Some("/a")), Some(11.0));
+    }
+
+    /// A Claude Code on a folder no account has (the person's shell set `CLAUDE_CONFIG_DIR`)
+    /// is the agent's own: its limits stay the meter's.
+    #[test]
+    fn the_agents_own_limits_are_every_folder_but_its_accounts() {
+        let dir = tempfile::tempdir().unwrap();
+        let account = Path::new("/a");
+        let status = STATUS.replace("23.5", "11");
+        relay(
+            status.as_bytes(),
+            dir.path(),
+            Some("1-0"),
+            None,
+            Some(account),
+        );
+        let used = |dir: &Path| own_limits(dir, &[account]).map(|l| l.windows[0].used_percent);
+        assert_eq!(used(dir.path()), None, "the account's");
+        let path = dir.path().join("1-0.json");
+        set_modified(&path, now() - 100);
+        let shells = STATUS.replace("23.5", "44");
+        relay(
+            shells.as_bytes(),
+            dir.path(),
+            Some("1-1"),
+            None,
+            Some(Path::new("/home/u/.config/claude")),
+        );
+        assert_eq!(used(dir.path()), Some(44.0));
     }
 
     #[test]
