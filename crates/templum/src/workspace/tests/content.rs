@@ -374,11 +374,12 @@ fn the_instructions_say_what_to_do_with_a_kanban_and_a_note(cx: &mut TestAppCont
     // Batch 8's sentence about tasks comes after it.
     assert!(
         text.contains(
-            "When a connected kanban has your task, move its card to Doing when you start; when you \
-             are done, comment on it what you did and what the next agent needs to know \
-             (comment_card), then move it to Review (Done when the board has no Review); write what \
-             the next agent needs to know in the connected note too, and check the items of a \
-             connected checklist as you finish them."
+            "When a connected kanban has your task, claim its card (claim_card: a card for another \
+             agent isn't yours) and move it to Doing when you start; check its checklist's items as \
+             you finish them (edit_card); when you are done, comment on it what you did and what the \
+             next agent needs to know (comment_card), then move it to Review (Done when the board has \
+             no Review); write what the next agent needs to know in the connected note too, and check \
+             the items of a connected checklist as you finish them."
         ),
         "{text}"
     );
@@ -1260,4 +1261,123 @@ fn create_and_edit_card_set_priority_who_and_checklist(cx: &mut TestAppContext) 
             .clone()),
         Some(Assignee::Block(uid.clone()))
     );
+}
+
+#[gpui_kit::test]
+fn claim_card_follows_who_a_card_is_for(cx: &mut TestAppContext) {
+    use crate::board::Assignee;
+    let (handle, ws) = open(cx);
+    let terminal = first_id(&ws, cx);
+    let (me, uid, _, board, card) = wired_board(handle, &ws, cx);
+    let set = |cx: &mut TestAppContext, a: Option<Assignee>| {
+        ws.update(cx, |ws, _| {
+            ws.edit_boards(|b| b.edit_card(board, card, |c| c.assignee = a))
+        })
+    };
+    let runs = |cx: &mut TestAppContext, agent: Option<&str>| {
+        ws.update(cx, |ws, _| {
+            ws.space.terminal_mut(terminal).unwrap().seen.agent = agent.map(str::to_string)
+        })
+    };
+    let claim =
+        |cx: &mut TestAppContext| call(handle, &ws, cx, &me, "claim_card", json!({ "card": card }));
+    set(cx, Some(Assignee::Agent("codex".into())));
+    runs(cx, None);
+    let (failed, text) = claim(cx);
+    assert!(
+        failed
+            && text
+                == format!(
+                    "Card {card} is for any Codex, and Templum can't tell yet which agent you are: \
+                     try again in a few seconds."
+                ),
+        "{text}"
+    );
+    runs(cx, Some("claude"));
+    let (failed, text) = claim(cx);
+    assert!(
+        failed
+            && text
+                == format!(
+                    "Card {card} is for any Codex, and you are Claude Code: take a card for you or \
+                     for anyone."
+                ),
+        "{text}"
+    );
+    runs(cx, Some("codex"));
+    let (_, list) = call(handle, &ws, cx, &me, "list_cards", json!({}));
+    assert!(list.contains("for any codex (you)"), "{list}");
+    assert_eq!(claim(cx), (false, format!("Card {card} is yours.")));
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws
+            .boards
+            .card(board, card)
+            .unwrap()
+            .assignee
+            .clone()),
+        Some(Assignee::Block(uid.clone()))
+    );
+    let (_, list) = call(handle, &ws, cx, &me, "list_cards", json!({}));
+    assert!(
+        list.contains(&format!("assignee {uid} ")) && list.contains("(you)"),
+        "{list}"
+    );
+    // move_card stays open, and says whose card it is.
+    set(cx, Some(Assignee::Agent("claude".into())));
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "move_card",
+        json!({ "card": card, "column": "Doing" }),
+    );
+    assert!(
+        !failed && text.ends_with(" It is for any claude, not you."),
+        "{text}"
+    );
+    // edit_card's `for` follows claim_card: no card for another agent given to itself...
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "edit_card",
+        json!({ "card": card, "for": uid }),
+    );
+    assert!(
+        failed && text.contains("is for any Claude Code, and you are Codex"),
+        "{text}"
+    );
+    // ...and no card another block holds freed or handed on; its checklist stays open.
+    set(cx, Some(Assignee::Block("zzzzz".into())));
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "edit_card",
+        json!({ "card": card, "for": "anyone" }),
+    );
+    assert!(failed && text.contains("taken by zzzzz"), "{text}");
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "edit_card",
+            json!({ "card": card, "add_items": "x" })
+        )
+        .0
+    );
+    // A person's agent that runs a built-in's program is that agent to a card.
+    ws.update(cx, |ws, _| {
+        let mut work = ws.agents.iter().find(|a| a.id == "codex").unwrap().clone();
+        (work.id, work.title, work.builtin) = ("codex-work".into(), "Codex work".into(), None);
+        work.command = "codex --profile work".into();
+        ws.agents.push(work);
+    });
+    set(cx, Some(Assignee::Agent("codex-work".into())));
+    assert_eq!(claim(cx), (false, format!("Card {card} is yours.")));
 }

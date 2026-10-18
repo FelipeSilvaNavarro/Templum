@@ -647,11 +647,13 @@ impl Workspace {
              You are block {uid}, {title:?}, in Templum workspace {:?}. Connected to you: {}. In this \
              workspace, not connected (ask with connect): {}. Name blocks by these ids. You may only read \
              or write your own block and those connected to you; connect asks the person for another. \
-             list_blocks gives the current list. When a connected kanban has your task, move its card \
-             to Doing when you start; when you are done, comment on it what you did and what the next \
-             agent needs to know (comment_card), then move it to Review (Done when the board has no \
-             Review); write what the next agent needs to know in the connected note too, and check \
-             the items of a connected checklist as you finish them. A task you \
+             list_blocks gives the current list. When a connected kanban has your task, claim its \
+             card (claim_card: a card for another agent isn't yours) and move it to Doing when you \
+             start; check its checklist's items as you finish them (edit_card); when you are done, \
+             comment on it what you did and what the next agent needs to know (comment_card), then \
+             move it to Review (Done when the board has no Review); write what the next agent needs \
+             to know in the connected note too, and check the items of a connected checklist as you \
+             finish them. A task you \
              hand over without wait comes back typed into your terminal as [task …]: it isn't the \
              person writing.",
             space.name,

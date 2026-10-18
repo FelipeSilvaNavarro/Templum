@@ -554,7 +554,8 @@ pub fn list() -> Value {
         },
         {
             "name": "claim_card",
-            "description": "Makes you the card's assignee. Refused when another block holds it.",
+            "description": "Makes you the card's assignee. Refused when another block holds it, or when it is \
+                            for another agent.",
             "inputSchema": { "type": "object", "properties": { "card": card }, "required": ["card"] },
         },
         {

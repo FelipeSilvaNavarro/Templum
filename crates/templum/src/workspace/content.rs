@@ -14,6 +14,18 @@ use crate::checklists;
 use crate::editor::{Content, Editor};
 use crate::notes;
 
+/// The caller as cards name it: its block id, and the agent it runs.
+type Caller = (String, Option<String>);
+
+fn caller(space: &Space, me: BlockId) -> Caller {
+    let uid = space.uids.get(&me).cloned().unwrap_or_default();
+    let agent = space
+        .terminal(me)
+        .and_then(|p| p.agent())
+        .map(str::to_string);
+    (uid, agent)
+}
+
 impl Workspace {
     /// The caller's workspace and block: `call` found it.
     fn caller_space(&self, from: &str) -> (&Space, BlockId) {
@@ -113,6 +125,64 @@ impl Workspace {
         }
     }
 
+    /// Whether a block running `pane_agent` runs `agent` to a card: the same agent, or one with
+    /// its program (the first word of their commands).
+    fn runs(&self, pane_agent: Option<&str>, agent: &str) -> bool {
+        let program = |id: &str| {
+            self.agents
+                .iter()
+                .find(|a| a.id == id)
+                .and_then(|a| a.command.split_whitespace().next())
+        };
+        pane_agent.is_some_and(|pane| {
+            pane == agent || program(pane).is_some_and(|p| program(agent) == Some(p))
+        })
+    }
+
+    /// Whether `assignee` is the caller's: its block, or an agent it runs.
+    fn is_callers(&self, assignee: &Assignee, caller: &Caller) -> bool {
+        match assignee {
+            Assignee::Block(uid) => *uid == caller.0,
+            Assignee::Agent(id) => self.runs(caller.1.as_deref(), id),
+        }
+    }
+
+    /// Ok when the caller may take `card`: it is for anyone, the caller's block, or an agent it
+    /// runs; otherwise `claim_card`'s refusal, saying why.
+    fn may_take(&self, card: &Card, caller: &Caller, cx: &App) -> Result<(), Reply> {
+        let id = card.id;
+        match &card.assignee {
+            Some(Assignee::Block(uid)) if *uid != caller.0 => Err(Reply::err(format!(
+                "Card {id} is taken by {}. Ask the person to free it (the ✕ by its assignee in the \
+                 open card), or take another card.",
+                self.who(uid, cx)
+            ))),
+            Some(a @ Assignee::Agent(agent)) if !self.is_callers(a, caller) => {
+                let wanted = self.agent_title(agent);
+                Err(Reply::err(match &caller.1 {
+                    None => format!(
+                        "Card {id} is for any {wanted}, and Templum can't tell yet which agent you \
+                         are: try again in a few seconds."
+                    ),
+                    Some(mine) => format!(
+                        "Card {id} is for any {wanted}, and you are {}: take a card for you or for \
+                         anyone.",
+                        self.agent_title(mine)
+                    ),
+                }))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Who a card is for, as `move_card` says it: `b7k2m "Codex · api"`, or `any codex`.
+    fn for_whom(&self, assignee: &Assignee, cx: &App) -> String {
+        match assignee {
+            Assignee::Block(uid) => self.who(uid, cx),
+            Assignee::Agent(id) => format!("any {id}"),
+        }
+    }
+
     fn no_column(&self, board: u64, column: &str) -> Reply {
         let titles: Vec<String> = self
             .boards
@@ -133,13 +203,14 @@ impl Workspace {
         cx: &App,
     ) -> Reply {
         let (space, me) = self.caller_space(from);
+        let caller = caller(space, me);
         if let Some(card) = card {
             let board = match self.card_board(space, me, card) {
                 Ok(b) => b,
                 Err(refused) => return refused,
             };
             return Reply::ok(tools::tail(
-                &self.card_whole(board, card, cx),
+                &self.card_whole(board, card, &caller, cx),
                 tools::MAX_TEXT,
             ));
         }
@@ -157,14 +228,14 @@ impl Workspace {
                 text.push_str(" no cards");
             }
             for c in &column.cards {
-                text.push_str(&format!("\n  {}", self.card_line(c, cx)));
+                text.push_str(&format!("\n  {}", self.card_line(c, &caller, cx)));
             }
         }
         Reply::ok(tools::tail(&text, tools::MAX_TEXT))
     }
 
     /// `5  Fix login  [red, green]  priority high  assignee b7k2m "Codex"  checklist 2/5  2 comments`
-    fn card_line(&self, c: &Card, cx: &App) -> String {
+    fn card_line(&self, c: &Card, caller: &Caller, cx: &App) -> String {
         let mut line = format!("{}  {}", c.id, flat(&c.title));
         if !c.labels.is_empty() {
             let names: Vec<&str> = c.labels.iter().map(|l| l.name()).collect();
@@ -180,6 +251,12 @@ impl Workspace {
             Some(Assignee::Agent(id)) => line.push_str(&format!("  for any {id}")),
             None => {}
         }
+        if c.assignee
+            .as_ref()
+            .is_some_and(|a| self.is_callers(a, caller))
+        {
+            line.push_str(" (you)");
+        }
         if !c.checklist.is_empty() {
             let (done, all) = c.progress();
             line.push_str(&format!("  checklist {done}/{all}"));
@@ -192,7 +269,7 @@ impl Workspace {
         line
     }
 
-    fn card_whole(&self, board: u64, card: u64, cx: &App) -> String {
+    fn card_whole(&self, board: u64, card: u64, caller: &Caller, cx: &App) -> String {
         let (Some(b), Some(c)) = (self.boards.board(board), self.boards.card(board, card)) else {
             return String::new();
         };
@@ -212,7 +289,7 @@ impl Workspace {
             flat(&b.name),
             b.id,
             column.map(|col| flat(&col.title)).unwrap_or_default(),
-            self.card_line(c, cx)
+            self.card_line(c, caller, cx)
         );
         if !c.description.trim().is_empty() {
             text.push_str(&format!("\ndescription:\n{}", indent(&c.description)));
@@ -338,6 +415,20 @@ impl Workspace {
             Some(Err(refused)) => return refused,
             None => None,
         };
+        // Its `for` follows claim_card: never a card another block holds freed or handed on,
+        // nor one for another agent given to the caller.
+        if let Some(who) = &assignee
+            && let Some(c) = self.boards.card(board, card)
+        {
+            let caller = caller(space, me);
+            let held = matches!(&c.assignee, Some(Assignee::Block(uid)) if *uid != caller.0);
+            let names_caller = who.as_ref().is_some_and(|w| self.is_callers(w, &caller));
+            if (held || names_caller)
+                && let Err(refused) = self.may_take(c, &caller, cx)
+            {
+                return refused;
+            }
+        }
         let has = |item: &u64| {
             self.boards
                 .card(board, card)
@@ -416,7 +507,8 @@ impl Workspace {
         let Some(to) = self.boards.column_named(board, column) else {
             return self.no_column(board, column);
         };
-        let mine = space.uids.get(&me).cloned().unwrap_or_default();
+        let caller = caller(space, me);
+        let mine = caller.0.clone();
         // Its last column, or Review: the card is done, and says so only through a comment.
         let finished = self.boards.board(board).is_some_and(|b| {
             b.columns.last().is_some_and(|c| c.id == to)
@@ -429,6 +521,13 @@ impl Workspace {
             .card(board, card)
             .and_then(|c| c.comments.last())
             .is_some_and(|c| c.by == mine);
+        // Moving stays open to every wired agent; it says when the card is someone else's.
+        let theirs = self
+            .boards
+            .card(board, card)
+            .and_then(|c| c.assignee.as_ref())
+            .filter(|a| !self.is_callers(a, &caller))
+            .map(|a| self.for_whom(a, cx));
         self.edit_boards(|b| b.move_card(board, card, to, None));
         cx.notify();
         let mut text = format!("Moved card {card} to {column}.");
@@ -436,6 +535,9 @@ impl Workspace {
             text.push_str(
                 " Say on it what you did and what the next one needs to know: comment_card.",
             );
+        }
+        if let Some(who) = theirs {
+            text.push_str(&format!(" It is for {who}, not you."));
         }
         Reply::ok(text)
     }
@@ -472,30 +574,18 @@ impl Workspace {
             Ok(b) => b,
             Err(refused) => return refused,
         };
-        let mine = space.uids.get(&me).cloned().unwrap_or_default();
-        match self
-            .boards
-            .card(board, card)
-            .and_then(|c| c.assignee.clone())
-        {
-            Some(Assignee::Block(holder)) if holder == mine => {
-                return Reply::ok(format!("Card {card} is already yours."));
-            }
-            Some(holder) => {
-                let holder = match holder {
-                    Assignee::Block(uid) => self.who(&uid, cx),
-                    Assignee::Agent(id) => format!("any {id}"),
-                };
-                return Reply::err(format!(
-                    "Card {card} is taken by {holder}. Ask the person to free it (the ✕ by its \
-                     assignee in the open card), or take another card."
-                ));
-            }
-            None => {}
+        let caller = caller(space, me);
+        let Some(c) = self.boards.card(board, card) else {
+            return Reply::err(format!("Card {card} is gone."));
+        };
+        let mine = Assignee::Block(caller.0.clone());
+        if c.assignee.as_ref() == Some(&mine) {
+            return Reply::ok(format!("Card {card} is already yours."));
         }
-        self.edit_boards(|b| {
-            b.edit_card(board, card, |c| c.assignee = Some(Assignee::Block(mine)))
-        });
+        if let Err(refused) = self.may_take(c, &caller, cx) {
+            return refused;
+        }
+        self.edit_boards(|b| b.edit_card(board, card, |c| c.assignee = Some(mine)));
         cx.notify();
         Reply::ok(format!("Card {card} is yours."))
     }
