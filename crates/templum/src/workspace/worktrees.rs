@@ -14,20 +14,21 @@ impl Workspace {
     /// answer: no block works in the worktree since, and it holds no more work than they were
     /// told of (a merge: still what was merged).
     pub(super) fn worktree_still(&self, from: &str, then: &Approved) -> Result<(), Reply> {
-        let (repo, name, changed, unmerged) = match then {
+        let (repo, name, changed, unmerged, ignored) = match then {
             Approved::Connect { .. } => return Ok(()),
             Approved::RemoveWorktree {
                 repo,
                 name,
                 changed,
                 unmerged,
-            } => (repo, name, *changed, *unmerged),
+                ignored,
+            } => (repo, name, *changed, *unmerged, ignored.as_slice()),
             Approved::MergeWorktree {
                 repo,
                 name,
                 unmerged,
                 ..
-            } => (repo, name, 0, *unmerged),
+            } => (repo, name, 0, *unmerged, &[][..]),
         };
         let folder = repo.root.to_string_lossy();
         let (repo, state) = self.worktree_for(from, name, Some(&folder))?;
@@ -44,7 +45,9 @@ impl Workspace {
                 state.into
             )));
         }
-        let more = state.changed > changed || state.unmerged > unmerged;
+        let more = state.changed > changed
+            || state.unmerged > unmerged
+            || (!merging && state.ignored.iter().any(|f| !ignored.contains(f)));
         if more || (merging && state.unmerged != unmerged) {
             return Err(Reply::err(format!(
                 "{name} changed since the person was asked: ask again."
@@ -122,21 +125,39 @@ impl Workspace {
             Ok(found) => found,
             Err(refused) => return Outcome::Now(refused),
         };
-        if state.changed == 0 && state.unmerged == 0 {
+        let work = state.changed > 0 || state.unmerged > 0;
+        if !work && state.ignored.is_empty() {
             return Outcome::Later(self.worktree_remove(repo, name.to_string(), false, cx));
         }
         if !discard {
-            return Outcome::Now(Reply::err(format!(
-                "{name} has {} changed files and {} commits not merged into {}: merge_worktree \
-                 merges them, discard: true loses them.",
-                state.changed, state.unmerged, state.into
-            )));
+            let refused = if work {
+                let mut refused = format!(
+                    "{name} has {} changed files and {} commits not merged into {}: \
+                     merge_worktree merges them, discard: true loses them.",
+                    state.changed, state.unmerged, state.into
+                );
+                if !state.ignored.is_empty() {
+                    refused.push_str(&format!(
+                        " Removing it also deletes files git ignores: {}.",
+                        listed(&state.ignored)
+                    ));
+                }
+                refused
+            } else {
+                format!(
+                    "{name} has files git ignores, which removing it deletes: {}. discard: true \
+                     deletes them.",
+                    listed(&state.ignored)
+                )
+            };
+            return Outcome::Now(Reply::err(refused));
         }
         let then = Approved::RemoveWorktree {
             repo,
             name: name.to_string(),
             changed: state.changed,
             unmerged: state.unmerged,
+            ignored: state.ignored,
         };
         Outcome::Wait(Box::new(Waiting::Allow { then }), Some(tools::ASK_WAIT))
     }
@@ -167,6 +188,16 @@ impl Workspace {
         };
         Outcome::Wait(Box::new(Waiting::Allow { then }), Some(tools::ASK_WAIT))
     }
+}
+
+/// `files` for a sentence: the first few, then how many more.
+pub(super) fn listed(files: &[String]) -> String {
+    const SHOWN: usize = 5;
+    let mut said = files[..files.len().min(SHOWN)].join(", ");
+    if files.len() > SHOWN {
+        said.push_str(&format!(" and {} more", files.len() - SHOWN));
+    }
+    said
 }
 
 /// Why the worktree `name` (`state`, of `repo`) can't be merged now, if so.

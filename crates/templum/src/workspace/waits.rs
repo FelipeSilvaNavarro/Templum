@@ -90,12 +90,13 @@ pub(crate) enum Approved {
     /// `connect`: wires the asking block to the block `to` (its block id). Allow, Deny.
     Connect { to: String },
     /// `remove_worktree` with `discard`: removes the worktree `name` of `repo`, losing its
-    /// `changed` files and `unmerged` commits. Delete, Keep.
+    /// `changed` files, `unmerged` commits and the files git ignores there, `ignored`. Delete, Keep.
     RemoveWorktree {
         repo: templum_git::Repo,
         name: String,
         changed: usize,
         unmerged: u32,
+        ignored: Vec<String>,
     },
     /// `merge_worktree`: merges the worktree `name`'s `unmerged` commits into `into`, the branch
     /// of `repo`'s working tree. Merge, Cancel.
@@ -510,11 +511,21 @@ impl Workspace {
                 name,
                 changed,
                 unmerged,
+                ignored,
                 ..
-            } => format!(
-                "{from} wants to delete the worktree {name}, with {changed} changed files and \
-                 {unmerged} commits not merged."
-            ),
+            } => {
+                let ignored = match ignored.as_slice() {
+                    [] => String::new(),
+                    files => format!(
+                        ", and files git ignores: {}",
+                        super::worktrees::listed(files)
+                    ),
+                };
+                format!(
+                    "{from} wants to delete the worktree {name}, with {changed} changed files and \
+                     {unmerged} commits not merged{ignored}."
+                )
+            }
             Approved::MergeWorktree {
                 name,
                 unmerged,

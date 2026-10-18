@@ -398,9 +398,13 @@ conversation.
 - **`remove_worktree`** (`worktree`, `folder`, `discard` false unless given): with no changes and its branch merged into the
   main working tree's branch, removes the worktree and deletes its branch at once: `Removed the worktree feature-x and
   its branch.` With changes or commits not merged, refused unless `discard`: "feature-x has 2 changed files and 3
-  commits not merged into development: merge_worktree merges them, discard: true loses them." With `discard`, the
-  person is asked in the balloon first ([Asking the person](#asking-the-person)): "*Claude Code · api* wants to delete
-  the worktree feature-x, with 2 changed files and 3 commits not merged." **Delete** and **Keep**. Deleted:
+  commits not merged into development: merge_worktree merges them, discard: true loses them." So are files git ignores
+  there, which `git worktree remove` deletes, but for the folders a build fills again (`node_modules`, `target`,
+  `build`, `dist`, `out`, `.next`, `.venv`, `venv`, `__pycache__`, `.gradle`, `.cache`): "feature-x has files git
+  ignores, which removing it deletes: .env. discard: true deletes them." With `discard`, the person is asked in the
+  balloon first ([Asking the person](#asking-the-person)): "*Claude Code · api* wants to delete the worktree
+  feature-x, with 2 changed files and 3 commits not merged, and files git ignores: .env." (the last part with such
+  files only) **Delete** and **Keep**. Deleted:
   `git worktree remove --force` then `git branch -D`.
 - **`merge_worktree`** (`worktree`, `folder`): the person is asked first, always: "*Claude Code · api* wants to merge
   feature-x (3 commits) into development." **Merge** and **Cancel**. Allowed, and still the commits and the branch the

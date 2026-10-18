@@ -1699,3 +1699,59 @@ fn a_worktree_going_back_to_a_detached_head_is_refused(cx: &mut TestAppContext) 
     }
     assert!(wt.exists());
 }
+
+/// Removing a worktree deletes what git ignores in it: a `.env` is named, and goes only once the
+/// person says Delete; a build folder goes without a word.
+#[gpui_kit::test]
+fn remove_worktree_names_the_ignored_files_it_would_delete(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    std::fs::write(root.join(".gitignore"), ".env\ntarget/\n").unwrap();
+    git_run(&root, &["add", ".gitignore"]);
+    git_run(&root, &["commit", "-qm", "Ignore"]);
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "e"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::write(wt.join(".env"), "SECRET=x\n").unwrap();
+    std::fs::create_dir(wt.join("target")).unwrap();
+    std::fs::write(wt.join("target").join("o"), "o\n").unwrap();
+    let remove = json!({ "worktree": "e", "folder": root });
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "remove_worktree", remove),
+        (
+            true,
+            "e has files git ignores, which removing it deletes: .env. discard: true deletes them."
+                .into()
+        )
+    );
+    assert!(wt.join(".env").exists());
+    let discard = json!({ "worktree": "e", "folder": root, "discard": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 5, "remove_worktree", discard);
+    let line = ws.read_with(cx, |ws, cx| {
+        ws.allow_line(ws.balloon(&terminal).unwrap().0, cx)
+    });
+    assert!(
+        line.ends_with(
+            " wants to delete the worktree e, with 0 changed files and 0 commits not merged, and \
+             files git ignores: .env."
+        ),
+        "{line}"
+    );
+    press_balloon(handle, cx, mine, "allow");
+    assert_eq!(
+        answer_soon(cx, &answers),
+        (false, "Removed the worktree e and its branch.".into())
+    );
+    assert!(!wt.exists());
+}

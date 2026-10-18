@@ -84,7 +84,26 @@ pub struct WorktreeState {
     /// The files its HEAD has that a merge would write where it goes back over files git ignores
     /// there, which git does without asking (a `.env` its branch tracks).
     pub overwrites: Vec<String>,
+    /// Its files git ignores, which removing it deletes (a `.env`), but for the folders a build
+    /// makes again (`node_modules`, `target`); a folder an ignore pattern names as `dir/`.
+    pub ignored: Vec<String>,
 }
+
+/// The folders a build or a package manager fills again: a worktree's ignored files in them aren't
+/// work [`WorktreeState::ignored`] tells of.
+const BUILT: &[&str] = &[
+    "node_modules",
+    "target",
+    "build",
+    "dist",
+    "out",
+    ".next",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".gradle",
+    ".cache",
+];
 
 #[derive(Clone, Debug)]
 pub struct Repo {
@@ -556,18 +575,26 @@ impl Repo {
             .parse()
             .unwrap_or(0);
         let into_changed = lines(self.text(&["diff", "--name-only", "HEAD"])?);
-        let ignored = self.text(&["ls-files", "-o", "-i", "--exclude-standard", "--directory"])?;
-        let ignored: Vec<&str> = ignored.lines().collect();
+        let theirs = self.ignored()?;
         let overwrites = self
             .text(&["diff", "--name-only", "--diff-filter=A", "HEAD", head])?
             .lines()
             .filter(|file| {
-                ignored
+                theirs
                     .iter()
-                    .any(|i| file == i || (i.ends_with('/') && file.starts_with(i)))
+                    .any(|i| file == i || (i.ends_with('/') && file.starts_with(i.as_str())))
             })
             .map(str::to_string)
             .collect();
+        // What a build makes again goes without a word.
+        let built = |entry: &String| {
+            entry
+                .strip_suffix('/')
+                .and_then(|dir| dir.rsplit('/').next())
+                .is_some_and(|dir| BUILT.contains(&dir))
+        };
+        let mut ignored = tree.ignored()?;
+        ignored.retain(|entry| !built(entry));
         Ok(Some(WorktreeState {
             path,
             branch,
@@ -577,7 +604,18 @@ impl Repo {
             into_changed,
             busy: self.operation().is_some(),
             overwrites,
+            ignored,
         }))
+    }
+
+    /// The files git ignores in its working tree, a folder an ignore pattern names as `dir/`.
+    fn ignored(&self) -> Result<Vec<String>, GitError> {
+        let listed = self.text(&["status", "--porcelain", "--ignored=matching"])?;
+        Ok(listed
+            .lines()
+            .filter_map(|l| l.strip_prefix("!! "))
+            .map(str::to_string)
+            .collect())
     }
 
     /// Removes the worktree `add_worktree(name)` made, then its branch: with `force`, its changes
