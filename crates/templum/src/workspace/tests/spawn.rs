@@ -615,7 +615,12 @@ fn a_spawned_agent_that_never_started_is_let_go(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
     let (terminal, _) = me(&ws, cx, mine);
     let folder = tempfile::tempdir().unwrap();
-    let spawn = json!({ "agent": "codex", "folder": folder.path(), "prompt": "say hi" });
+    let spawn = json!({
+        "agent": "codex",
+        "folder": folder.path(),
+        "prompt": "say hi",
+        "model": "gpt-5.6-luna",
+    });
     call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
     let new = spawned(&ws, cx, mine);
     let (_, uid) = me(&ws, cx, new);
@@ -631,6 +636,9 @@ fn a_spawned_agent_that_never_started_is_let_go(cx: &mut TestAppContext) {
         let pane = ws.space.terminal(new).unwrap();
         assert!(pane.prompt.is_none() && pane.handed.is_none());
         assert_eq!(pane.seen.agent, None);
+        // A schedule set now takes it for a terminal, not for an agent that may still start.
+        assert_eq!(pane.agent(), None);
+        assert_eq!((&pane.model, &pane.effort), (&None, &None));
     });
     let (failed, text) = answered(&waiting);
     assert!(

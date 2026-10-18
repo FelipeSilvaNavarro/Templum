@@ -876,6 +876,8 @@ impl Space {
                     } else if pane.prompt.is_some() && starting {
                         seen.agent = pane.seen.agent.take();
                     } else if pane.prompt.take().is_some() {
+                        // Nor what it was given: it isn't the agent there.
+                        (pane.model, pane.effort, pane.flags_for) = (None, None, None);
                         gone.push(pane.term.id().to_string());
                     }
                 }
