@@ -22,6 +22,6 @@ pub use parse::{
 };
 pub use repo::{
     Back, DIFF_LIMIT, GitError, HistoryQuery, Pull, Repo, Search, Side, Synced, WorkingDiff,
-    clone_name, clone_target, left_on, root_of,
+    WorktreeState, clone_name, clone_target, left_on, root_of,
 };
 pub use words::changed;

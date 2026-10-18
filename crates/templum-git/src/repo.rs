@@ -63,6 +63,25 @@ impl std::error::Error for GitError {}
 /// 4 MB editable, too).
 pub const DIFF_LIMIT: usize = 4 * 1024 * 1024;
 
+/// A worktree `add_worktree` made, against the working tree it goes back to (`worktree_state`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorktreeState {
+    /// Its folder.
+    pub path: PathBuf,
+    /// Its branch.
+    pub branch: String,
+    /// The branch of the working tree it goes back to.
+    pub into: String,
+    /// Its files with changes, untracked ones included.
+    pub changed: usize,
+    /// Its branch's commits `into` doesn't have.
+    pub unmerged: u32,
+    /// The files with changes not committed where it goes back, tracked ones only.
+    pub into_changed: usize,
+    /// A merge, rebase or cherry-pick under way where it goes back.
+    pub busy: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct Repo {
     program: String,
@@ -459,14 +478,7 @@ impl Repo {
                 "'{name}' can't name a worktree: use letters, digits, '-', '_', '.' and '/'"
             )));
         }
-        // The main working tree is the list's first; a bare repository has none.
-        let list = self.text(&["worktree", "list", "--porcelain"])?;
-        let mut first = list.split("\n\n").next().unwrap_or_default().lines();
-        let main = first
-            .next()
-            .and_then(|l| l.strip_prefix("worktree "))
-            .map(PathBuf::from);
-        let Some(main) = main.filter(|_| !first.any(|l| l == "bare")) else {
+        let Some(main) = self.main_tree()? else {
             return Err(refused(
                 "a bare repository has no working tree to branch from".into(),
             ));
@@ -479,6 +491,110 @@ impl Repo {
         let dest = path.to_string_lossy().into_owned();
         self.run(&["worktree", "add", "-q", "-b", name, &dest])?;
         Ok(path)
+    }
+
+    /// The repository's main working tree: the first of `git worktree list`; None for a bare
+    /// repository, which has none.
+    fn main_tree(&self) -> Result<Option<PathBuf>, GitError> {
+        let list = self.text(&["worktree", "list", "--porcelain"])?;
+        let mut first = list.split("\n\n").next().unwrap_or_default().lines();
+        let main = first
+            .next()
+            .and_then(|l| l.strip_prefix("worktree "))
+            .map(PathBuf::from);
+        Ok(main.filter(|_| !first.any(|l| l == "bare")))
+    }
+
+    /// The worktree `add_worktree(name)` made (`.worktrees/<name>` of the main working tree), as
+    /// it stands against this working tree, where it goes back: None when there is no such
+    /// worktree, or `name` couldn't name one.
+    pub fn worktree_state(&self, name: &str) -> Result<Option<WorktreeState>, GitError> {
+        if !worktree_name_ok(name) {
+            return Ok(None);
+        }
+        let Some(main) = self.main_tree()? else {
+            return Ok(None);
+        };
+        let path = main.join(".worktrees").join(name);
+        let same = |p: &Path| match (p.canonicalize(), path.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => p == path,
+        };
+        let list = self.text(&["worktree", "list", "--porcelain"])?;
+        let Some(entry) = list.split("\n\n").find(|entry| {
+            entry
+                .lines()
+                .next()
+                .and_then(|l| l.strip_prefix("worktree "))
+                .is_some_and(|p| same(Path::new(p)))
+        }) else {
+            return Ok(None);
+        };
+        let branch = entry
+            .lines()
+            .find_map(|l| l.strip_prefix("branch refs/heads/"))
+            .unwrap_or(name)
+            .to_string();
+        let Some(tree) = Repo::discover(&self.program, &path)? else {
+            return Ok(None);
+        };
+        let lines = |text: String| text.lines().filter(|l| !l.is_empty()).count();
+        let changed = lines(tree.text(&["status", "--porcelain", "-uall"])?);
+        let into = self
+            .text(&["rev-parse", "--abbrev-ref", "HEAD"])?
+            .trim()
+            .to_string();
+        let unmerged = self
+            .text(&["rev-list", "--count", &format!("HEAD..refs/heads/{branch}")])?
+            .trim()
+            .parse()
+            .unwrap_or(0);
+        let into_changed = lines(self.text(&["diff", "--name-only", "HEAD"])?);
+        Ok(Some(WorktreeState {
+            path,
+            branch,
+            into,
+            changed,
+            unmerged,
+            into_changed,
+            busy: self.operation().is_some(),
+        }))
+    }
+
+    /// Removes the worktree `add_worktree(name)` made, then its branch: with `force`, its changes
+    /// and its commits not merged are lost; without, git refuses to lose them.
+    pub fn remove_worktree(&self, name: &str, force: bool) -> Result<(), GitError> {
+        let state = self.worktree_state(name)?.ok_or_else(|| GitError {
+            command: shown(&self.program, &["worktree", "remove", name]),
+            code: None,
+            stderr: format!("fatal: there's no worktree {name}"),
+            missing: false,
+        })?;
+        let path = state.path.to_string_lossy().into_owned();
+        let mut args = vec!["worktree", "remove"];
+        if force {
+            args.push("--force");
+        }
+        args.push(&path);
+        self.run(&args)?;
+        self.delete_branch(&state.branch, force)
+    }
+
+    /// Merges `branch` into this working tree's branch: Ok(Err(files)) when it would conflict
+    /// in `files`, the merge then aborted, so nothing is left half done.
+    pub fn merge_from(&self, branch: &str) -> Result<Result<(), Vec<String>>, GitError> {
+        let Err(failed) = self.run(&["merge", "--no-edit", branch]) else {
+            return Ok(Ok(()));
+        };
+        let conflicted = self.text(&["diff", "--name-only", "--diff-filter=U"])?;
+        let files: Vec<String> = conflicted.lines().map(str::to_string).collect();
+        if self.operation() == Some(Operation::Merge) {
+            self.run(&["merge", "--abort"])?;
+        }
+        if files.is_empty() {
+            return Err(failed);
+        }
+        Ok(Err(files))
     }
 
     /// `git commit -m message` (`--amend` with `amend`): the new commit's short hash.

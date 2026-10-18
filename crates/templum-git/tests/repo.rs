@@ -2025,3 +2025,107 @@ fn sync_on_a_branch_never_published_says_so_not_deleted() {
     repo.run(&["checkout", "-q", "-b", "new"]).unwrap();
     assert_eq!(repo.sync().unwrap(), Synced::Unpublished);
 }
+
+/// Writes `name` in `root` and commits it in `repo` with `message`.
+fn commit_in(repo: &Repo, root: &Path, name: &str, text: &str, message: &str) {
+    write(root, name, text);
+    repo.stage(&[name]).unwrap();
+    repo.commit(message, false).unwrap();
+}
+
+fn branch_exists(repo: &Repo, name: &str) -> bool {
+    !repo.run(&["branch", "--list", name]).unwrap().is_empty()
+}
+
+/// A worktree Templum made: its changed files, its commits not merged into the branch of the
+/// working tree it goes back to, and that one's own changes to tracked files.
+#[test]
+fn a_worktrees_state_counts_its_changes_and_its_commits_not_merged() {
+    let (dir, repo) = committed();
+    assert_eq!(repo.worktree_state("w").unwrap(), None, "no such worktree");
+    assert_eq!(repo.worktree_state("../w").unwrap(), None, "not a name");
+    let path = repo.add_worktree("w").unwrap();
+    let state = repo.worktree_state("w").unwrap().unwrap();
+    assert_eq!(
+        (
+            state.branch.as_str(),
+            state.into.as_str(),
+            state.changed,
+            state.unmerged,
+            state.into_changed,
+            state.busy
+        ),
+        ("w", "main", 0, 0, 0, false)
+    );
+    assert_eq!(
+        state.path.canonicalize().unwrap(),
+        path.canonicalize().unwrap()
+    );
+    write(&path, "a.txt", "two\n");
+    write(&path, "new.txt", "new\n");
+    assert_eq!(repo.worktree_state("w").unwrap().unwrap().changed, 2);
+    let w = Repo::discover("git", &path).unwrap().unwrap();
+    w.stage(&["a.txt", "new.txt"]).unwrap();
+    w.commit("Two", false).unwrap();
+    let state = repo.worktree_state("w").unwrap().unwrap();
+    assert_eq!((state.changed, state.unmerged), (0, 1));
+    // Where it goes back: a tracked file changed counts, an untracked one doesn't.
+    write(dir.path(), "a.txt", "changed\n");
+    write(dir.path(), "loose.txt", "untracked\n");
+    assert_eq!(repo.worktree_state("w").unwrap().unwrap().into_changed, 1);
+}
+
+/// Read from a linked worktree that made it, a worktree goes back to that one's branch.
+#[test]
+fn a_worktree_made_from_a_worktree_goes_back_to_its_branch() {
+    let (_dir, repo) = committed();
+    let a_path = repo.add_worktree("a").unwrap();
+    let a = Repo::discover("git", &a_path).unwrap().unwrap();
+    commit_in(&a, &a_path, "b.txt", "b\n", "A's own");
+    a.add_worktree("w").unwrap();
+    let state = a.worktree_state("w").unwrap().unwrap();
+    assert_eq!(
+        (state.into.as_str(), state.unmerged),
+        ("a", 0),
+        "a's own commits aren't w's"
+    );
+    let from_main = repo.worktree_state("w").unwrap().unwrap();
+    assert_eq!((from_main.into.as_str(), from_main.unmerged), ("main", 1));
+}
+
+#[test]
+fn removing_a_worktree_with_changes_takes_force_and_deletes_its_branch() {
+    let (_dir, repo) = committed();
+    let path = repo.add_worktree("w").unwrap();
+    write(&path, "a.txt", "two\n");
+    assert!(repo.remove_worktree("w", false).is_err());
+    assert!(path.exists(), "kept");
+    repo.remove_worktree("w", true).unwrap();
+    assert!(!path.exists());
+    assert!(!branch_exists(&repo, "w"));
+    // A clean, merged one goes without force.
+    let path = repo.add_worktree("clean").unwrap();
+    repo.remove_worktree("clean", false).unwrap();
+    assert!(!path.exists() && !branch_exists(&repo, "clean"));
+}
+
+#[test]
+fn merging_a_worktree_back_takes_a_clean_commit_and_aborts_a_conflict() {
+    let (dir, repo) = committed();
+    let path = repo.add_worktree("w").unwrap();
+    let w = Repo::discover("git", &path).unwrap().unwrap();
+    commit_in(&w, &path, "c.txt", "c\n", "C");
+    assert_eq!(repo.merge_from("w").unwrap(), Ok(()));
+    assert_eq!(repo.worktree_state("w").unwrap().unwrap().unmerged, 0);
+    commit_in(&w, &path, "a.txt", "theirs\n", "W's");
+    commit_in(&repo, dir.path(), "a.txt", "ours\n", "Main's");
+    assert_eq!(
+        repo.merge_from("w").unwrap(),
+        Err(vec!["a.txt".to_string()])
+    );
+    assert_eq!(repo.operation(), None, "no merge left under way");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "ours\n"
+    );
+}
