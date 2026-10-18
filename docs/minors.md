@@ -1119,6 +1119,22 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   describe` gives the agent the bytes decoded as text (a byte that isn't UTF-8 becomes `U+FFFD`) and a newline at
   the end; text such as `git diff` arrives whole. Fix: a program named `claude` on PATH instead of a function, at the
   cost connections.md's "Considered and left out" gives.
+- [ ] **In zsh, a typed agent that isn't installed skips the person's not-found handler.** Left by the second review
+  of card 42 (`crates/templum-terminal/src/integration/zsh/.zshenv:41`): a `claude` or `codex` missing from PATH prints
+  zsh's plain message, so install hints from pkgfile or Homebrew's `command_not_found_handler` don't show; bash's
+  handler does run. Fix: when `(( $+functions[command_not_found_handler] ))`, call
+  `command_not_found_handler "$name" "$@"` and return its status.
+- [ ] **In fish before 3.2, a typed agent that isn't installed emits no not-found event.** Left by the second review
+  of card 42 (`crates/templum-terminal/src/integration/templum.fish:28,49`): the fallback prints fish's message but
+  never emits `fish_command_not_found`, so Ubuntu 20.04's command-not-found hints don't show for `claude` or
+  `codex`. Fix: `emit fish_command_not_found claude` (and `codex`) after the echo.
+- [ ] **PowerShell's integration doesn't install under `Set-StrictMode`.** Left by the second review of card 42
+  (`crates/templum-terminal/src/integration/templum.ps1:8,15`; older than the card at line 8): with
+  `Set-StrictMode -Version 1` or `Latest` in the profile, line 8 reads an unset variable, throws, and the
+  `try {} catch {}` swallows it, so a person sees no prompt marks and no typed-agent functions; line 15 reads
+  `$Global:__TemplumAgentExit` before `Set-StrictMode -Off` without setting it. Fix: test with
+  `Test-Path Variable:Global:__TemplumPrompt`, set `$Global:__TemplumAgentExit = $null` beside `__TemplumRunning`,
+  and move line 15 below `Set-StrictMode -Off`.
 
 ## Keeping the canvas
 
