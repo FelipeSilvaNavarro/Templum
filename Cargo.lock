@@ -6835,6 +6835,7 @@ version = "0.1.2"
 dependencies = [
  "alacritty_terminal",
  "polling",
+ "regex",
  "rustix",
  "sysinfo",
  "tempfile",

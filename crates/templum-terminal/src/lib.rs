@@ -25,7 +25,7 @@ pub use link::{Target, resolve};
 pub use palette::Palette;
 pub use shells::{ShellOption, available_shells, default_shell, default_shell_label};
 pub use snapshot::{Bar, Cursor, Row, Run, Snapshot, Span};
-pub use tap::{Mark, Outcome, Status};
+pub use tap::{Mark, Outcome, Pattern, Status};
 #[cfg(windows)]
 pub use terminal::quit_before_terminals;
 pub use terminal::{

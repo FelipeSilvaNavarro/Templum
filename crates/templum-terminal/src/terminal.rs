@@ -22,7 +22,7 @@ use alacritty_terminal::vte::ansi::CursorStyle;
 use crate::agent::{Detect, agent_of};
 use crate::input::{KeyInput, MouseInput, encode_key, encode_mouse, paste_bytes, typed_bytes};
 use crate::palette::{self, Palette};
-use crate::tap::{Mark, Status, Tap};
+use crate::tap::{Mark, Pattern, Status, Tap};
 
 /// Called (coalesced) when a terminal has something new to show.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -52,6 +52,10 @@ pub(crate) struct Shared {
     pub(crate) folder: Mutex<Option<PathBuf>>,
     /// Each command's state, by the number of its prompt's mark.
     pub(crate) marks: Mutex<HashMap<u32, Mark>>,
+    /// The watches on its printed lines: each one's id, its pattern and the first line that
+    /// matched it. `watching` spares the reader thread the lock while there are none.
+    watches: Mutex<Vec<(u64, Pattern, Option<String>)>>,
+    watching: AtomicBool,
 }
 
 impl Shared {
@@ -69,6 +73,46 @@ impl Shared {
             status: Mutex::default(),
             folder: Mutex::default(),
             marks: Mutex::default(),
+            watches: Mutex::default(),
+            watching: AtomicBool::new(false),
+        }
+    }
+
+    /// Adds a watch for `pattern` on the lines printed from now on; its id.
+    pub(crate) fn watch(&self, pattern: Pattern) -> u64 {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let mut watches = self.watches.lock().unwrap();
+        watches.push((id, pattern, None));
+        self.watching.store(true, Ordering::Release);
+        id
+    }
+
+    /// The first line that matched the watch `id`, once one did.
+    pub(crate) fn hit(&self, id: u64) -> Option<String> {
+        let watches = self.watches.lock().unwrap();
+        watches.iter().find(|w| w.0 == id)?.2.clone()
+    }
+
+    pub(crate) fn unwatch(&self, id: u64) {
+        let mut watches = self.watches.lock().unwrap();
+        watches.retain(|w| w.0 != id);
+        self.watching.store(!watches.is_empty(), Ordering::Release);
+    }
+
+    /// A watch is set: the reader thread keeps the line being printed.
+    pub(crate) fn watched(&self) -> bool {
+        self.watching.load(Ordering::Acquire)
+    }
+
+    /// A line was printed: each watch with no match yet whose pattern it matches keeps it.
+    pub(crate) fn heard(&self, line: &[u8]) {
+        let line = String::from_utf8_lossy(line);
+        let mut watches = self.watches.lock().unwrap();
+        for (_, pattern, hit) in watches.iter_mut().filter(|w| w.2.is_none()) {
+            if pattern.is_match(&line) {
+                *hit = Some(line.clone().into_owned());
+            }
         }
     }
 
@@ -895,6 +939,26 @@ impl Terminal {
         };
         let name = system.process(Pid::from_u32(pid))?.name();
         Some((pid, name.to_string_lossy().into_owned()))
+    }
+
+    /// Looks for `pattern` in each line it prints from now on, escape sequences dropped, until
+    /// [`Terminal::unwatch`]; the watch's id, for [`Terminal::hit`].
+    pub fn watch(&self, pattern: Pattern) -> u64 {
+        self.shared.watch(pattern)
+    }
+
+    /// The first line that matched the watch `id`, once one did.
+    pub fn hit(&self, id: u64) -> Option<String> {
+        self.shared.hit(id)
+    }
+
+    pub fn unwatch(&self, id: u64) {
+        self.shared.unwatch(id);
+    }
+
+    /// How many watches it has.
+    pub fn watching(&self) -> usize {
+        self.shared.watches.lock().unwrap().len()
     }
 
     /// What the shell (with shell integration) and its programs told about their commands, and

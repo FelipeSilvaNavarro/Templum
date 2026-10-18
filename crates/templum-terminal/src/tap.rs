@@ -88,6 +88,44 @@ const MAX_BODY: usize = 4096;
 /// Notification texts are cut there.
 const MAX_MESSAGE: usize = 200;
 
+/// A line kept for the watches is cut there; its bytes past it are dropped until its line feed.
+const MAX_LINE: usize = 64 * 1024;
+
+/// What a watch looks for in each line a terminal prints (docs/specs/agent-tools.md, `wait_for`
+/// with a pattern): a regular expression in Rust's `regex` syntax, which runs in linear time.
+#[derive(Clone, Debug)]
+pub struct Pattern(regex::Regex);
+
+impl Pattern {
+    /// `text` as a pattern; why not, in the words an agent reads.
+    pub fn new(text: &str) -> Result<Pattern, String> {
+        if text.trim().is_empty() {
+            return Err("\"pattern\" is blank".into());
+        }
+        if text.chars().count() > 1000 {
+            return Err("\"pattern\" is longer than 1000 characters".into());
+        }
+        regex::RegexBuilder::new(text)
+            .size_limit(1 << 20)
+            .build()
+            .map(Pattern)
+            .map_err(|e| {
+                // Its last line says what is wrong; the ones above draw where.
+                let why = e.to_string();
+                let why = why.lines().last().unwrap_or_default().to_string();
+                format!("\"pattern\" isn't a regular expression: {why}")
+            })
+    }
+
+    pub fn is_match(&self, line: &str) -> bool {
+        self.0.is_match(line)
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum State {
     Ground,
@@ -97,6 +135,8 @@ enum State {
     Osc,
     /// In an OSC that isn't ours: waiting for its end.
     Skip,
+    /// In a CSI (`ESC [`): waiting for its final byte.
+    Csi,
 }
 
 /// Finds our OSC sequences in a byte stream that may split them anywhere. It ends an OSC where
@@ -114,6 +154,10 @@ pub(crate) struct Scanner {
     same_line: bool,
     /// Bytes to add after the ST that ends a sequence of ours, once its `\` is seen.
     after_st: Option<Vec<u8>>,
+    /// The line being printed, its escape sequences dropped, while a watch is set.
+    pub(crate) line: Vec<u8>,
+    /// A `\r` ended what was heard: the line starts again, unless a line feed comes first.
+    cr: bool,
 }
 
 /// Bytes to add to the stream, each at an offset of the scanned bytes.
@@ -129,6 +173,38 @@ impl Scanner {
             command: None,
             same_line: false,
             after_st: None,
+            line: Vec::new(),
+            cr: false,
+        }
+    }
+
+    /// Keeps the printable bytes of `text`, outside any escape sequence, in the line being
+    /// printed; at each line feed, the watches hear it. Nothing is kept without a watch.
+    fn keep(&mut self, text: &[u8], shared: &Shared) {
+        if !shared.watched() {
+            self.line.clear();
+            self.cr = false;
+            return;
+        }
+        for &b in text {
+            match b {
+                b'\n' => {
+                    shared.heard(&self.line);
+                    self.line.clear();
+                    self.cr = false;
+                }
+                b'\r' => self.cr = true,
+                b'\t' | 0x20..=0x7e | 0x80..=0xff => {
+                    // A progress bar: back to the line's start, drawn again.
+                    if std::mem::take(&mut self.cr) {
+                        self.line.clear();
+                    }
+                    if self.line.len() < MAX_LINE {
+                        self.line.push(b);
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -145,6 +221,7 @@ impl Scanner {
                     if self.same_line && bytes[i..end].contains(&b'\n') {
                         self.same_line = false;
                     }
+                    self.keep(&bytes[i..end], shared);
                     if at.is_none() {
                         return inserts;
                     }
@@ -161,10 +238,18 @@ impl Scanner {
                     if bytes[i] == b']' {
                         self.body.clear();
                         self.state = State::Osc;
-                    } else if bytes[i] != 0x1b {
+                    } else if bytes[i] == b'[' {
+                        self.state = State::Csi;
+                    } else if !matches!(bytes[i], 0x1b | 0x20..=0x2f) {
+                        // An intermediate byte (`ESC ( B`) waits for its final one.
                         self.state = State::Ground;
                     }
                 }
+                State::Csi => match bytes[i] {
+                    0x1b => self.state = State::Esc,
+                    0x18 | 0x1a | 0x40..=0x7e => self.state = State::Ground,
+                    _ => {}
+                },
                 State::Osc | State::Skip => match bytes[i] {
                     0x07 | 0x18 | 0x1a | 0x1b => {
                         if self.state == State::Osc {
@@ -626,6 +711,92 @@ mod tests {
         let s = status(&shared);
         assert_eq!(s.attention, 3);
         assert_eq!(s.message.as_deref(), Some("Only a title"));
+    }
+
+    /// `chunks` read one after the other by one scanner, which is returned.
+    fn scan_into(shared: &Shared, chunks: &[&[u8]]) -> Scanner {
+        let mut scanner = Scanner::new();
+        for chunk in chunks {
+            scanner.scan(chunk, shared);
+        }
+        scanner
+    }
+
+    fn add_watch(shared: &Shared, pattern: &str) -> u64 {
+        shared.watch(Pattern::new(pattern).unwrap())
+    }
+
+    fn watched(pattern: &str) -> (Arc<Shared>, u64) {
+        let shared = shared();
+        let id = add_watch(&shared, pattern);
+        (shared, id)
+    }
+
+    fn hit(shared: &Shared, id: u64) -> Option<String> {
+        shared.hit(id)
+    }
+
+    #[test]
+    fn a_watch_hears_a_line_split_across_reads_without_its_escapes() {
+        let (shared, id) = watched("Ready in \\d+ms");
+        scan_into(&shared, &[b"\x1b[32mVITE\x1b[0m Rea", b"dy in 312ms\r\n"]);
+        assert_eq!(hit(&shared, id).as_deref(), Some("VITE Ready in 312ms"));
+    }
+
+    #[test]
+    fn a_watch_sees_each_line_once_and_only_after_it_was_set() {
+        let shared = shared();
+        scan_into(&shared, &[b"ERROR before\n"]);
+        let id = add_watch(&shared, "ERROR");
+        scan_into(&shared, &[b"ok\nstill ok\n"]);
+        assert_eq!(hit(&shared, id), None);
+        scan_into(&shared, &[b"ERROR one\nERROR two\n"]);
+        assert_eq!(hit(&shared, id).as_deref(), Some("ERROR one"));
+        shared.unwatch(id);
+        assert_eq!(hit(&shared, id), None);
+    }
+
+    #[test]
+    fn a_progress_bar_a_huge_line_and_bad_utf8_never_break_a_watch() {
+        let (shared, id) = watched("^done$");
+        scan_into(&shared, &[b"50%\r100%\rdone\n"]);
+        assert_eq!(
+            hit(&shared, id).as_deref(),
+            Some("done"),
+            "a lone \\r returns to the line's start"
+        );
+        let (shared, id) = watched("tail");
+        let mut huge = vec![b'x'; 1 << 20];
+        huge.extend_from_slice(b"tail\n\xff\xfe tail\n");
+        scan_into(&shared, &[&huge]);
+        assert_eq!(
+            hit(&shared, id).as_deref(),
+            Some("\u{fffd}\u{fffd} tail"),
+            "the long line was cut before its tail"
+        );
+    }
+
+    #[test]
+    fn nothing_is_kept_without_a_watch() {
+        let shared = shared();
+        assert!(scan_into(&shared, &[b"a line not ended"]).line.is_empty());
+        add_watch(&shared, "x");
+        assert!(!scan_into(&shared, &[b"a line not ended"]).line.is_empty());
+    }
+
+    #[test]
+    fn a_pattern_refuses_what_isnt_one() {
+        assert!(Pattern::new("ERROR|Traceback").is_ok());
+        assert_eq!(Pattern::new(" ").unwrap_err(), "\"pattern\" is blank");
+        let bad = Pattern::new("(").unwrap_err();
+        assert!(
+            bad.starts_with("\"pattern\" isn't a regular expression: ") && !bad.contains('\n'),
+            "{bad}"
+        );
+        assert_eq!(
+            Pattern::new(&"a".repeat(1001)).unwrap_err(),
+            "\"pattern\" is longer than 1000 characters"
+        );
     }
 
     /// What vte gets from `chunks` read one after the other, and what was heard.
