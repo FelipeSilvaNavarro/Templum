@@ -189,10 +189,7 @@ fn run(command: &str, input: &[u8]) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// Writes the settings file the Claude Code Templum opens is given, with Templum's data folder
-/// `data` and its program `exe`: Templum's status line when `status_line`, and the hooks that
-/// tell Templum its turns when `hooks`. Returns its path as typed after `--settings` in a shell;
-/// None when there is nothing to give, or a path can't be typed safely in every shell.
+/// `settings_file`'s path as typed after `--settings` in a shell.
 pub fn settings_arg(
     data: &Path,
     exe: &Path,
@@ -200,8 +197,23 @@ pub fn settings_arg(
     status_line: bool,
     hooks: bool,
 ) -> Option<String> {
+    let path = settings_file(data, exe, windows, status_line, hooks)?;
+    typed_path(&path.to_string_lossy(), windows)
+}
+
+/// Writes the settings file the Claude Code Templum opens is given, with Templum's data folder
+/// `data` and its program `exe`: Templum's status line when `status_line`, and the hooks that
+/// tell Templum its turns when `hooks`. Returns its path; None when there is nothing to give, or
+/// a path can't be typed safely in every shell.
+pub fn settings_file(
+    data: &Path,
+    exe: &Path,
+    windows: bool,
+    status_line: bool,
+    hooks: bool,
+) -> Option<PathBuf> {
     let path = data.join(SETTINGS);
-    let typed = typed_path(&path.to_string_lossy(), windows)?;
+    typed_path(&path.to_string_lossy(), windows)?;
     // Linux names a program replaced while it runs (an upgrade) "<path> (deleted)": the new one
     // is at the path.
     let exe = exe.to_string_lossy();
@@ -233,14 +245,20 @@ pub fn settings_arg(
         return None;
     }
     write_changed(&path, &serde_json::Value::Object(settings))?;
-    Some(typed)
+    Some(path)
+}
+
+/// `mcp_file`'s path as typed after `--mcp-config` in a shell.
+pub fn mcp_arg(data: &Path, exe: &Path, windows: bool) -> Option<String> {
+    let path = mcp_file(data, exe, windows)?;
+    typed_path(&path.to_string_lossy(), windows)
 }
 
 /// Writes the MCP config the Claude Code Templum opens is given: Templum's own server, `exe
-/// mcp`. Returns its path as typed after `--mcp-config` in a shell; None when it can't be.
-pub fn mcp_arg(data: &Path, exe: &Path, windows: bool) -> Option<String> {
+/// mcp`. Returns its path; None when it can't be typed safely in every shell.
+pub fn mcp_file(data: &Path, exe: &Path, windows: bool) -> Option<PathBuf> {
     let path = data.join(MCP);
-    let typed = typed_path(&path.to_string_lossy(), windows)?;
+    typed_path(&path.to_string_lossy(), windows)?;
     let exe = exe.to_string_lossy();
     let exe = exe.strip_suffix(" (deleted)").unwrap_or(&exe);
     let config = serde_json::json!({
@@ -249,7 +267,7 @@ pub fn mcp_arg(data: &Path, exe: &Path, windows: bool) -> Option<String> {
         } }
     });
     write_changed(&path, &config)?;
-    Some(typed)
+    Some(path)
 }
 
 /// Writes `value` to `path` unless the file already holds it.
@@ -841,6 +859,32 @@ mod tests {
             mcp_arg(Path::new("/home/$x"), Path::new("/opt/templum"), false),
             None
         );
+    }
+
+    /// What a new terminal hands the `claude` a person types: the path itself, a space and all.
+    #[cfg(unix)]
+    #[test]
+    fn settings_file_is_the_path_unquoted() {
+        let parent = tempfile::tempdir().unwrap();
+        let dir = parent.path().join("Templum Data");
+        std::fs::create_dir(&dir).unwrap();
+        let exe = Path::new("/opt/templum");
+        let file = settings_file(&dir, exe, false, true, true).unwrap();
+        assert_eq!(file, dir.join(SETTINGS));
+        let written = std::fs::read(&file).unwrap();
+        assert_eq!(
+            settings_arg(&dir, exe, false, true, true),
+            Some(format!("\"{}\"", file.display()))
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), written);
+        let mcp = mcp_file(&dir, exe, false).unwrap();
+        assert_eq!(mcp, dir.join(MCP));
+        assert_eq!(
+            mcp_arg(&dir, exe, false),
+            Some(format!("\"{}\"", mcp.display()))
+        );
+        assert_eq!(settings_file(&dir, exe, false, false, false), None);
+        assert_eq!(mcp_file(Path::new("/home/$x"), exe, false), None);
     }
 
     /// As Claude Code 2.1.286 printed it for a Max plan.

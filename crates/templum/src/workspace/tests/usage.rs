@@ -101,6 +101,73 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
     });
 }
 
+/// Every new terminal carries what Templum types after `claude` and `codex`, as raw words, for
+/// the ones a person types there; empty when there is nothing to give (docs/specs/connections.md,
+/// Agents typed in a terminal).
+#[gpui_kit::test]
+fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAppContext) {
+    let parent = tempfile::tempdir().unwrap();
+    let data = parent.path().join("Templum Data");
+    std::fs::create_dir(&data).unwrap();
+    let (_, ws) = open_in(cx, None, Some(data.clone()));
+    ws.update(cx, |ws, _| {
+        let word = |ws: &Workspace, key: &str| {
+            let env = ws.agent_env();
+            env.into_iter().find(|(k, _)| k == key).unwrap().1
+        };
+        let p = |name: &str| {
+            let path = data.join(name).to_string_lossy().into_owned();
+            if cfg!(windows) {
+                path.replace('\\', "/")
+            } else {
+                path
+            }
+        };
+        let claude = format!(
+            "--settings\n{}\n--mcp-config={}",
+            p("claude-statusline.json"),
+            p("mcp.json")
+        );
+        assert_eq!(word(ws, "TEMPLUM_CLAUDE_ARGS"), claude);
+        #[cfg(unix)]
+        {
+            let exe = crate::workspace::usage::program().unwrap();
+            let codex = templum_mcp::codex_args(&exe.to_string_lossy(), false, true).unwrap();
+            assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), codex.join("\n"));
+        }
+        ws.config.connections.enabled = false;
+        assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), "");
+        assert_eq!(
+            word(ws, "TEMPLUM_CLAUDE_ARGS"),
+            format!("--settings\n{}", p("claude-statusline.json"))
+        );
+        ws.config.usage.claude_limits = false;
+        assert_eq!(word(ws, "TEMPLUM_CLAUDE_ARGS"), "");
+        assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), "");
+        ws.config.connections.enabled = true;
+        ws.config.usage.claude_limits = true;
+        for program in ["powershell", "CMD.EXE"] {
+            ws.config.shell.program = Some(program.into());
+            assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), "", "{program}");
+            assert_eq!(word(ws, "TEMPLUM_CLAUDE_ARGS"), claude, "{program}");
+        }
+        ws.config.shell.program = Some("WSL.exe".into());
+        assert_eq!(word(ws, "TEMPLUM_CLAUDE_ARGS"), "");
+        assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), "");
+    });
+    // Without a data folder: both, empty, so none comes from a Templum this one was started from.
+    let (_, bare) = open_in(cx, None, None);
+    bare.update(cx, |ws, _| {
+        assert_eq!(
+            ws.agent_env(),
+            [
+                ("TEMPLUM_CLAUDE_ARGS".to_string(), String::new()),
+                ("TEMPLUM_CODEX_ARGS".to_string(), String::new()),
+            ]
+        );
+    });
+}
+
 /// A program path a shell would expand (`$`) can't be typed into the hooks: the server isn't
 /// given either, or the agent would be connected with a dot that never moves.
 #[test]

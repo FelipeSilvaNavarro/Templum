@@ -26,6 +26,18 @@ pub(super) const CLAUDE_EVERY: Duration = Duration::from_secs(5 * 60);
 /// What a read found: each terminal's session, in the order asked, and each agent's limits.
 pub(crate) type Read = (Vec<Option<Session>>, Vec<(String, Limits)>);
 
+/// What Templum gives the Claude Code and Codex it opens or a person types (`Workspace::gives`):
+/// its data folder and program, whether connections are on with a bus, whether Codex's flags
+/// can be typed in the shell (not cmd nor Windows PowerShell 5.1), and whether `templum` is on
+/// the terminal's PATH (Codex's hooks run it).
+struct Gives {
+    data: PathBuf,
+    exe: PathBuf,
+    connected: bool,
+    codex: bool,
+    on_path: bool,
+}
+
 /// The agent of `pane` as the last snapshot found it, for a read of its session.
 pub(super) fn proc_of(pane: &Pane) -> Option<Proc> {
     let seen = &pane.seen;
@@ -48,27 +60,77 @@ impl Workspace {
     /// aren't the shell's, nor without a data folder.
     pub(super) fn typed(&self, agent: Option<&AgentEntry>, command: &str) -> String {
         let builtin = agent.and_then(|a| a.builtin);
-        let (Some(data), Some(exe), false) = (&self.data_dir, program(), self.shell_is("wsl"))
-        else {
+        let Some(gives) = self.gives() else {
             return command.to_string();
         };
-        let connected = self.config.connections.enabled && self.bus.is_some();
         let windows = cfg!(windows);
-        // `terminal_env` puts `<data>/bin`, where `templum` is, first on it.
-        let on_path = self.bus_env.iter().any(|(k, _)| k == "PATH");
         let mut line = command.to_string();
         if builtin == Some(Agent::CLAUDE) {
             let limits = self.config.usage.claude_limits;
-            line.push_str(&claude_flags(data, &exe, windows, limits, connected));
+            line.push_str(&claude_flags(
+                &gives.data,
+                &gives.exe,
+                windows,
+                limits,
+                gives.connected,
+            ));
         } else if builtin == Some(Agent::CODEX)
-            && connected
-            && !self.shell_is("cmd")
-            && !self.shell_is("powershell")
-            && let Some(flags) = templum_mcp::codex_flags(&exe.to_string_lossy(), windows, on_path)
+            && gives.codex
+            && let Some(flags) =
+                templum_mcp::codex_flags(&gives.exe.to_string_lossy(), windows, gives.on_path)
         {
             line.push_str(&flags);
         }
         line
+    }
+
+    /// What every new terminal's environment gets for the `claude` and `codex` a person types
+    /// there (docs/specs/connections.md, Agents typed in a terminal): the words `typed` would
+    /// append after each, unquoted, one per line. Both always, empty when there is nothing to
+    /// give, so a Templum started from another's terminal doesn't pass that one's on.
+    pub(super) fn agent_env(&self) -> Vec<(String, String)> {
+        let windows = cfg!(windows);
+        let (claude, codex) = match self.gives() {
+            Some(gives) => {
+                let limits = self.config.usage.claude_limits;
+                let claude = claude_args(&gives.data, &gives.exe, windows, limits, gives.connected);
+                let codex = gives
+                    .codex
+                    .then(|| {
+                        templum_mcp::codex_args(
+                            &gives.exe.to_string_lossy(),
+                            windows,
+                            gives.on_path,
+                        )
+                    })
+                    .flatten()
+                    .unwrap_or_default();
+                (claude.join("\n"), codex.join("\n"))
+            }
+            None => Default::default(),
+        };
+        vec![
+            ("TEMPLUM_CLAUDE_ARGS".to_string(), claude),
+            ("TEMPLUM_CODEX_ARGS".to_string(), codex),
+        ]
+    }
+
+    /// What Templum gives the agents it opens or a person types, as `typed` says; None without a
+    /// data folder or a program, or under WSL, where Templum's paths aren't the shell's.
+    fn gives(&self) -> Option<Gives> {
+        let (Some(data), Some(exe), false) = (&self.data_dir, program(), self.shell_is("wsl"))
+        else {
+            return None;
+        };
+        let connected = self.config.connections.enabled && self.bus.is_some();
+        Some(Gives {
+            data: data.clone(),
+            exe,
+            connected,
+            codex: connected && !self.shell_is("cmd") && !self.shell_is("powershell"),
+            // `terminal_env` puts `<data>/bin`, where `templum` is, first on it.
+            on_path: self.bus_env.iter().any(|(k, _)| k == "PATH"),
+        })
     }
 
     /// New terminals run the shell named `name` (its program's file name, in any case:
@@ -402,6 +464,36 @@ pub(super) fn claude_flags(
         flags.push_str(&format!(" --mcp-config {arg}"));
     }
     flags
+}
+
+/// `claude_flags` as the words a program gets, unquoted, Windows' `\` as `/`; the MCP config as
+/// one word, `--mcp-config=<path>`: alone, `--mcp-config` would take the person's words after it.
+pub(super) fn claude_args(
+    data: &Path,
+    exe: &Path,
+    windows: bool,
+    limits: bool,
+    connected: bool,
+) -> Vec<String> {
+    let word = |path: PathBuf| {
+        let path = path.to_string_lossy().into_owned();
+        if windows {
+            path.replace('\\', "/")
+        } else {
+            path
+        }
+    };
+    let mut args = Vec::new();
+    let Some(settings) =
+        templum_usage::claude::settings_file(data, exe, windows, limits, connected)
+    else {
+        return args;
+    };
+    args.extend(["--settings".to_string(), word(settings)]);
+    if connected && let Some(mcp) = templum_usage::claude::mcp_file(data, exe, windows) {
+        args.push(format!("--mcp-config={}", word(mcp)));
+    }
+    args
 }
 
 /// Templum's program as an agent should run it: the AppImage when it runs from one (its mount

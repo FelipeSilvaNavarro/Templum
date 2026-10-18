@@ -561,13 +561,16 @@ fn the_bus_answers_over_its_socket(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn terminals_get_the_bus_and_this_templum_first_on_their_path(cx: &mut TestAppContext) {
     let data = tempfile::tempdir().unwrap();
-    let script = "printf 'bus=%s;\\n' \"$TEMPLUM_BUS\"; command -v templum; exec cat";
+    // The first word Templum types after `claude`, for one a person types.
+    let script = "printf 'claude=%s;\\n' \"${TEMPLUM_CLAUDE_ARGS%%\n*}\"; \
+                  printf 'bus=%s;\\n' \"$TEMPLUM_BUS\"; command -v templum; exec cat";
     let command = ("sh".to_string(), vec!["-c".to_string(), script.to_string()]);
     let (_, ws) = open_as(cx, Some(command), None, Some(data.path().to_path_buf()));
     let env = ws.read_with(cx, |ws, _| ws.bus.as_ref().unwrap().env.clone());
     let first = first_id(&ws, cx);
     let shown = screen_with(&ws, cx, first, "bin/templum");
     assert!(shown.contains(&format!("bus={env};")), "{shown}");
+    assert!(shown.contains("claude=--settings;"), "{shown}");
     let link = data.path().join("bin").join("templum");
     assert_eq!(
         std::fs::read_link(&link).unwrap(),
@@ -576,16 +579,18 @@ fn terminals_get_the_bus_and_this_templum_first_on_their_path(cx: &mut TestAppCo
 }
 
 /// A Templum with no bus, started from another's terminal: its terminals don't get the other's
-/// `TEMPLUM_BUS`, where they would talk as terminals it doesn't know.
+/// `TEMPLUM_BUS`, where they would talk as terminals it doesn't know, nor its words for `claude`.
 #[cfg(unix)]
 #[gpui_kit::test]
 fn without_a_bus_terminals_name_none(cx: &mut TestAppContext) {
-    let script = "printf 'bus=%s;\\n' \"${TEMPLUM_BUS-unset}\"; exec cat";
+    let script = "printf 'claude=%s;\\n' \"${TEMPLUM_CLAUDE_ARGS-unset}\"; \
+                  printf 'bus=%s;\\n' \"${TEMPLUM_BUS-unset}\"; exec cat";
     let command = ("sh".to_string(), vec!["-c".to_string(), script.to_string()]);
     let (_, ws) = open_as(cx, Some(command), None, None);
     let first = first_id(&ws, cx);
     let shown = screen_with(&ws, cx, first, "bus=");
     assert!(shown.contains("bus=;"), "{shown}");
+    assert!(shown.contains("claude=;"), "{shown}");
 }
 
 /// An empty PATH entry is the current folder: Templum's folder goes first and adds none.

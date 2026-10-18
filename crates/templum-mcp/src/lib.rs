@@ -31,6 +31,18 @@ const CODEX_HOOKS: [(&str, u8); 6] = [
 /// person to trust them once, whatever Templum's path. None when `exe` can't go inside single
 /// quotes and a TOML string.
 pub fn codex_flags(exe: &str, windows: bool, hooks: bool) -> Option<String> {
+    let words = codex_args(exe, windows, hooks)?;
+    Some(
+        words
+            .chunks(2)
+            .map(|flag| format!(" -c '{}'", flag[1]))
+            .collect(),
+    )
+}
+
+/// `codex_flags` as the words a program gets, `-c` and each value, unquoted: what a new terminal
+/// hands the `codex` a person types (docs/specs/connections.md, Agents typed in a terminal).
+pub fn codex_args(exe: &str, windows: bool, hooks: bool) -> Option<Vec<String>> {
     let exe = if windows {
         exe.replace('\\', "/")
     } else {
@@ -39,19 +51,25 @@ pub fn codex_flags(exe: &str, windows: bool, hooks: bool) -> Option<String> {
     if exe.is_empty() || exe.contains(['\'', '"', '\\', '\n']) {
         return None;
     }
-    let mut flags = format!(
-        " -c 'mcp_servers.templum.command=\"{exe}\"' -c 'mcp_servers.templum.args=[\"mcp\"]' \
-         -c 'mcp_servers.templum.env_vars=[\"TEMPLUM_BUS\",\"TEMPLUM_TERMINAL\"]' \
-         -c 'mcp_servers.templum.tool_timeout_sec=604800'"
-    );
+    let mut values = vec![
+        format!("mcp_servers.templum.command=\"{exe}\""),
+        "mcp_servers.templum.args=[\"mcp\"]".to_string(),
+        "mcp_servers.templum.env_vars=[\"TEMPLUM_BUS\",\"TEMPLUM_TERMINAL\"]".to_string(),
+        "mcp_servers.templum.tool_timeout_sec=604800".to_string(),
+    ];
     if hooks {
         for (event, timeout) in CODEX_HOOKS {
-            flags.push_str(&format!(
-                " -c 'hooks.{event}=[{{hooks=[{{type=\"command\",command=\"templum hook codex\",timeout={timeout}}}]}}]'"
+            values.push(format!(
+                "hooks.{event}=[{{hooks=[{{type=\"command\",command=\"templum hook codex\",timeout={timeout}}}]}}]"
             ));
         }
     }
-    Some(flags)
+    Some(
+        values
+            .into_iter()
+            .flat_map(|value| ["-c".to_string(), value])
+            .collect(),
+    )
 }
 
 #[cfg(test)]
@@ -100,5 +118,23 @@ mod tests {
         );
         assert_eq!(codex_flags("/home/o'neil/templum", false, true), None);
         assert_eq!(codex_flags("", false, true), None);
+    }
+
+    /// What a new terminal hands the `codex` a person types: the same values, one word each.
+    #[test]
+    fn codex_args_are_the_flags_unquoted() {
+        let words = codex_args("/opt/Templum App/templum", false, true).unwrap();
+        assert_eq!(words.len(), 20, "{words:?}");
+        assert!(words.iter().step_by(2).all(|w| w == "-c"), "{words:?}");
+        assert_eq!(
+            words[1],
+            "mcp_servers.templum.command=\"/opt/Templum App/templum\""
+        );
+        assert_eq!(
+            words[19],
+            "hooks.Interrupt=[{hooks=[{type=\"command\",command=\"templum hook codex\",timeout=3}]}]"
+        );
+        assert_eq!(codex_args("/opt/templum", false, false).unwrap().len(), 8);
+        assert_eq!(codex_args("/home/o'neil/templum", false, true), None);
     }
 }

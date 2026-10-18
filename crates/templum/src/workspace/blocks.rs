@@ -417,11 +417,16 @@ impl Workspace {
                 .integration
                 .clone()
                 .filter(|_| self.config.shell.integration),
-            env: match (&self.bus, &self.data_dir) {
-                (Some(bus), Some(data)) => super::bus::terminal_env(bus, data),
-                // Not the bus of a Templum this one was started from, which doesn't know its
-                // terminals: an empty one names none.
-                _ => vec![("TEMPLUM_BUS".to_string(), String::new())],
+            env: {
+                let mut env = match (&self.bus, &self.data_dir) {
+                    (Some(bus), Some(data)) => super::bus::terminal_env(bus, data),
+                    // Not the bus of a Templum this one was started from, which doesn't know its
+                    // terminals: an empty one names none.
+                    _ => vec![("TEMPLUM_BUS".to_string(), String::new())],
+                };
+                // For a `claude` or `codex` typed there, always (empty: not that Templum's either).
+                env.extend(self.agent_env());
+                env
             },
         };
         let start = folder.or_else(std::env::home_dir);
