@@ -163,9 +163,10 @@ A dangerous call ([The gate](#the-gate)) waits. Templum shows the approval in th
   words, kept apart from Templum's.
 - **Text to type hides nothing:** every line it types runs once Enter comes (a bracketed paste keeps its lines), so the
   sentence counts them ("Type 41 lines into …"), each line break is a `⏎` at its line's end, a run of blank lines is one
-  line "⋯ 39 blank lines ⏎", a run of more than 3 spaces or tabs `⋯200 spaces⋯`, and a control, zero-width or
-  bidirectional character its picture (`␛`) or code point (`⟨U+202E⟩`). While the box hasn't been seen to its end, it
-  says "Scroll to its end to allow it." and neither Allow (button or key) answers; Deny does.
+  line "⋯ 39 blank lines ⏎", a run of more than 3 spaces or tabs `⋯200 spaces⋯`, and a control, zero-width,
+  bidirectional, line or paragraph separator, annotation or tag character its picture (`␛`) or code point
+  (`⟨U+202E⟩`). While the box hasn't been seen to its end, it says "Scroll to its end to allow it." and neither Allow
+  (button or key) answers; Deny does.
 - **Buttons:** **Allow once** (`1`), **Allow for this conversation** (`2`), **Deny** (`3` or Esc), then a field "Or tell
   it what to do instead" (Enter denies with that text). An action that asks each time has no `2`, and its Allow once is
   red (`normal.red`).

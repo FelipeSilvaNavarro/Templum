@@ -451,12 +451,16 @@ fn visible(line: &str) -> String {
         match c {
             '\0'..='\x1f' => out.push(char::from_u32(0x2400 + c as u32).unwrap_or('?')),
             '\x7f' => out.push('␡'),
-            // C1 controls, zero widths and the bidirectional overrides that reorder a line.
+            // C1 controls, zero widths, the bidirectional marks and overrides that reorder a line,
+            // the line and paragraph separators that break it, interlinear annotations and tags.
             '\u{80}'..='\u{9f}'
+            | '\u{61c}'
             | '\u{200b}'..='\u{200f}'
-            | '\u{202a}'..='\u{202e}'
+            | '\u{2028}'..='\u{202e}'
             | '\u{2060}'..='\u{2069}'
-            | '\u{feff}' => out.push_str(&format!("⟨U+{:04X}⟩", c as u32)),
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{e0000}'..='\u{e007f}' => out.push_str(&format!("⟨U+{:04X}⟩", c as u32)),
             c => out.push(c),
         }
     }
@@ -502,6 +506,14 @@ mod tests {
         assert_eq!(
             typed("x\x1b[2K\x15y\u{202e}hs"),
             ("x␛[2K␕y⟨U+202E⟩hs".into(), 1)
+        );
+        // A line or paragraph separator would break the line, the rest hides or annotates it.
+        assert_eq!(
+            typed("a\u{2028}b\u{2029}c\u{61c}d\u{fff9}e\u{fffb}f\u{e0001}g\u{e007f}"),
+            (
+                "a⟨U+2028⟩b⟨U+2029⟩c⟨U+061C⟩d⟨U+FFF9⟩e⟨U+FFFB⟩f⟨U+E0001⟩g⟨U+E007F⟩".into(),
+                1
+            )
         );
     }
 }
