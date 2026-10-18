@@ -200,11 +200,9 @@ impl Workspace {
                 // So is a checklist.
                 session::Item::Checklist(c) => {
                     let now = crate::notes::now();
-                    c.checklists = c
-                        .checklists
-                        .iter()
-                        .filter_map(|id| self.checklists.duplicate(*id, now))
-                        .collect();
+                    c.checklist = c
+                        .checklist
+                        .and_then(|id| self.checklists.duplicate(id, now));
                 }
                 _ => {}
             }

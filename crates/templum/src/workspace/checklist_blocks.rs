@@ -1,7 +1,7 @@
-//! Checklist blocks' tabs: new checklists, opening one where it is or in a block, closing a tab
-//! (a blank checklist goes), the field that edits a name or an item in place, and the changes to
-//! a checklist's content, each kept for Ctrl+Z (`edit_checklist`). A checklist is open in one tab
-//! at most: opening it again shows that tab.
+//! Checklist blocks: new checklists, opening one where it is, in an empty block or in a new one
+//! beside, the field that edits a name or an item in place, and the changes to a checklist's
+//! content, each kept for Ctrl+Z (`edit_checklist`). A block shows one checklist, and a checklist
+//! is open in one block at most: opening it again shows that block.
 
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{AppContext as _, Context, Entity, Focusable as _, Window};
@@ -14,13 +14,17 @@ use crate::notes;
 use super::{Body, CHECKLIST_UNDO, Space, Workspace};
 
 impl Workspace {
-    /// A checklist block at the viewport's center with a new checklist.
-    pub(crate) fn new_checklist(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let center = self.space.camera().to_world(self.center(window));
-        let size = checklist::SIZE;
-        let near = Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0);
-        let at = self.space.canvas.place_new(size, near).origin();
-        self.add_checklist_at(at, window, cx);
+    /// A new checklist, its name being edited: in the checklist block `into` when it shows none,
+    /// otherwise in a new block beside it, or at the viewport's center without one.
+    pub(crate) fn new_checklist(
+        &mut self,
+        into: Option<BlockId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let id = self.checklists.add(notes::now());
+        let block = self.place_checklist(id, into, window, cx);
+        self.edit_field(block, Field::Name, window, cx);
     }
 
     /// A checklist block with a new checklist, its top-left corner at `at` (world units), its
@@ -32,23 +36,22 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let id = self.checklists.add(notes::now());
-        let block = self.add_checklist_block(at, vec![id], window, cx);
+        let block = self.add_checklist_block(at, id, window, cx);
         self.edit_field(block, Field::Name, window, cx);
     }
 
-    /// A checklist block of the default size at `at` showing `tabs`, focused.
+    /// A checklist block of the default size at `at` showing checklist `list`, focused.
     fn add_checklist_block(
         &mut self,
         at: Point,
-        tabs: Vec<u64>,
+        list: u64,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> BlockId {
         self.space.pristine = false;
         let rect = Rect::new(at.x, at.y, checklist::SIZE.w, checklist::SIZE.h);
         let checklist = Checklist {
-            tabs,
-            active: 0,
+            list: Some(list),
             editing: None,
         };
         let id = self.add_block(rect, Body::Checklist(checklist));
@@ -56,19 +59,56 @@ impl Workspace {
         id
     }
 
+    /// Shows checklist `id` in the checklist block `into` when it shows none; otherwise in a new
+    /// block beside `into` (the camera goes there), or at the viewport's center without one. The
+    /// block, focused.
+    fn place_checklist(
+        &mut self,
+        id: u64,
+        into: Option<BlockId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> BlockId {
+        if let Some(block) = into
+            && let Some(checklist) = self.space.checklist_mut(block)
+            && checklist.list.is_none()
+        {
+            checklist.list = Some(id);
+            self.focus_block(block, window, cx);
+            return block;
+        }
+        let size = checklist::SIZE;
+        let beside = into.and_then(|b| self.space.canvas.get(b).map(|b| self.space.home(b)));
+        let at = match beside {
+            Some(beside) => self.space.room_beside(&[beside], size).origin(),
+            None => {
+                let center = self.space.camera().to_world(self.center(window));
+                let near = Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0);
+                self.space.canvas.place_new(size, near).origin()
+            }
+        };
+        let block = self.add_checklist_block(at, id, window, cx);
+        if beside.is_some() {
+            let space = self.space.id.clone();
+            self.reveal(&space, block, window, cx);
+        }
+        block
+    }
+
     /// The workspace and block where checklist `id` is open, if it is.
     pub(crate) fn checklist_open_at(&self, id: u64) -> Option<(&Space, BlockId)> {
         self.spaces().find_map(|space| {
             space.blocks.iter().find_map(|(block, body)| {
                 body.checklist()
-                    .is_some_and(|c| c.tabs.contains(&id))
+                    .is_some_and(|c| c.list == Some(id))
                     .then_some((space, *block))
             })
         })
     }
 
-    /// Opens checklist `id`: where it is open, that tab is shown; otherwise as a new tab of the
-    /// checklist block `into`, or in a new checklist block at the view's center without one.
+    /// Opens checklist `id`: where it is open, that block is shown; otherwise in the checklist
+    /// block `into` when it shows none, in a new block beside it, or at the viewport's center
+    /// without one.
     pub(crate) fn open_checklist(
         &mut self,
         id: u64,
@@ -78,108 +118,14 @@ impl Workspace {
     ) {
         if let Some((space, block)) = self.checklist_open_at(id) {
             let space = space.id.clone();
-            if let Some(checklist) = self
-                .space_by_id_mut(&space)
-                .and_then(|s| s.blocks.get_mut(&block))
-                .and_then(Body::checklist_mut)
-            {
-                checklist.active = checklist.tabs.iter().position(|t| *t == id).unwrap_or(0);
-            }
             self.reveal(&space, block, window, cx);
-            return;
-        }
-        if self.checklists.get(id).is_none() {
-            return;
-        }
-        let into = into.filter(|b| {
-            self.space
-                .blocks
-                .get(b)
-                .is_some_and(|b| b.checklist().is_some())
-        });
-        match into {
-            Some(block) => self.add_checklist_tab(block, id, window, cx),
-            None => {
-                let center = self.space.camera().to_world(self.center(window));
-                let size = checklist::SIZE;
-                let near = Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0);
-                let at = self.space.canvas.place_new(size, near).origin();
-                self.add_checklist_block(at, vec![id], window, cx);
-            }
+        } else if self.checklists.get(id).is_some() {
+            self.place_checklist(id, into, window, cx);
         }
     }
 
-    /// Checklist `id` after the block's last tab, shown.
-    fn add_checklist_tab(
-        &mut self,
-        block: BlockId,
-        id: u64,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.stop_editing(block, window, cx);
-        if let Some(checklist) = self.space.checklist_mut(block) {
-            checklist.tabs.push(id);
-            checklist.active = checklist.tabs.len() - 1;
-        }
-        self.focus_block(block, window, cx);
-    }
-
-    /// The tab strip's +: a new checklist in a new tab of `block`, its name being edited.
-    pub(crate) fn new_checklist_tab(
-        &mut self,
-        block: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let id = self.checklists.add(notes::now());
-        self.add_checklist_tab(block, id, window, cx);
-        self.edit_field(block, Field::Name, window, cx);
-    }
-
-    /// Shows the block's tab `index`.
-    pub(crate) fn show_checklist_tab(
-        &mut self,
-        block: BlockId,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.stop_editing(block, window, cx);
-        if let Some(checklist) = self.space.checklist_mut(block)
-            && index < checklist.tabs.len()
-        {
-            checklist.active = index;
-        }
-        self.focus_block(block, window, cx);
-    }
-
-    /// Closes the block's tab `index`. The checklist stays in the Checklists dialog, unless it is
-    /// blank: nothing is lost then.
-    pub(crate) fn close_checklist_tab(
-        &mut self,
-        block: BlockId,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.stop_editing(block, window, cx);
-        let Some(checklist) = self.space.checklist_mut(block) else {
-            return;
-        };
-        if index >= checklist.tabs.len() {
-            return;
-        }
-        let id = checklist.tabs.remove(index);
-        if checklist.active > index || checklist.active >= checklist.tabs.len() {
-            checklist.active = checklist.active.saturating_sub(1);
-        }
-        self.drop_checklist_if_blank(id);
-        self.focus_block(block, window, cx);
-    }
-
-    /// The Checklists dialog's delete: checklist `id` goes for good, from every block that shows
-    /// it.
+    /// The Checklists dialog's delete: checklist `id` goes for good, and the block that shows it
+    /// shows none.
     pub(crate) fn delete_checklist(
         &mut self,
         id: u64,
@@ -195,14 +141,10 @@ impl Workspace {
                 .space_by_id_mut(&space)
                 .and_then(|s| s.blocks.get_mut(&block))
                 .and_then(Body::checklist_mut)
-                && let Some(index) = checklist.tabs.iter().position(|t| *t == id)
             {
-                checklist.tabs.remove(index);
-                if checklist.active > index || checklist.active >= checklist.tabs.len() {
-                    checklist.active = checklist.active.saturating_sub(1);
-                }
+                checklist.list = None;
                 // A field of a hidden workspace's block goes with its checklist.
-                checklist.editing.take_if(|e| e.list == id);
+                checklist.editing = None;
             }
         }
         self.checklists.remove(id);
@@ -269,7 +211,7 @@ impl Workspace {
             .space
             .blocks
             .get(&block)
-            .and_then(|b| b.checklist()?.shown())
+            .and_then(|b| b.checklist()?.list)
         else {
             return;
         };
@@ -309,7 +251,6 @@ impl Workspace {
         self.focus_block(block, window, cx);
         if let Some(checklist) = self.space.checklist_mut(block) {
             checklist.editing = Some(Editing {
-                list,
                 field,
                 input: input.clone(),
                 kept: false,
@@ -335,15 +276,15 @@ impl Workspace {
         input: &Entity<InputState>,
         cx: &mut Context<Self>,
     ) {
-        let Some(editing) = self
+        let Some((list, editing)) = self
             .space
             .checklist_mut(block)
-            .and_then(|c| c.editing.as_mut())
-            .filter(|e| &e.input == input)
+            .and_then(|c| c.list.zip(c.editing.as_mut()))
+            .filter(|(_, e)| &e.input == input)
         else {
             return;
         };
-        let (list, field, kept) = (editing.list, editing.field, editing.kept);
+        let (field, kept) = (editing.field, editing.kept);
         editing.kept = true;
         let text = input.read(cx).value().to_string();
         let write = |c: &mut Checklists| match field {
@@ -367,18 +308,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(editing) = self
+        let Some((list, editing)) = self
             .space
             .blocks
             .get(&block)
-            .and_then(|b| b.checklist()?.editing.as_ref())
-            .filter(|e| &e.input == input)
+            .and_then(|b| b.checklist())
+            .and_then(|c| c.list.zip(c.editing.as_ref()))
+            .filter(|(_, e)| &e.input == input)
         else {
             return;
         };
         match editing.field {
             Field::Item(item) if !input.read(cx).value().trim().is_empty() => {
-                let list = editing.list;
                 self.add_item_after(block, list, Some(item), window, cx)
             }
             _ => self.stop_editing(block, window, cx),
@@ -420,11 +361,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(editing) = self
+        let Some((list, editing)) = self
             .space
             .blocks
             .get(&block)
-            .and_then(|b| b.checklist()?.editing.as_ref())
+            .and_then(|b| b.checklist())
+            .and_then(|c| c.list.zip(c.editing.as_ref()))
         else {
             return;
         };
@@ -432,7 +374,7 @@ impl Workspace {
         else {
             return;
         };
-        let before = self.checklists.get(editing.list).and_then(|l| {
+        let before = self.checklists.get(list).and_then(|l| {
             let at = l.items.iter().position(|i| i.id == item)?;
             Some(l.items.get(at.checked_sub(1)?)?.id)
         });
@@ -463,17 +405,16 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(editing) = self
+        let Some((list, editing)) = self
             .space
             .checklist_mut(block)
-            .and_then(|c| c.editing.take())
+            .and_then(|c| c.list.zip(c.editing.take()))
         else {
             return;
         };
         if editing.input.read(cx).focus_handle(cx).is_focused(window) {
             window.focus(&self.focus_handle, cx);
         }
-        let list = editing.list;
         let blank = |item: u64, c: &Checklists| {
             c.get(list)
                 .and_then(|l| l.item(item))
@@ -514,7 +455,6 @@ impl Workspace {
             .and_then(|s| s.blocks.get_mut(&block))
             .and_then(Body::checklist_mut)
             .and_then(|c| c.editing.as_mut())
-            .filter(|e| e.list == list)
         {
             editing.kept = false;
         }

@@ -11,8 +11,8 @@ A **checklist block** on the canvas: a list of items you tick off. It serves two
 person's own tracking, or a list handed to an agent, which reads it, ticks items as it finishes them and adds new
 ones (it can build the list for the person).
 
-Checklists are kept app-wide, like notes: closing a tab or a block never loses one, and a dialog finds every
-checklist again. A block shows some of them as tabs, as a note block does.
+Checklists are kept app-wide, like notes: closing a block never loses one, and a dialog finds every checklist
+again. A block shows **one** checklist, with no tabs: to see another at the same time, open it in another block.
 
 **Success criteria**
 
@@ -34,19 +34,22 @@ wires, copy and paste, moving to another workspace.
 - **Opening one:** the toolbar's **Checklist** button (gpui-kit's `ListChecks` icon, after Note) or **Add ▸
   Checklist** in the canvas menu opens a block with a new checklist at the viewport's center (the menu: at the point
   clicked), 320 × 360, at least 220 × 160. Its title is being edited, with the keyboard.
-- **Tabs:** a strip of 28 world units under the header, as a note block's: each open checklist's tab, the one on
-  screen underlined in the accent color. A click shows a tab; its × closes the tab (the checklist stays); **+** opens a
-  new checklist in a new tab. A checklist is open in **one tab at most**: opening it again shows that tab, in its
-  block, in its workspace.
-- **A tab's title** and the block's title: the checklist's name and its progress, "Deploy 2/5"; the name alone while
-  it has no items. "Checklists" with no tab open.
-- **No tab open:** the block says "No checklist open here" with **New checklist** and **Open a checklist…** (the
-  dialog, for it).
+- **One checklist per block:** it fills the body under the header; there is no tab strip. A checklist is open in
+  **one block at most**: opening it again shows that block, in its workspace (the camera goes there).
+- **The block's title:** the checklist's name and its progress, "Deploy 2/5"; the name alone while it has no items.
+  "Checklists" with none.
+- **No checklist:** a block whose checklist was deleted in the dialog (or a saved block whose checklist is gone) says
+  "No checklist open here" with **New checklist** (a new one, in this block) and **Open a checklist…** (the dialog,
+  for it).
+- **Where a checklist opens** (the dialog's click and its **New checklist**): where it is open already, that block is
+  shown; else in the block the dialog was opened from when it shows none; else in a new block beside that block, the
+  camera going there, as an editor opens beside a terminal (from the canvas menu's Checklists…: at the viewport's
+  center). No agent tool opens one: an agent works on the checklist a wired block shows.
 - **The header's button** at its top left (`ListChecks`, tooltip "All checklists") opens the dialog for the block.
 
 ### The checklist on screen
 
-Under the tabs, scrolling when it doesn't fit (the wheel scrolls it and stops there; Ctrl+wheel zooms the canvas):
+Under the header, scrolling when it doesn't fit (the wheel scrolls it and stops there; Ctrl+wheel zooms the canvas):
 
 - **The name** on top, in 15 world units, semi-bold. A new checklist is named "Checklist". A click edits it: Enter or
   a click elsewhere keeps it, Esc too. A blank name reads "Checklist".
@@ -76,16 +79,16 @@ choice over a wrapping field):
 checklist's content (an item added, edited, checked, moved or deleted, its name, an agent's change), up to 50: that
 checklist goes back as it was, in every block showing it. A field's typing is one step, taken at its first key;
 inside the field, Ctrl+Z is the field's own. Adding a checklist, removing a blank one and deleting one in the dialog
-(already a second click) are not steps, so a tab never shows a checklist undo took away; a step whose checklist was
+(already a second click) are not steps, so a block never shows a checklist undo took away; a step whose checklist was
 deleted since is skipped.
 
-**Blank checklists go:** a checklist named "Checklist" (or blank) whose items have no text, whose tab or block
-closes, is removed; nothing is lost.
+**Blank checklists go:** a checklist named "Checklist" (or blank) whose items have no text, whose block closes, is
+removed; nothing is lost.
 
 **Right-click a checklist block:** All checklists…, *the grid's items*, Close.
 
-**Copy and paste** a checklist block (canvas selection): the pasted block shows copies of its checklists, with the
-same names.
+**Copy and paste** a checklist block (canvas selection): the pasted block shows a copy of its checklist, with the
+same name.
 
 **Far away** (docs/specs/level-of-detail.md): a checklist block is drawn in full at every level, as a kanban block
 (13 world units never reach the Card level with today's zoom steps); below Full its title is the fixed-size label,
@@ -99,15 +102,14 @@ Opened by the header's button, **All checklists…** in the block's menu, **Chec
 - every checklist, the most recently changed first; each row its name, its progress ("2/5"), when it last changed
   ("5 min ago") and where it is open ("Open", "Open in Workspace 2");
 - the field on top finds checklists by their name and their items' text, in any case;
-- a click opens one: as a tab of the block the dialog was opened from, where it is open already, or in a new block;
-- **New checklist** adds one;
-- the trash deletes a checklist on its **second** click ("Delete for good" shows after the first), from every block
-  that shows it.
+- a click opens one, and **New checklist** adds one, where [a checklist opens](#a-checklist-block);
+- the trash deletes a checklist on its **second** click ("Delete for good" shows after the first); the block that
+  showed it shows none.
 
 ## Agents
 
 A checklist block wired to an agent ([connections.md](connections.md#tools)) gets three tools and their verbs. The
-checklist is the one on screen in the block; an item is named by its id, as `read_checklist` shows it.
+checklist is the block's; an item is named by its id, as `read_checklist` shows it.
 
 | Tool | Arguments | Does | Needs |
 |---|---|---|---|
@@ -146,13 +148,17 @@ checklist is the one on screen in the block; an item is named by its id, as `rea
     ids is read with the largest, and an id a hand-edited file gives twice gets a new one after its first).
   - A missing `items` means none, a missing `done` false; an unchecked item writes no `done`. `changed` is in Unix
     seconds, moved by any change to the checklist.
-- **A canvas file** gets a new item: `{ "kind": "checklist", "rect": {…}, "checklists": [11, 16], "active": 1 }`. A
-  Templum from before this spec sets such a file aside ([persistence.md](persistence.md#the-file)), as for the
-  kanban.
+- **A canvas file** gets a new item: `{ "kind": "checklist", "rect": {…}, "checklist": 11 }` (no `checklist`: it
+  shows none). A Templum from before this spec sets such a file aside ([persistence.md](persistence.md#the-file)),
+  as for the kanban.
+  - Before one checklist per block, a block named its tabs: `"checklists": [11, 16], "active": 1`. Such a block shows
+    the tab that was on screen (16), else the first of its tabs still there that no other block shows; its other
+    checklists stay in the dialog, but for blank ones, which go. These two fields are read, never written: the canvas
+    is saved back with `"checklist"`.
 - **Saving:** as `boards.json`: written by the 5-second snapshot when the checklists changed, and on quit, through the
   temporary file and rename. A `checklists.json` Templum can't parse is kept as `checklists.json.bak` and the
   checklists start empty; one it can't open isn't written that session. The canvases are written either way: a block
-  naming a checklist that isn't there shows the others (nothing is lost, the dialog keeps every checklist).
+  naming a checklist that isn't there shows none (nothing is lost, the dialog keeps every checklist).
 - The workspaces screen's card counts them: "2 checklists".
 
 ## Architecture
@@ -160,9 +166,8 @@ checklist is the one on screen in the block; an item is named by its id, as `rea
 | File | Change |
 |---|---|
 | `checklists.rs` (new) | The model (`Checklists`, `Checklist`, `Item`) and every edit: add, rename, add an item after another, set its text, check, move, delete, duplicate, find, progress, the blank test, `add_items`'s line parsing. Serde; `checklists.json`'s load and save. Pure and unit-tested, as `notes.rs` and `board.rs`. |
-| `checklist.rs` (new) | The block (`Checklist { tabs, active, editing }`): its body (tabs, name, rows, drag and drop, the field), the empty block, the header button and the dialog. |
-| `workspace/checklist_tabs.rs` (new) | Opening, closing and deleting checklists in blocks, the field's start and end, `edit_checklist` (one checklist's content as it was, for Ctrl+Z), as `note_tabs.rs` and `edit_boards`. |
-| `note.rs` | The tab strip becomes shared by note and checklist blocks, rather than copied. |
+| `checklist.rs` (new) | The block (`Checklist { list, editing }`): its body (name, rows, drag and drop, the field), the empty block, the header button and the dialog. |
+| `workspace/checklist_blocks.rs` (new) | Opening checklists in blocks (where open, an empty block, a new one beside), deleting them, the field's start and end, `edit_checklist` (one checklist's content as it was, for Ctrl+Z), as `edit_boards`. |
 | `workspace/mod.rs`, `block.rs`, `session.rs`, `workspace/persist.rs`, `workspace/selection.rs`, `spaces_screen.rs` | `Body::Checklist`, `Item::Checklist`, `checklists.json` with the snapshot, paste, counts. |
 | `menu/`, `toolbar.rs` | Add ▸ Checklist, Checklists…, the block's menu, the toolbar button. |
 | `templum-mcp`'s `tools.rs`, `cli.rs` | The three tools and their verbs. |
@@ -180,7 +185,8 @@ and by item text, any case, newest first; progress and the title; the blank test
 dropped, `[x]` checked, blank lines skipped); a file written and read back is equal, `next_id` follows the ids, a
 missing `done` is false.
 
-**Unit (`session`):** a canvas with a checklist item reads back equal.
+**Unit (`session`):** a canvas with a checklist item reads back equal; a block's tabs from before are read and never
+written.
 
 **Unit (`templum-mcp`):** the three tools parse their arguments and refuse a missing one; the verbs build their
 calls.
@@ -189,12 +195,14 @@ calls.
 
 - the toolbar button opens a block with a new checklist, its name editing;
 - Enter in an item adds the next one; Backspace in an empty one deletes it; an item left empty is deleted;
-- the box checks an item, and the tab's title shows the progress;
-- two tabs; closing a blank checklist's tab removes it, closing a named one keeps it;
-- the dialog opens a checklist where it is open, and deletes one from its blocks;
+- the box checks an item, and the block's title shows the progress;
+- the block has no tabs; closing a blank checklist's block removes it, closing a named one's keeps it;
+- the dialog opens a checklist where it is open, in an empty block, and beside a block that shows one (so does its
+  New checklist); it deletes one, and its block shows none;
 - Ctrl+Z undoes a check, and skips a step whose checklist was deleted;
 - a wired agent's `read_checklist`, `check_item` and `add_items`, and an unwired one refused;
-- checklists and blocks come back after a restart; a pasted block shows copies.
+- checklists and blocks come back after a restart; a block of tabs from before shows its tab on screen and keeps
+  the others in the dialog; a pasted block shows a copy.
 
 **Manual (Hyprland):** edit, check and drag items at zoom 0.5, 1 and 2, a one-line item's text staying where the
 row's was while it is edited; a long list scrolls; the dialog finds and deletes.
@@ -203,7 +211,8 @@ row's was while it is edited; a long list scrolls; the dialog finds and deletes.
 
 1. This spec.
 2. The model and `checklists.json`.
-3. The block: tabs, rows, editing, the dialog, menus, the toolbar, persistence.
+3. The block: rows, editing, the dialog, menus, the toolbar, persistence.
 4. Drag and drop.
 5. The agents' tools and verbs.
 6. The docs (ARCHITECTURE.md, connections.md, context-menus.md, level-of-detail.md).
+7. One checklist per block: the tab strip removed, a block of tabs from before loaded with its tab on screen.

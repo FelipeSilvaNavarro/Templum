@@ -236,21 +236,23 @@ impl Workspace {
             }
             session::Item::Checklist(c) => {
                 let rect = clamped_rect(c.rect.into(), checklist::MIN)?;
-                let shown = c.checklists.get(c.active).copied();
-                // A checklist is open in one tab at most, even named twice; a deleted one is gone.
-                let mut tabs: Vec<u64> = Vec::new();
+                // A file from before one checklist per block: its tab on screen, else the first
+                // of its tabs still there.
+                let tabs = c.checklists.get(c.active).into_iter().chain(&c.checklists);
+                // A checklist is open in one block at most, even named twice; a deleted one is
+                // gone.
+                let list = c.checklist.iter().chain(tabs).copied().find(|&id| {
+                    self.checklists.get(id).is_some() && self.checklist_open_at(id).is_none()
+                });
+                // Its other tabs' checklists stay in the Checklists dialog, but for blank ones:
+                // nothing is lost.
                 for &id in &c.checklists {
-                    if self.checklists.get(id).is_some()
-                        && !tabs.contains(&id)
-                        && self.checklist_open_at(id).is_none()
-                    {
-                        tabs.push(id);
+                    if Some(id) != list && self.checklist_open_at(id).is_none() {
+                        self.drop_checklist_if_blank(id);
                     }
                 }
-                let active = tabs.iter().position(|t| Some(*t) == shown).unwrap_or(0);
                 let checklist = Checklist {
-                    tabs,
-                    active,
+                    list,
                     editing: None,
                 };
                 Some(self.add_block(rect, Body::Checklist(checklist)))

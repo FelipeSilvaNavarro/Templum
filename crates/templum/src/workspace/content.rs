@@ -416,7 +416,7 @@ impl Workspace {
             return Err(Reply::err(format!("{block} isn't a checklist.")));
         };
         checklist
-            .shown()
+            .list
             .filter(|list| self.checklists.get(*list).is_some())
             .ok_or_else(|| Reply::err(format!("{block} shows no checklist.")))
     }

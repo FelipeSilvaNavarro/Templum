@@ -852,7 +852,8 @@ fn wired_checklist(
                 let item = crate::session::Item::Checklist(crate::session::ChecklistItem {
                     uid: String::new(),
                     rect: Rect::new(900.0, 40.0, 320.0, 360.0).into(),
-                    checklists: vec![list],
+                    checklist: Some(list),
+                    checklists: Vec::new(),
                     active: 0,
                 });
                 ws.quiet = true;

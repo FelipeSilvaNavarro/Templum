@@ -1,4 +1,4 @@
-//! Checklist blocks: checklists in tabs, kept app-wide (never lost with a block but for blank
+//! Checklist blocks: one checklist each, kept app-wide (never lost with a block but for blank
 //! ones), their items checked, edited and deleted, and Ctrl+Z on their content.
 
 use gpui_kit::ElementId;
@@ -38,13 +38,14 @@ fn new_checklist(
     })
 }
 
-/// The checklist on screen in `block`.
+/// The checklist `block` shows.
 fn shown(ws: &Workspace, block: BlockId) -> u64 {
-    ws.space.blocks[&block]
-        .checklist()
-        .unwrap()
-        .shown()
-        .unwrap()
+    list_of(ws, block).unwrap()
+}
+
+/// The checklist `block` shows, if any.
+fn list_of(ws: &Workspace, block: BlockId) -> Option<u64> {
+    ws.space.blocks[&block].checklist().unwrap().list
 }
 
 fn name(what: &str, block: BlockId, i: u64) -> ElementId {
@@ -106,6 +107,14 @@ fn the_toolbar_opens_a_block_with_a_new_checklist(cx: &mut TestAppContext) {
         );
         assert_eq!(ws.space.focused, Some(id));
     });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("checklist-tabs", id.0 as usize)).is_none(),
+            "one checklist, no tabs"
+        );
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -182,34 +191,28 @@ fn the_rows_x_deletes_its_item(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn closing_a_blank_checklists_tab_removes_it_and_a_named_one_stays(cx: &mut TestAppContext) {
+fn closing_a_blank_checklists_block_removes_it_and_a_named_one_stays(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
-    let id = new_checklist(handle, &ws, cx);
-    let first = ws.read_with(cx, |ws, _| shown(ws, id));
-    click(handle, cx, ("checklist-tab-new", id.0 as usize));
-    let second = ws.read_with(cx, |ws, _| shown(ws, id));
-    assert_ne!(first, second);
-    ws.update(cx, |ws, _| ws.checklists.rename(first, "Groceries", 1));
-    click(handle, cx, name("checklist-tab-close", id, 1));
-    click(handle, cx, name("checklist-tab-close", id, 0));
-    ws.read_with(cx, |ws, _| {
-        assert!(ws.space.blocks[&id].checklist().unwrap().tabs.is_empty());
-        assert!(ws.checklists.get(second).is_none(), "blank: gone");
-        assert!(ws.checklists.get(first).is_some(), "named: kept");
+    let close = |cx: &mut TestAppContext, id: BlockId| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.close(id, window, cx))
+        })
+        .unwrap();
+    };
+    let named = new_checklist(handle, &ws, cx);
+    let groceries = ws.update(cx, |ws, _| {
+        let list = shown(ws, named);
+        ws.checklists.rename(list, "Groceries", 1);
+        list
     });
-    cx.update_window(handle, |_, window, cx| {
-        window.render_frame(cx);
-        window.find(("checklist-empty", id.0 as usize));
-    })
-    .unwrap();
-    // Closing a block drops its blank checklists too.
-    let other = new_checklist(handle, &ws, cx);
-    let blank = ws.read_with(cx, |ws, _| shown(ws, other));
-    cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.close(other, window, cx))
-    })
-    .unwrap();
-    ws.read_with(cx, |ws, _| assert!(ws.checklists.get(blank).is_none()));
+    close(cx, named);
+    let blank = new_checklist(handle, &ws, cx);
+    let gone = ws.read_with(cx, |ws, _| shown(ws, blank));
+    close(cx, blank);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.checklists.get(gone).is_none(), "blank: gone");
+        assert!(ws.checklists.get(groceries).is_some(), "named: kept");
+    });
 }
 
 #[gpui_kit::test]
@@ -238,7 +241,7 @@ fn ctrl_z_on_a_checklist_block_undoes_a_check_and_skips_a_deleted_checklist(
 }
 
 #[gpui_kit::test]
-fn a_checklist_is_open_in_one_tab_at_most(cx: &mut TestAppContext) {
+fn a_checklist_is_open_in_one_block_at_most(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let first = new_checklist(handle, &ws, cx);
     let list = ws.update(cx, |ws, _| {
@@ -247,6 +250,8 @@ fn a_checklist_is_open_in_one_tab_at_most(cx: &mut TestAppContext) {
         list
     });
     let second = new_checklist(handle, &ws, cx);
+    let its_own = ws.read_with(cx, |ws, _| shown(ws, second));
+    let blocks = ws.read_with(cx, |ws, _| ws.space.blocks.len());
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
             ws.open_checklist(list, Some(second), window, cx)
@@ -255,7 +260,8 @@ fn a_checklist_is_open_in_one_tab_at_most(cx: &mut TestAppContext) {
     .unwrap();
     ws.read_with(cx, |ws, _| {
         assert_eq!(ws.space.focused, Some(first), "shown where it is");
-        assert_eq!(ws.space.blocks[&second].checklist().unwrap().tabs.len(), 1);
+        assert_eq!(shown(ws, second), its_own);
+        assert_eq!(ws.space.blocks.len(), blocks, "no new block");
     });
 }
 
@@ -477,7 +483,7 @@ fn one_ctrl_z_takes_back_an_edits_typing(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn closing_the_tab_while_editing_keeps_the_text(cx: &mut TestAppContext) {
+fn closing_the_block_while_editing_keeps_the_text(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let id = new_checklist(handle, &ws, cx);
     let list = ws.update(cx, |ws, _| {
@@ -487,9 +493,11 @@ fn closing_the_tab_while_editing_keeps_the_text(cx: &mut TestAppContext) {
     });
     click(handle, cx, ("checklist-add", id.0 as usize));
     cx.simulate_input(handle, "milk");
-    click(handle, cx, name("checklist-tab-close", id, 0));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close(id, window, cx))
+    })
+    .unwrap();
     assert_eq!(texts(&ws, cx, list), ["milk"]);
-    assert!(editing(&ws, cx, id).is_none());
 }
 
 #[gpui_kit::test]
@@ -606,15 +614,12 @@ fn tick(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn checklists_and_their_tabs_come_back_after_a_restart(cx: &mut TestAppContext) {
+fn checklists_and_their_blocks_come_back_after_a_restart(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
     let id = new_checklist(handle, &ws, cx);
-    let first = ws.read_with(cx, |ws, _| shown(ws, id));
-    click(handle, cx, ("checklist-tab-new", id.0 as usize));
     let (second, item) = ws.update(cx, |ws, _| {
         let second = shown(ws, id);
-        ws.checklists.rename(first, "Groceries", 1);
         ws.checklists.rename(second, "Deploy", 1);
         let item = ws
             .checklists
@@ -641,8 +646,7 @@ fn checklists_and_their_tabs_come_back_after_a_restart(cx: &mut TestAppContext) 
             .values()
             .find_map(|b| b.checklist())
             .unwrap();
-        assert_eq!(c.tabs, [first, second]);
-        assert_eq!(c.active, 1);
+        assert_eq!(c.list, Some(second));
         let deploy = ws.checklists.get(second).unwrap();
         assert_eq!(deploy.name, "Deploy");
         assert!(deploy.item(item).unwrap().done);
@@ -660,20 +664,73 @@ fn a_checklist_named_twice_in_a_canvas_opens_once(cx: &mut TestAppContext) {
     write_canvas(
         dir.path(),
         r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[
-            {"kind":"checklist","rect":{"x":0,"y":0,"w":320,"h":360},"checklists":[3,3]},
-            {"kind":"checklist","rect":{"x":400,"y":0,"w":320,"h":360},"checklists":[3]}]}"#,
+            {"kind":"checklist","rect":{"x":0,"y":0,"w":320,"h":360},"checklist":3},
+            {"kind":"checklist","rect":{"x":400,"y":0,"w":320,"h":360},"checklist":3}]}"#,
     );
     let (_, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
     ws.read_with(cx, |ws, _| {
-        let tabs: Vec<u64> = ws
+        let lists: Vec<u64> = ws
             .space
             .blocks
             .values()
-            .filter_map(|b| b.checklist())
-            .flat_map(|c| c.tabs.clone())
+            .filter_map(|b| b.checklist()?.list)
             .collect();
-        assert_eq!(tabs, [3], "one tab in all");
+        assert_eq!(lists, [3], "one block in all");
     });
+}
+
+/// A canvas from before one checklist per block: a block of several tabs shows the one that was
+/// on screen (the first still there, when that one is gone); the others stay in the Checklists
+/// dialog, but for blank ones. The canvas is written back with one checklist per block.
+#[gpui_kit::test]
+fn a_block_of_tabs_from_before_shows_its_tab_on_screen_and_keeps_the_others(
+    cx: &mut TestAppContext,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        crate::checklists::path(dir.path()),
+        r#"{"version":1,"next_id":9,"checklists":[
+            {"id":1,"name":"Groceries","items":[{"id":2,"text":"Milk"}]},
+            {"id":3,"name":"Deploy"},
+            {"id":4,"name":"Checklist","items":[{"id":5,"text":""}]},
+            {"id":6,"name":"Release"}]}"#,
+    )
+    .unwrap();
+    write_canvas(
+        dir.path(),
+        r#"{"version":1,"camera":{"x":0,"y":0,"zoom":1},"items":[
+            {"kind":"checklist","rect":{"x":0,"y":0,"w":320,"h":360},
+             "checklists":[1,3,4],"active":1},
+            {"kind":"checklist","rect":{"x":400,"y":0,"w":320,"h":360},
+             "checklists":[8,6],"active":0}]}"#,
+    );
+    let (_, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));
+    ws.update(cx, |ws, cx| {
+        let mut lists: Vec<u64> = ws
+            .space
+            .blocks
+            .values()
+            .filter_map(|b| b.checklist()?.list)
+            .collect();
+        lists.sort();
+        assert_eq!(
+            lists,
+            [3, 6],
+            "the tab on screen; else the first still there"
+        );
+        let groceries = ws.checklists.get(1).expect("a tab not shown stays");
+        assert_eq!(groceries.items[0].text, "Milk");
+        assert!(ws.checklists.get(4).is_none(), "a blank one goes");
+        ws.save_canvas_now(cx);
+    });
+    let text =
+        std::fs::read_to_string(crate::session::path(dir.path(), crate::session::DEFAULT_ID))
+            .unwrap();
+    assert!(text.contains(r#""checklist": 3"#), "{text}");
+    assert!(
+        !text.contains("checklists") && !text.contains("active"),
+        "{text}"
+    );
 }
 
 #[gpui_kit::test]
@@ -777,10 +834,11 @@ fn the_dialog_opens_one_where_it_is_open_and_deletes_one_from_its_blocks(cx: &mu
     let second = new_checklist(handle, &ws, cx);
     // The dialog asked from the second block: the checklist is shown where it is open.
     click(handle, cx, ("checklists", second.0 as usize));
+    let its_own = ws.read_with(cx, |ws, _| shown(ws, second));
     click(handle, cx, row(list));
     ws.read_with(cx, |ws, _| {
         assert_eq!(ws.space.focused, Some(first));
-        assert_eq!(ws.space.blocks[&second].checklist().unwrap().tabs.len(), 1);
+        assert_eq!(shown(ws, second), its_own);
     });
     // Its trash deletes it on the second click, from the block too.
     cx.update_window(handle, |_, window, cx| {
@@ -798,24 +856,101 @@ fn the_dialog_opens_one_where_it_is_open_and_deletes_one_from_its_blocks(cx: &mu
     click(handle, cx, trash(list));
     ws.read_with(cx, |ws, _| {
         assert!(ws.checklists.get(list).is_none(), "deleted");
-        assert!(ws.space.blocks[&first].checklist().unwrap().tabs.is_empty());
+        assert_eq!(list_of(ws, first), None);
     });
+}
+
+/// A block whose checklist was deleted in the dialog.
+fn empty_block(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> BlockId {
+    let id = new_checklist(handle, ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let list = shown(ws, id);
+            ws.delete_checklist(list, window, cx)
+        });
+        window.render_frame(cx);
+        window.find(("checklist-empty", id.0 as usize));
+    })
+    .unwrap();
+    id
 }
 
 #[gpui_kit::test]
 fn open_a_checklist_in_an_empty_block_opens_it_there(cx: &mut TestAppContext) {
     no_motion(cx);
     let (handle, ws) = open(cx);
-    let id = new_checklist(handle, &ws, cx);
+    let id = empty_block(handle, &ws, cx);
     let kept = ws.update(cx, |ws, _| {
         let kept = ws.checklists.add(1);
         ws.checklists.rename(kept, "Kept", 1);
         kept
     });
-    click(handle, cx, name("checklist-tab-close", id, 0));
+    let blocks = ws.read_with(cx, |ws, _| ws.space.blocks.len());
     click(handle, cx, ("checklist-open-here", id.0 as usize));
     click(handle, cx, row(kept));
-    ws.read_with(cx, |ws, _| assert_eq!(shown(ws, id), kept));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(shown(ws, id), kept);
+        assert_eq!(ws.space.blocks.len(), blocks, "no new block");
+    });
+}
+
+#[gpui_kit::test]
+fn new_checklist_in_an_empty_block_fills_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = empty_block(handle, &ws, cx);
+    let blocks = ws.read_with(cx, |ws, _| ws.space.blocks.len());
+    click(handle, cx, ("checklist-new-here", id.0 as usize));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.checklists.get(shown(ws, id)).unwrap().name, "Checklist");
+        assert_eq!(ws.space.blocks.len(), blocks, "no new block");
+    });
+    assert!(matches!(editing(&ws, cx, id), Some((Field::Name, _))));
+}
+
+/// From a block that shows a checklist, the dialog opens another, and its New checklist adds
+/// one, in a new block beside it: the block keeps its own.
+#[gpui_kit::test]
+fn the_dialog_opens_a_checklist_beside_a_block_that_shows_one(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let id = new_checklist(handle, &ws, cx);
+    let (own, other) = ws.update(cx, |ws, _| {
+        let other = ws.checklists.add(1);
+        ws.checklists.rename(other, "Other", 1);
+        (shown(ws, id), other)
+    });
+    let opened = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let top = ws.space.canvas.top().unwrap();
+            assert_ne!(top, id, "a new block");
+            assert_eq!(shown(ws, id), own, "the block keeps its own");
+            let (a, b) = (
+                ws.space.canvas.get(id).unwrap().rect,
+                ws.space.canvas.get(top).unwrap().rect,
+            );
+            assert!(!a.intersects(&b), "beside it: {a:?}, {b:?}");
+            top
+        })
+    };
+    click(handle, cx, ("checklists", id.0 as usize));
+    click(handle, cx, row(other));
+    let beside = opened(cx);
+    ws.read_with(cx, |ws, _| assert_eq!(shown(ws, beside), other));
+    // The camera went to the new block: the dialog is asked from the first one again.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |_, cx| {
+            crate::checklist::open_checklists(Some(id), window, cx)
+        });
+    })
+    .unwrap();
+    click(handle, cx, "checklists-new");
+    let new = opened(cx);
+    assert_ne!(new, beside);
+    assert!(matches!(editing(&ws, cx, new), Some((Field::Name, _))));
 }
 
 #[gpui_kit::test]

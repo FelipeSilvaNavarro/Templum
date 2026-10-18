@@ -304,17 +304,17 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 - [ ] **A field left editing in a hidden workspace stays drawn without the keyboard.** Switching workspaces while a
   checklist's name or item is edited hides the field, and GPUI sends no blur for an element it doesn't draw, so
-  `Checklist::editing` stays set (`crates/templum/src/workspace/checklist_tabs.rs`): back there, the field shows with
+  `Checklist::editing` stays set (`crates/templum/src/workspace/checklist_blocks.rs`): back there, the field shows with
   no caret, and an item left empty in it stays until the field is clicked and left. Fix: `stop_editing` on every
   checklist block of the space being hidden, in `switch_to`.
 - [ ] **A click on the bare canvas right after a field opens can leave it open.** A click on a block stops a
   checklist's field (`focus_block`), but the canvas relies on GPUI's blur, which reaches the field only once it has been
   drawn again since it took the keyboard (its caret blinks every 500 ms): a click on the empty canvas in that first
-  half second leaves the field drawn until the next click (`crates/templum/src/workspace/checklist_tabs.rs`). Fix: stop
+  half second leaves the field drawn until the next click (`crates/templum/src/workspace/checklist_blocks.rs`). Fix: stop
   the focused block's field wherever the canvas takes the keyboard (`space.focused = None`).
 - [ ] **Undoing a blank checklist's close brings back an empty block.** As for notes: a blank checklist goes when its
   block closes (`drop_checklist_if_blank`), so Ctrl+Z after closing it shows "No checklist open here". Fix: in
-  `add_saved`, a checklist item whose checklists are all gone opens a new blank checklist.
+  `add_saved`, a checklist item whose checklist is gone opens a new blank checklist.
 - [ ] **Two canvases naming one checklist both show it after a restart.** As for notes: `checklist_open_at` looks only
   in the workspaces already loaded (`crates/templum/src/workspace/persist.rs`, `add_saved`), so a hand-edited file
   that names a checklist in two workspaces opens it in both. Fix: look in `load_spaces`' list too while loading.
@@ -328,14 +328,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   an open field: a new, still empty item is written to `checklists.json`, and after a restart nothing edits it, so it
   stays until its × is clicked. Fix: write (and compare with `checklists_saved`) a copy of `self.checklists` without
   the blank items an open field edits, in every workspace; the quit hook has no `window` for `stop_editing`.
-- [ ] **Checklist code repeats the note blocks' and does per-row work every frame.** Nothing shows. `new_checklist`
-  and `open_checklist` (`crates/templum/src/workspace/checklist_tabs.rs`) each place a block at the view's center, and
-  `close_checklist_tab` and `delete_checklist` each remove a tab and fix `active`, as `note_tabs.rs` does twice too;
-  `row` (`crates/templum/src/checklist.rs`) looks its block up in the canvas and computes the drag preview's width for
-  every item; `read_checklist` (`crates/templum/src/workspace/content.rs`) looks the list up again after
-  `wired_checklist`, behind an error branch it can't reach. Fix: one helper for a new block's place at the center and
-  one for removing a tab, shared by notes and checklists; the width computed once in `list_view`; `wired_checklist`
-  returning the `&List`.
+- [ ] **Checklist code does per-row work every frame, and note tabs repeat code.** Nothing shows. `row`
+  (`crates/templum/src/checklist.rs`) looks its block up in the canvas and computes the drag preview's width for every
+  item; `read_checklist` (`crates/templum/src/workspace/content.rs`) looks the list up again after `wired_checklist`,
+  behind an error branch it can't reach; `note_tabs.rs` places a block at the view's center twice and removes a tab
+  and fixes `active` twice. Fix: the width computed once in `list_view`; `wired_checklist` returning the `&List`; one
+  helper each in `note_tabs.rs`.
 
 ## Grid mode
 

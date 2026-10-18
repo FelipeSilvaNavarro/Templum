@@ -511,11 +511,15 @@ pub(crate) struct ChecklistItem {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub uid: String,
     pub rect: SavedRect,
-    /// The checklists it shows as tabs, by their ids in `checklists.json`, in order.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// The checklist it shows, by its id in `checklists.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checklist: Option<u64>,
+    /// A file from before one checklist per block: the checklists it showed as tabs, in order,
+    /// read, never written. The block shows the one on screen.
+    #[serde(default, skip_serializing)]
     pub checklists: Vec<u64>,
-    /// The tab on screen, by its index in `checklists`.
-    #[serde(default)]
+    /// Before that too: the tab on screen, by its index in `checklists`.
+    #[serde(default, skip_serializing)]
     pub active: usize,
 }
 
@@ -936,18 +940,40 @@ mod tests {
                 w: 320.0,
                 h: 360.0,
             },
-            checklists: vec![3, 5],
-            active: 1,
+            checklist: Some(3),
+            checklists: Vec::new(),
+            active: 0,
         });
         let text = serde_json::to_string(&item).unwrap();
         assert!(text.contains(r#""kind":"checklist""#), "{text}");
+        assert!(text.contains(r#""checklist":3"#), "{text}");
         assert_eq!(serde_json::from_str::<Item>(&text).unwrap(), item);
         let Item::Checklist(mut none) = item else {
             unreachable!()
         };
-        none.checklists.clear();
+        none.checklist = None;
         let text = serde_json::to_string(&Item::Checklist(none)).unwrap();
-        assert!(!text.contains("checklists"), "{text}");
+        assert!(!text.contains(r#""checklist":"#), "{text}");
+    }
+
+    /// A file from before one checklist per block names its tabs: they are read, never written.
+    #[test]
+    fn a_checklist_blocks_old_tabs_are_read_and_not_written() {
+        let text = r#"{"kind":"checklist","rect":{"x":0,"y":0,"w":320,"h":360},
+                      "checklists":[3,5],"active":1}"#;
+        let item: Item = serde_json::from_str(text).unwrap();
+        let Item::Checklist(c) = &item else {
+            panic!("{item:?}")
+        };
+        assert_eq!(
+            (c.checklist, c.checklists.clone(), c.active),
+            (None, vec![3, 5], 1)
+        );
+        let back = serde_json::to_string(&item).unwrap();
+        assert!(
+            !back.contains("checklists") && !back.contains("active"),
+            "{back}"
+        );
     }
 
     #[test]

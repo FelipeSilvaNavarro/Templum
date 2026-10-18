@@ -107,7 +107,7 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
             false,
             ui,
         )
-        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.new_checklist(window, cx)))
+        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.new_checklist(None, window, cx)))
         .test_support()
         .into_any_element(),
         button(

@@ -3,7 +3,7 @@
 mod activity;
 mod blocks;
 mod bus;
-mod checklist_tabs;
+mod checklist_blocks;
 mod content;
 mod delegate;
 mod drawing;
@@ -427,8 +427,9 @@ impl Body {
             Body::Checklist(c) => session::Item::Checklist(session::ChecklistItem {
                 uid: String::new(),
                 rect: rect.into(),
-                checklists: c.tabs.clone(),
-                active: c.active,
+                checklist: c.list,
+                checklists: Vec::new(),
+                active: 0,
             }),
             Body::Editor(e) => session::Item::Editor(e.item(rect)),
         }

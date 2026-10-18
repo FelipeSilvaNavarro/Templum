@@ -1,6 +1,6 @@
-//! A checklist block: tabs of checklists (`checklists.rs` keeps them, app-wide), each drawn from
+//! A checklist block: one checklist (`checklists.rs` keeps them, app-wide), drawn from
 //! `Workspace::checklists` at the block's zoom: its name, its items with their check boxes, and
-//! "+ Add an item". With none open, a way to open one. And the Checklists dialog, where every
+//! "+ Add an item". With none, a way to open one. And the Checklists dialog, where every
 //! checklist is found, opened and deleted. See docs/specs/checklist.md.
 
 use gpui_kit::assets::IconName;
@@ -18,7 +18,6 @@ use crate::kanban::DragPreview;
 use crate::list_dialog;
 use crate::note;
 use crate::notes;
-use crate::tab_strip::tab_strip;
 use crate::workspace::Workspace;
 
 /// A new checklist block's size, and the smallest one (world units).
@@ -30,17 +29,16 @@ const NAME_FONT: f32 = 15.0;
 /// A check box's side, world units.
 const BOX: f32 = 14.0;
 
-/// A checklist block: the checklists it shows as tabs, by id, the one on screen, and the one
-/// field being edited.
+/// A checklist block: the checklist it shows, by id (None: none, as when it was deleted), and the
+/// one field being edited.
 pub(crate) struct Checklist {
-    pub tabs: Vec<u64>,
-    pub active: usize,
+    pub list: Option<u64>,
     pub editing: Option<Editing>,
 }
 
-/// A name or an item edited in place, every key written to the checklist as it is typed.
+/// A name or an item of the block's checklist edited in place, every key written to the
+/// checklist as it is typed.
 pub(crate) struct Editing {
-    pub list: u64,
     pub field: Field,
     pub input: Entity<InputState>,
     /// Its typing is an undo step already: the first key took it (or the add it came with).
@@ -61,14 +59,9 @@ pub(crate) enum Field {
 }
 
 impl Checklist {
-    /// The checklist on screen; None with no tab open.
-    pub fn shown(&self) -> Option<u64> {
-        self.tabs.get(self.active).copied()
-    }
-
-    /// The checklist on screen's title ("Deploy 2/5"); "Checklists" with none.
+    /// Its checklist's title ("Deploy 2/5"); "Checklists" with none.
     pub fn title(&self, ws: &Workspace) -> SharedString {
-        match self.shown().and_then(|id| ws.checklists.get(id)) {
+        match self.list.and_then(|id| ws.checklists.get(id)) {
             Some(list) => list.title().into(),
             None => "Checklists".into(),
         }
@@ -84,11 +77,11 @@ impl Checklist {
         })
     }
 
-    /// The field editing `field` of checklist `list`, if it is.
-    fn field(&self, list: u64, field: Field) -> Option<&Entity<InputState>> {
+    /// The field editing `field`, if it is.
+    fn field(&self, field: Field) -> Option<&Entity<InputState>> {
         self.editing
             .as_ref()
-            .filter(|e| e.list == list && e.field == field)
+            .filter(|e| e.field == field)
             .map(|e| &e.input)
     }
 }
@@ -97,8 +90,7 @@ fn name(what: &str, n: usize, id: u64) -> ElementId {
     ElementId::Name(format!("{what}-{n}-{id}").into())
 }
 
-/// The body below the header at the block's zoom `z`: the tab strip, then the checklist on
-/// screen, or a way to open one.
+/// The body below the header at the block's zoom `z`: its checklist, or a way to open one.
 pub(crate) fn body(
     ws: &Workspace,
     block: BlockId,
@@ -106,44 +98,19 @@ pub(crate) fn body(
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
-    let titles = checklist
-        .tabs
-        .iter()
-        .map(|id| {
-            ws.checklists
-                .get(*id)
-                .map_or_else(|| checklists::NAME.to_string(), List::title)
-                .into()
-        })
-        .collect();
-    let strip = tab_strip(
-        ws,
-        block,
-        "checklist",
-        titles,
-        checklist.active,
-        z,
-        Workspace::show_checklist_tab,
-        Workspace::close_checklist_tab,
-        Workspace::new_checklist_tab,
-        cx,
-    );
-    let inner = match checklist.shown().and_then(|id| ws.checklists.get(id)) {
+    let inner = match checklist.list.and_then(|id| ws.checklists.get(id)) {
         Some(list) => list_view(ws, block, checklist, list, z, cx),
         None => empty(ws, block, z, cx),
     };
     div()
         .size_full()
-        .flex()
-        .flex_col()
         // The wheel scrolls the checklist and stops there; with Ctrl it zooms the canvas.
         .on_scroll_wheel(|e: &ScrollWheelEvent, _, cx| {
             if !e.modifiers.control {
                 cx.stop_propagation();
             }
         })
-        .child(strip)
-        .child(div().relative().flex_1().min_h(px(0.0)).child(inner))
+        .child(inner)
         .into_any_element()
 }
 
@@ -161,7 +128,7 @@ fn list_view(
         .items
         .iter()
         .map(|item| {
-            let input = checklist.field(id, Field::Item(item.id));
+            let input = checklist.field(Field::Item(item.id));
             row(ws, block, id, item, input, z, cx)
         })
         .collect();
@@ -197,7 +164,7 @@ fn list_view(
                 .text_size(px(NAME_FONT * z))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(ui.title)
-                .map(|el| match checklist.field(id, Field::Name) {
+                .map(|el| match checklist.field(Field::Name) {
                     Some(input) => el.child(field(ws, block, input, NAME_FONT, z, cx)),
                     None => el
                         .line_height(relative(1.5))
@@ -377,7 +344,7 @@ fn field(
         .into_any_element()
 }
 
-/// A block with no checklist open: a new one.
+/// A block with no checklist: a new one, or one from the dialog.
 fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
     let n = block.0 as usize;
     div()
@@ -403,7 +370,7 @@ fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) ->
                 z,
             )
             .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                ws.new_checklist_tab(block, window, cx)
+                ws.new_checklist(Some(block), window, cx)
             }))
             .test_support(),
         )
@@ -425,9 +392,9 @@ fn empty(ws: &Workspace, block: BlockId, z: f32, cx: &mut Context<Workspace>) ->
 }
 
 /// The Checklists dialog: every checklist, the most recently changed first, and a field that
-/// finds them by their name and their items. A click opens one: in the block `into` it was asked
-/// from, where it is open already, or in a new block. Its trash deletes it on a second click,
-/// from every block too.
+/// finds them by their name and their items. A click opens one where it is open already, else in
+/// the block `into` it was asked from when that shows none, else in a new block (beside `into`).
+/// So does New checklist. Its trash deletes it on a second click, from its block too.
 pub(crate) fn open_checklists(
     into: Option<BlockId>,
     window: &mut Window,
@@ -446,10 +413,7 @@ pub(crate) fn open_checklists(
         rows,
         move |ws, id, window, cx| ws.open_checklist(id, into, window, cx),
         |ws, id, window, cx| ws.delete_checklist(id, window, cx),
-        move |ws, window, cx| match into {
-            Some(block) => ws.new_checklist_tab(block, window, cx),
-            None => ws.new_checklist(window, cx),
-        },
+        move |ws, window, cx| ws.new_checklist(into, window, cx),
         window,
         cx,
     );

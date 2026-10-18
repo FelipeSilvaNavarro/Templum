@@ -107,8 +107,9 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   blocks tiled full screen like Hyprland, [specs/grid.md](specs/grid.md)), `render.rs` (drawing a frame),
   `drawing.rs` (the drawing tools), `wires.rs` (wires between blocks: wiring and unwiring, their undo steps, the Wire
   tool, selecting a wire, the curves to paint), `note_tabs.rs` (note blocks' tabs and the notes they open),
-  `checklist_tabs.rs` (checklist blocks' tabs, the field that edits a name or an item in place, and
-  `edit_checklist`: one checklist's content as it was before each change, for Ctrl+Z), `persist.rs`
+  `checklist_blocks.rs` (the checklist each block shows, opened where it is, in an empty block or in a new one
+  beside, the field that edits a name or an item in place, and `edit_checklist`: one checklist's content as it was
+  before each change, for Ctrl+Z), `persist.rs`
   (restoring and saving the canvas), `preferences.rs` (config,
   themes, settings panel), `files.rs` and `file_tree.rs` (editor blocks), `git_ops.rs`, `git_changes.rs`,
   `git_branches.rs`, `git_history.rs`, `git_discard.rs` (discards through the trash), `git_keys.rs` (the
@@ -184,7 +185,7 @@ A file holds one responsibility; a module that grows past a few hundred lines be
 - Every block's content is a `Body` in `Space::blocks`: a terminal, a kanban block, a note block (`note.rs`: tabs
   of plain-text notes in gpui-kit's editor, and the Notes dialog; the notes themselves are app-wide in `notes.rs`, saved
   in `notes.json` with the snapshot, every change written there as it is typed; `workspace/note_tabs.rs` opens, closes
-  and deletes them), a checklist block (`checklist.rs`: tabs of checklists, their items checked, edited in place and
+  and deletes them), a checklist block (`checklist.rs`: one checklist, its items checked, edited in place and
   dragged, and the Checklists dialog; the checklists are app-wide in `checklists.rs`, saved in `checklists.json` with
   the snapshot, ids never reused across checklists and items, [specs/checklist.md](specs/checklist.md)), an editor (`editor.rs`: a lazy folder model behind gpui-base's `Tree`, tabs of
   gpui-kit `EditorState`s, files read and written on the UI thread). Git is not a block: each workspace has one
@@ -197,8 +198,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   are moved or resized (`templum-canvas`'s `snap.rs`). The toolbar (`toolbar.rs`) holds the tools;
   `workspace::Tool` is the active one. Kanban boards are app-wide (`Workspace::boards`,
   `board.rs`, saved in `boards.json` with the snapshot); `kanban.rs` draws a block's board at the zoom, with GPUI's
-  drag and drop ([specs/kanban.md](specs/kanban.md)). Note and checklist blocks share their tab strip (`tab_strip.rs`)
-  and their dialog's body (`list_dialog.rs`: the rows a search finds, open, delete on a second click, new).
+  drag and drop ([specs/kanban.md](specs/kanban.md)). Note blocks draw their tabs with `tab_strip.rs`. Note and checklist blocks
+  share their dialog's body (`list_dialog.rs`: the rows a search finds, open, delete on a second click, new).
 - The canvas is saved by `crates/templum/src/session.rs`: one JSON file per workspace in the data folder. Every
   5 s the workspace takes a `Layout` (rects and process ids, cheap) and a background task reads the processes
   (`templum_terminal::inspect`: folders, and whether Claude Code or Codex runs, by `agent_of`), builds the `Saved`
