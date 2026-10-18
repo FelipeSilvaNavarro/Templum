@@ -53,7 +53,8 @@ if ($null -eq $Global:__TemplumPrompt) {
     # name Templum's already (docs/specs/connections.md, "Agents typed in a terminal"). Not over
     # the person's own function of that name; their alias comes before any function anyway. The
     # program is the first application or script of that name (npm's claude.ps1 included):
-    # several on PATH make an array `&` can't run.
+    # several on PATH make an array `&` can't run. What is piped in is passed on (`git diff |
+    # claude -p review`), and only then: an `$input` always given takes the console from claude.
     function Global:__TemplumAgent($name, $words, $given) {
         $program = Get-Command $name -CommandType Application, ExternalScript -ErrorAction Ignore |
             Select-Object -First 1
@@ -67,7 +68,8 @@ if ($null -eq $Global:__TemplumPrompt) {
         $words = @($words -split "`n" | Where-Object { $_ })
         # PowerShell makes an array of an unquoted a,b: a program gets it as one word, a,b.
         $given = @(foreach ($a in $given) { if ($a -is [array]) { $a -join ',' } else { $a } })
-        & $program @words @given
+        if ($MyInvocation.ExpectingInput) { $input | & $program @words @given }
+        else { & $program @words @given }
         $Global:__TemplumAgentExit = $LASTEXITCODE
     }
     if ($env:TEMPLUM_CLAUDE_ARGS -and -not (Test-Path Function:\claude)) {
@@ -77,7 +79,8 @@ if ($null -eq $Global:__TemplumPrompt) {
                 if ("$a" -in '--settings', '--mcp-config' -or "$a" -like '--settings=*' -or
                     "$a" -like '--mcp-config=*') { $words = '' }
             }
-            __TemplumAgent claude $words $args
+            if ($MyInvocation.ExpectingInput) { $input | __TemplumAgent claude $words $args }
+            else { __TemplumAgent claude $words $args }
         }
     }
     if ($env:TEMPLUM_CODEX_ARGS -and -not (Test-Path Function:\codex)) {
@@ -86,7 +89,8 @@ if ($null -eq $Global:__TemplumPrompt) {
             foreach ($a in $args) {
                 if ("$a" -like 'mcp_servers.templum.*') { $words = '' }
             }
-            __TemplumAgent codex $words $args
+            if ($MyInvocation.ExpectingInput) { $input | __TemplumAgent codex $words $args }
+            else { __TemplumAgent codex $words $args }
         }
     }
 }

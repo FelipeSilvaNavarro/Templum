@@ -446,7 +446,8 @@ mod tests {
 
             /// A `claude` and a `codex` in `<home>/bin` that write their arguments, one per
             /// line, to `<home>/<name>.args` (at once: moved there), and exit 3 (`$FAKE_EXIT` when
-            /// set). Returns a PATH with them first.
+            /// set). What is piped into them, not typed, goes to `<home>/<name>.in` first. Returns
+            /// a PATH with them first.
             fn fake_agents(&self) -> String {
                 use std::os::unix::fs::PermissionsExt as _;
                 let bin = self.dir.path().join("bin");
@@ -455,9 +456,11 @@ mod tests {
                     self.write(
                         &format!("bin/{name}"),
                         format!(
-                            "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{0}.part'\n\
+                            "#!/bin/sh\n[ -t 0 ] || cat > '{1}'\n\
+                             for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{0}.part'\n\
                              mv '{0}.part' '{0}'\nexit \"${{FAKE_EXIT:-3}}\"\n",
-                            args.display()
+                            args.display(),
+                            args.with_extension("in").display()
                         ),
                     );
                     let mode = std::fs::Permissions::from_mode(0o755);
@@ -946,9 +949,29 @@ mod tests {
                 format!("Set-Location '{}'\n", home.start()),
             );
             let path = home.fake_agents();
-            if let Some(term) = home.spawn_with("pwsh", &["-NoLogo"], &with_agents(&path)) {
-                typed_agents(&term, &home, "Remove-Item Env:TEMPLUM_CLAUDE_ARGS", true);
-            }
+            let Some(term) = home.spawn_with("pwsh", &["-NoLogo"], &with_agents(&path)) else {
+                return;
+            };
+            typed_agents(&term, &home, "Remove-Item Env:TEMPLUM_CLAUDE_ARGS", true);
+            // What is piped into an agent reaches it, as `git diff | claude -p review`; one not
+            // piped into keeps the terminal.
+            let piped = |name: &str| {
+                let file = home.dir.path().join(format!("{name}.in"));
+                std::fs::read_to_string(file).unwrap_or_default()
+            };
+            assert!(!home.dir.path().join("claude.in").exists());
+            term.write(&b"'x' | claude -p review\r"[..]);
+            wait_args(&term, &home, "claude", &["-p", "review"]);
+            assert_eq!(piped("claude"), "x\n");
+            term.write(&b"'y' | codex exec -\r"[..]);
+            let codex: Vec<&str> = CODEX_WORDS.lines().collect();
+            wait_args(
+                &term,
+                &home,
+                "codex",
+                &[&codex[..], &["exec", "-"]].concat(),
+            );
+            assert_eq!(piped("codex"), "y\n");
         }
 
         /// In PowerShell an alias comes before any function: the person's wins too.
