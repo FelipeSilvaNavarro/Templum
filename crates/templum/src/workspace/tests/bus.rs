@@ -633,16 +633,8 @@ fn an_opencode_block_gets_its_config_in_its_environment(cx: &mut TestAppContext)
                     .cloned()
                     .unwrap();
                 let rect = templum_canvas::Rect::new(0.0, 600.0, 400.0, 300.0);
-                ws.start_agent(
-                    Some(&entry),
-                    &entry.command,
-                    "",
-                    folder.path(),
-                    rect,
-                    window,
-                    cx,
-                )
-                .unwrap()
+                ws.start_agent(Some(&entry), None, "", folder.path(), rect, window, cx)
+                    .unwrap()
             })
         })
         .unwrap();

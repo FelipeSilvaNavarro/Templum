@@ -621,16 +621,8 @@ fn a_gemini_cli_without_the_extension_is_told_once(cx: &mut TestAppContext) {
             ws.update(cx, |ws, cx| {
                 let entry = ws.agents.iter().find(|a| a.id == id).cloned().unwrap();
                 let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
-                ws.start_agent(
-                    Some(&entry),
-                    &entry.command,
-                    "",
-                    folder.path(),
-                    rect,
-                    window,
-                    cx,
-                )
-                .unwrap();
+                ws.start_agent(Some(&entry), None, "", folder.path(), rect, window, cx)
+                    .unwrap();
             })
         })
         .unwrap();

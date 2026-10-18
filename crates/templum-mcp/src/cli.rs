@@ -40,8 +40,8 @@ const ASK: &str = "ask <question> [--option <answer>]… [--json]";
 const WAIT: &str = "wait <block> [--for idle|needs_you|command_finished|attention] \
                     [--match <pattern>] [--lines <n>] [--timeout <seconds>] [--json]";
 const WIRE: &str = "wire <a> <b> [--json]";
-const SPAWN: &str = "spawn <agent> [--folder <folder>] [--worktree <name>] [--prompt <text>] \
-                     [--model <model>] [--effort <effort>] [--json]";
+const SPAWN: &str = "spawn [<agent>] [--fork] [--folder <folder>] [--worktree <name>] \
+                     [--prompt <text>] [--model <model>] [--effort <effort>] [--json]";
 const KEYS: &str = "keys <block> <key>… [--json]";
 const KANBAN: &str = "kanban list [<board>] [--card <card>] | add <title> [--column <column>] \
                       [--description <text>] [--board <board>] [--priority <priority>] [--for <who>] \
@@ -232,10 +232,18 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
             };
             (name, arguments)
         }
-        ("spawn", [agent, more @ ..]) => {
-            let mut arguments = json!({ "agent": agent });
+        ("spawn", all @ [_, ..]) => {
+            // The agent may be left out of a fork, its first word then a flag.
+            let (mut arguments, more) = match all {
+                [agent, more @ ..] if !agent.starts_with("--") => (json!({ "agent": agent }), more),
+                more => (json!({}), more),
+            };
             let mut more = more.iter();
             while let Some(flag) = more.next() {
+                if *flag == "--fork" {
+                    arguments["fork"] = json!(true);
+                    continue;
+                }
                 let key = match *flag {
                     "--folder" => "folder",
                     "--worktree" => "worktree",
@@ -880,6 +888,14 @@ mod tests {
             (
                 &["checklist", "delete", "4qm2a", "41"][..],
                 json!({ "name": "delete_item", "arguments": { "block": "4qm2a", "item": "41" } }),
+            ),
+            (
+                &["spawn", "--fork", "--prompt", "review it"][..],
+                json!({ "name": "spawn_agent", "arguments": { "fork": true, "prompt": "review it" } }),
+            ),
+            (
+                &["spawn", "claude", "--fork", "--prompt", "x"][..],
+                json!({ "name": "spawn_agent", "arguments": { "agent": "claude", "fork": true, "prompt": "x" } }),
             ),
             (
                 &["new", "note", "first", "notes"][..],

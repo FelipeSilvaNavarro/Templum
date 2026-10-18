@@ -332,20 +332,21 @@ impl Workspace {
         let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, self.cell.size);
         let rect = Rect::new(at.x, at.y, size.w, size.h);
         let entry = self.agents.iter().find(|a| a.id == agent).cloned();
-        let id = self.start_agent(entry.as_ref(), agent, "", folder, rect, window, cx)?;
+        let command = entry.is_none().then_some(agent);
+        let id = self.start_agent(entry.as_ref(), command, "", folder, rect, window, cx)?;
         window.focus(&self.focus_handle, cx);
         Some(id)
     }
 
-    /// A terminal at `rect` in `folder` with the agent `entry`'s command (`command` for one
-    /// Templum doesn't know) typed into its shell, `args` after it (`launch_args`: a model and an
-    /// effort) and before what Templum adds. It is focused on the canvas; the keyboard stays
+    /// A terminal at `rect` in `folder` with `command` (None: the agent `entry`'s start command)
+    /// typed into its shell, `args` after it (`launch_args`: a model and an effort) and before
+    /// what Templum adds. It is focused on the canvas; the keyboard stays
     /// where it is. The folder becomes this workspace's newest recent one.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn start_agent(
         &mut self,
         entry: Option<&AgentEntry>,
-        command: &str,
+        command: Option<&str>,
         args: &str,
         folder: &Path,
         rect: Rect,
@@ -357,10 +358,11 @@ impl Workspace {
         }
         let vars = self.agent_vars(entry, &super::usage::in_env);
         let id = self.spawn_block_with(rect, Some(folder.to_path_buf()), vars, window, cx)?;
-        let command = entry.map_or_else(
-            || command.to_string(),
-            |a| a.start_command(&uuid::Uuid::new_v4().to_string()),
-        ) + args;
+        let command = command
+            .map(str::to_string)
+            .or_else(|| entry.map(|a| a.start_command(&uuid::Uuid::new_v4().to_string())))
+            .unwrap_or_default()
+            + args;
         // The shell reads it once it is ready.
         let line = format!("{}\r", self.typed(entry, &command));
         // Known at once (Shift+Enter, closing), not at the next snapshot.

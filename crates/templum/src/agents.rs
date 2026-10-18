@@ -182,6 +182,17 @@ impl AgentEntry {
         self.resume.as_deref().unwrap_or(&self.command)
     }
 
+    /// What starts a fork of its session `session` (docs/specs/agent-tools.md, spawn_agent with
+    /// fork): its builtin's, as a resume by id is; None for one of the person's agents.
+    pub fn fork_command(&self, session: &str) -> Option<String> {
+        self.forking()?.fork_session(session)
+    }
+
+    /// The agent of Templum's it forks as, when it can fork.
+    pub fn forking(&self) -> Option<Agent> {
+        self.builtin.filter(|agent| agent.spec().fork_id.is_some())
+    }
+
     /// What starts it: its command, which starts a new session with the id `id` when it is one
     /// of Templum's agents that takes one and the command runs its program (not a wrapper).
     pub fn start_command(&self, id: &str) -> String {

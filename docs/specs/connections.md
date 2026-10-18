@@ -440,7 +440,7 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `send_to_terminal` | `block`, `text`, `enter` (false) | Types the text, as a paste; Enter after it when asked | wired | 1 |
 | `notify` | `text` | A notification from the caller ([Requests](#requests-from-agents)) | — | 1 |
 | `connect` | `block`, `timeout` (1800 s) | Asks the person to wire the caller to the block; waits for the answer | — | 3 |
-| `spawn_agent` | `agent` (an id of [agents.md](agents.md) or of `[agents]`), `prompt`, `folder`, `worktree`, `model`, `effort` | [Spawning](#spawning); the prompt's task id | — | 3, 6, 8 |
+| `spawn_agent` | `agent` (an id of [agents.md](agents.md) or of `[agents]`), `prompt`, `folder`, `worktree`, `model`, `effort`, `fork` | [Spawning](#spawning); the prompt's task id; with `fork`, a copy of the caller's own Claude Code or Codex on its conversation ([agent-tools.md](agent-tools.md#spawn_agent-with-fork)) | — | 3, 6, 8, card 35 |
 | `delegate` | `block`, `task`, `wait` (false), `timeout` (600 s) | [Delegating](#delegating); without `wait`, says the task's id at once, and its end is typed into the caller's terminal; to the agent on the caller's task, a change to it | wired, an agent | 3, 8 |
 | `reply` | `block`, `text` | Answers the task the block handed the caller; with none waiting, types `[reply from …]` (from batch 8 naming the task) and the text into it | wired | 3, 8 |
 | `wait_for_idle` | `block`, `timeout` (300 s) | Waits until the agent finishes its turn, and for the answer to a task the caller handed it, past `delegate`'s timeout too; its last answer | wired | 3 |
@@ -1130,7 +1130,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum hook copilot <event>` | Copilot CLI's hooks (JSON on stdin, the event named by the hook's command, as Copilot names its hook: `agentStop`); `agentStop`'s answer read from the end of its transcript | card 44 |
 | `templum hook opencode` / `templum hook qwen` / `templum hook pi` | the OpenCode and Kilo Code plugin's events, Qwen Code's hooks, Pi's extension's events (JSON on stdin) | card 44 |
 | `templum connect <block>` | `connect` | 3 |
-| `templum spawn <agent> [--folder <f>] [--worktree <name>] [--prompt <text>] [--model <m>] [--effort <e>]` | `spawn_agent` | 3, 6 |
+| `templum spawn [<agent>] [--fork] [--folder <f>] [--worktree <name>] [--prompt <text>] [--model <m>] [--effort <e>]` | `spawn_agent` | 3, 6, card 35 |
 | `templum delegate <block> <task> [--wait]` | `delegate` (from batch 8 it prints the task's id; a script's terminal gets no notice: `templum wait` waits for its end) | 3, 8 |
 | `templum reply <block> <text>` | `reply` | 3 |
 | `templum wait <block> [--for <event>] [--match <pattern>] [--lines <n>] [--timeout <s>]` | `wait_for_idle`, `wait_for` | 3, 5, card 35 |

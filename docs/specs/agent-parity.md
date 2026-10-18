@@ -60,15 +60,16 @@ Settings ▸ Agents.
 | A starting cover with its title while it opens | works: `crates/templum/src/workspace/starting.rs:52` | works | works | works | works |
 | Its own session back on restore (several blocks in one folder) | works, the id from its files: `crates/templum-usage/src/lib.rs:185`, `crates/templum-terminal/src/agent.rs:39` | works, from its rollouts: `crates/templum-usage/src/lib.rs:198` | works, opened with `--session-id`: `crates/templum-terminal/src/agent.rs:62`, `crates/templum-terminal/src/terminal.rs:436`; typed without it, the folder's latest | Qwen Code by its files, Grok Build, Pi and Copilot CLI by their arguments; 9 the folder's latest; 4 a new session (since card 44) ([table below](#the-others-one-by-one)) | its resume command, else a new session: `crates/templum/src/agents.rs:44` |
 | A typed agent's restore gets Templum's flags | works: `crates/templum/src/workspace/persist.rs:189` types through `typed` | works | — (the extension) | — (nothing to add) | — |
-| Forking a session | — | — | — | — | — |
+| Forking a session (`spawn_agent` with `fork`, card 35) | works, `claude --resume <id> --fork-session`: `crates/templum-terminal/src/agent.rs:44` | works, `codex fork -C . <id>`: `crates/templum-terminal/src/agent.rs:56` | impossible: no fork flag | Pi and Grok Build not yet ([below](#forking)); the others have no flag, or Templum can't know their session | refused |
 | `spawn_agent`'s `model` | works, `--model`: `crates/templum-terminal/src/agent.rs:270` | works, `-m`: `crates/templum-terminal/src/agent.rs:276` | works, `-m`: `crates/templum-terminal/src/agent.rs:282` | works since card 44 for the 13 that take one, `--model` each: `LAUNCH`, `crates/templum-terminal/src/agent.rs` ([below](#the-others-one-by-one)) | refused: `crates/templum/src/agents.rs:80` |
 | `spawn_agent`'s `effort` | works, `--effort`: `crates/templum-terminal/src/agent.rs:271` | works, `-c model_reasoning_effort=`: `crates/templum-terminal/src/agent.rs:277` | impossible: `gemini --help` (0.63) has no effort flag | works since card 44 for the 6 that take one: Copilot CLI, Grok Build, Pi, Kiro CLI, Aider, Cline (same table; Droid's TUI effort unconfirmed) | refused |
 | The model and effort kept on restore and Ctrl+Z | works: `crates/templum/src/workspace/persist.rs:186` | works | works (model) | — | — |
 
-Forking: Templum never forks a session, for any agent (a closed block brought back resumes the session the last
-snapshot found, [connections.md](connections.md#keys-stopping-and-closing)), so there is nothing to bring to the
-others. Claude Code (`--fork-session`), Codex (`codex fork`), OpenCode (`--fork`), Grok Build (`--fork-session`) and
-Pi (`--fork`) could fork, if a future feature asks for it.
+<a id="forking"></a>Forking: `spawn_agent` with `fork` (card 35, [agent-tools.md](agent-tools.md#spawn_agent-with-fork))
+opens a copy of the caller's own Claude Code or Codex on its conversation, whose new session Templum reads from the
+agent's files, so a restore resumes the fork. Pi (`pi --fork <id>` takes no `--session-id`) and Grok Build (its
+fork's arguments carry the original's id first) wait until Templum can name a fork's session; OpenCode's and Kilo
+Code's sessions Templum can't name; Gemini CLI, Copilot CLI and Qwen Code have no fork flag.
 
 ### The server and its tools
 
@@ -231,7 +232,7 @@ the table above carries the corrections.
   hooks answer through their screen or `templum reply`, as [connections.md](connections.md#delegating) 6 says.
 - **Codex's missing `Ended` and late `Started`.** Deliberate: its `SessionEnd` comes after 30 idle minutes too, and
   its `SessionStart` with the first prompt; the snapshot tells when it quits.
-- **Forking.** No Templum feature forks a session, for any agent.
+- **Forking.** Only Claude Code and Codex: [above](#forking).
 
 ## Sources
 

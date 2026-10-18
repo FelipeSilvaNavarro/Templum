@@ -1275,6 +1275,10 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   (`crates/templum-terminal/src/tap.rs`, `Scanner::keep`): ConPTY sends Templum its redraw of the screen, so after a
   resize or a full redraw a line may come again (a second match for a new watch) or two lines joined. Fix: ConPTY's
   passthrough mode, once alacritty_terminal offers it.
+- [ ] **Pi and Grok Build can't be forked.** Left by card 35 (`fork_id` in `crates/templum-terminal/src/agent.rs`):
+  `spawn_agent` with `fork` from one of them says it can't, though `pi --fork <id>` and `grok --resume <id>
+  --fork-session` exist, since Templum couldn't find the fork's own session to resume it after a restart. Fix: give a
+  fork a `--session-id` Templum picks, once each agent takes one with its fork flag.
 
 ## Keeping the canvas
 

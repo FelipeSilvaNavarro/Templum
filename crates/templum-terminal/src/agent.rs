@@ -22,6 +22,9 @@ pub struct Spec {
     /// Added to its command, starts a new session with an id Templum picks (`{id}`): the block
     /// then knows its session from the process's arguments.
     pub new_id: Option<&'static str>,
+    /// Starts a new session that begins with the conversation of session `{id}`, in the shell's
+    /// folder, whose own new id its files name (docs/specs/agent-tools.md, spawn_agent with fork).
+    pub fork_id: Option<&'static str>,
     /// How to install it, for someone who hasn't.
     pub install: &'static str,
     /// Its process or script names (the program, a renamed process title, a native child).
@@ -38,6 +41,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("claude --continue"),
         resume_id: Some("claude --resume {id}"),
         new_id: None,
+        fork_id: Some("claude --resume {id} --fork-session"),
         install: "curl -fsSL https://claude.ai/install.sh | bash",
         names: &["claude"],
         packages: &["@anthropic-ai/claude-code"],
@@ -49,6 +53,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("codex resume --last"),
         resume_id: Some("codex resume {id}"),
         new_id: None,
+        fork_id: Some("codex fork -C . {id}"),
         install: "npm install -g @openai/codex",
         names: &["codex"],
         packages: &["@openai/codex"],
@@ -60,6 +65,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("gemini --resume"),
         resume_id: Some("gemini --resume {id}"),
         new_id: Some("--session-id {id}"),
+        fork_id: None,
         install: "npm install -g @google/gemini-cli",
         names: &["gemini"],
         packages: &["@google/gemini-cli"],
@@ -71,6 +77,7 @@ const SPECS: [Spec; 20] = [
         resume: None,
         resume_id: Some("copilot --session-id {id}"),
         new_id: Some("--session-id {id}"),
+        fork_id: None,
         install: "curl -fsSL https://gh.io/copilot-install | bash",
         names: &["copilot"],
         packages: &["@github/copilot"],
@@ -82,6 +89,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("cursor-agent --continue"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl https://cursor.com/install -fsS | bash",
         names: &["cursor-agent"],
         packages: &["cursor-agent/"],
@@ -93,6 +101,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("opencode --continue"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -fsSL https://opencode.ai/install | bash",
         names: &["opencode"],
         packages: &["node_modules/opencode-ai/"],
@@ -104,6 +113,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("amp threads continue --last"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -fsSL https://ampcode.com/install.sh | bash",
         names: &["amp"],
         packages: &["@sourcegraph/amp"],
@@ -115,6 +125,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("kiro-cli chat --resume"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -fsSL https://cli.kiro.dev/install | bash",
         names: &["kiro-cli"],
         packages: &[],
@@ -126,6 +137,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("qwen --continue"),
         resume_id: Some("qwen --resume {id}"),
         new_id: None,
+        fork_id: None,
         install: "npm install -g @qwen-code/qwen-code@latest",
         names: &["qwen"],
         packages: &["@qwen-code/qwen-code"],
@@ -137,6 +149,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("grok --continue"),
         resume_id: Some("grok --resume {id}"),
         new_id: Some("--session-id {id}"),
+        fork_id: None,
         install: "curl -fsSL https://x.ai/cli/install.sh | bash",
         names: &["grok"],
         packages: &["@xai-official/grok"],
@@ -148,6 +161,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("kimi --continue"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
         names: &["kimi", "kimi-code"],
         packages: &["@moonshot-ai/kimi-code"],
@@ -159,6 +173,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("vibe --continue"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -LsSf https://mistral.ai/vibe/install.sh | bash",
         names: &["vibe"],
         packages: &[],
@@ -170,6 +185,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("aider --restore-chat-history"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -LsSf https://aider.chat/install.sh | sh",
         names: &["aider"],
         packages: &[],
@@ -181,6 +197,7 @@ const SPECS: [Spec; 20] = [
         resume: None,
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | bash",
         names: &["goose"],
         packages: &[],
@@ -192,6 +209,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("crush --continue"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "npm install -g @charmland/crush",
         names: &["crush"],
         packages: &["@charmland/crush"],
@@ -203,6 +221,7 @@ const SPECS: [Spec; 20] = [
         resume: None,
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -fsSL https://app.factory.ai/cli | sh",
         names: &["droid"],
         packages: &["node_modules/droid/"],
@@ -214,6 +233,7 @@ const SPECS: [Spec; 20] = [
         resume: None,
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "npm install -g @augmentcode/auggie",
         names: &["auggie"],
         packages: &["@augmentcode/auggie"],
@@ -225,6 +245,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("kilo --continue"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "npm install -g @kilocode/cli",
         names: &["kilo", "kilocode", ".kilo"],
         packages: &["@kilocode/cli"],
@@ -236,6 +257,7 @@ const SPECS: [Spec; 20] = [
         resume: None,
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "npm install -g cline",
         names: &["cline", ".cline"],
         packages: &["node_modules/cline/"],
@@ -247,6 +269,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("pi --continue"),
         resume_id: Some("pi --session-id {id}"),
         new_id: Some("--session-id {id}"),
+        fork_id: None,
         install: "curl -fsSL https://pi.dev/install.sh | sh",
         names: &["pi"],
         packages: &["@earendil-works/pi-coding-agent"],
@@ -439,6 +462,12 @@ impl Agent {
         typable(id).then(|| template.replace("{id}", id))
     }
 
+    /// What starts a fork of its session `id`, when it can fork one and `id` is one.
+    pub fn fork_session(self, id: &str) -> Option<String> {
+        let template = self.spec().fork_id?;
+        typable(id).then(|| template.replace("{id}", id))
+    }
+
     /// What its command takes to start a new session with the id `id`, when it can.
     pub fn new_session(self, id: &str) -> Option<String> {
         let template = self.spec().new_id?;
@@ -449,6 +478,14 @@ impl Agent {
     /// given to its new-session or its resume flag.
     pub fn session_in(self, args: &[&str]) -> Option<String> {
         let spec = self.spec();
+        // A fork's (`--fork-session`) name the session it started from, not its own.
+        let fork_flag = spec
+            .fork_id
+            .and_then(|f| f.split_whitespace().last())
+            .filter(|w| *w != "{id}");
+        if fork_flag.is_some_and(|flag| args.contains(&flag)) {
+            return None;
+        }
         // The word before `{id}`: `--session-id`, `--resume`, Codex's `resume`.
         let flags: Vec<&str> = [spec.new_id, spec.resume_id]
             .into_iter()
@@ -992,6 +1029,33 @@ mod tests {
             );
         }
         assert_eq!(Agent::from_name("rm -rf ~"), None);
+    }
+
+    /// Claude Code and Codex fork a session into a new one; the others can't (docs/specs/
+    /// agent-tools.md, Every agent).
+    #[test]
+    fn only_claude_code_and_codex_fork_a_session() {
+        let id = "0d5e5f4b-1c2d-4e3f-8a9b-0c1d2e3f4a5b";
+        assert_eq!(
+            Agent::CLAUDE.fork_session(id),
+            Some(format!("claude --resume {id} --fork-session"))
+        );
+        assert_eq!(
+            Agent::CODEX.fork_session(id),
+            Some(format!("codex fork -C . {id}"))
+        );
+        for other in ["gemini", "copilot", "opencode", "pi", "grok", "qwen"] {
+            assert_eq!(
+                Agent::from_name(other).unwrap().fork_session(id),
+                None,
+                "{other}"
+            );
+        }
+        assert_eq!(Agent::CLAUDE.fork_session("a;b"), None);
+        // A fork's arguments name the session it started from, not its own.
+        let args = ["claude", "--resume", id, "--fork-session"];
+        assert_eq!(Agent::CLAUDE.session_in(&args), None);
+        assert_eq!(Agent::CLAUDE.session_in(&args[..3]), Some(id.to_string()));
     }
 
     #[test]

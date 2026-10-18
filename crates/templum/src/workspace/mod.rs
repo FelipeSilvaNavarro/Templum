@@ -668,19 +668,23 @@ impl Space {
         let uid = self.uids.get(&block.id).cloned().unwrap_or_default();
         let mut item = self.blocks[&block.id].item(self.home(block));
         if let session::Item::Terminal(t) = &mut item {
-            t.session = self
-                .saved
-                .iter()
-                .flat_map(|s| &s.items)
-                .find_map(|saved| match saved {
-                    session::Item::Terminal(s) if s.uid == uid && s.agent == t.agent => {
-                        s.session.clone()
-                    }
-                    _ => None,
-                });
+            t.session = t.agent.as_deref().and_then(|a| self.session_of(&uid, a));
         }
         item.set_uid(uid);
         item
+    }
+
+    /// The session the last snapshot found the agent `agent` on in the terminal block `uid`.
+    pub(super) fn session_of(&self, uid: &str, agent: &str) -> Option<String> {
+        self.saved
+            .iter()
+            .flat_map(|s| &s.items)
+            .find_map(|saved| match saved {
+                session::Item::Terminal(s) if s.uid == uid && s.agent.as_deref() == Some(agent) => {
+                    s.session.clone()
+                }
+                _ => None,
+            })
     }
 
     /// The canvas as a snapshot needs it: rects and process ids, cheap on the UI thread.

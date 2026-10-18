@@ -176,13 +176,16 @@ pub enum Event {
 /// caller's when left out), and the worktree it makes first.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Spawn {
-    pub agent: String,
+    /// None only for a fork, which is always of the caller's own agent.
+    pub agent: Option<String>,
     pub prompt: Option<String>,
     pub folder: Option<String>,
     pub worktree: Option<String>,
     /// The model and the reasoning effort its agent starts on, checked by the app.
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// A copy of the caller's own agent, started on its conversation so far.
+    pub fork: bool,
 }
 
 /// The kinds of block `create_block` opens.
@@ -540,7 +543,11 @@ pub fn list() -> Value {
                 "properties": {
                     "agent": {
                         "type": "string",
-                        "description": "Which agent: claude, codex, gemini, … or an account, like claude2 (an id of Settings ▸ Agents).",
+                        "description": "Which agent: claude, codex, gemini, … or an account, like claude2 (an id of Settings ▸ Agents). Left out with fork.",
+                    },
+                    "fork": {
+                        "type": "boolean",
+                        "description": "A copy of your own agent (Claude Code, Codex), started on your conversation so far; needs a prompt telling it what to do.",
                     },
                     "prompt": { "type": "string" },
                     "folder": {
@@ -565,7 +572,6 @@ pub fn list() -> Value {
                                         high. The others take none.",
                     },
                 },
-                "required": ["agent"],
             },
         },
         {
@@ -980,14 +986,26 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
                 lines: lines.unwrap_or(0),
             }
         }
-        "spawn_agent" => Call::SpawnAgent(Spawn {
-            agent: text("agent")?,
-            prompt: optional("prompt")?,
-            folder: optional("folder")?,
-            worktree: optional("worktree")?,
-            model: optional("model")?,
-            effort: optional("effort")?,
-        }),
+        "spawn_agent" => {
+            let fork = flag("fork")?;
+            let agent = optional("agent")?;
+            if agent.is_none() && !fork {
+                return Err(format!("{name} needs \"agent\", or fork"));
+            }
+            let prompt = optional("prompt")?;
+            if fork && prompt.is_none() {
+                return Err("A fork needs a prompt: it tells the copy what to do.".into());
+            }
+            Call::SpawnAgent(Spawn {
+                agent,
+                prompt,
+                folder: optional("folder")?,
+                worktree: optional("worktree")?,
+                model: optional("model")?,
+                effort: optional("effort")?,
+                fork,
+            })
+        }
         "list_cards" => Call::ListCards {
             board: named("board")?,
             card: id("card", "list_cards")?,
@@ -1409,13 +1427,34 @@ mod tests {
         assert_eq!(
             parse("spawn_agent", &json!({ "agent": "claude" })),
             Ok(Call::SpawnAgent(Spawn {
-                agent: "claude".into(),
+                agent: Some("claude".into()),
                 prompt: None,
                 folder: None,
                 worktree: None,
                 model: None,
-                effort: None
+                effort: None,
+                fork: false
             }))
+        );
+        assert_eq!(
+            parse("spawn_agent", &json!({ "fork": true, "prompt": "x" })),
+            Ok(Call::SpawnAgent(Spawn {
+                agent: None,
+                prompt: Some("x".into()),
+                folder: None,
+                worktree: None,
+                model: None,
+                effort: None,
+                fork: true
+            }))
+        );
+        assert_eq!(
+            parse("spawn_agent", &json!({})),
+            Err("spawn_agent needs \"agent\", or fork".into())
+        );
+        assert_eq!(
+            parse("spawn_agent", &json!({ "fork": true })),
+            Err("A fork needs a prompt: it tells the copy what to do.".into())
         );
         assert_eq!(
             parse(

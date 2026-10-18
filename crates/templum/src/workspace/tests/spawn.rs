@@ -1016,3 +1016,110 @@ fn stop_agent_refuses_its_own_block_and_one_it_didnt_open(cx: &mut TestAppContex
         )
     );
 }
+
+/// A canvas the last snapshot saved: the terminal `uid` ran `agent` on `session`.
+fn saved_with(uid: &str, agent: &str, session: &str) -> crate::session::Saved {
+    serde_json::from_value(json!({
+        "version": 1, "camera": { "x": 0, "y": 0, "zoom": 1 },
+        "items": [{ "kind": "terminal", "uid": uid, "rect": { "x": 0, "y": 0, "w": 1, "h": 1 },
+                    "agent": agent, "session": session }],
+    }))
+    .unwrap()
+}
+
+/// `spawn_agent` with `fork` types the caller's own agent's fork command on the session the last
+/// snapshot found, and its prompt says it is a copy (docs/specs/agent-tools.md, spawn_agent with
+/// fork).
+#[gpui_kit::test]
+fn a_fork_types_the_callers_fork_command_with_its_session(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let session = "0d5e5f4b-1c2d-4e3f-8a9b-0c1d2e3f4a5b";
+    // The caller runs Claude Code, and the last snapshot found its session.
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(mine).unwrap().seen.agent = Some("claude".into());
+        ws.space.saved = Some(saved_with(&uid, "claude", session));
+    });
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "spawn_agent",
+        json!({ "fork": true, "prompt": "go on" }),
+    );
+    assert!(
+        !failed && text.starts_with("Opened a fork of your session as "),
+        "{text}"
+    );
+    let new = spawned(&ws, cx, mine);
+    screen_with(&ws, cx, new, &format!("--resume {session} --fork-session"));
+    in_front(&ws, cx, new, true);
+    found(&ws, cx, new);
+    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+    let mut looks = 0;
+    while ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some()) {
+        assert!(looks < 20, "its prompt was never typed");
+        std::thread::sleep(Duration::from_millis(100));
+        after(cx, look);
+        looks += 1;
+    }
+    enter(cx);
+    screen_with(
+        &ws,
+        cx,
+        new,
+        &format!("You are a copy of the agent in {uid}"),
+    );
+}
+
+#[gpui_kit::test]
+fn a_fork_refuses_another_agent_and_a_session_not_found(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(mine).unwrap().seen.agent = Some("claude".into())
+    });
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "spawn_agent",
+            json!({ "fork": true })
+        ),
+        (
+            true,
+            "A fork needs a prompt: it tells the copy what to do.".into()
+        )
+    );
+    let go = |agent: Option<&str>| match agent {
+        Some(a) => json!({ "fork": true, "prompt": "x", "agent": a }),
+        None => json!({ "fork": true, "prompt": "x" }),
+    };
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "spawn_agent", go(None)),
+        (
+            true,
+            "Templum doesn't know your session yet: try again in a few seconds.".into()
+        )
+    );
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "spawn_agent", go(Some("codex"))),
+        (
+            true,
+            "A fork is a copy of your own agent, claude: leave agent out.".into()
+        )
+    );
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(mine).unwrap().seen.agent = Some("gemini".into())
+    });
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "spawn_agent", go(None)),
+        (
+            true,
+            "Gemini CLI can't fork a session: forks are for Claude Code and Codex.".into()
+        )
+    );
+}

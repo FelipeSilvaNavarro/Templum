@@ -32,13 +32,21 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Outcome {
-        let Some(entry) = self.agents.iter().find(|a| a.id == spawn.agent).cloned() else {
-            let ids: Vec<&str> = self.agents.iter().map(|a| a.id.as_str()).collect();
-            return Outcome::Now(Reply::err(format!(
-                "There's no agent {}. These are: {}.",
-                spawn.agent,
-                ids.join(", ")
-            )));
+        let (entry, fork) = if spawn.fork {
+            match self.fork_of(from, spawn.agent.as_deref()) {
+                Ok((entry, command)) => (entry, Some(command)),
+                Err(refused) => return Outcome::Now(Reply::err(refused)),
+            }
+        } else {
+            let agent = spawn.agent.as_deref().unwrap_or_default();
+            let Some(entry) = self.agents.iter().find(|a| a.id == agent).cloned() else {
+                let ids: Vec<&str> = self.agents.iter().map(|a| a.id.as_str()).collect();
+                return Outcome::Now(Reply::err(format!(
+                    "There's no agent {agent}. These are: {}.",
+                    ids.join(", ")
+                )));
+            };
+            (entry, None)
         };
         // Typed into a shell: anything it can't type safely opens nothing, a worktree included.
         if let Err(why) = entry.launch_args(spawn.model.as_deref(), spawn.effort.as_deref()) {
@@ -58,7 +66,9 @@ impl Workspace {
             Err(refused) => return Outcome::Now(Reply::err(refused)),
         };
         let Some(name) = spawn.worktree.clone() else {
-            return Outcome::Now(self.open_agent(from, &entry, &folder, &spawn, window, cx));
+            let opened =
+                self.open_agent(from, &entry, fork.as_deref(), &folder, &spawn, window, cx);
+            return Outcome::Now(opened);
         };
         let (program, from) = (self.config.git.program().to_string(), from.to_string());
         Outcome::Later(cx.spawn_in(window, async move |ws, cx| {
@@ -80,7 +90,7 @@ impl Workspace {
             match made {
                 Ok(path) => ws
                     .update_in(cx, |ws, window, cx| {
-                        ws.open_agent(&from, &entry, &path, &spawn, window, cx)
+                        ws.open_agent(&from, &entry, fork.as_deref(), &path, &spawn, window, cx)
                     })
                     .unwrap_or_else(|_| Reply::err("Templum closed.")),
                 Err(why) => Reply::err(why),
@@ -88,15 +98,57 @@ impl Workspace {
         }))
     }
 
+    /// The agent a fork from the terminal `from` opens (the caller's own, `named` when given)
+    /// and the command that forks the caller's session, as the last snapshot found it; why not.
+    fn fork_of(&self, from: &str, named: Option<&str>) -> Result<(AgentEntry, String), String> {
+        let (space_id, me) = self.caller(from).expect("call found the caller");
+        let space = self.space_named(&space_id).expect("the caller's workspace");
+        let pane = space.terminal(me).ok_or("Only an agent forks itself.")?;
+        // An account's block runs the account: its id is the agent's.
+        let own = pane
+            .account
+            .clone()
+            .or_else(|| pane.seen.agent.clone())
+            .ok_or("Templum doesn't see an agent in your block: only an agent forks itself.")?;
+        if named.is_some_and(|named| named != own) {
+            return Err(format!(
+                "A fork is a copy of your own agent, {own}: leave agent out."
+            ));
+        }
+        let entry = self
+            .agents
+            .iter()
+            .find(|a| a.id == own)
+            .cloned()
+            .ok_or_else(|| format!("{own} isn't an agent of Settings ▸ Agents."))?;
+        if entry.forking().is_none() {
+            return Err(format!(
+                "{} can't fork a session: forks are for Claude Code and Codex.",
+                entry.title
+            ));
+        }
+        let uid = space.uids.get(&me).map_or("", String::as_str);
+        space
+            .session_of(uid, &own)
+            .and_then(|session| entry.fork_command(&session))
+            .map(|command| (entry, command))
+            .ok_or_else(|| {
+                "Templum doesn't know your session yet: try again in a few seconds.".into()
+            })
+    }
+
     /// Opens `entry` in `folder` beside the caller (terminal `from`), where it overlaps nothing,
     /// toward the blocks wired to the caller (`Space::room_near`), wired to it: one Ctrl+Z
     /// closes both. The keyboard, the selection and the camera stay. Its agent starts on the
-    /// spawn's model and effort (checked by `spawn_agent`), and its prompt is typed once the
-    /// agent is ready, as a task the caller handed over.
+    /// spawn's model and effort (checked by `spawn_agent`), with `fork` typed instead of its start
+    /// command for a fork of the caller's session, and its prompt is typed once the agent is
+    /// ready, as a task the caller handed over.
+    #[allow(clippy::too_many_arguments)]
     fn open_agent(
         &mut self,
         from: &str,
         entry: &AgentEntry,
+        fork: Option<&str>,
         folder: &Path,
         spawn: &tools::Spawn,
         window: &mut Window,
@@ -123,8 +175,7 @@ impl Workspace {
                 );
                 // In grid mode a new block takes half of the focused tile: the caller's.
                 ws.space.focused = Some(me);
-                let id =
-                    ws.start_agent(Some(entry), &entry.command, &args, folder, rect, window, cx);
+                let id = ws.start_agent(Some(entry), fork, &args, folder, rect, window, cx);
                 (ws.space.focused, ws.space.selected, ws.space.selected_wire) = kept;
                 let id = id?;
                 ws.space.add_wire(me, id);
@@ -151,15 +202,27 @@ impl Workspace {
             (None, Some(e)) => format!(", with {e} effort"),
             (None, None) => String::new(),
         };
+        let what = match fork {
+            Some(_) => "a fork of your session".to_string(),
+            None => entry.title.clone(),
+        };
         let mut said = format!(
-            "Opened {} as {uid} in {}, connected to you{on}.",
-            entry.title,
+            "Opened {what} as {uid} in {}, connected to you{on}.",
             folder.display()
         );
         if let Some(prompt) = spawn.prompt.as_ref() {
             self.next_task += 1;
             let id = self.next_task;
-            let text = format!("[from {by}, task t{id}] {TASK_LEAD}\n{prompt}");
+            // A fork that took itself for the original would answer its tasks too.
+            let copy = match (fork, self.space_named(&space_id)) {
+                (Some(_), Some(space)) => format!(
+                    "You are a copy of the agent in {}, started from its conversation so far, in a \
+                     block of your own.\n\n",
+                    space.uids.get(&me).map_or("", String::as_str)
+                ),
+                _ => String::new(),
+            };
+            let text = format!("[from {by}, task t{id}] {TASK_LEAD}\n{copy}{prompt}");
             let handed = Handed {
                 id,
                 // Its session starts with its task: all it spends is the task's.
