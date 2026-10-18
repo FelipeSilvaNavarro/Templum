@@ -32,7 +32,9 @@ if status is-interactive; and not set -q __templum_installed
         # A variable for this command only, unless the shell has one (the block Templum opened,
         # the person's own). Not in a block: `set -l` there would end with it.
         test -n "$value"; and test -z "$$var"; and set -lx $var $value
-        command $name (string split --no-empty \n -- $words) $argv[5..]
+        # The person's words: what follows these four (`$argv[5..]` needs fish 3.2).
+        set -e argv[1..4]
+        command $name (string split --no-empty \n -- $words) $argv
     end
     if test -n "$TEMPLUM_CLAUDE_ARGS"; and not functions -q claude
         function claude
