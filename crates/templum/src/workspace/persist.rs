@@ -8,7 +8,6 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, Window};
 use templum_canvas::{BlockId, Camera, Point, Rect, Size, chrome};
 
-use crate::agents::AgentEntry;
 use crate::board::{self, Boards};
 use crate::checklist::{self, Checklist};
 use crate::checklists::{self, Checklists};
@@ -331,7 +330,7 @@ impl Workspace {
 
     /// The agents to look for in terminals, for a snapshot's background read.
     pub(super) fn known_agents(&self) -> Arc<Vec<templum_terminal::Detect>> {
-        Arc::new(self.agents.iter().map(AgentEntry::detect).collect())
+        Arc::new(crate::agents::detects(&self.agents))
     }
 
     /// Every session::EVERY: reads the processes and writes each workspace's file in the

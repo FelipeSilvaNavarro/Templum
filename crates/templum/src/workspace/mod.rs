@@ -1213,7 +1213,8 @@ impl Workspace {
             eprintln!("templum: {warning}");
             show_notification(window, cx, Notification::warning(warning));
         }
-        let effective_agents = agents::effective(&config.agents, &agents::codex_models());
+        let effective_agents =
+            agents::effective(&config.agents, &agents::codex_models(), data_dir.as_deref());
         let commit_agent = agents::commit_agent(
             &effective_agents,
             &config.git.commit_message,

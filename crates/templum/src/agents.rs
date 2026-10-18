@@ -3,9 +3,11 @@
 //! agents in terminals and restoring them all read this list. See docs/specs/agents.md.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use templum_terminal::{Agent, Detect, program_name};
+use templum_usage::accounts::{Kind, Share};
 
 use crate::config::{AgentConfig, CommitMessage, valid_agent_id};
 
@@ -32,9 +34,91 @@ pub(crate) struct AgentEntry {
     pub generate: Option<String>,
     /// Its models for commit messages, the recommended one first.
     pub models: Vec<String>,
+    /// An account of `builtin` (docs/specs/accounts.md): its folder and what it shares.
+    pub account: Option<Account>,
+}
+
+/// An account: its agent run with its own folder.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Account {
+    pub kind: &'static Kind,
+    /// What its agent's variable names, with no trailing separator: the macOS Keychain names a
+    /// login by this exact text.
+    pub folder: PathBuf,
+    /// The person chose it; false: `<data>/accounts/<id>`.
+    pub chosen: bool,
+    /// Its items shared, by key: the agent's id or another account of it.
+    pub share: BTreeMap<String, String>,
+}
+
+/// The state folder of `kind`'s own folder, as Templum's environment names it.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "used once an account opens, the next commit")
+)]
+fn own_state(kind: &Kind) -> Option<PathBuf> {
+    kind.own_folder(std::env::var_os(kind.var), std::env::home_dir().as_deref())
+        .map(|f| kind.state_dir(&f))
 }
 
 impl AgentEntry {
+    /// An account's variable and its folder.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used once an account opens, the next commit")
+    )]
+    pub fn var(&self) -> Option<(&'static str, PathBuf)> {
+        self.account
+            .as_ref()
+            .map(|a| (a.kind.var, a.folder.clone()))
+    }
+
+    /// An account's choice for each of its items: the state folder it is shared with, among
+    /// `agents`, or its own.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used once an account opens, the next commit")
+    )]
+    pub fn shares(&self, agents: &[AgentEntry]) -> Vec<Share> {
+        let Some(account) = &self.account else {
+            return Vec::new();
+        };
+        let of = account.kind.agent;
+        account
+            .kind
+            .items
+            .iter()
+            .map(|item| Share {
+                key: item.key,
+                from: account.share.get(item.key).and_then(|target| {
+                    if target == of {
+                        own_state(account.kind)
+                    } else {
+                        let other = agents.iter().find(|a| a.id == *target)?.account.as_ref()?;
+                        Some(other.kind.state_dir(&other.folder))
+                    }
+                }),
+            })
+            .collect()
+    }
+
+    /// Every state folder a share of this account may point at: its agent's own folder's, then
+    /// each of its other accounts'.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "used once an account opens, the next commit")
+    )]
+    pub fn sources(&self, agents: &[AgentEntry]) -> Vec<PathBuf> {
+        let Some(account) = &self.account else {
+            return Vec::new();
+        };
+        let others = agents.iter().filter(|a| a.id != self.id).filter_map(|a| {
+            let other = a.account.as_ref()?;
+            (other.kind.agent == account.kind.agent).then(|| other.kind.state_dir(&other.folder))
+        });
+        own_state(account.kind).into_iter().chain(others).collect()
+    }
+
     /// The program its command runs, to look for on this computer.
     pub fn program(&self) -> &str {
         self.command.split_whitespace().next().unwrap_or_default()
@@ -107,11 +191,13 @@ impl AgentEntry {
     }
 }
 
-/// Templum's agents with `config`'s changes, in their order, then the user's, by id. `codex`:
-/// Codex's own list of models (`codex_models`).
+/// Templum's agents with `config`'s changes, in their order, then the user's, by id, then the
+/// accounts, by id (none without Templum's data folder `data`). `codex`: Codex's own list of
+/// models (`codex_models`).
 pub(crate) fn effective(
     config: &BTreeMap<String, AgentConfig>,
     codex: &[String],
+    data: Option<&Path>,
 ) -> Vec<AgentEntry> {
     fn text(v: &Option<String>) -> Option<&str> {
         v.as_deref().map(str::trim).filter(|v| !v.is_empty())
@@ -138,11 +224,36 @@ pub(crate) fn effective(
             show: set_.show.unwrap_or(true),
             generate: text(&set_.generate).or(generate).map(str::to_string),
             models: set_.models.clone().unwrap_or(models),
+            account: None,
         }
     });
+    let ours: Vec<AgentEntry> = ours.collect();
+    let accounts = config.iter().filter_map(|(id, set)| {
+        let kind = templum_usage::accounts::kind(set.of.as_deref()?)?;
+        let agent = ours.iter().find(|a| a.id == kind.agent)?;
+        let (folder, chosen) = match text(&set.folder) {
+            Some(folder) => (crate::launcher::expand(folder), true),
+            None => (data?.join("accounts").join(id), false),
+        };
+        Some(AgentEntry {
+            id: id.clone(),
+            title: text(&set.name)
+                .map_or_else(|| format!("{} ({id})", agent.title), str::to_string),
+            changed: false,
+            show: set.show.unwrap_or(true),
+            account: Some(Account {
+                kind,
+                folder: folder.components().collect(),
+                chosen,
+                share: set.share.clone().unwrap_or_default(),
+            }),
+            ..agent.clone()
+        })
+    });
+    let accounts: Vec<AgentEntry> = accounts.collect();
     let theirs = config
         .iter()
-        .filter(|(id, _)| Agent::from_name(id).is_none())
+        .filter(|(id, set)| Agent::from_name(id).is_none() && set.of.is_none())
         .filter_map(|(id, set)| {
             Some(AgentEntry {
                 id: id.clone(),
@@ -155,9 +266,66 @@ pub(crate) fn effective(
                 show: set.show.unwrap_or(true),
                 generate: text(&set.generate).map(str::to_string),
                 models: set.models.clone().unwrap_or_default(),
+                account: None,
             })
         });
-    ours.chain(theirs).collect()
+    ours.into_iter().chain(theirs).chain(accounts).collect()
+}
+
+/// The agents to look for in a terminal's processes: an account isn't one (its block's account
+/// names it, docs/specs/accounts.md, Its block).
+pub(crate) fn detects(agents: &[AgentEntry]) -> Vec<Detect> {
+    agents
+        .iter()
+        .filter(|a| a.account.is_none())
+        .map(AgentEntry::detect)
+        .collect()
+}
+
+/// A new account's id: its agent's and the first free number from 2 (`claude2`).
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "used once an account opens, the next commit")
+)]
+pub(crate) fn new_account_id(of: &str, taken: impl Fn(&str) -> bool) -> String {
+    (2..)
+        .map(|n| format!("{of}{n}"))
+        .find(|id| !taken(id) && Agent::from_name(id).is_none())
+        .expect("a free id")
+}
+
+/// Where an account's agent keeps its files.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "used once an account opens, the next commit")
+)]
+pub(crate) struct Home {
+    /// The account's id.
+    pub id: String,
+    /// Its agent's id.
+    pub agent: String,
+    /// Its state folder.
+    pub state: PathBuf,
+}
+
+/// Each account's [`Home`].
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "used once an account opens, the next commit")
+)]
+pub(crate) fn homes(agents: &[AgentEntry]) -> Vec<Home> {
+    agents
+        .iter()
+        .filter_map(|a| {
+            let account = a.account.as_ref()?;
+            Some(Home {
+                id: a.id.clone(),
+                agent: account.kind.agent.to_string(),
+                state: account.kind.state_dir(&account.folder),
+            })
+        })
+        .collect()
 }
 
 /// Templum's command to write a commit message with one of its agents, and its models (the
@@ -412,9 +580,119 @@ pub(crate) fn commit_agent(
 mod tests {
     use super::*;
     use crate::config::parse;
+    use std::path::{Path, PathBuf};
 
     fn agents(text: &str) -> Vec<AgentEntry> {
-        effective(&parse(text).unwrap().agents, &[])
+        effective(&parse(text).unwrap().agents, &[], Some(Path::new("/data")))
+    }
+
+    #[test]
+    fn an_account_runs_its_agents_command() {
+        let text = concat!(
+            "[agents]\n",
+            "claude = { command = \"claude --model opus\" }\n",
+            "claude2 = { of = \"claude\" }\n",
+        );
+        let list = agents(text);
+        let claude2 = list.last().unwrap();
+        assert_eq!(claude2.id, "claude2");
+        assert_eq!(claude2.command, "claude --model opus");
+        assert_eq!(
+            claude2.resume_command(),
+            by(&list, "claude").resume_command()
+        );
+        assert_eq!(claude2.builtin, Some(Agent::CLAUDE));
+        assert_eq!(claude2.title, "Claude Code (claude2)");
+        assert!(!claude2.changed);
+        let account = claude2.account.as_ref().unwrap();
+        assert_eq!(account.folder, Path::new("/data/accounts/claude2"));
+        assert!(!account.chosen);
+        let none = effective(&parse(text).unwrap().agents, &[], None);
+        assert!(
+            none.iter().all(|a| a.id != "claude2"),
+            "no data folder, no account"
+        );
+    }
+
+    #[test]
+    fn its_variable_names_its_folder() {
+        let list = agents("[agents]\nclaude2 = { of = \"claude\" }\n");
+        assert_eq!(
+            by(&list, "claude2").var(),
+            Some(("CLAUDE_CONFIG_DIR", PathBuf::from("/data/accounts/claude2")))
+        );
+        assert_eq!(by(&list, "claude").var(), None);
+        let home = std::env::home_dir().unwrap();
+        for folder in ["~/w", "~/w/"] {
+            let list = agents(&format!(
+                "[agents.claude2]\nof = \"claude\"\nfolder = \"{folder}\"\n"
+            ));
+            let (_, path) = by(&list, "claude2").var().unwrap();
+            // The macOS Keychain names a login by this exact text.
+            assert_eq!(path.as_os_str(), home.join("w").as_os_str(), "{folder}");
+            assert!(by(&list, "claude2").account.as_ref().unwrap().chosen);
+        }
+    }
+
+    #[test]
+    fn its_shares_point_at_their_sources() {
+        let list = agents(concat!(
+            "[agents]\n",
+            "claude2 = { of = \"claude\", share = { skills = \"claude\" } }\n",
+            "claude3 = { of = \"claude\" }\n",
+            "claude4 = { of = \"claude\", share = { skills = \"claude3\" } }\n",
+        ));
+        let kind = templum_usage::accounts::kind("claude").unwrap();
+        let own = kind
+            .own_folder(std::env::var_os(kind.var), std::env::home_dir().as_deref())
+            .unwrap();
+        let from = |id: &str, key: &str| {
+            by(&list, id)
+                .shares(&list)
+                .into_iter()
+                .find(|s| s.key == key)
+                .unwrap()
+                .from
+        };
+        assert_eq!(from("claude2", "skills"), Some(own.clone()));
+        assert_eq!(
+            from("claude4", "skills"),
+            Some(PathBuf::from("/data/accounts/claude3"))
+        );
+        assert_eq!(from("claude2", "plugins"), None, "its own");
+        let sources = by(&list, "claude2").sources(&list);
+        assert_eq!(
+            sources,
+            [
+                own,
+                PathBuf::from("/data/accounts/claude3"),
+                PathBuf::from("/data/accounts/claude4")
+            ]
+        );
+        let homes = homes(&list);
+        assert_eq!(homes.len(), 3);
+        assert_eq!(
+            (
+                homes[0].id.as_str(),
+                homes[0].agent.as_str(),
+                homes[0].state.as_path()
+            ),
+            ("claude2", "claude", Path::new("/data/accounts/claude2"))
+        );
+    }
+
+    #[test]
+    fn account_ids_count_from_two() {
+        assert_eq!(new_account_id("claude", |_| false), "claude2");
+        assert_eq!(new_account_id("claude", |id| id == "claude2"), "claude3");
+    }
+
+    #[test]
+    fn accounts_arent_looked_for_in_terminals() {
+        let list = agents("[agents]\nclaude2 = { of = \"claude\" }\n");
+        let ids: Vec<String> = detects(&list).into_iter().map(|d| d.id).collect();
+        assert!(ids.contains(&"claude".to_string()));
+        assert!(!ids.contains(&"claude2".to_string()));
     }
 
     fn by<'a>(list: &'a [AgentEntry], id: &str) -> &'a AgentEntry {
@@ -616,7 +894,7 @@ mod tests {
             "models = [\"flash\"]\n",
         ))
         .unwrap();
-        let list = effective(&config.agents, &codex_list);
+        let list = effective(&config.agents, &codex_list, None);
         let claude = by(&list, "claude");
         // No tools, and none of the person's settings (their hooks, plugins and MCP servers): a
         // one-shot answer, never a session that reads or runs anything in the repository.
@@ -673,7 +951,7 @@ mod tests {
         assert_eq!(parse(&text).unwrap().agents["claude"], kept, "{text}");
         // Codex's list is its own: kept only when the person changed it.
         let codex_list = ["gpt-a".to_string()];
-        let codex = by(&effective(&BTreeMap::new(), &codex_list), "codex").clone();
+        let codex = by(&effective(&BTreeMap::new(), &codex_list, None), "codex").clone();
         assert_eq!(
             Draft::of(&codex).to_config(Some(Agent::CODEX), &codex_list),
             None

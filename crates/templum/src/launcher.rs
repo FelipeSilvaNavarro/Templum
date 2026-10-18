@@ -73,11 +73,9 @@ pub(crate) fn ask_folder(
             agent.command.clone(),
         ),
     });
-    let command = agent.command.clone();
+    let id = agent.id.clone();
     let open: Rc<Open> = Rc::new(move |folder, window, cx| {
-        entity.update(cx, |ws, cx| {
-            ws.launch_agent(&command, folder, at, window, cx)
-        })
+        entity.update(cx, |ws, cx| ws.launch_agent(&id, folder, at, window, cx))
     });
     ask_folder_for(ws, format!("Open {}", agent.title), help, open, window, cx);
 }

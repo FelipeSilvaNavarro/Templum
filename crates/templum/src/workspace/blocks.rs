@@ -311,12 +311,12 @@ impl Workspace {
         self.open(Rect::new(at.x, at.y, size.w, size.h), window, cx);
     }
 
-    /// A terminal in `folder`, its top-left corner at `at`, with an agent's `command` typed into
-    /// its shell;
-    /// the folder becomes this workspace's newest recent one.
+    /// A terminal in `folder`, its top-left corner at `at`, with the agent `agent`'s command (an
+    /// entry's id; one Templum doesn't know is typed as it is) typed into its shell; the folder
+    /// becomes this workspace's newest recent one.
     pub(crate) fn launch_agent(
         &mut self,
-        command: &str,
+        agent: &str,
         folder: &std::path::Path,
         at: Point,
         window: &mut Window,
@@ -331,8 +331,8 @@ impl Workspace {
         self.space.pristine = false;
         let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, self.cell.size);
         let rect = Rect::new(at.x, at.y, size.w, size.h);
-        let entry = self.agents.iter().find(|a| a.command == command).cloned();
-        let id = self.start_agent(entry.as_ref(), command, "", folder, rect, window, cx)?;
+        let entry = self.agents.iter().find(|a| a.id == agent).cloned();
+        let id = self.start_agent(entry.as_ref(), agent, "", folder, rect, window, cx)?;
         window.focus(&self.focus_handle, cx);
         Some(id)
     }

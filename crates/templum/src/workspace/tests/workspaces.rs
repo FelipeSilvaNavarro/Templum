@@ -38,7 +38,7 @@ fn a_workspace_shows_an_agent_from_its_last_snapshot() {
         }),
         ..crate::workspace::Space::default()
     };
-    let known = crate::agents::effective(&Default::default(), &[]);
+    let known = crate::agents::effective(&Default::default(), &[], None);
     assert!(with(Some("claude")).has_agent(&known));
     assert!(
         !with(Some("vim")).has_agent(&known),

@@ -229,7 +229,11 @@ impl Workspace {
             }
         }
         if self.config.agents != old.agents {
-            self.agents = agents::effective(&self.config.agents, &agents::codex_models());
+            self.agents = agents::effective(
+                &self.config.agents,
+                &agents::codex_models(),
+                self.data_dir.as_deref(),
+            );
         }
         if self.config.agents != old.agents
             || self.config.git.commit_message != old.git.commit_message

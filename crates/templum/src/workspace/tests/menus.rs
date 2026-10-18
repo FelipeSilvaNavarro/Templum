@@ -127,6 +127,7 @@ fn the_canvas_menu_opens_an_agent_in_a_recent_folder(cx: &mut TestAppContext) {
             show: true,
             generate: None,
             models: Vec::new(),
+            account: None,
         }];
     });
     cx.update_window(handle, |_, window, cx| {
