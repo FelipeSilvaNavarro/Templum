@@ -308,6 +308,13 @@ fn an_agent_is_taken_off_the_title_bar_and_back(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         window.click("settings-tab-usage", cx);
         window.render_frame(cx);
+        // The section's last row, below the fold of a small window.
+        window.scroll(
+            "settings-scroll",
+            ScrollDelta::Pixels(point(px(0.), px(-5000.))),
+            cx,
+        );
+        window.render_frame(cx);
         window.click("field-usage.hide.codex", cx);
         window.render_frame(cx);
         window.render_frame(cx);

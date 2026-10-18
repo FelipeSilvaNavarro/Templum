@@ -493,8 +493,9 @@ impl Render for Workspace {
                             } else {
                                 ws.end_drag();
                                 ws.hover_program(e.position, &e.modifiers);
-                                ws.pointer_moved = true;
-                                ws.follow_pointer(window, cx);
+                                if ws.pointer.replace(e.position) != Some(e.position) {
+                                    ws.follow_pointer(window, cx);
+                                }
                             }
                         });
                     }

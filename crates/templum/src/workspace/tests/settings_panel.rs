@@ -89,6 +89,7 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
             ws.config.terminal.notifications,
             ws.config.usage.claude_limits,
             ws.config.connections.enabled,
+            ws.config.canvas.focus_follows_pointer,
         )
     };
     for (tab, field, reset, line) in [
@@ -116,11 +117,24 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
             "reset-connections.enabled",
             "enabled = false",
         ),
+        (
+            "settings-tab-canvas",
+            "field-canvas.focus_follows_pointer",
+            "reset-canvas.focus_follows_pointer",
+            "focus_follows_pointer = false",
+        ),
     ] {
         cx.update_window(handle, |_, window, cx| {
             window.click(tab, cx);
             window.render_frame(cx);
             assert!(window.try_find(reset).is_none());
+            // Under three rows of tabs, a switch may be below the fold of a small window.
+            window.scroll(
+                "settings-scroll",
+                ScrollDelta::Pixels(point(px(0.), px(-5000.))),
+                cx,
+            );
+            window.render_frame(cx);
             window.click(field, cx);
             window.render_frame(cx);
             window.render_frame(cx);
@@ -138,7 +152,7 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
     }
     assert_eq!(
         ws.read_with(cx, |ws, _| on(ws)),
-        (true, true, true, true),
+        (true, true, true, true, true),
         "back on"
     );
     ws.update(cx, |ws, _| ws.save());
@@ -147,7 +161,8 @@ fn the_integration_and_notification_switches_turn_them_off_and_back(cx: &mut Tes
         !text.contains("integration")
             && !text.contains("notifications")
             && !text.contains("claude_limits")
-            && !text.contains("enabled"),
+            && !text.contains("enabled")
+            && !text.contains("focus_follows_pointer"),
         "{text}"
     );
 }

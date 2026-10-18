@@ -61,13 +61,7 @@ impl Workspace {
         self.open_menu(menu::Target::Canvas(at), e.position, window, cx);
     }
 
-    pub(crate) fn hover_block(
-        &mut self,
-        id: BlockId,
-        hovered: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn hover_block(&mut self, id: BlockId, hovered: bool, cx: &mut Context<Self>) {
         let next = if hovered {
             Some(id)
         } else if self.space.hovered == Some(id) {
@@ -79,7 +73,38 @@ impl Workspace {
             self.space.hovered = next;
             cx.notify();
         }
-        self.follow_pointer(window, cx);
+    }
+
+    /// The pointer moved with no button down: the block under it takes the keyboard, as
+    /// Hyprland's `follow_mouse` does. Only on a move, so a block coming under a still pointer
+    /// (a pan, a swap, a new block) doesn't take it. Not during a drag, nor while a menu is open
+    /// or the keyboard is outside the canvas and its blocks (a dialog, the settings panel, the
+    /// Git popup). A grid tile comes to the top; on the canvas, where blocks overlap, the block
+    /// keeps its place in the stack, only when the settings say so and nothing is selected
+    /// (the selection keeps the keyboard for Delete and Copy).
+    pub(super) fn follow_pointer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self
+            .space
+            .hovered
+            .filter(|id| self.space.shown(*id) && self.space.focused != Some(*id))
+        else {
+            return;
+        };
+        if self.drag.is_some()
+            || self.menu.is_some()
+            || !self.focus_handle.contains_focused(window, cx)
+        {
+            return;
+        }
+        if self.space.grid.is_some() {
+            self.focus_block(id, window, cx);
+        } else if self.config.canvas.focus_follows_pointer
+            && self.space.selected.is_empty()
+            && self.space.selected_ink.is_none()
+            && self.space.selected_wire.is_none()
+        {
+            self.give_keyboard(id, window, cx);
+        }
     }
 
     pub(super) fn local(&self, pos: PixelPoint<Pixels>) -> Point {

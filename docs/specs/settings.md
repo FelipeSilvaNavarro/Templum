@@ -90,6 +90,12 @@ Under these rows, a card for the theme in use: **Duplicate…** for a built-in o
 its colors as swatches with color pickers for one of yours, written to its file ([themes.md](themes.md#making-a-theme),
 [the color editor](themes.md#the-color-editor)).
 
+**Canvas**
+
+| Field | Control | Option |
+|---|---|---|
+| Focus follows the pointer | Switch, on by default: the block under the pointer takes the keyboard once it moves ([navigation.md](navigation.md#the-keyboard-follows-the-pointer)); grid mode's tiles always do | `canvas.focus_follows_pointer` |
+
 **Font**
 
 | Field | Control | Option |

@@ -637,6 +637,23 @@ pub(super) fn board_with_a_card(
     .unwrap()
 }
 
+/// Moves the pointer to `to` (a window position), no button held, and draws.
+pub(super) fn point_at(handle: AnyWindowHandle, cx: &mut TestAppContext, to: (f32, f32)) {
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: point(px(to.0), px(to.1)),
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
 /// A local canvas point as a window position.
 pub(super) fn at(ws: &Entity<Workspace>, cx: &mut TestAppContext, p: (f32, f32)) -> (f32, f32) {
     let o = ws.read_with(cx, |ws, _| ws.origin);

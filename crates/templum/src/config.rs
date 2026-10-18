@@ -40,6 +40,7 @@ pub(crate) struct Config {
     pub usage: UsageConfig,
     pub updates: UpdatesConfig,
     pub connections: ConnectionsConfig,
+    pub canvas: CanvasConfig,
     /// `[agents.<id>]`: changes to one of Templum's AI agents (only what differs), or an agent of
     /// the user's own.
     pub agents: BTreeMap<String, AgentConfig>,
@@ -285,6 +286,23 @@ pub(crate) struct ConnectionsConfig {
 impl Default for ConnectionsConfig {
     fn default() -> Self {
         Self { enabled: true }
+    }
+}
+
+/// `[canvas]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct CanvasConfig {
+    /// The block under the pointer takes the keyboard once the pointer moves, no click needed
+    /// (docs/specs/navigation.md). Grid mode's tiles always do.
+    pub focus_follows_pointer: bool,
+}
+
+impl Default for CanvasConfig {
+    fn default() -> Self {
+        Self {
+            focus_follows_pointer: true,
+        }
     }
 }
 
@@ -833,6 +851,9 @@ pub(crate) fn template(macos: bool) -> String {
         "## A system notification when Templum is in the background and a long command ends or\n",
         "## a terminal asks for attention.\n",
         "# notifications = true\n\n",
+        "[canvas]\n",
+        "## The block under the pointer takes the keyboard once the pointer moves, no click needed.\n",
+        "# focus_follows_pointer = true\n\n",
         "[usage]\n",
         "## When a plan limit's reset is notified: \"off\", \"reached\" (95% or more of it was used),\n",
         "## \"half\" or \"always\".\n",
@@ -1375,6 +1396,13 @@ scrollback = 500
         assert!(c.shell.integration && c.terminal.notifications);
         let c = parse("[shell]\nintegration = false\n[terminal]\nnotifications = false\n").unwrap();
         assert!(!c.shell.integration && !c.terminal.notifications);
+    }
+
+    #[test]
+    fn focus_follows_the_pointer_unless_turned_off() {
+        assert!(parse("").unwrap().canvas.focus_follows_pointer);
+        let c = parse("[canvas]\nfocus_follows_pointer = false\n").unwrap();
+        assert!(!c.canvas.focus_follows_pointer);
     }
 
     #[test]

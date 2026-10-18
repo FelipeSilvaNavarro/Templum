@@ -960,3 +960,122 @@ fn a_markdown_preview_zooms_like_a_photo(cx: &mut TestAppContext) {
         );
     }
 }
+
+/// On the canvas the keyboard follows the pointer too (Settings ▸ Canvas, on by default): the
+/// block under it takes it once it moves, no click needed, and stays where it is in the stack. A
+/// note's editor lets go of it. A block coming under a still pointer doesn't take it.
+#[gpui_kit::test]
+fn on_the_canvas_the_keyboard_follows_the_pointer(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let focused = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.focused);
+    let stack = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let ids: Vec<BlockId> = ws.space.canvas.blocks().iter().map(|b| b.id).collect();
+            ids
+        })
+    };
+    assert_eq!(focused(cx), Some(note));
+    let before = stack(cx);
+    let over_terminal = at(&ws, cx, (240.0, 600.0));
+    point_at(handle, cx, over_terminal);
+    assert_eq!(focused(cx), Some(terminal), "no click needed");
+    assert_eq!(stack(cx), before, "the terminal stays under the others");
+    cx.update_window(handle, |_, window, cx| {
+        let ws = ws.read(cx);
+        assert!(!ws.space.blocks[&note].has_focus(window, cx));
+        assert!(ws.focus_handle.is_focused(window), "the terminal's keys");
+    })
+    .unwrap();
+    // The kanban block comes under the pointer, which hasn't moved: the keyboard stays.
+    let empty = at(&ws, cx, (700.0, 300.0));
+    point_at(handle, cx, empty);
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(kanban).unwrap().rect = Rect::new(600.0, 200.0, 220.0, 200.0)
+    });
+    frame(handle, cx);
+    frame(handle, cx);
+    assert_eq!(ws.read_with(cx, |ws, _| ws.space.hovered), Some(kanban));
+    assert_eq!(focused(cx), Some(terminal), "a still pointer");
+    // Some systems send a move where the pointer already is.
+    point_at(handle, cx, empty);
+    assert_eq!(focused(cx), Some(terminal), "nowhere new");
+    point_at(handle, cx, (empty.0 + 5.0, empty.1));
+    assert_eq!(focused(cx), Some(kanban), "the pointer moved");
+}
+
+/// The keyboard stays where it is with the setting off (a click focuses), while blocks are
+/// selected (the selection stays too), while a menu is open, while a button is held and while
+/// the keyboard is in the settings panel.
+#[gpui_kit::test]
+fn the_keyboard_doesnt_follow_the_pointer_when_it_shouldnt(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let focused = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.focused);
+    let over_terminal = at(&ws, cx, (240.0, 600.0));
+    let over_kanban = at(&ws, cx, (150.0, 150.0));
+    ws.update(cx, |ws, _| ws.config.canvas.focus_follows_pointer = false);
+    point_at(handle, cx, over_terminal);
+    assert_eq!(focused(cx), Some(note), "turned off");
+    ws.update(cx, |ws, _| {
+        ws.config.canvas.focus_follows_pointer = true;
+        ws.space.focused = None;
+        ws.space.selected = vec![kanban, note];
+    });
+    point_at(handle, cx, over_kanban);
+    assert_eq!(focused(cx), None, "blocks are selected");
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.selected.clone()),
+        vec![kanban, note]
+    );
+    ws.update(cx, |ws, _| ws.space.selected.clear());
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Right,
+                position: point(px(over_terminal.0 + 500.0), px(over_terminal.1)),
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    assert!(ws.read_with(cx, |ws, _| ws.menu.is_some()));
+    point_at(handle, cx, over_terminal);
+    assert_eq!(focused(cx), None, "a menu is open");
+    ws.update(cx, |ws, _| ws.menu = None);
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: point(px(over_kanban.0), px(over_kanban.1)),
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    assert_eq!(focused(cx), None, "a button is held");
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-button", cx);
+        let panel = ws.read(cx).settings_focus.clone();
+        window.focus(&panel, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    point_at(handle, cx, (over_terminal.0 + 5.0, over_terminal.1));
+    assert_eq!(focused(cx), None, "the keyboard is in the settings panel");
+    cx.update_window(handle, |_, window, cx| {
+        let canvas = ws.read(cx).focus_handle.clone();
+        window.focus(&canvas, cx);
+    })
+    .unwrap();
+    point_at(handle, cx, over_terminal);
+    assert_eq!(
+        focused(cx),
+        Some(terminal),
+        "the keyboard is back on the canvas"
+    );
+}

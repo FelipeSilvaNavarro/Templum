@@ -56,6 +56,7 @@ const WIDTH: f32 = 480.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Section {
     Appearance,
+    Canvas,
     Font,
     Terminal,
     Shell,
@@ -69,8 +70,9 @@ pub(crate) enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 11] = [
+    pub const ALL: [Section; 12] = [
         Section::Appearance,
+        Section::Canvas,
         Section::Font,
         Section::Terminal,
         Section::Shell,
@@ -86,6 +88,7 @@ impl Section {
     fn title(self) -> &'static str {
         match self {
             Section::Appearance => "Appearance",
+            Section::Canvas => "Canvas",
             Section::Font => "Font",
             Section::Terminal => "Terminal",
             Section::Shell => "Shell",
@@ -103,6 +106,7 @@ impl Section {
     fn tab_id(self) -> &'static str {
         match self {
             Section::Appearance => "settings-tab-appearance",
+            Section::Canvas => "settings-tab-canvas",
             Section::Font => "settings-tab-font",
             Section::Terminal => "settings-tab-terminal",
             Section::Shell => "settings-tab-shell",

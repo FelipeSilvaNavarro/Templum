@@ -480,6 +480,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   adds files to `<data folder>/theme-gallery/`; a theme changed upstream leaves its old file there (a few hundred
   bytes each). Fix: after a refresh, delete the `.toml` files `index.json` doesn't name.
 
+## Settings panel
+
+- [ ] **The tabs wrap to three rows.** Since Canvas joined, the twelve pills (`Section::ALL`,
+  `crates/templum/src/settings/mod.rs`) don't fit in two rows of the 480 px panel: a third row holds the last one or
+  two, and every section starts lower. Fix: tighter pills (less padding) or one row that scrolls sideways.
+
 ## GPUI engine (gpui-fast)
 
 - [ ] **A note tab's text is saved without telling the window.** The editor subscription in `note_tab`

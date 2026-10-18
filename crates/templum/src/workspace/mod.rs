@@ -945,9 +945,9 @@ pub struct Workspace {
     drag: Option<Drag>,
     /// The rects of the blocks a drag moves or resizes, as they were when it started.
     placed: Vec<(BlockId, templum_canvas::Rect)>,
-    /// The pointer moved since grid mode's tiles last changed: the tile under it takes the
-    /// keyboard (`follow_pointer`); a tile coming under a still pointer doesn't.
-    pub(crate) pointer_moved: bool,
+    /// Where the pointer last moved to with no button down (window position): a move elsewhere
+    /// gives the keyboard to the block under it (`follow_pointer`).
+    pointer: Option<PixelPoint<Pixels>>,
     /// Blocks added now aren't kept for Ctrl+Z: a canvas being restored, closed blocks coming
     /// back.
     quiet: bool,
@@ -1355,7 +1355,7 @@ impl Workspace {
             on_frame: None,
             drag: None,
             placed: Vec::new(),
-            pointer_moved: false,
+            pointer: None,
             quiet: false,
             press: None,
             focus_handle,

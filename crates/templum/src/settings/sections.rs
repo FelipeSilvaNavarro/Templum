@@ -42,6 +42,35 @@ pub(super) fn rows(
                 theme_row(ws, entity, names, true),
             ]
         }
+        Section::Canvas => {
+            let on = ws.config.canvas.focus_follows_pointer;
+            let e = entity.clone();
+            vec![
+                Row::new("canvas.focus_follows_pointer", "Focus follows the pointer")
+                    .description(
+                        "The block under the pointer takes the keyboard, no click needed. Grid \
+                         mode's tiles always do",
+                    )
+                    .control(Switch::new("focus-follows-switch").checked(on).on_click(
+                        move |on: &bool, _, cx| {
+                            let on = *on;
+                            e.update(cx, |ws, cx| {
+                                ws.edit(
+                                    Edit::set("canvas", "focus_follows_pointer", on),
+                                    |c| c.canvas.focus_follows_pointer = on,
+                                    cx,
+                                )
+                            })
+                        },
+                    ))
+                    .reset(
+                        !on,
+                        remove(entity, "canvas", "focus_follows_pointer", |c| {
+                            c.canvas.focus_follows_pointer = true
+                        }),
+                    ),
+            ]
+        }
         Section::Font => vec![
             font_family_row(ws, entity),
             number_row(ws, entity, &FONT_SIZE, "Size", window, cx)

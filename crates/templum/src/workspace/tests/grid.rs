@@ -611,35 +611,18 @@ fn a_restart_brings_the_grid_back_with_the_canvas_intact(cx: &mut TestAppContext
     });
 }
 
-/// Moves the pointer to `to` (a window position), no button held, and draws.
-fn point_at(handle: AnyWindowHandle, cx: &mut TestAppContext, to: (f32, f32)) {
-    cx.update_window(handle, |_, window, cx| {
-        window.dispatch_event(
-            PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
-                position: point(px(to.0), px(to.1)),
-                pressed_button: None,
-                modifiers: Modifiers::default(),
-            }),
-            cx,
-        );
-        window.render_frame(cx);
-        window.render_frame(cx);
-    })
-    .unwrap();
-}
-
 /// In grid mode the keyboard follows the pointer, as Hyprland's focus does: the tile under it
-/// takes it once it moves; a tile coming under a still pointer doesn't. On the canvas it doesn't.
+/// takes it once it moves; a tile coming under a still pointer doesn't. The canvas's setting
+/// turned off doesn't stop it.
 #[gpui_kit::test]
 fn grid_modes_focus_follows_the_pointer(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (kanban, note, _) = three_blocks(handle, &ws, cx);
     let focused = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.focused);
-    // On the canvas, hovering the terminal leaves the keyboard where it is.
-    let over_terminal = at(&ws, cx, (240.0, 600.0));
-    point_at(handle, cx, over_terminal);
-    assert_eq!(focused(cx), Some(note));
-    ws.update(cx, |ws, _| ws.space.selected = vec![kanban, note]);
+    ws.update(cx, |ws, _| {
+        ws.config.canvas.focus_follows_pointer = false;
+        ws.space.selected = vec![kanban, note];
+    });
     press(handle, TOGGLE, cx);
     let left = rect_of(&ws, cx, kanban);
     let over_left = at(&ws, cx, (left.x + 50.0, left.y + 100.0));

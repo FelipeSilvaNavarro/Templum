@@ -48,8 +48,10 @@ tiled side by side, like Hyprland's dwindle layout, and go back to the canvas ex
 
 - **The keyboard follows the pointer**, as Hyprland's `follow_mouse`: once the pointer moves, the tile under it takes
   the keyboard, no click needed. A tile that comes under a still pointer (a swap, a new tile, a resized window)
-  doesn't take it until the pointer moves; nor while a button is held or a menu is open. On the canvas, a click
-  still focuses.
+  doesn't take it until the pointer moves; nor while a button is held, a menu is open or the keyboard is outside
+  the tiles (a dialog, the settings panel, the Git popup). Tiles always follow: the setting that turns it off,
+  Settings ▸ Canvas ▸ Focus follows the pointer, is for the canvas, where blocks overlap
+  ([navigation.md](navigation.md#the-keyboard-follows-the-pointer)).
 - **Focus** (`focus_left`, `focus_right`, `focus_up`, `focus_down`; Ctrl+Alt+arrows): the keyboard goes to the
   nearest tile on that side.
 - **Swap** (`swap_left`…; Ctrl+Alt+Shift+arrows): the focused tile trades places with that neighbour.

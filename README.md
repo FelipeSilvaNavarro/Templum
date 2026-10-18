@@ -315,6 +315,9 @@ blink = false
 scrollback = 10000
 notifications = true   # system notifications while Templum is in the background
 
+[canvas]
+focus_follows_pointer = true   # the block under the pointer takes the keyboard, no click needed
+
 [usage]
 reset = "reached"      # when a plan limit's reset is notified: "off" | "reached" | "half" | "always"
 warn = 90              # notify once at this much of a limit: 0 (never) | 80 | 90 | 95
