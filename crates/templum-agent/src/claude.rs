@@ -93,12 +93,17 @@ pub fn args(o: &Options) -> Vec<String> {
 }
 
 /// A folder the engine may read, as it is on disk: none when it isn't one, or is `/`, the
-/// person's home or a folder above it (their keys and credentials are in it).
+/// person's home or a folder above it, or a hidden folder of home or one inside it (their keys
+/// and credentials are there: `~/.ssh`, `~/.aws`).
 fn readable(dir: &Path, home: Option<&Path>) -> Option<PathBuf> {
     let dir = dir.canonicalize().ok()?;
     let home = home.and_then(|h| h.canonicalize().ok());
-    let too_wide = dir.parent().is_none() || home.is_some_and(|h| h.starts_with(&dir));
-    (!too_wide).then_some(dir)
+    let too_wide = dir.parent().is_none() || home.as_ref().is_some_and(|h| h.starts_with(&dir));
+    let hidden = home
+        .as_ref()
+        .and_then(|h| dir.strip_prefix(h).ok()?.components().next())
+        .is_some_and(|first| first.as_os_str().to_string_lossy().starts_with('.'));
+    (!too_wide && !hidden).then_some(dir)
 }
 
 /// Writes `<dir>/mcp.json`, naming `exe control` as the only MCP server, unless it already
@@ -416,6 +421,10 @@ mod tests {
         let home = top.path().join("home");
         let project = home.join("project");
         std::fs::create_dir_all(&project).unwrap();
+        let secrets = home.join(".ssh");
+        std::fs::create_dir_all(secrets.join("keys")).unwrap();
+        let worktree = project.join(".worktrees");
+        std::fs::create_dir_all(&worktree).unwrap();
         let home = Some(home.as_path());
         assert_eq!(
             readable(&project, home),
@@ -423,7 +432,10 @@ mod tests {
         );
         let elsewhere = tempfile::tempdir().unwrap();
         assert!(readable(elsewhere.path(), home).is_some());
+        assert!(readable(&worktree, home).is_some(), "a project's own");
         for wide in [
+            secrets.clone(),
+            secrets.join("keys"),
             top.path().join("home"),
             top.path().to_path_buf(),
             project.join("../.."),

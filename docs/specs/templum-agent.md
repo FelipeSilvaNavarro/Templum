@@ -238,7 +238,8 @@ claude -p --verbose --input-format stream-json --output-format stream-json --inc
 - **`--tools Read,Glob,Grep`:** its only built-in tools read files, so it can look at a project before planning it.
   `--add-dir` names each workspace's folder and each folder of a block in any workspace (deduped), read again at each
   start of the process, so a project is readable once its workspace exists; never `/`, the person's home or a folder
-  above it (a fresh terminal sits at `~`, where their keys are), each resolved on disk first. No
+  above it (a fresh terminal sits at `~`, where their keys are), nor a hidden folder of home or one inside it
+  (`~/.ssh`, `~/.aws`), each resolved on disk first. No
   Bash, Edit, Write, WebFetch or Agent: what it changes, it changes through Templum, where the gate is.
 - **`--permission-mode default`:** not the person's `permissions.defaultMode`: with bypass or auto, Read, Glob and Grep
   would reach any file and `--permission-prompts none` would refuse nothing.
