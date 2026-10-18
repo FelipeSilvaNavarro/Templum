@@ -331,6 +331,8 @@ mod tests {
             started,
             cwd: Some(cwd.into()),
             terminal: "1-0".into(),
+            home: None,
+            account: None,
         }
     }
 

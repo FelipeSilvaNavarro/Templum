@@ -845,7 +845,7 @@ fn a_crashed_agents_state_never_comes_back(cx: &mut TestAppContext) {
     // The snapshot sees no agent any more, then the one typed by hand.
     ws.update(cx, |ws, _| {
         ws.space
-            .see(vec![(id, templum_terminal::Inspection::default())]);
+            .see(vec![(id, templum_terminal::Inspection::default())], &[]);
         ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into());
     });
     ws.read_with(cx, |ws, _| {

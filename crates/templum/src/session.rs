@@ -864,6 +864,8 @@ fn session_ids(found: &[templum_terminal::Inspection], data: &Path) -> Vec<Optio
             cwd: f.folder.clone(),
             // The relay's file isn't read for a session's id.
             terminal: String::new(),
+            home: None,
+            account: None,
         })
         .collect();
     let dirs = templum_usage::Dirs::of(data);

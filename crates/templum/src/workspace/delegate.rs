@@ -835,7 +835,7 @@ impl Workspace {
             .and_then(|p| p.transcript.as_deref())
             .map(|t| format!(", transcript {}", flat(t)))
             .unwrap_or_default();
-        let proc = pane.and_then(super::usage::proc_of);
+        let proc = pane.and_then(|p| self.proc_of(p));
         let (data, from, to, body) = (
             self.data_dir.clone(),
             handed.usage.clone(),

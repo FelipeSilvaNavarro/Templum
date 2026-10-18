@@ -436,3 +436,128 @@ fn an_agent_whose_folder_is_gone_isnt_resumed_elsewhere(cx: &mut TestAppContext)
         "not in the home folder: that's another conversation"
     );
 }
+
+/// Claude Code 2, an account of Claude Code on Templum's folder for it.
+pub(super) const CLAUDE2: &str = "[agents.claude2]\nof = \"claude\"\nname = \"Claude Code 2\"\n";
+
+/// `ws`'s agents as config.toml's `[agents]` `text` makes them, on its data folder.
+pub(super) fn with_agents(ws: &Entity<Workspace>, cx: &mut TestAppContext, text: &str) {
+    ws.update(cx, |ws, _| {
+        let config = crate::config::parse(text).unwrap();
+        ws.agents = crate::agents::effective(&config.agents, &[], ws.data_dir.as_deref());
+    });
+}
+
+/// Opens the agent `id` in a new terminal in `folder`.
+pub(super) fn launch(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: &str,
+    folder: &std::path::Path,
+) -> BlockId {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.launch_agent(id, folder, Point::new(0.0, 900.0), window, cx)
+        })
+    })
+    .unwrap()
+    .expect("a block")
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_account_opens_with_its_folder_in_its_shell(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let script = "echo \"dir=$CLAUDE_CONFIG_DIR;\"; exec cat";
+    let command = ("sh".to_string(), vec!["-c".to_string(), script.to_string()]);
+    let (handle, ws) = open_as(cx, Some(command), None, Some(data.path().to_path_buf()));
+    with_agents(&ws, cx, CLAUDE2);
+    let id = launch(handle, &ws, cx, "claude2", folder.path());
+    let account = data.path().join("accounts").join("claude2");
+    super::bus::screen_with(&ws, cx, id, &format!("dir={};", account.display()));
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(id).unwrap();
+        assert_eq!(pane.account.as_deref(), Some("claude2"));
+        assert_eq!(pane.agent(), Some("claude2"));
+        assert_eq!(ws.agent_name(pane), Some("Claude Code 2"));
+    });
+    assert!(account.is_dir(), "made at its start");
+    // Claude Code itself opens on its own folder: no variable of Templum's.
+    let claude = launch(handle, &ws, cx, "claude", folder.path());
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.terminal(claude).unwrap().account, None);
+    });
+}
+
+/// What a snapshot finds in an account's block: `agent`, as process `pid`.
+fn found(agent: Option<&str>, pid: Option<u32>) -> templum_terminal::Inspection {
+    templum_terminal::Inspection {
+        agent: agent.map(str::to_string),
+        pid,
+        ..Default::default()
+    }
+}
+
+/// The snapshot sees `inspection` in the block `id`.
+fn see(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    id: BlockId,
+    inspection: templum_terminal::Inspection,
+) {
+    ws.update(cx, |ws, _| {
+        let homes = crate::agents::homes(&ws.agents);
+        ws.space.see(vec![(id, inspection)], &homes);
+    });
+}
+
+#[gpui_kit::test]
+fn the_snapshot_names_an_accounts_agent(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    with_agents(&ws, cx, CLAUDE2);
+    let id = launch(handle, &ws, cx, "claude2", folder.path());
+    ws.update(cx, |ws, _| {
+        let pane = ws.space.terminal_mut(id).unwrap();
+        (pane.model, pane.flags_for) = (Some("opus".into()), Some("claude2".into()));
+    });
+    see(&ws, cx, id, found(Some("claude"), Some(7)));
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(id).unwrap();
+        assert_eq!(pane.agent(), Some("claude2"));
+        assert_eq!(
+            pane.model.as_deref(),
+            Some("opus"),
+            "the model is the account's"
+        );
+    });
+    // Another agent typed there is that agent, on its own folder.
+    see(&ws, cx, id, found(Some("codex"), Some(8)));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.terminal(id).unwrap().agent(), Some("codex"));
+    });
+}
+
+#[gpui_kit::test]
+fn claude_typed_again_in_its_block_is_the_account(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    with_agents(&ws, cx, CLAUDE2);
+    let id = launch(handle, &ws, cx, "claude2", folder.path());
+    see(&ws, cx, id, found(Some("claude"), Some(7)));
+    // It quits: its shell alone, which still has the account's variable.
+    see(&ws, cx, id, found(None, None));
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(id).unwrap();
+        assert_eq!(pane.seen.agent, None);
+        assert_eq!(pane.account.as_deref(), Some("claude2"));
+    });
+    see(&ws, cx, id, found(Some("claude"), Some(9)));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.terminal(id).unwrap().agent(), Some("claude2"));
+    });
+}

@@ -566,6 +566,8 @@ mod tests {
             started,
             cwd: None,
             terminal: terminal.into(),
+            home: None,
+            account: None,
         }
     }
 

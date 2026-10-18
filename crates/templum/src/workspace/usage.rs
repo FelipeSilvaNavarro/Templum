@@ -51,19 +51,28 @@ pub(super) fn in_env(name: &str) -> bool {
     std::env::var_os(name).is_some_and(|v| !v.is_empty())
 }
 
-/// The agent of `pane` as the last snapshot found it, for a read of its session.
-pub(super) fn proc_of(pane: &Pane) -> Option<Proc> {
-    let seen = &pane.seen;
-    Some(Proc {
-        agent: seen.agent.clone()?,
-        pid: seen.pid?,
-        started: seen.started?,
-        cwd: seen.folder.clone(),
-        terminal: pane.term.id().to_string(),
-    })
-}
-
 impl Workspace {
+    /// The agent of `pane` as the last snapshot found it, for a read of its session: an account's
+    /// is its agent, in the account's folder.
+    pub(super) fn proc_of(&self, pane: &Pane) -> Option<Proc> {
+        let seen = &pane.seen;
+        let id = seen.agent.clone()?;
+        let account = self
+            .agents
+            .iter()
+            .find(|a| a.id == id)
+            .and_then(|a| a.account.as_ref());
+        Some(Proc {
+            agent: account.map_or(id.clone(), |a| a.kind.agent.to_string()),
+            pid: seen.pid?,
+            started: seen.started?,
+            cwd: seen.folder.clone(),
+            terminal: pane.term.id().to_string(),
+            home: account.map(|a| a.kind.state_dir(&a.folder)),
+            account: account.map(|_| id),
+        })
+    }
+
     /// `command` as typed to start `agent` in a terminal (docs/specs/connections.md, What Templum
     /// types into each agent): the Claude Code Templum opens gets its settings file (the status
     /// line of the plan's limits, and the hooks) and its MCP server; Codex gets the server and
@@ -163,11 +172,27 @@ impl Workspace {
         .collect()
     }
 
-    /// The variables the shell of a block Templum opens for `agent` gets (docs/specs/connections.md,
-    /// OpenCode and Kilo Code): its server and plugin, for an agent that takes them only from its
-    /// environment, as `typed` says; none where `set(name)` says the person's environment already
-    /// has a non-empty one, which wins.
+    /// The variables the shell of a block Templum opens for `agent` gets: an account's folder
+    /// first, whatever Templum's environment has (docs/specs/accounts.md); then
+    /// (docs/specs/connections.md, OpenCode and Kilo Code) its server and plugin, for an agent
+    /// that takes them only from its environment, as `typed` says, none where `set(name)` says
+    /// the person's environment already has a non-empty one, which wins.
     pub(super) fn agent_vars(
+        &self,
+        agent: Option<&AgentEntry>,
+        set: &dyn Fn(&str) -> bool,
+    ) -> Vec<(String, String)> {
+        let account = agent
+            .and_then(AgentEntry::var)
+            .map(|(name, folder)| (name.to_string(), folder.to_string_lossy().into_owned()));
+        account
+            .into_iter()
+            .chain(self.server_vars(agent, set))
+            .collect()
+    }
+
+    /// `agent_vars`' server and plugin.
+    fn server_vars(
         &self,
         agent: Option<&AgentEntry>,
         set: &dyn Fn(&str) -> bool,
@@ -239,7 +264,7 @@ impl Workspace {
         let mut procs = Vec::new();
         for space in self.spaces() {
             for (id, pane) in space.terminals() {
-                if let Some(proc) = proc_of(pane) {
+                if let Some(proc) = self.proc_of(pane) {
                     keys.push((space.id.clone(), id));
                     procs.push(proc);
                 }

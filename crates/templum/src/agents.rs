@@ -52,10 +52,6 @@ pub(crate) struct Account {
 }
 
 /// The state folder of `kind`'s own folder, as Templum's environment names it.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used once an account opens, the next commit")
-)]
 fn own_state(kind: &Kind) -> Option<PathBuf> {
     kind.own_folder(std::env::var_os(kind.var), std::env::home_dir().as_deref())
         .map(|f| kind.state_dir(&f))
@@ -63,10 +59,6 @@ fn own_state(kind: &Kind) -> Option<PathBuf> {
 
 impl AgentEntry {
     /// An account's variable and its folder.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used once an account opens, the next commit")
-    )]
     pub fn var(&self) -> Option<(&'static str, PathBuf)> {
         self.account
             .as_ref()
@@ -75,10 +67,6 @@ impl AgentEntry {
 
     /// An account's choice for each of its items: the state folder it is shared with, among
     /// `agents`, or its own.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used once an account opens, the next commit")
-    )]
     pub fn shares(&self, agents: &[AgentEntry]) -> Vec<Share> {
         let Some(account) = &self.account else {
             return Vec::new();
@@ -104,10 +92,6 @@ impl AgentEntry {
 
     /// Every state folder a share of this account may point at: its agent's own folder's, then
     /// each of its other accounts'.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "used once an account opens, the next commit")
-    )]
     pub fn sources(&self, agents: &[AgentEntry]) -> Vec<PathBuf> {
         let Some(account) = &self.account else {
             return Vec::new();
@@ -285,7 +269,10 @@ pub(crate) fn detects(agents: &[AgentEntry]) -> Vec<Detect> {
 /// A new account's id: its agent's and the first free number from 2 (`claude2`).
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "used once an account opens, the next commit")
+    expect(
+        dead_code,
+        reason = "used by Settings ▸ Agents ▸ Accounts, a later commit"
+    )
 )]
 pub(crate) fn new_account_id(of: &str, taken: impl Fn(&str) -> bool) -> String {
     (2..)
@@ -296,10 +283,6 @@ pub(crate) fn new_account_id(of: &str, taken: impl Fn(&str) -> bool) -> String {
 
 /// Where an account's agent keeps its files.
 #[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used once an account opens, the next commit")
-)]
 pub(crate) struct Home {
     /// The account's id.
     pub id: String,
@@ -309,11 +292,16 @@ pub(crate) struct Home {
     pub state: PathBuf,
 }
 
+/// The agent `found` in a block whose shell has the account `account`'s variable: that account
+/// when it is the account's agent, else what was found.
+pub(crate) fn in_block(found: Option<&str>, account: Option<&Home>) -> Option<String> {
+    match account {
+        Some(home) if found == Some(home.agent.as_str()) => Some(home.id.clone()),
+        _ => found.map(str::to_string),
+    }
+}
+
 /// Each account's [`Home`].
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "used once an account opens, the next commit")
-)]
 pub(crate) fn homes(agents: &[AgentEntry]) -> Vec<Home> {
     agents
         .iter()
@@ -679,6 +667,25 @@ mod tests {
             ),
             ("claude2", "claude", Path::new("/data/accounts/claude2"))
         );
+    }
+
+    #[test]
+    fn in_block_names_the_account() {
+        let home = Home {
+            id: "claude2".into(),
+            agent: "claude".into(),
+            state: PathBuf::from("/data/accounts/claude2"),
+        };
+        assert_eq!(
+            in_block(Some("claude"), Some(&home)).as_deref(),
+            Some("claude2")
+        );
+        assert_eq!(
+            in_block(Some("codex"), Some(&home)).as_deref(),
+            Some("codex")
+        );
+        assert_eq!(in_block(None, Some(&home)), None);
+        assert_eq!(in_block(Some("claude"), None).as_deref(), Some("claude"));
     }
 
     #[test]

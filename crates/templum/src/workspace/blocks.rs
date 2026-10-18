@@ -352,6 +352,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
+        if let Some(entry) = entry {
+            self.prepare_account(entry, window, cx);
+        }
         let vars = self.agent_vars(entry, &super::usage::in_env);
         let id = self.spawn_block_with(rect, Some(folder.to_path_buf()), vars, window, cx)?;
         let command = entry.map_or_else(
@@ -368,11 +371,65 @@ impl Workspace {
         );
         let pane = self.space.terminal_mut(id).expect("just spawned");
         pane.term.write(line.into_bytes());
+        pane.account = entry.filter(|a| a.account.is_some()).map(|a| a.id.clone());
         pane.seen.agent = agent;
         self.cover_start(id, title, cx);
         remember(&mut self.space.recent, folder.to_path_buf());
         self.tell_gemini(entry, window, cx);
         Some(id)
+    }
+
+    /// Applies the account `entry`'s choices to its folder as it starts (docs/specs/accounts.md,
+    /// Making and changing it), and says what went wrong; nothing for an agent.
+    pub(crate) fn prepare_account(
+        &self,
+        entry: &AgentEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(account) = &entry.account else {
+            return;
+        };
+        let report = templum_usage::accounts::apply(
+            account.kind,
+            &account.folder,
+            &entry.shares(&self.agents),
+            &entry.sources(&self.agents),
+            templum_usage::accounts::When::Starting,
+        );
+        self.tell_account(entry, &report, window, cx);
+    }
+
+    /// The notifications of what applying the account `entry`'s choices met: one for what
+    /// couldn't be done, one per item its agent replaced with its own copy.
+    pub(crate) fn tell_account(
+        &self,
+        entry: &AgentEntry,
+        report: &templum_usage::accounts::Report,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(account) = &entry.account else {
+            return;
+        };
+        if !report.problems.is_empty() {
+            let message = format!("{}: {}", entry.title, report.problems.join("; "));
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+        }
+        let agent = entry.builtin.map_or(account.kind.agent, |a| a.title());
+        for key in &report.replaced {
+            let Some(item) = account.kind.item(key) else {
+                continue;
+            };
+            let path = item.paths[0].trim_end_matches('/');
+            let message = format!(
+                "{}'s {path} isn't shared any more: {agent} wrote its own. Edit the account to \
+                 share it again.",
+                entry.title
+            );
+            show_notification(window, cx, Notification::warning(message));
+        }
     }
 
     /// The kanban block `block` shows `board`.
@@ -503,6 +560,7 @@ impl Workspace {
                         starting: None,
                         restored: false,
                         resuming: None,
+                        account: None,
                     })),
                 );
                 self.added(id);

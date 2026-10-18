@@ -443,10 +443,11 @@ impl Workspace {
             Some((_, Err(err))) => failed = Some(err),
             None => {}
         }
+        let homes = crate::agents::homes(&self.agents);
         for (id, terminals, saved, written) in done {
             let gone = self
                 .space_by_id_mut(&id)
-                .map(|space| space.see(terminals))
+                .map(|space| space.see(terminals, &homes))
                 .unwrap_or_default();
             for terminal in gone {
                 self.agent_left(&terminal, cx);

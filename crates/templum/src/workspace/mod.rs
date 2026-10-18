@@ -248,6 +248,9 @@ pub(crate) struct Pane {
     /// Its saved item, whose agent Templum typed back, since when: until a snapshot finds an
     /// agent there, at most STARTS_WITHIN, snapshots keep its folder, agent and session.
     pub resuming: Option<(Instant, session::TerminalItem)>,
+    /// The account whose variable its shell has, by id (docs/specs/accounts.md, Its block): its
+    /// agent found there is that account.
+    pub account: Option<String>,
 }
 
 impl Pane {
@@ -789,12 +792,22 @@ impl Space {
 
     /// Tells each terminal what a snapshot found in it. The terminals whose agent, found running
     /// before, is gone, or whose agent spawned with a prompt no snapshot found within
-    /// `STARTS_WITHIN` never started: what was handed to it has no one to answer.
-    fn see(&mut self, found: Vec<(BlockId, templum_terminal::Inspection)>) -> Vec<String> {
+    /// `STARTS_WITHIN` never started: what was handed to it has no one to answer. `homes`: the
+    /// accounts, whose agent found in a block of one is that account.
+    fn see(
+        &mut self,
+        found: Vec<(BlockId, templum_terminal::Inspection)>,
+        homes: &[agents::Home],
+    ) -> Vec<String> {
         let now = Instant::now();
         let mut gone = Vec::new();
         for (id, mut seen) in found {
             if let Some(pane) = self.terminal_mut(id) {
+                let home = pane
+                    .account
+                    .as_deref()
+                    .and_then(|a| homes.iter().find(|h| h.id == a));
+                seen.agent = agents::in_block(seen.agent.as_deref(), home);
                 // A folder the snapshot couldn't read keeps the one known.
                 seen.folder = seen.folder.or(pane.seen.folder.take());
                 // The agent typed back is up, or the person's own: what is found is saved.

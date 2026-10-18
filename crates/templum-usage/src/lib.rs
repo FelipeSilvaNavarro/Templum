@@ -138,6 +138,10 @@ pub struct Proc {
     pub cwd: Option<PathBuf>,
     /// Its terminal's `TEMPLUM_TERMINAL`.
     pub terminal: String,
+    /// Its account's state folder (docs/specs/accounts.md); None: its agent's own folder.
+    pub home: Option<PathBuf>,
+    /// Its account's id; None: its agent's own folder.
+    pub account: Option<String>,
 }
 
 /// Where the agents keep their files, and the relay its own.
@@ -371,6 +375,8 @@ mod tests {
             started: 0,
             cwd: Some("/srv".into()),
             terminal: "1-0".into(),
+            home: None,
+            account: None,
         };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -405,6 +411,8 @@ mod tests {
             started: 0,
             cwd: Some("/srv".into()),
             terminal: String::new(),
+            home: None,
+            account: None,
         };
         let ids = session_ids(&[proc("claude"), proc("qwen"), proc("gemini")], &dirs, 0);
         assert_eq!(ids, [Some("c-1".into()), Some("q-2".into()), None]);
