@@ -569,6 +569,77 @@ pub fn kill_left(procs: &[Running]) {
     }
 }
 
+/// The processes that are a terminal's shell, `process` the one Templum started: it, and on macOS,
+/// where that is `login`, the shell it runs (its first child). `stop_agent` never ends them.
+pub fn shells_of(process: u32, name: &str, children: &[u32]) -> Vec<u32> {
+    let mut shells = vec![process];
+    if name == "login" {
+        shells.extend(children.first());
+    }
+    shells
+}
+
+/// What `stop_agent` ends in the terminal whose `TEMPLUM_TERMINAL` is `terminal`
+/// (docs/specs/agent-tools.md#stop_agent): `program` and every process below it, and every process
+/// carrying `terminal` in its environment whose parent is neither one of `shells` nor below them,
+/// what a tool's shell left when it quit, even in a session of its own. Never one of `shells`, nor a
+/// job started from them; a process whose environment can't be read is no orphan. Read before any
+/// signal, while the children still name their parents.
+pub fn strays(terminal: &str, shells: &[u32], program: Option<u32>) -> Vec<Running> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        ProcessRefreshKind::new().with_environ(UpdateKind::Always),
+    );
+    let shells: Vec<Pid> = shells.iter().map(|s| Pid::from_u32(*s)).collect();
+    let mut kept: Vec<Pid> = Vec::new();
+    for shell in &shells {
+        kept.extend(descendants(&system, *shell));
+    }
+    let mut found: Vec<Pid> = program
+        .map(Pid::from_u32)
+        .filter(|p| !shells.contains(p))
+        .map(|p| descendants(&system, p))
+        .unwrap_or_default();
+    let variable = format!("TEMPLUM_TERMINAL={terminal}");
+    for (pid, process) in system.processes() {
+        let orphan = process.thread_kind().is_none()
+            && !process.parent().is_some_and(|p| kept.contains(&p))
+            && process.environ().iter().any(|v| *v == *variable);
+        if orphan && !shells.contains(pid) && !found.contains(pid) {
+            found.push(*pid);
+        }
+    }
+    found
+        .into_iter()
+        .filter_map(|pid| {
+            Some(Running {
+                pid: pid.as_u32(),
+                started: system.process(pid)?.start_time(),
+            })
+        })
+        .collect()
+}
+
+/// Asks those of `procs` that still run, and are still the same process, to end: SIGTERM on Unix
+/// (an agent saves its session on it), TerminateProcess on Windows. [`kill_left`] ends what is left.
+pub fn terminate(procs: &[Running]) {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, Signal, System};
+    let pids: Vec<Pid> = procs.iter().map(|p| Pid::from_u32(p.pid)).collect();
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), ProcessRefreshKind::new());
+    for running in procs {
+        if let Some(process) = system.process(Pid::from_u32(running.pid))
+            && process.start_time() == running.started
+            && process.status() != ProcessStatus::Zombie
+            && process.kill_with(Signal::Term).is_none()
+        {
+            process.kill();
+        }
+    }
+}
+
 /// The level Windows ends this process at when the session ends, before every program at the
 /// default 0x280: the first of the range applications may take.
 #[cfg(windows)]
@@ -777,6 +848,53 @@ impl Terminal {
             foreground: self.foreground(),
             reported: self.shared.folder.lock().unwrap().clone(),
         }
+    }
+
+    /// Its shell's processes ([`shells_of`]): empty once it exited.
+    pub fn shells(&self) -> Vec<u32> {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+        let Some(pid) = self.pid.filter(|_| !self.exited()) else {
+            return Vec::new();
+        };
+        let mut system = System::new();
+        system.refresh_processes_specifics(ProcessesToUpdate::All, ProcessRefreshKind::new());
+        let name = system
+            .process(Pid::from_u32(pid))
+            .map(|p| p.name().to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut children: Vec<&sysinfo::Process> = system
+            .processes()
+            .values()
+            .filter(|p| p.parent() == Some(Pid::from_u32(pid)) && p.thread_kind().is_none())
+            .collect();
+        children.sort_by_key(|p| p.start_time());
+        let children: Vec<u32> = children.iter().map(|p| p.pid().as_u32()).collect();
+        shells_of(pid, &name, &children)
+    }
+
+    /// The program in front of its shell, by pid and name: the leader of the PTY's foreground
+    /// process group when it isn't one of `shells` (Unix); on Windows, which can't tell who is in
+    /// front, `agent` (the agent's process a snapshot found), else the shell's first child.
+    pub fn program(&self, shells: &[u32], agent: Option<u32>) -> Option<(u32, String)> {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+        let mut system = System::new();
+        let pid = if cfg!(windows) {
+            system.refresh_processes_specifics(ProcessesToUpdate::All, ProcessRefreshKind::new());
+            agent.or_else(|| {
+                let shell = Pid::from_u32(*shells.first()?);
+                descendants(&system, shell).get(1).map(|p| p.as_u32())
+            })?
+        } else {
+            let front = self.foreground().filter(|f| !shells.contains(f))?;
+            let pids = [Pid::from_u32(front)];
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&pids),
+                ProcessRefreshKind::new(),
+            );
+            front
+        };
+        let name = system.process(Pid::from_u32(pid))?.name();
+        Some((pid, name.to_string_lossy().into_owned()))
     }
 
     /// What the shell (with shell integration) and its programs told about their commands, and

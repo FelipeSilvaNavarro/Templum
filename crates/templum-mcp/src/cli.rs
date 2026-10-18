@@ -31,6 +31,7 @@ const VERBS: &[&str] = &[
     "wire",
     "keys",
     "interrupt",
+    "stop",
     "close",
 ];
 const READ: &str = "read <block> [-n <lines>] [--last] [--json]";
@@ -360,6 +361,7 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         }
         ("interrupt", [block]) => ("interrupt", json!({ "block": block })),
         ("close", [block]) => ("close_block", json!({ "block": block })),
+        ("stop", [block]) => ("stop_agent", json!({ "block": block })),
         ("whoami", _) => return Err("whoami [--json]"),
         ("blocks", _) => return Err("blocks [--json]"),
         ("read", _) => return Err(READ),
@@ -377,6 +379,7 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
         ("keys", _) => return Err(KEYS),
         ("interrupt", _) => return Err("interrupt <block> [--json]"),
         ("close", _) => return Err("close <block> [--json]"),
+        ("stop", _) => return Err("stop <block> [--json]"),
         _ => return Err("notify <text> [--json]"),
     };
     Ok(CallArgs {
@@ -726,6 +729,10 @@ mod tests {
                 json!({ "name": "close_block", "arguments": { "block": "k9x1d" } }),
             ),
             (
+                &["stop", "k9x1d"][..],
+                json!({ "name": "stop_agent", "arguments": { "block": "k9x1d" } }),
+            ),
+            (
                 &[
                     "spawn",
                     "codex",
@@ -744,6 +751,7 @@ mod tests {
             (&["keys", "k9x1d"][..], "usage: templum keys"),
             (&["interrupt"][..], "usage: templum interrupt"),
             (&["close", "a", "b"][..], "usage: templum close"),
+            (&["stop"][..], "usage: templum stop"),
             (&["spawn", "codex", "--effort"][..], "usage: templum spawn"),
         ] {
             let (code, _, err) = run_with(args, &env(&bus), "");

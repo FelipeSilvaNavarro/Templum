@@ -459,6 +459,7 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `wait_for` | `block`, `event` (`idle`, `needs_you`, `command_finished`, `attention`), `timeout` | Waits for the event in the block: `idle` as `wait_for_idle`; `needs_you`, its agent or its balloon asking the person (at once when it already does), with what it asks and, from batch 7, the last 20 lines of its screen; `command_finished`, the next command to finish there, with its output (needs [shell integration](shell-integration.md)); `attention`, its next bell or notification | wired | 5 |
 | `send_keys` | `block`, `keys` (1 to 16) | Presses the keys ([Keys](#keys-stopping-and-closing)); the screen after them | wired | 6 |
 | `interrupt` | `block` | Esc in its agent; ends the task the caller handed it | wired, an agent | 6 |
+| `stop_agent` | `block` | Ends the program in the terminal (its agent, or the command `create_block` started), everything below it and what it left running; its shell stays ([agent-tools.md](agent-tools.md#stop_agent)); ends the task the caller handed it | wired, opened by the caller | card 35 |
 | `close_block` | `block` | Closes a block the caller opened | wired, opened by the caller | 6 |
 
 - A block is named by its id. A **board** is named by its name or id, and may be left out when one wired kanban
@@ -1136,6 +1137,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum keys <block> <key>…` | `send_keys` | 6 |
 | `templum interrupt <block>` | `interrupt` | 6 |
 | `templum close <block>` | `close_block` | 6 |
+| `templum stop <block>` | `stop_agent` | card 35 |
 | `templum wire <a> <b>` | wires two blocks of the workspace of the terminal it runs in, a step of Ctrl+Z; not a tool (an agent's MCP server never lists it); it asks no one, so an agent's shell tool can wire its own block (the person's choice) | 5 |
 
 A verb stays connected until its answer: stopped with Ctrl+C, what it waited for (a balloon) is withdrawn.

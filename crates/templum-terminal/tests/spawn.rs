@@ -579,3 +579,82 @@ fn a_tree_is_ended_even_when_it_ignores_hangup() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// The process among `parent`'s children whose arguments end with `last`, by sysinfo.
+#[cfg(unix)]
+fn child_running(parent: u32, last: &str) -> u32 {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        ProcessRefreshKind::new().with_cmd(UpdateKind::Always),
+    );
+    system
+        .processes()
+        .iter()
+        .find(|(_, p)| {
+            p.parent() == Some(Pid::from_u32(parent))
+                && p.cmd().last().is_some_and(|a| a.to_string_lossy() == last)
+        })
+        .map(|(pid, _)| pid.as_u32())
+        .unwrap_or_else(|| panic!("no child of {parent} ends with {last}"))
+}
+
+/// `pid` runs, and isn't a zombie.
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), ProcessRefreshKind::new());
+    system
+        .process(pid)
+        .is_some_and(|p| p.status() != ProcessStatus::Zombie)
+}
+
+/// What `stop_agent` ends: the program in front, what runs below it, and what a tool's shell left
+/// in a session of its own (as Claude Code's Bash tool does) carrying the terminal's variable;
+/// never the shell, nor a job the person started from it.
+#[cfg(unix)]
+#[test]
+fn strays_are_the_program_what_it_left_in_a_session_of_its_own_and_never_the_shell() {
+    let dir = tempfile::tempdir().unwrap();
+    let flag = dir.path().join("f");
+    // Unique: only what this test started carries it.
+    let id = format!("t-strays-{}", std::process::id());
+    let script = format!(
+        "sleep 31 & sh -c '(setsid sh -c \"sleep 2 && touch {}\" &); exec sleep 33' & wait",
+        flag.display()
+    );
+    let mut shell = std::process::Command::new("sh")
+        .args(["-c", &script])
+        .env("TEMPLUM_TERMINAL", &id)
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let program = child_running(shell.id(), "33");
+    let person = child_running(shell.id(), "31");
+    let found = templum_terminal::strays(&id, &[shell.id()], Some(program));
+    let pids: Vec<u32> = found.iter().map(|r| r.pid).collect();
+    assert!(pids.contains(&program), "{pids:?}");
+    assert!(
+        !pids.contains(&shell.id()) && !pids.contains(&person),
+        "{pids:?}"
+    );
+    assert!(pids.len() >= 3, "the orphan sh and its sleep: {pids:?}");
+    templum_terminal::terminate(&found);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(!flag.exists(), "the orphan wrote its file");
+    assert!(process_alive(person), "the person's job stays");
+    templum_terminal::kill_left(&templum_terminal::tree(&[shell.id()]));
+    let _ = shell.wait();
+}
+
+#[test]
+fn the_shell_is_logins_child_when_the_terminal_runs_login() {
+    assert_eq!(
+        templum_terminal::shells_of(10, "login", &[11, 12]),
+        [10, 11]
+    );
+    assert_eq!(templum_terminal::shells_of(10, "zsh", &[11]), [10]);
+}

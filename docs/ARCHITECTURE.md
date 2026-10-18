@@ -125,7 +125,8 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   `delegate.rs` (tasks handed between agents: typing them, their answers, `reply`, `wait_for_idle`, `send_keys` and
   `interrupt`), `spawn.rs` (`spawn_agent`: an agent beside the caller, its worktree, its model and effort, its prompt
   once it is ready, `close_block`), `content.rs` (the tools on a
-  wired block's content: a kanban's cards, a note, a checklist, a file opened in an editor). Methods a
+  wired block's content: a kanban's cards, a note, a checklist, a file opened in an editor), `ops.rs` (the workspace
+  operations both MCP servers call, each taking its target, never a caller: `stop_in`…). Methods a
   sibling or a test calls are `pub(super)`.
   `workspace/tests/` holds its tests, one file per area, with the shared helpers in `tests/mod.rs`.
 - `settings/`, `git_block/` and `menu/`: the panel's sections, the Git popup's view and tabs, and what each menu lists, each

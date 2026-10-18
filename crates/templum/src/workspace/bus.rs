@@ -500,6 +500,7 @@ impl Workspace {
             Call::OpenFile { path, line } => self.open_file_for(terminal, &path, line, window, cx),
             Call::SendKeys { block, keys } => return self.send_keys(terminal, &block, keys, cx),
             Call::Interrupt { block } => return self.interrupt(terminal, &block, cx),
+            Call::StopAgent { block } => self.stop_agent(terminal, &block, cx),
             Call::CloseBlock { block } => self.close_block(terminal, &block, window, cx),
             Call::AskUser { ask, timeout } => {
                 let what = Waiting::Question {

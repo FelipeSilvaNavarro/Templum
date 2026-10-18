@@ -24,6 +24,7 @@ mod git_sync;
 mod history;
 mod input;
 mod note_tabs;
+mod ops;
 mod persist;
 mod preferences;
 mod questions;

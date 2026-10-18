@@ -899,3 +899,120 @@ fn spawn_agent_opens_an_account(cx: &mut TestAppContext) {
         assert_eq!(pane.agent(), Some("claude2"));
     });
 }
+
+/// `stop_agent` ends the program in a terminal the caller opened and what it left running, ends
+/// the task it handed there without a notice, and keeps the shell (docs/specs/agent-tools.md,
+/// stop_agent).
+#[gpui_kit::test]
+fn stop_agent_ends_what_the_caller_opened_and_what_it_left_running(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let dir = tempfile::tempdir().unwrap();
+    let flag = dir.path().join("f");
+    // Its "agent" (`cat`, in place of the `sh` that started it) leaves a job that would write a
+    // file later; once they end, the shell waits in a builtin `read`, at its prompt with nothing
+    // below it.
+    ws.update(cx, |ws, _| {
+        ws.command = Some(jobs(&format!(
+            "printf '\\033[?2004h'; sh -c '(sleep 2 && touch {}) & exec cat'; while read -r x; do :; done",
+            flag.display()
+        )))
+    });
+    let spawn = json!({ "agent": "codex", "folder": dir.path(), "prompt": "go" });
+    assert!(!call(handle, &ws, cx, &terminal, "spawn_agent", spawn).0);
+    let new = spawned(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, new);
+    in_front(&ws, cx, new, true);
+    found(&ws, cx, new);
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "stop_agent",
+        json!({ "block": them }),
+    );
+    assert!(!failed, "{text}");
+    assert!(
+        text.starts_with(&format!("Stopped {them}: ended ")),
+        "{text}"
+    );
+    assert!(text.ends_with("Its shell is at its prompt."), "{text}");
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(new).unwrap();
+        assert!(
+            pane.handed.is_none() && pane.prompt.is_none(),
+            "its task ended"
+        );
+        assert!(!pane.term.exited(), "the shell stays");
+    });
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(!flag.exists(), "its job wrote its file");
+    in_front(&ws, cx, new, false);
+    let again = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "stop_agent",
+        json!({ "block": them }),
+    );
+    assert_eq!(
+        again,
+        (
+            true,
+            format!("Nothing runs in {them}: its shell is at its prompt.")
+        )
+    );
+}
+
+#[gpui_kit::test]
+fn stop_agent_refuses_its_own_block_and_one_it_didnt_open(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let own = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "stop_agent",
+        json!({ "block": uid }),
+    );
+    assert_eq!(
+        own,
+        (
+            true,
+            "This block is yours: stop_agent stops another block.".into()
+        )
+    );
+    // A terminal the person opened, wired by them.
+    let dir = tempfile::tempdir().unwrap();
+    let other = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let id = ws
+                    .terminal_beside(Some(mine), dir.path(), None, window, cx)
+                    .unwrap();
+                assert!(ws.connect(mine, id, cx));
+                ws.space.uids[&id].clone()
+            })
+        })
+        .unwrap();
+    let theirs = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "stop_agent",
+        json!({ "block": other }),
+    );
+    assert_eq!(
+        theirs,
+        (
+            true,
+            format!(
+                "Only the person stops {other}: you didn't open it. interrupt presses Esc in it."
+            )
+        )
+    );
+}

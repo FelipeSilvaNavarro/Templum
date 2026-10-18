@@ -372,6 +372,55 @@ impl Workspace {
         Outcome::Later(self.press_keys(worker, by, vec!["escape".into()], said, cx))
     }
 
+    /// `stop_agent` from the terminal `from`: ends what runs in the terminal `block`, which the
+    /// caller opened, and what it left running (docs/specs/agent-tools.md#stop_agent). The task the
+    /// caller handed it ends, its waits hearing so at once, with the prompt a spawn still keeps for
+    /// it; the caller isn't told of that end: it knows. Another agent's task there ends as when its
+    /// agent leaves, once a snapshot no longer finds it.
+    pub(super) fn stop_agent(&mut self, from: &str, block: &str, cx: &mut Context<Self>) -> Reply {
+        let (space_id, me) = self.caller(from).expect("call found the caller");
+        let space = self.space_named(&space_id).expect("the caller's workspace");
+        let to = match target(space, me, block) {
+            Ok(to) => to,
+            Err(refused) => return refused,
+        };
+        if to == me {
+            return Reply::err("This block is yours: stop_agent stops another block.");
+        }
+        let Some(pane) = space.terminal(to) else {
+            return Reply::err(format!("{block} isn't a terminal."));
+        };
+        if pane.opened_by.is_none() || pane.opened_by.as_ref() != space.uids.get(&me) {
+            return Reply::err(format!(
+                "Only the person stops {block}: you didn't open it. interrupt presses Esc in it."
+            ));
+        }
+        let worker = pane.term.id().to_string();
+        let stopped = match self.stop_in(&space_id, to, cx) {
+            Ok(stopped) => stopped,
+            Err(refused) => return Reply::err(refused),
+        };
+        if let Some(pane) = self.pane_mut(&worker) {
+            pane.prompt = None;
+            if pane.handed.as_ref().is_some_and(|h| h.by == from) {
+                pane.handed = None;
+                self.end_turn(&worker, Reply::err("Stopped by you."), cx);
+            }
+        }
+        let count = |n| match n {
+            1 => "1 process".to_string(),
+            n => format!("{n} processes"),
+        };
+        let ended = match (stopped.program.as_str(), stopped.processes) {
+            ("", n) => format!("{} it left running", count(n)),
+            (program, 0) => format!("{program} and nothing else"),
+            (program, n) => format!("{program} and {} it started", count(n)),
+        };
+        Reply::ok(format!(
+            "Stopped {block}: ended {ended}. Its shell is at its prompt."
+        ))
+    }
+
     /// Presses `keys` in the terminal `worker`, KEY_GAP apart, as keys `by` pressed (the person's,
     /// for the screen's looks); then `said` and its screen, KEYS_SETTLE after the last. The
     /// terminal is found again before each key: one closed meanwhile ends the call there.

@@ -122,6 +122,10 @@ pub enum Call {
     Interrupt {
         block: String,
     },
+    /// Ends what runs in a terminal the caller opened, and what it left running.
+    StopAgent {
+        block: String,
+    },
     /// Closes a block the caller opened with `spawn_agent`.
     CloseBlock {
         block: String,
@@ -648,6 +652,13 @@ pub fn list() -> Value {
             "inputSchema": { "type": "object", "properties": { "block": block }, "required": ["block"] },
         },
         {
+            "name": "stop_agent",
+            "description": "Ends the agent, or the command, that runs in a terminal you opened (spawn_agent, \
+                            create_block), and every process it started, background ones included; its shell \
+                            stays. Only the person stops a block you didn't open.",
+            "inputSchema": { "type": "object", "properties": { "block": block }, "required": ["block"] },
+        },
+        {
             "name": "close_block",
             "description": "Closes a block you opened with spawn_agent and are still connected to, without asking \
                             the person (they bring it back with Ctrl+Z, its agent resumed). Only the person closes \
@@ -915,6 +926,9 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
         "interrupt" => Call::Interrupt {
             block: text("block")?,
         },
+        "stop_agent" => Call::StopAgent {
+            block: text("block")?,
+        },
         "close_block" => Call::CloseBlock {
             block: text("block")?,
         },
@@ -1039,6 +1053,7 @@ mod tests {
                 json!({ "block": "k9x1d", "keys": ["2", "enter"] }),
             ),
             ("interrupt", json!({ "block": "k9x1d" })),
+            ("stop_agent", json!({ "block": "k9x1d" })),
             ("close_block", json!({ "block": "k9x1d" })),
         ];
         let listed: Vec<String> = list()["tools"]
@@ -1339,6 +1354,10 @@ mod tests {
                 &json!({ "block": "b", "text": "x", "enter": "yes" })
             )
             .is_err()
+        );
+        assert_eq!(
+            parse("stop_agent", &json!({})),
+            Err("stop_agent needs \"block\", a string".into())
         );
         assert!(!known("rm_rf"));
         assert!(parse("rm_rf", &json!({})).is_err());
