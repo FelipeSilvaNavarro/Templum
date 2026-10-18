@@ -445,8 +445,8 @@ mod tests {
             }
 
             /// A `claude` and a `codex` in `<home>/bin` that write their arguments, one per
-            /// line, to `<home>/<name>.args` (at once: moved there), and exit 3. Returns a PATH
-            /// with them first.
+            /// line, to `<home>/<name>.args` (at once: moved there), and exit 3 (`$FAKE_EXIT` when
+            /// set). Returns a PATH with them first.
             fn fake_agents(&self) -> String {
                 use std::os::unix::fs::PermissionsExt as _;
                 let bin = self.dir.path().join("bin");
@@ -456,7 +456,7 @@ mod tests {
                         &format!("bin/{name}"),
                         format!(
                             "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\n' \"$a\"; done > '{0}.part'\n\
-                             mv '{0}.part' '{0}'\nexit 3\n",
+                             mv '{0}.part' '{0}'\nexit \"${{FAKE_EXIT:-3}}\"\n",
                             args.display()
                         ),
                     );
@@ -537,6 +537,12 @@ mod tests {
                     "claude --mcp-config=y hi",
                     "claude",
                     vec!["--mcp-config=y", "hi"],
+                ),
+                // PowerShell makes an array of a,b: passed on as one word, as to a program.
+                (
+                    "claude --x a,b",
+                    "claude",
+                    [&claude[..], &["--x", "a,b"]].concat(),
                 ),
                 (
                     "codex resume --last",
@@ -770,6 +776,82 @@ mod tests {
         #[test]
         fn zsh_keeps_the_persons_alias_and_function() {
             keeps_the_persons_alias_and_function("zsh", ".zshrc");
+        }
+
+        /// `set -e` in the `.bashrc`: the shell stays, and the agent runs.
+        #[test]
+        fn bash_with_errexit_runs_the_agent() {
+            let home = Home::new();
+            home.write(
+                ".bashrc",
+                format!("set -e\nexport FAKE_EXIT=0\ncd '{}'\n", home.start()),
+            );
+            let path = home.fake_agents();
+            let Some(term) = home.spawn_with("bash", &[], &with_agents(&path)) else {
+                return;
+            };
+            type_first(&term, &home, "claude hi", "claude");
+            let claude: Vec<&str> = CLAUDE_WORDS.lines().collect();
+            wait_args(&term, &home, "claude", &[&claude[..], &["hi"]].concat());
+            term.write(&b"codex hi\r"[..]);
+            let codex: Vec<&str> = CODEX_WORDS.lines().collect();
+            wait_args(&term, &home, "codex", &[&codex[..], &["hi"]].concat());
+        }
+
+        /// A `claude` typed where none is installed: the shell's own complaint, nothing of
+        /// Templum's on the screen, and a failed command.
+        #[test]
+        fn a_missing_agent_is_told_as_without_templum() {
+            let shells: [(&str, &[&str], &str, &str, bool); 4] = [
+                ("bash", &[], ".bashrc", "cd", bash_has_ps0()),
+                ("zsh", &[], ".zshrc", "cd", true),
+                ("fish", &[], ".config/fish/config.fish", "cd", true),
+                (
+                    "pwsh",
+                    &["-NoLogo"],
+                    ".config/powershell/Microsoft.PowerShell_profile.ps1",
+                    "Set-Location",
+                    true,
+                ),
+            ];
+            for (program, a, file, cd, status) in shells {
+                let home = Home::new();
+                home.write(file, format!("{cd} '{}'\n", home.start()));
+                if program == "zsh" {
+                    zsh_modules(&home);
+                }
+                // No `claude` there, nor from mise's fish config, which puts its tools back.
+                let env = [
+                    ("PATH", "/usr/bin:/bin"),
+                    ("MISE_FISH_AUTO_ACTIVATE", "0"),
+                    ("TEMPLUM_CLAUDE_ARGS", CLAUDE_WORDS),
+                    ("TEMPLUM_CODEX_ARGS", CODEX_WORDS),
+                ];
+                let Some(term) = home.spawn_with(program, a, &env) else {
+                    continue;
+                };
+                wait(&term, "the startup file's folder", |t| {
+                    same(t.processes().reported, home.start.path())
+                });
+                term.write(&b"claude\r"[..]);
+                let screen = || {
+                    let mut screen = crate::Snapshot::default();
+                    screen.refresh(term.shared(), &Palette::default());
+                    screen.text()
+                };
+                if status {
+                    wait_pressing(&term, "claude to fail", Some(b"\r"), |t| {
+                        let s = t.status();
+                        s.finished >= 1 && !matches!(s.last.map(|o| o.code), Some(Some(0)))
+                    });
+                } else {
+                    wait(&term, "claude to be told", |_| {
+                        screen().matches("claude").count() > 1
+                    });
+                }
+                let shown = screen();
+                assert!(!shown.contains("emplum"), "{program}:\n{shown}");
+            }
         }
 
         /// Started without Templum's words, the shell has no `claude` of Templum's: words set

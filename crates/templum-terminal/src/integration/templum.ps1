@@ -55,10 +55,18 @@ if ($null -eq $Global:__TemplumPrompt) {
     # program is the first application or script of that name (npm's claude.ps1 included):
     # several on PATH make an array `&` can't run.
     function Global:__TemplumAgent($name, $words, $given) {
-        $program = Get-Command $name -CommandType Application, ExternalScript |
+        $program = Get-Command $name -CommandType Application, ExternalScript -ErrorAction Ignore |
             Select-Object -First 1
-        if (-not $program) { return }
+        if (-not $program) {
+            # As PowerShell says it, without this function's lines.
+            $Host.UI.WriteErrorLine("${name}: The term '$name' is not recognized as a name of a " +
+                'cmdlet, function, script file, or executable program.')
+            $Global:__TemplumAgentExit = 1
+            return
+        }
         $words = @($words -split "`n" | Where-Object { $_ })
+        # PowerShell makes an array of an unquoted a,b: a program gets it as one word, a,b.
+        $given = @(foreach ($a in $given) { if ($a -is [array]) { $a -join ',' } else { $a } })
         & $program @words @given
         $Global:__TemplumAgentExit = $LASTEXITCODE
     }

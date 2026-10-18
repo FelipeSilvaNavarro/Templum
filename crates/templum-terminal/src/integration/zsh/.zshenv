@@ -35,6 +35,11 @@ if [[ -o interactive && -z ${__templum_installed-} ]]; then
     __templum_agent() {
         builtin local name="$1" w="$2"
         builtin shift 2
+        # As zsh says it, not from inside this function.
+        if (( ! $+commands[$name] )); then
+            builtin print -u2 "zsh: command not found: $name"
+            builtin return 127
+        fi
         if [[ -z "$w" ]]; then
             command "$name" "$@"
         else

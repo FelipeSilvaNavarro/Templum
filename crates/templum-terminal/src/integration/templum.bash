@@ -55,7 +55,8 @@ if [[ -z "${__templum_installed-}" ]]; then
         if [[ -z "$w" ]]; then
             builtin command "$name" "$@"
         else
-            IFS=$'\n' builtin read -r -d '' -a words <<< "$w"
+            # `read -d ''` fails at the end of its input: not a failure for `set -e`.
+            IFS=$'\n' builtin read -r -d '' -a words <<< "$w" || builtin true
             builtin command "$name" "${words[@]}" "$@"
         fi
     }

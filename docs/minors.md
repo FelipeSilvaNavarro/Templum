@@ -1087,6 +1087,26 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   PowerShell reaches Claude Code differently than without the function. Fix: when
   the words hold `--` or a `-x:y`, run the program with the line's own text after the name (`$MyInvocation.Line`),
   else as today.
+- [ ] **In PowerShell, `&&`, `||` and `$?` see a typed agent succeed whatever its exit code.** Left by
+  `docs/plans/2026-10-18-agents-in-any-terminal.md` (`crates/templum-terminal/src/integration/templum.ps1`,
+  `__TemplumAgent`): a plain function can't make its caller's `$?` false, so `claude -p x && git push` pushes after
+  Claude Code exited 3, and `claude; $?` prints True; only the prompt's mark is told. And `claude -p x; /bin/true`
+  marks the line failed (D;1) where bash marks it 0: the prompt turns `$?` false for the agent's code though a later
+  program succeeded. Fix: none for `$?` without `[CmdletBinding()]`, which would take `-p` and `-d` as PowerShell's
+  own; for the mark, turn `$?` false only when `$LASTEXITCODE` is still the agent's code.
+- [ ] **A terminal opened before the switch changed keeps words that no longer match the shared files.** Left by
+  `docs/plans/2026-10-18-agents-in-any-terminal.md` (`Workspace::agent_env`, `crates/templum/src/workspace/usage.rs`;
+  `settings_file`, `crates/templum-usage/src/claude.rs`): every new terminal rewrites the one
+  `claude-statusline.json` for the current config, while older terminals keep their `TEMPLUM_CLAUDE_ARGS`. Turn
+  `[connections]` off and open a terminal: a `claude` typed in an older one still gets `--mcp-config=…mcp.json` but
+  a settings file without hooks, Templum's server with a dot that never moves. Fix: a file per content (the hooks in
+  their own settings file, named in the words), or drop `--mcp-config` from the words when the file has no hooks.
+- [ ] **An alias of `claude` to a path skips Templum's words without a word.** Left by
+  `docs/plans/2026-10-18-agents-in-any-terminal.md` (`templum.bash`, `zsh/.zshenv`): `alias claude=~/bin/claude` in
+  a `.bashrc` or `.zshrc` expands to a path, which runs the program alone (as connections.md says of a path), so the
+  agent has no server, hooks or status line and nothing tells the person why. Fix: name an alias to a path in
+  connections.md's "Where it doesn't reach", or have bash and zsh run the alias's program with Templum's words
+  when its first word ends in `/claude` or `/codex`.
 
 ## Keeping the canvas
 
