@@ -421,18 +421,28 @@ impl Workspace {
                 let to = to.clone();
                 Err(self.connect_for(&from, &to, cx))
             }
-            (true, Approved::RemoveWorktree { repo, name, .. }) => {
-                Ok(self.worktree_remove(repo.clone(), name.clone(), true, cx))
-            }
-            (
-                true,
-                Approved::MergeWorktree {
-                    repo,
-                    name,
-                    unmerged,
-                    into,
+            (true, then) => match self.worktree_still(&from, then) {
+                Err(refused) => Err(refused),
+                Ok(()) => match then {
+                    Approved::RemoveWorktree { repo, name, .. } => {
+                        Ok(self.worktree_remove(repo.clone(), name.clone(), true, cx))
+                    }
+                    Approved::MergeWorktree {
+                        repo,
+                        name,
+                        unmerged,
+                        into,
+                    } => Ok(self.worktree_merge(
+                        repo.clone(),
+                        name.clone(),
+                        into.clone(),
+                        *unmerged,
+                        cx,
+                    )),
+                    // Answered by the arm above.
+                    Approved::Connect { .. } => Err(Reply::err("Connected.")),
                 },
-            ) => Ok(self.worktree_merge(repo.clone(), name.clone(), into.clone(), *unmerged, cx)),
+            },
         };
         self.seen_asking(&from);
         match job {

@@ -1521,3 +1521,39 @@ fn a_worktree_off_its_branch_is_refused(cx: &mut TestAppContext) {
     );
     assert!(wt.exists());
 }
+
+/// What the person allowed is checked again when they answer: work made in the worktree since
+/// the question isn't lost with it.
+#[gpui_kit::test]
+fn a_worktree_changed_since_the_question_isnt_deleted(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "d"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::write(wt.join("b.txt"), "work\n").unwrap();
+    let remove = json!({ "worktree": "d", "folder": root, "discard": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 5, "remove_worktree", remove);
+    // More work while the person reads the question.
+    std::fs::write(wt.join("c.txt"), "more work\n").unwrap();
+    press_balloon(handle, cx, mine, "allow");
+    assert_eq!(
+        answer_soon(cx, &answers),
+        (
+            true,
+            "d changed since the person was asked: ask again.".into()
+        )
+    );
+    assert!(wt.join("c.txt").exists(), "kept");
+}

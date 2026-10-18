@@ -10,6 +10,40 @@ use super::bus::Outcome;
 use super::waits::{Approved, Waiting};
 
 impl Workspace {
+    /// What the person allowed (`then`, asked by the terminal `from`) still stands when they
+    /// answer: no block works in the worktree since, and it holds no more work than they were
+    /// told of (a merge: still what was merged).
+    pub(super) fn worktree_still(&self, from: &str, then: &Approved) -> Result<(), Reply> {
+        let (repo, name, changed, unmerged) = match then {
+            Approved::Connect { .. } => return Ok(()),
+            Approved::RemoveWorktree {
+                repo,
+                name,
+                changed,
+                unmerged,
+            } => (repo, name, *changed, *unmerged),
+            Approved::MergeWorktree {
+                repo,
+                name,
+                unmerged,
+                ..
+            } => (repo, name, 0, *unmerged),
+        };
+        let folder = repo.root.to_string_lossy();
+        let (repo, state) = self.worktree_for(from, name, Some(&folder))?;
+        let merging = matches!(then, Approved::MergeWorktree { .. });
+        if merging && let Some(refused) = merge_refusal(name, &repo, &state) {
+            return Err(Reply::err(refused));
+        }
+        let more = state.changed > changed || state.unmerged > unmerged;
+        if more || (merging && state.unmerged != unmerged) {
+            return Err(Reply::err(format!(
+                "{name} changed since the person was asked: ask again."
+            )));
+        }
+        Ok(())
+    }
+
     /// The worktree `name` of the repository of `folder` (the caller's when None, relative to it),
     /// and its state; refused when there is none, or a terminal block works in it.
     fn worktree_for(
@@ -99,31 +133,7 @@ impl Workspace {
             Err(refused) => return Outcome::Now(refused),
         };
         let into = state.into.clone();
-        let refused = if state.changed > 0 {
-            Some(format!(
-                "{name} has {} changed files. Commit them first: a merge takes commits.",
-                state.changed
-            ))
-        } else if state.into_changed > 0 {
-            Some(format!(
-                "{into} has changes not committed in {}: commit or stash them first.",
-                repo.root.display()
-            ))
-        } else if into == "HEAD" {
-            Some(format!(
-                "{} has a detached HEAD: check out the branch to merge into first.",
-                repo.root.display()
-            ))
-        } else if state.busy {
-            Some(format!(
-                "A merge, rebase or cherry-pick is under way in {}: it ends first.",
-                repo.root.display()
-            ))
-        } else if state.unmerged == 0 {
-            Some(format!("{name} has nothing {into} doesn't."))
-        } else {
-            None
-        };
+        let refused = merge_refusal(name, &repo, &state);
         if let Some(refused) = refused {
             return Outcome::Now(Reply::err(refused));
         }
@@ -134,5 +144,39 @@ impl Workspace {
             into,
         };
         Outcome::Wait(Box::new(Waiting::Allow { then }), Some(tools::ASK_WAIT))
+    }
+}
+
+/// Why the worktree `name` (`state`, of `repo`) can't be merged now, if so.
+fn merge_refusal(
+    name: &str,
+    repo: &templum_git::Repo,
+    state: &templum_git::WorktreeState,
+) -> Option<String> {
+    let into = &state.into;
+    if state.changed > 0 {
+        Some(format!(
+            "{name} has {} changed files. Commit them first: a merge takes commits.",
+            state.changed
+        ))
+    } else if state.into_changed > 0 {
+        Some(format!(
+            "{into} has changes not committed in {}: commit or stash them first.",
+            repo.root.display()
+        ))
+    } else if into == "HEAD" {
+        Some(format!(
+            "{} has a detached HEAD: check out the branch to merge into first.",
+            repo.root.display()
+        ))
+    } else if state.busy {
+        Some(format!(
+            "A merge, rebase or cherry-pick is under way in {}: it ends first.",
+            repo.root.display()
+        ))
+    } else if state.unmerged == 0 {
+        Some(format!("{name} has nothing {into} doesn't."))
+    } else {
+        None
     }
 }
