@@ -925,6 +925,22 @@ pub(crate) fn read<T: DeserializeOwned>(path: &Path) -> Loaded<T> {
     }
 }
 
+/// Makes an edited file's ids (`ids`: all of them, in the file's order) safe to use: an id given
+/// twice by hand gets a new one after its first, so deleting one thing never deletes another, and
+/// `next_id` passes them all, so none is given out twice.
+pub(crate) fn unique_ids<'a>(ids: impl IntoIterator<Item = &'a mut u64>, next_id: &mut u64) {
+    let ids: Vec<&mut u64> = ids.into_iter().collect();
+    let mut next = ids.iter().map(|id| **id).fold(*next_id, u64::max);
+    let mut seen = std::collections::HashSet::new();
+    for id in ids {
+        if !seen.insert(*id) {
+            next += 1;
+            *id = next;
+        }
+    }
+    *next_id = next;
+}
+
 /// Writes a workspace's canvas through [`write_newest`].
 pub(crate) fn save(dir: &Path, id: &str, saved: &Saved, generation: u64) -> io::Result<()> {
     let text = serde_json::to_string_pretty(saved).map_err(io::Error::other)?;

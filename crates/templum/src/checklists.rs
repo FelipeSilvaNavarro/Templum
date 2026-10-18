@@ -278,25 +278,10 @@ pub(crate) fn path(dir: &Path) -> PathBuf {
 pub(crate) fn load(dir: &Path) -> Loaded<Checklists> {
     match session::read::<Checklists>(&path(dir)) {
         Loaded::Saved(mut c) => {
-            // An edited file's next_id may lag behind its ids: never give one out twice.
-            let ids = c
-                .lists
-                .iter()
-                .flat_map(|l| std::iter::once(l.id).chain(l.items.iter().map(|i| i.id)));
-            c.next_id = ids.fold(c.next_id, u64::max);
-            // Nor have one twice: an id given twice by hand gets a new one after its first.
-            let mut seen = std::collections::HashSet::new();
-            let mut next = c.next_id;
             let ids = c.lists.iter_mut().flat_map(|l| {
                 std::iter::once(&mut l.id).chain(l.items.iter_mut().map(|i| &mut i.id))
             });
-            for id in ids {
-                if !seen.insert(*id) {
-                    next += 1;
-                    *id = next;
-                }
-            }
-            c.next_id = next;
+            session::unique_ids(ids, &mut c.next_id);
             Loaded::Saved(c)
         }
         other => other,

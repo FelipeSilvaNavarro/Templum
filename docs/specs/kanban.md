@@ -106,7 +106,8 @@ Every change applies as it is typed or clicked, so every block showing the board
   }
   ```
 
-  - Ids are unique across boards, columns and cards, and never reused (`next_id`).
+  - Ids are unique across boards, columns and cards, and never reused (`next_id`). A file edited by hand keeps them
+    so: an id given twice gets a new one after its first, and `next_id` passes them all.
   - Missing `description`, `labels` and `comments` mean empty, a missing `assignee` none; a card with no assignee
     or comments writes neither key. An unknown label color is dropped.
   - `assignee` is the block id of the agent that claimed the card. A comment's `by` is an agent's block id, or

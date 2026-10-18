@@ -471,15 +471,14 @@ pub(crate) fn path(dir: &Path) -> PathBuf {
 pub(crate) fn load(dir: &Path) -> Loaded<Boards> {
     match session::read::<Boards>(&path(dir)) {
         Loaded::Saved(mut boards) => {
-            // An edited file's next_id may lag behind its ids: never give one out twice.
-            let ids = boards.boards.iter().flat_map(|b| {
-                std::iter::once(b.id).chain(b.columns.iter().flat_map(|c| {
-                    std::iter::once(c.id).chain(c.cards.iter().flat_map(|x| {
-                        std::iter::once(x.id).chain(x.checklist.iter().map(|i| i.id))
+            let ids = boards.boards.iter_mut().flat_map(|b| {
+                std::iter::once(&mut b.id).chain(b.columns.iter_mut().flat_map(|c| {
+                    std::iter::once(&mut c.id).chain(c.cards.iter_mut().flat_map(|x| {
+                        std::iter::once(&mut x.id).chain(x.checklist.iter_mut().map(|i| &mut i.id))
                     }))
                 }))
             });
-            boards.next_id = ids.fold(boards.next_id, u64::max);
+            session::unique_ids(ids, &mut boards.next_id);
             Loaded::Saved(boards)
         }
         other => other,
@@ -812,5 +811,27 @@ mod tests {
             panic!("not read")
         };
         assert_eq!(read.next_id, 50);
+    }
+
+    #[test]
+    fn ids_given_twice_by_hand_get_new_ones_after_the_first() {
+        let d = tempfile::tempdir().unwrap();
+        let text = r#"{"version":1,"boards":[{"id":1,"name":"B","columns":[{"id":2,"title":"T",
+            "cards":[{"id":3,"title":"x","checklist":[{"id":5,"text":"a"},{"id":5,"text":"b"}]},
+            {"id":3,"title":"y"}]}]}]}"#;
+        std::fs::write(path(d.path()), text).unwrap();
+        let Loaded::Saved(mut read) = load(d.path()) else {
+            panic!("not read")
+        };
+        let column = &read.boards[0].columns[0];
+        let items: Vec<u64> = column.cards[0].checklist.iter().map(|i| i.id).collect();
+        assert_eq!(items, [5, 6]);
+        assert_eq!(column.cards[1].id, 7);
+        assert_eq!(read.next_id, 7);
+        // Ticking or deleting the second item leaves the first alone.
+        assert!(read.set_item_done(1, 3, 6, true));
+        assert_eq!(read.card(1, 3).unwrap().progress(), (1, 2));
+        read.remove_item(1, 3, 6);
+        assert_eq!(read.card(1, 3).unwrap().checklist[0].text, "a");
     }
 }
