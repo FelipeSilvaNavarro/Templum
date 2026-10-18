@@ -483,7 +483,8 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 A card's assignee is none (anyone), **any session of an agent** (by the agent's id: `claude`, `codex`, an `[agents]`
 key) or **one block** (one agent's session, kept across restarts: [kanban.md](kanban.md#who-a-card-is-for)). A block
 runs the agent Templum sees in it (`Pane::seen.agent`), else the one Templum started there (`Pane::flags_for`); it
-runs "any X" when its agent is X or runs X's program (the first word of their commands).
+runs "any X" when its agent is X or runs X's program (the first word of their commands, without its folder or
+`.exe`).
 
 - **`for`** (in `create_card` and `edit_card`) names who: `anyone`; an agent's id or title in either case (`codex`,
   `Claude Code`); or a terminal block's id, in any workspace. Agents are matched first. Anything else is refused:

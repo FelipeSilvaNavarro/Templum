@@ -218,8 +218,9 @@ A card's **assignee** says who does it. It is one field, as before, with one mor
 - **Which agent a block runs:** the one Templum sees running in it (`Pane::seen.agent`, read every 5 s), else the one
   Templum started there (`Pane::flags_for`, set by `spawn_agent` before the first read). A block with neither runs no
   agent Templum can name yet.
-- **A block runs "any X"** when its agent is X, or runs the same program as X (the first word of their commands): a
-  person's `[agents]` entry `claude-work = "claude --settings …"` runs `claude`, which Templum sees as Claude Code, so a
+- **A block runs "any X"** when its agent is X, or runs the same program as X (the first word of their commands,
+  without its folder or `.exe`, in any case): a person's `[agents]` entry `claude-work = "~/bin/claude --settings …"`
+  runs `claude`, which Templum sees as Claude Code, so a
   card for any claude-work is taken by a Claude Code block and the other way round. Otherwise a card for such an entry
   could never be taken.
 - **Claiming** turns the assignee into the claiming block (as before): a card for any Codex, claimed by a Codex block,

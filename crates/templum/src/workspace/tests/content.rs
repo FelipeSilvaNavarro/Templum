@@ -1380,11 +1380,11 @@ fn claim_card_follows_who_a_card_is_for(cx: &mut TestAppContext) {
         )
         .0
     );
-    // A person's agent that runs a built-in's program is that agent to a card.
+    // A person's agent that runs a built-in's program is that agent to a card, by a path too.
     ws.update(cx, |ws, _| {
         let mut work = ws.agents.iter().find(|a| a.id == "codex").unwrap().clone();
         (work.id, work.title, work.builtin) = ("codex-work".into(), "Codex work".into(), None);
-        work.command = "codex --profile work".into();
+        work.command = "~/bin/Codex.exe --profile work".into();
         ws.agents.push(work);
     });
     set(cx, Some(Assignee::Agent("codex-work".into())));

@@ -126,13 +126,14 @@ impl Workspace {
     }
 
     /// Whether a block running `pane_agent` runs `agent` to a card: the same agent, or one with
-    /// its program (the first word of their commands).
+    /// its program (the first word of their commands, as `program_name` reads it).
     fn runs(&self, pane_agent: Option<&str>, agent: &str) -> bool {
         let program = |id: &str| {
             self.agents
                 .iter()
                 .find(|a| a.id == id)
-                .and_then(|a| a.command.split_whitespace().next())
+                .map(|a| templum_terminal::program_name(&a.command))
+                .filter(|p| !p.is_empty())
         };
         pane_agent.is_some_and(|pane| {
             pane == agent || program(pane).is_some_and(|p| program(agent) == Some(p))
