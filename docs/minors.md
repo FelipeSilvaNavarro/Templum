@@ -631,16 +631,9 @@ Left by batch 3 (agents together) and its review; line numbers are those of `dev
 - [ ] **A long question is cut by its block.** The balloon is clipped by the block (`render`,
   `crates/templum/src/balloon.rs:18`); in a small block a long question loses its end and its buttons. Fix: a scroll in
   the balloon's text, or let it overflow the block.
-- [ ] **The keyboard goes nowhere when a question leaves while its field has it.** Only `answer_question`
-  (`crates/templum/src/workspace/waits.rs:202`) gives the keyboard back to the canvas; a question that expires
-  (`expire`, `waits.rs:132`), is cancelled (`cancel`, `waits.rs:157`), whose agent quits (`closed`, `waits.rs:164`) or
-  whose block closes drops its field with the keyboard in it, and GPUI sends keys to the window's root. A person typing
-  an answer sees their keys and shortcuts do nothing until a click. Fix: refocus the canvas in `render` when a wait's
-  field had the keyboard last frame and nothing has it now (or `on_focus_lost`).
-- [ ] **The balloon's field misses Templum's paste shortcut and Esc.** The balloon's branch of `on_key_down`
-  (`crates/templum/src/workspace/input.rs:618`) lets every command but Copy and Paste through, so Ctrl+Shift+V does
-  nothing there and Esc doesn't leave the field; the find field's branch above it handles both. Fix: the same two
-  cases as the find field's.
+- [ ] **The balloon's field misses Templum's paste shortcut.** The balloon's branch of `on_key_down`
+  (`crates/templum/src/workspace/input.rs`) lets every command but Copy and Paste through, so Ctrl+Shift+V does
+  nothing in a question's field; the find field's branch above it handles it. Fix: the same case as the find field's.
 - [ ] **The dot stops while it is off screen on a wire that is only partly in view.** A frame is asked for only when
   the dot's point is in view (`crates/templum/src/workspace/render.rs:447`): once it leaves the view it stays there
   until something else draws, then jumps. Fix: ask for frames while the wire's curve's bounds meet the view.
@@ -1076,3 +1069,7 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   deadline passes or the block closes while an Other field or the note is focused, the focus stays on a dropped
   handle and keys go nowhere until a click (traced in GPUI's `window.rs`, not run). Fix: give the workspace the
   keyboard when a wait whose field had it is removed (`answer`, `closed`).
+- [ ] **Esc and the arrows do nothing in a question's first half second.** `question_key`
+  (`crates/templum/src/workspace/questions.rs:204`) returns on `too_soon` before matching the key, so it blocks every
+  dialog key, though the spec only blocks those that answer (options, Send, Dismiss). A person who presses Esc as the
+  dialog appears keeps it and has to press again. Fix: check `too_soon` only for Space and Enter.
