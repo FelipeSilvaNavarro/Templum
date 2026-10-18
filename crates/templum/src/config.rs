@@ -577,8 +577,19 @@ pub(crate) fn check_account(
             }
         }
     }
-    if let Some(folder) = &account.folder {
+    if let Some(folder) = account.folder.as_deref().filter(|f| !f.trim().is_empty()) {
         let path = crate::launcher::expand(folder);
+        // A relative one would be each block's working folder's.
+        if !path.is_absolute() {
+            let start = if cfg!(windows) {
+                "C:\\ or ~\\"
+            } else {
+                "/ or ~/"
+            };
+            return Err(format!(
+                "{FILE}: agents.{id}.folder: {folder} isn't a full path: start it with {start}"
+            ));
+        }
         let own = kind.own_folder(std::env::var_os(kind.var), std::env::home_dir().as_deref());
         if own.is_some_and(|own| own == path) {
             return Err(format!(
@@ -1728,12 +1739,30 @@ scrollback = 500
     #[test]
     fn two_accounts_cant_share_a_folder() {
         let err = parse(concat!(
-            "[agents.claude2]\nof = \"claude\"\nfolder = \"/srv/work\"\n",
-            "[agents.claude3]\nof = \"claude\"\nfolder = \"/srv/work/\"\n",
+            "[agents.claude2]\nof = \"claude\"\nfolder = \"~/srv/work\"\n",
+            "[agents.claude3]\nof = \"claude\"\nfolder = \"~/srv/work/\"\n",
         ))
         .unwrap_err();
-        assert!(err.contains(".folder: /srv/work"), "{err}");
-        parse("[agents.claude2]\nof = \"claude\"\nfolder = \"/srv/work\"\n").unwrap();
+        assert!(err.contains(".folder: ~/srv/work"), "{err}");
+        parse("[agents.claude2]\nof = \"claude\"\nfolder = \"~/srv/work\"\n").unwrap();
+    }
+
+    #[test]
+    fn an_account_folder_is_a_full_path() {
+        for folder in ["claude-work", ".claude", "~bob/x", "C:foo"] {
+            let err = parse(&format!(
+                "[agents.claude2]\nof = \"claude\"\nfolder = \"{folder}\"\n"
+            ))
+            .unwrap_err();
+            assert!(
+                err.contains(&format!(
+                    "agents.claude2.folder: {folder} isn't a full path"
+                )),
+                "{err}"
+            );
+        }
+        parse("[agents.claude2]\nof = \"claude\"\nfolder = \"~/w\"\n").unwrap();
+        parse("[agents.claude2]\nof = \"claude\"\nfolder = \"\"\n").unwrap();
     }
 
     #[test]

@@ -184,7 +184,8 @@ share = { settings = "claude3", instructions = "claude3", rules = "claude3", ski
   or another account of the same agent. A missing item is the account's own. An unknown key, a target that is
   neither, an account of another agent, or a chain that comes back to the account (claude3's `skills` from claude4,
   claude4's from claude3) is a config error naming the key, and the last valid config stays.
-- `folder`: `~` is the home folder. It can't be the agent's own folder, nor another account's.
+- `folder`: `~` is the home folder. It is a full path (`/…` or `~/…`; `C:\…` on Windows): a relative one would be each
+  block's working folder. It can't be the agent's own folder, nor another account's.
 - The id of an account added in Settings is its agent's id and the first free number from 2: `claude2`, `claude3`,
   `codex2`. It never changes; the name does. One written by hand may be any free id (`work`).
 - An account isn't one of Templum's agents: Settings ▸ Agents' **Reset all** leaves it, and its agent's ↺ too.
