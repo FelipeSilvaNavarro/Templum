@@ -1,10 +1,6 @@
 //! The Templum Agent's engine (docs/specs/templum-agent.md#a-conversations-life): started with the
 //! first message, resumed by its session after Stop, a crash, a settings change or a restart, its
 //! lines folded into the conversation, and the conversation's file.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the pill and the chat call it (chat/)")
-)]
 
 use std::path::PathBuf;
 use std::time::Duration;

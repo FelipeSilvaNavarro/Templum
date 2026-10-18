@@ -683,9 +683,14 @@ impl Render for Workspace {
                 .child(git_block::popup(self, g, w, h, cx))
         });
         // Window chrome over the canvas's bottom center, above the toolbar: the zoom never scales it.
-        let agent = (!tiled)
-            .then(|| crate::chat::pill::render(self, vp.w, window, cx))
+        let open = self.templum_agent.open;
+        let agent = (!tiled || open)
+            .then(|| crate::chat::pill::render(self, vp.w, open, window, cx))
             .flatten()
+            .and_then(|pill| match open {
+                true => crate::chat::panel::render(self, (vp.w, vp.h), pill, window, cx),
+                false => Some(pill),
+            })
             .map(|pill| {
                 let left = if self.sidebar { sidebar::WIDTH } else { 0.0 };
                 div()

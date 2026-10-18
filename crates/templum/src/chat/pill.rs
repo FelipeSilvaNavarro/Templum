@@ -48,18 +48,19 @@ pub(crate) fn engine(ws: &Workspace) -> String {
     }
 }
 
-/// The pill, `canvas_w` the canvas's width; None when it is turned off and doesn't have the
-/// keyboard.
+/// The pill, `canvas_w` the canvas's width; as the open chat's `footer`, as wide as it. None
+/// when it is turned off and has neither the keyboard nor the chat.
 pub(crate) fn render(
     ws: &Workspace,
     canvas_w: f32,
+    footer: bool,
     window: &Window,
     cx: &mut Context<Workspace>,
 ) -> Option<AnyElement> {
     let ui = ws.ui;
     let agent = &ws.templum_agent;
     let typing = ws.agent_has_keys(window, cx);
-    if !ws.config.templum_agent.pill && !typing {
+    if !ws.config.templum_agent.pill && !typing && !footer {
         return None;
     }
     let text = agent
@@ -121,19 +122,21 @@ pub(crate) fn render(
         .items_center()
         .gap(px(8.0))
         .px(px(14.0))
-        .w(px(width))
+        .map(|el| if footer { el.w_full() } else { el.w(px(width)) })
         .min_h(px(HEIGHT))
         .rounded(px(18.0))
         .bg(ui.surface)
         .border_1()
         .border_color(border)
-        .shadow(vec![BoxShadow {
-            color: ui.shadow,
-            offset: point(px(0.0), px(4.0)),
-            blur_radius: px(12.0),
-            spread_radius: px(0.0),
-            inset: false,
-        }])
+        .when(!footer, |el| {
+            el.shadow(vec![BoxShadow {
+                color: ui.shadow,
+                offset: point(px(0.0), px(4.0)),
+                blur_radius: px(12.0),
+                spread_radius: px(0.0),
+                inset: false,
+            }])
+        })
         .on_key_down(cx.listener(Workspace::on_agent_key))
         // Nothing under the pill reacts to its clicks.
         .block_mouse_except_scroll()

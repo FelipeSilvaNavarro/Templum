@@ -1570,3 +1570,136 @@ fn the_pill_says_what_it_does_what_it_asks_and_that_something_is_new(cx: &mut Te
         assert!(ws.templum_agent.open && !ws.templum_agent.unread)
     });
 }
+
+fn open_chat(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            if !ws.agent_has_keys(window, cx) {
+                ws.toggle_agent(window, cx);
+            }
+            ws.templum_agent.open = true;
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_turn_shows_its_rows(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN]);
+    send(handle, &ws, cx, "hi");
+    let rows = rows_until(&ws, cx, ended);
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("agent-chat").is_some());
+        for n in 0..rows.len() {
+            assert!(
+                window.try_find(format!("agent-row-{n}")).is_some(),
+                "row {n}"
+            );
+        }
+        assert!(
+            window
+                .try_find(format!("agent-row-{}", rows.len()))
+                .is_none()
+        );
+        assert!(
+            window.try_find("agent-pill").is_some(),
+            "the pill is its footer"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_rows_click_reveals_its_block_in_another_workspace(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    control(handle, &ws, cx, "create_workspace", json!({"name": "API"}));
+    let input = json!({"workspace": "w2", "kind": "note", "text": "plan"});
+    ws.update(cx, |ws, _| {
+        let c = &mut ws.templum_agent.conversation;
+        c.person("a note");
+        c.apply(::templum_agent::ChatEvent::ToolStarted {
+            id: "t1".into(),
+            name: "mcp__templum-control__add_block".into(),
+        });
+        c.apply(::templum_agent::ChatEvent::ToolCall {
+            id: "t1".into(),
+            name: "mcp__templum-control__add_block".into(),
+            input: input.clone(),
+        });
+    });
+    let (_, text) = control(handle, &ws, cx, "add_block", input);
+    let note = id_in(&text);
+    ws.update(cx, |ws, _| {
+        let c = &mut ws.templum_agent.conversation;
+        c.apply(::templum_agent::ChatEvent::ToolResult {
+            id: "t1".into(),
+            text,
+            is_error: false,
+        });
+        c.apply(::templum_agent::ChatEvent::TurnEnded {
+            ms: None,
+            cost_usd: None,
+            error: None,
+        });
+    });
+    assert_ne!(
+        ws.read_with(cx, |ws, _| ws.space.id.clone()),
+        "w2",
+        "not shown yet"
+    );
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("agent-row-1", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.id, "w2");
+        assert_eq!(ws.space.focused, ws.space.block_by_uid(&note));
+    });
+}
+
+#[gpui_kit::test]
+fn new_chat_and_stop_buttons(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| ws.templum_agent.conversation.person("go"));
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.try_find("agent-stop").is_some(), "while it works");
+        window.click("agent-new", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("agent-stop").is_none());
+    })
+    .unwrap();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.templum_agent.conversation.rows.clone()),
+        [::templum_agent::Row::Note {
+            text: "New conversation.".into()
+        }]
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.click("agent-close", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("agent-chat").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn suggestions_fill_the_field(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        for n in 0..3 {
+            assert!(window.try_find(format!("agent-suggestion-{n}")).is_some());
+        }
+        window.click("agent-suggestion-1", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(pill_text(&ws, cx), "Catch me up: what's going on?");
+}

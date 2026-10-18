@@ -721,7 +721,7 @@ impl Workspace {
     }
 
     /// The block `uid` names, in any workspace: its workspace's id and its id.
-    pub(super) fn find_block(&self, uid: &str) -> Option<(String, BlockId)> {
+    pub(crate) fn find_block(&self, uid: &str) -> Option<(String, BlockId)> {
         self.spaces()
             .find_map(|s| Some((s.id.clone(), s.block_by_uid(uid)?)))
     }

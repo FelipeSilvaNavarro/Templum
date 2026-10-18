@@ -1,15 +1,14 @@
 //! The Templum Agent (docs/specs/templum-agent.md): the chat the person has with an agent that
 //! builds and runs the canvas, and its state on the workspace.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the pill and the chat call it (chat/)")
-)]
 
+use std::cell::Cell;
 use std::collections::{BTreeSet, VecDeque};
 
 use gpui_kit::component::input::{InputEvent, TextareaState};
 use gpui_kit::prelude::*;
-use gpui_kit::{Context, Entity, Focusable as _, KeyDownEvent, Subscription, Task, Window};
+use gpui_kit::{
+    Context, Entity, Focusable as _, KeyDownEvent, ScrollHandle, Subscription, Task, Window,
+};
 use serde_json::Value;
 use templum_agent::{Conversation, Engine};
 use templum_canvas::BlockId;
@@ -19,7 +18,9 @@ use templum_mcp::control::Parsed;
 use crate::keys::Command;
 use crate::workspace::Workspace;
 
+pub(crate) mod panel;
 pub(crate) mod pill;
+mod rows;
 
 /// The Templum Agent's state: one per Templum.
 pub(crate) struct TemplumAgent {
@@ -55,6 +56,11 @@ pub(crate) struct TemplumAgent {
     _enter: Option<Subscription>,
     /// The block that had the keyboard before the pill took it.
     pub back: Option<BlockId>,
+    /// The chat's body: it follows its end while it is there.
+    pub scroll: ScrollHandle,
+    /// The rows the chat drew last, and whether some came below the view since.
+    pub seen: Cell<usize>,
+    pub unseen: Cell<bool>,
     /// Whether Claude Code is installed, as the tests say it.
     #[cfg(test)]
     pub installed: Option<bool>,
@@ -86,6 +92,9 @@ impl Default for TemplumAgent {
             input: None,
             _enter: None,
             back: None,
+            scroll: ScrollHandle::new(),
+            seen: Cell::new(0),
+            unseen: Cell::new(false),
             #[cfg(test)]
             installed: None,
             #[cfg(test)]
@@ -111,6 +120,7 @@ pub(crate) struct Approval {
     /// The action in one sentence: `Close "Codex · api"`.
     pub said: String,
     /// Exactly what will happen: the text to type, the keys, what stops.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the approval popup shows it"))]
     pub details: String,
 }
 
@@ -240,6 +250,45 @@ impl Workspace {
         self.templum_agent.open = true;
         self.templum_agent.unread = false;
         self.send_to_agent(text, window, cx);
+    }
+
+    /// A suggestion of the empty chat, clicked: its text in the field, which takes the keyboard.
+    pub(crate) fn suggest_to_agent(
+        &mut self,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = self.agent_input(window, cx);
+        if !self.agent_has_keys(window, cx) {
+            self.templum_agent.back = self.space.focused;
+        }
+        input.update(cx, |input, cx| {
+            input.set_value(text.to_string(), window, cx);
+            input.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    /// A click on row `n`: what its action touched is shown, its workspace first.
+    pub(crate) fn show_row(&mut self, n: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(templum_agent::Row::Action {
+            target: Some(target),
+            ..
+        }) = self.templum_agent.conversation.rows.get(n).cloned()
+        else {
+            return;
+        };
+        let block = target.block.as_deref().and_then(|uid| self.find_block(uid));
+        match (block, target.workspace) {
+            (Some((space, id)), _) => self.reveal(&space, id, window, cx),
+            (None, Some(space)) => {
+                if let Some(to) = self.order().iter().position(|s| s.id == space) {
+                    self.switch_to(to, window, cx);
+                }
+            }
+            (None, None) => {}
+        }
     }
 
     /// Settings ▸ Templum Agent.
