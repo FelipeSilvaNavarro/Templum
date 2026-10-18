@@ -3,14 +3,15 @@
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, Window};
-use serde_json::json;
+use serde_json::{Value, json};
 use templum_agent::Target;
 use templum_canvas::BlockId;
-use templum_mcp::control::{self, AddBlock, ControlCall, Kind, Parsed};
+use templum_mcp::control::{self, AddBlock, ControlCall, Kind, Opening, Parsed};
 use templum_mcp::{Call, Hello, Incoming, Replier, Reply, rpc, tools};
 
 use super::bus::{Outcome, agent_state, clean_title};
 use super::ops::{NewBlock, Place};
+use super::spawn::Opener;
 use super::{Space, Workspace, show_notification};
 
 /// What a control client hears when its secret isn't the engine's.
@@ -52,7 +53,7 @@ impl Workspace {
                     rpc::error(&id, rpc::PARAMS, &format!("Unknown tool: {name}"))
                 } else {
                     let (outcome, target) = match control::parse(name, arguments) {
-                        Ok(parsed) => self.control_call(parsed, window, cx),
+                        Ok(parsed) => self.control_call(parsed, arguments, window, cx),
                         Err(why) => (Outcome::Now(Reply::err(why)), None),
                     };
                     if let Some(target) = target {
@@ -85,6 +86,7 @@ impl Workspace {
     fn control_call(
         &mut self,
         parsed: Parsed,
+        args: &Value,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> (Outcome, Option<Target>) {
@@ -112,6 +114,12 @@ impl Workspace {
                 return self.show_for_agent(workspace, block, window, cx);
             }
             ControlCall::AddBlock(add) => return self.add_block_for_agent(add, window, cx),
+            ControlCall::OpenAgent(opening) => {
+                return (
+                    self.open_agent_for_agent(opening, args.clone(), window, cx),
+                    None,
+                );
+            }
             ControlCall::Connect { a, b } => return self.wire_for_agent(&a, &b, true, cx),
             ControlCall::Disconnect { a, b } => return self.wire_for_agent(&a, &b, false, cx),
             ControlCall::Block(Call::ListCards { board, card }) => {
@@ -422,6 +430,102 @@ impl Workspace {
             block: Some(uid),
         };
         (Outcome::Now(done), Some(target))
+    }
+
+    /// `open_agent`: `spawn_agent`'s checks, then the agent opened in the workspace, beside
+    /// `near` or in the middle of its view, wired to `connect`; in a new worktree, once git made
+    /// it. Its row's target is set when it opened (`args`, its call).
+    fn open_agent_for_agent(
+        &mut self,
+        opening: Opening,
+        args: Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
+        let refuse = |why: String| Outcome::Now(Reply::err(why));
+        let spawn = opening.spawn;
+        // Parsed with one: no fork, no role.
+        let agent = spawn.agent.as_deref().unwrap_or_default();
+        let Some(entry) = self.agents.iter().find(|a| a.id == agent).cloned() else {
+            let ids: Vec<&str> = self.agents.iter().map(|a| a.id.as_str()).collect();
+            return refuse(format!(
+                "There's no agent {agent}. These are: {}.",
+                ids.join(", ")
+            ));
+        };
+        // Typed into a shell: anything it can't type safely opens nothing, a worktree included.
+        let (model, effort) = (spawn.model.as_deref(), spawn.effort.as_deref());
+        if let Err(why) = entry.launch_args_with(model, effort, None) {
+            return refuse(why);
+        }
+        if !templum_terminal::installed(entry.program()) {
+            return refuse(format!(
+                "{} isn't installed on this computer ({} wasn't found).",
+                entry.title,
+                entry.program()
+            ));
+        }
+        let space = match self.space_of(&opening.workspace, false) {
+            Ok(space) => space,
+            Err(refused) => return Outcome::Now(refused),
+        };
+        let Some(home) = self.space_named(&space) else {
+            return refuse("That workspace is gone.".into());
+        };
+        let name = clean_title(&home.name);
+        let block = |uid: &str| {
+            home.block_by_uid(uid).ok_or_else(|| {
+                format!("There's no block {uid} in {name} ({space}): overview lists them.")
+            })
+        };
+        let wire_to: Vec<BlockId> = match opening.connect.iter().map(|uid| block(uid)).collect() {
+            Ok(ids) => ids,
+            Err(why) => return refuse(why),
+        };
+        let place = match opening.near.as_deref().map(block) {
+            Some(Ok(id)) => Place::Near(id),
+            Some(Err(why)) => return refuse(why),
+            None => Place::Free,
+        };
+        let folder = match (spawn.folder.as_deref(), home.folder.clone()) {
+            (Some(named), here) => {
+                let named = crate::launcher::expand(named);
+                match here {
+                    Some(here) if named.is_relative() => here.join(named),
+                    _ => named,
+                }
+            }
+            (None, Some(here)) => here,
+            (None, None) => {
+                return refuse(format!(
+                    "Workspace {name} has no folder: name one with folder."
+                ));
+            }
+        };
+        if !folder.is_dir() {
+            return refuse(format!("{} isn't a folder.", folder.display()));
+        }
+        let worktree = spawn.worktree.clone();
+        let open = move |ws: &mut Self,
+                         folder: &std::path::Path,
+                         window: &mut Window,
+                         cx: &mut Context<Self>| {
+            let opener = Opener::TemplumAgent;
+            let (done, uid) = ws.open_agent_in(
+                &space, &entry, None, folder, &spawn, place, &wire_to, opener, window, cx,
+            );
+            if let Some(uid) = uid {
+                let conversation = &mut ws.templum_agent.conversation;
+                conversation.own.blocks.push(uid.clone());
+                let target = Target {
+                    workspace: Some(space),
+                    block: Some(uid),
+                };
+                conversation.touched("open_agent", &args, target);
+            }
+            done
+        };
+        self.in_worktree(folder, worktree, open, window, cx)
     }
 
     /// `connect` (`on`) and `disconnect`: a wire between two blocks of one workspace, a step of

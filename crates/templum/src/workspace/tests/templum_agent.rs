@@ -598,3 +598,170 @@ fn connect_wires_two_blocks_and_ctrl_z_takes_it_back(cx: &mut TestAppContext) {
         (true, format!("{a} and {far} aren't in one workspace."))
     );
 }
+
+/// Claude Code and Codex started as `cat` in front of new terminals' shells, their input boxes
+/// bracketing pastes (as the spawn tests' `spawner`).
+#[cfg(unix)]
+fn cat_agents(ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+    ws.update(cx, |ws, _| {
+        ws.command = Some(jobs("printf '\\033[?2004h'; cat; true"));
+        for agent in &mut ws.agents {
+            if agent.id == "claude" || agent.id == "codex" {
+                agent.command = "cat".into();
+            }
+        }
+    });
+}
+
+/// The block id an `open_agent` answer names: `Opened … as <uid> in …`.
+fn opened_uid(text: &str) -> String {
+    text.split(" as ")
+        .nth(1)
+        .unwrap()
+        .split(' ')
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn open_agent_opens_in_a_workspace_not_shown_wired_to_its_board(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cat_agents(&ws, cx);
+    let folder = tempfile::tempdir().unwrap();
+    control(
+        handle,
+        &ws,
+        cx,
+        "create_workspace",
+        json!({"name": "API", "folder": folder.path()}),
+    );
+    let (_, text) = control(
+        handle,
+        &ws,
+        cx,
+        "add_block",
+        json!({"workspace": "w2", "kind": "kanban", "board": "Sprint"}),
+    );
+    let kanban = id_in(&text);
+    let before = person_view(&ws, cx);
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "open_agent",
+        json!({"agent": "codex", "workspace": "API", "connect": [kanban], "near": kanban,
+               "model": "gpt-5.6", "effort": "high"}),
+    );
+    assert!(!failed, "{text}");
+    let uid = opened_uid(&text);
+    assert_eq!(
+        text,
+        format!(
+            "Opened Codex as {uid} in {}, on gpt-5.6 (high), connected to {kanban}.",
+            folder.path().display()
+        )
+    );
+    assert_eq!(
+        person_view(&ws, cx),
+        before,
+        "the person's view and keyboard stay"
+    );
+    ws.read_with(cx, |ws, _| {
+        let space = ws.space_named("w2").unwrap();
+        let (id, board) = (
+            space.block_by_uid(&uid).unwrap(),
+            space.block_by_uid(&kanban).unwrap(),
+        );
+        assert!(space.wired(id, board));
+        let pane = space.terminal(id).unwrap();
+        assert_eq!(pane.opened_by.as_deref(), Some(::templum_agent::ASKER));
+        assert_eq!(
+            (pane.model.as_deref(), pane.effort.as_deref()),
+            (Some("gpt-5.6"), Some("high"))
+        );
+        assert!(ws.templum_agent.conversation.own.blocks.contains(&uid));
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn its_prompt_is_typed_under_the_templum_agents_line(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cat_agents(&ws, cx);
+    let folder = tempfile::tempdir().unwrap();
+    let shown = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "open_agent",
+        json!({"agent": "codex", "workspace": shown, "folder": folder.path(), "prompt": "say hi"}),
+    );
+    assert!(!failed, "{text}");
+    assert!(
+        text.ends_with(" Its prompt is typed once it is ready, as task t1."),
+        "{text}"
+    );
+    let new = ws.read_with(cx, |ws, _| {
+        ws.space.block_by_uid(&opened_uid(&text)).unwrap()
+    });
+    in_front(&ws, cx, new, true);
+    super::delegate::found(&ws, cx, new);
+    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+    let mut looks = 0;
+    while ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some()) {
+        assert!(looks < 10, "never typed");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        super::bus::after(cx, look);
+        looks += 1;
+    }
+    screen_with(&ws, cx, new, "[from Templum Agent, task t1]");
+    let by = ws.read_with(cx, |ws, _| {
+        ws.space
+            .terminal(new)
+            .unwrap()
+            .handed
+            .as_ref()
+            .unwrap()
+            .by
+            .clone()
+    });
+    assert_eq!(by, ::templum_agent::ASKER);
+}
+
+#[gpui_kit::test]
+fn an_unknown_agent_or_a_bad_effort_opens_nothing(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let shown = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    let blocks = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len())
+    };
+    let before = blocks(&ws, cx);
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "open_agent",
+        json!({"agent": "nope", "workspace": shown}),
+    );
+    assert!(failed && text.contains("There's no agent nope"), "{text}");
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "open_agent",
+        json!({"agent": "claude", "workspace": shown, "effort": "ultra"}),
+    );
+    assert!(failed && text.contains("effort"), "{text}");
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "open_agent",
+        json!({"agent": "claude", "workspace": shown, "connect": ["nope1"]}),
+    );
+    assert!(failed && text.contains("nope1"), "{text}");
+    assert_eq!(blocks(&ws, cx), before);
+}

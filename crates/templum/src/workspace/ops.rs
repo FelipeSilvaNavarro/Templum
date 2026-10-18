@@ -121,22 +121,11 @@ impl Workspace {
                 NewBlock::Kanban { .. } => crate::kanban::SIZE,
                 NewBlock::Editor { .. } => crate::editor::SIZE,
             };
-            let rect = match place {
-                Place::Near(id) => ws
-                    .space
-                    .room_near(id, size)
-                    .ok_or("That block isn't in this workspace.")?,
-                Place::Free => {
-                    let center = ws.space.camera().to_world(ws.center(window));
-                    let at = Rect::new(
-                        center.x - size.w / 2.0,
-                        center.y - size.h / 2.0,
-                        size.w,
-                        size.h,
-                    );
-                    ws.space.free_at(at)
-                }
-            };
+            let center = ws.space.camera().to_world(ws.center(window));
+            let rect = ws
+                .space
+                .spot(&place, size, center)
+                .ok_or("That block isn't in this workspace.")?;
             let kept = (
                 ws.space.focused,
                 ws.space.selected.clone(),
@@ -927,6 +916,26 @@ impl Workspace {
 }
 
 impl Space {
+    /// Where a block of `size` goes at `place`: beside its block, toward the blocks wired to it,
+    /// or centered on `center` (the view's middle); never over a block. None when the block of
+    /// `Near` isn't on this canvas.
+    pub(super) fn spot(
+        &self,
+        place: &Place,
+        size: Size,
+        center: templum_canvas::Point,
+    ) -> Option<Rect> {
+        match place {
+            Place::Near(id) => self.room_near(*id, size),
+            Place::Free => Some(self.free_at(Rect::new(
+                center.x - size.w / 2.0,
+                center.y - size.h / 2.0,
+                size.w,
+                size.h,
+            ))),
+        }
+    }
+
     /// `at` when it covers no block nor drawing, else the nearest spot beside it that doesn't.
     fn free_at(&self, at: Rect) -> Rect {
         let taken: Vec<Rect> = (self.canvas.blocks().iter().map(|b| self.home(b)))

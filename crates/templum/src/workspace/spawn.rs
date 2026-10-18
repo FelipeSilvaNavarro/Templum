@@ -12,11 +12,19 @@ use templum_terminal::Agent;
 use super::bus::{Outcome, target};
 use super::delegate::TASK_LEAD;
 use super::history::Then;
+use super::ops::Place;
 use super::{AGENT_COLS, AGENT_ROWS, Handed, Prompt, Space, Workspace};
 use crate::agents::AgentEntry;
 
 /// How often a spawned agent's readiness for its prompt is looked at.
 pub(super) const READY_LOOK: Duration = Duration::from_secs(1);
+/// Who opens an agent: a block's agent with `spawn_agent` (its terminal's `TEMPLUM_TERMINAL` and
+/// its block), or the Templum Agent.
+pub(super) enum Opener {
+    Block { terminal: String, id: BlockId },
+    TemplumAgent,
+}
+
 /// How long after the spawn a shell may take to start its agent (its startup files): a snapshot
 /// that still finds none there lets it go, prompt and task (its folder's trust was declined, a
 /// question of its shell took the command).
@@ -90,12 +98,48 @@ impl Workspace {
             Ok(folder) => folder,
             Err(refused) => return Outcome::Now(Reply::err(refused)),
         };
-        let Some(name) = spawn.worktree.clone() else {
-            let opened =
-                self.open_agent(from, &entry, fork.as_deref(), &folder, &spawn, window, cx);
-            return Outcome::Now(opened);
+        let (from, worktree) = (from.to_string(), spawn.worktree.clone());
+        let open =
+            move |ws: &mut Self, folder: &Path, window: &mut Window, cx: &mut Context<Self>| {
+                let Some((space, me)) = ws.caller(&from) else {
+                    return Reply::err("Your block was closed before the agent could open.");
+                };
+                let opener = Opener::Block {
+                    terminal: from.clone(),
+                    id: me,
+                };
+                let place = Place::Near(me);
+                ws.open_agent_in(
+                    &space,
+                    &entry,
+                    fork.as_deref(),
+                    folder,
+                    &spawn,
+                    place,
+                    &[me],
+                    opener,
+                    window,
+                    cx,
+                )
+                .0
+            };
+        self.in_worktree(folder, worktree, open, window, cx)
+    }
+
+    /// `open` in `folder`, at once; with `worktree`, in a new Git worktree of that name that git
+    /// makes on the background executor, the call answered once `open` ran there.
+    pub(super) fn in_worktree(
+        &mut self,
+        folder: PathBuf,
+        worktree: Option<String>,
+        open: impl FnOnce(&mut Self, &Path, &mut Window, &mut Context<Self>) -> Reply + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
+        let Some(name) = worktree else {
+            return Outcome::Now(open(self, &folder, window, cx));
         };
-        let (program, from) = (self.config.git.program().to_string(), from.to_string());
+        let program = self.config.git.program().to_string();
         Outcome::Later(cx.spawn_in(window, async move |ws, cx| {
             let made = cx
                 .background_executor()
@@ -114,9 +158,7 @@ impl Workspace {
                 .await;
             match made {
                 Ok(path) => ws
-                    .update_in(cx, |ws, window, cx| {
-                        ws.open_agent(&from, &entry, fork.as_deref(), &path, &spawn, window, cx)
-                    })
+                    .update_in(cx, |ws, window, cx| open(ws, &path, window, cx))
                     .unwrap_or_else(|_| Reply::err("Templum closed.")),
                 Err(why) => Reply::err(why),
             }
@@ -162,54 +204,73 @@ impl Workspace {
             })
     }
 
-    /// Opens `entry` in `folder` beside the caller (terminal `from`), where it overlaps nothing,
-    /// toward the blocks wired to the caller (`Space::room_near`), wired to it: one Ctrl+Z
-    /// closes both. The keyboard, the selection and the camera stay. Its agent starts on the
-    /// spawn's model and effort (checked by `spawn_agent`), with `fork` typed instead of its start
-    /// command for a fork of the caller's session, and its prompt is typed once the agent is
-    /// ready, as a task the caller handed over.
+    /// Opens `entry` in `folder` in the workspace `space` at `place`, where it overlaps nothing,
+    /// wired to `wire_to`: one Ctrl+Z closes it and its wires. The keyboard, the selection and the
+    /// camera stay. Its agent starts on the spawn's model and effort (checked by the caller), with
+    /// `fork` typed instead of its start command for a fork of the opener's session, and its
+    /// prompt is typed once the agent is ready, as a task `opener` handed over. The answer, and
+    /// the new block's id when it opened.
     #[allow(clippy::too_many_arguments)]
-    fn open_agent(
+    pub(super) fn open_agent_in(
         &mut self,
-        from: &str,
+        space: &str,
         entry: &AgentEntry,
         fork: Option<&str>,
         folder: &Path,
         spawn: &tools::Spawn,
+        place: Place,
+        wire_to: &[BlockId],
+        opener: Opener,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Reply {
-        let Some((space_id, me)) = self.caller(from) else {
-            return Reply::err("Your block was closed before the agent could open.");
-        };
+    ) -> (Reply, Option<String>) {
         let (model, effort) = (spawn.model.as_deref(), spawn.effort.as_deref());
         let args = entry
             .launch_args_with(model, effort, spawn.args.as_deref())
             .unwrap_or_default();
-        // A task the caller hands over, under its `[from …]` line, as `delegate` types one.
-        let by = self
-            .space_named(&space_id)
-            .map(|space| self.signature(space, me, cx))
-            .unwrap_or_default();
+        // A task the opener hands over, under its `[from …]` line, as `delegate` types one.
+        let (by, asker, opened_by) = match &opener {
+            Opener::Block { terminal, id } => {
+                let home = self.space_named(space);
+                (
+                    home.map(|s| self.signature(s, *id, cx)).unwrap_or_default(),
+                    terminal.clone(),
+                    home.and_then(|s| s.uids.get(id).cloned()),
+                )
+            }
+            Opener::TemplumAgent => (
+                "Templum Agent".to_string(),
+                templum_agent::ASKER.to_string(),
+                Some(templum_agent::ASKER.to_string()),
+            ),
+        };
         let opened = self
-            .in_space(&space_id, |ws| {
+            .in_space(space, |ws| {
                 let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, ws.cell.size);
-                let rect = ws.space.room_near(me, size)?;
+                let center = ws.space.camera().to_world(ws.center(window));
+                let near = match place {
+                    Place::Near(id) => Some(id),
+                    Place::Free => None,
+                };
+                let rect = ws.space.spot(&place, size, center)?;
                 let kept = (
                     ws.space.focused,
                     ws.space.selected.clone(),
                     ws.space.selected_wire,
                 );
-                // In grid mode a new block takes half of the focused tile: the caller's.
-                ws.space.focused = Some(me);
+                // In grid mode a new block takes half of the focused tile: the one it opens near.
+                if near.is_some() {
+                    ws.space.focused = near;
+                }
                 let id = ws.start_agent(Some(entry), fork, &args, folder, rect, window, cx);
                 (ws.space.focused, ws.space.selected, ws.space.selected_wire) = kept;
                 let id = id?;
-                ws.space.add_wire(me, id);
-                // The caller may close it (`close_block`); a resume types its model again.
-                let opener = ws.space.uids.get(&me).cloned();
+                for to in wire_to {
+                    ws.space.add_wire(*to, id);
+                }
+                // Its opener may close it (`close_block`); a resume types its model again.
                 let pane = ws.space.terminal_mut(id)?;
-                pane.opened_by = opener;
+                pane.opened_by = opened_by.clone();
                 (pane.model, pane.effort) = (spawn.model.clone(), spawn.effort.clone());
                 pane.role = spawn.role.clone();
                 pane.flags_for = Some(entry.id.clone());
@@ -218,11 +279,8 @@ impl Workspace {
             })
             .flatten();
         let Some((uid, terminal)) = opened else {
-            return Reply::err(format!(
-                "Couldn't open {} in {}.",
-                entry.title,
-                folder.display()
-            ));
+            let why = format!("Couldn't open {} in {}.", entry.title, folder.display());
+            return (Reply::err(why), None);
         };
         let on = match (model, effort) {
             (Some(m), Some(e)) => format!(", on {m} ({e})"),
@@ -230,23 +288,38 @@ impl Workspace {
             (None, Some(e)) => format!(", with {e} effort"),
             (None, None) => String::new(),
         };
+        let wired = match &opener {
+            Opener::Block { .. } => ", connected to you".to_string(),
+            Opener::TemplumAgent if wire_to.is_empty() => String::new(),
+            Opener::TemplumAgent => {
+                let home = self.space_named(space);
+                let uids: Vec<String> = wire_to
+                    .iter()
+                    .filter_map(|id| home?.uids.get(id).cloned())
+                    .collect();
+                format!(", connected to {}", uids.join(", "))
+            }
+        };
         let what = match fork {
             Some(_) => "a fork of your session".to_string(),
             None => entry.title.clone(),
         };
-        let mut said = format!(
-            "Opened {what} as {uid} in {}, connected to you{on}.",
-            folder.display()
-        );
+        let mut said = match opener {
+            Opener::Block { .. } => {
+                format!("Opened {what} as {uid} in {}{wired}{on}.", folder.display())
+            }
+            Opener::TemplumAgent => {
+                format!("Opened {what} as {uid} in {}{on}{wired}.", folder.display())
+            }
+        };
         if let Some(prompt) = spawn.prompt.as_ref() {
             self.next_task += 1;
             let id = self.next_task;
             // A fork that took itself for the original would answer its tasks too.
-            let copy = match (fork, self.space_named(&space_id)) {
-                (Some(_), Some(space)) => format!(
-                    "You are a copy of the agent in {}, started from its conversation so far, in a \
-                     block of your own.\n\n",
-                    space.uids.get(&me).map_or("", String::as_str)
+            let copy = match (fork, &opened_by) {
+                (Some(_), Some(original)) => format!(
+                    "You are a copy of the agent in {original}, started from its conversation so \
+                     far, in a block of your own.\n\n"
                 ),
                 _ => String::new(),
             };
@@ -263,7 +336,7 @@ impl Workspace {
                     tokens: Some(0),
                     ..Default::default()
                 }),
-                ..Handed::new(from, Duration::from_secs(tools::TASK_WAIT))
+                ..Handed::new(&asker, Duration::from_secs(tools::TASK_WAIT))
             };
             if let Some(pane) = self.pane_mut(&terminal) {
                 pane.prompt = Some(Prompt {
@@ -283,7 +356,7 @@ impl Workspace {
             ));
         }
         cx.notify();
-        Reply::ok(said)
+        (Reply::ok(said), Some(uid))
     }
 
     /// `close_block` from the terminal `from`: the block `block`, which it opened with
