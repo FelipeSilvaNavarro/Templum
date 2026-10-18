@@ -626,10 +626,17 @@ pub fn shells_of(process: u32, name: &str, children: &[u32]) -> Vec<u32> {
 /// What `stop_agent` ends in the terminal whose `TEMPLUM_TERMINAL` is `terminal`
 /// (docs/specs/agent-tools.md#stop_agent): `program` and every process below it, and every process
 /// carrying `terminal` in its environment whose parent is neither one of `shells` nor below them,
-/// what a tool's shell left when it quit, even in a session of its own. Never one of `shells`, nor a
-/// job started from them; a process whose environment can't be read is no orphan. Read before any
-/// signal, while the children still name their parents.
-pub fn strays(terminal: &str, shells: &[u32], program: Option<u32>) -> Vec<Running> {
+/// what a tool's shell left when it quit, even in a session of its own, started after the program
+/// did (`since` without one: when its agent did; neither, none). Never one of `shells`, a job
+/// started from them, nor a daemon started before the program (an ssh-agent or a tmux server from
+/// the shell's startup files); a process whose environment can't be read is no orphan. Read before
+/// any signal, while the children still name their parents.
+pub fn strays(
+    terminal: &str,
+    shells: &[u32],
+    program: Option<u32>,
+    since: Option<u64>,
+) -> Vec<Running> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let mut system = System::new();
     system.refresh_processes_specifics(
@@ -647,8 +654,14 @@ pub fn strays(terminal: &str, shells: &[u32], program: Option<u32>) -> Vec<Runni
         .map(|p| descendants(&system, p))
         .unwrap_or_default();
     let variable = format!("TEMPLUM_TERMINAL={terminal}");
+    // Start times are whole seconds: one in the program's own second is taken for older.
+    let after = program
+        .and_then(|p| system.process(Pid::from_u32(p)))
+        .map(sysinfo::Process::start_time)
+        .or(since);
     for (pid, process) in system.processes() {
         let orphan = process.thread_kind().is_none()
+            && after.is_some_and(|after| process.start_time() > after)
             && !process.parent().is_some_and(|p| kept.contains(&p))
             && process.environ().iter().any(|v| *v == *variable);
         if orphan && !shells.contains(pid) && !found.contains(pid) {

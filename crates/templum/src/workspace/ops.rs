@@ -65,7 +65,7 @@ impl Workspace {
         }
         let program = pane.term.program(&shells, pane.seen.pid);
         let front = program.as_ref().map(|(pid, _)| *pid);
-        let found = templum_terminal::strays(pane.term.id(), &shells, front);
+        let found = templum_terminal::strays(pane.term.id(), &shells, front, pane.seen.started);
         if found.is_empty() {
             return Err(nothing);
         }

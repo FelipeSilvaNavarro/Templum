@@ -612,9 +612,36 @@ fn process_alive(pid: u32) -> bool {
         .is_some_and(|p| p.status() != ProcessStatus::Zombie)
 }
 
+/// The processes carrying `TEMPLUM_TERMINAL=id` whose arguments end with `last`.
+#[cfg(unix)]
+fn carriers(id: &str, last: &str) -> Vec<templum_terminal::Running> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        ProcessRefreshKind::new()
+            .with_cmd(UpdateKind::Always)
+            .with_environ(UpdateKind::Always),
+    );
+    let variable = format!("TEMPLUM_TERMINAL={id}");
+    system
+        .processes()
+        .values()
+        .filter(|p| {
+            p.environ().iter().any(|v| *v == *variable)
+                && p.cmd().last().is_some_and(|a| a.to_string_lossy() == last)
+        })
+        .map(|p| templum_terminal::Running {
+            pid: p.pid().as_u32(),
+            started: p.start_time(),
+        })
+        .collect()
+}
+
 /// What `stop_agent` ends: the program in front, what runs below it, and what a tool's shell left
-/// in a session of its own (as Claude Code's Bash tool does) carrying the terminal's variable;
-/// never the shell, nor a job the person started from it.
+/// in a session of its own (as Claude Code's Bash tool does) carrying the terminal's variable,
+/// started after the program; never the shell, a job the person started from it, nor a daemon
+/// started before the program (an ssh-agent from the shell's startup files).
 #[cfg(unix)]
 #[test]
 fn strays_are_the_program_what_it_left_in_a_session_of_its_own_and_never_the_shell() {
@@ -622,8 +649,10 @@ fn strays_are_the_program_what_it_left_in_a_session_of_its_own_and_never_the_she
     let flag = dir.path().join("f");
     // Unique: only what this test started carries it.
     let id = format!("t-strays-{}", std::process::id());
+    // Seconds apart: start times are whole seconds.
     let script = format!(
-        "sleep 31 & sh -c '(setsid sh -c \"sleep 2 && touch {}\" &); exec sleep 33' & wait",
+        "(setsid sleep 37 &); sleep 31 & sleep 1.2; \
+         sh -c 'sleep 1.2; (setsid sh -c \"sleep 2 && touch {}\" &); exec sleep 33' & wait",
         flag.display()
     );
     let mut shell = std::process::Command::new("sh")
@@ -631,21 +660,32 @@ fn strays_are_the_program_what_it_left_in_a_session_of_its_own_and_never_the_she
         .env("TEMPLUM_TERMINAL", &id)
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(400));
+    std::thread::sleep(Duration::from_millis(2800));
     let program = child_running(shell.id(), "33");
     let person = child_running(shell.id(), "31");
-    let found = templum_terminal::strays(&id, &[shell.id()], Some(program));
+    let daemon = carriers(&id, "37");
+    assert_eq!(daemon.len(), 1, "the daemon started");
+    let found = templum_terminal::strays(&id, &[shell.id()], Some(program), None);
     let pids: Vec<u32> = found.iter().map(|r| r.pid).collect();
     assert!(pids.contains(&program), "{pids:?}");
     assert!(
         !pids.contains(&shell.id()) && !pids.contains(&person),
         "{pids:?}"
     );
+    assert!(
+        !pids.contains(&daemon[0].pid),
+        "started before the program: {pids:?}"
+    );
     assert!(pids.len() >= 3, "the orphan sh and its sleep: {pids:?}");
     templum_terminal::terminate(&found);
     std::thread::sleep(Duration::from_millis(2500));
     assert!(!flag.exists(), "the orphan wrote its file");
     assert!(process_alive(person), "the person's job stays");
+    assert!(process_alive(daemon[0].pid), "the daemon stays");
+    // Without a program, only what started after `since`: here nothing.
+    let since = daemon[0].started;
+    assert!(templum_terminal::strays(&id, &[shell.id()], None, Some(since)).is_empty());
+    templum_terminal::kill_left(&daemon);
     templum_terminal::kill_left(&templum_terminal::tree(&[shell.id()]));
     let _ = shell.wait();
 }

@@ -104,7 +104,10 @@ as every tool's ([connections.md](connections.md#the-mcp-server)). "Wired" check
     parent isn't the terminal's shell nor a process below it: what a tool's shell left behind when it quit. Claude
     Code's Bash tool runs its shell as the leader of a session of its own, so a `( sleep 60 && touch f ) &` it leaves
     is reparented to init (or `systemd --user`) in that session: neither below the terminal's shell nor in its session,
-    but it carries the variable (checked by hand on 2026-10-18);
+    but it carries the variable (checked by hand on 2026-10-18). Only one started after the program (its start time
+    in a later second; with no program in front, after its agent's, as the last snapshot found it; neither known,
+    none): a daemon the shell's startup files or the person started before it (an `ssh-agent`, a tmux server, a
+    browser a dev server opened before) stays;
   - **never** the shell: the terminal's process, and on macOS, where that is `login`, the shell it runs (its child); what runs between them and the program, nor a job the person started from the shell's prompt (a child of the
     shell); a process whose environment can't be read is no orphan.
 - **Nothing in front and no orphan:** "Nothing runs in k9x1d: its shell is at its prompt." With nothing in front but
@@ -595,6 +598,7 @@ work), each in [the plan](../plans/2026-10-18-agent-tools.md):
 |---|---|
 | `stop_agent` kills a process the person started in that terminal | Only blocks the caller opened; never the shell, what is above the program, or a job started from the shell's prompt; an orphan is ended only when its parent is gone |
 | A detached process wipes its environment (`env -i`) and escapes | Documented: a program that hides from its terminal on purpose; the person sees it in their own tools |
+| `stop_agent` ends a daemon the person or the shell's startup started from that terminal (ssh-agent, tmux) | An orphan is ended only when it started after the program (or its agent); a GUI app the program itself opened (a browser `vite --open` launched) is still its orphan and ends with it |
 | An agent killed before it saves its session | SIGTERM first, SIGKILL 2 s later; Claude Code and Codex write their transcripts as they go |
 | A pid taken again between reading the tree and ending it | `Running` keeps each process's start time, checked before it is ended (`kill_left`'s rule, `terminate` too) |
 | A watch costs the reader thread | Lines are kept only while a watch is set; the regex crate runs in linear time; a line is cut at 64 KB |
