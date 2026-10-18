@@ -2131,7 +2131,7 @@ fn merging_a_worktree_back_takes_a_clean_commit_and_aborts_a_conflict() {
 }
 
 /// What git ignores in a worktree goes when it is removed: the state names it, but for what a
-/// build or a test run fills again.
+/// build or a test run fills again, also a cache that ignores itself (pytest's, ruff's).
 #[test]
 fn a_worktrees_state_names_its_ignored_files_but_build_folders() {
     let (dir, repo) = committed();
@@ -2139,7 +2139,7 @@ fn a_worktrees_state_names_its_ignored_files_but_build_folders() {
         &repo,
         dir.path(),
         ".gitignore",
-        ".env\nnode_modules/\ntarget/\n.pytest_cache/\ncoverage/\n*.egg-info/\n*.log\n",
+        ".env\nnode_modules/\ntarget/\ncoverage/\n*.egg-info/\n*.log\n",
         "Ignore",
     );
     let path = repo.add_worktree("w").unwrap();
@@ -2150,7 +2150,11 @@ fn a_worktrees_state_names_its_ignored_files_but_build_folders() {
     write(&path, ".env", "SECRET=x\n");
     write(&path, "node_modules/x/i.js", "x\n");
     write(&path, "crates/a/target/o", "o\n");
+    // A `*` in its own `.gitignore`: git lists what is inside, not the folder.
+    write(&path, ".pytest_cache/.gitignore", "*\n");
     write(&path, ".pytest_cache/v/cache/nodeids", "[]\n");
+    write(&path, ".ruff_cache/.gitignore", "*\n");
+    write(&path, ".ruff_cache/0.6.0/12345", "x\n");
     write(&path, "web/coverage/lcov.info", "TN:\n");
     write(&path, "src/pkg.egg-info/PKG-INFO", "Name: pkg\n");
     write(&path, "web/npm-debug.log", "0 info\n");

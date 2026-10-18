@@ -396,19 +396,20 @@ conversation.
   the branch feature-x goes back to first."
 - **Nobody may work in it:** a terminal block whose folder is in it refuses both: "k9x1d works in it: stop_agent or
   close_block it first." (any workspace).
-- **`remove_worktree`** (`worktree`, `folder`, `discard` false unless given): with no changes and its branch merged into the
-  main working tree's branch, removes the worktree and deletes its branch at once: `Removed the worktree feature-x and
-  its branch.` With changes or commits not merged, refused unless `discard`: "feature-x has 2 changed files and 3
+- **`remove_worktree`** (`worktree`, `folder`, `discard` false unless given): with no changes and its branch merged into
+  the main working tree's branch, removes the worktree and deletes its branch at once: `Removed the worktree feature-x
+  and its branch.` With changes or commits not merged, refused unless `discard`: "feature-x has 2 changed files and 3
   commits not merged into development: merge_worktree merges them, discard: true loses them." So are files git ignores
   there, which `git worktree remove` deletes, but for what a build or a test run fills again: the folders
   `node_modules`, `target`, `build`, `dist`, `out`, `.next`, `.nuxt`, `.svelte-kit`, `.angular`, `.turbo`,
   `.parcel-cache`, `.venv`, `venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.nox`,
-  `.hypothesis`, `coverage`, `htmlcov`, `.nyc_output`, `.gradle`, `.dart_tool`, `.cache` and `*.egg-info`, the files
-  `npm-debug.log`, `yarn-error.log`, `yarn-debug.log`, `pnpm-debug.log`, `.eslintcache` and `.coverage`: "feature-x
-  has files git ignores, which removing it deletes: .env. discard: true deletes them." With `discard`, the person is
-  asked in the balloon first ([Asking the person](#asking-the-person)): "*Claude Code · api* wants to delete the
-  worktree feature-x, with 2 changed files and 3 commits not merged, and files git ignores: .env." (the last part with
-  such files only) **Delete** and **Keep**. Deleted: `git worktree remove --force` then `git branch -D`.
+  `.hypothesis`, `coverage`, `htmlcov`, `.nyc_output`, `.gradle`, `.dart_tool`, `.cache` and `*.egg-info`, with all
+  inside them (a cache that ignores itself, as pytest's, included), the files `npm-debug.log`, `yarn-error.log`,
+  `yarn-debug.log`, `pnpm-debug.log`, `.eslintcache` and `.coverage`: "feature-x has files git ignores, which removing
+  it deletes: .env. discard: true deletes them." With `discard`, the person is asked in the balloon first ([Asking the
+  person](#asking-the-person)): "*Claude Code · api* wants to delete the worktree feature-x, with 2 changed files and 3
+  commits not merged, and files git ignores: .env." (the last part with such files only) **Delete** and **Keep**.
+  Deleted: `git worktree remove --force` then `git branch -D`.
 - **`merge_worktree`** (`worktree`, `folder`): the person is asked first, always: "*Claude Code · api* wants to merge
   feature-x (3 commits) into development." **Merge** and **Cancel**. Allowed, and still the commits and the branch the
   person was told of ("/home/u/app is on main now, not on development as the person was told: ask again."), Templum

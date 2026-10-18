@@ -613,13 +613,19 @@ impl Repo {
             })
             .map(str::to_string)
             .collect();
-        // What a build makes again goes without a word.
-        let built = |entry: &String| match entry.strip_suffix('/') {
-            Some(dir) => {
-                let name = dir.rsplit('/').next().unwrap_or(dir);
-                BUILT.contains(&name) || name.ends_with(".egg-info")
-            }
-            None => BUILT_FILES.contains(&entry.rsplit('/').next().unwrap_or(entry)),
+        // What a build makes again goes without a word: also what is inside a cache that ignores
+        // itself with a `*` (pytest's, ruff's), which git lists instead of the folder.
+        let built = |entry: &String| {
+            let (folders, file) = match entry.strip_suffix('/') {
+                Some(dir) => (dir, None),
+                None => entry
+                    .rsplit_once('/')
+                    .map_or(("", Some(entry.as_str())), |(dir, file)| (dir, Some(file))),
+            };
+            folders
+                .split('/')
+                .any(|name| BUILT.contains(&name) || name.ends_with(".egg-info"))
+                || file.is_some_and(|file| BUILT_FILES.contains(&file))
         };
         let mut ignored = tree.ignored()?;
         ignored.retain(|entry| !built(entry));
