@@ -1763,3 +1763,48 @@ fn remove_worktree_names_the_ignored_files_it_would_delete(cx: &mut TestAppConte
     );
     assert!(!wt.exists());
 }
+
+/// A merge that would write over files git ignores in the person's tree is refused, naming the
+/// first few of them.
+#[gpui_kit::test]
+fn merge_worktree_names_a_few_of_the_ignored_files_it_would_overwrite(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    std::fs::write(root.join(".gitignore"), "deps/\n").unwrap();
+    git_run(&root, &["add", ".gitignore"]);
+    git_run(&root, &["commit", "-qm", "Ignore"]);
+    std::fs::create_dir(root.join("deps")).unwrap();
+    std::fs::write(root.join("deps").join("x.js"), "the person's\n").unwrap();
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "m"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::create_dir(wt.join("deps")).unwrap();
+    for i in 1..=7 {
+        std::fs::write(wt.join("deps").join(format!("{i}.js")), "agent's\n").unwrap();
+    }
+    git_run(&wt, &["add", "-f", "deps"]);
+    git_run(&wt, &["commit", "-qm", "Deps"]);
+    let merge = json!({ "worktree": "m", "folder": root });
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "merge_worktree", merge),
+        (
+            true,
+            format!(
+                "The merge would overwrite deps/1.js, deps/2.js, deps/3.js, deps/4.js, deps/5.js \
+                 and 2 more, ignored in {}: move it first.",
+                root.display()
+            )
+        )
+    );
+}

@@ -425,7 +425,7 @@ conversation.
   them first."); nothing to merge ("feature-x has nothing development doesn't."); a merge, rebase or cherry-pick
   already under way there; a file git ignores there that the worktree's branch tracks (a `.env` added with `git add
   -f`), which git would write over without a word ("The merge would overwrite .env, ignored in /home/u/app: move it
-  first."), checked again when the person says Merge. Other untracked files don't refuse it: git refuses itself when
+  first.", the first five files and how many more), checked again when the person says Merge. Other untracked files don't refuse it: git refuses itself when
   the merge would write over one. A conflict aborts the merge (`git merge
   --abort`) and answers with the files: "The merge would conflict in src/a.rs, src/b.rs: merge development into
   feature-x and resolve them there, then merge again." Merged: `Merged feature-x into development (3 commits).

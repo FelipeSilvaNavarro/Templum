@@ -227,7 +227,7 @@ fn merge_refusal(
     } else if !state.overwrites.is_empty() {
         Some(format!(
             "The merge would overwrite {}, ignored in {}: move it first.",
-            state.overwrites.join(", "),
+            listed(&state.overwrites),
             repo.root.display()
         ))
     } else {
