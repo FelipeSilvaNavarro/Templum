@@ -1573,3 +1573,13 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   are made, and more agents than the cap start. Fix: count the worktrees being made for a prompted `open_agent` in
   `agent_tasks` (a counter raised before `in_worktree` and lowered when it opens or fails).
 
+- [ ] **A dialog the agent cancels itself can give way to another in the same words unseen.** A terminal's `facts`
+  (`crates/templum/src/workspace/approvals.rs`) count its agent's dialogs by their hooks and stamp the person's keys
+  and clicks, but when the agent itself drops the dialog the approval showed (a subagent aborted) and a queued one in
+  the same words takes its place, no hook fires and nobody typed: Allow presses its keys on a command the person never
+  saw. Fix: put a hash of the screen's dialog region in `facts`, leaving out its animated lines (a spinner, a timer).
+- [ ] **The person's pointer moving over a TUI isn't counted.** `report` (`crates/templum/src/workspace/input.rs`)
+  stamps `Pane::clicked` for a press, a drag, a release and the wheel, not for a move with no button down, so a program
+  that asked for every move (and highlights the option under the pointer) can have its choice moved before an Allow of
+  `send_keys ["enter"]`. Counting the moves would ask again each time the pointer crosses it on the way to the
+  approval. Fix: the screen hash above covers it.
