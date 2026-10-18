@@ -1187,6 +1187,11 @@ pub struct Workspace {
     pub(crate) next_schedule: u64,
     /// The look at the schedules runs (`schedules.rs`).
     scheduling: bool,
+    /// `wait_for` watches whose match is typed back (`wait: false`), the last one's id, and
+    /// whether their look runs (`schedules.rs`).
+    pub(crate) watches: Vec<schedules::Watch>,
+    next_watch: u64,
+    watching: bool,
     /// Draws the next frame while a dot travels along a wire in view (`wires::DOT_FRAME`).
     _dot_frame: Task<()>,
     _wake: Task<()>,
@@ -1525,6 +1530,9 @@ impl Workspace {
             schedules: Vec::new(),
             next_schedule: 0,
             scheduling: false,
+            watches: Vec::new(),
+            next_watch: 0,
+            watching: false,
             _dot_frame: Task::ready(()),
             _wake: wake,
         };

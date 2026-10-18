@@ -7,7 +7,7 @@ use serde_json::json;
 use templum_canvas::Wire;
 
 use super::bus::{after, call, me, screen_until};
-use super::delegate::found;
+use super::delegate::{found, prints};
 use super::spawn::spawner;
 use super::*;
 use crate::workspace::Handed;
@@ -287,4 +287,93 @@ fn the_callers_block_shows_its_schedules_and_its_menu_cancels_them(cx: &mut Test
     pick(handle, cx, mine, 5, 1);
     assert_eq!(ids(&ws, cx), Vec::<u64>::new());
     assert!(!clock(handle, cx, mine));
+}
+
+/// The notices, once the terminals' threads and a few looks gave them time to come.
+fn notices_once(ws: &Entity<Workspace>, cx: &mut TestAppContext, n: usize) -> Vec<String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        after(cx, 250);
+        let now = notices(ws, cx);
+        if now.len() >= n {
+            return now;
+        }
+        assert!(std::time::Instant::now() < deadline, "{now:?}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// `wait_for` with a pattern and `wait: false` answers at once, and its first match, its timeout
+/// or its block's closing comes back as one notice (docs/specs/agent-tools.md, wait_for with a
+/// pattern).
+#[gpui_kit::test]
+fn a_watch_without_wait_types_its_match_back_once(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    agent_without_notices(&ws, cx, mine);
+    let other = wired_plain(handle, &ws, cx, mine);
+    let (_, them) = me(&ws, cx, other);
+    let watching = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            ws.space.terminal(other).unwrap().term.watching()
+        })
+    };
+    let watch = |pattern: &str, timeout: u64| json!({ "block": them, "pattern": pattern, "wait": false, "timeout": timeout });
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "wait_for", watch("ERROR", 300)),
+        (
+            false,
+            format!("Watching {them} for \"ERROR\" as w1: a match is typed into your terminal.")
+        )
+    );
+    prints(&ws, cx, other, b"ERROR one\r");
+    let told = notices_once(&ws, cx, 1);
+    assert!(
+        told[0].starts_with(&format!(
+            "[watch w1 on {them}: a line matches \"ERROR\"] The line is in the pasted text.\nERROR one\nIts last lines:\n"
+        )),
+        "{told:?}"
+    );
+    prints(&ws, cx, other, b"ERROR two\r");
+    std::thread::sleep(Duration::from_millis(300));
+    after(cx, 1_000);
+    assert_eq!(notices(&ws, cx).len(), 1, "once");
+    assert_eq!(watching(&ws, cx), 0, "no watch left");
+    // Its timeout.
+    ws.update(cx, |ws, _| ws.notices.clear());
+    assert!(!call(handle, &ws, cx, &terminal, "wait_for", watch("never", 1)).0);
+    after(cx, 1_300);
+    assert_eq!(
+        notices(&ws, cx),
+        [format!(
+            "[watch w2 on {them} ended: no line matched \"never\" in 1 s]"
+        )]
+    );
+    assert_eq!(watching(&ws, cx), 0);
+    // Its block closing.
+    ws.update(cx, |ws, _| ws.notices.clear());
+    assert!(!call(handle, &ws, cx, &terminal, "wait_for", watch("never", 300)).0);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close_now(&[other], Then::New, window, cx))
+    })
+    .unwrap();
+    after(cx, 500);
+    assert_eq!(
+        notices(&ws, cx),
+        [format!("[watch w3 on {them} ended: {them} was closed]")]
+    );
+    // The caller closing drops its watches, silently.
+    let third = wired_plain(handle, &ws, cx, mine);
+    let (_, three) = me(&ws, cx, third);
+    let quiet = json!({ "block": three, "pattern": "never", "wait": false });
+    assert!(!call(handle, &ws, cx, &terminal, "wait_for", quiet).0);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.close_now(&[mine], Then::New, window, cx))
+    })
+    .unwrap();
+    after(cx, 500);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.watches.is_empty());
+        assert_eq!(ws.space.terminal(third).unwrap().term.watching(), 0);
+    });
 }

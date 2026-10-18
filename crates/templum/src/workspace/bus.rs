@@ -508,7 +508,8 @@ impl Workspace {
                 timeout,
                 pattern,
                 lines,
-            } => return self.wait_for(terminal, &block, event, timeout, pattern, lines),
+                wait,
+            } => return self.wait_for(terminal, &block, event, timeout, pattern, lines, wait, cx),
             Call::Wire { a, b } => self.wire_blocks(terminal, &a, &b, cx),
             Call::ListCards { board, card } => {
                 self.list_cards(terminal, board.as_deref(), card, cx)

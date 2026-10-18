@@ -245,4 +245,18 @@ impl Workspace {
         self.schedules.retain(|s| s.id != id);
         self.schedules.len() < before
     }
+
+    /// Keeps `watch`, its match, its timeout or its block's end typed back to its asker
+    /// (`schedules.rs`); its id, counting from 1 (`w1`).
+    pub(super) fn watch_keep(
+        &mut self,
+        mut watch: super::schedules::Watch,
+        cx: &mut Context<Self>,
+    ) -> u64 {
+        self.next_watch += 1;
+        watch.id = self.next_watch;
+        self.watches.push(watch);
+        self.look_at_watches(cx);
+        self.next_watch
+    }
 }

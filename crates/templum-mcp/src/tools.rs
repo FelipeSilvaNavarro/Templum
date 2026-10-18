@@ -67,13 +67,15 @@ pub enum Call {
         block: String,
         timeout: u64,
     },
-    /// `pattern` goes with `Event::Output` alone; `lines` (0 unless given) with a pattern.
+    /// `pattern` goes with `Event::Output` alone; `lines` (0 unless given) with a pattern; and
+    /// `wait` false (a watch, its match typed back) too.
     WaitFor {
         block: String,
         event: Event,
         timeout: u64,
         pattern: Option<String>,
         lines: usize,
+        wait: bool,
     },
     SpawnAgent(Spawn),
     ListCards {
@@ -672,6 +674,11 @@ pub fn list() -> Value {
                     },
                     "pattern": pattern,
                     "lines": lines,
+                    "wait": {
+                        "type": "boolean",
+                        "description": "With a pattern, false answers at once and keeps watching: the first \
+                                        match, or the timeout, is typed into your terminal while you work.",
+                    },
                     "timeout": seconds(IDLE_WAIT),
                 },
                 "required": ["block"],
@@ -1076,12 +1083,20 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             if pattern.is_some() && event != Event::Output {
                 return Err("\"pattern\" goes with event output".into());
             }
+            let wait = match &args["wait"] {
+                Value::Null => true,
+                value => value.as_bool().ok_or("\"wait\" is true or false")?,
+            };
+            if !wait && pattern.is_none() {
+                return Err("\"wait\" goes with a pattern".into());
+            }
             Call::WaitFor {
                 block: text("block")?,
                 event,
                 timeout: seconds(IDLE_WAIT)?,
                 pattern,
                 lines: lines.unwrap_or(0),
+                wait,
             }
         }
         "spawn_agent" => {
@@ -1578,7 +1593,8 @@ mod tests {
                 event: Event::CommandFinished,
                 timeout: IDLE_WAIT,
                 pattern: None,
-                lines: 0
+                lines: 0,
+                wait: true
             })
         );
         assert_eq!(
@@ -1591,7 +1607,8 @@ mod tests {
                 event: Event::Idle,
                 timeout: MAX_WAIT,
                 pattern: None,
-                lines: 0
+                lines: 0,
+                wait: true
             })
         );
         assert!(parse("reply", &json!({ "block": "b" })).is_err(), "no text");
@@ -1749,8 +1766,23 @@ mod tests {
                 event: Event::Output,
                 timeout: IDLE_WAIT,
                 pattern: Some("Ready in".into()),
-                lines: 20
+                lines: 20,
+                wait: true
             })
+        );
+        assert!(matches!(
+            parse(
+                "wait_for",
+                &json!({ "block": "t4q8p", "pattern": "ERROR", "wait": false })
+            ),
+            Ok(Call::WaitFor { wait: false, .. })
+        ));
+        assert_eq!(
+            parse(
+                "wait_for",
+                &json!({ "block": "t4q8p", "event": "idle", "wait": false })
+            ),
+            Err("\"wait\" goes with a pattern".into())
         );
         for (bad, why) in [
             (

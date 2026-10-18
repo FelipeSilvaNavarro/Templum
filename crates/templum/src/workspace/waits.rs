@@ -24,9 +24,9 @@ pub(crate) const TOO_SOON: Duration = Duration::from_millis(500);
 /// The lines of an agent's screen a turn's wait that times out gives.
 pub(super) const LAST_LINES: usize = 40;
 /// The lines of its terminal a `wait_for` with a pattern gives after the line that matched.
-const PRINTED_LINES: usize = 20;
+pub(super) const PRINTED_LINES: usize = 20;
 /// How often a `wait_for` a command or an alert looks at its terminal's counters.
-const EVENT_LOOK: Duration = Duration::from_millis(250);
+pub(super) const EVENT_LOOK: Duration = Duration::from_millis(250);
 /// How long after a hook says its agent waits for its person its screen is read: the hook comes
 /// before its dialog is drawn (it may answer the dialog; Codex's drew 25 ms after).
 const DRAWN: Duration = Duration::from_millis(300);
@@ -503,15 +503,19 @@ impl Workspace {
     /// `wait_for` from the terminal `from`: `event` in the terminal `block`. `idle` is
     /// `wait_for_idle`; `needs_you` answers at once when its agent, or its balloon, already asks
     /// its person; `output` waits for a line matching `pattern`, at once when one of its last
-    /// `lines` does; the others wait for the next command or alert.
+    /// `lines` does, or with `wait` false keeps watching while the caller works, its match typed
+    /// back; the others wait for the next command or alert.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn wait_for(
-        &self,
+        &mut self,
         from: &str,
         block: &str,
         event: Event,
         timeout: u64,
         pattern: Option<String>,
         lines: usize,
+        wait: bool,
+        cx: &mut Context<Self>,
     ) -> Outcome {
         if event == Event::Idle {
             return self.wait_for_idle(from, block, timeout);
@@ -559,6 +563,23 @@ impl Workspace {
             }
             None => None,
         };
+        if let Some((watch, pattern)) = watch.clone().filter(|_| !wait) {
+            let until = cx.background_executor().now() + Duration::from_secs(timeout);
+            let watch = super::schedules::Watch {
+                id: 0,
+                by: from.to_string(),
+                of,
+                uid: block.to_string(),
+                pattern: pattern.clone(),
+                watch,
+                timeout,
+                until,
+            };
+            let id = self.watch_keep(watch, cx);
+            return Outcome::Now(Reply::ok(format!(
+                "Watching {block} for \"{pattern}\" as w{id}: a match is typed into your terminal."
+            )));
+        }
         let status = pane.term.status();
         let what = Waiting::Event {
             of,
