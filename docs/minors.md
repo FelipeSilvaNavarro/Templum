@@ -1523,7 +1523,10 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
   target or Denied. Fix: search newest first, among Running rows only.
 - [ ] **A killed engine's secret stays good until the next start.** `kill_engine` (`crates/templum/src/workspace/agent.rs`)
   leaves `TemplumAgent::secret` as it was, so a leftover process of the killed engine still says hello as it. Fix:
-  a new secret in `kill_engine`.
+  a new secret in `kill_engine`. On Windows the leftover is likely: `claude` runs as `cmd /C claude.cmd`
+  (`crates/templum-agent/src/engine.rs`, `command`) and `Child::kill` ends only `cmd.exe`, so after Stop or New chat
+  Claude Code's `node` can go on running, its control connection still good, and the chat shows it stopped. Fix
+  there too: start `node` with Claude Code's script directly, or put the process in a Job Object that closes with it.
 - [ ] **The engine is written to on the UI thread.** `Engine::send` (`crates/templum-agent/src/engine.rs`) writes a
   message (a notice may be 256 KB) straight into the pipe: an engine that stopped reading with a full pipe would
   freeze Templum. Fix: a writer thread fed by a channel.
@@ -1543,6 +1546,23 @@ Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those
 - [ ] **After Stop, a task's end still wakes the engine.** `agent_notice` (`crates/templum/src/workspace/agent.rs`)
   sends every notice, so a run the person stopped goes on when an agent finishes. The spec doesn't say; ask the
   maintainer whether Stop should hold the notices as rows until the person writes.
+- [ ] **The conversation grows without end and is saved on the UI thread.** `Conversation::rows`
+  (`crates/templum-agent/src/conversation.rs`) keeps every row until New chat (each Action's whole `input`, a
+  notice's first line), and `save_conversation` (`crates/templum/src/workspace/agent.rs`) writes all of it as pretty
+  JSON at each turn's end on the UI thread: a long-running conversation makes each turn's end hitch. Fix: drop the
+  `input` of rows older than the last few hundred (cap the rows the file keeps), and write compact JSON on a
+  background thread.
+- [ ] **The recorded fixtures aren't the command line Templum runs.** `crates/templum-agent/tests/fixtures/*.jsonl`
+  were recorded without `--strict-mcp-config` and `--mcp-config`, so no `init` line shows `templum-control` in
+  `mcp_servers` and nothing checks how Claude Code names it. Fix: re-record one turn with `claude::args`' exact words
+  (a scratch HOME), and assert `templum-control` is `connected` in its `init`.
+- [ ] **A chat row out of view that changes height is measured again only once shown.** The chat's `list`
+  (`crates/templum/src/chat/panel.rs`) learns only of new rows; an action scrolled out of view that fails (it gains a
+  line) or a person's row that stops being Queued keeps its old height until it scrolls into view, where the scroll
+  can jump a few pixels. Fix: `ListState::remeasure_items` over the rows a turn changed (from the turn's first row).
+- [ ] **The approval's box has no visible scrollbar.** Text taller than 160 px (`crates/templum/src/chat/approval.rs`)
+  scrolls with the wheel, and "Scroll to its end to allow it." says so, but nothing shows how much is left. Fix:
+  gpui-base's `Scrollbar::vertical` over the box's `ScrollHandle`.
 - [ ] **The run meter never shows tokens.** `panel::meter` shows dollars only; the spec says tokens when there is no
   cost. Fix: keep the turns' and the notices' tokens and show them when the cost is 0.
 
