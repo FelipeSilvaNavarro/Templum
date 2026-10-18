@@ -81,7 +81,7 @@ pub(crate) struct Watch {
 
 impl Workspace {
     /// `schedule` from the terminal `from`: `text` to the block `block` (its own, or one wired to
-    /// it running an agent) at its time, and every `every` minutes after.
+    /// it, running an agent) at its time, and every `every` minutes after.
     pub(super) fn schedule(
         &mut self,
         from: &str,
@@ -97,18 +97,17 @@ impl Workspace {
             Ok(to) => to,
             Err(refused) => return refused,
         };
-        if to != me {
-            let Some(pane) = space.terminal(to) else {
-                return Reply::err(format!("{block} isn't a terminal."));
-            };
-            // Also one Templum started there that no snapshot found yet (`spawn_agent` a moment
-            // ago, its shell still in front), and one that quit the last snapshot still has.
-            if pane.agent().is_none() {
-                return Reply::err(format!(
-                    "{block} runs no agent: schedules go to agents. To run a command, open a \
-                     terminal with create_block's command."
-                ));
-            }
+        let Some(pane) = space.terminal(to) else {
+            return Reply::err(format!("{block} isn't a terminal."));
+        };
+        // Also one Templum started there that no snapshot found yet (`spawn_agent` a moment ago,
+        // its shell still in front), and one that quit the last snapshot still has. The caller's
+        // own too: a shell running `templum schedule` would never take its notices.
+        if pane.agent().is_none() {
+            return Reply::err(format!(
+                "{block} runs no agent: schedules go to agents. To run a command, open a terminal \
+                 with create_block's command."
+            ));
         }
         let now = SystemTime::now();
         let every = every.map(|m| Duration::from_secs(m * 60));

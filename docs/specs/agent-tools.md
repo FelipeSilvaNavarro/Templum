@@ -348,9 +348,10 @@ conversation.
   `at` (`HH:MM`, 24-hour, the computer's local time: the next time the clock shows it, today or tomorrow), `after`
   (minutes, 1 to 10080), `every` (minutes, 1 to 10080). One of `at` and `after`, or `every` alone, which first comes
   `every` minutes from now; `every` with `at` or `after` repeats from that first time. Neither is refused ("schedule
-  needs at, after or every"), and so are `at` with `after`. A wired block running no agent is refused: "k9x1d runs no
-  agent: schedules go to agents. To run a command, open a terminal with create_block's command." Templum already knows
-  when an agent takes a task; a shell never says when a line typed into it would run as the person meant.
+  needs at, after or every"), and so are `at` with `after`. A block running no agent, a wired one or the caller's own (a
+  shell running `templum schedule`, which would never take its notices), is refused: "k9x1d runs no agent: schedules go
+  to agents. To run a command, open a terminal with create_block's command." Templum already knows when an agent takes
+  a task; a shell never says when a line typed into it would run as the person meant.
 - **When it comes** Templum delivers `text`, from the caller, as if the caller sent it then:
   - to an agent: a new task, as `delegate` without `wait` types one (its first line `[from Claude Code · api (b7k2m),
     task t9, scheduled s3]`), whose end comes back to the caller typed. A schedule never changes a task: an agent still

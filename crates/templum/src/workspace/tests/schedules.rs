@@ -68,15 +68,21 @@ fn agent_without_notices(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: Bl
 fn a_schedule_goes_at_its_time_to_the_caller_never_to_a_plain_terminal(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
     let (terminal, uid) = me(&ws, cx, mine);
-    agent_without_notices(&ws, cx, mine);
-    let (failed, text) = call(
-        handle,
-        &ws,
-        cx,
-        &terminal,
-        "schedule",
-        json!({ "block": uid, "text": "check the build", "after": 2 }),
+    // A shell running `templum schedule` for itself: refused, it would never take the notice.
+    let mine_once = json!({ "block": uid, "text": "check the build", "after": 2 });
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "schedule", mine_once.clone()),
+        (
+            true,
+            format!(
+                "{uid} runs no agent: schedules go to agents. To run a command, open a terminal \
+                 with create_block's command."
+            )
+        )
     );
+    assert_eq!(ids(&ws, cx), Vec::<u64>::new());
+    agent_without_notices(&ws, cx, mine);
+    let (failed, text) = call(handle, &ws, cx, &terminal, "schedule", mine_once);
     assert_eq!(
         (failed, text.as_str()),
         (false, "Scheduled s1: to you in 2 minutes.")
@@ -276,6 +282,7 @@ fn clock(handle: AnyWindowHandle, cx: &mut TestAppContext, id: BlockId) -> bool 
 fn the_callers_block_shows_its_schedules_and_its_menu_cancels_them(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
     let (terminal, uid) = me(&ws, cx, mine);
+    agent_without_notices(&ws, cx, mine);
     let other = wired_plain(handle, &ws, cx, mine);
     let (_, them) = me(&ws, cx, other);
     ws.update(cx, |ws, _| {
