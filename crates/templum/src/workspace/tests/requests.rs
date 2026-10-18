@@ -317,7 +317,8 @@ fn a_cancelled_question_stays_and_its_answer_is_typed_back(cx: &mut TestAppConte
         notices(&ws, cx),
         [(
             terminal.clone(),
-            "[answer to your question \"Ship it?\"] Yes".to_string()
+            "[answer to your question \"Ship it?\"] The answer is in the pasted text.\nYes"
+                .to_string()
         )]
     );
     ws.read_with(cx, |ws, _| assert_eq!(ws.waits.len(), 1));

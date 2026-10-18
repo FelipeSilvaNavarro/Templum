@@ -153,7 +153,8 @@ later starts with none.
     agent leaving (its connection to Templum ends);
   - a cancelled call (`notifications/cancelled`: the agent's client gave up, or the person pressed Esc in it) drops a
     request to connect; a question stays, saying "The agent stopped waiting: your answer will be typed into its
-    terminal.", and its answer is typed into the agent's terminal as a notice, `[answer to your question "…"] …`
+    terminal.", and its answer is typed into the agent's terminal as a notice,
+    `[answer to your question "…"] The answer is in the pasted text.` and the answer on the next line
     ([ask-user.md](ask-user.md#when-the-client-stops-waiting)); Dismiss or its deadline drop it silently.
 
 ### Delegating

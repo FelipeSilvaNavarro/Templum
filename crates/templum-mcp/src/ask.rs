@@ -222,10 +222,12 @@ impl Ask {
         })
     }
 
-    /// The line typed into the agent's terminal when its client stopped waiting for `answer`.
+    /// What is typed into the agent's terminal when its client stopped waiting for `answer`: a
+    /// line naming the question, then the answer on the next (a long one is a paste the first
+    /// line comes with, as delegate's notices).
     pub fn notice(&self, answer: &str) -> String {
         format!(
-            "[answer to your question \"{}\"] {answer}",
+            "[answer to your question \"{}\"] The answer is in the pasted text.\n{answer}",
             cut(&self.summary(), NOTICE_MAX)
         )
     }
@@ -599,13 +601,21 @@ mod tests {
             notice.starts_with("[answer to your question \"Which database"),
             "{notice}"
         );
-        assert!(notice.ends_with("\"] SQLite"), "{notice}");
+        // The answer on a line of its own: Claude Code shows a long paste as "[Pasted text]",
+        // which it takes for data unless its first line comes with it.
+        assert!(
+            notice.ends_with("\"] The answer is in the pasted text.\nSQLite"),
+            "{notice}"
+        );
         let long = "x".repeat(80);
         let ask = parse(&json!({ "question": format!("{long}\nsecond line") })).unwrap();
         assert_eq!(ask.summary(), long);
         assert_eq!(
             ask.notice("Yes"),
-            format!("[answer to your question \"{}…\"] Yes", "x".repeat(59))
+            format!(
+                "[answer to your question \"{}…\"] The answer is in the pasted text.\nYes",
+                "x".repeat(59)
+            )
         );
     }
 

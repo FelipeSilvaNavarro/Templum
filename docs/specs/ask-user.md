@@ -127,9 +127,11 @@ What each client does with a long tool call (read in their documentation, 2026-1
   says under its first line: "The agent stopped waiting: your answer will be typed into its terminal." Answered, the
   answer is typed into the agent's terminal as a notice (`queue_notice`, the path of
   [connections.md's Delegating 10](connections.md#delegating): typed once the agent takes typing):
-  `[answer to your question "Which database should the service use?"] {"answers": …}`, the text the tool would have
-  returned, after the first question's first line (at most 60 characters, cut with "…"). Dismiss drops it. Its
-  deadline, if it has one, drops it silently: no one waits for the refusal.
+  `[answer to your question "Which database should the service use?"] The answer is in the pasted text.`, then on
+  the next line `{"answers": …}`, the text the tool would have returned; the question is the first question's first
+  line (at most 60 characters, cut with "…"). A long answer is a paste in Claude Code ("[Pasted text]"), which it
+  takes for data unless typed text comes with it: the first line is that text, as delegate's notices. Dismiss drops
+  it. Its deadline, if it has one, drops it silently: no one waits for the refusal.
 - The connection ending (the agent quit, `templum ask` stopped with Ctrl+C) withdraws its questions, as today, and
   so does closing the block.
 - Either way the person's answer reaches the agent: as the call's result while the client waits, typed in once it
