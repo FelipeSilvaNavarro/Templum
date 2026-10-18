@@ -270,7 +270,7 @@ impl Form {
             return Some(id.clone());
         }
         let kind = self.kind?;
-        Some(new_account_id(kind.agent, |x| {
+        Some(new_account_id(kind.agent, self.data.as_deref(), |x| {
             self.agents.iter().any(|a| a.id == x)
         }))
     }

@@ -278,11 +278,19 @@ pub(crate) fn detects(agents: &[AgentEntry]) -> Vec<Detect> {
         .collect()
 }
 
-/// A new account's id: its agent's and the first free number from 2 (`claude2`).
-pub(crate) fn new_account_id(of: &str, taken: impl Fn(&str) -> bool) -> String {
+/// A new account's id: its agent's and the first free number from 2 (`claude2`). An id whose
+/// folder is still in Templum's data folder `data` (left by a change of folder) is taken: the new
+/// account would open on that login, and deleting it would delete it.
+pub(crate) fn new_account_id(
+    of: &str,
+    data: Option<&Path>,
+    taken: impl Fn(&str) -> bool,
+) -> String {
+    let left =
+        |id: &str| data.is_some_and(|d| d.join("accounts").join(id).symlink_metadata().is_ok());
     (2..)
         .map(|n| format!("{of}{n}"))
-        .find(|id| !taken(id) && Agent::from_name(id).is_none())
+        .find(|id| !taken(id) && !left(id) && Agent::from_name(id).is_none())
         .expect("a free id")
 }
 
@@ -913,8 +921,18 @@ mod tests {
 
     #[test]
     fn account_ids_count_from_two() {
-        assert_eq!(new_account_id("claude", |_| false), "claude2");
-        assert_eq!(new_account_id("claude", |id| id == "claude2"), "claude3");
+        assert_eq!(new_account_id("claude", None, |_| false), "claude2");
+        assert_eq!(
+            new_account_id("claude", None, |id| id == "claude2"),
+            "claude3"
+        );
+        let data = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(data.path().join("accounts/claude2")).unwrap();
+        assert_eq!(
+            new_account_id("claude", Some(data.path()), |_| false),
+            "claude3",
+            "its folder, with a login, is still there"
+        );
     }
 
     #[test]

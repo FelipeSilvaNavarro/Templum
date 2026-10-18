@@ -189,7 +189,8 @@ share = { settings = "claude3", instructions = "claude3", rules = "claude3", ski
   accounts (`<data>/accounts`, whose folders go with their account: "that is Templum's folder for accounts: leave
   Folder empty").
 - The id of an account added in Settings is its agent's id and the first free number from 2: `claude2`, `claude3`,
-  `codex2`. It never changes; the name does. One written by hand may be any free id (`work`).
+  `codex2`; a number whose `<data>/accounts/<id>` is still there (an old folder kept by a change of folder, with its
+  login) is taken. It never changes; the name does. One written by hand may be any free id (`work`).
 - An account isn't one of Templum's agents: Settings ▸ Agents' **Reset all** leaves it, and its agent's ↺ too.
 
 ## Its folder and its items

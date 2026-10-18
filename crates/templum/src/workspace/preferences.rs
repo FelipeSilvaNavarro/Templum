@@ -71,7 +71,7 @@ impl Workspace {
         let pending = self.pending.as_ref().unwrap_or(&self.config);
         let id = match id {
             Some(id) => id.to_string(),
-            None => agents::new_account_id(&draft.of, |x| {
+            None => agents::new_account_id(&draft.of, self.data_dir.as_deref(), |x| {
                 pending.agents.contains_key(x) || self.agents.iter().any(|a| a.id == x)
             }),
         };
