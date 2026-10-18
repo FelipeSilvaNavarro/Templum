@@ -527,30 +527,77 @@ fn candidates(system: &sysinfo::System, p: &Processes) -> Vec<sysinfo::Pid> {
     descendants(system, Pid::from_u32(shell))
 }
 
-/// `root` and every process below it, nearest first. A child started before its parent names
-/// a parent that died and whose pid was taken again (Windows keeps stale parent ids): it isn't
-/// followed.
+/// A process of the OS's table, as [`below`] and [`front`] read it.
+#[derive(Clone, Copy, Debug)]
+struct Proc {
+    pid: u32,
+    parent: Option<u32>,
+    started: u64,
+}
+
+/// The processes of `system`, threads left out.
+fn table(system: &sysinfo::System) -> Vec<Proc> {
+    system
+        .processes()
+        .values()
+        .filter(|p| p.thread_kind().is_none())
+        .map(|p| Proc {
+            pid: p.pid().as_u32(),
+            parent: p.parent().map(sysinfo::Pid::as_u32),
+            started: p.start_time(),
+        })
+        .collect()
+}
+
+/// `root` and every process below it, nearest first.
 fn descendants(system: &sysinfo::System, root: sysinfo::Pid) -> Vec<sysinfo::Pid> {
-    let started = |pid| system.process(pid).map_or(0, sysinfo::Process::start_time);
+    below(&table(system), root.as_u32())
+        .into_iter()
+        .map(sysinfo::Pid::from_u32)
+        .collect()
+}
+
+/// `root` and every process of `table` below it, nearest first. A child started before its
+/// parent names a parent that died and whose pid was taken again (Windows keeps stale parent
+/// ids): it isn't followed.
+fn below(table: &[Proc], root: u32) -> Vec<u32> {
     let mut found = vec![root];
     let mut i = 0;
     while i < found.len() {
         let parent = found[i];
-        let children: Vec<_> = system
-            .processes()
+        let since = table
             .iter()
-            .filter(|(pid, process)| {
-                process.parent() == Some(parent)
-                    && process.thread_kind().is_none()
-                    && process.start_time() >= started(parent)
-                    && !found.contains(pid)
-            })
-            .map(|(pid, _)| *pid)
+            .find(|p| p.pid == parent)
+            .map_or(0, |p| p.started);
+        let children: Vec<u32> = table
+            .iter()
+            .filter(|p| p.parent == Some(parent) && p.started >= since && !found.contains(&p.pid))
+            .map(|p| p.pid)
             .collect();
         found.extend(children);
         i += 1;
     }
     found
+}
+
+/// The program in front of the innermost of `shells` where the OS can't tell (Windows): `agent`,
+/// the agent's pid and start time a snapshot found, while that process is still below the shell
+/// (its pid not taken again since), else the shell's oldest child. Never one of `shells`.
+fn front(table: &[Proc], shells: &[u32], agent: Option<(u32, u64)>) -> Option<u32> {
+    let shell = *shells.last()?;
+    let under = below(table, shell);
+    let ours = |pid: u32| !shells.contains(&pid) && under.contains(&pid);
+    if let Some((pid, started)) = agent
+        && ours(pid)
+        && table.iter().any(|p| p.pid == pid && p.started == started)
+    {
+        return Some(pid);
+    }
+    table
+        .iter()
+        .filter(|p| p.parent == Some(shell) && ours(p.pid))
+        .min_by_key(|p| (p.started, p.pid))
+        .map(|p| p.pid)
 }
 
 /// A process to end later: its pid, and when it started, since a pid can be taken again.
@@ -613,14 +660,33 @@ pub fn kill_left(procs: &[Running]) {
     }
 }
 
-/// The processes that are a terminal's shell, `process` the one Templum started: it, and on macOS,
-/// where that is `login`, the shell it runs (its first child). `stop_agent` never ends them.
-pub fn shells_of(process: u32, name: &str, children: &[u32]) -> Vec<u32> {
+/// The processes that are a terminal's shell, `process` the one Templum started, named `name`, run
+/// from the file `exe`, with `children` (each one's pid and file, oldest first): it, and the shell
+/// it runs where it only starts one: macOS's `login` (its first child), Git for Windows'
+/// `bin\bash.exe` and `bin\sh.exe` (the `usr\bin\bash.exe` beside them). `stop_agent` never ends
+/// them.
+pub fn shells_of(process: u32, name: &str, exe: &str, children: &[(u32, String)]) -> Vec<u32> {
     let mut shells = vec![process];
     if name == "login" {
-        shells.extend(children.first());
+        shells.extend(children.first().map(|(pid, _)| *pid));
+    } else if let Some(real) = git_bash(exe) {
+        let shell = children.iter().find(|(_, e)| e.eq_ignore_ascii_case(&real));
+        shells.extend(shell.map(|(pid, _)| *pid));
     }
     shells
+}
+
+/// The shell Git for Windows' `exe` starts when it is `<Git>\bin\bash.exe` or `<Git>\bin\sh.exe`,
+/// a wrapper: `<Git>\usr\bin\bash.exe`.
+fn git_bash(exe: &str) -> Option<String> {
+    let lower = exe.to_ascii_lowercase();
+    let end = ["\\bin\\bash.exe", "\\bin\\sh.exe"]
+        .into_iter()
+        .find(|end| lower.ends_with(end))?;
+    Some(format!(
+        "{}\\usr\\bin\\bash.exe",
+        &exe[..exe.len() - end.len()]
+    ))
 }
 
 /// What `stop_agent` ends in the terminal whose `TEMPLUM_TERMINAL` is `terminal`
@@ -909,15 +975,23 @@ impl Terminal {
 
     /// Its shell's processes ([`shells_of`]): empty once it exited.
     pub fn shells(&self) -> Vec<u32> {
-        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
         let Some(pid) = self.pid.filter(|_| !self.exited()) else {
             return Vec::new();
         };
         let mut system = System::new();
-        system.refresh_processes_specifics(ProcessesToUpdate::All, ProcessRefreshKind::new());
-        let name = system
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            ProcessRefreshKind::new().with_exe(UpdateKind::Always),
+        );
+        let exe = |p: &sysinfo::Process| {
+            p.exe()
+                .map(|e| e.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let (name, file) = system
             .process(Pid::from_u32(pid))
-            .map(|p| p.name().to_string_lossy().into_owned())
+            .map(|p| (p.name().to_string_lossy().into_owned(), exe(p)))
             .unwrap_or_default();
         let mut children: Vec<&sysinfo::Process> = system
             .processes()
@@ -925,22 +999,23 @@ impl Terminal {
             .filter(|p| p.parent() == Some(Pid::from_u32(pid)) && p.thread_kind().is_none())
             .collect();
         children.sort_by_key(|p| p.start_time());
-        let children: Vec<u32> = children.iter().map(|p| p.pid().as_u32()).collect();
-        shells_of(pid, &name, &children)
+        let children: Vec<(u32, String)> = children
+            .iter()
+            .map(|p| (p.pid().as_u32(), exe(p)))
+            .collect();
+        shells_of(pid, &name, &file, &children)
     }
 
     /// The program in front of its shell, by pid and name: the leader of the PTY's foreground
     /// process group when it isn't one of `shells` (Unix); on Windows, which can't tell who is in
-    /// front, `agent` (the agent's process a snapshot found), else the shell's first child.
-    pub fn program(&self, shells: &[u32], agent: Option<u32>) -> Option<(u32, String)> {
+    /// front, `agent` (the agent's pid and start time a snapshot found) while it still runs below
+    /// the shell, else the shell's oldest child ([`front`]).
+    pub fn program(&self, shells: &[u32], agent: Option<(u32, u64)>) -> Option<(u32, String)> {
         use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
         let mut system = System::new();
         let pid = if cfg!(windows) {
             system.refresh_processes_specifics(ProcessesToUpdate::All, ProcessRefreshKind::new());
-            agent.or_else(|| {
-                let shell = Pid::from_u32(*shells.first()?);
-                descendants(&system, shell).get(1).map(|p| p.as_u32())
-            })?
+            front(&table(&system), shells, agent)?
         } else {
             let front = self.foreground().filter(|f| !shells.contains(f))?;
             let pids = [Pid::from_u32(front)];
@@ -1423,6 +1498,53 @@ mod tests {
             "not held back by the coalescing"
         );
         assert!(shared.exited.get().is_some());
+    }
+
+    /// Windows can't tell who is in front: under Git Bash's wrapper and its real shell, the
+    /// program is the agent a snapshot found while it is still the same process below the shell,
+    /// else the shell's oldest child; never the real shell, nor a process that took the agent's
+    /// pid after it quit.
+    #[test]
+    fn on_windows_the_program_is_the_agent_still_below_the_shell_else_its_oldest_child() {
+        let p = |pid, parent, started| Proc {
+            pid,
+            parent: Some(parent),
+            started,
+        };
+        // Git's bin\bash.exe 10 starts the real bash 11; Claude Code 12 (and its node 13), then
+        // a job the person started, 14; 20 is elsewhere.
+        let tree = [
+            p(10, 1, 100),
+            p(11, 10, 100),
+            p(14, 11, 300),
+            p(12, 11, 200),
+            p(13, 12, 201),
+            p(20, 1, 50),
+        ];
+        let shells = [10, 11];
+        assert_eq!(front(&tree, &shells, Some((14, 300))), Some(14));
+        assert_eq!(front(&tree, &shells, None), Some(12), "the oldest child");
+        assert_eq!(
+            front(&tree, &shells, Some((20, 50))),
+            Some(12),
+            "not below the shell"
+        );
+        assert_eq!(front(&tree, &shells, Some((11, 100))), Some(12));
+        // The agent 12 quit; its pid was taken again by a job started after the person's 14.
+        let taken = [
+            p(10, 1, 100),
+            p(11, 10, 100),
+            p(14, 11, 300),
+            p(12, 11, 400),
+        ];
+        assert_eq!(front(&taken, &shells, Some((12, 200))), Some(14));
+        let idle = [p(10, 1, 100), p(11, 10, 100)];
+        assert_eq!(
+            front(&idle, &shells, None),
+            None,
+            "the real shell isn't the program"
+        );
+        assert_eq!(front(&idle, &[], None), None);
     }
 
     #[test]

@@ -1291,11 +1291,6 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   (`worktree_for`, `crates/templum/src/workspace/worktrees.rs`): a terminal whose shell stays in the worktree after
   `stop_agent` still works in it (`works_in` reads its folder), so the agent that follows the advice is refused again.
   Fix: say "close_block it first", here and in agent-tools.md.
-- [ ] **On Windows `stop_agent` may take the wrong process for the program.** Left by the final review of card 35
-  (`Terminal::program`, `crates/templum-terminal/src/terminal.rs`): with no snapshot's pid it takes the shell's first
-  descendant in a hash map's order (maybe a job the person started), and a snapshot's pid isn't checked to be still
-  below the shell (a pid taken again). Fix: check `seen.pid` is in `descendants(shell)` with its `seen.started`, and
-  pick the oldest child.
 - [ ] **`stop_agent` reads the process table on the UI thread.** Left by the final review of card 35 (`stop_in`,
   `crates/templum/src/workspace/ops.rs`): up to three full refreshes, one reading every process's environment, before
   it answers; on a busy machine the window may hitch. Fix: one refresh, on the background executor.

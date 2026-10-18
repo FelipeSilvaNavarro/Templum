@@ -692,9 +692,41 @@ fn strays_are_the_program_what_it_left_in_a_session_of_its_own_and_never_the_she
 
 #[test]
 fn the_shell_is_logins_child_when_the_terminal_runs_login() {
+    let children = [(11, "/bin/zsh".to_string()), (12, "/bin/sleep".to_string())];
     assert_eq!(
-        templum_terminal::shells_of(10, "login", &[11, 12]),
+        templum_terminal::shells_of(10, "login", "/usr/bin/login", &children),
         [10, 11]
     );
-    assert_eq!(templum_terminal::shells_of(10, "zsh", &[11]), [10]);
+    assert_eq!(
+        templum_terminal::shells_of(10, "zsh", "/bin/zsh", &children[1..]),
+        [10]
+    );
+}
+
+/// Git for Windows' `bin\bash.exe` only starts the real shell, `usr\bin\bash.exe`: both are the
+/// terminal's shell, never what `stop_agent` ends. A bash run directly (MSYS2's) starts none.
+#[test]
+fn the_shell_is_the_real_bash_git_bash_starts() {
+    let real = (11, "C:\\Program Files\\Git\\usr\\bin\\bash.exe".to_string());
+    let wrapper = "C:\\Program Files\\Git\\bin\\bash.exe";
+    assert_eq!(
+        templum_terminal::shells_of(10, "bash.exe", wrapper, std::slice::from_ref(&real)),
+        [10, 11]
+    );
+    let sh = "C:\\Program Files\\Git\\bin\\SH.EXE";
+    assert_eq!(
+        templum_terminal::shells_of(10, "sh.exe", sh, std::slice::from_ref(&real)),
+        [10, 11]
+    );
+    let agent = (12, "C:\\Users\\u\\.local\\bin\\claude.exe".to_string());
+    assert_eq!(
+        templum_terminal::shells_of(11, "bash.exe", &real.1, &[agent]),
+        [11]
+    );
+    let msys = "C:\\msys64\\usr\\bin\\bash.exe";
+    let nested = (12, msys.to_string());
+    assert_eq!(
+        templum_terminal::shells_of(10, "bash.exe", msys, &[nested]),
+        [10]
+    );
 }

@@ -63,7 +63,9 @@ impl Workspace {
         if shells.is_empty() {
             return Err(nothing);
         }
-        let program = pane.term.program(&shells, pane.seen.pid);
+        let program = pane
+            .term
+            .program(&shells, pane.seen.pid.zip(pane.seen.started));
         let front = program.as_ref().map(|(pid, _)| *pid);
         let found = templum_terminal::strays(pane.term.id(), &shells, front, pane.seen.started);
         if found.is_empty() {

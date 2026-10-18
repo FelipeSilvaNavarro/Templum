@@ -99,7 +99,8 @@ as every tool's ([connections.md](connections.md#the-mcp-server)). "Wired" check
   parents):
   - **the program:** the process in front of the shell (Unix: the leader of the PTY's foreground process group, when it
     isn't the shell); on Windows, which can't tell who is in front, the agent's process the last snapshot found
-    (`Pane::seen.pid`), else the shell's children; and every process below it;
+    (`Pane::seen.pid`) while it is still that process (its start time, `seen.started`) below the shell, else the
+    shell's oldest child; and every process below it;
   - **its orphans:** every process of the user whose environment's `TEMPLUM_TERMINAL` is this terminal's and whose
     parent isn't the terminal's shell nor a process below it: what a tool's shell left behind when it quit. Claude
     Code's Bash tool runs its shell as the leader of a session of its own, so a `( sleep 60 && touch f ) &` it leaves
@@ -108,8 +109,10 @@ as every tool's ([connections.md](connections.md#the-mcp-server)). "Wired" check
     in a later second; with no program in front, after its agent's, as the last snapshot found it; neither known,
     none): a daemon the shell's startup files or the person started before it (an `ssh-agent`, a tmux server, a
     browser a dev server opened before) stays;
-  - **never** the shell: the terminal's process, and on macOS, where that is `login`, the shell it runs (its child); what runs between them and the program, nor a job the person started from the shell's prompt (a child of the
-    shell); a process whose environment can't be read is no orphan.
+  - **never** the shell: the terminal's process, and on macOS, where that is `login`, the shell it runs (its child), and
+    on Windows, where it is Git for Windows' `bin\bash.exe`, the `usr\bin\bash.exe` it starts; what runs between them
+    and the program, nor a job the person started from the shell's prompt (a child of the shell); a process whose
+    environment can't be read is no orphan.
 - **Nothing in front and no orphan:** "Nothing runs in k9x1d: its shell is at its prompt." With nothing in front but
   orphans left (its agent quit and left a job), they are ended, and the answer says `ended 2 processes it left
   running`.
