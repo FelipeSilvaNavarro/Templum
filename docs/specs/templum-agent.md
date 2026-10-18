@@ -400,7 +400,7 @@ conversation". `reason` is an optional string on every Ask tool, shown in the ap
 | `open_agent` | `agent` (an id of `list_agents`), `workspace`, `folder`, `worktree`, `model`, `effort`, `prompt`, `connect` (blocks to wire it to), `near` | Opens the agent as `spawn_agent` does ([connections.md](connections.md#spawning)), in that workspace, beside `near` or at its free spot, wired to `connect`, its `opened_by` `templum-agent`; its prompt typed once it is ready; its id | Asks when `connect` names a terminal not its own | 1 |
 | `connect`, `disconnect` | `a`, `b` | Wires or unwires two blocks of one workspace (a step of Ctrl+Z) | `connect` asks when both are terminals and one isn't its own | 1 |
 | `close_block` | `block`, `reason` | Closes the block, a step of Ctrl+Z | Ask own when a program runs in it (an agent, a command); – otherwise | 1 |
-| `send_to_terminal` | `block`, `text`, `enter`, `reason` | As the block server's | Ask | 1 |
+| `send_to_terminal` | `block`, `text`, `enter`, `reason` | As the block server's; a text over 256 KiB is refused before asking (the approval shows it whole) | Ask | 1 |
 | `send_keys` | `block`, `keys`, `reason` | As the block server's: answering an agent's dialog is approving its tool for the person | Ask | 1 |
 | `notify` | `text` | A notification from the Templum Agent; a click opens the chat | – | 1 |
 | `delegate` | `block`, `task`, `wait` | Hands an agent block a task ([Orchestration](#orchestration)) | – | 2 |

@@ -408,7 +408,19 @@ pub fn parse(name: &str, args: &Value) -> Result<Parsed, String> {
         "close_block" => ControlCall::CloseBlock {
             block: text("block")?,
         },
-        _ if SHARED.contains(&name) => ControlCall::Block(tools::parse(name, args)?),
+        _ if SHARED.contains(&name) => {
+            let call = tools::parse(name, args)?;
+            // The approval shows it whole: a longer one would stall each frame that draws it.
+            if let Call::SendToTerminal { text, .. } = &call
+                && text.len() > tools::MAX_TEXT
+            {
+                return Err(format!(
+                    "\"text\" is at most {} bytes: send it in parts.",
+                    tools::MAX_TEXT
+                ));
+            }
+            ControlCall::Block(call)
+        }
         _ => return Err(format!("Unknown tool: {name}")),
     };
     Ok(Parsed {
@@ -595,6 +607,14 @@ mod tests {
             parse("whoami", &json!({}))
                 .unwrap_err()
                 .contains("Unknown tool")
+        );
+        let long = "x".repeat(tools::MAX_TEXT);
+        let typing = |text: String| parse("send_to_terminal", &json!({"block": "b", "text": text}));
+        assert!(typing(long.clone()).is_ok());
+        assert!(
+            typing(long + "x")
+                .unwrap_err()
+                .contains("\"text\" is at most 262144 bytes")
         );
     }
 
