@@ -12,6 +12,7 @@ use templum_canvas::Level;
 use templum_mcp::ask::{Ask, Form};
 use templum_mcp::tools::Event;
 use templum_mcp::{Replier, Reply, tools};
+use templum_terminal::Pattern;
 
 use super::bus::{Outcome, target};
 use super::{AgentState, Pane, Workspace};
@@ -22,6 +23,8 @@ use crate::alert::Alert;
 pub(crate) const TOO_SOON: Duration = Duration::from_millis(500);
 /// The lines of an agent's screen a turn's wait that times out gives.
 pub(super) const LAST_LINES: usize = 40;
+/// The lines of its terminal a `wait_for` with a pattern gives after the line that matched.
+const PRINTED_LINES: usize = 20;
 /// How often a `wait_for` a command or an alert looks at its terminal's counters.
 const EVENT_LOOK: Duration = Duration::from_millis(250);
 /// How long after a hook says its agent waits for its person its screen is read: the hook comes
@@ -69,12 +72,14 @@ pub(crate) enum Waiting {
     Turn { of: String, uid: String },
     /// `wait_for`: `event` in the terminal `of` (the block `uid`). `since`: the commands that had
     /// finished there and the alerts it had sent when the call came (`Status.finished`,
-    /// `Status.attention`).
+    /// `Status.attention`). `watch`: for `Event::Output`, the id of the watch set on the terminal
+    /// and its pattern's text, unwatched when the wait ends however it ends.
     Event {
         of: String,
         uid: String,
         event: Event,
         since: (u64, u64),
+        watch: Option<(u64, String)>,
     },
 }
 
@@ -146,7 +151,7 @@ impl Workspace {
         let looks = matches!(
             wait.what,
             Waiting::Event {
-                event: Event::CommandFinished | Event::Attention,
+                event: Event::CommandFinished | Event::Output | Event::Attention,
                 ..
             }
         );
@@ -174,6 +179,7 @@ impl Workspace {
             return false;
         };
         let wait = self.waits.remove(i);
+        self.unwatch(&wait);
         if !matches!(wait.what, Waiting::Question { stopped: true, .. }) {
             let _ = wait.reply.send(tools::tool_result(&wait.id, &reply));
         }
@@ -202,6 +208,15 @@ impl Workspace {
                  (wait_for_idle(\"{uid}\") waits again). The last lines of its screen:\n{}",
                 screen(of)
             )),
+            Waiting::Event {
+                of,
+                uid,
+                watch: Some((_, pattern)),
+                ..
+            } => Reply::err(format!(
+                "No line matching \"{pattern}\" in {uid} within {seconds} seconds. Its last lines:\n{}",
+                screen(of)
+            )),
             Waiting::Event { of, uid, event, .. } => Reply::err(format!(
                 "No {} in {uid} within {seconds} seconds. The last lines of its screen:\n{}",
                 awaited(*event),
@@ -215,18 +230,24 @@ impl Workspace {
     /// answer (the client wants none). A question stays, its answer to be typed into its
     /// terminal (docs/specs/ask-user.md, When the client stops waiting).
     pub(super) fn cancel(&mut self, conn: u64, id: &Value, cx: &mut Context<Self>) {
-        self.waits.retain_mut(|w| {
-            if w.conn != conn || w.id != *id {
-                return true;
-            }
-            match &mut w.what {
-                Waiting::Question { stopped, .. } => {
-                    *stopped = true;
-                    true
+        let gone: Vec<Wait> = self
+            .waits
+            .extract_if(.., |w| {
+                if w.conn != conn || w.id != *id {
+                    return false;
                 }
-                _ => false,
-            }
-        });
+                match &mut w.what {
+                    Waiting::Question { stopped, .. } => {
+                        *stopped = true;
+                        false
+                    }
+                    _ => true,
+                }
+            })
+            .collect();
+        for wait in &gone {
+            self.unwatch(wait);
+        }
         cx.notify();
     }
 
@@ -240,8 +261,25 @@ impl Workspace {
     /// The connection `conn` ended (its agent quit, its command exited): what it waited for has
     /// no one to answer.
     pub(super) fn closed(&mut self, conn: u64, cx: &mut Context<Self>) {
-        self.waits.retain(|w| w.conn != conn);
+        let gone: Vec<Wait> = self.waits.extract_if(.., |w| w.conn == conn).collect();
+        for wait in &gone {
+            self.unwatch(wait);
+        }
         cx.notify();
+    }
+
+    /// A wait ends, however it ends: the watch it set on its terminal goes, or the terminal's
+    /// reader thread would keep its lines for good.
+    fn unwatch(&self, wait: &Wait) {
+        if let Waiting::Event {
+            of,
+            watch: Some((id, _)),
+            ..
+        } = &wait.what
+            && let Some(pane) = self.pane(of)
+        {
+            pane.term.unwatch(*id);
+        }
     }
 
     /// Each frame: a wait whose block is gone (closed, its shell exited, its workspace stopped)
@@ -459,8 +497,17 @@ impl Workspace {
 
     /// `wait_for` from the terminal `from`: `event` in the terminal `block`. `idle` is
     /// `wait_for_idle`; `needs_you` answers at once when its agent, or its balloon, already asks
-    /// its person; the others wait for the next command or alert.
-    pub(super) fn wait_for(&self, from: &str, block: &str, event: Event, timeout: u64) -> Outcome {
+    /// its person; `output` waits for a line matching `pattern`, at once when one of its last
+    /// `lines` does; the others wait for the next command or alert.
+    pub(super) fn wait_for(
+        &self,
+        from: &str,
+        block: &str,
+        event: Event,
+        timeout: u64,
+        pattern: Option<String>,
+        lines: usize,
+    ) -> Outcome {
         if event == Event::Idle {
             return self.wait_for_idle(from, block, timeout);
         }
@@ -486,12 +533,34 @@ impl Workspace {
                 return Outcome::Now(waiting_for_person(block, what.as_deref(), &pane.tail()));
             }
         }
+        let watch = match pattern.filter(|_| event == Event::Output) {
+            Some(text) => {
+                let pattern = match Pattern::new(&text) {
+                    Ok(pattern) => pattern,
+                    Err(refused) => return Outcome::Now(Reply::err(refused)),
+                };
+                // Set before looking back: a line printed meanwhile is seen.
+                let id = self.watch_add(&of, pattern.clone()).expect("its pane");
+                let back = pane.term.shared().lines(lines.min(tools::MAX_LINES));
+                if let Some(line) = back
+                    .iter()
+                    .filter(|_| lines > 0)
+                    .find(|l| pattern.is_match(l))
+                {
+                    pane.term.unwatch(id);
+                    return Outcome::Now(printed(block, &text, line, pane));
+                }
+                Some((id, text))
+            }
+            None => None,
+        };
         let status = pane.term.status();
         let what = Waiting::Event {
             of,
             uid: block.to_string(),
             event,
             since: (status.finished, status.attention),
+            watch,
         };
         Outcome::Wait(what, Some(timeout))
     }
@@ -572,6 +641,7 @@ impl Workspace {
             uid,
             event,
             since,
+            watch,
         } = &wait.what
         else {
             return false;
@@ -596,6 +666,13 @@ impl Workspace {
                 }
                 Reply::ok(text)
             }
+            Event::Output => match watch
+                .as_ref()
+                .and_then(|(id, p)| Some((pane.term.hit(*id)?, p)))
+            {
+                Some((line, pattern)) => printed(uid, pattern, &line, pane),
+                None => return true,
+            },
             Event::Attention if status.attention > since.1 => Reply::ok(match status.message {
                 Some(message) => format!("{uid} asks for attention: {message}"),
                 None => format!("{uid} rang its bell."),
@@ -647,6 +724,17 @@ fn awaited(event: Event) -> &'static str {
         Event::Idle => "end of its turn",
         Event::NeedsYou => "wait for its person",
         Event::CommandFinished => "finished command",
+        Event::Output => "line matching its pattern",
         Event::Attention => "call for attention",
     }
+}
+
+/// The answer to a `wait_for` with `pattern`: the block `uid` printed `line`, and its last lines.
+fn printed(uid: &str, pattern: &str, line: &str, pane: &Pane) -> Reply {
+    let last = pane.term.shared().lines(PRINTED_LINES).join("\n");
+    Reply::ok(format!(
+        "{uid} printed a line matching \"{pattern}\":\n{}\nIts last lines:\n{}",
+        tools::tail(line, tools::MAX_TEXT),
+        tools::tail(&last, tools::MAX_TEXT)
+    ))
 }

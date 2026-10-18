@@ -8,7 +8,7 @@ use templum_canvas::Wire;
 
 use super::bus::{after, answered, call, call_later, event, me, screen_with};
 #[cfg(unix)]
-use super::bus::{result_of, screen_until};
+use super::bus::{bus_note, result_of, screen_until};
 use super::*;
 
 /// Two terminals side by side and wired: mine at (40, 100) and theirs at (900, 100), 700 × 300
@@ -2132,6 +2132,119 @@ fn a_wait_for_times_out_goes_with_its_block_and_shows_no_balloon(cx: &mut TestAp
         answered(&closed),
         (true, format!("{them} was closed while you waited."))
     );
+}
+
+/// How many watches the terminal of block `id` has.
+#[cfg(unix)]
+fn watching(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> usize {
+    ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().term.watching())
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn wait_for_a_pattern_answers_on_the_printed_line(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    let answers = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        7,
+        "wait_for",
+        json!({ "block": them, "pattern": "Ready in \\d+" }),
+    );
+    after(cx, 250);
+    assert!(answers.try_recv().is_err(), "nothing printed yet");
+    assert_eq!(watching(&ws, cx, theirs), 1);
+    prints(&ws, cx, theirs, b"starting\r  Ready in 312 ms\r");
+    let (failed, text) = heard(cx, &answers);
+    assert!(!failed, "{text}");
+    assert!(
+        text.starts_with(&format!(
+            "{them} printed a line matching \"Ready in \\d+\":\n  Ready in 312 ms\nIts last lines:\n"
+        )),
+        "{text}"
+    );
+    assert_eq!(watching(&ws, cx, theirs), 0, "answered, its watch goes");
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn wait_for_a_pattern_with_lines_answers_from_what_is_there(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    prints(&ws, cx, theirs, b"Local: http://localhost:5173\r");
+    screen_until(&ws, cx, theirs, |shown| shown.contains("localhost:5173"));
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "wait_for",
+        json!({ "block": them, "pattern": "Local:", "lines": 20 }),
+    );
+    assert!(
+        !failed && text.contains("Local: http://localhost:5173"),
+        "{text}"
+    );
+    assert_eq!(watching(&ws, cx, theirs), 0);
+    let bad = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "wait_for",
+        json!({ "block": them, "pattern": "(" }),
+    );
+    assert!(
+        bad.0
+            && bad
+                .1
+                .starts_with("\"pattern\" isn't a regular expression: "),
+        "{bad:?}"
+    );
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_pattern_wait_leaves_no_watch_behind(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    let never = |timeout: u64| json!({ "block": them, "pattern": "never", "timeout": timeout });
+    // Its timeout.
+    let answers = call_later(handle, &ws, cx, &terminal, 8, "wait_for", never(1));
+    assert_eq!(watching(&ws, cx, theirs), 1);
+    after(cx, 1_100);
+    let (failed, text) = answered(&answers);
+    assert!(
+        failed
+            && text.starts_with(&format!(
+                "No line matching \"never\" in {them} within 1 seconds. Its last lines:\n"
+            )),
+        "{text}"
+    );
+    assert_eq!(watching(&ws, cx, theirs), 0);
+    // Its connection's end.
+    let _answers = call_later(handle, &ws, cx, &terminal, 9, "wait_for", never(60));
+    assert_eq!(watching(&ws, cx, theirs), 1);
+    bus_note(handle, &ws, cx, 9, templum_mcp::bus::CLOSED, json!({}));
+    assert_eq!(watching(&ws, cx, theirs), 0);
+    // Its cancel.
+    let _answers = call_later(handle, &ws, cx, &terminal, 10, "wait_for", never(60));
+    assert_eq!(watching(&ws, cx, theirs), 1);
+    bus_note(
+        handle,
+        &ws,
+        cx,
+        10,
+        "notifications/cancelled",
+        json!({ "requestId": 10 }),
+    );
+    assert_eq!(watching(&ws, cx, theirs), 0);
 }
 
 /// `cat` in block `id` prints `text` back, and the test waits until its screen shows it.

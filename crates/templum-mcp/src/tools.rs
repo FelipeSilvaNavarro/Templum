@@ -67,10 +67,13 @@ pub enum Call {
         block: String,
         timeout: u64,
     },
+    /// `pattern` goes with `Event::Output` alone; `lines` (0 unless given) with a pattern.
     WaitFor {
         block: String,
         event: Event,
         timeout: u64,
+        pattern: Option<String>,
+        lines: usize,
     },
     SpawnAgent(Spawn),
     ListCards {
@@ -146,6 +149,8 @@ pub enum Event {
     NeedsYou,
     /// The next command that finishes in the terminal (needs the shell's integration).
     CommandFinished,
+    /// A line printed in the terminal that matches a pattern.
+    Output,
     /// The terminal rings or sends a notification.
     Attention,
 }
@@ -237,6 +242,19 @@ pub fn list() -> Value {
     let column =
         json!({ "type": "string", "description": "A column's title (either case) or id." });
     let none = json!({ "type": "object", "properties": {} });
+    let pattern = json!({
+        "type": "string",
+        "description": "A regular expression (Rust's regex syntax, as grep -E writes most of it): Ready in, \
+                        ERROR|Traceback, (?i)listening on. Each line printed from now on is tested; the first \
+                        match answers.",
+    });
+    let lines = json!({
+        "type": "integer",
+        "minimum": 0,
+        "maximum": MAX_LINES,
+        "description": "With a pattern: how many of the lines already in the terminal are tested first, \
+                        oldest first (0 unless given), for a command that may have printed its line already.",
+    });
     let priority = json!({ "type": "string", "enum": ["low", "medium", "high", "none"] });
     let who = json!({
         "type": "string",
@@ -437,19 +455,23 @@ pub fn list() -> Value {
                             (at once when it is idle), with its last answer. needs_you: the agent waits for its \
                             person, at a permission prompt or a question (at once when it already does). \
                             command_finished: the next command that finishes in the terminal, with its output \
-                            (needs the shell's integration). attention: the terminal rings or sends a \
-                            notification. It may take minutes.",
+                            (needs the shell's integration). output (with a pattern, which implies it): a line \
+                            printed in the terminal that matches the pattern, as \"Ready in\" or \"ERROR|Traceback\", \
+                            with the line. attention: the terminal rings or sends a notification. It may take \
+                            minutes.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "block": block,
                     "event": {
                         "type": "string",
-                        "enum": ["idle", "needs_you", "command_finished", "attention"],
+                        "enum": ["idle", "needs_you", "command_finished", "output", "attention"],
                     },
+                    "pattern": pattern,
+                    "lines": lines,
                     "timeout": seconds(IDLE_WAIT),
                 },
-                "required": ["block", "event"],
+                "required": ["block"],
             },
         },
         {
@@ -802,21 +824,54 @@ pub fn parse(name: &str, args: &Value) -> Result<Call, String> {
             block: text("block")?,
             timeout: seconds(IDLE_WAIT)?,
         },
-        "wait_for" => Call::WaitFor {
-            block: text("block")?,
-            event: match args["event"].as_str() {
-                Some("idle") => Event::Idle,
-                Some("needs_you") => Event::NeedsYou,
-                Some("command_finished") => Event::CommandFinished,
-                Some("attention") => Event::Attention,
+        "wait_for" => {
+            // A blank pattern goes on, for the app to say so.
+            let pattern = match &args["pattern"] {
+                Value::Null => None,
+                value => Some(
+                    value
+                        .as_str()
+                        .ok_or("\"pattern\" is a string, a regular expression")?
+                        .to_string(),
+                ),
+            };
+            let lines = match &args["lines"] {
+                Value::Null => None,
+                value => Some(
+                    value
+                        .as_u64()
+                        .map(|n| (n as usize).min(MAX_LINES))
+                        .ok_or_else(|| format!("\"lines\" is a number from 0 to {MAX_LINES}"))?,
+                ),
+            };
+            if lines.is_some() && pattern.is_none() {
+                return Err("\"lines\" goes with a pattern".into());
+            }
+            let event = match (args["event"].as_str(), &args["event"]) {
+                (_, Value::Null) if pattern.is_some() => Event::Output,
+                (Some("output"), _) if pattern.is_some() => Event::Output,
+                (Some("idle"), _) => Event::Idle,
+                (Some("needs_you"), _) => Event::NeedsYou,
+                (Some("command_finished"), _) => Event::CommandFinished,
+                (Some("attention"), _) => Event::Attention,
                 _ => {
                     return Err(format!(
-                        "{name} needs \"event\": idle, needs_you, command_finished or attention"
+                        "{name} needs \"event\": idle, needs_you, command_finished, output (with a \
+                         pattern) or attention"
                     ));
                 }
-            },
-            timeout: seconds(IDLE_WAIT)?,
-        },
+            };
+            if pattern.is_some() && event != Event::Output {
+                return Err("\"pattern\" goes with event output".into());
+            }
+            Call::WaitFor {
+                block: text("block")?,
+                event,
+                timeout: seconds(IDLE_WAIT)?,
+                pattern,
+                lines: lines.unwrap_or(0),
+            }
+        }
         "spawn_agent" => Call::SpawnAgent(Spawn {
             agent: text("agent")?,
             prompt: optional("prompt")?,
@@ -1151,7 +1206,9 @@ mod tests {
             Ok(Call::WaitFor {
                 block: "b".into(),
                 event: Event::CommandFinished,
-                timeout: IDLE_WAIT
+                timeout: IDLE_WAIT,
+                pattern: None,
+                lines: 0
             })
         );
         assert_eq!(
@@ -1162,7 +1219,9 @@ mod tests {
             Ok(Call::WaitFor {
                 block: "b".into(),
                 event: Event::Idle,
-                timeout: MAX_WAIT
+                timeout: MAX_WAIT,
+                pattern: None,
+                lines: 0
             })
         );
         assert!(parse("reply", &json!({ "block": "b" })).is_err(), "no text");
@@ -1242,7 +1301,7 @@ mod tests {
 
     /// The events tools/list offers are the ones wait_for takes; any other is refused, naming them.
     #[test]
-    fn wait_for_takes_the_four_events_it_lists() {
+    fn wait_for_takes_the_five_events_it_lists() {
         let tools = list();
         let listed = tools["tools"]
             .as_array()
@@ -1250,17 +1309,21 @@ mod tests {
             .iter()
             .find(|t| t["name"] == "wait_for")
             .unwrap();
-        assert_eq!(listed["inputSchema"]["required"], json!(["block", "event"]));
+        assert_eq!(listed["inputSchema"]["required"], json!(["block"]));
         let events: Vec<Event> = listed["inputSchema"]["properties"]["event"]["enum"]
             .as_array()
             .unwrap()
             .iter()
-            .map(
-                |name| match parse("wait_for", &json!({ "block": "b", "event": name })) {
+            .map(|name| {
+                let mut args = json!({ "block": "b", "event": name });
+                if name == "output" {
+                    args["pattern"] = json!("x");
+                }
+                match parse("wait_for", &args) {
                     Ok(Call::WaitFor { event, .. }) => event,
                     other => panic!("{name}: {other:?}"),
-                },
-            )
+                }
+            })
             .collect();
         assert_eq!(
             events,
@@ -1268,9 +1331,39 @@ mod tests {
                 Event::Idle,
                 Event::NeedsYou,
                 Event::CommandFinished,
+                Event::Output,
                 Event::Attention
             ]
         );
+        assert_eq!(
+            parse(
+                "wait_for",
+                &json!({ "block": "t4q8p", "pattern": "Ready in", "lines": 20 })
+            ),
+            Ok(Call::WaitFor {
+                block: "t4q8p".into(),
+                event: Event::Output,
+                timeout: IDLE_WAIT,
+                pattern: Some("Ready in".into()),
+                lines: 20
+            })
+        );
+        for (bad, why) in [
+            (
+                json!({ "block": "t4q8p", "event": "idle", "pattern": "x" }),
+                "\"pattern\" goes with event output",
+            ),
+            (
+                json!({ "block": "t4q8p", "event": "output" }),
+                "wait_for needs \"event\": idle, needs_you, command_finished, output (with a pattern) or attention",
+            ),
+            (
+                json!({ "block": "t4q8p", "lines": 5 }),
+                "\"lines\" goes with a pattern",
+            ),
+        ] {
+            assert_eq!(parse("wait_for", &bad), Err(why.to_string()), "{bad}");
+        }
         for bad in [
             json!({ "block": "b" }),
             json!({ "block": "b", "event": "done" }),

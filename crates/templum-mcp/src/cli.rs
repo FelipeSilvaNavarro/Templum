@@ -36,8 +36,8 @@ const VERBS: &[&str] = &[
 ];
 const READ: &str = "read <block> [-n <lines>] [--last] [--json]";
 const ASK: &str = "ask <question> [--option <answer>]… [--json]";
-const WAIT: &str =
-    "wait <block> [--for idle|needs_you|command_finished|attention] [--timeout <seconds>] [--json]";
+const WAIT: &str = "wait <block> [--for idle|needs_you|command_finished|attention] \
+                    [--match <pattern>] [--lines <n>] [--timeout <seconds>] [--json]";
 const WIRE: &str = "wire <a> <b> [--json]";
 const SPAWN: &str = "spawn <agent> [--folder <folder>] [--worktree <name>] [--prompt <text>] \
                      [--model <model>] [--effort <effort>] [--json]";
@@ -208,6 +208,11 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
                 let value = *more.next().ok_or(WAIT)?;
                 match *flag {
                     "--for" => arguments["event"] = json!(value),
+                    "--match" => arguments["pattern"] = json!(value),
+                    "--lines" => {
+                        let lines: u64 = value.parse().map_err(|_| WAIT)?;
+                        arguments["lines"] = json!(lines);
+                    }
                     "--timeout" => {
                         let seconds: u64 = value.parse().map_err(|_| WAIT)?;
                         arguments["timeout"] = json!(seconds);
@@ -215,7 +220,7 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
                     _ => return Err(WAIT),
                 }
             }
-            let name = if arguments.get("event").is_some() {
+            let name = if arguments.get("event").is_some() || arguments.get("pattern").is_some() {
                 "wait_for"
             } else {
                 "wait_for_idle"
@@ -801,6 +806,10 @@ mod tests {
                     "command_finished",
                 ][..],
                 json!({ "name": "wait_for", "arguments": { "block": "k9x1d", "timeout": 60, "event": "command_finished" } }),
+            ),
+            (
+                &["wait", "t4q8p", "--match", "ERROR", "--lines", "5"][..],
+                json!({ "name": "wait_for", "arguments": { "block": "t4q8p", "pattern": "ERROR", "lines": 5 } }),
             ),
             (
                 &[

@@ -3,6 +3,7 @@
 
 use gpui_kit::Context;
 use templum_canvas::BlockId;
+use templum_terminal::Pattern;
 
 use super::Workspace;
 
@@ -48,5 +49,11 @@ impl Workspace {
         templum_terminal::terminate(&found);
         self.end_later(found, cx);
         Ok(Stopped { program, processes })
+    }
+
+    /// Looks for `pattern` in each line the terminal `terminal` (its `TEMPLUM_TERMINAL`) prints
+    /// from now on; the watch's id, None when no block of any workspace shows that terminal.
+    pub(super) fn watch_add(&self, terminal: &str, pattern: Pattern) -> Option<u64> {
+        Some(self.pane(terminal)?.term.watch(pattern))
     }
 }

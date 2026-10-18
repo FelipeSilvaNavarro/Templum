@@ -1271,6 +1271,10 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
 - [ ] **In PowerShell, `qwen MCP list` or `pi LIST` loses Templum's words.** Left by the second review of card 44
   (`crates/templum-terminal/src/integration/templum.ps1:142` and Pi's list beside it): `-in` ignores case, though
   Qwen and Pi read those words as a prompt, so the agent starts without Templum's server and hooks. Fix: `-cin`.
+- [ ] **On Windows a `wait_for` pattern reads ConPTY's drawing, not the program's lines.** Left by card 35
+  (`crates/templum-terminal/src/tap.rs`, `Scanner::keep`): ConPTY sends Templum its redraw of the screen, so after a
+  resize or a full redraw a line may come again (a second match for a new watch) or two lines joined. Fix: ConPTY's
+  passthrough mode, once alacritty_terminal offers it.
 
 ## Keeping the canvas
 
