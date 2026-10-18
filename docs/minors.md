@@ -1107,6 +1107,12 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   agent has no server, hooks or status line and nothing tells the person why. Fix: name an alias to a path in
   connections.md's "Where it doesn't reach", or have bash and zsh run the alias's program with Templum's words
   when its first word ends in `/claude` or `/codex`.
+- [ ] **In zsh, a typed agent suspended and brought back loses its exit code.** Left by the review of card 42
+  (`__templum_agent`, `crates/templum-terminal/src/integration/zsh/.zshenv`): Ctrl+Z on a `claude` or `codex` typed in
+  a zsh terminal, then `fg`, and when it ends `$?` is 0 and the prompt's mark shows success whatever its code: zsh
+  moves the rest of a suspended function into a subshell, which doesn't keep it. connections.md says so. Fix: a
+  program named `claude` on PATH instead of a function keeps it, at the cost connections.md's "Considered and left
+  out" gives; nothing within a function was found.
 
 ## Keeping the canvas
 

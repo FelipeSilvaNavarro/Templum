@@ -655,8 +655,9 @@ front of the person's:
   an alias of the same name doesn't break its definition.
 - `command claude`, a path (`~/.local/bin/claude`), `npx`, `sudo` or a script: the program alone, as outside Templum.
 - The exit status: the agent's, in every shell (PowerShell's prompt is told it: a function's caller would see `$?`
-  true). In PowerShell the function passes `--` and `-p:x` on as PowerShell parses them (`--` dropped, `-p:x`
-  reaching the agent as `x`; [minors](../minors.md#connections)).
+  true), except in zsh after Ctrl+Z and `fg`: zsh moves the rest of a suspended function into a subshell, and `$?`
+  is then 0 ([minors](../minors.md#connections)). In PowerShell the function passes `--` and `-p:x` on as
+  PowerShell parses them (`--` dropped, `-p:x` reaching the agent as `x`; [minors](../minors.md#connections)).
 
 **Where it doesn't reach** (the agent runs as outside Templum; the canvas menu still opens a connected one):
 
