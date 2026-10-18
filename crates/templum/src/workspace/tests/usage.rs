@@ -494,16 +494,94 @@ fn claude_code_is_asked_for_its_limits_when_wanted(cx: &mut TestAppContext) {
     ws.update(cx, |ws, _| {
         let claude = ws.agents.iter_mut().find(|a| a.id == "claude").unwrap();
         claude.command = format!("{} --model opus", program.display());
+        let probe = data.path().join("usage").join("probe");
         assert_eq!(
-            ws.claude_poll_job(),
-            Some((program.clone(), data.path().join("usage").join("probe")))
+            ws.claude_poll_jobs(),
+            [("claude".to_string(), program.clone(), probe.clone(), None)]
         );
         ws.config.usage.claude_limits = false;
-        assert_eq!(ws.claude_poll_job(), None);
+        assert_eq!(ws.claude_poll_jobs(), []);
         ws.config.usage.claude_limits = true;
         ws.data_dir = None;
-        assert_eq!(ws.claude_poll_job(), None);
+        assert_eq!(ws.claude_poll_jobs(), []);
     });
+}
+
+/// Each Claude Code account seen running since Templum started is asked too, on its folder.
+#[gpui_kit::test]
+fn an_account_that_ran_is_asked_for_its_limits(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let program = data.path().join("my-claude");
+    std::fs::write(&program, "").unwrap();
+    let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    super::agents::with_agents(
+        &ws,
+        cx,
+        &format!(
+            "[agents.claude]\ncommand = \"{}\"\n{}",
+            program.display(),
+            super::agents::CLAUDE2
+        ),
+    );
+    ws.update(cx, |ws, _| {
+        assert_eq!(ws.claude_poll_jobs().len(), 1, "not run yet");
+        ws.accounts_ran.insert("claude2".into());
+        let jobs = ws.claude_poll_jobs();
+        let account = data.path().join("accounts").join("claude2");
+        assert_eq!(
+            jobs[1],
+            (
+                "claude2".to_string(),
+                program.clone(),
+                data.path().join("usage").join("probe"),
+                Some(account)
+            )
+        );
+    });
+}
+
+/// Each account is its own row of the meter, named by its name, and its own switch.
+#[gpui_kit::test]
+fn each_account_has_its_row_in_the_meter(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    super::agents::with_agents(&ws, cx, super::agents::CLAUDE2);
+    let now = crate::notes::now();
+    let limits = templum_usage::Limits {
+        windows: vec![templum_usage::Window {
+            minutes: 300,
+            used_percent: 40.0,
+            resets_at: now + 3600,
+            scope: None,
+        }],
+        at: now,
+    };
+    ws.update(cx, |ws, _| {
+        ws.limits = vec![
+            ("claude".into(), limits.clone()),
+            ("claude2".into(), limits),
+        ];
+        let shown: Vec<String> = crate::usage::meter_agents(ws, now)
+            .into_iter()
+            .map(|(id, _)| ws.agent_title(id))
+            .collect();
+        assert_eq!(shown, ["Claude Code", "Claude Code 2"]);
+        ws.config.usage.hide = vec!["claude2".into()];
+        let shown: Vec<&str> = crate::usage::meter_agents(ws, now)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(shown, ["claude"]);
+    });
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-tab-usage", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("field-usage.hide.claude2").is_some());
+    })
+    .unwrap();
 }
 
 #[cfg(unix)]

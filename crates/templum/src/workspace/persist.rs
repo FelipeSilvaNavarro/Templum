@@ -493,6 +493,18 @@ impl Workspace {
             for terminal in gone {
                 self.agent_left(&terminal, cx);
             }
+            // An account found running: `/usage` asks its limits from now on.
+            let ran: Vec<String> = self
+                .space_by_id_mut(&id)
+                .map(|space| {
+                    space
+                        .terminals()
+                        .filter_map(|(_, p)| p.seen.agent.clone().filter(|_| p.seen.pid.is_some()))
+                        .filter(|a| homes.iter().any(|h| h.id == *a))
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.accounts_ran.extend(ran);
             match written {
                 None => {}
                 Some(Ok(())) => {

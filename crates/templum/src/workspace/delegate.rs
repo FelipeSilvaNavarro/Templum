@@ -850,7 +850,7 @@ impl Workspace {
                     cx.background_executor()
                         .spawn(async move {
                             let dirs = templum_usage::Dirs::of(&data);
-                            templum_usage::read(&[proc], &dirs, crate::notes::now())
+                            templum_usage::read(&[proc], &dirs, &[], crate::notes::now())
                                 .0
                                 .pop()
                                 .flatten()

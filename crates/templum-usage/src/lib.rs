@@ -183,37 +183,94 @@ pub fn relay_dir(data: &Path) -> PathBuf {
     data.join("usage").join("claude")
 }
 
-/// What the agents `procs` tell about their sessions, in order, and each agent's plan limits,
-/// at `now` (seconds since the epoch). Reads files: off the UI thread.
+/// A folder one of the agents whose limits Templum reads keeps its files in: its own (`id` is
+/// the agent's) or an account's (docs/specs/accounts.md, Usage and limits).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentHome {
+    /// Whose limits these are: the agent's id, or the account's.
+    pub id: String,
+    /// The agent's id.
+    pub agent: String,
+    /// Its state folder.
+    pub dir: PathBuf,
+    /// Its `sessions` are another Codex folder's too: its newest rollouts may be the other's.
+    pub sessions_shared: bool,
+}
+
+/// The `agent` processes among `procs`, by index, each with the folder it keeps its files in:
+/// its account's, else `own`.
+fn by_folder<'a>(
+    procs: &'a [Proc],
+    agent: &str,
+    own: Option<&'a Path>,
+) -> Vec<(&'a Path, Vec<usize>, Vec<&'a Proc>)> {
+    let mut groups: Vec<(&Path, Vec<usize>, Vec<&Proc>)> = Vec::new();
+    for (i, p) in procs.iter().enumerate().filter(|(_, p)| p.agent == agent) {
+        let Some(dir) = p.home.as_deref().or(own) else {
+            continue;
+        };
+        match groups.iter_mut().find(|(d, ..)| *d == dir) {
+            Some((_, at, ps)) => {
+                at.push(i);
+                ps.push(p);
+            }
+            None => groups.push((dir, vec![i], vec![p])),
+        }
+    }
+    groups
+}
+
+/// What the agents `procs` tell about their sessions, in order, and the plan limits of each of
+/// `homes`, by its id, at `now` (seconds since the epoch). Reads files: off the UI thread.
 pub fn read(
     procs: &[Proc],
     dirs: &Dirs,
+    homes: &[AgentHome],
     now: u64,
 ) -> (Vec<Option<Session>>, Vec<(String, Limits)>) {
     let mut sessions: Vec<Option<Session>> = procs
         .iter()
         .map(|p| match p.agent.as_str() {
-            "claude" => claude::session(p, &dirs.relay, dirs.claude.as_deref()),
+            "claude" => {
+                claude::session(p, &dirs.relay, p.home.as_deref().or(dirs.claude.as_deref()))
+            }
             _ => None,
         })
         .collect();
-    let mut limits = Vec::new();
-    if let Some(l) = claude::limits(&dirs.relay) {
-        limits.push(("claude".to_string(), l));
-    }
-    if let Some(dir) = &dirs.codex {
-        let (at, codex): (Vec<usize>, Vec<&Proc>) = procs
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.agent == "codex")
-            .unzip();
-        if !codex.is_empty() {
-            for (i, s) in at.into_iter().zip(codex::sessions(&codex, dir, now)) {
-                sessions[i] = s;
-            }
+    let codex = by_folder(procs, "codex", dirs.codex.as_deref());
+    for (dir, at, ps) in &codex {
+        for (&i, s) in at.iter().zip(codex::sessions(ps, dir, now)) {
+            sessions[i] = s;
         }
-        if let Some(l) = codex::limits(dir, now) {
-            limits.push(("codex".to_string(), l));
+    }
+    let mut limits = Vec::new();
+    for home in homes {
+        let found = match home.agent.as_str() {
+            // The agent's own: the relay files of a Claude Code on no folder of Templum's, or on
+            // the one Templum's own environment names.
+            "claude" if home.id == home.agent => [
+                claude::limits(&dirs.relay, None),
+                claude::limits(&dirs.relay, Some(&home.dir)),
+            ]
+            .into_iter()
+            .flatten()
+            .max_by_key(|l| l.at),
+            "claude" => claude::limits(&dirs.relay, Some(&home.dir)),
+            // Its own processes' rollouts: the folder's newest may be another account's.
+            "codex" if home.sessions_shared => {
+                let files: Vec<PathBuf> = codex
+                    .iter()
+                    .filter(|(dir, ..)| *dir == home.dir)
+                    .flat_map(|(dir, _, ps)| codex::rollouts_of(ps, dir, now))
+                    .flatten()
+                    .collect();
+                codex::limits_of(&files)
+            }
+            "codex" => codex::limits(&home.dir, now),
+            _ => None,
+        };
+        if let Some(l) = found {
+            merge(&mut limits, &home.id, &l);
         }
     }
     (sessions, limits)
@@ -235,22 +292,7 @@ pub fn session_ids(procs: &[Proc], dirs: &Dirs, now: u64) -> Vec<Option<String>>
         })
         .collect();
     // Each Codex folder's processes together: an account's are in its own.
-    let mut folders: Vec<&Path> = Vec::new();
-    for p in procs.iter().filter(|p| p.agent == "codex") {
-        if let Some(dir) = p.home.as_deref().or(dirs.codex.as_deref())
-            && !folders.contains(&dir)
-        {
-            folders.push(dir);
-        }
-    }
-    for dir in folders {
-        let (at, codex): (Vec<usize>, Vec<&Proc>) = procs
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| {
-                p.agent == "codex" && p.home.as_deref().or(dirs.codex.as_deref()) == Some(dir)
-            })
-            .unzip();
+    for (dir, at, codex) in by_folder(procs, "codex", dirs.codex.as_deref()) {
         for (i, id) in at.into_iter().zip(codex::session_ids(&codex, dir, now)) {
             ids[i] = id;
         }
@@ -394,7 +436,13 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let (sessions, limits) = read(&[proc("claude"), proc("aider")], &dirs, now);
+        let homes = [AgentHome {
+            id: "claude".into(),
+            agent: "claude".into(),
+            dir: data.join("claude"),
+            sessions_shared: false,
+        }];
+        let (sessions, limits) = read(&[proc("claude"), proc("aider")], &dirs, &homes, now);
         assert_eq!(sessions[0].as_ref().unwrap().cost_usd, Some(1.5));
         assert_eq!(sessions[1], None);
         assert_eq!(limits.len(), 1);

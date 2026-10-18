@@ -292,6 +292,42 @@ pub(crate) struct Home {
     pub state: PathBuf,
 }
 
+/// The folders whose plan limits Templum reads (`templum_usage::LIMITED`'s agents): each agent's
+/// own, then its accounts'. A folder whose `sessions` are another's too (a share of them, either
+/// way) has `sessions_shared`.
+pub(crate) fn usage_homes(agents: &[AgentEntry]) -> Vec<templum_usage::AgentHome> {
+    let shares_sessions = |id: &str| {
+        agents
+            .iter()
+            .filter_map(|a| a.account.as_ref().map(|acc| (a, acc)))
+            .any(|(a, acc)| {
+                let to = acc.share.get("sessions");
+                a.id == id && to.is_some() || to.is_some_and(|t| t == id)
+            })
+    };
+    let own = templum_usage::LIMITED.iter().filter_map(|agent| {
+        let kind = templum_usage::accounts::kind(agent)?;
+        Some(templum_usage::AgentHome {
+            id: agent.to_string(),
+            agent: agent.to_string(),
+            dir: own_state(kind)?,
+            sessions_shared: shares_sessions(agent),
+        })
+    });
+    let accounts = agents.iter().filter_map(|a| {
+        let account = a.account.as_ref()?;
+        templum_usage::LIMITED
+            .contains(&account.kind.agent)
+            .then(|| templum_usage::AgentHome {
+                id: a.id.clone(),
+                agent: account.kind.agent.to_string(),
+                dir: account.kind.state_dir(&account.folder),
+                sessions_shared: shares_sessions(&a.id),
+            })
+    });
+    own.chain(accounts).collect()
+}
+
 /// The agent `found` in a block whose shell has the account `account`'s variable: that account
 /// when it is the account's agent, else what was found.
 pub(crate) fn in_block(found: Option<&str>, account: Option<&Home>) -> Option<String> {
@@ -686,6 +722,31 @@ mod tests {
         );
         assert_eq!(in_block(None, Some(&home)), None);
         assert_eq!(in_block(Some("claude"), None).as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn each_folder_whose_limits_are_read_is_a_home() {
+        let list = agents(concat!(
+            "[agents]\n",
+            "claude2 = { of = \"claude\" }\n",
+            "codex2 = { of = \"codex\", share = { sessions = \"codex\" } }\n",
+            "codex3 = { of = \"codex\" }\n",
+            "gemini2 = { of = \"gemini\" }\n",
+        ));
+        let homes = usage_homes(&list);
+        let ids: Vec<&str> = homes.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, ["claude", "codex", "claude2", "codex2", "codex3"]);
+        let shared = |id: &str| homes.iter().find(|h| h.id == id).unwrap().sessions_shared;
+        assert!(
+            shared("codex") && shared("codex2"),
+            "one sessions/ for both"
+        );
+        assert!(!shared("codex3") && !shared("claude"));
+        assert_eq!(
+            homes[2].dir,
+            Path::new("/data/accounts/claude2"),
+            "an account's own state folder"
+        );
     }
 
     #[test]

@@ -51,6 +51,9 @@ struct Status {
     rate_limits: Option<RateLimits>,
     workspace: Option<Workspace>,
     cwd: Option<PathBuf>,
+    /// The folder the Claude Code it came from was on, when its `CLAUDE_CONFIG_DIR` named one:
+    /// an account's (docs/specs/accounts.md, Usage and limits).
+    templum_config_dir: Option<PathBuf>,
 }
 
 #[derive(Default, Deserialize)]
@@ -94,17 +97,29 @@ struct Workspace {
 }
 
 /// The relay, given Claude Code's status line `input` in the terminal `terminal` (its
-/// `TEMPLUM_TERMINAL`): writes it to `relay_dir`, then runs the user's own status line, found
-/// in the project's settings or `claude_dir`'s, and returns what it printed. Never fails:
-/// Claude Code would show the error in its status line.
+/// `TEMPLUM_TERMINAL`): writes it to `relay_dir`, with `"templum_config_dir"` added when its
+/// `CLAUDE_CONFIG_DIR` named `config_dir`, then runs the user's own status line, found in the
+/// project's settings or `claude_dir`'s, and returns what it printed. Never fails: Claude Code
+/// would show the error in its status line.
 pub fn relay(
     input: &[u8],
     relay_dir: &Path,
     terminal: Option<&str>,
     claude_dir: Option<&Path>,
+    config_dir: Option<&Path>,
 ) -> Vec<u8> {
     if let Some(terminal) = terminal.filter(|t| valid_id(t)) {
-        let _ = write_atomic(&relay_dir.join(format!("{terminal}.json")), input);
+        let named = config_dir.and_then(|dir| {
+            let mut value: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_slice(input).ok()?;
+            value.insert(
+                "templum_config_dir".into(),
+                dir.to_string_lossy().into_owned().into(),
+            );
+            serde_json::to_vec(&value).ok()
+        });
+        let bytes = named.as_deref().unwrap_or(input);
+        let _ = write_atomic(&relay_dir.join(format!("{terminal}.json")), bytes);
     }
     let status: Status = serde_json::from_slice(input).unwrap_or_default();
     let project = status
@@ -391,8 +406,9 @@ fn project_folder(cwd: &Path) -> String {
         .collect()
 }
 
-/// The plan limits in the newest relay file that has them: they are the account's.
-pub fn limits(relay_dir: &Path) -> Option<Limits> {
+/// The plan limits in the newest relay file that has them, of the Claude Code on `config_dir`
+/// (None: one whose `CLAUDE_CONFIG_DIR` named none): they are its account's.
+pub fn limits(relay_dir: &Path, config_dir: Option<&Path>) -> Option<Limits> {
     let mut files: Vec<(u64, PathBuf)> = std::fs::read_dir(relay_dir)
         .ok()?
         .flatten()
@@ -403,6 +419,9 @@ pub fn limits(relay_dir: &Path) -> Option<Limits> {
     files.sort_by_key(|f| std::cmp::Reverse(f.0));
     files.into_iter().find_map(|(at, path)| {
         let status: Status = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        if status.templum_config_dir.as_deref() != config_dir {
+            return None;
+        }
         let rate = status.rate_limits?;
         let windows: Vec<Window> = [(300, rate.five_hour), (10080, rate.seven_day)]
             .into_iter()
@@ -426,10 +445,14 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(30);
 /// The plan's limits as Claude Code's `/usage` tells them, asked of `program` (Claude Code) at
 /// `now`: it reads its own login, asks nothing of the model and keeps no session. It runs in
 /// `dir`, an empty folder, with that folder's settings only, so the user's hooks and plugins
-/// don't run. None for an API key, which has no plan. Slow: off the UI thread.
-pub fn poll(program: &Path, dir: &Path, now: u64) -> Option<Limits> {
+/// don't run; on an account's folder `config_dir` when given. None for an API key, which has no
+/// plan. Slow: off the UI thread.
+pub fn poll(program: &Path, dir: &Path, config_dir: Option<&Path>, now: u64) -> Option<Limits> {
     std::fs::create_dir_all(dir).ok()?;
     let mut command = Command::new(program);
+    if let Some(config_dir) = config_dir {
+        command.env("CLAUDE_CONFIG_DIR", config_dir);
+    }
     command
         .args(["--setting-sources", "local", "-p", "/usage"])
         .args(["--output-format", "stream-json", "--verbose"])
@@ -593,7 +616,13 @@ mod tests {
             r#"{"statusLine": {"type": "command", "command": "printf mine; wc -c >/dev/null"}}"#,
         )
         .unwrap();
-        let out = relay(STATUS.as_bytes(), &relay_dir, Some("12-3"), Some(&claude));
+        let out = relay(
+            STATUS.as_bytes(),
+            &relay_dir,
+            Some("12-3"),
+            Some(&claude),
+            None,
+        );
         assert_eq!(out, b"mine");
         assert_eq!(
             std::fs::read_to_string(relay_dir.join("12-3.json")).unwrap(),
@@ -616,11 +645,75 @@ mod tests {
             r#"{{"workspace": {{"project_dir": "{}"}}}}"#,
             project.display()
         );
-        let out = relay(input.as_bytes(), dir.path(), None, Some(&claude));
+        let out = relay(input.as_bytes(), dir.path(), None, Some(&claude), None);
         assert_eq!(out, b"shared");
         std::fs::write(project.join(".claude/settings.local.json"), line("local")).unwrap();
-        let out = relay(input.as_bytes(), dir.path(), None, Some(&claude));
+        let out = relay(input.as_bytes(), dir.path(), None, Some(&claude), None);
         assert_eq!(out, b"local");
+    }
+
+    #[test]
+    fn the_relay_names_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let relay_dir = dir.path().join("relay");
+        relay(
+            STATUS.as_bytes(),
+            &relay_dir,
+            Some("1-0"),
+            None,
+            Some(Path::new("/a")),
+        );
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(relay_dir.join("1-0.json")).unwrap()).unwrap();
+        assert_eq!(written["templum_config_dir"], "/a");
+        let input: serde_json::Value = serde_json::from_str(STATUS).unwrap();
+        for (key, value) in input.as_object().unwrap() {
+            assert_eq!(&written[key], value, "{key}");
+        }
+        relay(STATUS.as_bytes(), &relay_dir, Some("1-1"), None, None);
+        assert_eq!(
+            std::fs::read_to_string(relay_dir.join("1-1.json")).unwrap(),
+            STATUS
+        );
+        relay(
+            b"not json",
+            &relay_dir,
+            Some("1-2"),
+            None,
+            Some(Path::new("/a")),
+        );
+        assert_eq!(
+            std::fs::read(relay_dir.join("1-2.json")).unwrap(),
+            b"not json"
+        );
+    }
+
+    #[test]
+    fn limits_are_the_folders_own() {
+        let dir = tempfile::tempdir().unwrap();
+        for (terminal, folder, used) in [
+            ("1-0", "/a", "11"),
+            ("1-1", "/b", "22"),
+            ("1-2", "/c", "33"),
+        ] {
+            let status = STATUS.replace("23.5", used);
+            relay(
+                status.as_bytes(),
+                dir.path(),
+                Some(terminal),
+                None,
+                Some(Path::new(folder)),
+            );
+        }
+        let used = |folder: Option<&str>| {
+            limits(dir.path(), folder.map(Path::new)).map(|l| l.windows[0].used_percent)
+        };
+        assert_eq!(used(Some("/a")), Some(11.0));
+        assert_eq!(used(Some("/b")), Some(22.0));
+        assert_eq!(used(None), None, "the agent's own folder has none of these");
+        relay(STATUS.as_bytes(), dir.path(), Some("1-3"), None, None);
+        assert_eq!(used(None), Some(23.5));
+        assert_eq!(used(Some("/a")), Some(11.0));
     }
 
     #[test]
@@ -634,8 +727,8 @@ mod tests {
         )
         .unwrap();
         let relay_dir = dir.path().join("relay");
-        assert!(relay(b"{}", &relay_dir, Some("../x"), Some(&claude)).is_empty());
-        assert!(relay(b"{}", &relay_dir, Some(""), Some(&claude)).is_empty());
+        assert!(relay(b"{}", &relay_dir, Some("../x"), Some(&claude), None).is_empty());
+        assert!(relay(b"{}", &relay_dir, Some(""), Some(&claude), None).is_empty());
         assert!(!relay_dir.exists());
     }
 
@@ -654,7 +747,7 @@ mod tests {
                 cost_usd: Some(3.1),
             }
         );
-        let l = limits(dir.path()).unwrap();
+        let l = limits(dir.path(), None).unwrap();
         assert_eq!(l.windows.len(), 2);
         assert_eq!(
             l.windows[0],
@@ -685,7 +778,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let broken = STATUS.replace(r#""resets_at": 1738857600"#, r#""resets_at": null"#);
         std::fs::write(dir.path().join("1-0.json"), broken).unwrap();
-        let l = limits(dir.path()).unwrap();
+        let l = limits(dir.path(), None).unwrap();
         assert_eq!(l.windows.len(), 1);
         assert_eq!(l.windows[0].minutes, 300);
         let s = session(&proc("1-0", now() - 60), dir.path(), None).unwrap();
@@ -704,7 +797,7 @@ mod tests {
         let newest = dir.path().join("1-2.json");
         std::fs::write(&newest, r#"{"session_id": "s3"}"#).unwrap();
         set_modified(&newest, now() + 5);
-        let l = limits(dir.path()).unwrap();
+        let l = limits(dir.path(), None).unwrap();
         assert_eq!(l.windows[0].used_percent, 60.0);
     }
 
@@ -939,7 +1032,7 @@ mod tests {
         std::fs::write(
             &program,
             format!(
-                "#!/bin/sh\necho \"$@\" > \"{}/args\"\ncat \"{}\"\n",
+                "#!/bin/sh\necho \"$@\" > \"{0}/args\"\necho \"$CLAUDE_CONFIG_DIR\" > \"{0}/config\"\ncat \"{1}\"\n",
                 dir.path().display(),
                 printed.display()
             ),
@@ -947,7 +1040,7 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         let probe = dir.path().join("probe");
-        let l = poll(&program, &probe, 5).unwrap();
+        let l = poll(&program, &probe, None, 5).unwrap();
         assert_eq!(l.windows.len(), 3);
         assert!(probe.is_dir());
         let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
@@ -956,6 +1049,11 @@ mod tests {
             "{args}"
         );
         assert!(args.contains("--no-session-persistence"), "{args}");
+        // An account's: on its folder.
+        let account = dir.path().join("accounts").join("claude2");
+        poll(&program, &probe, Some(&account), 5).unwrap();
+        let config = std::fs::read_to_string(dir.path().join("config")).unwrap();
+        assert_eq!(config.trim_end(), account.to_string_lossy());
     }
 
     #[test]

@@ -182,14 +182,19 @@ fn relay() {
         .or_else(session::dir);
     let dirs = data.map(|data| templum_usage::Dirs::of(&data));
     let terminal = std::env::var("TEMPLUM_TERMINAL").ok();
+    // An account's Claude Code names its folder: its limits are that account's.
+    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from);
     let out = match &dirs {
         Some(dirs) => templum_usage::claude::relay(
             &input,
             &dirs.relay,
             terminal.as_deref(),
             dirs.claude.as_deref(),
+            config_dir.as_deref(),
         ),
-        None => templum_usage::claude::relay(&input, std::path::Path::new(""), None, None),
+        None => templum_usage::claude::relay(&input, std::path::Path::new(""), None, None, None),
     };
     let _ = std::io::stdout().write_all(&out);
 }

@@ -1033,8 +1033,11 @@ pub struct Workspace {
     pub(crate) usage_open: bool,
     /// The Git popup (the sidebar's bottom button) is open, on the workspace shown's Git.
     pub(crate) git_open: bool,
-    /// The plan's limits as Claude Code's `/usage` last told them.
-    pub(crate) claude_polled: Option<templum_usage::Limits>,
+    /// The plan's limits as Claude Code's `/usage` last told them, by account (the agent's id
+    /// for its own folder).
+    pub(crate) claude_polled: HashMap<String, templum_usage::Limits>,
+    /// The accounts a snapshot found running since Templum started: `/usage` asks theirs too.
+    pub(crate) accounts_ran: std::collections::HashSet<String>,
     /// Asks Claude Code for them every few minutes.
     _claude_poll: Task<()>,
     /// The title bar's meter shows the agents in turn: this one (an index among those shown),
@@ -1302,21 +1305,29 @@ impl Workspace {
         } else {
             cx.spawn_in(window, async move |ws, cx| {
                 loop {
-                    let Ok(job) = ws.update(cx, |ws, _| ws.claude_poll_job()) else {
+                    let Ok(jobs) = ws.update(cx, |ws, _| ws.claude_poll_jobs()) else {
                         break;
                     };
-                    if let Some((program, dir)) = job {
+                    for (id, program, dir, config_dir) in jobs {
                         let found = cx
                             .background_executor()
                             .spawn(async move {
-                                templum_usage::claude::poll(&program, &dir, crate::notes::now())
+                                let now = crate::notes::now();
+                                templum_usage::claude::poll(
+                                    &program,
+                                    &dir,
+                                    config_dir.as_deref(),
+                                    now,
+                                )
                             })
                             .await;
                         // A failed ask keeps what the last one found.
-                        if found.is_some()
-                            && ws.update(cx, |ws, _| ws.claude_polled = found).is_err()
+                        if let Some(found) = found
+                            && ws
+                                .update(cx, |ws, _| ws.claude_polled.insert(id, found))
+                                .is_err()
                         {
-                            break;
+                            return;
                         }
                     }
                     cx.background_executor().timer(usage::CLAUDE_EVERY).await;
@@ -1427,7 +1438,8 @@ impl Workspace {
             watch: templum_usage::Watch::new(crate::notes::now()),
             usage_open: false,
             git_open: false,
-            claude_polled: None,
+            claude_polled: HashMap::new(),
+            accounts_ran: Default::default(),
             _claude_poll: claude_poll,
             meter_turn: 0,
             meter_turned: 0,

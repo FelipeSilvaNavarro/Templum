@@ -14,7 +14,7 @@ use templum_terminal::Agent;
 use templum_usage::{Event, Limits, Proc, Session, Watch};
 
 use super::{Pane, TryIt, Workspace, show_notification};
-use crate::agents::AgentEntry;
+use crate::agents::{self, AgentEntry};
 use crate::config::Edit;
 use crate::notes;
 use crate::usage::{TURN_SECS, limit_name, meter_agents, resets_local};
@@ -270,13 +270,14 @@ impl Workspace {
                 }
             }
         }
+        let homes = agents::usage_homes(&self.agents);
         // The next read replaces this one: a slow disk never piles reads up.
         self._usage = cx.spawn_in(window, async move |ws, cx| {
             let read = cx
                 .background_executor()
                 .spawn(async move {
                     let dirs = templum_usage::Dirs::of(&data);
-                    templum_usage::read(&procs, &dirs, notes::now())
+                    templum_usage::read(&procs, &dirs, &homes, notes::now())
                 })
                 .await;
             ws.update_in(cx, |ws, window, cx| ws.usage_done(keys, read, window, cx))
@@ -294,8 +295,18 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let mut limits = limits;
-        if let Some(polled) = &self.claude_polled {
-            templum_usage::merge(&mut limits, "claude", polled);
+        for (id, polled) in &self.claude_polled {
+            templum_usage::merge(&mut limits, id, polled);
+        }
+        // A Codex folder whose sessions another shares reads only its running processes': with
+        // none running, its limits stay as last read.
+        for home in agents::usage_homes(&self.agents)
+            .iter()
+            .filter(|h| h.sessions_shared)
+        {
+            if let Some((_, old)) = self.limits.iter().find(|(id, _)| *id == home.id) {
+                templum_usage::merge(&mut limits, &home.id, old);
+            }
         }
         let mut changed = self.limits != limits;
         self.limits = limits;
@@ -381,24 +392,46 @@ impl Workspace {
         show_notification(window, cx, notification);
     }
 
-    /// The Claude Code to ask for the plan's limits, and the empty folder to ask in; None when
-    /// the user turned it off, without a data folder, or when it isn't installed.
-    pub(super) fn claude_poll_job(&self) -> Option<(PathBuf, PathBuf)> {
-        let data = self.data_dir.as_ref()?;
-        if !self.config.usage.claude_limits {
-            return None;
-        }
-        let claude = self
+    /// What to ask for the plan's limits: by whose limits they are, the Claude Code to ask, the
+    /// empty folder to ask in and the account's folder (None: its own), for its own folder and
+    /// each Claude Code account a snapshot found running since Templum started. None when the
+    /// user turned it off, without a data folder, or when it isn't installed.
+    pub(super) fn claude_poll_jobs(&self) -> Vec<(String, PathBuf, PathBuf, Option<PathBuf>)> {
+        let Some(data) = self
+            .data_dir
+            .as_ref()
+            .filter(|_| self.config.usage.claude_limits)
+        else {
+            return Vec::new();
+        };
+        let Some(claude) = self
             .agents
             .iter()
-            .find(|a| a.builtin == Some(Agent::CLAUDE))?;
-        let program = claude.command.split_whitespace().next()?;
+            .find(|a| a.builtin == Some(Agent::CLAUDE))
+        else {
+            return Vec::new();
+        };
+        let Some(program) = claude.command.split_whitespace().next() else {
+            return Vec::new();
+        };
         let program = if program.contains(['/', '\\']) {
             PathBuf::from(program)
         } else {
-            templum_terminal::locate(program)?
+            let Some(found) = templum_terminal::locate(program) else {
+                return Vec::new();
+            };
+            found
         };
-        Some((program, data.join("usage").join("probe")))
+        let probe = data.join("usage").join("probe");
+        let accounts = self.agents.iter().filter_map(|a| {
+            let account = a.account.as_ref()?;
+            (account.kind.agent == "claude" && self.accounts_ran.contains(&a.id))
+                .then(|| (a.id.clone(), Some(account.folder.clone())))
+        });
+        std::iter::once((claude.id.clone(), None))
+            .chain(accounts)
+            .map(|(id, folder)| (id, program.clone(), probe.clone(), folder))
+            .collect()
     }
 
     /// Shows `agent`'s limits in the title bar, or stops (Settings ▸ Usage).

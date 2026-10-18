@@ -279,14 +279,25 @@ pub(super) fn rows(
                         }),
                     ),
             ];
-            // Which agents' limits the title bar's meter shows, in turn.
-            for agent in templum_usage::LIMITED {
-                let shown = !ws.config.usage.hide.iter().any(|a| a == agent);
+            // Which agents' limits the title bar's meter shows, in turn: an account's are its own.
+            let accounts = ws.agents.iter().filter(|a| {
+                a.account
+                    .as_ref()
+                    .is_some_and(|acc| templum_usage::LIMITED.contains(&acc.kind.agent))
+            });
+            let ids: Vec<String> = templum_usage::LIMITED
+                .iter()
+                .map(|a| a.to_string())
+                .chain(accounts.map(|a| a.id.clone()))
+                .collect();
+            for agent in ids {
+                let shown = !ws.config.usage.hide.contains(&agent);
                 let (e, r) = (entity.clone(), entity.clone());
+                let (on_agent, reset_agent) = (agent.clone(), agent.clone());
                 rows.push(
                     Row::new(
                         format!("usage.hide.{agent}"),
-                        format!("{} in the title bar", ws.agent_title(agent)),
+                        format!("{} in the title bar", ws.agent_title(&agent)),
                     )
                     .description("Its limits take turns with the others' in the title bar")
                     .control(
@@ -294,11 +305,11 @@ pub(super) fn rows(
                             .checked(shown)
                             .on_click(move |on: &bool, _, cx| {
                                 let on = *on;
-                                e.update(cx, |ws, cx| ws.show_in_title_bar(agent, on, cx))
+                                e.update(cx, |ws, cx| ws.show_in_title_bar(&on_agent, on, cx))
                             }),
                     )
                     .reset(!shown, move |_, cx| {
-                        r.update(cx, |ws, cx| ws.show_in_title_bar(agent, true, cx))
+                        r.update(cx, |ws, cx| ws.show_in_title_bar(&reset_agent, true, cx))
                     }),
                 );
             }
