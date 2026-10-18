@@ -79,7 +79,8 @@ What doesn't come back: the text that was on screen, and programs other than the
   | Anything else (`vim`, `node server.js`, `node claude.js`, the shell itself) | None |
 
 - **The block's folder:** with an agent open, it is the agent process's folder. This matters on Windows, where
-  PowerShell's `cd` doesn't move PowerShell's own folder, but the programs it starts do run in the new one.
+  PowerShell's `cd` doesn't move PowerShell's own folder, but the programs it starts do run in the new one. When the
+  OS won't tell the agent's folder, it is the shell's.
 - **Restore:** right after the block's shell starts, Templum types the agent's resume command and Enter into it,
   only when the block starts in its saved folder. Anywhere else (a folder that's gone, or wasn't known) it would
   resume another folder's conversation.
@@ -91,6 +92,10 @@ What doesn't come back: the text that was on screen, and programs other than the
 
   The terminal buffers the typed text until the shell is ready. When the agent exits, the user is back in the shell.
   If the agent isn't installed, the shell says so ("command not found") and nothing else happens.
+- **Until the agent is up:** a snapshot that finds no agent in the block yet (a slow shell start, a question of the
+  shell that takes the typed line) saves the block's saved folder, agent and session, for a minute at most
+  (`STARTS_WITHIN`), so quitting meanwhile resumes it at the next start. Once a snapshot finds an agent there, what
+  it finds is saved.
 - **Safety:** the file stores only the agent's name and its session's id, never a command. A `"agent"` value other
   than `"claude"` or `"codex"` is ignored, and a `"session"` is typed only when it is letters, digits and `-`, so an
   edited file can't make Templum type anything else.

@@ -416,13 +416,20 @@ fn inspect_one(system: &sysinfo::System, p: &Processes, known: &[Detect]) -> Ins
             .filter(|cwd| !cwd.as_os_str().is_empty())
             .map(Path::to_path_buf)
     };
+    // The shell's folder: its own word, else the OS's.
+    let shell = || {
+        reported(p)
+            .or_else(|| p.foreground.map(Pid::from_u32).and_then(cwd))
+            .or_else(|| p.shell.map(Pid::from_u32).and_then(cwd))
+    };
     let found = candidates(system, p)
         .into_iter()
         .find_map(|pid| Some((pid, agent_in(system.process(pid)?, known)?)));
     match found {
-        // Its folder: under PowerShell, the shell's own doesn't follow `cd`, but programs it starts do.
+        // Its folder: under PowerShell, the shell's own doesn't follow `cd`, but programs it starts
+        // do. One the OS won't tell is the shell's.
         Some((pid, agent)) => Inspection {
-            folder: cwd(pid),
+            folder: cwd(pid).or_else(shell),
             session: system.process(pid).and_then(|process| {
                 let args = args(process);
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -433,9 +440,7 @@ fn inspect_one(system: &sysinfo::System, p: &Processes, known: &[Detect]) -> Ins
             started: system.process(pid).map(sysinfo::Process::start_time),
         },
         None => Inspection {
-            folder: reported(p)
-                .or_else(|| p.foreground.map(Pid::from_u32).and_then(cwd))
-                .or_else(|| p.shell.map(Pid::from_u32).and_then(cwd)),
+            folder: shell(),
             ..Inspection::default()
         },
     }
@@ -1204,6 +1209,34 @@ mod tests {
             "not held back by the coalescing"
         );
         assert!(shared.exited.get().is_some());
+    }
+
+    #[test]
+    fn an_agent_whose_folder_the_os_wont_tell_is_in_its_shells() {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+        // This test's process as the agent, read without folders: as one the OS won't tell of.
+        let me = std::process::id();
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[Pid::from_u32(me)]),
+            ProcessRefreshKind::new().with_cmd(UpdateKind::Always),
+        );
+        let exe = std::env::current_exe().unwrap();
+        let name = exe.file_stem().unwrap().to_string_lossy().to_lowercase();
+        let known = [Detect {
+            id: "agent".into(),
+            names: vec![name],
+            packages: Vec::new(),
+        }];
+        let reported = tempfile::tempdir().unwrap();
+        let p = Processes {
+            shell: Some(me),
+            foreground: None,
+            reported: Some(reported.path().to_path_buf()),
+        };
+        let found = inspect_one(&system, &p, &known);
+        assert_eq!(found.agent.as_deref(), Some("agent"));
+        assert_eq!(found.folder.as_deref(), Some(reported.path()));
     }
 
     #[test]

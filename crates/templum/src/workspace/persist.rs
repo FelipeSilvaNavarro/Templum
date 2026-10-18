@@ -196,6 +196,9 @@ impl Workspace {
         if let Some(pane) = self.space.terminal_mut(id) {
             pane.term.write(line.into_bytes());
             pane.seen.agent = Some(agent);
+            // A slow shell, or a question of its that takes the line: until the agent is up, the
+            // next start resumes it still.
+            pane.resuming = Some((std::time::Instant::now(), saved.clone()));
             if args.is_ok() {
                 (pane.model, pane.effort) = (saved.model.clone(), saved.effort.clone());
                 pane.flags_for = pane.seen.agent.clone();

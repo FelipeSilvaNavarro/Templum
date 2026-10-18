@@ -356,6 +356,68 @@ fn a_restored_shell_that_ends_at_once_leaves_the_saved_canvas_alone(cx: &mut Tes
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "kept");
 }
 
+/// A snapshot taken before a restored agent is up (a slow shell, a question of its that took the
+/// typed line) keeps its saved folder, agent and session: the next start resumes it still. Once
+/// a snapshot finds an agent there, what it finds is saved.
+#[gpui_kit::test]
+fn a_snapshot_before_the_restored_agent_is_up_keeps_it(cx: &mut TestAppContext) {
+    use crate::session::{Item, Saved};
+    let data = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let folder = work.path().display().to_string();
+    let json = folder.replace('\\', "\\\\");
+    write_canvas(
+        data.path(),
+        &format!(
+            r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+                  {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{json}",
+                    "agent":"claude","session":"abc-1"}}]}}"#
+        ),
+    );
+    // `cat` is the shell: the agent typed into it never starts.
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let id = first_id(&ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.camera.pan_by(Point::new(30.0, 0.0))
+    });
+    tick(cx);
+    let path = crate::session::path(data.path(), crate::session::DEFAULT_ID);
+    let saved: Saved = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let Item::Terminal(t) = &saved.items[0] else {
+        panic!("{saved:?}")
+    };
+    assert_eq!(saved.camera.x, -30.0, "written");
+    assert_eq!(
+        (
+            t.folder.as_deref(),
+            t.agent.as_deref(),
+            t.session.as_deref()
+        ),
+        (Some(folder.as_str()), Some("claude"), Some("abc-1"))
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let found = templum_terminal::Inspection {
+                folder: Some(work.path().to_path_buf()),
+                agent: Some("claude".into()),
+                pid: Some(42),
+                ..Default::default()
+            };
+            let space = ws.space.id.clone();
+            ws.snapshot_done(
+                vec![(space, vec![(id, found)], saved.clone(), None)],
+                None,
+                None,
+                None,
+                window,
+                cx,
+            );
+            assert!(ws.space.terminal(id).unwrap().resuming.is_none());
+        })
+    })
+    .unwrap();
+}
+
 /// A snapshot's read of the processes tells each terminal its folder and its agent, with the
 /// agent's process: what the menus, the Git block and the usage read.
 #[gpui_kit::test]

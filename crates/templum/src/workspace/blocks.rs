@@ -458,6 +458,7 @@ impl Workspace {
                         transcript: None,
                         starting: None,
                         restored: false,
+                        resuming: None,
                     })),
                 );
                 self.added(id);

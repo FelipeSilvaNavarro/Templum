@@ -245,6 +245,9 @@ pub(crate) struct Pane {
     /// It came back with its saved canvas: a shell that ends as it starts couldn't start
     /// (`Pane::died_starting`).
     pub restored: bool,
+    /// Its saved item, whose agent Templum typed back, since when: until a snapshot finds an
+    /// agent there, at most STARTS_WITHIN, snapshots keep its folder, agent and session.
+    pub resuming: Option<(Instant, session::TerminalItem)>,
 }
 
 impl Pane {
@@ -683,7 +686,12 @@ impl Space {
                         let mut item = pane.item(self.home(b), uid);
                         // What the snapshot compares with the agent it finds there.
                         item.agent = pane.flags_for.clone().or(item.agent);
-                        session::LayoutBlock::Terminal(item, pane.term.processes())
+                        let resuming = pane
+                            .resuming
+                            .as_ref()
+                            .filter(|(since, _)| since.elapsed() < spawn::STARTS_WITHIN)
+                            .map(|(_, saved)| Box::new(saved.clone()));
+                        session::LayoutBlock::Terminal(item, pane.term.processes(), resuming)
                     }
                     _ => session::LayoutBlock::Saved(self.item_of(b)),
                 })
@@ -783,6 +791,10 @@ impl Space {
             if let Some(pane) = self.terminal_mut(id) {
                 // A folder the snapshot couldn't read keeps the one known.
                 seen.folder = seen.folder.or(pane.seen.folder.take());
+                // The agent typed back is up, or the person's own: what is found is saved.
+                if seen.agent.is_some() {
+                    pane.resuming = None;
+                }
                 // The model and the effort are the agent's they were typed for: gone once another
                 // agent is found there (typed by hand), or once that agent, found before, left.
                 // One still starting keeps them.

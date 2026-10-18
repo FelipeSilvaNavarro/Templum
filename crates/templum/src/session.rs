@@ -765,8 +765,9 @@ pub(crate) struct Layout {
 pub(crate) enum LayoutBlock {
     /// A terminal as the UI thread knows it: its id, rect, opener, model and effort, and as its
     /// agent the one they were typed for (else the one last seen); its folder, agent and session
-    /// come from its processes, read in the background.
-    Terminal(TerminalItem, Processes),
+    /// come from its processes, read in the background. While the agent of its saved item, typed
+    /// back, isn't up yet, that item: its folder, agent and session are kept.
+    Terminal(TerminalItem, Processes, Option<Box<TerminalItem>>),
     /// Any other kind: its item, complete, built on the UI thread.
     Saved(Item),
 }
@@ -780,7 +781,7 @@ impl Layout {
             .blocks
             .iter()
             .filter_map(|b| match b {
-                LayoutBlock::Terminal(_, p) => Some(p.clone()),
+                LayoutBlock::Terminal(_, p, _) => Some(p.clone()),
                 LayoutBlock::Saved(_) => None,
             })
             .collect();
@@ -799,16 +800,27 @@ impl Layout {
                 .blocks
                 .iter()
                 .map(|b| match b {
-                    LayoutBlock::Terminal(item, _) => {
+                    LayoutBlock::Terminal(item, _, resuming) => {
                         // One answer per terminal, in order.
                         let found = found.next().unwrap_or_default();
+                        let session = sessions.next().flatten();
+                        // Its saved agent, typed back, isn't up yet: the next start resumes it
+                        // still.
+                        if let Some(saved) = resuming.as_ref().filter(|_| found.agent.is_none()) {
+                            return Item::Terminal(TerminalItem {
+                                folder: saved.folder.clone(),
+                                agent: saved.agent.clone(),
+                                session: saved.session.clone(),
+                                ..item.clone()
+                            });
+                        }
                         // The model and the effort are the agent the UI thread knew there: gone,
                         // or another one found (typed by hand), they aren't its.
                         let theirs = item.agent.is_none() || item.agent == found.agent;
                         Item::Terminal(TerminalItem {
                             folder: found.folder.and_then(utf8),
                             // The agent's files first: they follow a switch inside it.
-                            session: sessions.next().flatten().or(found.session),
+                            session: session.or(found.session),
                             agent: found.agent,
                             model: item.model.clone().filter(|_| theirs),
                             effort: item.effort.clone().filter(|_| theirs),
@@ -1723,6 +1735,7 @@ mod tests {
                         effort: Some("high".into()),
                     },
                     Processes::default(),
+                    None,
                 ),
                 LayoutBlock::Saved(Item::Kanban(KanbanItem {
                     uid: String::new(),
@@ -1741,6 +1754,7 @@ mod tests {
                         effort: None,
                     },
                     Processes::default(),
+                    None,
                 ),
             ],
             focused: Some(1),
@@ -1820,6 +1834,7 @@ mod tests {
                     effort: Some("high".into()),
                 },
                 Processes::default(),
+                None,
             )],
             focused: None,
             recent: Vec::new(),
