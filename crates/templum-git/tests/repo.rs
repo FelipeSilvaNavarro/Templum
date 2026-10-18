@@ -2130,6 +2130,31 @@ fn merging_a_worktree_back_takes_a_clean_commit_and_aborts_a_conflict() {
     );
 }
 
+/// A file the worktree's branch tracks that git ignores where it goes back (a `.env` added with
+/// `git add -f`) would be written over by a merge without a word: the state names it.
+#[test]
+fn a_worktrees_state_names_the_ignored_files_a_merge_would_overwrite() {
+    let (dir, repo) = committed();
+    commit_in(&repo, dir.path(), ".gitignore", ".env\ndeps/\n", "Ignore");
+    write(dir.path(), ".env", "SECRET=person\n");
+    write(dir.path(), "deps/x.js", "person's\n");
+    let path = repo.add_worktree("w").unwrap();
+    let w = Repo::discover("git", &path).unwrap().unwrap();
+    commit_in(&w, &path, "c.txt", "c\n", "C");
+    assert_eq!(
+        repo.worktree_state("w").unwrap().unwrap().overwrites,
+        Vec::<String>::new()
+    );
+    write(&path, ".env", "SECRET=agent\n");
+    write(&path, "deps/x.js", "agent's\n");
+    w.run(&["add", "-f", ".env", "deps/x.js"]).unwrap();
+    w.commit("Env", false).unwrap();
+    assert_eq!(
+        repo.worktree_state("w").unwrap().unwrap().overwrites,
+        [".env", "deps/x.js"]
+    );
+}
+
 /// A worktree whose HEAD left its branch (detached, or another branch checked out there) says so,
 /// and isn't removed: its commits, or the other branch, would be lost.
 #[test]

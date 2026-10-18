@@ -407,8 +407,10 @@ conversation.
   first: a merge takes commits."); changes not committed to tracked files where it merges into, which a merge would mix
   with and an aborted one may not give back ("development has changes not committed in /home/u/app: commit or stash
   them first."); nothing to merge ("feature-x has nothing development doesn't."); a merge, rebase or cherry-pick
-  already under way there. Untracked files don't refuse it: git refuses itself when the merge would write over
-  one. A conflict aborts the merge (`git merge
+  already under way there; a file git ignores there that the worktree's branch tracks (a `.env` added with `git add
+  -f`), which git would write over without a word ("The merge would overwrite .env, ignored in /home/u/app: move it
+  first."), checked again when the person says Merge. Other untracked files don't refuse it: git refuses itself when
+  the merge would write over one. A conflict aborts the merge (`git merge
   --abort`) and answers with the files: "The merge would conflict in src/a.rs, src/b.rs: merge development into
   feature-x and resolve them there, then merge again." Merged: `Merged feature-x into development (3 commits).
   remove_worktree removes it.` The worktree stays.

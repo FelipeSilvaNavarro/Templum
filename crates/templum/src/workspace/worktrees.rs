@@ -176,6 +176,12 @@ fn merge_refusal(
         ))
     } else if state.unmerged == 0 {
         Some(format!("{name} has nothing {into} doesn't."))
+    } else if !state.overwrites.is_empty() {
+        Some(format!(
+            "The merge would overwrite {}, ignored in {}: move it first.",
+            state.overwrites.join(", "),
+            repo.root.display()
+        ))
     } else {
         None
     }

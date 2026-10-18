@@ -81,6 +81,9 @@ pub struct WorktreeState {
     pub into_changed: usize,
     /// A merge, rebase or cherry-pick under way where it goes back.
     pub busy: bool,
+    /// The files its HEAD has that a merge would write where it goes back over files git ignores
+    /// there, which git does without asking (a `.env` its branch tracks).
+    pub overwrites: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -553,6 +556,18 @@ impl Repo {
             .parse()
             .unwrap_or(0);
         let into_changed = lines(self.text(&["diff", "--name-only", "HEAD"])?);
+        let ignored = self.text(&["ls-files", "-o", "-i", "--exclude-standard", "--directory"])?;
+        let ignored: Vec<&str> = ignored.lines().collect();
+        let overwrites = self
+            .text(&["diff", "--name-only", "--diff-filter=A", "HEAD", head])?
+            .lines()
+            .filter(|file| {
+                ignored
+                    .iter()
+                    .any(|i| file == i || (i.ends_with('/') && file.starts_with(i)))
+            })
+            .map(str::to_string)
+            .collect();
         Ok(Some(WorktreeState {
             path,
             branch,
@@ -561,6 +576,7 @@ impl Repo {
             unmerged,
             into_changed,
             busy: self.operation().is_some(),
+            overwrites,
         }))
     }
 
