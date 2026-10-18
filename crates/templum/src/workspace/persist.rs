@@ -139,8 +139,9 @@ impl Workspace {
 
     /// Keeps the file of each workspace where a restored shell ended as it started
     /// (`Pane::died_starting`), as when one can't start at all: its block stays, and its saved
-    /// canvas is the next start's.
-    pub(super) fn keep_dead_starts(&mut self, window: &mut Window, cx: &mut App) {
+    /// canvas is the next start's. Before every save, also one before any frame (the window
+    /// minimized). True when it kept one more, to say so.
+    pub(super) fn keep_dead_starts(&mut self) -> bool {
         let mut died = false;
         for space in std::iter::once(&mut self.space).chain(&mut self.others) {
             if !space.frozen && space.terminals().any(|(_, pane)| pane.died_starting()) {
@@ -148,9 +149,7 @@ impl Workspace {
                 died = true;
             }
         }
-        if died {
-            say_unstarted(window, cx);
-        }
+        died
     }
 
     /// A saved terminal `saved`, just started as the terminal `id`: who opened it, and, when
@@ -337,6 +336,9 @@ impl Workspace {
         if self.snapshotting {
             return;
         }
+        if self.keep_dead_starts() {
+            say_unstarted(window, cx);
+        }
         self.snapshotting = true;
         self.generation += 1;
         let generation = self.generation;
@@ -480,6 +482,7 @@ impl Workspace {
         let Some(dir) = self.data_dir.clone().filter(|_| !self.first_run_welcome()) else {
             return;
         };
+        self.keep_dead_starts();
         self.generation += 1;
         let generation = self.generation;
         if !self.boards_frozen && self.boards_saved.as_ref() != Some(&self.boards) {
@@ -559,7 +562,7 @@ fn ended_starting(lived: Duration, status: &templum_terminal::Status) -> bool {
 }
 
 /// Terminals of a saved canvas couldn't start: their workspace's file is kept (`frozen`).
-fn say_unstarted(window: &mut Window, cx: &mut App) {
+pub(super) fn say_unstarted(window: &mut Window, cx: &mut App) {
     let message = "Some terminals couldn't start, so this session won't save their canvas: \
                    the saved one stays for the next start"
         .to_string();

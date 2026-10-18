@@ -297,7 +297,9 @@ impl Render for Workspace {
         };
         // The focused terminal's painting sets it again this frame, if its cursor blinks.
         self.cursor_blinks = false;
-        self.keep_dead_starts(window, cx);
+        if self.keep_dead_starts() {
+            super::persist::say_unstarted(window, cx);
+        }
         let exited: Vec<BlockId> = self
             .space
             .terminals()

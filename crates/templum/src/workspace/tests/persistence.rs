@@ -356,6 +356,49 @@ fn a_restored_shell_that_ends_at_once_leaves_the_saved_canvas_alone(cx: &mut Tes
     assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "kept");
 }
 
+/// A restored shell that ends as it starts keeps the saved canvas also before any frame (the
+/// window minimized at start): neither a snapshot nor quitting writes over it.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_restored_shell_that_ends_before_any_frame_leaves_the_saved_canvas_alone(
+    cx: &mut TestAppContext,
+) {
+    let data = tempfile::tempdir().unwrap();
+    let folder = data.path().display().to_string();
+    let text = format!(
+        r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+              {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{folder}",
+                "agent":"claude","session":"abc-1"}}]}}"#
+    );
+    write_canvas(data.path(), &text);
+    let ends = Some(("sh".to_string(), vec!["-c".into(), "exit 1".into()]));
+    let (handle, ws) = open_as(cx, ends, None, Some(data.path().to_path_buf()));
+    let id = first_id(&ws, cx);
+    // No frame drawn meanwhile.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().term.exited()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the shell never ended"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.snapshot(window, cx);
+            assert!(ws.space.frozen, "a snapshot keeps it");
+            // As if no snapshot had come first.
+            ws.space.frozen = false;
+            ws.save_canvas_now(cx);
+            assert!(ws.space.frozen, "quitting keeps it");
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let path = crate::session::path(data.path(), crate::session::DEFAULT_ID);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "kept");
+}
+
 /// A restored shell ended by the person, at once (Ctrl+D, or `exit` with no shell integration),
 /// did start: its block closes as any other's, and the workspace is saved as usual.
 #[cfg(unix)]
