@@ -154,7 +154,7 @@ fn gemini_row(ws: &Workspace, entity: &Entity<Workspace>, data: &Path) -> Row {
                         title,
                         text,
                         ok,
-                        move |_, cx| e.update(cx, |ws, cx| ws.setup_gemini(!installed, cx)),
+                        move |_, cx| e.update(cx, |ws, cx| ws.setup_gemini(!installed, None, cx)),
                         window,
                         cx,
                     );

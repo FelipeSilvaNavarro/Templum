@@ -143,6 +143,7 @@ impl Workspace {
                             &repo.root,
                             timeout,
                             &cancel,
+                            agent.env.as_slice(),
                         )
                     })();
                     // A commit made meanwhile, from the block or a terminal, took what the
@@ -394,6 +395,7 @@ impl Workspace {
                         &std::env::temp_dir(),
                         timeout,
                         &cancel,
+                        agent.env.as_slice(),
                     )
                 })
                 .await;

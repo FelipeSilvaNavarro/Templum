@@ -590,7 +590,10 @@ fn gemini_cli_links_the_extension_or_says_why_not() {
     use crate::workspace::usage::gemini_run;
     let data = tempfile::tempdir().unwrap();
     // `true` and `false` stand in for gemini: whatever they are given, they succeed or fail.
-    assert_eq!(gemini_run(Some("true".into()), data.path(), true), Ok(()));
+    assert_eq!(
+        gemini_run(Some("true".into()), data.path(), true, None),
+        Ok(())
+    );
     assert!(
         data.path()
             .join("gemini")
@@ -598,9 +601,9 @@ fn gemini_cli_links_the_extension_or_says_why_not() {
             .exists(),
         "the extension is written first"
     );
-    let why = gemini_run(Some("false".into()), data.path(), false).unwrap_err();
+    let why = gemini_run(Some("false".into()), data.path(), false, None).unwrap_err();
     assert!(why.starts_with("Gemini CLI failed"), "{why}");
-    let why = gemini_run(None, data.path(), true).unwrap_err();
+    let why = gemini_run(None, data.path(), true, None).unwrap_err();
     assert!(why.contains("didn't find Gemini CLI"), "{why}");
 }
 
@@ -713,4 +716,29 @@ fn blocks_templum_opens_get_their_agents_variable(cx: &mut TestAppContext) {
             .find(|(k, _)| k == "TEMPLUM_HOOKED");
         assert_eq!(hooked, Some(("TEMPLUM_HOOKED".to_string(), String::new())));
     });
+}
+
+/// A Gemini CLI account with its own extensions, without Templum's, is told; one sharing them
+/// with a folder that has it isn't.
+#[gpui_kit::test]
+fn a_gemini_account_without_the_extension_is_told(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    super::agents::with_agents(
+        &ws,
+        cx,
+        concat!(
+            "[agents.gemini2]\nof = \"gemini\"\n",
+            "[agents.gemini3]\nof = \"gemini\"\nshare = { extensions = \"gemini2\" }\n",
+        ),
+    );
+    super::agents::launch(handle, &ws, cx, "gemini2", folder.path());
+    ws.read_with(cx, |ws, _| assert!(ws.gemini_told.contains("gemini2")));
+    let extensions = data
+        .path()
+        .join("accounts/gemini2/.gemini/extensions/templum");
+    std::fs::create_dir_all(&extensions).unwrap();
+    super::agents::launch(handle, &ws, cx, "gemini3", folder.path());
+    ws.read_with(cx, |ws, _| assert!(!ws.gemini_told.contains("gemini3")));
 }

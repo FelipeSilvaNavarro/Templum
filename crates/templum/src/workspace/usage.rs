@@ -515,20 +515,25 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let gemini = entry.is_some_and(|e| e.builtin == Some(Agent::GEMINI));
-        if !gemini || self.gemini_told || !self.gives().is_some_and(|g| g.connected) {
+        let Some(entry) = entry.filter(|e| e.builtin == Some(Agent::GEMINI)) else {
+            return;
+        };
+        if self.gemini_told.contains(&entry.id) || !self.gives().is_some_and(|g| g.connected) {
             return;
         }
         let Some(data) = &self.data_dir else {
             return;
         };
-        let installed = templum_usage::Dirs::of(data)
-            .gemini
-            .is_some_and(|dir| templum_usage::gemini::installed(&dir));
-        if installed {
+        // An account's extensions are its folder's, or the folder it shares them with.
+        let dir = match &entry.account {
+            Some(a) => Some(a.kind.state_dir(&a.folder)),
+            None => templum_usage::Dirs::of(data).gemini,
+        };
+        if dir.is_some_and(|dir| templum_usage::gemini::installed(&dir)) {
             return;
         }
-        self.gemini_told = true;
+        self.gemini_told.insert(entry.id.clone());
+        let account = entry.account.is_some().then(|| entry.id.clone());
         let ws = cx.entity().downgrade();
         let notification = Notification::new()
             .with_type(NotificationType::Warning)
@@ -538,14 +543,15 @@ impl Workspace {
             )
             .delivery(self.delivery(window))
             .on_click(move |_, window, cx| {
-                let ws = ws.clone();
+                let (ws, account) = (ws.clone(), account.clone());
                 let (title, text, ok) = crate::settings::connections::INSTALL;
                 crate::prompt::confirm(
                     title,
                     text,
                     ok,
                     move |_, cx| {
-                        ws.update(cx, |ws, cx| ws.setup_gemini(true, cx)).ok();
+                        ws.update(cx, |ws, cx| ws.setup_gemini(true, account.as_deref(), cx))
+                            .ok();
                     },
                     window,
                     cx,
@@ -555,11 +561,21 @@ impl Workspace {
     }
 
     /// Settings ▸ Connections ▸ Gemini CLI: installs Templum's extension (`install`) or removes
-    /// it, in the background; Settings shows what went wrong, if anything did.
-    pub(crate) fn setup_gemini(&mut self, install: bool, cx: &mut Context<Self>) {
+    /// it, in the background, for Gemini CLI's own folder or the account `account`'s; Settings
+    /// shows what went wrong, if anything did.
+    pub(crate) fn setup_gemini(
+        &mut self,
+        install: bool,
+        account: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(data) = self.data_dir.clone() else {
             return;
         };
+        let env = account
+            .and_then(|id| self.agents.iter().find(|a| a.id == id))
+            .and_then(AgentEntry::var)
+            .map(|(name, folder)| (name.to_string(), folder.to_string_lossy().into_owned()));
         if matches!(self.gemini_job, Some(TryIt::Running(_))) {
             return;
         }
@@ -568,9 +584,9 @@ impl Workspace {
         cx.spawn(async move |ws, cx| {
             let done = cx
                 .background_executor()
-                .spawn(
-                    async move { gemini_run(templum_terminal::locate("gemini"), &data, install) },
-                )
+                .spawn(async move {
+                    gemini_run(templum_terminal::locate("gemini"), &data, install, env)
+                })
                 .await;
             ws.update(cx, |ws, cx| {
                 ws.gemini_job = done.err().map(TryIt::Failed);
@@ -583,12 +599,14 @@ impl Workspace {
 }
 
 /// Runs Gemini CLI (`gemini`, where Templum found it, if it did) to link Templum's extension,
-/// written first (`install`), or to uninstall it; what went wrong, whole, if anything did.
+/// written first (`install`), or to uninstall it, with `env` (an account's folder); what went
+/// wrong, whole, if anything did.
 // ponytail: no deadline; a Gemini CLI that hangs keeps the button spinning until Templum quits.
 pub(super) fn gemini_run(
     gemini: Option<PathBuf>,
     data: &Path,
     install: bool,
+    env: Option<(String, String)>,
 ) -> Result<(), String> {
     use templum_usage::gemini;
     let program = gemini.ok_or("Templum didn't find Gemini CLI (gemini) on this computer.")?;
@@ -602,7 +620,10 @@ pub(super) fn gemini_run(
         gemini::UNLINK.iter().map(OsString::from).collect()
     };
     let mut command = std::process::Command::new(program);
-    command.args(args).stdin(std::process::Stdio::null());
+    command
+        .args(args)
+        .envs(env)
+        .stdin(std::process::Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;

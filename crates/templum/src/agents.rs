@@ -548,6 +548,8 @@ pub(crate) struct CommitAgent {
     /// Its program is installed, and a model is known when its command needs one: Generate
     /// shows.
     pub ready: bool,
+    /// An account's variable, naming its folder: the message is written on its plan.
+    pub env: Option<(String, String)>,
 }
 
 impl CommitAgent {
@@ -594,6 +596,9 @@ pub(crate) fn commit_agent(
         models: agent.models.clone(),
         model,
         ready: false,
+        env: agent
+            .var()
+            .map(|(name, folder)| (name.to_string(), folder.to_string_lossy().into_owned())),
     };
     chosen.ready = installed(chosen.program())
         && !(chosen.model.is_empty() && chosen.command.contains("{model}"));
@@ -746,6 +751,31 @@ mod tests {
             homes[2].dir,
             Path::new("/data/accounts/claude2"),
             "an account's own state folder"
+        );
+    }
+
+    #[test]
+    fn generate_runs_on_the_accounts_folder() {
+        let list = agents("[agents]\nclaude2 = { of = \"claude\" }\n");
+        let chose = |agent: &str| CommitMessage {
+            agent: Some(agent.to_string()),
+            ..CommitMessage::default()
+        };
+        let account = commit_agent(&list, &chose("claude2"), |_| true).unwrap();
+        assert_eq!(
+            account.env,
+            Some((
+                "CLAUDE_CONFIG_DIR".to_string(),
+                "/data/accounts/claude2".to_string()
+            ))
+        );
+        assert_eq!(
+            account.command,
+            by(&list, "claude").generate.clone().unwrap()
+        );
+        assert_eq!(
+            commit_agent(&list, &chose("claude"), |_| true).unwrap().env,
+            None
         );
     }
 

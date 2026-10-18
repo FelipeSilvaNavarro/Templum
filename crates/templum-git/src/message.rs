@@ -205,8 +205,8 @@ impl Failure {
 
 /// Runs `command`, a generate command, through the user's login shell in `folder`: `{model}`
 /// is `model`; `request` is its standard input, or the file `{prompt_file}` names; the answer is
-/// its standard output, or what it wrote to the file `{output_file}` names. Stopped past
-/// `timeout`, or as soon as `cancel` is set.
+/// its standard output, or what it wrote to the file `{output_file}` names, with `env` set (an
+/// account's folder). Stopped past `timeout`, or as soon as `cancel` is set.
 pub fn run(
     command: &str,
     model: &str,
@@ -214,6 +214,7 @@ pub fn run(
     folder: &Path,
     timeout: Duration,
     cancel: &AtomicBool,
+    env: &[(String, String)],
 ) -> Result<String, Failure> {
     if cancel.load(Ordering::Relaxed) {
         return Err(Failure::Cancelled);
@@ -258,6 +259,7 @@ pub fn run(
             // Claude Code's own commit rules end every message with a Co-Authored-By trailer:
             // the user's instructions are the only rules (they ask for one there if they want it).
             .env("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS", "1")
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -565,6 +567,7 @@ mod tests {
             dir.path(),
             LONG,
             &never(),
+            &[],
         )
         .unwrap();
         assert_eq!(answer.trim(), "it's");
@@ -578,15 +581,28 @@ mod tests {
         } else {
             "echo $CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"
         };
-        let answer = run(line, "m", "r", dir.path(), LONG, &never()).unwrap();
+        let answer = run(line, "m", "r", dir.path(), LONG, &never(), &[]).unwrap();
         assert_eq!(answer.trim(), "1");
+    }
+
+    #[test]
+    fn an_accounts_variable_is_set_on_the_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = if cfg!(windows) {
+            "echo $env:CLAUDE_CONFIG_DIR"
+        } else {
+            "echo $CLAUDE_CONFIG_DIR"
+        };
+        let env = [("CLAUDE_CONFIG_DIR".to_string(), "/acc".to_string())];
+        let answer = run(line, "m", "r", dir.path(), LONG, &never(), &env).unwrap();
+        assert_eq!(answer.trim(), "/acc");
     }
 
     #[cfg(unix)]
     #[test]
     fn the_request_goes_to_the_standard_input_or_the_prompt_file() {
         let dir = tempfile::tempdir().unwrap();
-        let answer = run("cat", "m", "the request\n", dir.path(), LONG, &never()).unwrap();
+        let answer = run("cat", "m", "the request\n", dir.path(), LONG, &never(), &[]).unwrap();
         assert_eq!(answer, "the request\n");
         let answer = run(
             "cat {prompt_file}",
@@ -595,6 +611,7 @@ mod tests {
             dir.path(),
             LONG,
             &never(),
+            &[],
         );
         assert_eq!(answer.unwrap(), "from a file\n");
     }
@@ -609,6 +626,7 @@ mod tests {
             dir.path(),
             LONG,
             &never(),
+            &[],
         );
         assert_eq!(answer.unwrap().trim(), "Fix it");
         assert_eq!(
@@ -627,7 +645,7 @@ mod tests {
         } else {
             "echo oops >&2; exit 3"
         };
-        let err = run(line, "m", "r", dir.path(), LONG, &never()).unwrap_err();
+        let err = run(line, "m", "r", dir.path(), LONG, &never(), &[]).unwrap_err();
         let Failure::Failed { code, stderr } = &err else {
             panic!("{err:?}")
         };
@@ -637,7 +655,7 @@ mod tests {
             assert!(err.details().contains("oops"), "{}", err.details());
         }
         assert_eq!(err.to_string(), "The agent's command failed (exit code 3)");
-        let err = run("exit 0", "m", "r", dir.path(), LONG, &never()).unwrap_err();
+        let err = run("exit 0", "m", "r", dir.path(), LONG, &never(), &[]).unwrap_err();
         assert!(matches!(err, Failure::Empty { .. }), "{err:?}");
         assert_eq!(err.to_string(), "The agent answered nothing");
     }
@@ -647,7 +665,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let started = Instant::now();
         let short = Duration::from_millis(500);
-        let err = run("sleep 20", "m", "r", dir.path(), short, &never()).unwrap_err();
+        let err = run("sleep 20", "m", "r", dir.path(), short, &never(), &[]).unwrap_err();
         assert_eq!(err, Failure::TimedOut(short));
         assert!(
             started.elapsed() < Duration::from_secs(10),
@@ -659,7 +677,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(300));
             flag.store(true, Ordering::Relaxed);
         });
-        let err = run("sleep 20", "m", "r", dir.path(), LONG, &cancel).unwrap_err();
+        let err = run("sleep 20", "m", "r", dir.path(), LONG, &cancel, &[]).unwrap_err();
         assert_eq!(err, Failure::Cancelled);
         assert!(started.elapsed() < Duration::from_secs(20));
     }
@@ -713,7 +731,7 @@ mod tests {
     fn the_request_is_kept_where_only_this_user_can_read_it() {
         let dir = tempfile::tempdir().unwrap();
         let line = "ls -ld \"$(dirname {prompt_file})\"; dirname {prompt_file}";
-        let answer = run(line, "m", "r", dir.path(), LONG, &never()).unwrap();
+        let answer = run(line, "m", "r", dir.path(), LONG, &never(), &[]).unwrap();
         let (listing, folder) = answer.trim().split_once('\n').unwrap();
         assert!(listing.starts_with("drwx------"), "{listing}");
         assert!(!std::path::Path::new(folder).exists(), "{folder} removed");
@@ -726,7 +744,16 @@ mod tests {
         let started = Instant::now();
         let short = Duration::from_millis(500);
         // The shell ends at once; the sleep it left keeps its standard output open.
-        let err = run("sleep 20 & echo hi", "m", "r", dir.path(), short, &never()).unwrap_err();
+        let err = run(
+            "sleep 20 & echo hi",
+            "m",
+            "r",
+            dir.path(),
+            short,
+            &never(),
+            &[],
+        )
+        .unwrap_err();
         assert_eq!(err, Failure::TimedOut(short));
         assert!(
             started.elapsed() < Duration::from_secs(10),
