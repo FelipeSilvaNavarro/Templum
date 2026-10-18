@@ -223,6 +223,153 @@ impl Question {
     }
 }
 
+/// A row of the dialog the highlight can be on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Row {
+    /// Question `.0`'s option `.1`.
+    Option(usize, usize),
+    /// Question `.0`'s Other field (a question without options: its field).
+    Other(usize),
+    Note,
+    Send,
+}
+
+/// What the person picked in a dialog, and the row highlighted. The Other fields' and the note's
+/// texts live in the app's fields.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Form {
+    pub highlight: Option<Row>,
+    picked: Vec<Vec<bool>>,
+    other: Vec<bool>,
+}
+
+impl Form {
+    /// Nothing picked, no row highlighted.
+    pub fn new(ask: &Ask) -> Form {
+        Form {
+            highlight: None,
+            picked: ask
+                .questions
+                .iter()
+                .map(|q| vec![false; q.options.len()])
+                .collect(),
+            other: vec![false; ask.questions.len()],
+        }
+    }
+
+    /// The dialog's rows in order: for `questions`, each question's options then its Other, then
+    /// the note and Send; today's shape, its options alone, or its field and Send.
+    pub fn rows(ask: &Ask) -> Vec<Row> {
+        if !ask.json {
+            let options = ask.questions[0].options.len();
+            return if options == 0 {
+                vec![Row::Other(0), Row::Send]
+            } else {
+                (0..options).map(|i| Row::Option(0, i)).collect()
+            };
+        }
+        let mut rows: Vec<Row> = ask
+            .questions
+            .iter()
+            .enumerate()
+            .flat_map(|(q, question)| {
+                (0..question.options.len())
+                    .map(move |i| Row::Option(q, i))
+                    .chain([Row::Other(q)])
+            })
+            .collect();
+        rows.extend([Row::Note, Row::Send]);
+        rows
+    }
+
+    pub fn picked(&self, q: usize, i: usize) -> bool {
+        self.picked[q][i]
+    }
+
+    pub fn other_picked(&self, q: usize) -> bool {
+        self.other[q]
+    }
+
+    /// Picks option `i` of question `q`: alone in a single-select question (Other unpicked, its
+    /// text kept), checked or unchecked in a multiSelect.
+    pub fn pick(&mut self, ask: &Ask, q: usize, i: usize) {
+        if ask.questions[q].multi {
+            self.picked[q][i] = !self.picked[q][i];
+        } else {
+            self.picked[q].iter_mut().for_each(|p| *p = false);
+            self.picked[q][i] = true;
+            self.other[q] = false;
+        }
+    }
+
+    /// Question `q`'s Other field holds `text`: picked unless it is blank, which in a
+    /// single-select question unpicks its option.
+    pub fn typed(&mut self, ask: &Ask, q: usize, text: &str) {
+        self.other[q] = !text.trim().is_empty();
+        if self.other[q] && !ask.questions[q].multi {
+            self.picked[q].iter_mut().for_each(|p| *p = false);
+        }
+    }
+
+    /// Moves the highlight `by` rows, wrapping; from none, onto the first row going down, the
+    /// last going up.
+    pub fn step(&mut self, ask: &Ask, by: isize) {
+        let rows = Form::rows(ask);
+        let at = self
+            .highlight
+            .and_then(|row| rows.iter().position(|r| *r == row));
+        let next = match at {
+            Some(at) => (at as isize + by).rem_euclid(rows.len() as isize) as usize,
+            None if by > 0 => 0,
+            None => rows.len() - 1,
+        };
+        self.highlight = Some(rows[next]);
+    }
+
+    /// Each question's answer (the labels picked in option order, then Other's text trimmed), once
+    /// every question has one. `others[q]`: question `q`'s Other text.
+    pub fn answers(&self, ask: &Ask, others: &[String]) -> Option<Vec<Vec<String>>> {
+        (0..ask.questions.len())
+            .map(|q| Some(self.answer_of(ask, q, others)).filter(|a| !a.is_empty()))
+            .collect()
+    }
+
+    fn answer_of(&self, ask: &Ask, q: usize, others: &[String]) -> Vec<String> {
+        let mut answer: Vec<String> = ask.questions[q]
+            .options
+            .iter()
+            .zip(&self.picked[q])
+            .filter(|(_, picked)| **picked)
+            .map(|(choice, _)| choice.label.clone())
+            .collect();
+        let other = others.get(q).map_or("", |t| t.trim());
+        if self.other[q] && !other.is_empty() {
+            answer.push(other.to_string());
+        }
+        answer
+    }
+
+    /// Highlights the first row of the next question without an answer after the highlighted
+    /// one, wrapping; stays when every question has one.
+    pub fn next_unanswered(&mut self, ask: &Ask, others: &[String]) {
+        let n = ask.questions.len();
+        let from = match self.highlight {
+            Some(Row::Option(q, _) | Row::Other(q)) => q + 1,
+            _ => 0,
+        };
+        let next = (from..from + n)
+            .map(|q| q % n)
+            .find(|q| self.answer_of(ask, *q, others).is_empty());
+        if let Some(q) = next {
+            self.highlight = Some(if ask.questions[q].options.is_empty() {
+                Row::Other(q)
+            } else {
+                Row::Option(q, 0)
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,6 +550,142 @@ mod tests {
         assert_eq!(
             ask.notice("Yes"),
             format!("[answer to your question \"{}…\"] Yes", "x".repeat(59))
+        );
+    }
+
+    /// A `questions` call of `n` single-select questions ("Q0", …) of two options each.
+    fn singles(n: usize) -> Ask {
+        let questions: Vec<Value> = (0..n)
+            .map(|q| json!({ "question": format!("Q{q}"), "options": ["A", "B"] }))
+            .collect();
+        parse(&json!({ "questions": questions })).unwrap()
+    }
+
+    fn one(question: Value) -> Ask {
+        parse(&json!({ "questions": [question] })).unwrap()
+    }
+
+    #[test]
+    fn a_single_select_question_keeps_one_pick() {
+        let ask = one(json!({ "question": "Which?", "options": ["Postgres", "SQLite"] }));
+        let mut form = Form::new(&ask);
+        form.pick(&ask, 0, 0);
+        form.pick(&ask, 0, 1);
+        assert!(!form.picked(0, 0) && form.picked(0, 1));
+        form.typed(&ask, 0, "MySQL");
+        assert!(!form.picked(0, 1), "typing in Other unpicks the option");
+        assert!(form.other_picked(0));
+        form.pick(&ask, 0, 0);
+        assert!(!form.other_picked(0), "an option unpicks Other");
+        assert_eq!(
+            form.answers(&ask, &["MySQL".into()]),
+            Some(vec![vec!["Postgres".to_string()]])
+        );
+    }
+
+    #[test]
+    fn a_multi_select_question_toggles() {
+        let ask = one(
+            json!({ "question": "Which?", "options": ["Auth", "Search", "Export"],
+                              "multiSelect": true }),
+        );
+        let mut form = Form::new(&ask);
+        form.pick(&ask, 0, 0);
+        form.pick(&ask, 0, 2);
+        form.pick(&ask, 0, 0);
+        assert!(!form.picked(0, 0) && form.picked(0, 2));
+        form.typed(&ask, 0, "Docs");
+        assert!(form.picked(0, 2) && form.other_picked(0));
+        assert_eq!(
+            form.answers(&ask, &["Docs".into()]),
+            Some(vec![vec!["Export".to_string(), "Docs".to_string()]])
+        );
+        form.typed(&ask, 0, "");
+        assert!(!form.other_picked(0), "emptying the field unpicks Other");
+    }
+
+    #[test]
+    fn other_with_only_spaces_is_no_answer() {
+        let ask = one(json!({ "question": "Which?", "options": ["Postgres"] }));
+        let mut form = Form::new(&ask);
+        form.typed(&ask, 0, "   ");
+        assert!(!form.other_picked(0));
+        assert_eq!(form.answers(&ask, &["   ".into()]), None);
+        form.typed(&ask, 0, "  MySQL ");
+        assert_eq!(
+            form.answers(&ask, &["  MySQL ".into()]),
+            Some(vec![vec!["MySQL".to_string()]])
+        );
+    }
+
+    #[test]
+    fn a_question_without_options_is_its_field() {
+        let ask = one(json!({ "question": "When?" }));
+        assert_eq!(Form::rows(&ask), [Row::Other(0), Row::Note, Row::Send]);
+        let today = parse(&json!({ "question": "When?" })).unwrap();
+        assert_eq!(Form::rows(&today), [Row::Other(0), Row::Send]);
+        for ask in [ask, today] {
+            let mut form = Form::new(&ask);
+            assert_eq!(form.answers(&ask, &[String::new()]), None);
+            form.typed(&ask, 0, "Friday");
+            assert_eq!(
+                form.answers(&ask, &["Friday".into()]),
+                Some(vec![vec!["Friday".to_string()]])
+            );
+            form.typed(&ask, 0, " ");
+            assert_eq!(form.answers(&ask, &[" ".into()]), None);
+        }
+    }
+
+    #[test]
+    fn todays_shape_has_no_other_nor_note() {
+        let ask = parse(&json!({ "question": "Ship it?", "options": ["Yes", "No"] })).unwrap();
+        assert_eq!(Form::rows(&ask), [Row::Option(0, 0), Row::Option(0, 1)]);
+    }
+
+    #[test]
+    fn the_highlight_starts_on_none_then_steps_and_wraps() {
+        let ask = singles(2);
+        assert_eq!(Form::rows(&ask).len(), 2 + 1 + 2 + 1 + 2);
+        let mut form = Form::new(&ask);
+        assert_eq!(form.highlight, None);
+        form.step(&ask, 1);
+        assert_eq!(form.highlight, Some(Row::Option(0, 0)));
+        form.step(&ask, 1);
+        form.step(&ask, 1);
+        assert_eq!(form.highlight, Some(Row::Other(0)));
+        let mut back = Form::new(&ask);
+        back.step(&ask, -1);
+        assert_eq!(back.highlight, Some(Row::Send));
+        back.step(&ask, -1);
+        assert_eq!(back.highlight, Some(Row::Note));
+        back.step(&ask, 1);
+        back.step(&ask, 1);
+        assert_eq!(
+            back.highlight,
+            Some(Row::Option(0, 0)),
+            "from Send it wraps"
+        );
+    }
+
+    #[test]
+    fn next_unanswered_skips_answered_questions() {
+        let ask = singles(3);
+        let others = vec![String::new(); 3];
+        let mut form = Form::new(&ask);
+        form.pick(&ask, 1, 0);
+        form.highlight = Some(Row::Option(0, 1));
+        form.next_unanswered(&ask, &others);
+        assert_eq!(form.highlight, Some(Row::Option(2, 0)));
+        form.next_unanswered(&ask, &others);
+        assert_eq!(form.highlight, Some(Row::Option(0, 0)), "it wraps");
+        form.pick(&ask, 0, 0);
+        form.pick(&ask, 2, 1);
+        form.next_unanswered(&ask, &others);
+        assert_eq!(
+            form.highlight,
+            Some(Row::Option(0, 0)),
+            "all answered: it stays"
         );
     }
 }
