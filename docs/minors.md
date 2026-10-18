@@ -526,6 +526,18 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **A drag move over a board asks for a redraw GPUI already makes.** `on_edge` calls `window.refresh()`, and GPUI
   refreshes on every mouse move during a drag (`crates/templum/src/kanban.rs`); nobody sees a difference. Fix: delete
   the call.
+- [ ] **Two of the person's agents started through the same wrapper count as one program.** Left by the second review
+  of card 40 (`runs`, `crates/templum/src/workspace/content.rs:130`): `[agents]` entries such as `codex-a = "npx …"`
+  and `codex-b = "npx …"` (or `bunx`, `env`, `wsl`) share their first word, so a card "for any codex-a" can be
+  claimed by a block running the other; built-in agents all differ. Fix: for a known wrapper, compare the next word.
+- [ ] **A block under the sidebar can stop a board's auto-scroll.** Left by the second review of card 40
+  (`block_under`, `crates/templum/src/workspace/input.rs:117`): it ignores the sidebar and other overlays, so dragging
+  a card from a board at the left of the canvas over the sidebar, inside the board's one-zone margin, stops the scroll
+  when a hidden block lies under the sidebar. Fix: return None when the pointer is outside the canvas area.
+- [ ] **Ctrl+Z on a click in a card's dialog also undoes the typing after it.** Older than card 40, which adds more
+  such clicks (`edit_typed`, `crates/templum/src/kanban.rs:748`): type in the open card's title, click a priority, an
+  item or the assignee, type more, then Ctrl+Z: the later typing goes with the click. Fix: reset the `typed` flag when
+  a click in the dialog makes its own undo step.
 
 ## Connections
 
