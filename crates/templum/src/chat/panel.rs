@@ -23,12 +23,23 @@ const HEADER: f32 = 36.0;
 const RISE: f32 = 12.0;
 const APPEAR: Duration = Duration::from_millis(220);
 
-/// What an empty conversation offers; a click puts its text in the field.
+/// The person's message Catch me up sends.
+pub(crate) const CATCH_UP: &str = "Catch me up: what's going on?";
+
+/// What an empty conversation offers; a click puts its text in the field (Catch me up sends).
 pub(crate) const SUGGESTIONS: [&str; 3] = [
     "Set up a workspace for a project, with a kanban and an agent per card",
-    "Catch me up: what's going on?",
+    CATCH_UP,
     "Tidy this workspace into a grid",
 ];
+
+/// The run meter: its tasks under way and what the conversation spent ("3 working · $1.24");
+/// None before it ran anything.
+pub(crate) fn meter(ws: &Workspace) -> Option<String> {
+    let tasks = ws.agent_tasks();
+    let cost = ws.templum_agent.conversation.cost();
+    (tasks > 0 || cost > 0.0).then(|| format!("{tasks} working · ${cost:.2}"))
+}
 
 /// The chat, `canvas` the canvas's width and height, `footer` the pill; None while it is closed.
 pub(crate) fn render(
@@ -84,6 +95,43 @@ pub(crate) fn render(
                 .child(super::pill::engine(ws)),
         )
         .child(div().flex_1())
+        .when_some(meter(ws), |el, meter| {
+            el.child(
+                div()
+                    .id("agent-meter")
+                    .px(px(8.0))
+                    .py(px(2.0))
+                    .rounded(px(6.0))
+                    .text_size(px(12.0))
+                    .text_color(ui.title_dim)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(ui.hover))
+                    .on_click(cx.listener(|ws, _: &ClickEvent, _, cx| {
+                        ws.templum_agent.tasks_open = !ws.templum_agent.tasks_open;
+                        cx.notify();
+                    }))
+                    .child(meter)
+                    .test_support(),
+            )
+        })
+        .when(ws.agent_tasks() > 0, |el| {
+            el.child(
+                div()
+                    .id("agent-catch-up")
+                    .px(px(8.0))
+                    .py(px(2.0))
+                    .rounded(px(6.0))
+                    .text_size(px(12.0))
+                    .text_color(ui.title_dim)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(ui.hover))
+                    .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| {
+                        ws.send_to_agent(CATCH_UP.to_string(), window, cx)
+                    }))
+                    .child("Catch me up")
+                    .test_support(),
+            )
+        })
         .when(agent.conversation.working, |el| {
             el.child(
                 button("agent-stop", IconName::CircleStop)
@@ -101,6 +149,44 @@ pub(crate) fn render(
                 .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.leave_agent(window, cx)))
                 .test_support(),
         );
+    // The meter's list: a line per task under way; a click shows its block.
+    let tasks = agent.tasks_open.then(|| {
+        div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .p(px(8.0))
+            .border_b_1()
+            .border_color(ui.hairline)
+            .children(
+                ws.agent_task_blocks()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(n, (space, id))| {
+                        let title = ws
+                            .spaces()
+                            .find(|s| s.id == space)
+                            .and_then(|s| s.blocks.get(&id))
+                            .map(|b| crate::block::title(ws, b, cx).to_string())
+                            .unwrap_or_default();
+                        div()
+                            .id(ElementId::Name(format!("agent-task-{n}").into()))
+                            .px(px(6.0))
+                            .py(px(2.0))
+                            .rounded(px(6.0))
+                            .text_size(px(12.0))
+                            .text_color(ui.title)
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(ui.hover))
+                            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
+                                ws.reveal(&space, id, window, cx)
+                            }))
+                            .child(title)
+                            .test_support()
+                    }),
+            )
+    });
     // It follows its end while it is there; a row below the view says so.
     let scroll = &agent.scroll;
     let at_end = -scroll.offset().y >= scroll.max_offset().y - px(4.0);
@@ -204,6 +290,7 @@ pub(crate) fn render(
             cx.stop_propagation()
         })
         .child(header)
+        .children(tasks)
         .child(
             div()
                 .relative()

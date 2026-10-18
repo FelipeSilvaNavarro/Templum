@@ -1702,11 +1702,14 @@ fn suggestions_fill_the_field(cx: &mut TestAppContext) {
         for n in 0..3 {
             assert!(window.try_find(format!("agent-suggestion-{n}")).is_some());
         }
-        window.click("agent-suggestion-1", cx);
+        window.click("agent-suggestion-0", cx);
         window.render_frame(cx);
     })
     .unwrap();
-    assert_eq!(pill_text(&ws, cx), "Catch me up: what's going on?");
+    assert_eq!(
+        pill_text(&ws, cx),
+        "Set up a workspace for a project, with a kanban and an agent per card"
+    );
 }
 
 #[gpui_kit::test]
@@ -2208,5 +2211,77 @@ fn max_agents_from_the_settings(cx: &mut TestAppContext) {
     assert_eq!(
         control(handle, &ws, cx, "open_agent", open),
         (true, too_many(1))
+    );
+}
+
+#[gpui_kit::test]
+fn the_meter_counts_its_tasks_and_cost(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (first, _, _) = handed_by_the_templum_agent(handle, &ws, cx);
+    handed_by_the_templum_agent(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        let c = &mut ws.templum_agent.conversation;
+        c.person("go");
+        c.apply(::templum_agent::ChatEvent::TurnEnded {
+            ms: None,
+            cost_usd: Some(0.04),
+            error: None,
+        });
+        c.notice(
+            "[task t9 from Codex (b9): done in 31 s, $0.31] Its answer.",
+            ::templum_agent::NoticeLevel::Done,
+            None,
+        );
+        c.working = false;
+    });
+    assert_eq!(
+        ws.read_with(cx, |ws, _| crate::chat::panel::meter(ws)),
+        Some("2 working · $0.35".to_string())
+    );
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("agent-meter", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("agent-task-1").is_some());
+        window.click("agent-task-0", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.focused),
+        Some(first),
+        "a task shows its block"
+    );
+}
+
+#[gpui_kit::test]
+fn catch_me_up_sends_its_sentence(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = with_fake_engine(cx, dir.path(), &[TEXT_TURN, TEXT_TURN]);
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("agent-suggestion-1", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let rows = rows_until(&ws, cx, ended);
+    assert_eq!(
+        rows[0],
+        ::templum_agent::Row::Person {
+            text: "Catch me up: what's going on?".into(),
+            queued: false
+        }
+    );
+    handed_by_the_templum_agent(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("agent-catch-up", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let rows = ws.read_with(cx, |ws, _| ws.templum_agent.conversation.rows.clone());
+    assert!(
+        rows.iter().filter(|r| matches!(r, ::templum_agent::Row::Person { text, .. } if text == "Catch me up: what's going on?")).count() == 2,
+        "{rows:#?}"
     );
 }

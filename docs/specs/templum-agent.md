@@ -1,7 +1,8 @@
 # Templum Agent: the canvas you talk to
 
 - **Date:** 2026-10-18
-- **Status:** Batch 1 implemented (kanban card 43); batches 2 to 4 planned:
+- **Status:** Batches 1 and 2 implemented (kanban card 43), but batch 2's `stop_agent` and `wait_for` pattern,
+  which wait for card 35's on `development`; batches 3 and 4 planned:
   [docs/plans/2026-10-18-templum-agent.md](../plans/2026-10-18-templum-agent.md)
 - **Builds on:** [connections.md](connections.md) (the bus, the MCP server, tasks handed over, spawning, the
   balloon's rules), [agents.md](agents.md) (the agents and `[agents]`), [kanban.md](kanban.md),

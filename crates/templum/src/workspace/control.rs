@@ -762,16 +762,29 @@ impl Workspace {
         (Outcome::Now(done), target)
     }
 
-    /// Its tasks under way: the agents it handed a task (a prompt, `delegate`) that hasn't ended.
-    pub(crate) fn agent_tasks(&self) -> usize {
-        self.spaces()
-            .flat_map(|s| s.terminals())
-            .filter(|(_, pane)| {
-                pane.handed
-                    .as_ref()
-                    .is_some_and(|h| h.by == templum_agent::ASKER)
+    /// Its tasks under way: the blocks of the agents it handed a task (a prompt, `delegate`)
+    /// that hasn't ended, with their workspace.
+    pub(crate) fn agent_task_blocks(&self) -> Vec<(String, BlockId)> {
+        // In the canvas's order, back to front: the blocks' map has none, and the run meter's
+        // list mustn't reorder between frames.
+        self.order()
+            .into_iter()
+            .flat_map(|s| {
+                s.canvas
+                    .blocks()
+                    .iter()
+                    .filter(|b| {
+                        s.terminal(b.id)
+                            .and_then(|pane| pane.handed.as_ref())
+                            .is_some_and(|h| h.by == templum_agent::ASKER)
+                    })
+                    .map(|b| (s.id.clone(), b.id))
             })
-            .count()
+            .collect()
+    }
+
+    pub(crate) fn agent_tasks(&self) -> usize {
+        self.agent_task_blocks().len()
     }
 
     /// The refusal of a new task while `max_agents` of its tasks are under way.

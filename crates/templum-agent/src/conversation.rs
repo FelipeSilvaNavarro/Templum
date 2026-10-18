@@ -150,6 +150,17 @@ pub fn is_read(tool: &str) -> bool {
     )
 }
 
+/// What a notice's first line says its task spent: `…: done in 31 s, $0.31, transcript …]`.
+fn notice_cost(line: &str) -> Option<f64> {
+    let head = line.split(']').next()?;
+    let at = head.find(", $")? + 3;
+    let digits: String = head[at..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    digits.parse().ok()
+}
+
 impl Conversation {
     pub fn new(engine: &str) -> Self {
         Self {
@@ -351,12 +362,13 @@ impl Conversation {
         });
     }
 
-    /// What its turns cost, in US dollars.
+    /// What it spent, in US dollars: its turns' cost, and its tasks' as their notices say.
     pub fn cost(&self) -> f64 {
         self.rows
             .iter()
             .filter_map(|r| match r {
                 Row::End { cost_usd, .. } => *cost_usd,
+                Row::Notice { text, .. } => notice_cost(text),
                 _ => None,
             })
             .sum()
@@ -611,6 +623,28 @@ mod tests {
             }]
         );
         assert!(c.working);
+    }
+
+    #[test]
+    fn the_cost_is_its_turns_and_its_tasks() {
+        let mut c = Conversation::new("claude");
+        c.person("go");
+        c.apply(ChatEvent::TurnEnded {
+            ms: None,
+            cost_usd: Some(0.04),
+            error: None,
+        });
+        c.notice(
+            "[task t1 from Codex (b1): done in 31 s, $0.31, transcript /t.jsonl] Its answer.",
+            NoticeLevel::Done,
+            None,
+        );
+        c.notice(
+            "[task t2 from Gemini (b2): done in 3 s, 1200 tokens] Its answer.",
+            NoticeLevel::Done,
+            None,
+        );
+        assert!((c.cost() - 0.35).abs() < 1e-9, "{}", c.cost());
     }
 
     #[test]

@@ -64,6 +64,8 @@ pub(crate) struct TemplumAgent {
     /// The rows the chat drew last, and whether some came below the view since.
     pub seen: Cell<usize>,
     pub unseen: Cell<bool>,
+    /// The run meter's list of its tasks is open.
+    pub tasks_open: bool,
     /// The blocks it just touched, by id, and when: their border glows for GLOW.
     pub glow: HashMap<String, Instant>,
     /// The approval's keyboard, and its field for the person's words, made with the first one.
@@ -107,6 +109,7 @@ impl Default for TemplumAgent {
             scroll: ScrollHandle::new(),
             seen: Cell::new(0),
             unseen: Cell::new(false),
+            tasks_open: false,
             glow: HashMap::new(),
             approval_focus: None,
             words: None,
@@ -403,6 +406,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Catch me up is sent at once.
+        if text == panel::CATCH_UP {
+            return self.send_to_agent(text.to_string(), window, cx);
+        }
         let input = self.agent_input(window, cx);
         if !self.agent_has_keys(window, cx) {
             self.templum_agent.back = self.space.focused;
