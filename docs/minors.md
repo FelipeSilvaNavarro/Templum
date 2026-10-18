@@ -1073,3 +1073,26 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   (`crates/templum/src/workspace/questions.rs:204`) returns on `too_soon` before matching the key, so it blocks every
   dialog key, though the spec only blocks those that answer (options, Send, Dismiss). A person who presses Esc as the
   dialog appears keeps it and has to press again. Fix: check `too_soon` only for Space and Enter.
+
+## Keeping the canvas
+
+Left by the investigation of canvases that came back empty on Windows and macOS (kanban card 41); line numbers are
+those of `development` at de530a6.
+
+- [ ] **A shell the system kills takes its block, and the next save, with it.** The frame closes every terminal whose
+  shell ended (`crates/templum/src/workspace/render.rs:303`) without looking at how it ended: one killed while
+  Templum runs (out of memory, a session ending in an order Templum didn't set) closes like `exit`, the 5-second
+  snapshot writes the canvas without it, and its agent isn't resumed at the next start. Fix: keep the block when
+  alacritty's `ChildExit` says the shell was killed (Unix: SIGHUP, SIGTERM or SIGKILL; Windows: `0xC000013A`,
+  `STATUS_CONTROL_C_EXIT`), and save it from what it last knew (`pane.seen`), not from its dead pids.
+- [ ] **Cmd+W pressed again and again closes every terminal.** `close_terminal`
+  (`crates/templum/src/workspace/blocks.rs:824`) hands the keyboard to the block on top, as a terminal app's next tab,
+  so the macOS habit of Cmd+W to close the window (Ctrl+Shift+W, Windows Terminal's for a tab) closes the terminals
+  one by one, a busy one after "Close the terminal?", and the next start shows an empty canvas. Ctrl+Z brings them
+  back, but few know. Fix, a product choice: ask before closing the last terminal, or leave nothing focused after a
+  close by shortcut.
+- [ ] **Two Templums on one data folder keep the canvas the last one wrote.** The snapshot and the save on quit
+  compare with their own last write (`space.saved`, `crates/templum/src/workspace/persist.rs:495`), not the file: a
+  second Templum (a second launch from the Start menu, another copy of the app) writes over the first's canvas, and
+  the first never writes it back while its own canvas doesn't change, not even on quit. Whatever the second had last
+  (blocks closed there) opens next time. Fix: one Templum per data folder (a second one shows the first and exits).
