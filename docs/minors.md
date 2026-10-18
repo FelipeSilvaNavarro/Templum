@@ -1409,11 +1409,19 @@ Left by the data-safety fixes after that review; line numbers are those of `deve
   `delete_account` (`crates/templum/src/workspace/preferences.rs:154`) deletes a folder can make it again. Fix: apply
   the account's choices before either runs, and wait for (or stop) its probe in `delete_account`.
 - [ ] **A Templum started in an account's block refuses that account's chosen folder.** `check_account`
-  (`crates/templum/src/config.rs:607`) takes the inherited `CLAUDE_CONFIG_DIR` for Claude Code's own folder, so the
-  account whose folder it names is "claude's own folder" and config.toml is refused at that start; its plain blocks
-  inherit the variable too, so `claude` typed there runs on the account. Fix: drop an agent's variable from
-  Templum's environment at start when it names one of its accounts' folders, as `own_state_in` ignores it.
+  (its `own_folder` call, `crates/templum/src/config.rs:631`) takes the inherited `CLAUDE_CONFIG_DIR` for Claude
+  Code's own folder, so the account whose folder it names is "claude's own folder" and config.toml is refused at that
+  start, while from claude2's block a new account on `~/.claude` is accepted: the same login as `claude` (no files
+  move). Its plain blocks inherit the variable too, so `claude` typed there runs on the account. Fix: drop an agent's
+  variable from Templum's environment at start when it names one of its accounts' folders, as `own_state_in`
+  ignores it.
 - [ ] **A loop across items applies one account before the other.** `upstream` (`crates/templum/src/agents.rs:248`)
   orders whole accounts: with claude3's `skills` from claude4 and claude4's `settings` from claude3, one of them is
   applied before the other's item is linked, which then starts as a real empty folder. Fix: order by item, or
   refuse a loop across items in `check_account`.
+- [ ] **Deleting an account on a linked or chosen folder leaves Templum's links in it.** `delete`
+  (`crates/templum-usage/src/accounts/folder.rs:340`) removes only the folder's link when it, or Gemini CLI's
+  `.gemini` in it, is a link, and `delete_account` keeps a chosen folder whole, so the links Templum made there for
+  missing shared items stay: with claude5's folder a link to `~/.claude` sharing `agents` from claude3, `claude`
+  keeps claude3's agents after claude5 is deleted, and a link to nothing once claude3 is. Fix: pass `delete` the
+  account's sources and remove there only the links `at` says are Templum's.
