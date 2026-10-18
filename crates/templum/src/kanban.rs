@@ -186,14 +186,17 @@ fn step(
     })
 }
 
-/// A drag move over a container: its speed from where the pointer is.
+/// A drag move over a container of `block`: its speed from where the pointer is; none while
+/// another block is on top there (every container hears every drag).
 fn on_edge<T: 'static>(
     edge: &Entity<EdgeScroll>,
+    block: BlockId,
     vertical: bool,
     z: f32,
+    cx: &mut Context<Workspace>,
 ) -> impl Fn(&DragMoveEvent<T>, &mut Window, &mut App) + 'static {
     let edge = edge.clone();
-    move |e, window, cx| {
+    cx.listener(move |ws, e: &DragMoveEvent<T>, window, cx| {
         let (p, b) = (e.event.position, e.bounds);
         let pointer = Point::new(p.x.into(), p.y.into());
         let bounds = Rect {
@@ -202,12 +205,16 @@ fn on_edge<T: 'static>(
             w: b.size.width.into(),
             h: b.size.height.into(),
         };
-        let speed = drag_speed(pointer, bounds, vertical, z);
+        let speed = if ws.block_under(p).is_some_and(|top| top != block) {
+            0.0
+        } else {
+            drag_speed(pointer, bounds, vertical, z)
+        };
         edge.update(cx, |e, _| e.speed = speed);
         if speed != 0.0 {
             window.refresh();
         }
-    }
+    })
 }
 
 fn name(prefix: &str, n: usize, id: u64) -> ElementId {
@@ -394,8 +401,8 @@ fn board_view(
         .overflow_x_scroll()
         .track_scroll(&edge.read(cx).handle)
         // A card, or a column by its title, dragged near the left or right scrolls the columns.
-        .on_drag_move(on_edge::<CardDrag>(&edge, false, z))
-        .on_drag_move(on_edge::<ColumnDrag>(&edge, false, z))
+        .on_drag_move(on_edge::<CardDrag>(&edge, block, false, z, cx))
+        .on_drag_move(on_edge::<ColumnDrag>(&edge, block, false, z, cx))
         .children(columns)
         .child(add)
         .test_support()
@@ -526,7 +533,7 @@ fn column_view(
                 .overflow_y_scroll()
                 .track_scroll(&edge.read(cx).handle)
                 // A card dragged near the top or bottom of the list scrolls it.
-                .on_drag_move(on_edge::<CardDrag>(&edge, true, z))
+                .on_drag_move(on_edge::<CardDrag>(&edge, BlockId(n as u64), true, z, cx))
                 .child(
                     div()
                         .flex()

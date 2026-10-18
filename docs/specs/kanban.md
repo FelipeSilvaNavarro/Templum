@@ -300,7 +300,8 @@ While a card is dragged, a container under it scrolls when the pointer is near i
   nearer the edge, 900 a second at the edge or past it), measured in **world units**: zone and speed scale with the
   zoom like everything in the block, so the board moves the same at zoom 0.25 and 2 (only resizing changes a board's
   layout, never the zoom). The pointer may leave the container on that side, by up to
-  one zone: full speed; further off (another block, the canvas) it stops, since every container hears every drag.
+  one zone: full speed; further off it stops, and over another block at once, since every container hears every
+  drag.
 - It runs each frame while the pointer holds still (a frame asked for while it moves), from the time since the last
   frame, at most 0.05 s, so a stalled frame doesn't jump; it stops at the ends and when the drag ends or the pointer
   leaves the zone. Drop targets follow what scrolled under the pointer.
@@ -413,8 +414,8 @@ The person was away; each can be changed.
     of the kanban's Ctrl+Z, which keeps `next_id` (an undone item's id is never given out again).
 14. **Several lines pasted into "Add an item" are added at once,** an item each: the field is one line, so they
     can't wait there for Enter.
-15. **Past an edge, one zone at most:** a drag further off scrolls nothing, so a card dragged in one block never
-    scrolls another block's board.
+15. **Past an edge, one zone at most, and never over another block:** a drag further off, or over a block beside
+    (tiles 8 apart), scrolls nothing, so a card dragged in one block never scrolls another block's board.
 
 ### Considered and left out
 

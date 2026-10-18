@@ -114,6 +114,12 @@ impl Workspace {
         )
     }
 
+    /// The top block drawn under a window position.
+    pub(crate) fn block_under(&self, pos: PixelPoint<Pixels>) -> Option<BlockId> {
+        self.space
+            .block_at(self.space.canvas.camera.to_world(self.local(pos)))
+    }
+
     pub(crate) fn begin_move(&mut self, id: BlockId, pos: PixelPoint<Pixels>) {
         // A tile is dropped on another to trade places.
         if self.space.grid.is_some() {

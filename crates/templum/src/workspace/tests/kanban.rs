@@ -871,6 +871,54 @@ fn dragging_a_card_near_the_boards_right_edge_scrolls_its_columns(cx: &mut TestA
 }
 
 #[gpui_kit::test]
+fn a_card_dragged_in_one_block_never_scrolls_the_block_beside_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (b, board, card) = board_with_a_card(handle, &ws, cx);
+    // Block `a` shows the same wide board, 8 to the left of `b`.
+    let (a, last) = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let at = ws.space.canvas.get(b).unwrap().rect;
+                ws.add_kanban_at(Point::new(at.x - at.w - 8.0, at.y), window, cx);
+                let a = ws.space.canvas.top().unwrap();
+                ws.show_board(a, board, cx);
+                let last = (0..4)
+                    .map(|_| ws.edit_boards(|b| b.add_column(board)).unwrap())
+                    .last()
+                    .unwrap();
+                ws.space.appearing.clear();
+                (a, last)
+            })
+        })
+        .unwrap();
+    let el = |what: &str, block: BlockId, id: u64| {
+        gpui_kit::ElementId::Name(format!("{what}-{}-{id}", block.0).into())
+    };
+    let (from, to, left) = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let beside = window.find(("columns", a.0 as usize)).bounds();
+            let row = window.find(("columns", b.0 as usize)).bounds();
+            let to = point(row.left() + px(4.0), row.center().y);
+            assert!(to.x - beside.right() < px(40.0), "within a's edge zone");
+            (
+                window.find(el("card", b, card)).bounds().center(),
+                to,
+                window.find(el("column", a, last)).bounds().left(),
+            )
+        })
+        .unwrap();
+    hold_drag(handle, cx, from, to);
+    let now = cx
+        .update_window(handle, |_, window, _| {
+            window.find(el("column", a, last)).bounds().left()
+        })
+        .unwrap();
+    assert_eq!(now, left, "the block beside stayed put");
+    release(handle, cx, to);
+}
+
+#[gpui_kit::test]
 fn lines_pasted_into_add_an_item_make_an_item_each(cx: &mut TestAppContext) {
     no_motion(cx);
     let (handle, ws) = open(cx);
