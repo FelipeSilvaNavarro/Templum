@@ -6,10 +6,11 @@ use gpui_kit::{App, Context, Window};
 use serde_json::json;
 use templum_agent::Target;
 use templum_canvas::BlockId;
-use templum_mcp::control::{self, ControlCall, Parsed};
+use templum_mcp::control::{self, AddBlock, ControlCall, Kind, Parsed};
 use templum_mcp::{Call, Hello, Incoming, Replier, Reply, rpc, tools};
 
 use super::bus::{Outcome, agent_state, clean_title};
+use super::ops::{NewBlock, Place};
 use super::{Space, Workspace, show_notification};
 
 /// What a control client hears when its secret isn't the engine's.
@@ -102,6 +103,17 @@ impl Workspace {
                 Some((space, id)) => self.note_text((&space, id), &block, cx),
                 None => no_block(&block),
             },
+            ControlCall::CreateWorkspace {
+                name,
+                folder,
+                color,
+            } => return self.create_workspace(&name, folder, color, window, cx),
+            ControlCall::Show { workspace, block } => {
+                return self.show_for_agent(workspace, block, window, cx);
+            }
+            ControlCall::AddBlock(add) => return self.add_block_for_agent(add, window, cx),
+            ControlCall::Connect { a, b } => return self.wire_for_agent(&a, &b, true, cx),
+            ControlCall::Disconnect { a, b } => return self.wire_for_agent(&a, &b, false, cx),
             ControlCall::Block(Call::ListCards { board, card }) => {
                 let board = match card {
                     Some(card) => self
@@ -174,6 +186,283 @@ impl Workspace {
             _ => Reply::err("Templum doesn't serve that tool to the Templum Agent yet."),
         };
         (Outcome::Now(reply), None)
+    }
+
+    /// `create_workspace`: a new workspace, not shown, with its name, folder and color.
+    fn create_workspace(
+        &mut self,
+        name: &str,
+        folder: Option<String>,
+        color: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Outcome, Option<Target>) {
+        let refuse = |why: String| (Outcome::Now(Reply::err(why)), None);
+        let name = name.trim();
+        if name.is_empty() {
+            return refuse("A workspace needs a name.".into());
+        }
+        let folder = folder.map(|f| crate::launcher::expand(&f));
+        if let Some(folder) = folder.as_ref().filter(|f| !f.is_dir()) {
+            return refuse(format!("{} isn't a folder.", folder.display()));
+        }
+        if let Some(color) = color
+            .as_deref()
+            .filter(|c| !crate::space_dialog::COLORS.contains(c))
+        {
+            return refuse(format!(
+                "{color} isn't a workspace color: red, yellow, green, cyan, blue, magenta or accent."
+            ));
+        }
+        let id = self.make_space();
+        if let Some(space) = self.space_by_id_mut(&id) {
+            space.name = name.to_string();
+            space.folder = folder;
+            space.look.color = color;
+        }
+        self.write_index(window, cx);
+        self.templum_agent
+            .conversation
+            .own
+            .workspaces
+            .push(id.clone());
+        cx.notify();
+        let done = Reply::ok(format!("Created workspace {} ({id}).", clean_title(name)));
+        let target = Target {
+            workspace: Some(id),
+            block: None,
+        };
+        (Outcome::Now(done), Some(target))
+    }
+
+    /// `show`: the workspace shown, and the camera flown to the block.
+    fn show_for_agent(
+        &mut self,
+        workspace: Option<String>,
+        block: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Outcome, Option<Target>) {
+        let shown = match (workspace, block) {
+            (_, Some(uid)) => match self.find_block(&uid) {
+                Some((space, id)) => {
+                    self.reveal(&space, id, window, cx);
+                    Ok((space, Some(uid)))
+                }
+                None => Err(no_block(&uid)),
+            },
+            (Some(name), None) => self.space_of(&name, true).map(|space| {
+                if let Some(to) = self.order().iter().position(|s| s.id == space) {
+                    self.switch_to(to, window, cx);
+                }
+                (space, None)
+            }),
+            (None, None) => Err(Reply::err("show needs a workspace or a block.")),
+        };
+        match shown {
+            Ok((space, block)) => {
+                let name = self
+                    .space_named(&space)
+                    .map(|s| clean_title(&s.name))
+                    .unwrap_or_default();
+                let done = match &block {
+                    Some(uid) => format!("Showing {uid} in {name} ({space})."),
+                    None => format!("Showing {name} ({space})."),
+                };
+                let target = Target {
+                    workspace: Some(space),
+                    block,
+                };
+                (Outcome::Now(Reply::ok(done)), Some(target))
+            }
+            Err(refused) => (Outcome::Now(refused), None),
+        }
+    }
+
+    /// `add_block`: a block of a kind in a workspace, where it covers nothing.
+    fn add_block_for_agent(
+        &mut self,
+        add: AddBlock,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Outcome, Option<Target>) {
+        let refuse = |why: Reply| (Outcome::Now(why), None);
+        let space = match self.space_of(&add.workspace, false) {
+            Ok(space) => space,
+            Err(refused) => return refuse(refused),
+        };
+        let Some(home) = self.space_named(&space) else {
+            return refuse(Reply::err("That workspace is gone."));
+        };
+        let (name, home_folder) = (clean_title(&home.name), home.folder.clone());
+        let place = match &add.near {
+            Some(near) => match home.block_by_uid(near) {
+                Some(id) => Place::Near(id),
+                None => {
+                    return refuse(Reply::err(format!(
+                        "There's no block {near} in {name} ({space}): overview lists them."
+                    )));
+                }
+            },
+            None => Place::Free,
+        };
+        let folder = add
+            .folder
+            .as_deref()
+            .map(crate::launcher::expand)
+            .map(|f| match &home_folder {
+                Some(home) if f.is_relative() => home.join(f),
+                _ => f,
+            })
+            .or(home_folder);
+        if let Some(folder) = folder.as_ref().filter(|f| !f.is_dir()) {
+            return refuse(Reply::err(format!("{} isn't a folder.", folder.display())));
+        }
+        let mut made_board = None;
+        let (block, what) = match add.kind {
+            Kind::Terminal => {
+                // A workspace with no folder opens it at home, as a new terminal does.
+                let Some(folder) = folder.or_else(std::env::home_dir) else {
+                    return refuse(Reply::err(
+                        "Name a folder: Templum can't find your home folder.",
+                    ));
+                };
+                let block = NewBlock::Terminal {
+                    folder,
+                    command: None,
+                };
+                (block, "a terminal".to_string())
+            }
+            Kind::Note => (
+                NewBlock::Note {
+                    text: add.text.unwrap_or_default(),
+                },
+                "a note".to_string(),
+            ),
+            Kind::Checklist => {
+                let text = add.text.unwrap_or_default();
+                let (name, items) = text.split_once('\n').unwrap_or((&text, ""));
+                let block = NewBlock::Checklist {
+                    name: name.to_string(),
+                    items: crate::checklists::parse_items(items),
+                };
+                (block, "a checklist".to_string())
+            }
+            Kind::Kanban => {
+                let board = match add.board.as_deref().map(|b| self.board_named(b)) {
+                    Some(Ok(board)) => board,
+                    found => {
+                        // None given, or none by that name: a new one, with those columns.
+                        let name = match (found, &add.board) {
+                            (Some(Err(_)), Some(name)) if name.parse::<u64>().is_err() => {
+                                Some(name.trim().to_string())
+                            }
+                            (Some(Err(refused)), _) => return refuse(refused),
+                            _ => None,
+                        };
+                        let columns: Vec<String> = if add.columns.is_empty() {
+                            ["To do", "Doing", "Review", "Done"]
+                                .map(String::from)
+                                .into()
+                        } else {
+                            add.columns.clone()
+                        };
+                        let board =
+                            self.edit_boards(|b| b.add_board_with(name.as_deref(), &columns));
+                        made_board = Some(board);
+                        board
+                    }
+                };
+                let title = self
+                    .boards
+                    .board(board)
+                    .map(|b| clean_title(&b.name))
+                    .unwrap_or_default();
+                (
+                    NewBlock::Kanban { board },
+                    format!("a kanban showing board {title:?} ({board})"),
+                )
+            }
+            Kind::Editor => match folder {
+                Some(folder) => (NewBlock::Editor { folder }, "an editor".to_string()),
+                None => return refuse(Reply::err("An editor needs a folder.")),
+            },
+        };
+        let own = &mut self.templum_agent.conversation.own;
+        own.boards.extend(made_board);
+        let opened = self.add_block_in(
+            &space,
+            block,
+            place,
+            Some(templum_agent::ASKER.into()),
+            window,
+            cx,
+        );
+        let id = match opened {
+            Ok(id) => id,
+            Err(why) => return refuse(Reply::err(why)),
+        };
+        let Some(home) = self.space_named(&space) else {
+            return refuse(Reply::err("That workspace is gone."));
+        };
+        let uid = home.uids.get(&id).cloned().unwrap_or_default();
+        let (note, list) = (
+            home.blocks
+                .get(&id)
+                .and_then(|b| b.note()?.tab().map(|t| t.id)),
+            home.blocks.get(&id).and_then(|b| b.checklist()?.list),
+        );
+        let own = &mut self.templum_agent.conversation.own;
+        own.blocks.push(uid.clone());
+        own.notes.extend(note);
+        own.checklists.extend(list);
+        let done = Reply::ok(format!("Added {what} to {name} ({space}) as {uid}."));
+        let target = Target {
+            workspace: Some(space),
+            block: Some(uid),
+        };
+        (Outcome::Now(done), Some(target))
+    }
+
+    /// `connect` (`on`) and `disconnect`: a wire between two blocks of one workspace, a step of
+    /// that workspace's Ctrl+Z.
+    fn wire_for_agent(
+        &mut self,
+        a: &str,
+        b: &str,
+        on: bool,
+        cx: &mut Context<Self>,
+    ) -> (Outcome, Option<Target>) {
+        let (Some((space, x)), Some((other, y))) = (self.find_block(a), self.find_block(b)) else {
+            let missing = if self.find_block(a).is_none() { a } else { b };
+            return (Outcome::Now(no_block(missing)), None);
+        };
+        if space != other {
+            let why = format!("{a} and {b} aren't in one workspace.");
+            return (Outcome::Now(Reply::err(why)), None);
+        }
+        let changed = self
+            .in_space(&space, |ws| {
+                if on {
+                    ws.connect(x, y, cx)
+                } else {
+                    ws.disconnect(templum_canvas::Wire { a: x, b: y }, cx)
+                }
+            })
+            .unwrap_or(false);
+        let done = match (on, changed) {
+            (true, true) => Reply::ok(format!("Connected {a} and {b}.")),
+            (true, false) => Reply::err(format!(
+                "{a} and {b} can't be wired: they already are, or are one block."
+            )),
+            (false, true) => Reply::ok(format!("Disconnected {a} and {b}.")),
+            (false, false) => Reply::err(format!("{a} and {b} aren't wired.")),
+        };
+        let target = changed.then(|| Target {
+            workspace: Some(space),
+            block: Some(a.to_string()),
+        });
+        (Outcome::Now(done), target)
     }
 
     /// `f` on the block `uid` names, in any workspace; its answer, and the block for the row.

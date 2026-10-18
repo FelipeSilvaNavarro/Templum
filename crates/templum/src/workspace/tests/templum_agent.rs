@@ -339,3 +339,262 @@ fn notes_and_checklists_take_writes_without_a_wire(cx: &mut TestAppContext) {
         "{text}"
     );
 }
+
+/// What the person has: the shown workspace, its focused block and its camera.
+fn person_view(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> (String, Option<BlockId>, Camera) {
+    ws.read_with(cx, |ws, _| {
+        (
+            ws.space.id.clone(),
+            ws.space.focused,
+            ws.space.canvas.camera,
+        )
+    })
+}
+
+/// A tool's answer that names an id last, as `(w2).` or `as b7k2m`: that id.
+fn id_in(text: &str) -> String {
+    text.trim_end_matches('.')
+        .rsplit(['(', ' '])
+        .next()
+        .unwrap()
+        .trim_end_matches(')')
+        .to_string()
+}
+
+#[gpui_kit::test]
+fn create_workspace_makes_one_without_showing_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let before = person_view(&ws, cx);
+    let dir = tempfile::tempdir().unwrap();
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "create_workspace",
+        json!({"name": "API", "folder": dir.path(), "color": "blue"}),
+    );
+    assert_eq!(
+        (failed, text.as_str()),
+        (false, "Created workspace API (w2).")
+    );
+    assert_eq!(person_view(&ws, cx), before);
+    ws.read_with(cx, |ws, _| {
+        let space = ws.space_named("w2").unwrap();
+        assert_eq!(space.name, "API");
+        assert_eq!(space.folder.as_deref(), Some(dir.path()));
+        assert_eq!(space.look.color.as_deref(), Some("blue"));
+        assert_eq!(ws.templum_agent.conversation.own.workspaces, ["w2"]);
+    });
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "create_workspace",
+        json!({"name": "X", "color": "#ff0000"}),
+    );
+    assert!(failed && text.contains("red, yellow, green"), "{text}");
+}
+
+#[gpui_kit::test]
+fn add_block_opens_each_kind_where_it_covers_nothing(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let folder = tempfile::tempdir().unwrap();
+    control(
+        handle,
+        &ws,
+        cx,
+        "create_workspace",
+        json!({"name": "API", "folder": folder.path()}),
+    );
+    let before = person_view(&ws, cx);
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "add_block",
+        json!({"workspace": "api", "kind": "kanban", "board": "Sprint"}),
+    );
+    assert!(!failed, "{text}");
+    let kanban = id_in(&text);
+    let mut uids = vec![kanban.clone()];
+    for args in [
+        json!({"workspace": "w2", "kind": "note", "text": "plan", "near": kanban}),
+        json!({"workspace": "w2", "kind": "checklist", "text": "Steps\nOne\nTwo"}),
+        json!({"workspace": "w2", "kind": "terminal"}),
+        json!({"workspace": "w2", "kind": "editor", "folder": folder.path()}),
+    ] {
+        let (failed, text) = control(handle, &ws, cx, "add_block", args);
+        assert!(!failed, "{text}");
+        uids.push(id_in(&text));
+    }
+    assert_eq!(
+        person_view(&ws, cx),
+        before,
+        "the person's view and keyboard stay"
+    );
+    ws.read_with(cx, |ws, cx| {
+        let space = ws.space_named("w2").unwrap();
+        let rects: Vec<Rect> = uids
+            .iter()
+            .map(|uid| {
+                space
+                    .canvas
+                    .get(space.block_by_uid(uid).unwrap())
+                    .unwrap()
+                    .rect
+            })
+            .collect();
+        for (i, a) in rects.iter().enumerate() {
+            for b in &rects[i + 1..] {
+                assert!(!a.intersects(b), "{a:?} and {b:?} overlap");
+            }
+        }
+        // The note sits beside the kanban.
+        let (k, n) = (rects[0], rects[1]);
+        let gap = (n.x - (k.x + k.w)).abs().min((k.x - (n.x + n.w)).abs());
+        let gap = gap
+            .min((n.y - (k.y + k.h)).abs())
+            .min((k.y - (n.y + n.h)).abs());
+        assert!(gap <= templum_canvas::BESIDE + 1.0, "{k:?} {n:?}");
+        let board = space
+            .kanban(space.block_by_uid(&uids[0]).unwrap())
+            .unwrap()
+            .board
+            .unwrap();
+        let b = ws.boards.board(board).unwrap();
+        assert_eq!(b.name, "Sprint");
+        let columns: Vec<&str> = b.columns.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(columns, ["To do", "Doing", "Review", "Done"]);
+        let note = space.blocks[&space.block_by_uid(&uids[1]).unwrap()]
+            .note()
+            .unwrap();
+        assert_eq!(note.tab().unwrap().editor.read(cx).value().as_ref(), "plan");
+        let list = space.blocks[&space.block_by_uid(&uids[2]).unwrap()]
+            .checklist()
+            .unwrap();
+        let list = ws.checklists.get(list.list.unwrap()).unwrap();
+        assert_eq!(list.name_shown(), "Steps");
+        assert_eq!(list.items.len(), 2);
+        assert!(
+            space
+                .terminal(space.block_by_uid(&uids[3]).unwrap())
+                .is_some()
+        );
+        assert_eq!(ws.templum_agent.conversation.own.blocks, uids);
+    });
+    // A kanban on a board that is there shows it.
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "add_block",
+        json!({"workspace": "w2", "kind": "kanban", "board": "sprint"}),
+    );
+    assert!(!failed, "{text}");
+    assert_eq!(ws.read_with(cx, |ws, _| ws.boards.boards.len()), 1);
+}
+
+#[gpui_kit::test]
+fn a_stopped_workspace_is_refused(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    control(handle, &ws, cx, "create_workspace", json!({"name": "API"}));
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.stop_now("w2", window, cx))
+    })
+    .unwrap();
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "add_block",
+        json!({"workspace": "API", "kind": "note"}),
+    );
+    assert_eq!(
+        (failed, text.as_str()),
+        (true, "Workspace API is stopped: show it first (show).")
+    );
+    assert!(ws.read_with(cx, |ws, _| {
+        ws.space_named("w2").unwrap().canvas.blocks().is_empty()
+    }));
+    let (failed, text) = control(handle, &ws, cx, "show", json!({"workspace": "API"}));
+    assert!(!failed, "{text}");
+    let (failed, text) = control(
+        handle,
+        &ws,
+        cx,
+        "add_block",
+        json!({"workspace": "API", "kind": "note"}),
+    );
+    assert!(!failed, "{text}");
+}
+
+#[gpui_kit::test]
+fn show_switches_and_reveals(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    control(handle, &ws, cx, "create_workspace", json!({"name": "API"}));
+    let (_, text) = control(
+        handle,
+        &ws,
+        cx,
+        "add_block",
+        json!({"workspace": "w2", "kind": "note"}),
+    );
+    let note = id_in(&text);
+    let (failed, text) = control(handle, &ws, cx, "show", json!({"block": note}));
+    assert!(!failed, "{text}");
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.id, "w2");
+        assert_eq!(ws.space.focused, ws.space.block_by_uid(&note));
+    });
+    let (failed, text) = control(handle, &ws, cx, "show", json!({"workspace": "nowhere"}));
+    assert!(
+        failed && text.contains("There's no workspace nowhere"),
+        "{text}"
+    );
+}
+
+#[gpui_kit::test]
+fn connect_wires_two_blocks_and_ctrl_z_takes_it_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let (a, b, t) = ws.read_with(cx, |ws, _| {
+        (
+            ws.space.uids[&kanban].clone(),
+            ws.space.uids[&note].clone(),
+            ws.space.uids[&terminal].clone(),
+        )
+    });
+    let (failed, text) = control(handle, &ws, cx, "connect", json!({"a": a, "b": t}));
+    assert!(!failed, "{text}");
+    assert!(ws.read_with(cx, |ws, _| ws.space.wired(kanban, terminal)));
+    cx.update_window(handle, |_, window, cx| {
+        window.press(UNDO, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(
+        !ws.read_with(cx, |ws, _| ws.space.wired(kanban, terminal)),
+        "Ctrl+Z unwires"
+    );
+    control(handle, &ws, cx, "connect", json!({"a": b, "b": t}));
+    let (failed, text) = control(handle, &ws, cx, "disconnect", json!({"a": t, "b": b}));
+    assert!(!failed, "{text}");
+    assert!(!ws.read_with(cx, |ws, _| ws.space.wired(note, terminal)));
+    control(handle, &ws, cx, "create_workspace", json!({"name": "API"}));
+    let (_, text) = control(
+        handle,
+        &ws,
+        cx,
+        "add_block",
+        json!({"workspace": "w2", "kind": "note"}),
+    );
+    let far = id_in(&text);
+    let (failed, text) = control(handle, &ws, cx, "connect", json!({"a": a, "b": far}));
+    assert_eq!(
+        (failed, text),
+        (true, format!("{a} and {far} aren't in one workspace."))
+    );
+}

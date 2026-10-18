@@ -273,7 +273,7 @@ impl Workspace {
 
     /// Adds an empty workspace after the last one, hidden: its id. The index is the caller's
     /// to write.
-    fn make_space(&mut self) -> String {
+    pub(super) fn make_space(&mut self) -> String {
         let dir = self.data_dir.clone();
         let id = session::next_id(|id| {
             self.spaces().any(|s| s.id == id)

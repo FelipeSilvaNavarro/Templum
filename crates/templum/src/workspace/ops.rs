@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 
 use gpui_kit::component::input::EditorState;
 use gpui_kit::{App, Context, Entity, Task, Window};
-use templum_canvas::{BlockId, chrome};
+use templum_canvas::{BlockId, Rect, Size, chrome, free_spot};
 use templum_mcp::{Reply, tools};
 use templum_terminal::Pattern;
 
-use super::bus::flat;
+use super::bus::{clean_title, flat};
 use super::content::Caller;
-use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Workspace};
+use super::{Body, DEFAULT_COLS, DEFAULT_ROWS, Kanban, Space, Workspace, remember};
 use crate::board::{Assignee, Card, Comment, Priority};
 use crate::checklist::{self, Checklist};
 use crate::note::{self, Note};
@@ -32,12 +32,18 @@ pub(crate) enum NewBlock {
         folder: PathBuf,
         command: Option<String>,
     },
+    /// A kanban showing `board`.
+    Kanban { board: u64 },
+    /// An editor of `folder`.
+    Editor { folder: PathBuf },
 }
 
-/// Where [`Workspace::add_block_in`] opens a block.
+/// Where [`Workspace::add_block_in`] opens a block, never over another block.
 pub(crate) enum Place {
-    /// Beside the block, where it covers no block, toward the blocks wired to it.
+    /// Beside the block, toward the blocks wired to it.
     Near(BlockId),
+    /// At the middle of the workspace's view.
+    Free,
 }
 
 /// What [`Workspace::stop_in`] ended: the program in front of the shell (its agent's name, else its
@@ -92,9 +98,10 @@ impl Workspace {
         Some(self.pane(terminal)?.term.watch(pattern))
     }
 
-    /// Opens `new` in the workspace `space` at `place`, as one step of Ctrl+Z: the keyboard, the
-    /// selection and the camera stay where they were; in grid mode it takes half of the tile of
-    /// the block it is near. A terminal's `opened_by` is `opener`, which may stop and close it.
+    /// Opens `new` in the workspace `space`, shown or not, at `place`, as one step of Ctrl+Z: the
+    /// keyboard, the selection and the camera stay where they were; in grid mode a block near
+    /// another takes half of its tile. A terminal's `opened_by` is `opener` (the block id, or the
+    /// Templum Agent's word, of whoever opened it), which may stop and close it.
     pub(crate) fn add_block_in(
         &mut self,
         space: &str,
@@ -104,7 +111,6 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<BlockId, String> {
-        let Place::Near(near) = place;
         let added = self.in_space(space, |ws| {
             let size = match &new {
                 NewBlock::Note { .. } => note::SIZE,
@@ -112,15 +118,34 @@ impl Workspace {
                 NewBlock::Terminal { .. } => {
                     chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, ws.cell.size)
                 }
+                NewBlock::Kanban { .. } => crate::kanban::SIZE,
+                NewBlock::Editor { .. } => crate::editor::SIZE,
             };
-            let rect = ws.space.room_near(near, size)?;
+            let rect = match place {
+                Place::Near(id) => ws
+                    .space
+                    .room_near(id, size)
+                    .ok_or("That block isn't in this workspace.")?,
+                Place::Free => {
+                    let center = ws.space.camera().to_world(ws.center(window));
+                    let at = Rect::new(
+                        center.x - size.w / 2.0,
+                        center.y - size.h / 2.0,
+                        size.w,
+                        size.h,
+                    );
+                    ws.space.free_at(at)
+                }
+            };
             let kept = (
                 ws.space.focused,
                 ws.space.selected.clone(),
                 ws.space.selected_wire,
             );
             // In grid mode a new block takes half of the focused tile.
-            ws.space.focused = Some(near);
+            if let Place::Near(near) = place {
+                ws.space.focused = Some(near);
+            }
             ws.space.pristine = false;
             let now = notes::now();
             // Built here, not by the menus' constructors, which give the new block the keyboard.
@@ -155,14 +180,26 @@ impl Workspace {
                     }
                     id
                 }
+                NewBlock::Kanban { board } => {
+                    let kanban = Kanban {
+                        board: Some(board),
+                        picking: false,
+                    };
+                    Some(ws.add_block(rect, Body::Kanban(kanban)))
+                }
+                NewBlock::Editor { folder } => {
+                    let editor = crate::editor::Editor::new(folder.clone(), true, cx);
+                    remember(&mut ws.space.recent, folder);
+                    Some(ws.add_block(rect, Body::Editor(Box::new(editor))))
+                }
             };
             (ws.space.focused, ws.space.selected, ws.space.selected_wire) = kept;
-            id
+            id.ok_or("The shell couldn't start.")
         });
         cx.notify();
         added
-            .flatten()
-            .ok_or_else(|| "Couldn't open the block.".to_string())
+            .unwrap_or(Err("That workspace is gone."))
+            .map_err(str::to_string)
     }
 
     /// The note the note block `block` of the workspace `space` shows: its whole text becomes
@@ -340,6 +377,29 @@ impl Workspace {
                 Err(e) => Reply::err(format!("Couldn't merge {name}: {}", e.first_line())),
             }
         })
+    }
+
+    /// The workspace `name` names, by its id, then by its name in either case. A stopped one is
+    /// refused unless `stopped` takes it (`show` starts it).
+    pub(super) fn space_of(&self, name: &str, stopped: bool) -> Result<String, Reply> {
+        let lower = name.trim().to_lowercase();
+        let space = self
+            .spaces()
+            .find(|s| s.id == name.trim())
+            .or_else(|| {
+                self.spaces()
+                    .find(|s| s.name.trim().to_lowercase() == lower)
+            })
+            .ok_or_else(|| {
+                Reply::err(format!("There's no workspace {name}: overview lists them."))
+            })?;
+        if space.stopped && !stopped {
+            return Err(Reply::err(format!(
+                "Workspace {} is stopped: show it first (show).",
+                clean_title(&space.name)
+            )));
+        }
+        Ok(space.id.clone())
     }
 
     /// What a terminal shows, `read_terminal`'s answer: its last `lines`, or its last finished
@@ -862,6 +922,20 @@ impl Workspace {
         match ids.as_slice() {
             [one] => Reply::ok(format!("Added item {one}.")),
             many => Reply::ok(format!("Added items {}.", many.join(", "))),
+        }
+    }
+}
+
+impl Space {
+    /// `at` when it covers no block nor drawing, else the nearest spot beside it that doesn't.
+    fn free_at(&self, at: Rect) -> Rect {
+        let taken: Vec<Rect> = (self.canvas.blocks().iter().map(|b| self.home(b)))
+            .chain(self.ink.iter().map(templum_canvas::Drawing::bounds))
+            .collect();
+        if taken.iter().any(|t| t.intersects(&at)) {
+            free_spot(&taken, &[at], Size::new(at.w, at.h))
+        } else {
+            at
         }
     }
 }

@@ -216,7 +216,10 @@ pub fn list() -> Value {
                 "properties": {
                     "name": { "type": "string" },
                     "folder": { "type": "string", "description": "Its project's folder: its blocks start there." },
-                    "color": { "type": "string", "description": "Its color, as #rrggbb." },
+                    "color": {
+                        "type": "string",
+                        "enum": ["red", "yellow", "green", "cyan", "blue", "magenta", "accent"],
+                    },
                 },
                 "required": ["name"],
             },

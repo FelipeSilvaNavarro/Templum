@@ -264,16 +264,24 @@ impl Boards {
 
     /// "Board n" with To do, Doing and Done; returns its id.
     pub fn add_board(&mut self) -> u64 {
-        let name = (self.boards.len() + 1..)
-            .map(|n| format!("Board {n}"))
-            .find(|name| !self.boards.iter().any(|b| b.name == *name))
-            .expect("an unused name");
+        self.add_board_with(None, &["To do", "Doing", "Done"].map(String::from))
+    }
+
+    /// A board named `name` ("Board n" when None) with `columns`, in their order; returns its
+    /// id.
+    pub fn add_board_with(&mut self, name: Option<&str>, columns: &[String]) -> u64 {
+        let name = name.map(str::to_string).unwrap_or_else(|| {
+            (self.boards.len() + 1..)
+                .map(|n| format!("Board {n}"))
+                .find(|name| !self.boards.iter().any(|b| b.name == *name))
+                .expect("an unused name")
+        });
         let id = self.next();
-        let columns = ["To do", "Doing", "Done"]
-            .into_iter()
+        let columns = columns
+            .iter()
             .map(|title| Column {
                 id: self.next(),
-                title: title.into(),
+                title: title.clone(),
                 cards: Vec::new(),
             })
             .collect();
