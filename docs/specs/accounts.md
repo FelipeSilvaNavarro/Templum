@@ -245,7 +245,8 @@ the account still opens with what could be done.
   Templum refused that can have ("Claude Code 3's folder is in Claude Code 2's: change it first").
 - A block of it that comes back later (Ctrl+Z, a stopped workspace started, a restore) is a plain terminal: an
   `"account"` Templum doesn't know gives no variable and no account, as in an older Templum.
-- **Its folder in Templum's data folder** is deleted with it, its links removed first (what they point at stays): "Its
+- **Its folder in Templum's data folder** is deleted with it, its links removed first (what they point at stays; a
+  folder that is itself a link: only that link): "Its
   folder is deleted: its login and everything it doesn't share. What it shares stays where it is." For an agent whose
   login is in the system's keychain (Claude Code on macOS, Copilot CLI everywhere), the question adds "Its login stays
   in the system's keychain: run /logout in it first to remove it."

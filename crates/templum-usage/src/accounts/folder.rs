@@ -296,8 +296,11 @@ pub fn read(kind: &Kind, folder: &Path, sources: &[PathBuf]) -> Vec<(&'static st
 }
 
 /// Deletes an account's `folder`: its items' links first (only the links), then the folder,
-/// which never follows a link.
+/// which never follows a link. A folder that is a link itself: only that link.
 pub fn delete(kind: &Kind, folder: &Path) -> io::Result<()> {
+    if std::fs::symlink_metadata(folder)?.file_type().is_symlink() {
+        return unlink(folder, true);
+    }
     let state = kind.state_dir(folder);
     for path in kind.items.iter().flat_map(|i| i.paths) {
         let (name, dir) = name(path);
@@ -561,6 +564,24 @@ mod tests {
         delete(&FAKE, &t.acc).unwrap();
         assert!(!t.acc.exists());
         assert!(t.src.join("skills/keep").is_file());
+        t.logins_intact();
+    }
+
+    #[test]
+    fn delete_removes_a_folder_that_is_a_link_and_nothing_in_it() {
+        let t = Two::new();
+        let dotfiles = t.root.join("dotfiles/skills");
+        fs::create_dir_all(&dotfiles).unwrap();
+        std::os::unix::fs::symlink(&dotfiles, t.src.join("skills")).unwrap();
+        let linked = t.root.join("linked");
+        std::os::unix::fs::symlink(&t.src, &linked).unwrap();
+        delete(&FAKE, &linked).unwrap();
+        assert!(fs::symlink_metadata(&linked).is_err(), "the link goes");
+        assert_eq!(
+            fs::read_link(t.src.join("skills")).unwrap(),
+            dotfiles,
+            "the person's own link in its target stays"
+        );
         t.logins_intact();
     }
 
