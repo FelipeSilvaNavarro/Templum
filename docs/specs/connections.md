@@ -395,10 +395,11 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
   > see them: use them only when the person asks for a subagent. You are block b7k2m, "Claude Code · api", in
   > Templum workspace "Main". Connected to you: t4q8p (terminal "dev server"), k9x1d (kanban "Sprint"). In this
   > workspace, not connected (ask with connect): 4qm2a (note "Ideas"). Name blocks by these ids. You may only read or write your own block and those connected to you; connect asks the person
-  > for another. list_blocks gives the current list. When a connected kanban has your task, move its card to Doing
-  > when you start; when you are done, comment on it what you did and what the next agent needs to know
-  > (comment_card), then move it to Review (Done when the board has no Review); write what the next agent needs to
-  > know in the connected note too, and check the items of a connected checklist as you finish them.
+  > for another. list_blocks gives the current list. When a connected kanban has your task, claim its card
+  > (claim_card: a card for another agent isn't yours) and move it to Doing when you start; check its checklist's
+  > items as you finish them (edit_card); when you are done, comment on it what you did and what the next agent
+  > needs to know (comment_card), then move it to Review (Done when the board has no Review); write what the next
+  > agent needs to know in the connected note too, and check the items of a connected checklist as you finish them.
 
   The first sentence comes first because Claude Code shows its own Agent tool whole and Templum's tools only by name
   until it searches them, so "start an agent" would otherwise open a subagent the person never sees; Codex weighs
@@ -440,11 +441,12 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 | `reply` | `block`, `text` | Answers the task the block handed the caller; with none waiting, types `[reply from …]` (from batch 8 naming the task) and the text into it | wired | 3, 8 |
 | `wait_for_idle` | `block`, `timeout` (300 s) | Waits until the agent finishes its turn, and for the answer to a task the caller handed it, past `delegate`'s timeout too; its last answer | wired | 3 |
 | `ask_user` | `questions` (each `question`, `header`, `options` with `label`, `description`, `preview`, `multiSelect`), or `question` and `options` (strings); `timeout` (none) | Questions in a balloon ([Requests](#requests-from-agents), [ask-user.md](ask-user.md)); the answers as JSON, or with `question` the answer as text | — | 3 |
-| `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, assignee and comment count; with `card`, that card whole: its description and comments | wired kanban | 4 |
-| `create_card` | `board`, `column`, `title`, `description` | A new card at the column's end (the board's first column when left out); its id | wired kanban | 4 |
+| `list_cards` | `board`, `card` | The wired kanban block's board: columns, and each card's id, title, labels, priority, assignee (`(you)` on the caller's), checklist progress and comment count; with `card`, that card whole: its description, checklist items and comments ([Cards for an agent](#cards-for-an-agent)) | wired kanban | 4, card 40 |
+| `create_card` | `board`, `column`, `title`, `description`, `priority`, `for`, `checklist` | A new card at the column's end (the board's first column when left out); its id | wired kanban | 4, card 40 |
+| `edit_card` | `card`, `priority`, `for`, `add_items`, `check`, `uncheck` | Sets the card's priority and who it is for, adds checklist items, checks and unchecks them: one Ctrl+Z step ([Cards for an agent](#cards-for-an-agent)) | wired kanban | card 40 |
 | `move_card` | `card`, `column` | Moves a card to the end of a column; into the board's last column or one titled Review (either case), unless the card's newest comment is the caller's, its answer asks for one: "Say on it what you did and what the next one needs to know: comment_card." | wired kanban | 4 |
 | `comment_card` | `card`, `text` | Adds a comment signed with the caller's id: what it did on the card, and what the next one needs to know, when it finishes it | wired kanban | 4 |
-| `claim_card` | `card` | Makes the caller the card's assignee; refused when another block holds it | wired kanban | 4 |
+| `claim_card` | `card` | Makes the caller the card's assignee; refused when another block holds it, or (card 40) when the card is for another agent ([Cards for an agent](#cards-for-an-agent)) | wired kanban | 4, card 40 |
 | `read_note` | `block` | The text of the note the note block shows | wired note | 4 |
 | `append_note` | `block`, `text` | Adds the text at the note's end, after a blank line; the note shows it at once and Ctrl+Z takes it back | wired note | 4 |
 | `read_checklist` | `block` | The checklist the block shows: its name and progress, then one line per item: its id, `[x]` or `[ ]`, its text ([checklist.md](checklist.md#agents)) | wired checklist | — |
@@ -471,6 +473,55 @@ https://modelcontextprotocol.io/specification/2025-11-25)); tools only, no resou
 - A `timeout` is whole seconds from 1 to 3600; a longer one is cut to 3600. The agents Templum opens wait seven days
   for a tool call (Codex's `tool_timeout_sec=604800`, the `timeout` of Claude Code's `mcp.json` and of Gemini CLI's
   extension), so a question asked without a `timeout` can wait for its person.
+
+### Cards for an agent
+
+*Planned (kanban card 40, [kanban.md](kanban.md#version-2-kanban-card-40)):
+[docs/plans/2026-10-18-kanban-v2.md](../plans/2026-10-18-kanban-v2.md).*
+
+A card's assignee is none (anyone), **any session of an agent** (by the agent's id: `claude`, `codex`, an `[agents]`
+key) or **one block** (one agent's session, kept across restarts: [kanban.md](kanban.md#who-a-card-is-for)). A block
+runs the agent Templum sees in it (`Pane::seen.agent`), else the one Templum started there (`Pane::flags_for`); it
+runs "any X" when its agent is X or runs X's program (the first word of their commands).
+
+- **`for`** (in `create_card` and `edit_card`) names who: `anyone`; an agent's id or title in either case (`codex`,
+  `Claude Code`); or a terminal block's id, in any workspace. Agents are matched first. Anything else is refused:
+  `There's no agent or terminal block {for}. Agents: claude, codex, …; or a terminal's block id, or anyone.`
+- **`priority`** is `low`, `medium`, `high` or `none`, in either case; another word is refused by the server:
+  `"priority" is low, medium, high or none`.
+- **`list_cards`** lines, in this order after the id and title: the labels, `priority high`, the assignee
+  (`assignee b7k2m "Claude Code · api"` for a block, `for any codex` for an agent; ` (you)` after it when it is the
+  caller's block, or the caller's agent), `checklist 2/5`, the comments. With `card`, after the description:
+  `checklist:` then one line per item, `  41 [ ] Build` (its id, `[x]` or `[ ]`, its text), as `read_checklist` does.
+- **`create_card`** also takes `priority`, `for` and `checklist` (text, an item per line, read as `add_items` reads
+  it). Its answer is unchanged: `Created card 40.`
+- **`edit_card`** takes `card` and at least one of `priority`, `for`, `add_items` (text, as `add_items`), `check` and
+  `uncheck` (an item's id, or a list of them). The server refuses a call with none: `edit_card needs something to
+  change: priority, for, add_items, check or uncheck`. An item id the card doesn't have refuses the whole call before
+  anything changes: `Card 40 has no item 99: list_cards with card shows its items.` What it does is one Ctrl+Z step,
+  and its answer says it: `Card 40: priority high; for any codex; added items 43, 44; checked 41; unchecked 42.`
+  Its `for` follows `claim_card`, and a refusal changes nothing: on a card another block holds it is refused with
+  `claim_card`'s "taken by" sentence; when it names the caller (its block id, or an agent the caller runs) on a card
+  for an agent the caller doesn't run, with `claim_card`'s "is for any …" sentences. Its `priority`, `add_items`,
+  `check` and `uncheck` work on any card of a wired kanban.
+- **`claim_card`:**
+
+  | The card's assignee | The caller | Answer |
+  |---|---|---|
+  | none | any block | `Card 40 is yours.` (the assignee becomes its block) |
+  | its block | — | `Card 40 is already yours.` |
+  | another block | — | refused, as before: `Card 40 is taken by b7k2m "Codex · api". Ask the person to free it (the ✕ by its assignee in the open card), or take another card.` |
+  | any `codex` | runs Codex, or an agent with Codex's program | `Card 40 is yours.` (the assignee becomes its block) |
+  | any `codex` | runs another agent | refused: `Card 40 is for any Codex, and you are Claude Code: take a card for you or for anyone.` |
+  | any `codex` | runs none Templum can name yet | refused: `Card 40 is for any Codex, and Templum can't tell yet which agent you are: try again in a few seconds.` |
+
+- **`move_card` and `comment_card`** stay open to every wired agent. `move_card`'s answer ends with
+  ` It is for any codex, not you.` (or `b7k2m "Codex · api"`) when the card's assignee isn't the caller's.
+- **The instructions** ask an agent to claim its card when it starts and to check its checklist's items as it
+  finishes them ([The MCP server](#the-mcp-server)).
+- **The command line:** `templum kanban add` takes `--priority`, `--for` and `--checklist`; `templum kanban edit <card>`
+  takes `--priority`, `--for`, `--add <text>`, and `--check <item>` and `--uncheck <item>`, each as many times as
+  wanted.
 
 ## Hooks and agent state
 
@@ -1062,7 +1113,7 @@ Templum or with Templum gone, exit code 2 as [above](#the-mcp-server).
 | `templum reply <block> <text>` | `reply` | 3 |
 | `templum wait <block> [--for <event>] [--timeout <s>]` | `wait_for_idle`, `wait_for` | 3, 5 |
 | `templum ask <question> [--option <o>]…` | `ask_user` | 3 |
-| `templum kanban list [<board>] [--card <card>] \| add <title> [--column <c>] [--description <d>] [--board <b>] \| move <card> <column> \| comment <card> <text> \| claim <card>` | the kanban tools | 4 |
+| `templum kanban list [<board>] [--card <card>] \| add <title> [--column <c>] [--description <d>] [--board <b>] [--priority <p>] [--for <who>] [--checklist <text>] \| edit <card> [--priority <p>] [--for <who>] [--add <text>] [--check <item>]… [--uncheck <item>]… \| move <card> <column> \| comment <card> <text> \| claim <card>` | the kanban tools (`edit` and the new options: card 40) | 4, card 40 |
 | `templum note read\|append <block> [text]` | `read_note`, `append_note` | 4 |
 | `templum checklist read <block> \| add <block> <text> \| check\|uncheck <block> <item>` | `read_checklist`, `add_items`, `check_item` | — |
 | `templum open <path>[:<line>]` | `open_file` | 4 |
@@ -1114,7 +1165,8 @@ a Copy button, and Gemini CLI's Install and Remove.
   `{ "by": "<block id or 'you'>", "text": "…", "at": <unix seconds> }`. An older file loads with none; an older
   Templum ignores them. The card shows the assignee's block title and the comment count; its dialog lists the
   comments, adds the person's, and frees the assignee (✕), each a step of the kanban's Ctrl+Z; `claim_card` refuses a
-  card another block holds until the person frees it.
+  card another block holds until the person frees it. Card 40 adds `priority`, `checklist` and an agent assignee
+  (`"agent:codex"`) to a card ([kanban.md](kanban.md#files-1)).
 - **Terminal items** (batch 6) also keep `opened_by` (the block id of the agent that spawned it), `model` and
   `effort` (what `spawn_agent` was given). A pasted block has none; an older file loads with none; an older Templum
   ignores them.
