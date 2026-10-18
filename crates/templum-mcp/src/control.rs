@@ -125,7 +125,7 @@ pub enum Level {
 
 /// What the block server's descriptions say of the caller, said for the Templum Agent: it acts
 /// on any block and any board.
-const SHARED_WORDS: [(&str, &str); 16] = [
+const SHARED_WORDS: [(&str, &str); 18] = [
     (" connected to you", ""),
     (" shown by a kanban", ""),
     ("; may be left out when one kanban shows a board", ""),
@@ -157,6 +157,16 @@ const SHARED_WORDS: [(&str, &str); 16] = [
     (
         "Only the person stops a block you didn't open.",
         "The person allows it first, unless you opened the block.",
+    ),
+    (
+        "waits for its person or is on another agent's task.",
+        "waits for its person or is on another agent's task. The person allows it first, unless \
+         you opened the block.",
+    ),
+    (
+        "Refused while it is idle or on another agent's task.",
+        "Refused while it is idle or on another agent's task. The person allows it first, unless \
+         you opened the block.",
     ),
     // Its tasks' ends and watches come back into its chat; it has no reply of its own.
     (
@@ -686,19 +696,22 @@ mod tests {
         ] {
             assert!(!text.contains(block_words), "{block_words}: {text}");
         }
-        let stop = &list()["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|t| t["name"] == "stop_agent")
-            .unwrap()
-            .clone();
-        let words = stop["description"].as_str().unwrap();
-        assert!(
-            words.contains("allows it first") && !words.contains("you opened ("),
-            "{words}"
-        );
-        assert!(stop["inputSchema"]["properties"]["reason"].is_object());
+        for asks in ["stop_agent", "delegate", "interrupt"] {
+            let tool = &list()["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|t| t["name"] == asks)
+                .unwrap()
+                .clone();
+            let words = tool["description"].as_str().unwrap();
+            assert!(
+                words.contains("The person allows it first, unless you opened the block.")
+                    && !words.contains("you opened ("),
+                "{words}"
+            );
+            assert!(tool["inputSchema"]["properties"]["reason"].is_object());
+        }
     }
 
     #[test]
