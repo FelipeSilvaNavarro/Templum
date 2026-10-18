@@ -417,7 +417,11 @@ mod tests {
                     format!("HOME={}", home.display()),
                     format!("XDG_CONFIG_HOME={}", home.join(".config").display()),
                 ];
-                for key in ["TEMPLUM_CLAUDE_ARGS", "TEMPLUM_CODEX_ARGS"] {
+                for key in [
+                    "TEMPLUM_CLAUDE_ARGS",
+                    "TEMPLUM_CODEX_ARGS",
+                    "TEMPLUM_COPILOT_ARGS",
+                ] {
                     if !env.iter().any(|(k, _)| *k == key) {
                         command.push(format!("{key}="));
                     }
@@ -444,14 +448,14 @@ mod tests {
                 Some(term)
             }
 
-            /// A `claude` and a `codex` in `<home>/bin` that write their arguments, one per
+            /// A `claude`, a `codex` and a `copilot` in `<home>/bin` that write their arguments, one per
             /// line, to `<home>/<name>.args` (at once: moved there), and exit 3 (`$FAKE_EXIT` when
             /// set). What is piped into them, not typed, goes to `<home>/<name>.in` first. Returns
             /// a PATH with them first.
             fn fake_agents(&self) -> String {
                 use std::os::unix::fs::PermissionsExt as _;
                 let bin = self.dir.path().join("bin");
-                for name in ["claude", "codex"] {
+                for name in ["claude", "codex", "copilot"] {
                     let args = self.dir.path().join(format!("{name}.args"));
                     self.write(
                         &format!("bin/{name}"),
@@ -478,13 +482,18 @@ mod tests {
         /// What Templum gives a terminal for a `codex` typed in it (two of its flags).
         const CODEX_WORDS: &str = "-c\nmcp_servers.templum.command=\"/opt/templum\"\n-c\nhooks.Stop=[{hooks=[{type=\"command\",command=\"templum hook codex\",timeout=5}]}]";
 
-        /// The environment of a shell whose `claude` and `codex` are `fake_agents`' on `path`,
-        /// with Templum's words for both.
-        fn with_agents(path: &str) -> [(&str, &str); 3] {
+        /// What Templum gives a terminal for a `copilot` typed in it; the last word names
+        /// Templum's folder.
+        const COPILOT_WORDS: &str = "--allow-all-mcp-server-instructions\n--additional-mcp-config=@/tmp/Templum Data/copilot/mcp.json\n--plugin-dir=/tmp/Templum Data/copilot/plugin";
+
+        /// The environment of a shell whose agents are `fake_agents`' on `path`, with Templum's
+        /// words for each.
+        fn with_agents(path: &str) -> [(&str, &str); 4] {
             [
                 ("PATH", path),
                 ("TEMPLUM_CLAUDE_ARGS", CLAUDE_WORDS),
                 ("TEMPLUM_CODEX_ARGS", CODEX_WORDS),
+                ("TEMPLUM_COPILOT_ARGS", COPILOT_WORDS),
             ]
         }
 
@@ -564,6 +573,55 @@ mod tests {
             }
             term.write(format!("{unset}\rclaude hi\r").into_bytes());
             wait_args(term, home, "claude", &["hi"]);
+        }
+
+        /// A `copilot` typed at the prompt of a shell started `with_agents`, after `typed_agents`:
+        /// Templum's words first, none when the person's words hold the last of them or start
+        /// with a subcommand (AWS's `copilot`), none once `unset` empties the variable
+        /// (docs/specs/connections.md, Typed by hand: the shells). With `status`, its exit code is
+        /// the command's.
+        fn typed_copilot(term: &Terminal, home: &Home, unset: &str, status: bool) {
+            let words: Vec<&str> = COPILOT_WORDS.lines().collect();
+            if status {
+                // The last command (an agent's) exited 3 too: one that exits 0 first.
+                let finished = term.status().finished;
+                term.write(&b"echo ready\r"[..]);
+                wait(term, "echo to end", |t| {
+                    t.status().finished > finished
+                        && t.status().last.map(|o| o.code) == Some(Some(0))
+                });
+            }
+            term.write(&b"copilot\r"[..]);
+            wait_args(term, home, "copilot", &words);
+            if status {
+                wait(term, "copilot's exit code", |t| {
+                    t.status().last.map(|o| o.code) == Some(Some(3))
+                });
+            }
+            let mine = words[2];
+            let lines = [
+                (
+                    "copilot -p 'hi there'".to_string(),
+                    [&words[..], &["-p", "hi there"]].concat(),
+                ),
+                (
+                    "copilot --plugin-dir=/mine".to_string(),
+                    [&words[..], &["--plugin-dir=/mine"]].concat(),
+                ),
+                (
+                    "copilot --model gpt-5.4".to_string(),
+                    [&words[..], &["--model", "gpt-5.4"]].concat(),
+                ),
+                (format!("copilot '{mine}'"), vec![mine]),
+                ("copilot plugin list".to_string(), vec!["plugin", "list"]),
+                ("copilot app deploy".to_string(), vec!["app", "deploy"]),
+            ];
+            for (line, want) in lines {
+                term.write(format!("{line}\r").into_bytes());
+                wait_args(term, home, "copilot", &want);
+            }
+            term.write(format!("{unset}\rcopilot x\r").into_bytes());
+            wait_args(term, home, "copilot", &["x"]);
         }
 
         use std::sync::Arc;
@@ -725,6 +783,7 @@ mod tests {
             let path = home.fake_agents();
             if let Some(term) = home.spawn_with("bash", &[], &with_agents(&path)) {
                 typed_agents(&term, &home, "unset TEMPLUM_CLAUDE_ARGS", bash_has_ps0());
+                typed_copilot(&term, &home, "unset TEMPLUM_COPILOT_ARGS", bash_has_ps0());
             }
         }
 
@@ -750,6 +809,7 @@ mod tests {
             wait(&term, "ls to end", |t| t.status().finished == 1);
             home.fake_agents();
             typed_agents(&term, &home, "unset TEMPLUM_CLAUDE_ARGS", true);
+            typed_copilot(&term, &home, "unset TEMPLUM_COPILOT_ARGS", true);
         }
 
         /// The person's alias and function, read before Templum defines its own (bash) or after

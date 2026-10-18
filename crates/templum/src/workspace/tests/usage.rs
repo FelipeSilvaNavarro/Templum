@@ -156,8 +156,14 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
             let codex = templum_mcp::codex_args(&exe.to_string_lossy(), false, true).unwrap();
             assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), codex.join("\n"));
         }
+        let copilot = templum_usage::copilot::args(&data, cfg!(windows))
+            .unwrap()
+            .join("\n");
+        assert!(copilot.ends_with(&p("copilot/plugin")), "{copilot}");
+        assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), copilot);
         ws.config.connections.enabled = false;
         assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), "");
+        assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), "");
         assert_eq!(
             word(ws, "TEMPLUM_CLAUDE_ARGS"),
             format!("--settings\n{}", p("claude-statusline.json"))
@@ -171,10 +177,16 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
             ws.config.shell.program = Some(program.into());
             assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), "", "{program}");
             assert_eq!(word(ws, "TEMPLUM_CLAUDE_ARGS"), claude, "{program}");
+            assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), copilot, "{program}");
         }
         ws.config.shell.program = Some("WSL.exe".into());
         assert_eq!(word(ws, "TEMPLUM_CLAUDE_ARGS"), "");
         assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), "");
+        assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), "");
+        ws.config.shell.program = None;
+        // Without `<data>/bin` on the terminal's PATH, the files' program can't be found.
+        ws.bus_env.retain(|(k, _)| k != "PATH");
+        assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), "");
     });
     // Without a data folder: both, empty, so none comes from a Templum this one was started from.
     let (_, bare) = open_in(cx, None, None);
@@ -184,6 +196,7 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
             [
                 ("TEMPLUM_CLAUDE_ARGS".to_string(), String::new()),
                 ("TEMPLUM_CODEX_ARGS".to_string(), String::new()),
+                ("TEMPLUM_COPILOT_ARGS".to_string(), String::new()),
             ]
         );
     });

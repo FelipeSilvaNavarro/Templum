@@ -597,6 +597,7 @@ fn terminals_get_the_bus_and_this_templum_first_on_their_path(cx: &mut TestAppCo
 #[gpui_kit::test]
 fn without_a_bus_terminals_name_none(cx: &mut TestAppContext) {
     let script = "printf 'claude=%s;\\n' \"${TEMPLUM_CLAUDE_ARGS-unset}\"; \
+                  printf 'copilot=%s;\\n' \"${TEMPLUM_COPILOT_ARGS-unset}\"; \
                   printf 'bus=%s;\\n' \"${TEMPLUM_BUS-unset}\"; exec cat";
     let command = ("sh".to_string(), vec!["-c".to_string(), script.to_string()]);
     let (_, ws) = open_as(cx, Some(command), None, None);
@@ -604,6 +605,7 @@ fn without_a_bus_terminals_name_none(cx: &mut TestAppContext) {
     let shown = screen_with(&ws, cx, first, "bus=");
     assert!(shown.contains("bus=;"), "{shown}");
     assert!(shown.contains("claude=;"), "{shown}");
+    assert!(shown.contains("copilot=;"), "{shown}");
 }
 
 /// An empty PATH entry is the current folder: Templum's folder goes first and adds none.

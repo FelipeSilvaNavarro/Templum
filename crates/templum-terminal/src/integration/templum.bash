@@ -45,10 +45,11 @@ if [[ -z "${__templum_installed-}" ]]; then
         PROMPT_COMMAND="__templum_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
     fi
 
-    # A `claude` or `codex` typed here gets Templum's MCP server and hooks: the words of
-    # TEMPLUM_CLAUDE_ARGS or TEMPLUM_CODEX_ARGS, one per line, before the person's, unless they
-    # name Templum's already (docs/specs/connections.md, "Agents typed in a terminal"). Not over
-    # the person's own function; `function` keeps an alias of that name from breaking this.
+    # A `claude`, `codex` or `copilot` typed here gets Templum's MCP server and hooks: the words of
+    # TEMPLUM_CLAUDE_ARGS, TEMPLUM_CODEX_ARGS or TEMPLUM_COPILOT_ARGS, one per line, before the
+    # person's, unless they name Templum's already (docs/specs/connections.md, "Agents typed in a
+    # terminal"). Not over the person's own function; `function` keeps an alias of that name from
+    # breaking this.
     __templum_agent() {
         builtin local name="$1" w="$2" words
         builtin shift 2
@@ -76,6 +77,20 @@ if [[ -z "${__templum_installed-}" ]]; then
                 case "$a" in mcp_servers.templum.*) w= ;; esac
             done
             __templum_agent codex "$w" "$@"
+        }
+    fi
+    # The others' words end with a path in Templum's folder, which only Templum types: none when
+    # the person's words hold it (docs/specs/connections.md, "Typed by hand: the shells").
+    if [[ -n "${TEMPLUM_COPILOT_ARGS-}" ]] && ! builtin declare -F copilot > /dev/null; then
+        function copilot {
+            builtin local w="${TEMPLUM_COPILOT_ARGS-}" nl=$'\n' last a
+            # Not before a subcommand (`copilot plugin list`; AWS's `copilot` too).
+            case "${1--}" in -*) ;; *) w= ;; esac
+            last="${w##*$nl}"
+            for a in "$@"; do
+                case "$a" in "$last") w= ;; esac
+            done
+            __templum_agent copilot "$w" "$@"
         }
     fi
 fi

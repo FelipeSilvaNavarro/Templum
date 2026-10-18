@@ -91,13 +91,14 @@ impl Workspace {
         line
     }
 
-    /// What every new terminal's environment gets for the `claude` and `codex` a person types
-    /// there (docs/specs/connections.md, Agents typed in a terminal): the words `typed` would
-    /// append after each, unquoted, one per line. Both always, empty when there is nothing to
-    /// give, so a Templum started from another's terminal doesn't pass that one's on.
+    /// What every new terminal's environment gets for the agents a person types there
+    /// (docs/specs/connections.md, Agents typed in a terminal; Typed by hand: the shells): the
+    /// words `typed` would append after each, unquoted, one per line. Each always, empty when
+    /// there is nothing to give, so a Templum started from another's terminal doesn't pass that
+    /// one's on.
     pub(super) fn agent_env(&self) -> Vec<(String, String)> {
         let windows = cfg!(windows);
-        let (claude, codex) = match self.gives() {
+        let (claude, codex, copilot) = match self.gives() {
             Some(gives) => {
                 let limits = self.config.usage.claude_limits;
                 let claude = claude_args(&gives.data, &gives.exe, windows, limits, gives.connected);
@@ -112,13 +113,19 @@ impl Workspace {
                     })
                     .flatten()
                     .unwrap_or_default();
-                (claude.join("\n"), codex.join("\n"))
+                // Its files run `<data>/bin/templum`: only where that is on the PATH.
+                let copilot = (gives.connected && gives.on_path)
+                    .then(|| templum_usage::copilot::args(&gives.data, windows))
+                    .flatten()
+                    .unwrap_or_default();
+                (claude.join("\n"), codex.join("\n"), copilot.join("\n"))
             }
             None => Default::default(),
         };
         vec![
             ("TEMPLUM_CLAUDE_ARGS".to_string(), claude),
             ("TEMPLUM_CODEX_ARGS".to_string(), codex),
+            ("TEMPLUM_COPILOT_ARGS".to_string(), copilot),
         ]
     }
 
