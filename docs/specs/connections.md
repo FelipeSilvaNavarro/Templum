@@ -351,7 +351,8 @@ Batch 6.
   A socket file left by a Templum that is gone is removed from `<data>/bus` when the bus starts.
 - **Windows:** a TCP socket on `127.0.0.1` at a port the system picks, and a random token.
   `TEMPLUM_BUS=tcp:127.0.0.1:<port>:<token>`.
-- **No data folder** (`--bench`), no bus: terminals get no `TEMPLUM_BUS`, agents get no MCP server or hooks.
+- **No data folder** (`--bench`, a second Templum), no bus: terminals get an empty `TEMPLUM_BUS`, so one started
+  from another Templum's terminal doesn't pass that one's on, and agents get no MCP server or hooks.
 - **Trust:** the bus trusts every process of the user that can reach it, as the user's shells can already type into
   every terminal. The folder's permissions (Unix) and the token (Windows) keep other users out. The terminal a
   client names is taken as is.

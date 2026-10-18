@@ -419,7 +419,9 @@ impl Workspace {
                 .filter(|_| self.config.shell.integration),
             env: match (&self.bus, &self.data_dir) {
                 (Some(bus), Some(data)) => super::bus::terminal_env(bus, data),
-                _ => Vec::new(),
+                // Not the bus of a Templum this one was started from, which doesn't know its
+                // terminals: an empty one names none.
+                _ => vec![("TEMPLUM_BUS".to_string(), String::new())],
             },
         };
         let start = folder.or_else(std::env::home_dir);

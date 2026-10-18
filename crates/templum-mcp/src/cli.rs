@@ -354,7 +354,9 @@ fn call_of(verb: &str, args: &[String]) -> Result<CallArgs, &'static str> {
 
 /// Connects to the bus of the terminal this runs in and says hello.
 fn open(env: &Env, client: &str) -> Result<Stream, &'static str> {
-    let (Some(address), Some(terminal)) = (&env.bus, &env.terminal) else {
+    // An empty bus is a Templum's that has none.
+    let bus = env.bus.as_ref().filter(|bus| !bus.is_empty());
+    let (Some(address), Some(terminal)) = (bus, &env.terminal) else {
         return Err("not inside a Templum terminal");
     };
     let gone = "Templum isn't running";
@@ -838,6 +840,14 @@ mod tests {
     fn outside_templum_or_with_it_gone_a_command_exits_2() {
         let (code, out, err) = run_with(&["blocks"], &Env::default(), "");
         assert_eq!((code, out.as_str()), (2, ""));
+        assert!(err.contains("not inside a Templum terminal"), "{err}");
+        // A Templum with no bus gives its terminals an empty one.
+        let no_bus = Env {
+            bus: Some(String::new()),
+            terminal: Some("1-1".into()),
+        };
+        let (code, _, err) = run_with(&["blocks"], &no_bus, "");
+        assert_eq!(code, 2);
         assert!(err.contains("not inside a Templum terminal"), "{err}");
         let gone = Env {
             bus: Some(if cfg!(unix) {
