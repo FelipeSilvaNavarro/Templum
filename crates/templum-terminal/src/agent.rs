@@ -542,6 +542,14 @@ impl Agent {
         Ok(args)
     }
 
+    /// The efforts its command line takes from Templum, lowest first; none when it takes none.
+    pub fn efforts(self) -> &'static [&'static str] {
+        LAUNCH
+            .iter()
+            .find(|l| l.id == self.name())
+            .map_or(&[], |l| l.efforts)
+    }
+
     /// How to tell it from its processes.
     pub fn detect(self) -> Detect {
         let owned = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();

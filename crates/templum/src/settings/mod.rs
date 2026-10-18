@@ -30,6 +30,7 @@ mod fonts;
 mod git;
 mod row;
 mod sections;
+mod templum_agent;
 #[cfg(test)]
 mod tests;
 mod updates;
@@ -65,13 +66,14 @@ pub(crate) enum Section {
     Git,
     Agents,
     Connections,
+    TemplumAgent,
     Usage,
     Updates,
     Shortcuts,
 }
 
 impl Section {
-    pub const ALL: [Section; 12] = [
+    pub const ALL: [Section; 13] = [
         Section::Appearance,
         Section::Canvas,
         Section::Font,
@@ -81,6 +83,7 @@ impl Section {
         Section::Git,
         Section::Agents,
         Section::Connections,
+        Section::TemplumAgent,
         Section::Usage,
         Section::Updates,
         Section::Shortcuts,
@@ -97,6 +100,7 @@ impl Section {
             Section::Git => "Git",
             Section::Agents => "Agents",
             Section::Connections => "Connections",
+            Section::TemplumAgent => "Templum Agent",
             Section::Usage => "Usage",
             Section::Updates => "Updates",
             Section::Shortcuts => "Shortcuts",
@@ -115,6 +119,7 @@ impl Section {
             Section::Git => "settings-tab-git",
             Section::Agents => "settings-tab-agents",
             Section::Connections => "settings-tab-connections",
+            Section::TemplumAgent => "settings-tab-templum-agent",
             Section::Usage => "settings-tab-usage",
             Section::Updates => "settings-tab-updates",
             Section::Shortcuts => "settings-tab-shortcuts",
@@ -139,6 +144,10 @@ impl Section {
             Section::Connections => Some(
                 "What the agents in the canvas get from Templum: its MCP server, to read and type \
                  into the blocks wired to them, and its hooks, for the dot on their terminal.",
+            ),
+            Section::TemplumAgent => Some(
+                "The chat at the bottom of the canvas: an agent that builds and runs the canvas for \
+                 you, and asks before anything it can't take back.",
             ),
             Section::Usage => Some(
                 "Claude Code's and Codex's plan limits, shown in the title bar, and each agent's \

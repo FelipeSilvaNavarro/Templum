@@ -40,6 +40,7 @@ pub(crate) struct Config {
     pub usage: UsageConfig,
     pub updates: UpdatesConfig,
     pub connections: ConnectionsConfig,
+    pub templum_agent: TemplumAgentConfig,
     pub canvas: CanvasConfig,
     /// `[agents.<id>]`: changes to one of Templum's AI agents (only what differs), or an agent of
     /// the user's own.
@@ -349,6 +350,35 @@ impl Default for ConnectionsConfig {
     }
 }
 
+/// `[templum_agent]`: the agent the chat at the bottom of the canvas runs on
+/// (docs/specs/templum-agent.md#config).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct TemplumAgentConfig {
+    /// The engine's id: `claude`.
+    pub agent: String,
+    /// Its model; empty is the agent's own default.
+    pub model: String,
+    /// Its effort, one of the agent's; empty is its default.
+    pub effort: String,
+    /// The prompt pill at the bottom of the canvas; off, the shortcut still opens it.
+    pub pill: bool,
+    /// How many of its tasks may run at once.
+    pub max_agents: u32,
+}
+
+impl Default for TemplumAgentConfig {
+    fn default() -> Self {
+        Self {
+            agent: "claude".into(),
+            model: String::new(),
+            effort: String::new(),
+            pill: true,
+            max_agents: 4,
+        }
+    }
+}
+
 /// `[canvas]`.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
@@ -504,6 +534,29 @@ pub(crate) fn parse_in(text: &str, data: Option<&Path>) -> Result<Config, String
         question <= 1440,
         "0 and 1440",
         question.to_string(),
+    )?;
+    let agent = &config.templum_agent;
+    if agent.agent != "claude" {
+        return Err(format!(
+            "{FILE}: templum_agent.agent is claude (it is {:?})",
+            agent.agent
+        ));
+    }
+    let claude = templum_terminal::Agent::from_name("claude").expect("Claude Code");
+    fn blank(v: &str) -> Option<&str> {
+        (!v.is_empty()).then_some(v)
+    }
+    if let Err(why) = claude.launch_args(blank(&agent.model), None) {
+        return Err(format!("{FILE}: templum_agent.model: {why}"));
+    }
+    if let Err(why) = claude.launch_args(None, blank(&agent.effort)) {
+        return Err(format!("{FILE}: templum_agent.effort: {why}"));
+    }
+    range(
+        "templum_agent.max_agents",
+        (1..=16).contains(&agent.max_agents),
+        "1 and 16",
+        agent.max_agents.to_string(),
     )?;
     let message = &config.git.commit_message;
     range(
@@ -1138,6 +1191,17 @@ pub(crate) fn template(macos: bool) -> String {
         "## Ways spawn_agent opens an agent by name (docs/specs/agent-tools.md#roles): its agent, and\n",
         "## optionally its model, effort, args (the agent's own flags) and instructions. For example:\n",
         "## reviewer = { agent = \"claude\", model = \"opus\", effort = \"high\", args = \"--tools Read,Grep,Glob,Bash\", instructions = \"You review code and report each finding as a card. Never edit files.\" }\n\n",
+        "[templum_agent]\n",
+        "## The agent the Templum Agent runs on (docs/specs/templum-agent.md): claude.\n",
+        "# agent = \"claude\"\n",
+        "## Its model; empty is the agent's own default.\n",
+        "# model = \"\"\n",
+        "## Its effort: low, medium, high, xhigh or max for Claude Code; empty is the agent's default.\n",
+        "# effort = \"\"\n",
+        "## The prompt pill at the bottom of the canvas; off, Ctrl+Shift+Space still opens it.\n",
+        "# pill = true\n",
+        "## How many of its tasks may run at once.\n",
+        "# max_agents = 4\n\n",
         "[git]\n",
         "# program = \"git\"   # a name on PATH, or a path\n\n",
         "[keys]\n",
@@ -1650,6 +1714,51 @@ scrollback = 500
         );
         let err = parse("[connections]\nmcp = true\n").unwrap_err();
         assert!(err.contains("mcp"), "{err}");
+    }
+
+    #[test]
+    fn the_templum_agent_runs_on_claude_with_its_pill_unless_set() {
+        let agent = parse("").unwrap().templum_agent;
+        assert_eq!(
+            (
+                agent.agent.as_str(),
+                agent.model.as_str(),
+                agent.effort.as_str()
+            ),
+            ("claude", "", "")
+        );
+        assert!(agent.pill);
+        assert_eq!(agent.max_agents, 4);
+        let set =
+            parse("[templum_agent]\nmodel = \"opus\"\neffort = \"high\"\npill = false\n").unwrap();
+        assert_eq!(
+            (
+                set.templum_agent.model.as_str(),
+                set.templum_agent.effort.as_str()
+            ),
+            ("opus", "high")
+        );
+        assert!(!set.templum_agent.pill);
+        let err = parse("[templum_agent]\nagent = \"gemini\"\n").unwrap_err();
+        assert!(err.contains("templum_agent.agent is claude"), "{err}");
+        let err = parse("[templum_agent]\neffort = \"ultra\"\n").unwrap_err();
+        assert!(
+            err.contains("templum_agent.effort") && err.contains("low, medium, high, xhigh or max"),
+            "{err}"
+        );
+        let err = parse("[templum_agent]\nmodel = \"opus; rm -rf /\"\n").unwrap_err();
+        assert!(err.contains("templum_agent.model"), "{err}");
+        let err = parse("[templum_agent]\nmax_agents = 17\n").unwrap_err();
+        assert!(
+            err.contains("templum_agent.max_agents must be between 1 and 16"),
+            "{err}"
+        );
+        assert!(parse("[templum_agent]\nmax_agents = 0\n").is_err());
+        let t = template(false);
+        assert!(t.contains("[templum_agent]\n"), "{t}");
+        for key in ["agent", "model", "effort", "pill", "max_agents"] {
+            assert!(t.contains(&format!("\n# {key} = ")), "{key}");
+        }
     }
 
     #[test]

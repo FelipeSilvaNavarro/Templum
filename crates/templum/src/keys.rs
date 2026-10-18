@@ -34,6 +34,7 @@ pub(crate) enum Command {
     ThemePicker,
     OpenConfig,
     Settings,
+    Agent,
     NextWorkspace,
     PreviousWorkspace,
     NewWorkspace,
@@ -47,7 +48,7 @@ pub(crate) enum Command {
 
 impl Command {
     /// The [keys] order: when two commands share a shortcut, the earlier one wins.
-    pub const ALL: [Command; 38] = [
+    pub const ALL: [Command; 39] = [
         Command::NewTerminal,
         Command::NewKanban,
         Command::NewNote,
@@ -77,6 +78,7 @@ impl Command {
         Command::ThemePicker,
         Command::OpenConfig,
         Command::Settings,
+        Command::Agent,
         Command::NextWorkspace,
         Command::PreviousWorkspace,
         Command::NewWorkspace,
@@ -120,6 +122,7 @@ impl Command {
             Command::ThemePicker => "theme_picker",
             Command::OpenConfig => "open_config",
             Command::Settings => "settings",
+            Command::Agent => "agent",
             Command::NextWorkspace => "next_workspace",
             Command::PreviousWorkspace => "previous_workspace",
             Command::NewWorkspace => "new_workspace",
@@ -164,6 +167,7 @@ impl Command {
             Command::ThemePicker => "Theme picker",
             Command::OpenConfig => "Edit config.toml",
             Command::Settings => "Settings",
+            Command::Agent => "Templum Agent",
             Command::NextWorkspace => "Next workspace",
             Command::PreviousWorkspace => "Previous workspace",
             Command::NewWorkspace => "New workspace",
@@ -268,6 +272,8 @@ impl Command {
             (Command::OpenConfig, _) => &[],
             (Command::Settings, false) => &["ctrl-,"],
             (Command::Settings, true) => &["cmd-,"],
+            (Command::Agent, false) => &["ctrl-shift-space"],
+            (Command::Agent, true) => &["cmd-shift-space"],
             (Command::NextWorkspace, _) => &["ctrl-tab"],
             (Command::PreviousWorkspace, _) => &["ctrl-shift-tab"],
             (Command::NewWorkspace, false) => &["ctrl-shift-n"],
@@ -328,6 +334,7 @@ pub(crate) struct KeysConfig {
     pub theme_picker: Option<Keys>,
     pub open_config: Option<Keys>,
     pub settings: Option<Keys>,
+    pub agent: Option<Keys>,
     pub next_workspace: Option<Keys>,
     pub previous_workspace: Option<Keys>,
     pub new_workspace: Option<Keys>,
@@ -371,6 +378,7 @@ impl KeysConfig {
             Command::ThemePicker => self.theme_picker.as_ref(),
             Command::OpenConfig => self.open_config.as_ref(),
             Command::Settings => self.settings.as_ref(),
+            Command::Agent => self.agent.as_ref(),
             Command::NextWorkspace => self.next_workspace.as_ref(),
             Command::PreviousWorkspace => self.previous_workspace.as_ref(),
             Command::NewWorkspace => self.new_workspace.as_ref(),
@@ -414,6 +422,7 @@ impl KeysConfig {
             Command::ThemePicker => &mut self.theme_picker,
             Command::OpenConfig => &mut self.open_config,
             Command::Settings => &mut self.settings,
+            Command::Agent => &mut self.agent,
             Command::NextWorkspace => &mut self.next_workspace,
             Command::PreviousWorkspace => &mut self.previous_workspace,
             Command::NewWorkspace => &mut self.new_workspace,
@@ -594,6 +603,13 @@ mod tests {
         assert_eq!(mac.command(&typed("cmd-,")), Some(Command::Settings));
         assert_eq!(mac.command(&typed("cmd-q")), Some(Command::Quit));
         assert_eq!(mac.command(&typed("cmd-s")), Some(Command::Save));
+        assert_eq!(Command::Agent.defaults(false), ["ctrl-shift-space"]);
+        assert_eq!(Command::Agent.defaults(true), ["cmd-shift-space"]);
+        assert_eq!(
+            linux.command(&typed("ctrl-shift-space")),
+            Some(Command::Agent)
+        );
+        assert_eq!(mac.command(&typed("cmd-shift-space")), Some(Command::Agent));
     }
 
     #[test]

@@ -327,3 +327,58 @@ fn a_theme_picked_right_after_a_panel_change_is_the_one_saved(cx: &mut TestAppCo
     assert!(text.contains("light = \"Apple Light\""), "{text}");
     ws.read_with(cx, |ws, _| assert_eq!(ws.config.theme.light, "Apple Light"));
 }
+
+#[gpui_kit::test]
+fn the_templum_agent_section_edits_its_keys(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    let file = || std::fs::read_to_string(dir.path().join(crate::config::FILE)).unwrap_or_default();
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-tab-templum-agent", cx);
+        window.render_frame(cx);
+        window.click("field-templum_agent.pill", cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+        // Default, low, medium, high, xhigh, max.
+        window
+            .within("field-templum_agent.effort")
+            .click("menu-templum_agent.effort", cx);
+        window.render_frame(cx);
+        window.within("popup-menu").click(3usize, cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(!ws.config.templum_agent.pill);
+        assert_eq!(ws.config.templum_agent.effort, "high");
+    });
+    ws.update(cx, |ws, _| ws.save());
+    let text = file();
+    assert!(
+        text.contains("[templum_agent]")
+            && text.contains("pill = false")
+            && text.contains("effort = \"high\""),
+        "{text}"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window
+            .within("field-templum_agent.effort")
+            .click("menu-templum_agent.effort", cx);
+        window.render_frame(cx);
+        window.within("popup-menu").click(0usize, cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.update(cx, |ws, _| ws.save());
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.config.templum_agent.effort.clone()),
+        ""
+    );
+    let text = file();
+    assert!(!text.contains("effort"), "Default removes the key: {text}");
+}
