@@ -1018,13 +1018,16 @@ Left by batch 8 and its review; line numbers are those of `development` at c51be
   person starts another there before the task ends, the new session is typed `[task t7 …]`, a task it never handed
   over, and may act on it. Fix: in `agent_left` (also run on a session's end), drop the notices to that terminal and
   mark the tasks it handed (`Handed::by` that terminal) so their end isn't told.
-- [ ] **On Windows, a notice queued right after its asker's agent quit can go into Git Bash.** `takes_notice`
-  (`crates/templum/src/workspace/delegate.rs`) drops a notice when the shell is in front, but `shell_in_front` is
-  always false on Windows, and `agent_left` leaves `seen.agent` and `seen.pid` set until the next snapshot (up to
-  5 s). A person sees the worker's answer typed with Enter into the shell after Codex's `/quit` or Claude Code's
-  `/exit`, and bash runs its lines as commands (`reply` has the same gap, but notices come on their own). Fix: in
-  `agent_left`, set `seen.pid = None`, so `takes_notice` waits until a snapshot finds an agent again or clears
-  `seen.agent`, which drops the notice.
+- [ ] **On Windows, a notice or a schedule right after an agent quit can go into Git Bash.** `takes_notice`
+  (`crates/templum/src/workspace/delegate.rs`) drops a notice when the shell is in front, and a schedule's `deliver`
+  (`schedules.rs`) refuses an agent whose shell is in front, but `shell_in_front` is always false on Windows, and
+  `agent_left` leaves `seen.agent` and `seen.pid` set until the next snapshot (up to 5 s). A person sees, after
+  Codex's `/quit` or Claude Code's `/exit`, the worker's answer, a schedule's `[scheduled s3]` to the caller, or a
+  schedule's task handed through `delegate` to another agent typed with Enter into the shell, and bash runs its lines
+  as commands (`reply` has the same gap, but notices and schedules come on their own). Fix: in `agent_left`, set
+  `seen.pid = None`, so `takes_notice` waits until a snapshot finds an agent again or clears `seen.agent`, which drops
+  the notice, and `takes_handing` refuses the schedule's task ("still starting"), told to the caller and tried again
+  at its next time.
 - [ ] **A task whose agent quit without a hook is told under the shell's title.** `see`
   (`crates/templum/src/workspace/persist.rs`) writes the new `seen` (no agent) before it calls `agent_left`, so
   `signature_of` (`delegate.rs`) falls back to the terminal's title. A person sees the asker get `[task t1 from sh
