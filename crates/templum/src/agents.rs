@@ -545,11 +545,17 @@ impl AccountDraft {
         }
     }
 
-    /// Why it can't be saved as the account `id` among `agents` (config.toml's), if it can't.
-    pub fn problem(&self, id: &str, agents: &BTreeMap<String, AgentConfig>) -> Option<String> {
+    /// Why it can't be saved as the account `id` among `agents` (config.toml's), with Templum's
+    /// data folder `data`, if it can't.
+    pub fn problem(
+        &self,
+        id: &str,
+        agents: &BTreeMap<String, AgentConfig>,
+        data: Option<&Path>,
+    ) -> Option<String> {
         let mut agents = agents.clone();
         agents.insert(id.to_string(), self.to_config());
-        crate::config::check_account(id, &agents).err()
+        crate::config::check_account(id, &agents, data).err()
     }
 }
 
@@ -896,13 +902,13 @@ mod tests {
             folder: None,
             share: [("skills".to_string(), "claude3".to_string())].into(),
         };
-        let problem = draft.problem("claude4", &agents).unwrap();
+        let problem = draft.problem("claude4", &agents, None).unwrap();
         assert!(problem.contains("shares it back"), "{problem}");
         let fine = AccountDraft {
             share: BTreeMap::new(),
             ..draft
         };
-        assert_eq!(fine.problem("claude4", &agents), None);
+        assert_eq!(fine.problem("claude4", &agents, None), None);
     }
 
     #[test]

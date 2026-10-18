@@ -418,8 +418,15 @@ impl Config {
     }
 }
 
-/// Parses and validates config.toml. The error is ready to show to the user.
+/// `parse_in` without Templum's data folder.
+#[cfg(test)]
 pub(crate) fn parse(text: &str) -> Result<Config, String> {
+    parse_in(text, None)
+}
+
+/// Parses and validates config.toml, with Templum's data folder `data` (accounts' folders are
+/// in it). The error is ready to show to the user.
+pub(crate) fn parse_in(text: &str, data: Option<&Path>) -> Result<Config, String> {
     let config: Config = toml::from_str(text).map_err(|e| {
         let (line, column) = e.span().map_or((1, 1), |s| line_col(text, s.start));
         format!("{FILE}, line {line}, column {column}: {}", e.message())
@@ -483,7 +490,7 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
         }
         let ours = templum_terminal::Agent::from_name(id).is_some();
         if agent.of.is_some() || agent.folder.is_some() || agent.share.is_some() {
-            check_account(id, &config.agents)?;
+            check_account(id, &config.agents, data)?;
             continue;
         }
         let blank = |v: &Option<String>| v.as_deref().is_none_or(|v| v.trim().is_empty());
@@ -512,10 +519,12 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
 
 /// The account `id` of `agents` (an entry with `of`), checked: its agent has accounts, it takes
 /// nothing its agent has, each share names an item and one of its agent's folders without coming
-/// back to it, and its folder is no other's.
+/// back to it, and its folder is no other's, nor in Templum's folder for accounts
+/// (`<data>/accounts`, whose folders are deleted with their account).
 pub(crate) fn check_account(
     id: &str,
     agents: &BTreeMap<String, AgentConfig>,
+    data: Option<&Path>,
 ) -> Result<(), String> {
     let account = &agents[id];
     let of = account.of.as_deref().unwrap_or_default();
@@ -590,6 +599,11 @@ pub(crate) fn check_account(
                 "{FILE}: agents.{id}.folder: {folder} isn't a full path: start it with {start}"
             ));
         }
+        if data.is_some_and(|data| path.starts_with(data.join("accounts"))) {
+            return Err(format!(
+                "{FILE}: agents.{id}.folder: {folder} is Templum's folder for accounts: leave Folder empty"
+            ));
+        }
         let own = kind.own_folder(std::env::var_os(kind.var), std::env::home_dir().as_deref());
         if own.is_some_and(|own| own == path) {
             return Err(format!(
@@ -612,13 +626,13 @@ pub(crate) fn check_account(
     Ok(())
 }
 
-/// `<dir>/config.toml`. No folder or no file: the defaults.
-pub(crate) fn load(dir: Option<&Path>) -> Result<Config, String> {
+/// `<dir>/config.toml`, with Templum's data folder `data`. No folder or no file: the defaults.
+pub(crate) fn load(dir: Option<&Path>, data: Option<&Path>) -> Result<Config, String> {
     let Some(path) = dir.map(|d| d.join(FILE)) else {
         return Ok(Config::default());
     };
     match std::fs::read_to_string(&path) {
-        Ok(text) => parse(&text),
+        Ok(text) => parse_in(&text, data),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Config::default()),
         Err(e) => Err(format!("couldn't read {}: {e}", path.display())),
     }
@@ -1088,7 +1102,7 @@ mod tests {
         assert!(text.contains("# my settings"), "{text}");
         assert!(text.contains("light = \"One Light\" # sunny"), "{text}");
         assert!(text.contains("[font]\nsize = 16"), "{text}");
-        let c = load(Some(d.path())).unwrap();
+        let c = load(Some(d.path()), None).unwrap();
         assert_eq!(
             (c.theme.light.as_str(), c.theme.dark.as_str()),
             ("One Light", "One Dark")
@@ -1100,7 +1114,10 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let dir = d.path().join("templum");
         save_theme(&dir, false, "Catppuccin Frappé").unwrap();
-        assert_eq!(load(Some(&dir)).unwrap().theme.light, "Catppuccin Frappé");
+        assert_eq!(
+            load(Some(&dir), None).unwrap().theme.light,
+            "Catppuccin Frappé"
+        );
     }
 
     #[test]
@@ -1373,10 +1390,10 @@ scrollback = 500
     #[test]
     fn load_gives_defaults_without_a_file_and_errors_for_a_bad_one() {
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(load(Some(d.path())).unwrap(), Config::default());
-        assert_eq!(load(None).unwrap(), Config::default());
+        assert_eq!(load(Some(d.path()), None).unwrap(), Config::default());
+        assert_eq!(load(None, None).unwrap(), Config::default());
         write(d.path(), "[font\n");
-        assert!(load(Some(d.path())).unwrap_err().contains("line 1"));
+        assert!(load(Some(d.path()), None).unwrap_err().contains("line 1"));
     }
 
     #[test]
@@ -1603,7 +1620,7 @@ scrollback = 500
             !text.contains("[keys]"),
             "removing from a missing table adds nothing: {text}"
         );
-        let c = load(Some(d.path())).unwrap();
+        let c = load(Some(d.path()), None).unwrap();
         assert_eq!((c.font.size, c.font.family), (20.0, None));
         assert_eq!(c.terminal.scrollback, 500);
     }
@@ -1748,6 +1765,26 @@ scrollback = 500
     }
 
     #[test]
+    fn an_account_folder_isnt_in_templums_folder_for_accounts() {
+        let data = std::env::home_dir().unwrap().join("templum-data");
+        for folder in [
+            "~/templum-data/accounts",
+            "~/templum-data/accounts/claude3/x",
+        ] {
+            let text = format!("[agents.claude2]\nof = \"claude\"\nfolder = \"{folder}\"\n");
+            let err = parse_in(&text, Some(&data)).unwrap_err();
+            assert!(
+                err.contains(&format!(
+                    "agents.claude2.folder: {folder} is Templum's folder for accounts"
+                )),
+                "{err}"
+            );
+        }
+        let text = "[agents.claude2]\nof = \"claude\"\nfolder = \"~/templum-data/w\"\n";
+        parse_in(text, Some(&data)).unwrap();
+    }
+
+    #[test]
     fn an_account_folder_is_a_full_path() {
         for folder in ["claude-work", ".claude", "~bob/x", "C:foo"] {
             let err = parse(&format!(
@@ -1788,14 +1825,14 @@ scrollback = 500
             &[Edit::set("agents", "claude".to_string(), value)],
         )
         .unwrap();
-        let c = load(Some(d.path())).unwrap();
+        let c = load(Some(d.path()), None).unwrap();
         assert_eq!(
             c.agents["claude"].command.as_deref(),
             Some("claude --model opus")
         );
         assert_eq!(c.agents["codex"].show, Some(false), "the others stay");
         save_edits(d.path(), &[Edit::remove("agents", "claude".to_string())]).unwrap();
-        let c = load(Some(d.path())).unwrap();
+        let c = load(Some(d.path()), None).unwrap();
         assert!(!c.agents.contains_key("claude"), "back to the default");
         let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
         assert!(text.contains("# mine"), "{text}");
@@ -1834,7 +1871,7 @@ scrollback = 500
         assert!(text.contains("# family = \"JetBrains Mono\""), "{text}");
         assert!(text.contains("# mode = \"system\""), "{text}");
         assert!(!text.contains("size") && !text.contains("light"), "{text}");
-        assert_eq!(load(Some(d.path())).unwrap(), Config::default());
+        assert_eq!(load(Some(d.path()), None).unwrap(), Config::default());
     }
 
     #[test]
@@ -1946,13 +1983,20 @@ scrollback = 500
         .unwrap();
         let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
         assert!(text.contains("program = \"/opt/git\" # mine"), "{text}");
-        let c = load(Some(d.path())).unwrap();
+        let c = load(Some(d.path()), None).unwrap();
         assert_eq!(
             (c.git.program.as_str(), c.git.commit_message.timeout),
             ("/opt/git", 90)
         );
         save_edits(d.path(), &[Edit::remove("git.commit_message", "timeout")]).unwrap();
-        assert_eq!(load(Some(d.path())).unwrap().git.commit_message.timeout, 60);
+        assert_eq!(
+            load(Some(d.path()), None)
+                .unwrap()
+                .git
+                .commit_message
+                .timeout,
+            60
+        );
         // Removing from a table that isn't there adds nothing.
         save_edits(d.path(), &[Edit::remove("git.nothing", "x")]).unwrap();
         let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
@@ -1987,7 +2031,7 @@ scrollback = 500
             text.contains("[git.repositories.\"/home/u/my.proj\"]"),
             "{text}"
         );
-        let c = load(Some(d.path())).unwrap();
+        let c = load(Some(d.path()), None).unwrap();
         for r in roots {
             assert_eq!(
                 c.git.repositories[r].commit_instructions.as_deref(),
@@ -2002,7 +2046,7 @@ scrollback = 500
             )],
         )
         .unwrap();
-        let c = load(Some(d.path())).unwrap();
+        let c = load(Some(d.path()), None).unwrap();
         assert_eq!(
             c.git
                 .repositories

@@ -75,7 +75,7 @@ impl Workspace {
                 pending.agents.contains_key(x) || self.agents.iter().any(|a| a.id == x)
             }),
         };
-        if let Some(problem) = draft.problem(&id, &pending.agents) {
+        if let Some(problem) = draft.problem(&id, &pending.agents, self.data_dir.as_deref()) {
             return Err(problem);
         }
         let config = draft.to_config();
@@ -163,6 +163,21 @@ impl Workspace {
         let Some(account) = entry.account else {
             return Err(format!("{} isn't an account", entry.title));
         };
+        // Never another account's folder (a config written before Templum refused it there).
+        let inside = self.agents.iter().find(|a| {
+            a.id != id
+                && a.account
+                    .as_ref()
+                    .is_some_and(|other| other.folder.starts_with(&account.folder))
+        });
+        if !account.chosen
+            && let Some(other) = inside
+        {
+            return Err(format!(
+                "{}'s folder is in {}'s: change it first",
+                other.title, entry.title
+            ));
+        }
         if !account.chosen {
             match templum_usage::accounts::delete(account.kind, &account.folder) {
                 Ok(()) => {}
@@ -296,7 +311,7 @@ impl Workspace {
     /// Reads config.toml again and applies what changed. An invalid file keeps the current
     /// config and says why.
     pub(crate) fn reload_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match config::load(self.config_dir.as_deref()) {
+        match config::load(self.config_dir.as_deref(), self.data_dir.as_deref()) {
             Ok(new) => {
                 if std::mem::take(&mut self.config_failed) {
                     show_notification(

@@ -1012,6 +1012,51 @@ fn a_chosen_folder_stays(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui_kit::test]
+fn an_account_folder_in_templums_folder_for_accounts_is_refused(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let claude2 = data.path().join("accounts").join("claude2");
+    std::fs::create_dir_all(&claude2).unwrap();
+    std::fs::write(claude2.join(".credentials.json"), "claude3's login").unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    // Written before Templum refused it: test agents are read without the data folder.
+    super::agents::with_agents(
+        &ws,
+        cx,
+        &format!(
+            "[agents.claude2]\nof = \"claude\"\n[agents.claude3]\nof = \"claude\"\nname = \"Claude Code 3\"\nfolder = '{}'\n",
+            claude2.display()
+        ),
+    );
+    assert_eq!(
+        delete(&ws, cx, "claude2"),
+        Err("Claude Code 3's folder is in Claude Code (claude2)'s: change it first".to_string())
+    );
+    assert_eq!(
+        std::fs::read(claude2.join(".credentials.json")).unwrap(),
+        b"claude3's login"
+    );
+    let saved = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let entry = ws
+                    .agents
+                    .iter()
+                    .find(|a| a.id == "claude3")
+                    .unwrap()
+                    .clone();
+                let draft = crate::agents::AccountDraft::of(&entry);
+                ws.save_account(Some("claude3"), &draft, window, cx)
+            })
+        })
+        .unwrap();
+    assert!(
+        saved
+            .unwrap_err()
+            .contains("is Templum's folder for accounts: leave Folder empty")
+    );
+}
+
 /// The row's Log in opens a block of the account; its dialog's Delete asks, then deletes it.
 #[gpui_kit::test]
 fn an_accounts_row_logs_in_and_its_dialog_deletes_it(cx: &mut TestAppContext) {

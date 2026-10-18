@@ -1212,7 +1212,8 @@ impl Workspace {
         });
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
-        let (config, config_error) = match config::load(config_dir.as_deref()) {
+        let (config, config_error) = match config::load(config_dir.as_deref(), data_dir.as_deref())
+        {
             Ok(config) => (config, None),
             Err(message) => (Config::default(), Some(message)),
         };

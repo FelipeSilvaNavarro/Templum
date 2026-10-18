@@ -185,7 +185,9 @@ share = { settings = "claude3", instructions = "claude3", rules = "claude3", ski
   neither, an account of another agent, or a chain that comes back to the account (claude3's `skills` from claude4,
   claude4's from claude3) is a config error naming the key, and the last valid config stays.
 - `folder`: `~` is the home folder. It is a full path (`/…` or `~/…`; `C:\…` on Windows): a relative one would be each
-  block's working folder. It can't be the agent's own folder, nor another account's.
+  block's working folder. It can't be the agent's own folder, nor another account's, nor in Templum's folder for
+  accounts (`<data>/accounts`, whose folders go with their account: "that is Templum's folder for accounts: leave
+  Folder empty").
 - The id of an account added in Settings is its agent's id and the first free number from 2: `claude2`, `claude3`,
   `codex2`. It never changes; the name does. One written by hand may be any free id (`work`).
 - An account isn't one of Templum's agents: Settings ▸ Agents' **Reset all** leaves it, and its agent's ↺ too.
@@ -239,7 +241,8 @@ the account still opens with what could be done.
 - Refused while a block of a running workspace is the account's, its agent running in it or only its shell ("Claude
   Code 2 has 2 blocks: close them first"): typing its agent in one would make its folder again, with a login no row
   manages. Refused too while another account shares one of its items ("Claude Code 4 shares Claude Code 2's skills:
-  change it first").
+  change it first"). Refused too while another account's folder is in its own, as a config.toml written before
+  Templum refused that can have ("Claude Code 3's folder is in Claude Code 2's: change it first").
 - A block of it that comes back later (Ctrl+Z, a stopped workspace started, a restore) is a plain terminal: an
   `"account"` Templum doesn't know gives no variable and no account, as in an older Templum.
 - **Its folder in Templum's data folder** is deleted with it, its links removed first (what they point at stays): "Its

@@ -1358,10 +1358,6 @@ by hand (a second real login, macOS, Windows). Line numbers are those of `develo
 - [ ] **Gemini CLI reads `advanced.autoConfigureMemory` from the account's folder, not its `.gemini/`.** Its issue
   27421: the setting saved in an account's `.gemini/settings.json` is ignored. Fix: none on Templum's side until
   Gemini CLI fixes it.
-- [ ] **A folder chosen for an account may be another account's default one.** `check_account`
-  (`crates/templum/src/config.rs:516`) compares chosen folders only, so `folder = "<data>/accounts/claude3"` on
-  claude2 isn't refused while claude3 uses that default: both run on one folder. Fix: compare with each account's
-  folder in effect (`agents::effective` has them).
 - [ ] **Crush's own folder is Linux's default.** `own: ".local/share/crush"` (`crates/templum-usage/src/accounts.rs:284`)
   misses `XDG_DATA_HOME` and Windows' `%LOCALAPPDATA%\crush`, so a Crush account chosen on that folder isn't
   refused as Crush's own. Fix: `own_folder` follows them for Crush.
