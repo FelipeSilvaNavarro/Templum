@@ -67,10 +67,14 @@ pub fn args(o: &Options) -> Vec<String> {
         a.extend(["--effort".into(), effort.clone()]);
     }
     a.extend(["--tools".into(), "Read,Glob,Grep".into()]);
-    for dir in &o.add_dirs {
+    let home = std::env::home_dir();
+    for dir in o.add_dirs.iter().filter_map(|d| readable(d, home.as_deref())) {
         a.extend(["--add-dir".into(), dir.to_string_lossy().into_owned()]);
     }
     a.extend([
+        // Not the person's defaultMode: bypass or auto would let it read anywhere.
+        "--permission-mode".into(),
+        "default".into(),
         "--strict-mcp-config".into(),
         "--mcp-config".into(),
         o.mcp_file.to_string_lossy().into_owned(),
@@ -82,6 +86,15 @@ pub fn args(o: &Options) -> Vec<String> {
         ROLE.into(),
     ]);
     a
+}
+
+/// A folder the engine may read, as it is on disk: none when it isn't one, or is `/`, the
+/// person's home or a folder above it (their keys and credentials are in it).
+fn readable(dir: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let dir = dir.canonicalize().ok()?;
+    let home = home.and_then(|h| h.canonicalize().ok());
+    let too_wide = dir.parent().is_none() || home.is_some_and(|h| h.starts_with(&dir));
+    (!too_wide).then_some(dir)
 }
 
 /// Writes `<dir>/mcp.json`, naming `exe control` as the only MCP server, unless it already
@@ -321,14 +334,20 @@ mod tests {
 
     #[test]
     fn a_new_conversation_gets_every_word_in_order() {
+        let folders = tempfile::tempdir().unwrap();
+        let (pa, pb) = (folders.path().join("a"), folders.path().join("b"));
+        std::fs::create_dir(&pa).unwrap();
+        std::fs::create_dir(&pb).unwrap();
         let o = Options {
             session: Session::New("u1".into()),
             model: Some("opus".into()),
             effort: Some("high".into()),
-            add_dirs: vec!["/p/a".into(), "/p/b".into()],
+            add_dirs: vec![pa.clone(), pb.clone()],
             mcp_file: "/d/agent/mcp.json".into(),
         };
         let a = args(&o);
+        let disk = |p: &Path| p.canonicalize().unwrap().to_string_lossy().into_owned();
+        let (pa, pb) = (disk(&pa), disk(&pb));
         assert_eq!(
             &a[..10],
             [
@@ -348,8 +367,9 @@ mod tests {
             ["--model", "opus"],
             ["--effort", "high"],
             ["--tools", "Read,Glob,Grep"],
-            ["--add-dir", "/p/a"],
-            ["--add-dir", "/p/b"],
+            ["--add-dir", &pa],
+            ["--add-dir", &pb],
+            ["--permission-mode", "default"],
             ["--mcp-config", "/d/agent/mcp.json"],
             ["--allowedTools", "mcp__templum-control"],
             ["--permission-prompts", "none"],
@@ -377,6 +397,27 @@ mod tests {
                 || w == "--effort"
                 || w == "--add-dir")
         );
+    }
+
+    #[test]
+    fn home_root_and_what_is_above_home_are_never_readable() {
+        let top = tempfile::tempdir().unwrap();
+        let home = top.path().join("home");
+        let project = home.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let home = Some(home.as_path());
+        assert_eq!(readable(&project, home), Some(project.canonicalize().unwrap()));
+        let elsewhere = tempfile::tempdir().unwrap();
+        assert!(readable(elsewhere.path(), home).is_some());
+        for wide in [
+            top.path().join("home"),
+            top.path().to_path_buf(),
+            project.join("../.."),
+            "/".into(),
+            top.path().join("missing"),
+        ] {
+            assert_eq!(readable(&wide, home), None, "{}", wide.display());
+        }
     }
 
     #[test]
