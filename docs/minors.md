@@ -1404,3 +1404,21 @@ Left by the final review of kanban card 37; line numbers are those of `developme
   `GEMINI_CLI_HOME`, `Kind::own_folder` follows it, so with it set the extension notice and the accounts disagree on
   where Gemini CLI's own folder is. Fix: `Dirs::of` takes Claude Code's, Codex's and Gemini CLI's from
   `accounts::kind(..).own_folder`.
+
+Left by the data-safety fixes after that review; line numbers are those of `development` at e54d463.
+
+- [ ] **Generate and the `/usage` probe run an account's agent without its choices.** Generate's environment
+  (`CommitAgent::env`, `crates/templum/src/agents.rs:767`) and the probe (`claude_poll_jobs`,
+  `crates/templum/src/workspace/usage.rs:399`) name the account's folder without `AgentEntry::apply`: the agent makes
+  a never-opened account's folder itself, at 0755 and without its links, and a probe still running when
+  `delete_account` (`crates/templum/src/workspace/preferences.rs:154`) deletes a folder can make it again. Fix: apply
+  the account's choices before either runs, and wait for (or stop) its probe in `delete_account`.
+- [ ] **A Templum started in an account's block refuses that account's chosen folder.** `check_account`
+  (`crates/templum/src/config.rs:607`) takes the inherited `CLAUDE_CONFIG_DIR` for Claude Code's own folder, so the
+  account whose folder it names is "claude's own folder" and config.toml is refused at that start; its plain blocks
+  inherit the variable too, so `claude` typed there runs on the account. Fix: drop an agent's variable from
+  Templum's environment at start when it names one of its accounts' folders, as `own_state_in` ignores it.
+- [ ] **A loop across items applies one account before the other.** `upstream` (`crates/templum/src/agents.rs:248`)
+  orders whole accounts: with claude3's `skills` from claude4 and claude4's `settings` from claude3, one of them is
+  applied before the other's item is linked, which then starts as a real empty folder. Fix: order by item, or
+  refuse a loop across items in `check_account`.
