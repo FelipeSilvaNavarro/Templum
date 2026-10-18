@@ -325,11 +325,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let typing = self
-            .waits
-            .iter()
-            .any(|w| w.key == key && field_focused(w, window, cx));
-        if self.answer(key, reply, cx) && typing {
+        let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
+            return;
+        };
+        let typing = field_focused(wait, window, cx);
+        let from = wait.from.clone();
+        self.answer(key, reply, cx);
+        self.seen_asking(&from);
+        if typing {
             window.focus(&self.focus_handle, cx);
         }
     }

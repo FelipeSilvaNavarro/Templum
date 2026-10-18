@@ -1,7 +1,7 @@
 # Questions from agents: `ask_user` v2
 
 - **Date:** 2026-10-17
-- **Status:** Designed (kanban card 34, "Correções ask_user"); plan:
+- **Status:** Implemented (kanban card 34, "Correções ask_user"); plan:
   [2026-10-17-ask-user-v2.md](../plans/2026-10-17-ask-user-v2.md)
 - **Builds on:** [connections.md](connections.md#requests-from-agents) (the balloon, the tools, the notices typed
   back), [settings.md](settings.md), [shell-integration.md](shell-integration.md#news-and-notifications) (alerts and

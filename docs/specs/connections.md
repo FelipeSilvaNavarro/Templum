@@ -140,7 +140,11 @@ later starts with none.
     showing are ignored;
   - when the person doesn't see the balloon (the block is in another workspace, outside the view, hidden by grid mode,
     or too small on screen for the Full level and not focused, or the window is in the background), a notification
-    says what the agent asks, also the system's in the background; clicking it reveals the block;
+    says what the agent asks ("Asks you: …", with "(and 2 more)" for a call's other questions), also the system's in
+    the background; clicking it reveals the block. The block gets an alert too, as a bell gives one: its workspace's
+    tile shows the yellow dot and Ctrl+Shift+A goes there; answering clears it;
+  - a question or a request to connect makes a short system sound, seen or not, at most one every 2 seconds, unless
+    `[connections] sound = false` ([ask-user.md](ask-user.md#telling-the-person));
   - the block's dot shows it waiting for the person (yellow, "Waiting for you: *the question*"), at every level;
   - a request no one answers is withdrawn after its timeout, and the agent is told so: a request to connect's is 30
     minutes unless the agent asked for another; a question waits until it is answered unless the agent gave a

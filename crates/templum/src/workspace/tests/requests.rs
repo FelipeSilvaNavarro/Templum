@@ -472,9 +472,104 @@ fn a_question_off_screen_is_a_notification(cx: &mut TestAppContext) {
     ws.update(cx, |ws, _| {
         ws.space.canvas.get_mut(mine).unwrap().rect.x += 100_000.0;
     });
+    let alert = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(mine).unwrap().alert.clone())
+    };
+    assert_eq!(alert(cx), None, "seen: no alert");
+    // Not the block the person works in either.
+    ws.update(cx, |ws, _| ws.space.focused = None);
     let asked = json!({ "question": "There?", "options": ["Yes"] });
     let _there = call_later(handle, &ws, cx, &terminal, 2, "ask_user", asked);
     assert_eq!(notification_count(handle, cx), before + 1);
+    // An alert too, as a bell's: its workspace's dot, and Ctrl+Shift+A goes there.
+    assert_eq!(
+        alert(cx),
+        Some(crate::alert::Alert::Attention(Some(
+            "Asks you: There?".into()
+        )))
+    );
+    let id = ws.read_with(cx, |ws, _| ws.space.id.clone());
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, _| ws.sidebar = true);
+        window.render_frame(cx);
+        assert!(
+            window
+                .try_find(gpui_kit::ElementId::Name(
+                    format!("workspace-alert-{id}").into()
+                ))
+                .is_some(),
+            "the workspace's dot"
+        );
+        ws.update(cx, |ws, cx| ws.go_to_waiting(window, cx));
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.focused, Some(mine), "revealed")
+    });
+    assert_eq!(alert(cx), None);
+}
+
+/// The notification counts the call's other questions; it says the same as the alert.
+#[gpui_kit::test]
+fn a_notification_counts_the_other_questions(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    super::terminals::set_active(handle, true, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.focused = None;
+        ws.space.canvas.get_mut(mine).unwrap().rect.x += 100_000.0;
+    });
+    let before = notification_count(handle, cx);
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", two_questions());
+    assert_eq!(notification_count(handle, cx), before + 1);
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.terminal(mine).unwrap().alert.clone()),
+        Some(crate::alert::Alert::Attention(Some(
+            "Asks you: Which database should the service use? (and 1 more)".into()
+        )))
+    );
+}
+
+/// A sound for a question or a request to connect, seen or not, at most once every 2 seconds.
+#[gpui_kit::test]
+fn a_request_chimes_once_every_two_seconds(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, _, mine) = three_blocks(handle, &ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let chimed = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.last_chime);
+    assert_eq!(chimed(cx), None);
+    let asked = json!({ "question": "Ship it?", "options": ["Yes"] });
+    let _one = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked.clone());
+    let first = chimed(cx).expect("a sound");
+    let _two = call_later(handle, &ws, cx, &terminal, 2, "ask_user", asked);
+    assert_eq!(chimed(cx), Some(first), "not twice within 2 s");
+    after(cx, 2100);
+    let k = ws.read_with(cx, |ws, _| ws.space.uids[&kanban].clone());
+    let _connect = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        3,
+        "connect",
+        json!({ "block": k }),
+    );
+    assert!(
+        chimed(cx).is_some_and(|at| at > first),
+        "a request to connect too"
+    );
+}
+
+#[gpui_kit::test]
+fn no_chime_with_the_sound_off(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
+    let (terminal, _) = me(&ws, cx, first);
+    ws.update(cx, |ws, _| ws.config.connections.sound = false);
+    let asked = json!({ "question": "Ship it?", "options": ["Yes"] });
+    let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
+    ws.read_with(cx, |ws, _| assert_eq!(ws.last_chime, None));
 }
 
 /// The person doesn't see a question in view: the window is in the background, or the asking
@@ -649,7 +744,7 @@ fn a_question_from_another_workspace_is_a_notification(cx: &mut TestAppContext) 
     ws.read_with(cx, |ws, _| {
         assert_eq!(
             ws.caller(&terminal),
-            Some((there, kanban)),
+            Some((there.clone(), kanban)),
             "the kanban's id here"
         )
     });
@@ -657,6 +752,27 @@ fn a_question_from_another_workspace_is_a_notification(cx: &mut TestAppContext) 
     let asked = json!({ "question": "Here?", "options": ["Yes"] });
     let _asked = call_later(handle, &ws, cx, &terminal, 1, "ask_user", asked);
     assert_eq!(notification_count(handle, cx), before + 1);
+    // Its tile's dot lights, and Ctrl+Shift+A goes there.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, _| ws.sidebar = true);
+        window.render_frame(cx);
+        let dot = format!("workspace-alert-{there}");
+        assert!(
+            window
+                .try_find(gpui_kit::ElementId::Name(dot.into()))
+                .is_some()
+        );
+        ws.update(cx, |ws, cx| ws.go_to_waiting(window, cx));
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.id, there);
+        assert_eq!(
+            ws.space.focused,
+            Some(kanban),
+            "the terminal, by its id there"
+        );
+    });
 }
 
 #[gpui_kit::test]

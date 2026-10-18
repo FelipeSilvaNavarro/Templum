@@ -1046,3 +1046,13 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   goes to a call no one reads and nothing is typed. Fix: ask from Claude Code, leave it 3 minutes, answer, and write
   what happened in `ask-user.md`'s client table and connections.md's Risks row; on a silent drop, treat the call's
   backgrounding hook (if one comes) as a cancel.
+- [ ] **The question's sound is unheard on macOS and Windows.** `chime::players` (`crates/templum/src/chime.rs`) runs
+  `afplay /System/Library/Sounds/Glass.aiff` on macOS and PowerShell's `[System.Media.SystemSounds]::Asterisk` on
+  Windows; neither was played on those systems, so a person there may hear nothing (or a console flash on Windows).
+  On Linux both `canberra-gtk-play` and `pw-play` exit 0, but no one listened. Fix: play it there and adjust
+  `chime::players`.
+- [ ] **ask_user v2's dialog isn't tried by hand.** The dialog (`crates/templum/src/balloon.rs`) was built and tested
+  headless only: its look at far and near zooms, the preview's two columns, the highlight, and Claude Code, Codex
+  and Gemini CLI each asking with `questions`, then Esc in Claude Code and an answer typed back, weren't seen. A
+  person may meet misaligned marks or a pane that crowds the options. Fix: run `cargo run -p templum -- --dev`, ask
+  with the spec's example from each agent and from `templum ask`, and correct what looks wrong.

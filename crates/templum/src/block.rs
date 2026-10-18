@@ -913,14 +913,17 @@ fn shadow(color: Hsla, focused: bool, lift: f32, z: f32) -> BoxShadow {
 /// text names the block that pressed keys in it, for ANSWERED_FOR.
 pub(crate) fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedString)> {
     let ansi = |i: usize| hsla(ws.theme.palette.ansi[i], 1.0);
-    let (color, text) = match &pane.alert {
-        Some(a @ Alert::Attention(_)) => (ansi(3), a.text()),
-        Some(a) if a.failed() => (ansi(1), a.text()),
-        Some(a) => (ansi(2), a.text()),
-        None => match ws.balloon(pane.term.id()) {
-            Some((wait, _)) => (ansi(3), format!("Waiting for you: {}", wait.summary())),
+    let (color, text) = match (&pane.alert, ws.balloon(pane.term.id())) {
+        // A request waits: its own alert ("Asks you: …") or a bell's says less than this.
+        (None | Some(Alert::Attention(_)), Some((wait, _))) => {
+            (ansi(3), format!("Waiting for you: {}", wait.summary()))
+        }
+        (Some(a @ Alert::Attention(_)), None) => (ansi(3), a.text()),
+        (Some(a), _) if a.failed() => (ansi(1), a.text()),
+        (Some(a), _) => (ansi(2), a.text()),
+        (None, None) => {
             // An agent the last snapshot no longer sees (it crashed) says nothing of its turn.
-            None => match pane.state.as_ref().filter(|_| pane.seen.agent.is_some()) {
+            match pane.state.as_ref().filter(|_| pane.seen.agent.is_some()) {
                 Some(AgentState::NeedsYou(asks)) => (
                     ansi(3),
                     asks.as_ref().map_or_else(
@@ -943,8 +946,8 @@ pub(crate) fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedStr
                         _ => return None,
                     }
                 }
-            },
-        },
+            }
+        }
     };
     Some(match pane.answered_by() {
         Some(by) => (color, format!("{text} · answered by {by}").into()),

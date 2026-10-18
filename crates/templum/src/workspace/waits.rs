@@ -15,6 +15,7 @@ use templum_mcp::{Replier, Reply, tools};
 
 use super::bus::{Outcome, target};
 use super::{AgentState, Pane, Workspace};
+use crate::alert::Alert;
 
 /// How long after the dialog first shows a question its keys and clicks are ignored: someone
 /// typing or clicking in the terminal as it appears doesn't answer it.
@@ -154,6 +155,7 @@ impl Workspace {
             Waiting::Question { .. } | Waiting::Connect { .. }
         ) {
             self.tell_asking(&wait, window, cx);
+            self.chime(cx);
             // Its block waits for its person now. The agent that handed it a task hears nothing:
             // the person sees the balloon, and that agent can't answer it.
             self.needs_you(&wait.from, Some(&wait.summary()), false, cx);
@@ -323,8 +325,8 @@ impl Workspace {
         let Waiting::Connect { to } = &wait.what else {
             return;
         };
-        let to = to.clone();
-        let reply = match self.caller(&wait.from) {
+        let (to, from) = (to.clone(), wait.from.clone());
+        let reply = match self.caller(&from) {
             _ if !allow => Reply::err(format!("The person didn't connect you to {to}.")),
             None => Reply::err("Your block was closed; the request was withdrawn."),
             Some((space_id, me)) => {
@@ -341,6 +343,15 @@ impl Workspace {
             }
         };
         self.answer(key, reply, cx);
+        self.seen_asking(&from);
+    }
+
+    /// The person answered a request of the terminal `from`: they saw its block, whose alert
+    /// (`tell_asking`'s, or any other) goes, as seeing a block clears its alert.
+    pub(super) fn seen_asking(&mut self, from: &str) {
+        if let Some(pane) = self.pane_mut(from) {
+            pane.alert = None;
+        }
     }
 
     /// "*Claude Code* wants to connect to *Dev server*": a request to connect as the person reads
@@ -393,11 +404,25 @@ impl Workspace {
             .map(|w| w.from.as_str())
     }
 
+    /// A request's short sound, unless `[connections] sound` is off or one played under
+    /// `chime::GAP` ago.
+    fn chime(&mut self, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        let recent = self
+            .last_chime
+            .is_some_and(|at| now.duration_since(at) < crate::chime::GAP);
+        if self.config.connections.sound && !recent {
+            self.last_chime = Some(now);
+            crate::chime::play();
+        }
+    }
+
     /// The person doesn't see the asking block's dialog (the block is in another workspace,
     /// outside the view, hidden by grid mode, or too small on screen for its dialog to be drawn,
-    /// or the window is in the background): a notification says what it asks; clicking it shows
-    /// the block.
-    fn tell_asking(&self, wait: &Wait, window: &mut Window, cx: &mut Context<Self>) {
+    /// or the window is in the background): a notification says what it asks, clicking it shows
+    /// the block; and the block gets an alert, as a bell gives one (its workspace's dot,
+    /// `go_to_waiting`).
+    fn tell_asking(&mut self, wait: &Wait, window: &mut Window, cx: &mut Context<Self>) {
         let Some((space_id, me)) = self.caller(&wait.from) else {
             return;
         };
@@ -419,10 +444,16 @@ impl Workspace {
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let (_, title, _) = self.about(&space.blocks[&me], cx);
         let text = match &wait.what {
-            Waiting::Question { ask, .. } => format!("Asks you: {}", ask.summary()),
+            Waiting::Question { ask, .. } => match ask.questions.len() - 1 {
+                0 => format!("Asks you: {}", ask.summary()),
+                more => format!("Asks you: {} (and {more} more)", ask.summary()),
+            },
             Waiting::Connect { .. } => self.connect_line(wait, cx),
             Waiting::Turn { .. } | Waiting::Event { .. } => return,
         };
+        if let Some(pane) = self.pane_mut(&wait.from) {
+            pane.alert = Some(Alert::Attention(Some(text.clone())));
+        }
         self.notify_from(space_id, me, title, text, window, cx);
     }
 

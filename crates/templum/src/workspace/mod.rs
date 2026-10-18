@@ -1120,6 +1120,8 @@ pub struct Workspace {
     waits: Vec<waits::Wait>,
     /// The last wait's key.
     next_wait: u64,
+    /// When a request last made its sound (`chime::GAP`), by the executor's clock.
+    pub(crate) last_chime: Option<std::time::Instant>,
     /// The last task's id.
     pub(crate) next_task: u64,
     /// What tasks' agents did, waiting to be typed into the agents that handed them over, oldest
@@ -1445,6 +1447,7 @@ impl Workspace {
             _bus: bus_task,
             waits: Vec::new(),
             next_wait: 0,
+            last_chime: None,
             next_task: 0,
             notices: Vec::new(),
             _dot_frame: Task::ready(()),

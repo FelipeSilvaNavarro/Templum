@@ -10,6 +10,7 @@ mod block;
 mod board;
 mod checklist;
 mod checklists;
+mod chime;
 mod config;
 mod editor;
 mod gallery;
