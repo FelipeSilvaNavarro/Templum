@@ -22,8 +22,10 @@ export const Templum = async ({ client }) => {
   const hooked = process.env.TEMPLUM_HOOKED;
   const quiet = Boolean(hooked) && hooked !== String(process.pid);
   if (!hooked) process.env.TEMPLUM_HOOKED = String(process.pid);
-  // Subagents' sessions: never the block's turn.
+  // Subagents' sessions: never the block's turn. Their dialogs are told: they hold the whole turn
+  // until the person answers.
   const children = new Set();
+  const dialog = (type) => type.startsWith("permission.") || type.startsWith("question.");
   // Waits for the hook (events stay in order); it gives up within the limit when Templum is gone.
   const send = (line) => {
     try {
@@ -58,7 +60,7 @@ export const Templum = async ({ client }) => {
         if (info?.parentID) children.add(info.id);
         if (!TOLD.has(event?.type)) return;
         const session = properties.sessionID ?? info?.id;
-        if (children.has(session)) return;
+        if (children.has(session) && !dialog(event.type)) return;
         const said = event.type === "session.idle" && session ? await answer(session) : null;
         send({ type: event.type, properties, answer: said });
       } catch {}

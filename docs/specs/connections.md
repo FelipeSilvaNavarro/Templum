@@ -842,7 +842,8 @@ under `opencode serve`; Kilo Code from its source):
   `<data>/bin/templum hook opencode` and waits for it (`spawnSync` with a 3-second limit, so events stay in order; the
   hook exits within a second when Templum is gone, and a missing program throws nothing). Only those events: OpenCode
   streams many more (`message.part.updated` at each piece of text), each of which would start a process. It reports
-  only the main session: a subagent's session (one with a `parentID`) is never this block's turn. It sets `TEMPLUM_HOOKED` to its process id when it is empty, and says
+  only the main session's turns: a subagent's session (one with a `parentID`) is never this block's turn. Its dialogs
+  (`permission.*`, `question.*`) are told all the same: OpenCode holds the whole turn until the person answers them. It sets `TEMPLUM_HOOKED` to its process id when it is empty, and says
   nothing when it finds another process's: an `opencode run` an OpenCode in Templum starts from its shell tool
   inherits the variable, and must not speak for the block. Every Templum terminal gets an empty `TEMPLUM_HOOKED`.
 

@@ -149,6 +149,9 @@ mod tests {
                 await event("message.part.updated", { sessionID: "main" });
                 await event("session.created", { info: { id: "child", parentID: "main" } });
                 await hooks["chat.message"]({ sessionID: "child" }, {});
+                await event("session.status", { sessionID: "child", status: { type: "busy" } });
+                // A subagent's dialog holds the whole turn: the person must answer it.
+                await event("permission.asked", { sessionID: "child", permission: "bash" });
                 await event("session.idle", { sessionID: "child" });
                 await event("session.idle", { sessionID: "main" });
                 console.log("ran");
@@ -178,9 +181,17 @@ mod tests {
             .iter()
             .map(|l| l["type"].as_str().unwrap())
             .collect();
-        assert_eq!(kinds, ["chat.message", "session.status", "session.idle"]);
-        assert_eq!(heard_lines[2]["answer"], "Done.");
-        assert_eq!(heard_lines[2]["properties"]["sessionID"], "main");
+        assert_eq!(
+            kinds,
+            [
+                "chat.message",
+                "session.status",
+                "permission.asked",
+                "session.idle"
+            ]
+        );
+        assert_eq!(heard_lines[3]["answer"], "Done.");
+        assert_eq!(heard_lines[3]["properties"]["sessionID"], "main");
         // Under another OpenCode that reports (its `opencode run`): nothing at all.
         std::fs::remove_file(&heard).unwrap();
         run(&module("nested.mjs", &program), "1");
