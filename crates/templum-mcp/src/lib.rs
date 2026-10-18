@@ -4,6 +4,7 @@
 pub mod ask;
 pub mod bus;
 pub mod cli;
+pub mod control;
 pub mod hooks;
 pub mod rpc;
 pub mod tools;
