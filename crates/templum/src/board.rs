@@ -112,6 +112,14 @@ impl Priority {
             Priority::High => "high",
         }
     }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Priority::Low => "Low",
+            Priority::Medium => "Medium",
+            Priority::High => "High",
+        }
+    }
 }
 
 /// A priority by its name; one Templum doesn't know is none (a typo mustn't lose the file).

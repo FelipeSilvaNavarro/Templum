@@ -2,13 +2,13 @@
 //! and the dialog of an open card. Everything is drawn at the block's zoom `z`, like a
 //! terminal's text. See docs/specs/kanban.md.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::dialog::DialogButtonProps;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::{Icon, WindowExt as _};
+use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, FontWeight, MouseButton,
@@ -621,6 +621,19 @@ fn edit_typed(ws: &mut Workspace, typed: &Cell<bool>, f: impl FnOnce(&mut Boards
     }
 }
 
+/// Where a card is, as its dialog says it: "In {column} on {board}".
+fn place(boards: &Boards, board: u64, card: u64) -> String {
+    let Some(b) = boards.board(board) else {
+        return String::new();
+    };
+    let column = b
+        .columns
+        .iter()
+        .find(|c| c.cards.iter().any(|x| x.id == card))
+        .map_or("", |c| c.title.as_str());
+    format!("In {column} on {}", b.name)
+}
+
 /// The open card: title, description and labels apply as they change. `new`: the title is
 /// selected, to type over "New card".
 pub(crate) fn open_card(
@@ -632,12 +645,12 @@ pub(crate) fn open_card(
 ) {
     let card = current.id;
     let ws = cx.entity();
-    let title = cx.new(|cx| InputState::new(window, cx).default_value(current.title));
+    let title = cx.new(|cx| InputState::new(window, cx).default_value(current.title.clone()));
     let title_focus = title.clone();
     let description = cx.new(|cx| {
         TextareaState::new(window, cx)
             .rows(5)
-            .default_value(current.description)
+            .default_value(current.description.clone())
     });
     let comment = cx.new(|cx| TextareaState::new(window, cx).rows(2));
     // Subscribed through the app: the workspace these update isn't leased, and they need no
@@ -672,18 +685,31 @@ pub(crate) fn open_card(
         })
         .detach();
     }
+    // A card gone meanwhile (an agent, another block, Ctrl+Z) draws its last values.
+    let last = RefCell::new((current, String::new()));
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let ws_now = ws.read(cx);
         let ui = ws_now.ui;
         let palette = ws_now.theme.palette;
-        let labels = ws_now
-            .boards
-            .card(board, card)
-            .map(|c| c.labels.clone())
-            .unwrap_or_default();
-        let toggles = Label::ALL.map(|label| {
-            let on = labels.contains(&label);
+        if let Some(c) = ws_now.boards.card(board, card) {
+            *last.borrow_mut() = (c.clone(), place(&ws_now.boards, board, card));
+        }
+        let (shown, place) = last.borrow().clone();
+        // Each change from the dialog is one step of the kanban's Ctrl+Z.
+        let edit = {
             let ws = ws.clone();
+            move |f: Rc<dyn Fn(&mut Boards)>| {
+                let ws = ws.clone();
+                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                    ws.update(cx, |ws, cx| {
+                        ws.edit_boards(|b| f(b));
+                        cx.notify();
+                    })
+                }
+            }
+        };
+        let toggles = Label::ALL.map(|label| {
+            let on = shown.labels.contains(&label);
             div()
                 .id(ElementId::Name(format!("label-{}", label.name()).into()))
                 .w(px(40.0))
@@ -700,19 +726,43 @@ pub(crate) fn open_card(
                     gpui_kit::transparent_black()
                 })
                 .cursor_pointer()
-                .on_click(move |_: &ClickEvent, _, cx| {
-                    ws.update(cx, |ws, cx| {
-                        ws.edit_boards(|b| b.toggle_label(board, card, label));
-                        cx.notify();
-                    })
-                })
+                .on_click(edit(Rc::new(move |b| b.toggle_label(board, card, label))))
                 .test_support()
         });
-        let (assignee, comments) = ws_now
-            .boards
-            .card(board, card)
-            .map(|c| (c.assignee.clone(), c.comments.clone()))
-            .unwrap_or_default();
+        let chips = std::iter::once(None)
+            .chain(Priority::ALL.map(Some))
+            .map(|p| {
+                let on = shown.priority == p;
+                let word = p.map_or("None", Priority::title);
+                div()
+                    .id(ElementId::Name(
+                        format!("priority-{}", p.map_or("none", Priority::name)).into(),
+                    ))
+                    .h(px(26.0))
+                    .px(px(10.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .text_size(px(12.0))
+                    .cursor_pointer()
+                    .map(|el| {
+                        if on {
+                            el.bg(ui.hover).border_color(ui.accent).text_color(ui.title)
+                        } else {
+                            el.border_color(ui.hairline)
+                                .text_color(ui.title_dim)
+                                .hover(move |s| s.bg(ui.hover))
+                        }
+                    })
+                    .when_some(p, |el, p| el.child(priority_icon(ws_now, p, 12.0)))
+                    .child(word)
+                    .on_click(edit(Rc::new(move |b| {
+                        b.edit_card(board, card, |c| c.priority = p)
+                    })))
+                    .test_support()
+            });
         let now = notes::now();
         let author = |by: &str| {
             if by == "you" {
@@ -721,8 +771,8 @@ pub(crate) fn open_card(
                 ws_now.uid_title(by, cx).unwrap_or_else(|| by.to_string())
             }
         };
-        let assignee = assignee.map(|a| (assignee_label(ws_now, &a, cx), ws.clone()));
-        let comments: Vec<_> = comments
+        let comments: Vec<_> = shown
+            .comments
             .iter()
             .map(|c| {
                 div()
@@ -740,15 +790,9 @@ pub(crate) fn open_card(
             .collect();
         let add = {
             let (ws, comment) = (ws.clone(), comment.clone());
-            div()
-                .id("add-comment")
-                .px(px(10.0))
-                .py(px(4.0))
-                .rounded(px(6.0))
-                .text_size(px(12.0))
-                .cursor_pointer()
-                .hover(move |s| s.bg(ui.hover))
-                .child("Add comment")
+            Button::new("add-comment")
+                .small()
+                .label("Add comment")
                 .on_click(move |_: &ClickEvent, window, cx| {
                     let text = comment.read(cx).value().trim().to_string();
                     if text.is_empty() {
@@ -765,19 +809,23 @@ pub(crate) fn open_card(
                     });
                     comment.update(cx, |c, cx| c.set_value("", window, cx));
                 })
-                .test_support()
         };
         let delete = {
             let ws = ws.clone();
+            let red = hsla(palette.ansi[1], 1.0);
             div()
                 .id("delete-card")
+                .h(px(28.0))
                 .px(px(10.0))
-                .py(px(4.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
                 .rounded(px(6.0))
-                .text_size(px(12.0))
-                .text_color(hsla(palette.ansi[1], 1.0))
+                .text_size(px(13.0))
+                .text_color(red)
                 .cursor_pointer()
                 .hover(move |s| s.bg(ui.hover))
+                .child(Icon::new(IconName::Trash).size(px(14.0)).text_color(red))
                 .child("Delete card")
                 .on_click(move |_: &ClickEvent, window, cx| {
                     ws.update(cx, |ws, cx| {
@@ -788,62 +836,155 @@ pub(crate) fn open_card(
                 })
                 .test_support()
         };
-        let field = |label: &'static str| {
+        let section = |label: &'static str| {
             div()
                 .text_size(px(12.0))
+                .font_weight(FontWeight::MEDIUM)
                 .text_color(ui.title_dim)
                 .child(label)
         };
+        // A section's header: its label at the left, a count at the right.
+        let header = |label: &'static str, count: Option<String>| {
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(section(label))
+                .when_some(count, |el, count| {
+                    el.child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(ui.title_dim)
+                            .child(count),
+                    )
+                })
+        };
+        let property = |label: &'static str| {
+            div()
+                .min_h(px(28.0))
+                .flex()
+                .items_center()
+                .gap(px(12.0))
+                .child(
+                    div()
+                        .w(px(84.0))
+                        .flex_shrink_0()
+                        .text_size(px(12.0))
+                        .text_color(ui.title_dim)
+                        .child(label),
+                )
+        };
+        let who = shown
+            .assignee
+            .as_ref()
+            .map_or_else(|| "Anyone".to_string(), |a| assignee_label(ws_now, a, cx));
+        let unassign = shown.assignee.is_some().then(|| {
+            div()
+                .id("unassign")
+                .size(px(24.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(move |s| s.bg(ui.hover))
+                .child(
+                    Icon::new(IconName::Close)
+                        .size(px(12.0))
+                        .text_color(ui.title_dim),
+                )
+                .on_click(edit(Rc::new(move |b| {
+                    b.edit_card(board, card, |c| c.assignee = None)
+                })))
+                .test_support()
+        });
+        let count = shown.comments.len();
         alert
-            .title("Card")
-            .w(px(520.0))
-            .button_props(DialogButtonProps::default().ok_text("Done"))
+            .title(
+                div()
+                    .id("card-number")
+                    .child(format!("Card #{card}"))
+                    .test_support(),
+            )
+            .description(place)
+            .w(px(560.0))
+            .footer(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(delete)
+                    .child(
+                        Button::new("card-done")
+                            .primary()
+                            .label("Done")
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    ),
+            )
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(8.0))
-                    .child(field("Title"))
+                    .gap(px(16.0))
                     .child(
                         div()
                             .id("card-title")
                             .child(Input::new(&title))
                             .test_support(),
                     )
-                    .child(field("Description"))
-                    .child(Textarea::new(&description))
-                    .child(field("Labels"))
-                    .child(div().flex().gap(px(6.0)).children(toggles))
-                    .when_some(assignee, |el, (who, ws)| {
-                        el.child(field("Assignee")).child(
-                            div().flex().items_center().gap(px(6.0)).child(who).child(
-                                div()
-                                    .id("unassign")
-                                    .cursor_pointer()
-                                    .hover(move |s| s.bg(ui.hover))
-                                    .child(Icon::new(IconName::Close).size(px(12.0)))
-                                    .on_click(move |_: &ClickEvent, _, cx| {
-                                        ws.update(cx, |ws, cx| {
-                                            ws.edit_boards(|b| {
-                                                b.edit_card(board, card, |c| c.assignee = None)
-                                            });
-                                            cx.notify();
-                                        })
-                                    })
-                                    .test_support(),
-                            ),
-                        )
-                    })
-                    .child(field("Comments"))
-                    .children(comments)
                     .child(
                         div()
-                            .id("comment-field")
-                            .child(Textarea::new(&comment))
+                            .id("card-properties")
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.0))
+                            .child(
+                                property("Assignee")
+                                    .child(div().text_size(px(13.0)).child(who))
+                                    .children(unassign),
+                            )
+                            .child(
+                                property("Priority")
+                                    .child(div().flex().gap(px(6.0)).children(chips)),
+                            )
+                            .child(
+                                property("Labels")
+                                    .child(div().flex().gap(px(6.0)).children(toggles)),
+                            )
                             .test_support(),
                     )
-                    .child(div().flex().justify_end().child(add))
-                    .child(div().flex().justify_end().child(delete)),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(section("Description"))
+                            .child(Textarea::new(&description)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(header("Checklist", None))
+                            .child(div().id("card-checklist").flex().flex_col().test_support()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(header("Comments", (count > 0).then(|| count.to_string())))
+                            .child(div().flex().flex_col().gap(px(10.0)).children(comments))
+                            .child(
+                                div()
+                                    .id("comment-field")
+                                    .child(Textarea::new(&comment))
+                                    .test_support(),
+                            )
+                            .child(div().mt(px(2.0)).flex().justify_end().child(add)),
+                    ),
             )
     });
     // After opening: the dialog takes the focus when it opens.

@@ -1,6 +1,7 @@
 //! Kanban blocks and their boards.
 
 use super::*;
+use gpui_kit::component::WindowExt as _;
 
 fn top_kanban(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> BlockId {
     ws.read_with(cx, |ws, _| {
@@ -490,4 +491,104 @@ fn a_card_shows_its_id_always_and_its_priority_and_checklist_when_it_has_them(
             ws.uid_title(&uid, cx).unwrap()
         );
     });
+}
+
+#[gpui_kit::test]
+fn the_open_card_sets_a_priority_has_delete_left_of_done_and_survives_its_card(
+    cx: &mut TestAppContext,
+) {
+    use crate::board::Priority;
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (_, board, card) = board_with_a_card(handle, &ws, cx);
+    let open_it = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let current = ws.boards.card(board, card).cloned().unwrap();
+                crate::kanban::open_card(board, current, false, window, cx)
+            });
+            window.render_frame(cx);
+        })
+        .unwrap()
+    };
+    let priority = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.boards.card(board, card).unwrap().priority)
+    };
+    open_it(cx);
+    cx.update_window(handle, |_, window, cx| {
+        assert!(window.try_find("card-number").is_some());
+        window.click("priority-high", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(priority(cx), Some(Priority::High));
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    assert_eq!(priority(cx), None, "one Ctrl+Z step");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("priority-medium", cx);
+        window.render_frame(cx);
+        // The fix of the misplaced button: Delete card at the footer's left, on Done's row.
+        let (delete, done) = (
+            window.find("delete-card").bounds(),
+            window.find("card-done").bounds(),
+        );
+        assert!(delete.right() < done.left(), "{delete:?} {done:?}");
+        assert!(
+            (delete.center().y - done.center().y).abs() < px(4.0),
+            "one row"
+        );
+        window.click("card-done", cx);
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+    })
+    .unwrap();
+    assert_eq!(priority(cx), Some(Priority::Medium));
+    // Deleted meanwhile (an agent, another block): the dialog still draws and closes.
+    open_it(cx);
+    ws.update(cx, |ws, _| ws.edit_boards(|b| b.remove_card(board, card)));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("card-done", cx);
+        window.render_frame(cx);
+        assert!(!window.has_active_dialog(cx));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_long_open_card_keeps_its_footer_on_screen(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let (handle, ws) = open(cx);
+    let (_, board, card) = board_with_a_card(handle, &ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| {
+            b.edit_card(board, card, |c| {
+                for i in 0..30 {
+                    c.comments.push(crate::board::Comment {
+                        by: "you".into(),
+                        text: format!("Comment {i}\nwith a second line"),
+                        at: 0,
+                    });
+                }
+            })
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            let current = ws.boards.card(board, card).cloned().unwrap();
+            crate::kanban::open_card(board, current, false, window, cx)
+        });
+        window.render_frame(cx);
+        let screen = window.viewport_size();
+        let done = window.find("card-done");
+        assert!(done.visible(), "{:?}", done.bounds());
+        assert!(
+            done.bounds().bottom() <= screen.height,
+            "{:?} {screen:?}",
+            done.bounds()
+        );
+        assert!(window.find("card-number").bounds().top() >= px(0.0));
+    })
+    .unwrap();
 }
