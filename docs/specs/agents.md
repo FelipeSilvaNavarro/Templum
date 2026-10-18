@@ -4,6 +4,8 @@
 - **Status:** Implemented
 - **Builds on:** [context-menus.md](context-menus.md), [persistence.md](persistence.md) (detecting and resuming
   agents) and [workspaces.md](workspaces.md)
+- **Parity:** what each agent below gets of Templum's server, hooks, usage and flags, and what is missing:
+  [agent-parity.md](agent-parity.md)
 
 ## Goal
 
