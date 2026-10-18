@@ -322,6 +322,9 @@ impl Workspace {
             let told = pane.term.mouse(&input);
             if told {
                 pane.scrolled.set(true);
+                if button.is_some() {
+                    pane.clicked.set(Some(Instant::now()));
+                }
             }
             told
         })

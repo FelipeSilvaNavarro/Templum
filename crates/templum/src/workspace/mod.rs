@@ -222,6 +222,9 @@ pub(crate) struct Pane {
     /// The person scrolled it, or its program heard their mouse, since the last look, which then
     /// tells nothing.
     pub scrolled: Cell<bool>,
+    /// When its program last heard the person's mouse: a press, its drag or release, the wheel;
+    /// not a move with no button down. It may have answered a dialog.
+    pub clicked: Cell<Option<Instant>>,
     /// How many prompts its agent took (`Submitted`): a task's Enter is confirmed by one more.
     pub submitted: u64,
     /// How many times its agent began to wait for its person (a dialog, or it seemed stuck): two

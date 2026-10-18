@@ -1326,6 +1326,74 @@ fn an_allow_after_a_dialog_queued_behind_it_asks_again(cx: &mut TestAppContext) 
     assert!(ws.read_with(cx, |ws, _| ws.templum_agent.approvals[0].changed));
 }
 
+/// Two dialogs were asked before the approval: the person answers the first one themselves, in
+/// their terminal, and the second shows with no hook. Allow presses nothing on it.
+#[gpui_kit::test]
+fn an_allow_after_the_person_typed_in_it_asks_again(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    let terminal = ws.read_with(cx, |ws, _| {
+        ws.space.terminal(busy).unwrap().term.id().to_string()
+    });
+    let asks = json!({ "event": "needs_you", "message": "Allow Bash?" });
+    super::bus::event(handle, &ws, cx, &terminal, asks.clone());
+    super::bus::event(handle, &ws, cx, &terminal, asks);
+    let answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "send_keys",
+        json!({"block": uid, "keys": ["1"]}),
+    );
+    ws.read_with(cx, |ws, _| ws.space.terminal(busy).unwrap().person_typed());
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    super::bus::after(cx, 1_000);
+    assert!(answers.try_recv().is_err(), "it still waits");
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.terminal(busy).unwrap().keys_from.is_none());
+        assert!(ws.templum_agent.approvals[0].changed);
+    });
+}
+
+/// The same with the person's mouse: a program that asked for it (a TUI, Claude Code full screen)
+/// hears the wheel, which may answer its dialog.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_allow_after_the_persons_mouse_reached_it_asks_again(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    super::terminals::program_asks("\x1b[?1002h\x1b[?1006h", handle, &ws, cx, |m| m.mouse);
+    let (uid, terminal) = ws.update(cx, |ws, _| {
+        let pane = ws.space.terminal_mut(id).unwrap();
+        pane.seen.agent = Some("claude".into());
+        let terminal = pane.term.id().to_string();
+        (ws.space.uids[&id].clone(), terminal)
+    });
+    let asks = json!({ "event": "needs_you", "message": "Allow Bash?" });
+    super::bus::event(handle, &ws, cx, &terminal, asks.clone());
+    super::bus::event(handle, &ws, cx, &terminal, asks);
+    let answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "send_keys",
+        json!({"block": uid, "keys": ["1"]}),
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let body = window.find(("body", id.0 as usize)).bounds().origin;
+        let at = (f32::from(body.x) + 20., f32::from(body.y) + 20.);
+        wheel(window, cx, at, ScrollDelta::Lines(point(0., 1.)), false);
+    })
+    .unwrap();
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    super::bus::after(cx, 1_000);
+    assert!(answers.try_recv().is_err(), "it still waits");
+    assert!(ws.read_with(cx, |ws, _| ws.templum_agent.approvals[0].changed));
+}
+
 /// A block closed and brought back with Ctrl+Z keeps its id, with another terminal in it: an Allow
 /// given to the one the person saw presses nothing in the other, also when it asks the same.
 #[gpui_kit::test]

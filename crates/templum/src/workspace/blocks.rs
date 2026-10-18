@@ -614,6 +614,7 @@ impl Workspace {
                         typed: Default::default(),
                         keyed: Default::default(),
                         scrolled: Default::default(),
+                        clicked: Default::default(),
                         submitted: 0,
                         dialogs: 0,
                         speaks: false,
