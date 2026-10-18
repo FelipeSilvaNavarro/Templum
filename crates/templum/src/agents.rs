@@ -52,9 +52,21 @@ pub(crate) struct Account {
 }
 
 /// The state folder of `kind`'s own folder, as Templum's environment names it.
-fn own_state(kind: &Kind) -> Option<PathBuf> {
+pub(crate) fn own_state(kind: &Kind) -> Option<PathBuf> {
+    // Tests never reach the person's own agent folders (~/.claude…): `<OWN_FOLDERS>/<agent>`.
+    #[cfg(test)]
+    return OWN_FOLDERS
+        .with_borrow(|dir| dir.as_ref().map(|d| kind.state_dir(&d.join(kind.agent))));
+    #[cfg(not(test))]
     kind.own_folder(std::env::var_os(kind.var), std::env::home_dir().as_deref())
         .map(|f| kind.state_dir(&f))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Where a test's agents keep their own folders; None: they have none.
+    pub(crate) static OWN_FOLDERS: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 impl AgentEntry {
@@ -267,13 +279,6 @@ pub(crate) fn detects(agents: &[AgentEntry]) -> Vec<Detect> {
 }
 
 /// A new account's id: its agent's and the first free number from 2 (`claude2`).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "used by Settings ▸ Agents ▸ Accounts, a later commit"
-    )
-)]
 pub(crate) fn new_account_id(of: &str, taken: impl Fn(&str) -> bool) -> String {
     (2..)
         .map(|n| format!("{of}{n}"))
@@ -488,14 +493,76 @@ impl Draft {
     }
 }
 
+/// `path` with the home folder as `~`, as a person types it.
+pub(crate) fn tilde(path: &Path) -> String {
+    match std::env::home_dir().and_then(|h| path.strip_prefix(h).ok().map(Path::to_path_buf)) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
+/// What the account dialog edits (docs/specs/accounts.md, The dialog).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct AccountDraft {
+    /// Its agent's id.
+    pub of: String,
+    pub name: String,
+    pub show: bool,
+    /// The folder the person chose, as typed; None: Templum's, `<data>/accounts/<id>`.
+    pub folder: Option<String>,
+    /// Its items shared, by key: the agent's id or another account of it.
+    pub share: BTreeMap<String, String>,
+}
+
+impl AccountDraft {
+    pub fn of(entry: &AgentEntry) -> AccountDraft {
+        let account = entry.account.as_ref();
+        AccountDraft {
+            of: account.map_or_else(String::new, |a| a.kind.agent.to_string()),
+            name: entry.title.clone(),
+            show: entry.show,
+            folder: account.filter(|a| a.chosen).map(|a| tilde(&a.folder)),
+            share: account.map(|a| a.share.clone()).unwrap_or_default(),
+        }
+    }
+
+    /// What `[agents.<id>]` holds for it.
+    pub fn to_config(&self) -> AgentConfig {
+        let name = self.name.trim();
+        AgentConfig {
+            of: Some(self.of.clone()),
+            name: (!name.is_empty()).then(|| name.to_string()),
+            show: (!self.show).then_some(false),
+            folder: self
+                .folder
+                .as_deref()
+                .map(str::trim)
+                .filter(|f| !f.is_empty())
+                .map(str::to_string),
+            share: (!self.share.is_empty()).then(|| self.share.clone()),
+            ..AgentConfig::default()
+        }
+    }
+
+    /// Why it can't be saved as the account `id` among `agents` (config.toml's), if it can't.
+    pub fn problem(&self, id: &str, agents: &BTreeMap<String, AgentConfig>) -> Option<String> {
+        let mut agents = agents.clone();
+        agents.insert(id.to_string(), self.to_config());
+        crate::config::check_account(id, &agents).err()
+    }
+}
+
 /// `config` as the value of `agents.<id>` in config.toml.
 pub(crate) fn to_value(config: &AgentConfig) -> toml_edit::InlineTable {
     let mut table = toml_edit::InlineTable::new();
     for (key, value) in [
+        ("of", &config.of),
         ("name", &config.name),
         ("command", &config.command),
         ("resume", &config.resume),
         ("generate", &config.generate),
+        ("folder", &config.folder),
     ] {
         if let Some(value) = value {
             table.insert(key, value.as_str().into());
@@ -507,6 +574,13 @@ pub(crate) fn to_value(config: &AgentConfig) -> toml_edit::InlineTable {
     if let Some(models) = &config.models {
         let list: toml_edit::Array = models.iter().map(String::as_str).collect();
         table.insert("models", list.into());
+    }
+    if let Some(share) = &config.share {
+        let mut shared = toml_edit::InlineTable::new();
+        for (key, to) in share {
+            shared.insert(key, to.as_str().into());
+        }
+        table.insert("share", shared.into());
     }
     table
 }
@@ -671,10 +745,8 @@ mod tests {
             "claude3 = { of = \"claude\" }\n",
             "claude4 = { of = \"claude\", share = { skills = \"claude3\" } }\n",
         ));
-        let kind = templum_usage::accounts::kind("claude").unwrap();
-        let own = kind
-            .own_folder(std::env::var_os(kind.var), std::env::home_dir().as_deref())
-            .unwrap();
+        OWN_FOLDERS.set(Some(PathBuf::from("/own")));
+        let own = PathBuf::from("/own/claude");
         let from = |id: &str, key: &str| {
             by(&list, id)
                 .shares(&list)
@@ -731,6 +803,7 @@ mod tests {
 
     #[test]
     fn each_folder_whose_limits_are_read_is_a_home() {
+        OWN_FOLDERS.set(Some(PathBuf::from("/own")));
         let list = agents(concat!(
             "[agents]\n",
             "claude2 = { of = \"claude\" }\n",
@@ -777,6 +850,59 @@ mod tests {
             commit_agent(&list, &chose("claude"), |_| true).unwrap().env,
             None
         );
+    }
+
+    #[test]
+    fn an_account_draft_round_trips() {
+        let draft = AccountDraft {
+            of: "claude".into(),
+            name: "Claude Code 2".into(),
+            show: false,
+            folder: Some("~/work".into()),
+            share: [("skills", "claude"), ("output-styles", "claude")]
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .into(),
+        };
+        let config = draft.to_config();
+        let text = format!("[agents]\nclaude2 = {}\n", to_value(&config));
+        assert_eq!(parse(&text).unwrap().agents["claude2"], config, "{text}");
+        let list = effective(&parse(&text).unwrap().agents, &[], Some(Path::new("/data")));
+        assert_eq!(AccountDraft::of(by(&list, "claude2")), draft);
+        let own = AccountDraft {
+            folder: None,
+            share: BTreeMap::new(),
+            ..draft
+        };
+        let config = own.to_config();
+        assert_eq!(
+            (config.folder, config.share),
+            (None, None),
+            "Templum's folder, all its own"
+        );
+    }
+
+    #[test]
+    fn a_draft_with_a_cycle_is_refused() {
+        let claude3 = AgentConfig {
+            of: Some("claude".into()),
+            share: Some([("skills".to_string(), "claude4".to_string())].into()),
+            ..AgentConfig::default()
+        };
+        let agents: BTreeMap<String, AgentConfig> = [("claude3".to_string(), claude3)].into();
+        let draft = AccountDraft {
+            of: "claude".into(),
+            name: "Claude Code 4".into(),
+            show: true,
+            folder: None,
+            share: [("skills".to_string(), "claude3".to_string())].into(),
+        };
+        let problem = draft.problem("claude4", &agents).unwrap();
+        assert!(problem.contains("shares it back"), "{problem}");
+        let fine = AccountDraft {
+            share: BTreeMap::new(),
+            ..draft
+        };
+        assert_eq!(fine.problem("claude4", &agents), None);
     }
 
     #[test]

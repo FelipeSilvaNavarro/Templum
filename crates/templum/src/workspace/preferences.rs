@@ -57,6 +57,95 @@ impl Workspace {
         Ok(id)
     }
 
+    /// Saves an account from Settings ▸ Agents ▸ Accounts (docs/specs/accounts.md): `id` names
+    /// one already there, None a new one (its agent's id and the first free number). Its folder
+    /// then gets its choices, a real item in the way of a link kept aside. A change of folder
+    /// waits for its blocks to close and for no other account to share from it. Returns its id.
+    pub(crate) fn save_account(
+        &mut self,
+        id: Option<&str>,
+        draft: &agents::AccountDraft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<String, String> {
+        let pending = self.pending.as_ref().unwrap_or(&self.config);
+        let id = match id {
+            Some(id) => id.to_string(),
+            None => agents::new_account_id(&draft.of, |x| {
+                pending.agents.contains_key(x) || self.agents.iter().any(|a| a.id == x)
+            }),
+        };
+        if let Some(problem) = draft.problem(&id, &pending.agents) {
+            return Err(problem);
+        }
+        let config = draft.to_config();
+        let mut all = pending.agents.clone();
+        all.insert(id.clone(), config.clone());
+        let list = agents::effective(&all, &agents::codex_models(), self.data_dir.as_deref());
+        let Some(entry) = list.iter().find(|a| a.id == id).cloned() else {
+            return Err("An account needs Templum's data folder".to_string());
+        };
+        let account = entry.account.as_ref().expect("an account");
+        let moved = self
+            .agents
+            .iter()
+            .find(|a| a.id == id)
+            .and_then(|a| a.account.as_ref())
+            .is_some_and(|old| old.folder != account.folder);
+        if moved && let Some(why) = self.account_in_use(&id) {
+            return Err(format!("{why} to change its folder"));
+        }
+        let key = id.clone();
+        self.edit(
+            Edit::set("agents", id.clone(), agents::to_value(&config)),
+            |c| {
+                c.agents.insert(key, config);
+            },
+            cx,
+        );
+        let report = templum_usage::accounts::apply(
+            account.kind,
+            &account.folder,
+            &entry.shares(&list),
+            &entry.sources(&list),
+            templum_usage::accounts::When::Saved,
+        );
+        self.tell_account(&entry, &report, window, cx);
+        Ok(id)
+    }
+
+    /// Why the account `id` can't be deleted or moved now, if it can't: a block of a running
+    /// workspace is its (its agent running there or only its shell), or another account shares
+    /// one of its items.
+    pub(crate) fn account_in_use(&self, id: &str) -> Option<String> {
+        let entry = self.agents.iter().find(|a| a.id == id)?;
+        let blocks = self
+            .spaces()
+            .filter(|s| !s.stopped)
+            .flat_map(|s| s.terminals())
+            .filter(|(_, p)| p.account.as_deref() == Some(id))
+            .count();
+        if blocks > 0 {
+            let s = if blocks == 1 { "" } else { "s" };
+            return Some(format!(
+                "{} has {blocks} block{s}: close them first",
+                entry.title
+            ));
+        }
+        self.agents.iter().filter(|a| a.id != id).find_map(|other| {
+            let (key, _) = other
+                .account
+                .as_ref()?
+                .share
+                .iter()
+                .find(|(_, to)| *to == id)?;
+            Some(format!(
+                "{} shares {}'s {key}: change it first",
+                other.title, entry.title
+            ))
+        })
+    }
+
     /// One of Templum's agents back to its defaults, or one of the user's deleted.
     pub(crate) fn remove_agent(&mut self, id: &str, cx: &mut Context<Self>) {
         let key = id.to_string();

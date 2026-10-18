@@ -644,3 +644,238 @@ fn the_git_program_field_keeps_a_typed_space(cx: &mut TestAppContext) {
         )
     });
 }
+
+/// Opens Settings ▸ Agents, scrolled to its end: the accounts.
+fn open_accounts(handle: AnyWindowHandle, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-tab-agents", cx);
+        window.render_frame(cx);
+        window.scroll(
+            "settings-scroll",
+            ScrollDelta::Pixels(point(px(0.), px(-8000.))),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+/// Picks the option at `index` of the dropdown `id`.
+fn pick(handle: AnyWindowHandle, cx: &mut TestAppContext, id: &'static str, index: usize) {
+    cx.update_window(handle, |_, window, cx| {
+        window.click(id, cx);
+        window.render_frame(cx);
+        window.within("popup-menu").click(index, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+/// The Add an account dialog with Claude Code chosen.
+fn add_claude_account(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        window.click("add-account", cx);
+        window.render_frame(cx);
+        assert!(gpui_kit::component::WindowExt::has_active_dialog(window, cx));
+    })
+    .unwrap();
+    let claude = ws.read_with(cx, |ws, _| {
+        crate::settings::accounts::agent_choices(&ws.agents)
+            .iter()
+            .position(|(id, _)| id == "claude")
+            .unwrap()
+    });
+    pick(handle, cx, "account-agent", claude);
+}
+
+fn save_dialog(handle: AnyWindowHandle, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        window.within("dialog").click("ok", cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn adding_an_account_in_settings_writes_it_and_its_links(cx: &mut TestAppContext) {
+    let own = tempfile::tempdir().unwrap();
+    crate::agents::OWN_FOLDERS.set(Some(own.path().to_path_buf()));
+    let (config, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (handle, ws) = open_in(
+        cx,
+        Some(config.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    open_accounts(handle, cx);
+    add_claude_account(handle, &ws, cx);
+    // The agent's own folder comes first.
+    pick(handle, cx, "account-share-all", 0);
+    save_dialog(handle, cx);
+    ws.update(cx, |ws, _| ws.save());
+    let text = std::fs::read_to_string(config.path().join(crate::config::FILE)).unwrap();
+    let agents = crate::config::parse(&text).unwrap().agents;
+    let claude2 = &agents["claude2"];
+    assert_eq!(claude2.of.as_deref(), Some("claude"));
+    assert_eq!(claude2.name.as_deref(), Some("Claude Code 2"));
+    let share = claude2.share.as_ref().unwrap();
+    let kind = templum_usage::accounts::kind("claude").unwrap();
+    assert_eq!(share.len(), kind.items.len());
+    assert!(share.values().all(|to| to == "claude"), "{text}");
+    let account = data.path().join("accounts").join("claude2");
+    assert_eq!(
+        std::fs::read_link(account.join("skills")).unwrap(),
+        own.path().join("claude").join("skills")
+    );
+    assert!(
+        !account.join(".credentials.json").exists(),
+        "its login is its own"
+    );
+}
+
+#[gpui_kit::test]
+fn the_agents_rows_leave_accounts_out_and_reset_all_leaves_them(cx: &mut TestAppContext) {
+    let (config, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    std::fs::write(
+        config.path().join(crate::config::FILE),
+        format!(
+            "[agents.claude]\ncommand = \"claude --model opus\"\n{}",
+            super::agents::CLAUDE2
+        ),
+    )
+    .unwrap();
+    let (handle, ws) = open_in(
+        cx,
+        Some(config.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    open_accounts(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        assert!(
+            window.try_find("field-agents.claude2").is_none(),
+            "not among the agents"
+        );
+        assert!(
+            window.try_find("field-accounts.claude2").is_some(),
+            "under Accounts"
+        );
+        window.scroll(
+            "settings-scroll",
+            ScrollDelta::Pixels(point(px(0.), px(8000.))),
+            cx,
+        );
+        window.render_frame(cx);
+        window.click("settings-reset-section", cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let agents = &ws.pending.as_ref().unwrap_or(&ws.config).agents;
+        assert!(
+            !agents.contains_key("claude"),
+            "Claude Code back to Templum's"
+        );
+        assert!(agents.contains_key("claude2"), "the account stays");
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_folder_set_up_by_hand_keeps_its_sharing(cx: &mut TestAppContext) {
+    let own = tempfile::tempdir().unwrap();
+    crate::agents::OWN_FOLDERS.set(Some(own.path().to_path_buf()));
+    let skills = own.path().join("claude").join("skills");
+    std::fs::create_dir_all(&skills).unwrap();
+    let mine = tempfile::tempdir().unwrap();
+    let dotfiles = mine.path().join("dotfiles").join("agents");
+    std::fs::create_dir_all(&dotfiles).unwrap();
+    let folder = mine.path().join("work");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::os::unix::fs::symlink(&skills, folder.join("skills")).unwrap();
+    std::os::unix::fs::symlink(&dotfiles, folder.join("agents")).unwrap();
+    let (config, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (handle, ws) = open_in(
+        cx,
+        Some(config.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    open_accounts(handle, cx);
+    add_claude_account(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("account-folder", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.simulate_input(handle, &folder.display().to_string());
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("account-share-skills").is_some());
+        assert!(
+            window.try_find("account-share-agents").is_none(),
+            "the person's link: a line in place of its dropdown"
+        );
+    })
+    .unwrap();
+    save_dialog(handle, cx);
+    ws.update(cx, |ws, _| ws.save());
+    let text = std::fs::read_to_string(config.path().join(crate::config::FILE)).unwrap();
+    let agents = crate::config::parse(&text).unwrap().agents;
+    assert_eq!(
+        agents["claude2"].share.as_ref().unwrap()["skills"],
+        "claude",
+        "{text}"
+    );
+    assert_eq!(std::fs::read_link(folder.join("skills")).unwrap(), skills);
+    assert_eq!(std::fs::read_link(folder.join("agents")).unwrap(), dotfiles);
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_folder_change_waits_for_the_blocks_and_keeps_the_old_one(cx: &mut TestAppContext) {
+    let (data, elsewhere) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    super::agents::with_agents(
+        &ws,
+        cx,
+        "[agents.claude2]\nof = \"claude\"\n[agents.claude3]\nof = \"claude\"\n",
+    );
+    let folder = tempfile::tempdir().unwrap();
+    let block = super::agents::launch(handle, &ws, cx, "claude2", folder.path());
+    let old = data.path().join("accounts").join("claude2");
+    let new = elsewhere.path().join("w");
+    let moved = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let entry = ws
+                    .agents
+                    .iter()
+                    .find(|a| a.id == "claude2")
+                    .unwrap()
+                    .clone();
+                let draft = crate::agents::AccountDraft {
+                    folder: Some(new.display().to_string()),
+                    ..crate::agents::AccountDraft::of(&entry)
+                };
+                ws.save_account(Some("claude2"), &draft, window, cx)
+            })
+        })
+        .unwrap()
+    };
+    let refused = moved(&ws, cx).unwrap_err();
+    assert_eq!(
+        refused,
+        "Claude Code (claude2) has 1 block: close them first to change its folder"
+    );
+    ws.update(cx, |ws, cx| {
+        ws.space.blocks.remove(&block);
+        ws.space.canvas.remove(block);
+        cx.notify();
+    });
+    assert_eq!(moved(&ws, cx), Ok("claude2".to_string()));
+    assert!(new.is_dir(), "its choices applied in the new folder");
+    assert!(old.is_dir(), "the old one, with its login, stays");
+}

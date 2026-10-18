@@ -94,7 +94,7 @@ pub(crate) fn welcome_groups(
             let found: Vec<Row> = ws
                 .agents
                 .iter()
-                .filter(|a| installed.contains(&a.id))
+                .filter(|a| a.account.is_none() && installed.contains(&a.id))
                 .map(|a| agent_row(ws, entity, a))
                 .collect();
             let found = if found.is_empty() {

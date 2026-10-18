@@ -241,9 +241,11 @@ pub(super) fn rows(
             ]
         }
         Section::Git => super::git::rows(ws, entity, window, cx),
+        // The accounts are under them (`accounts.rs`).
         Section::Agents => ws
             .agents
             .iter()
+            .filter(|agent| agent.account.is_none())
             .map(|agent| agent_row(ws, entity, agent))
             .collect(),
         Section::Usage => {

@@ -20,6 +20,7 @@ use crate::motion;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
 
+pub(crate) mod accounts;
 mod agents;
 mod colors;
 pub(crate) mod connections;
@@ -307,7 +308,10 @@ pub(crate) fn render(
                     )
                 })
                 .child(div().mt(px(4.0)).child(card))
-                .when(section == Section::Agents, |el| el.child(add_agent(ui, cx)))
+                .when(section == Section::Agents, |el| {
+                    el.child(add_agent(ui, cx))
+                        .child(accounts::accounts(ws, &entity, cx))
+                })
                 .when(section == Section::Appearance, |el| {
                     el.child(colors::theme_card(ws, window, cx))
                 }),
