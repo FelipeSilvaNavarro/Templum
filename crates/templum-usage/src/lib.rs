@@ -226,7 +226,7 @@ pub fn session_ids(procs: &[Proc], dirs: &Dirs, now: u64) -> Vec<Option<String>>
         .iter()
         .map(|p| {
             let dir = match p.agent.as_str() {
-                "claude" => dirs.claude.as_deref(),
+                "claude" => p.home.as_deref().or(dirs.claude.as_deref()),
                 // Qwen Code keeps the same file for each of its processes.
                 "qwen" => dirs.qwen.as_deref(),
                 _ => None,
@@ -234,12 +234,23 @@ pub fn session_ids(procs: &[Proc], dirs: &Dirs, now: u64) -> Vec<Option<String>>
             claude::session_id(p.pid, dir?)
         })
         .collect();
-    let (at, codex): (Vec<usize>, Vec<&Proc>) = procs
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| p.agent == "codex")
-        .unzip();
-    if let (Some(dir), false) = (&dirs.codex, codex.is_empty()) {
+    // Each Codex folder's processes together: an account's are in its own.
+    let mut folders: Vec<&Path> = Vec::new();
+    for p in procs.iter().filter(|p| p.agent == "codex") {
+        if let Some(dir) = p.home.as_deref().or(dirs.codex.as_deref())
+            && !folders.contains(&dir)
+        {
+            folders.push(dir);
+        }
+    }
+    for dir in folders {
+        let (at, codex): (Vec<usize>, Vec<&Proc>) = procs
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| {
+                p.agent == "codex" && p.home.as_deref().or(dirs.codex.as_deref()) == Some(dir)
+            })
+            .unzip();
         for (i, id) in at.into_iter().zip(codex::session_ids(&codex, dir, now)) {
             ids[i] = id;
         }
@@ -250,8 +261,9 @@ pub fn session_ids(procs: &[Proc], dirs: &Dirs, now: u64) -> Vec<Option<String>>
 /// Whether `agent` still has its session `id` to resume. Gemini CLI deletes a session that has
 /// no message yet when it exits, and can't resume one it doesn't find
 /// (`tmp/<project>/chats/session-<time>-<the id's first 8>.jsonl`); the others are taken to.
-pub fn session_kept(agent: &str, id: &str, dirs: &Dirs) -> bool {
-    let (Some(dir), "gemini") = (&dirs.gemini, agent) else {
+/// `home`: an account's state folder, where its agent keeps them.
+pub fn session_kept(agent: &str, id: &str, dirs: &Dirs, home: Option<&Path>) -> bool {
+    let (Some(dir), "gemini") = (home.or(dirs.gemini.as_deref()), agent) else {
         return true;
     };
     let name = format!("-{}.jsonl", id.get(..8).unwrap_or(id));
@@ -419,6 +431,44 @@ mod tests {
     }
 
     #[test]
+    fn a_session_id_is_read_from_the_accounts_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let account = dir.path().join("accounts").join("claude2");
+        let sessions = account.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(
+            sessions.join("7.json"),
+            r#"{"pid": 7, "sessionId": "acc-1", "cwd": "/srv"}"#,
+        )
+        .unwrap();
+        let dirs = Dirs {
+            relay: dir.path().join("relay"),
+            claude: Some(dir.path().join("own")),
+            codex: None,
+            qwen: None,
+            gemini: Some(dir.path().join("gemini")),
+        };
+        let proc = |home: Option<PathBuf>| Proc {
+            agent: "claude".into(),
+            pid: 7,
+            started: 0,
+            cwd: Some("/srv".into()),
+            terminal: String::new(),
+            account: home.as_ref().map(|_| "claude2".into()),
+            home,
+        };
+        let ids = session_ids(&[proc(Some(account.clone())), proc(None)], &dirs, 0);
+        assert_eq!(ids, [Some("acc-1".into()), None]);
+        // Gemini CLI's session, in the account's folder only.
+        let id = "019a1f2e-7b3c-7d4e-8f5a-6b7c8d9e0f1a";
+        let chats = account.join("tmp/my-app/chats");
+        std::fs::create_dir_all(&chats).unwrap();
+        std::fs::write(chats.join("session-2026-10-14T10-00-019a1f2e.jsonl"), "{}").unwrap();
+        assert!(session_kept("gemini", id, &dirs, Some(&account)));
+        assert!(!session_kept("gemini", id, &dirs, None));
+    }
+
+    #[test]
     fn a_gemini_session_is_kept_only_while_its_file_is() {
         let dir = tempfile::tempdir().unwrap();
         let dirs = Dirs {
@@ -429,18 +479,22 @@ mod tests {
             gemini: Some(dir.path().to_path_buf()),
         };
         let id = "019a1f2e-7b3c-7d4e-8f5a-6b7c8d9e0f1a";
-        assert!(!session_kept("gemini", id, &dirs), "no folder yet");
+        assert!(!session_kept("gemini", id, &dirs, None), "no folder yet");
         let chats = dir.path().join("tmp/my-app/chats");
         std::fs::create_dir_all(&chats).unwrap();
-        assert!(!session_kept("gemini", id, &dirs));
+        assert!(!session_kept("gemini", id, &dirs, None));
         std::fs::write(chats.join("session-2026-10-14T10-00-019a1f2e.jsonl"), "{}").unwrap();
-        assert!(session_kept("gemini", id, &dirs));
+        assert!(session_kept("gemini", id, &dirs, None));
         assert!(!session_kept(
             "gemini",
             "11111111-7b3c-7d4e-8f5a-6b7c8d9e0f1a",
-            &dirs
+            &dirs,
+            None
         ));
-        assert!(session_kept("grok", id, &dirs), "the others keep theirs");
+        assert!(
+            session_kept("grok", id, &dirs, None),
+            "the others keep theirs"
+        );
     }
 
     #[test]

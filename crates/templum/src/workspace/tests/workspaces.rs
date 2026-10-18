@@ -28,6 +28,7 @@ fn a_workspace_shows_an_agent_from_its_last_snapshot() {
                 opened_by: None,
                 model: None,
                 effort: None,
+                account: None,
             })],
             focused: None,
             recent: Vec::new(),

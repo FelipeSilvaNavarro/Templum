@@ -8,6 +8,7 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, Window};
 use templum_canvas::{BlockId, Camera, Point, Rect, Size, chrome};
 
+use crate::agents::AgentEntry;
 use crate::board::{self, Boards};
 use crate::checklist::{self, Checklist};
 use crate::checklists::{self, Checklists};
@@ -162,8 +163,19 @@ impl Workspace {
         resume: bool,
         cx: &mut Context<Self>,
     ) {
+        // Its account, when Templum still has it: one deleted gives a plain terminal.
+        let account = saved
+            .account
+            .as_deref()
+            .and_then(|a| {
+                self.agents
+                    .iter()
+                    .find(|e| e.id == a && e.account.is_some())
+            })
+            .map(|e| e.id.clone());
         if let Some(pane) = self.space.terminal_mut(id) {
             pane.opened_by = saved.opened_by.clone();
+            pane.account = account;
         }
         let Some(agent) = saved
             .agent
@@ -176,7 +188,12 @@ impl Workspace {
         let session = saved.session.as_deref();
         let kept = match (session, &self.data_dir) {
             (Some(id), Some(data)) => {
-                templum_usage::session_kept(&agent.id, id, &templum_usage::Dirs::of(data))
+                let (of, home) = match &agent.account {
+                    Some(a) => (a.kind.agent, Some(a.kind.state_dir(&a.folder))),
+                    None => (agent.id.as_str(), None),
+                };
+                let dirs = templum_usage::Dirs::of(data);
+                templum_usage::session_kept(of, id, &dirs, home.as_deref())
             }
             _ => true,
         };
@@ -225,8 +242,27 @@ impl Workspace {
                     .agent
                     .as_deref()
                     .and_then(|a| self.agents.iter().find(|known| known.id == a))
-                    .filter(|_| in_its_folder);
-                let vars = self.agent_vars(agent, &super::usage::in_env);
+                    .filter(|_| in_its_folder)
+                    .cloned();
+                // Its account's variable, with or without its agent, even out of its folder.
+                let account = t
+                    .account
+                    .as_deref()
+                    .and_then(|a| {
+                        self.agents
+                            .iter()
+                            .find(|e| e.id == a && e.account.is_some())
+                    })
+                    .cloned();
+                if let Some(account) = &account {
+                    self.prepare_account(account, window, cx);
+                }
+                let mut vars = self.agent_vars(agent.as_ref(), &super::usage::in_env);
+                if let Some((name, folder)) = account.as_ref().and_then(AgentEntry::var)
+                    && !vars.iter().any(|(k, _)| k == name)
+                {
+                    vars.insert(0, (name.to_string(), folder.to_string_lossy().into_owned()));
+                }
                 let id = self.spawn_block_with(rect, folder, vars, window, cx)?;
                 self.restore_terminal(id, t, in_its_folder, cx);
                 Some(id)
@@ -333,6 +369,11 @@ impl Workspace {
         Arc::new(crate::agents::detects(&self.agents))
     }
 
+    /// The accounts, whose agent found in one's block is that account.
+    pub(super) fn known_accounts(&self) -> Arc<Vec<crate::agents::Home>> {
+        Arc::new(crate::agents::homes(&self.agents))
+    }
+
     /// Every session::EVERY: reads the processes and writes each workspace's file in the
     /// background, when its snapshot differs from the last one written.
     pub(super) fn snapshot(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -348,13 +389,13 @@ impl Workspace {
         self.snapshotting = true;
         self.generation += 1;
         let generation = self.generation;
-        let known = self.known_agents();
+        let (known, accounts) = (self.known_agents(), self.known_accounts());
         // A stopped workspace's file holds its canvas until it starts: it isn't written.
         let jobs: Vec<_> = self
             .spaces()
             .filter(|s| !s.stopped)
             .map(|s| {
-                let layout = s.layout(known.clone(), cx);
+                let layout = s.layout(known.clone(), accounts.clone(), cx);
                 // A frozen workspace's file is never written, but its terminals are read.
                 let last = (!s.frozen).then(|| s.saved.clone());
                 (s.id.clone(), s.terminal_order(), layout, last)
@@ -514,12 +555,14 @@ impl Workspace {
                 }
             }
         }
-        let known = self.known_agents();
+        let (known, accounts) = (self.known_agents(), self.known_accounts());
         for space in std::iter::once(&mut self.space).chain(&mut self.others) {
             if space.frozen || space.stopped {
                 continue;
             }
-            let (saved, _) = space.layout(known.clone(), cx).snapshot(Some(&dir));
+            let (saved, _) = space
+                .layout(known.clone(), accounts.clone(), cx)
+                .snapshot(Some(&dir));
             // Written even when it looks unchanged: a snapshot in flight may have written an
             // older one.
             match session::save(&dir, &space.id, &saved, generation) {

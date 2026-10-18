@@ -553,7 +553,7 @@ impl Workspace {
         if at == self.active {
             self.switch_to(if at > 0 { at - 1 } else { 1 }, window, cx);
         }
-        let known = self.known_agents();
+        let (known, accounts) = (self.known_agents(), self.known_accounts());
         // A snapshot still being written is older: it can't replace this one.
         self.generation += 1;
         let generation = self.generation;
@@ -561,7 +561,7 @@ impl Workspace {
         let Some(space) = self.others.iter_mut().find(|s| s.id == id && !s.stopped) else {
             return;
         };
-        let (saved, _) = space.layout(known, cx).snapshot(dir.as_deref());
+        let (saved, _) = space.layout(known, accounts, cx).snapshot(dir.as_deref());
         let mut failed = None;
         // Written even when it looks unchanged: a snapshot in flight may have written an older one.
         if let Some(dir) = dir.filter(|_| !space.frozen)

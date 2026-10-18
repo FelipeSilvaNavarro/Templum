@@ -272,6 +272,7 @@ impl Pane {
             opened_by: self.opened_by.clone(),
             model: self.model.clone(),
             effort: self.effort.clone(),
+            account: self.account.clone(),
         }
     }
 
@@ -682,7 +683,12 @@ impl Space {
     }
 
     /// The canvas as a snapshot needs it: rects and process ids, cheap on the UI thread.
-    fn layout(&self, agents: Arc<Vec<templum_terminal::Detect>>, cx: &App) -> session::Layout {
+    fn layout(
+        &self,
+        agents: Arc<Vec<templum_terminal::Detect>>,
+        accounts: Arc<Vec<agents::Home>>,
+        cx: &App,
+    ) -> session::Layout {
         let blocks = self.canvas.blocks();
         // The canvas as it is, also in grid mode.
         session::Layout {
@@ -710,6 +716,7 @@ impl Space {
                 .and_then(|id| blocks.iter().position(|b| b.id == id)),
             recent: self.recent.clone(),
             agents,
+            accounts,
             ink: self.ink.iter().map(session::InkItem::of).collect(),
             grid: self.grid.as_ref().and_then(|g| {
                 session::SavedTile::of(&g.tiles, &|id| blocks.iter().position(|b| b.id == id))

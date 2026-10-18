@@ -731,6 +731,10 @@ pub(crate) struct TerminalItem {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// The account whose variable its shell has (docs/specs/accounts.md, Its block): its agent
+    /// is that account. One Templum doesn't know gives a plain terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -768,6 +772,8 @@ pub(crate) struct Layout {
     pub recent: Vec<PathBuf>,
     /// The agents to look for in the terminals.
     pub agents: std::sync::Arc<Vec<templum_terminal::Detect>>,
+    /// The accounts: a terminal's account names its agent found there.
+    pub accounts: std::sync::Arc<Vec<crate::agents::Home>>,
     pub ink: Vec<InkItem>,
     pub grid: Option<SavedTile>,
     pub wires: Vec<SavedWire>,
@@ -797,8 +803,23 @@ impl Layout {
                 LayoutBlock::Saved(_) => None,
             })
             .collect();
-        let inspections = templum_terminal::inspect(&processes, &self.agents);
-        let sessions = data.map_or_else(Vec::new, |data| session_ids(&inspections, data));
+        let homes: Vec<Option<&crate::agents::Home>> = self
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                LayoutBlock::Terminal(item, _, _) => Some(
+                    item.account
+                        .as_deref()
+                        .and_then(|a| self.accounts.iter().find(|h| h.id == a)),
+                ),
+                LayoutBlock::Saved(_) => None,
+            })
+            .collect();
+        let inspections =
+            name_accounts(templum_terminal::inspect(&processes, &self.agents), &homes);
+        let sessions = data.map_or_else(Vec::new, |data| {
+            session_ids(&procs(&inspections, &homes), data)
+        });
         let mut sessions = sessions.into_iter();
         let mut found = inspections.iter().cloned();
         let saved = Saved {
@@ -853,23 +874,52 @@ impl Layout {
     }
 }
 
-/// The session each terminal's agent has open, in order, from the agents' files.
-fn session_ids(found: &[templum_terminal::Inspection], data: &Path) -> Vec<Option<String>> {
-    let procs: Vec<templum_usage::Proc> = found
-        .iter()
-        .map(|f| templum_usage::Proc {
-            agent: f.agent.clone().unwrap_or_default(),
-            pid: f.pid.unwrap_or(0),
-            started: f.started.unwrap_or(0),
-            cwd: f.folder.clone(),
-            // The relay's file isn't read for a session's id.
-            terminal: String::new(),
-            home: None,
-            account: None,
+/// What a snapshot found in each terminal, in order, with the agent of a terminal's account
+/// (`homes`, one per terminal) named by that account.
+fn name_accounts(
+    found: Vec<templum_terminal::Inspection>,
+    homes: &[Option<&crate::agents::Home>],
+) -> Vec<templum_terminal::Inspection> {
+    found
+        .into_iter()
+        .zip(homes.iter().chain(std::iter::repeat(&None)))
+        .map(|(mut f, home)| {
+            f.agent = crate::agents::in_block(f.agent.as_deref(), *home);
+            f
         })
-        .collect();
+        .collect()
+}
+
+/// The processes of what `name_accounts` found: an account's is its agent's, in the account's
+/// folder.
+fn procs(
+    found: &[templum_terminal::Inspection],
+    homes: &[Option<&crate::agents::Home>],
+) -> Vec<templum_usage::Proc> {
+    found
+        .iter()
+        .zip(homes.iter().chain(std::iter::repeat(&None)))
+        .map(|(f, home)| {
+            let agent = f.agent.clone().unwrap_or_default();
+            let home = home.filter(|h| h.id == agent);
+            templum_usage::Proc {
+                agent: home.map_or(agent, |h| h.agent.clone()),
+                pid: f.pid.unwrap_or(0),
+                started: f.started.unwrap_or(0),
+                cwd: f.folder.clone(),
+                // The relay's file isn't read for a session's id.
+                terminal: String::new(),
+                home: home.map(|h| h.state.clone()),
+                account: home.map(|h| h.id.clone()),
+            }
+        })
+        .collect()
+}
+
+/// The session each process has open, in order, from the agents' files.
+fn session_ids(procs: &[templum_usage::Proc], data: &Path) -> Vec<Option<String>> {
     let dirs = templum_usage::Dirs::of(data);
-    templum_usage::session_ids(&procs, &dirs, crate::notes::now())
+    templum_usage::session_ids(procs, &dirs, crate::notes::now())
 }
 
 /// A path as JSON can hold it.
@@ -1072,6 +1122,60 @@ mod tests {
     }
 
     #[test]
+    fn an_items_account_is_kept() {
+        let text = r#"{"kind":"terminal","rect":{"x":0,"y":0,"w":1,"h":1},"agent":"claude2",
+                      "account":"claude2"}"#;
+        let item: Item = serde_json::from_str(text).unwrap();
+        let Item::Terminal(t) = &item else {
+            panic!("{item:?}")
+        };
+        assert_eq!(t.account.as_deref(), Some("claude2"));
+        let back = serde_json::to_string(&item).unwrap();
+        assert!(back.contains(r#""account":"claude2""#), "{back}");
+        let older: Item =
+            serde_json::from_str(r#"{"kind":"terminal","rect":{"x":0,"y":0,"w":1,"h":1}}"#)
+                .unwrap();
+        let Item::Terminal(o) = &older else {
+            panic!("{older:?}")
+        };
+        assert_eq!(o.account, None);
+        assert!(!serde_json::to_string(&older).unwrap().contains("account"));
+    }
+
+    #[test]
+    fn an_accounts_agent_is_named_by_it_and_read_in_its_folder() {
+        use templum_terminal::Inspection;
+        let home = crate::agents::Home {
+            id: "claude2".into(),
+            agent: "claude".into(),
+            state: PathBuf::from("/data/accounts/claude2"),
+        };
+        let found = |agent: &str, pid: u32| Inspection {
+            agent: Some(agent.into()),
+            pid: Some(pid),
+            ..Default::default()
+        };
+        let homes = [Some(&home), None, Some(&home)];
+        let named = name_accounts(
+            vec![found("claude", 7), found("claude", 8), found("codex", 9)],
+            &homes,
+        );
+        let agents: Vec<_> = named.iter().map(|f| f.agent.as_deref()).collect();
+        assert_eq!(agents, [Some("claude2"), Some("claude"), Some("codex")]);
+        let procs = procs(&named, &homes);
+        assert_eq!(
+            (
+                procs[0].agent.as_str(),
+                &procs[0].home,
+                procs[0].account.as_deref()
+            ),
+            ("claude", &Some(home.state.clone()), Some("claude2"))
+        );
+        assert_eq!((procs[1].agent.as_str(), &procs[1].home), ("claude", &None));
+        assert_eq!((procs[2].agent.as_str(), &procs[2].home), ("codex", &None));
+    }
+
+    #[test]
     fn an_old_git_block_still_reads_and_a_workspaces_git_round_trips() {
         // An older Templum's Git block: read, with its tab defaulting to Changes.
         let text = r#"{"kind":"git","rect":{"x":1,"y":2,"w":800,"h":560},"folder":"/p"}"#;
@@ -1121,6 +1225,7 @@ mod tests {
                     opened_by: None,
                     model: None,
                     effort: None,
+                    account: None,
                 }),
                 Item::Terminal(TerminalItem {
                     uid: String::new(),
@@ -1136,6 +1241,7 @@ mod tests {
                     opened_by: None,
                     model: None,
                     effort: None,
+                    account: None,
                 }),
                 Item::Kanban(KanbanItem {
                     uid: String::new(),
@@ -1777,6 +1883,7 @@ mod tests {
                         opened_by: Some("b7k2m".into()),
                         model: Some("opus".into()),
                         effort: Some("high".into()),
+                        account: None,
                     },
                     Processes::default(),
                     None,
@@ -1796,6 +1903,7 @@ mod tests {
                         opened_by: None,
                         model: None,
                         effort: None,
+                        account: None,
                     },
                     Processes::default(),
                     None,
@@ -1804,6 +1912,7 @@ mod tests {
             focused: Some(1),
             recent: vec![PathBuf::from("/a"), PathBuf::from("/b")],
             agents: Default::default(),
+            accounts: Default::default(),
             ink: Vec::new(),
             grid: None,
             wires: Vec::new(),
@@ -1876,6 +1985,7 @@ mod tests {
                     opened_by: Some("b7k2m".into()),
                     model: Some("gpt-5.6-luna".into()),
                     effort: Some("high".into()),
+                    account: None,
                 },
                 Processes::default(),
                 None,
@@ -1883,6 +1993,7 @@ mod tests {
             focused: None,
             recent: Vec::new(),
             agents: Default::default(),
+            accounts: Default::default(),
             ink: Vec::new(),
             grid: None,
             wires: Vec::new(),

@@ -627,3 +627,131 @@ fn a_frozen_workspaces_terminals_are_still_read(cx: &mut TestAppContext) {
     let file = crate::session::path(data.path(), crate::session::DEFAULT_ID);
     assert!(!file.exists(), "not written");
 }
+
+/// A shell that tells its `CLAUDE_CONFIG_DIR`, then echoes what is typed.
+#[cfg(unix)]
+fn telling_its_folder() -> (String, Vec<String>) {
+    let script = "echo \"dir=${CLAUDE_CONFIG_DIR-unset};\"; exec cat";
+    ("sh".to_string(), vec!["-c".to_string(), script.to_string()])
+}
+
+/// A saved terminal in `folder`, with `agent`, `session` and `account` when given.
+fn saved_terminal(
+    folder: &std::path::Path,
+    agent: Option<&str>,
+    session: Option<&str>,
+    account: Option<&str>,
+) -> crate::session::Item {
+    serde_json::from_value(serde_json::json!({
+        "kind": "terminal",
+        "rect": { "x": 0.0, "y": 900.0, "w": 700.0, "h": 450.0 },
+        "folder": folder,
+        "agent": agent,
+        "session": session,
+        "account": account,
+    }))
+    .unwrap()
+}
+
+fn restore(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    item: &crate::session::Item,
+) -> BlockId {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.add_saved(item, window, cx).unwrap())
+    })
+    .unwrap()
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn two_blocks_one_folder_two_accounts_resume_their_own(cx: &mut TestAppContext) {
+    use super::bus::screen_with;
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_as(
+        cx,
+        Some(telling_its_folder()),
+        None,
+        Some(data.path().to_path_buf()),
+    );
+    super::agents::with_agents(&ws, cx, super::agents::CLAUDE2);
+    let own = restore(
+        handle,
+        &ws,
+        cx,
+        &saved_terminal(folder.path(), Some("claude"), Some("a"), None),
+    );
+    let item = saved_terminal(folder.path(), Some("claude2"), Some("b"), Some("claude2"));
+    let account = restore(handle, &ws, cx, &item);
+    let account_folder = data.path().join("accounts").join("claude2");
+    screen_with(&ws, cx, account, "claude --resume b");
+    screen_with(
+        &ws,
+        cx,
+        account,
+        &format!("dir={};", account_folder.display()),
+    );
+    let shown = screen_with(&ws, cx, own, "claude --resume a");
+    assert!(
+        !shown.contains("accounts"),
+        "its agent's own folder: {shown}"
+    );
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.terminal(own).unwrap().account, None);
+        let pane = ws.space.terminal(account).unwrap();
+        assert_eq!(pane.account.as_deref(), Some("claude2"));
+        assert_eq!(pane.agent(), Some("claude2"));
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_account_block_keeps_its_folder_without_its_agent(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_as(
+        cx,
+        Some(telling_its_folder()),
+        None,
+        Some(data.path().to_path_buf()),
+    );
+    super::agents::with_agents(&ws, cx, super::agents::CLAUDE2);
+    let gone = data.path().join("gone");
+    let id = restore(
+        handle,
+        &ws,
+        cx,
+        &saved_terminal(&gone, None, None, Some("claude2")),
+    );
+    let account_folder = data.path().join("accounts").join("claude2");
+    super::bus::screen_with(&ws, cx, id, &format!("dir={};", account_folder.display()));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.space.terminal(id).unwrap().account.as_deref(),
+            Some("claude2")
+        );
+    });
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_deleted_accounts_block_comes_back_plain(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_as(
+        cx,
+        Some(telling_its_folder()),
+        None,
+        Some(data.path().to_path_buf()),
+    );
+    super::agents::with_agents(&ws, cx, super::agents::CLAUDE2);
+    let item = saved_terminal(folder.path(), Some("gone"), None, Some("gone"));
+    let id = restore(handle, &ws, cx, &item);
+    let shown = super::bus::screen_with(&ws, cx, id, "dir=");
+    assert!(!shown.contains("accounts"), "{shown}");
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.terminal(id).unwrap().account, None);
+    });
+}
