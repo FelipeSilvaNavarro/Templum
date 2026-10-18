@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
@@ -656,11 +656,27 @@ pub(crate) fn check_account(
 }
 
 /// `path` with its links followed as far as it exists (the rest as written), to compare folders:
-/// a link's target and the link, a case variant on macOS and Windows, a `\\?\` path.
-fn resolved(path: &Path) -> PathBuf {
-    path.ancestors()
-        .find_map(|a| Some(a.canonicalize().ok()?.join(path.strip_prefix(a).ok()?)))
-        .unwrap_or_else(|| path.to_path_buf())
+/// a link's target and the link, a case variant on macOS and Windows, a `\\?\` path. A `..` after
+/// a folder that isn't there is the folder before it, as once it is made.
+pub(crate) fn resolved(path: &Path) -> PathBuf {
+    let follow = |path: &Path| {
+        path.ancestors()
+            .find_map(|a| Some(a.canonicalize().ok()?.join(path.strip_prefix(a).ok()?)))
+            .unwrap_or_else(|| path.to_path_buf())
+    };
+    // What exists is followed first, so a `..` after a link is the OS's.
+    let mut plain = PathBuf::new();
+    for part in follow(path).components() {
+        match part {
+            Component::ParentDir => {
+                plain.pop();
+            }
+            Component::CurDir => {}
+            part => plain.push(part),
+        }
+    }
+    // Back up, it may be an existing folder again (`<data>/nothing/../accounts`).
+    follow(&plain)
 }
 
 /// `<dir>/config.toml`, with Templum's data folder `data`. No folder or no file: the defaults.
@@ -1905,6 +1921,10 @@ scrollback = 500
         assert!(err.contains("is Templum's folder for accounts"), "{err}");
         let err = one(&to_data).unwrap_err();
         assert!(err.contains("holds Templum's folder for accounts"), "{err}");
+        let err = one(&data.join("nothing/../accounts/claude3")).unwrap_err();
+        assert!(err.contains("is Templum's folder for accounts"), "{err}");
+        let err = one(&w.join("new/../../data/accounts")).unwrap_err();
+        assert!(err.contains("is Templum's folder for accounts"), "{err}");
         one(&w.join("skills")).unwrap();
         one(&dir.path().join("apart")).unwrap();
     }

@@ -159,12 +159,14 @@ impl Workspace {
         let Some(account) = entry.account else {
             return Err(format!("{} isn't an account", entry.title));
         };
-        // Never another account's folder (a config written before Templum refused it there).
+        // Never another account's folder (a config written before Templum refused it there),
+        // compared as `check_account` does.
+        let folder = crate::config::resolved(&account.folder);
         let inside = self.agents.iter().find(|a| {
             a.id != id
-                && a.account
-                    .as_ref()
-                    .is_some_and(|other| other.folder.starts_with(&account.folder))
+                && a.account.as_ref().is_some_and(|other| {
+                    crate::config::resolved(&other.folder).starts_with(&folder)
+                })
         });
         if !account.chosen
             && let Some(other) = inside

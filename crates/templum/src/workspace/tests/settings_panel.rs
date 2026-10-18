@@ -1019,42 +1019,52 @@ fn an_account_folder_in_templums_folder_for_accounts_is_refused(cx: &mut TestApp
     std::fs::create_dir_all(&claude2).unwrap();
     std::fs::write(claude2.join(".credentials.json"), "claude3's login").unwrap();
     let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
-    // Written before Templum refused it: test agents are read without the data folder.
-    super::agents::with_agents(
-        &ws,
-        cx,
-        &format!(
-            "[agents.claude2]\nof = \"claude\"\n[agents.claude3]\nof = \"claude\"\nname = \"Claude Code 3\"\nfolder = '{}'\n",
-            claude2.display()
-        ),
-    );
-    assert_eq!(
-        delete(&ws, cx, "claude2"),
-        Err("Claude Code 3's folder is in Claude Code (claude2)'s: change it first".to_string())
-    );
-    assert_eq!(
-        std::fs::read(claude2.join(".credentials.json")).unwrap(),
-        b"claude3's login"
-    );
-    let saved = cx
-        .update_window(handle, |_, window, cx| {
-            ws.update(cx, |ws, cx| {
-                let entry = ws
-                    .agents
-                    .iter()
-                    .find(|a| a.id == "claude3")
-                    .unwrap()
-                    .clone();
-                let draft = crate::agents::AccountDraft::of(&entry);
-                ws.save_account(Some("claude3"), &draft, window, cx)
+    // Also through a folder that isn't there: the OS makes it, then goes back up.
+    for folder in [
+        claude2.clone(),
+        data.path().join("nothing/../accounts/claude2"),
+    ] {
+        // Written before Templum refused it: test agents are read without the data folder.
+        super::agents::with_agents(
+            &ws,
+            cx,
+            &format!(
+                "[agents.claude2]\nof = \"claude\"\n[agents.claude3]\nof = \"claude\"\nname = \"Claude Code 3\"\nfolder = '{}'\n",
+                folder.display()
+            ),
+        );
+        assert_eq!(
+            delete(&ws, cx, "claude2"),
+            Err(
+                "Claude Code 3's folder is in Claude Code (claude2)'s: change it first".to_string()
+            )
+        );
+        assert_eq!(
+            std::fs::read(claude2.join(".credentials.json")).unwrap(),
+            b"claude3's login"
+        );
+        let saved = cx
+            .update_window(handle, |_, window, cx| {
+                ws.update(cx, |ws, cx| {
+                    let entry = ws
+                        .agents
+                        .iter()
+                        .find(|a| a.id == "claude3")
+                        .unwrap()
+                        .clone();
+                    let draft = crate::agents::AccountDraft::of(&entry);
+                    ws.save_account(Some("claude3"), &draft, window, cx)
+                })
             })
-        })
-        .unwrap();
-    assert!(
-        saved
-            .unwrap_err()
-            .contains("is Templum's folder for accounts: leave Folder empty")
-    );
+            .unwrap();
+        assert!(
+            saved
+                .unwrap_err()
+                .contains("is Templum's folder for accounts: leave Folder empty"),
+            "{}",
+            folder.display()
+        );
+    }
 }
 
 /// A folder the person chose keeps its own files, whatever it shares: ~/Documents with a
