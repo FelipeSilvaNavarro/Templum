@@ -1663,6 +1663,38 @@ fn a_turn_shows_its_rows(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_long_chat_draws_only_the_rows_in_view(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        let c = &mut ws.templum_agent.conversation;
+        for i in 0..2000 {
+            c.person(&format!("message {i}"));
+            c.apply(::templum_agent::ChatEvent::Text(format!("answer {i}")));
+        }
+    });
+    open_chat(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find("agent-row-3999").is_some(),
+            "its end is shown"
+        );
+        assert!(
+            window.try_find("agent-row-0").is_none(),
+            "its start isn't drawn"
+        );
+    })
+    .unwrap();
+    // A new row shows at its end.
+    ws.update(cx, |ws, _| ws.templum_agent.conversation.note("New one."));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("agent-row-4000").is_some());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn the_text_it_writes_is_markdown_once_whole(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     ws.update(cx, |ws, _| {

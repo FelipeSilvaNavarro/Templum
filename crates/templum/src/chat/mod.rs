@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    Context, Entity, FocusHandle, Focusable as _, KeyDownEvent, ScrollHandle, Subscription, Task,
-    Window,
+    Context, Entity, FocusHandle, Focusable as _, FollowMode, KeyDownEvent, ListAlignment,
+    ListState, Subscription, Task, Window, px,
 };
 use serde_json::Value;
 use templum_agent::{Conversation, Engine};
@@ -62,8 +62,8 @@ pub(crate) struct TemplumAgent {
     _enter: Option<Subscription>,
     /// The block that had the keyboard before the pill took it.
     pub back: Option<BlockId>,
-    /// The chat's body: it follows its end while it is there.
-    pub scroll: ScrollHandle,
+    /// The chat's rows, only those in view drawn: it follows its end while it is there.
+    pub list: ListState,
     /// The rows the chat drew last, and whether some came below the view since.
     pub seen: Cell<usize>,
     pub unseen: Cell<bool>,
@@ -110,7 +110,11 @@ impl Default for TemplumAgent {
             input: None,
             _enter: None,
             back: None,
-            scroll: ScrollHandle::new(),
+            list: {
+                let list = ListState::new(0, ListAlignment::Bottom, px(400.0));
+                list.set_follow_mode(FollowMode::Tail);
+                list
+            },
             seen: Cell::new(0),
             unseen: Cell::new(false),
             tasks_open: false,

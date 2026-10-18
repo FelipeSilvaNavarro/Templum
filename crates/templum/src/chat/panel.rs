@@ -8,7 +8,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, BoxShadow, ClickEvent, Context, ElementId,
-    MouseButton, MouseDownEvent, TestSupportExt, Window, div, point, px,
+    FollowMode, MouseButton, MouseDownEvent, TestSupportExt, Window, div, list, point, px,
 };
 
 use crate::workspace::Workspace;
@@ -187,14 +187,16 @@ pub(crate) fn render(
                     }),
             )
     });
-    // It follows its end while it is there; a row below the view says so.
-    let scroll = &agent.scroll;
-    let at_end = -scroll.offset().y >= scroll.max_offset().y - px(4.0);
-    if at_end {
+    // Only the rows in view are drawn: the list learns of each new one (and of a new chat), and
+    // follows its end while it is there; a row below the view says so.
+    let state = &agent.list;
+    match state.item_count() {
+        n if rows.len() < n => state.reset(rows.len()),
+        n if rows.len() > n => state.splice(n..n, rows.len() - n),
+        _ => {}
+    }
+    if state.is_following_tail() {
         agent.unseen.set(false);
-        if rows.len() != agent.seen.get() || agent.conversation.working {
-            scroll.scroll_to_bottom();
-        }
     } else if rows.len() > agent.seen.get() {
         agent.unseen.set(true);
     }
@@ -225,16 +227,18 @@ pub(crate) fn render(
             }))
             .into_any_element()
     } else {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(8.0))
-            .p(px(12.0))
-            .children(
-                rows.iter()
-                    .enumerate()
-                    .map(|(n, row)| super::rows::row(ws, n, row, cx)),
-            )
+        let row = cx.processor(|ws: &mut Workspace, n: usize, _, cx| {
+            let row = ws.templum_agent.conversation.rows.get(n).cloned();
+            let row = row.map(|row| super::rows::row(ws, n, &row, cx));
+            div()
+                .px(px(12.0))
+                .py(px(4.0))
+                .children(row)
+                .into_any_element()
+        });
+        list(state.clone(), row)
+            .size_full()
+            .py(px(8.0))
             .into_any_element()
     };
     let new_below = agent.unseen.get().then(|| {
@@ -256,7 +260,7 @@ pub(crate) fn render(
                     .text_color(ui.canvas)
                     .cursor_pointer()
                     .on_click(cx.listener(|ws, _: &ClickEvent, _, cx| {
-                        ws.templum_agent.scroll.scroll_to_bottom();
+                        ws.templum_agent.list.set_follow_mode(FollowMode::Tail);
                         cx.notify();
                     }))
                     .child("↓ New")
@@ -296,14 +300,7 @@ pub(crate) fn render(
                 .relative()
                 .flex_1()
                 .min_h(px(0.0))
-                .child(
-                    div()
-                        .id("agent-body")
-                        .size_full()
-                        .overflow_y_scroll()
-                        .track_scroll(scroll)
-                        .child(body),
-                )
+                .child(div().id("agent-body").size_full().child(body))
                 .children(new_below),
         )
         // An approval is pinned over its field.
