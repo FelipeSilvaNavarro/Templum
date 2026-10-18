@@ -180,7 +180,8 @@ What doesn't come back: the text that was on screen, and programs other than the
 - **The lock:** while it runs, Templum holds a lock on `templum.lock` in its data folder (the system's file lock,
   which the system lets go of when Templum ends, also when it crashes).
 - **A second Templum** on the same data folder (a second click on the Start menu shortcut, another copy of the app)
-  can't take it. It starts as `--bench` does: one terminal, nothing of the data folder read or written (no canvas,
+  can't take it, even after waiting 3 seconds for one that is quitting (still saving, when it was reopened right
+  after quitting). It starts as `--bench` does: one terminal, nothing of the data folder read or written (no canvas,
   boards, notes or bus), and a notice says Templum is already open in another window. Otherwise it would restore
   the same canvas, resume the same agents a second time, and write over the first one's file: what the person closed
   in either would be what the next start finds.

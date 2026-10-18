@@ -36,18 +36,30 @@ pub(crate) fn dir() -> Option<PathBuf> {
     )
 }
 
+/// How long a Templum starting waits for one quitting (still saving) to let go of the data
+/// folder: reopened right after quitting, it isn't a second Templum.
+pub(crate) const QUITTING: Duration = Duration::from_secs(3);
+
 /// Takes the data folder `dir` for this Templum while the file returned stays open
 /// (docs/specs/persistence.md, One Templum per data folder): `WouldBlock` when another Templum
-/// has it. The system lets go when Templum ends, also when it crashes.
-pub(crate) fn lock(dir: &Path) -> io::Result<std::fs::File> {
+/// still has it after `wait`. The system lets go when Templum ends, also when it crashes.
+pub(crate) fn lock(dir: &Path, wait: Duration) -> io::Result<std::fs::File> {
     std::fs::create_dir_all(dir)?;
     let file = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
         .open(dir.join("templum.lock"))?;
-    file.try_lock()?;
-    Ok(file)
+    let until = std::time::Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 /// `dir` for `--dev`: its sibling `<name>-dev` (`~/.local/share/templum-dev`).
@@ -1700,11 +1712,24 @@ mod tests {
     #[test]
     fn one_templum_holds_a_data_folder() {
         let d = tempfile::tempdir().unwrap();
-        let first = lock(d.path()).unwrap();
-        let second = lock(d.path()).unwrap_err();
+        let first = lock(d.path(), Duration::ZERO).unwrap();
+        let second = lock(d.path(), Duration::from_millis(100)).unwrap_err();
         assert_eq!(second.kind(), io::ErrorKind::WouldBlock);
         drop(first);
-        lock(d.path()).expect("free once the first Templum ends");
+        lock(d.path(), Duration::ZERO).expect("free once the first Templum ends");
+    }
+
+    /// Reopened right after quitting: the first Templum, still saving, lets go in a moment.
+    #[test]
+    fn a_templum_waits_for_the_one_quitting() {
+        let d = tempfile::tempdir().unwrap();
+        let first = lock(d.path(), Duration::ZERO).unwrap();
+        let quitting = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            drop(first);
+        });
+        lock(d.path(), QUITTING).expect("taken once the first is done");
+        quitting.join().unwrap();
     }
 
     #[cfg(unix)]

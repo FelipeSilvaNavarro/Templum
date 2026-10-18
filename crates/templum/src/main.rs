@@ -92,7 +92,9 @@ fn main() {
     let config_dir = dirs(config::dir());
     // One Templum per data folder: a second would restore the same canvas, resume the same
     // agents and write over the first's files. It keeps nothing instead.
-    let lock = data_dir.as_deref().map(session::lock);
+    let lock = data_dir
+        .as_deref()
+        .map(|dir| session::lock(dir, session::QUITTING));
     let second = match &lock {
         Some(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => true,
         Some(Err(e)) => {
