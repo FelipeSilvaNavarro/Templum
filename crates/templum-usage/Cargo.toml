@@ -15,6 +15,10 @@ serde_json = "1"
 # Already in the tree (GPUI's): Codex's ISO timestamps and its sessions' dated folders.
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 
+[target.'cfg(windows)'.dependencies]
+# An account's folder shared on Windows by a directory junction, which needs no privilege (MIT).
+junction = "2"
+
 [dev-dependencies]
 tempfile = "3"
 

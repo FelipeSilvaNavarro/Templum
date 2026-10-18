@@ -1,0 +1,599 @@
+//! An account's folder: its items made its own or links to another folder's, as its choices say
+//! (docs/specs/accounts.md, Its folder and its items). Only the links Templum would make are ever
+//! replaced or removed, and never what they point at; the login is never opened.
+
+use std::io;
+use std::path::{Path, PathBuf};
+
+use super::{Item, Kind};
+
+/// When an account's choices are applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum When {
+    /// The dialog saved them: a real item in the way of a link is kept aside.
+    Saved,
+    /// The account starts: a real item is left, and reported.
+    Starting,
+}
+
+/// One item's choice.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Share {
+    pub key: &'static str,
+    /// The state folder it is shared with; None: its own.
+    pub from: Option<PathBuf>,
+}
+
+/// What applying an account's choices met.
+#[derive(Debug, Default)]
+pub struct Report {
+    /// `"{label}: {error}"`, one per path that couldn't be done.
+    pub problems: Vec<String>,
+    /// Shared items the agent replaced with its own copy (found at a start).
+    pub replaced: Vec<&'static str>,
+    /// Items holding a link Templum didn't make, and where it points.
+    pub theirs: Vec<(&'static str, PathBuf)>,
+}
+
+/// What a folder holds for an item.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Found {
+    Own,
+    /// A link to the same item of this state folder.
+    Linked(PathBuf),
+    /// A link Templum wouldn't make, to this target.
+    Theirs(PathBuf),
+}
+
+/// Why a file stays its own on Windows without the privilege.
+pub const NO_FILE_LINKS: &str = "Windows shares a file only with Developer Mode on (Settings ▸ \
+                                 System ▸ For developers). Folders share without it.";
+
+/// What is at one path of an item.
+enum At {
+    Missing,
+    Real,
+    /// A link to `<one of the sources>/<the same path>`: Templum's.
+    Ours(PathBuf),
+    Theirs(PathBuf),
+}
+
+fn at(path: &Path, name: &str, sources: &[PathBuf]) -> At {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return At::Missing;
+    };
+    // A junction is a symbolic link to std on Windows too.
+    if !meta.file_type().is_symlink() {
+        return At::Real;
+    }
+    let Ok(target) = std::fs::read_link(path) else {
+        return At::Real;
+    };
+    let target = plain(target);
+    if sources.iter().any(|s| s.join(name) == target) {
+        At::Ours(target)
+    } else {
+        At::Theirs(target)
+    }
+}
+
+/// A link's target without Windows' `\\?\`, which a junction's has.
+fn plain(target: PathBuf) -> PathBuf {
+    match target.to_str().and_then(|t| t.strip_prefix(r"\\?\")) {
+        Some(rest) if !rest.starts_with("UNC") => PathBuf::from(rest),
+        _ => target,
+    }
+}
+
+/// `path`'s name and whether it is a folder.
+fn name(path: &str) -> (&str, bool) {
+    match path.strip_suffix('/') {
+        Some(name) => (name, true),
+        None => (path, false),
+    }
+}
+
+fn make_dir(path: &Path) -> io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(path)
+}
+
+fn link(source: &Path, path: &Path, dir: bool) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let _ = dir;
+        std::os::unix::fs::symlink(source, path)
+    }
+    #[cfg(windows)]
+    {
+        if dir {
+            junction::create(source, path)
+        } else if files_share() {
+            std::os::windows::fs::symlink_file(source, path)
+        } else {
+            Err(io::Error::other(NO_FILE_LINKS))
+        }
+    }
+}
+
+/// Removes the link at `path`, never what it points at.
+fn unlink(path: &Path, dir: bool) -> io::Result<()> {
+    // A junction (or a folder's symbolic link) is removed as a folder on Windows: its target stays.
+    if cfg!(windows) && dir {
+        std::fs::remove_dir(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+/// The first free `<path>.own`, `<path>.own-2`, …
+fn aside(path: &Path) -> PathBuf {
+    let with = |suffix: String| {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    (1..)
+        .map(|n| {
+            with(if n == 1 {
+                ".own".into()
+            } else {
+                format!(".own-{n}")
+            })
+        })
+        .find(|p| std::fs::symlink_metadata(p).is_err())
+        .expect("a free name")
+}
+
+fn own_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".own");
+    PathBuf::from(name)
+}
+
+/// Applies an account's `shares` to its `folder`: each item a link to the same item of the
+/// state folder it is shared with, or its own. `sources` are every state folder a share of this
+/// agent may point at: a link to one of them is Templum's, and only those are replaced or removed.
+pub fn apply(
+    kind: &Kind,
+    folder: &Path,
+    shares: &[Share],
+    sources: &[PathBuf],
+    when: When,
+) -> Report {
+    let mut report = Report::default();
+    let state = kind.state_dir(folder);
+    if let Err(e) = make_dir(&state) {
+        report.problems.push(format!("{}: {e}", state.display()));
+        return report;
+    }
+    for item in kind.items {
+        let from = shares
+            .iter()
+            .find(|s| s.key == item.key)
+            .and_then(|s| s.from.as_deref());
+        for path in item.paths {
+            let (name, dir) = name(path);
+            if let Err(e) = apply_path(
+                item,
+                &state.join(name),
+                name,
+                dir,
+                from,
+                sources,
+                when,
+                &mut report,
+            ) {
+                report.problems.push(format!("{}: {e}", item.label));
+            }
+        }
+    }
+    report
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_path(
+    item: &'static Item,
+    path: &Path,
+    name: &str,
+    dir: bool,
+    from: Option<&Path>,
+    sources: &[PathBuf],
+    when: When,
+    report: &mut Report,
+) -> io::Result<()> {
+    let here = at(path, name, sources);
+    if let At::Theirs(target) = &here {
+        if !report.theirs.iter().any(|(k, _)| *k == item.key) {
+            report.theirs.push((item.key, target.clone()));
+        }
+        return Ok(());
+    }
+    let Some(from) = from else {
+        // Its own: only a link of Templum's goes, and what was kept aside comes back.
+        if let At::Ours(_) = here {
+            unlink(path, dir)?;
+            let own = own_path(path);
+            if std::fs::symlink_metadata(&own).is_ok() {
+                std::fs::rename(own, path)?;
+            }
+        }
+        return Ok(());
+    };
+    let source = from.join(name);
+    if dir {
+        if !source.exists() {
+            std::fs::create_dir_all(&source)?;
+        }
+    } else if std::fs::symlink_metadata(&source).is_err() {
+        // Linked at a later start, once the agent wrote it.
+        return Ok(());
+    }
+    match here {
+        At::Missing => link(&source, path, dir),
+        At::Ours(target) if target == source => Ok(()),
+        At::Ours(_) => {
+            unlink(path, dir)?;
+            link(&source, path, dir)
+        }
+        At::Real if when == When::Saved => {
+            std::fs::rename(path, aside(path))?;
+            link(&source, path, dir)
+        }
+        At::Real => {
+            if !report.replaced.contains(&item.key) {
+                report.replaced.push(item.key);
+            }
+            Ok(())
+        }
+        At::Theirs(_) => Ok(()),
+    }
+}
+
+/// What `folder` already holds, item by item (an item's first path decides), for the dialog.
+pub fn read(kind: &Kind, folder: &Path, sources: &[PathBuf]) -> Vec<(&'static str, Found)> {
+    let state = kind.state_dir(folder);
+    kind.items
+        .iter()
+        .map(|item| {
+            let (name, _) = name(item.paths[0]);
+            let found = match at(&state.join(name), name, sources) {
+                At::Ours(target) => {
+                    Found::Linked(target.parent().map(Path::to_path_buf).unwrap_or(target))
+                }
+                At::Theirs(target) => Found::Theirs(target),
+                At::Missing | At::Real => Found::Own,
+            };
+            (item.key, found)
+        })
+        .collect()
+}
+
+/// Deletes an account's `folder`: its items' links first (only the links), then the folder,
+/// which never follows a link.
+pub fn delete(kind: &Kind, folder: &Path) -> io::Result<()> {
+    let state = kind.state_dir(folder);
+    for path in kind.items.iter().flat_map(|i| i.paths) {
+        let (name, dir) = name(path);
+        let path = state.join(name);
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            unlink(&path, dir)?;
+        }
+    }
+    std::fs::remove_dir_all(folder)
+}
+
+/// Whether a file can be shared: always on Unix; on Windows, whether a file's symbolic link can
+/// be made (Developer Mode, or an administrator), tried once.
+pub fn files_share() -> bool {
+    #[cfg(unix)]
+    {
+        true
+    }
+    #[cfg(windows)]
+    {
+        static CAN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *CAN.get_or_init(|| {
+            let dir = std::env::temp_dir().join(format!("templum-link-{}", std::process::id()));
+            let ok = std::fs::create_dir_all(&dir).is_ok()
+                && std::fs::write(dir.join("a"), "").is_ok()
+                && std::os::windows::fs::symlink_file(dir.join("a"), dir.join("b")).is_ok();
+            let _ = std::fs::remove_dir_all(&dir);
+            ok
+        })
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::accounts::{Keychain, item};
+    use std::fs;
+
+    const FAKE: Kind = Kind {
+        agent: "fake",
+        var: "FAKE_HOME",
+        own: ".fake",
+        state: None,
+        items: &[
+            item("skills", "Skills", &["skills/"]),
+            item("settings", "Settings", &["settings.json"]),
+            item("agents", "Agents", &["agents/"]),
+            item("commands", "Commands", &["commands/"]),
+        ],
+        login: &[".credentials.json"],
+        login_command: "fake login",
+        login_hint: None,
+        overrides: &[],
+        keychain: Keychain::Never,
+        note: None,
+    };
+
+    /// A source folder and an account's, each with its login.
+    struct Two {
+        _dir: tempfile::TempDir,
+        root: PathBuf,
+        src: PathBuf,
+        acc: PathBuf,
+    }
+
+    impl Two {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().to_path_buf();
+            let (src, acc) = (root.join("src"), root.join("acc"));
+            for (d, login) in [(&src, "source login"), (&acc, "account login")] {
+                fs::create_dir_all(d).unwrap();
+                fs::write(d.join(".credentials.json"), login).unwrap();
+            }
+            Self {
+                _dir: dir,
+                root,
+                src,
+                acc,
+            }
+        }
+
+        fn share(&self, key: &'static str) -> Vec<Share> {
+            vec![Share {
+                key,
+                from: Some(self.src.clone()),
+            }]
+        }
+
+        fn apply(&self, shares: &[Share], when: When) -> Report {
+            let report = apply(
+                &FAKE,
+                &self.acc,
+                shares,
+                std::slice::from_ref(&self.src),
+                when,
+            );
+            self.logins_intact();
+            report
+        }
+
+        fn logins_intact(&self) {
+            assert_eq!(
+                fs::read(self.src.join(".credentials.json")).unwrap(),
+                b"source login"
+            );
+            if self.acc.exists() {
+                assert_eq!(
+                    fs::read(self.acc.join(".credentials.json")).unwrap(),
+                    b"account login"
+                );
+            }
+        }
+    }
+
+    fn is_link(path: &Path) -> bool {
+        fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
+    }
+
+    #[test]
+    fn a_shared_folder_is_a_link_to_the_sources() {
+        let t = Two::new();
+        let report = t.apply(&t.share("skills"), When::Saved);
+        assert!(report.problems.is_empty(), "{:?}", report.problems);
+        assert_eq!(
+            fs::read_link(t.acc.join("skills")).unwrap(),
+            t.src.join("skills")
+        );
+        assert!(t.src.join("skills").is_dir(), "made empty");
+    }
+
+    #[test]
+    fn a_missing_source_file_is_linked_later() {
+        let t = Two::new();
+        let report = t.apply(&t.share("settings"), When::Saved);
+        assert!(report.problems.is_empty());
+        assert!(fs::symlink_metadata(t.acc.join("settings.json")).is_err());
+        fs::write(t.src.join("settings.json"), "{}").unwrap();
+        t.apply(&t.share("settings"), When::Starting);
+        assert_eq!(
+            fs::read_link(t.acc.join("settings.json")).unwrap(),
+            t.src.join("settings.json")
+        );
+    }
+
+    #[test]
+    fn a_real_item_is_kept_aside_on_save_and_left_at_a_start() {
+        let t = Two::new();
+        fs::create_dir_all(t.acc.join("skills/a")).unwrap();
+        t.apply(&t.share("skills"), When::Saved);
+        assert!(t.acc.join("skills.own/a").is_dir());
+        assert!(is_link(&t.acc.join("skills")));
+
+        fs::remove_file(t.acc.join("skills")).unwrap();
+        fs::create_dir_all(t.acc.join("skills/b")).unwrap();
+        t.apply(&t.share("skills"), When::Saved);
+        assert!(t.acc.join("skills.own-2/b").is_dir(), "skills.own is taken");
+        assert!(t.acc.join("skills.own/a").is_dir());
+
+        fs::write(t.src.join("settings.json"), "{}").unwrap();
+        fs::write(t.acc.join("settings.json"), "mine").unwrap();
+        let report = t.apply(&t.share("settings"), When::Starting);
+        assert!(!is_link(&t.acc.join("settings.json")));
+        assert_eq!(fs::read(t.acc.join("settings.json")).unwrap(), b"mine");
+        assert_eq!(report.replaced, ["settings"]);
+    }
+
+    #[test]
+    fn own_again_removes_only_the_link() {
+        let t = Two::new();
+        t.apply(&t.share("skills"), When::Saved);
+        fs::write(t.src.join("skills/keep"), "x").unwrap();
+        t.apply(&[], When::Saved);
+        assert!(fs::symlink_metadata(t.acc.join("skills")).is_err());
+        assert!(t.src.join("skills/keep").is_file());
+
+        fs::create_dir_all(t.acc.join("skills.own/x")).unwrap();
+        t.apply(&t.share("skills"), When::Saved);
+        assert!(is_link(&t.acc.join("skills")));
+        t.apply(&[], When::Starting);
+        assert!(t.acc.join("skills/x").is_dir(), "skills.own came back");
+        assert!(!t.acc.join("skills.own").exists());
+        assert!(t.src.join("skills/keep").is_file());
+    }
+
+    #[test]
+    fn a_chain_links_to_the_middle_account() {
+        let t = Two::new();
+        let (c, c3, c4) = (t.src.clone(), t.root.join("c3"), t.root.join("c4"));
+        let from = |dir: &Path| {
+            vec![Share {
+                key: "skills",
+                from: Some(dir.to_path_buf()),
+            }]
+        };
+        apply(&FAKE, &c3, &from(&c), &[c.clone(), c4.clone()], When::Saved);
+        apply(
+            &FAKE,
+            &c4,
+            &from(&c3),
+            &[c.clone(), c3.clone()],
+            When::Saved,
+        );
+        assert_eq!(fs::read_link(c4.join("skills")).unwrap(), c3.join("skills"));
+        fs::write(c.join("skills/f"), "seen").unwrap();
+        assert_eq!(fs::read(c4.join("skills/f")).unwrap(), b"seen");
+        t.logins_intact();
+    }
+
+    #[test]
+    fn delete_leaves_what_links_point_at() {
+        let t = Two::new();
+        t.apply(&t.share("skills"), When::Saved);
+        fs::write(t.src.join("skills/keep"), "x").unwrap();
+        delete(&FAKE, &t.acc).unwrap();
+        assert!(!t.acc.exists());
+        assert!(t.src.join("skills/keep").is_file());
+        t.logins_intact();
+    }
+
+    #[test]
+    fn a_link_templum_didnt_make_is_left() {
+        let t = Two::new();
+        let dotfiles = t.root.join("dotfiles/skills");
+        fs::create_dir_all(&dotfiles).unwrap();
+        std::os::unix::fs::symlink(&dotfiles, t.acc.join("skills")).unwrap();
+        for shares in [t.share("skills"), Vec::new()] {
+            let report = t.apply(&shares, When::Saved);
+            assert_eq!(fs::read_link(t.acc.join("skills")).unwrap(), dotfiles);
+            assert_eq!(report.theirs, [("skills", dotfiles.clone())]);
+        }
+    }
+
+    #[test]
+    fn read_finds_a_folder_set_up_by_hand() {
+        let t = Two::new();
+        let dotfiles = t.root.join("dotfiles/agents");
+        fs::create_dir_all(&dotfiles).unwrap();
+        fs::create_dir_all(t.src.join("skills")).unwrap();
+        std::os::unix::fs::symlink(t.src.join("skills"), t.acc.join("skills")).unwrap();
+        std::os::unix::fs::symlink(&dotfiles, t.acc.join("agents")).unwrap();
+        fs::create_dir_all(t.acc.join("commands")).unwrap();
+        let found = read(&FAKE, &t.acc, std::slice::from_ref(&t.src));
+        assert_eq!(
+            found,
+            [
+                ("skills", Found::Linked(t.src.clone())),
+                ("settings", Found::Own),
+                ("agents", Found::Theirs(dotfiles)),
+                ("commands", Found::Own),
+            ]
+        );
+        t.logins_intact();
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use crate::accounts::{Keychain, item};
+    use std::fs;
+
+    const FAKE: Kind = Kind {
+        agent: "fake",
+        var: "FAKE_HOME",
+        own: ".fake",
+        state: None,
+        items: &[
+            item("skills", "Skills", &["skills/"]),
+            item("settings", "Settings", &["settings.json"]),
+        ],
+        login: &[".credentials.json"],
+        login_command: "fake login",
+        login_hint: None,
+        overrides: &[],
+        keychain: Keychain::Never,
+        note: None,
+    };
+
+    #[test]
+    fn a_folder_is_a_junction_and_a_file_needs_the_privilege() {
+        let dir = tempfile::tempdir().unwrap();
+        let (src, acc) = (dir.path().join("src"), dir.path().join("acc"));
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("settings.json"), "{}").unwrap();
+        let shares = [
+            Share {
+                key: "skills",
+                from: Some(src.clone()),
+            },
+            Share {
+                key: "settings",
+                from: Some(src.clone()),
+            },
+        ];
+        let report = apply(
+            &FAKE,
+            &acc,
+            &shares,
+            std::slice::from_ref(&src),
+            When::Saved,
+        );
+        assert!(junction::exists(acc.join("skills")).unwrap());
+        fs::write(src.join("skills/keep"), "x").unwrap();
+        assert!(acc.join("skills/keep").is_file());
+        if files_share() {
+            assert!(
+                fs::symlink_metadata(acc.join("settings.json"))
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+        } else {
+            assert_eq!(report.problems, [format!("Settings: {NO_FILE_LINKS}")]);
+        }
+        delete(&FAKE, &acc).unwrap();
+        assert!(
+            src.join("skills/keep").is_file(),
+            "removing a junction keeps its target"
+        );
+    }
+}

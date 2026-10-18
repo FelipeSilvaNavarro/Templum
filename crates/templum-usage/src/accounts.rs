@@ -5,6 +5,10 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+mod folder;
+
+pub use folder::*;
+
 /// One file or folder of an agent's folder that an account may share.
 #[derive(Debug, PartialEq)]
 pub struct Item {
