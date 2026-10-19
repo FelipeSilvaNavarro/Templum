@@ -1339,6 +1339,20 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   --fork-session` exist, since Templum couldn't find the fork's own session to resume it after a restart. Fix: give a
   fork a `--session-id` Templum picks, once each agent takes one with its fork flag.
 
+## Placing new blocks
+
+Left by kanban card 53 (blocks Templum places line up, 48 apart); line numbers are those of `development` after it.
+
+- [ ] **A new editor moves the view even when its folder dialog is cancelled.** `new_editor`
+  (`crates/templum/src/workspace/files.rs:23`) finds the editor's place, and glides the view there, before the folder
+  dialog opens; cancelling it leaves the view moved for an editor that never opens. Fix: find the place, and glide,
+  in the dialog's answer (`ask_editor_folder`'s callback) instead.
+- [ ] **A column of subagents stops being one once the person nudges a block in it.** `free_spot`
+  (`crates/templum-canvas/src/canvas.rs`) counts a wired block as on a side's line only when its edge is within half a
+  unit of the line; a subagent dragged a few units off it, the next one goes the way of the connections instead (still
+  48 from everything, but maybe not under the others). Fix: count a block whose edge is within the snap distance
+  (`SNAP_PX`, in world units) of the line, and line the new one up with it.
+
 ## Keeping the canvas
 
 Left by the investigation of canvases that came back empty on Windows and macOS (kanban card 41); line numbers are
