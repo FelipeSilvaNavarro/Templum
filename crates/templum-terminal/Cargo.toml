@@ -18,8 +18,9 @@ regex = "1"
 sysinfo = { version = "0.31", default-features = false, features = ["system"] }
 
 [target.'cfg(unix)'.dependencies]
-# Already in the tree: the PTY's foreground process group (the shell the user types into).
-rustix = { version = "1.1", default-features = false, features = ["std", "termios"] }
+# Already in the tree (alacritty's): the PTY's foreground process group (the shell the user types
+# into). Not rustix's `tcgetpgrp`, which panics on the 0 macOS answers once the shell has ended.
+libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 # Already in the tree (GPUI's): PATH as an installer left it in the registry.

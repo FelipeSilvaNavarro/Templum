@@ -1059,10 +1059,16 @@ impl Terminal {
     }
 
     /// The PTY's foreground process group: its leader is the shell (or the program it runs).
+    /// Not rustix's `tcgetpgrp`: macOS answers 0 once the shell has ended, which rustix makes a
+    /// `Pid` that can't be 0 (a panic in debug builds, undefined behavior in release ones).
     #[cfg(unix)]
     fn foreground(&self) -> Option<u32> {
-        let group = rustix::termios::tcgetpgrp(self.master.as_ref()?).ok()?;
-        u32::try_from(group.as_raw_nonzero().get()).ok()
+        use std::os::fd::AsRawFd as _;
+        let master = self.master.as_ref()?.as_raw_fd();
+        // SAFETY: a plain call on the PTY master `self.master` keeps open; no pointers.
+        #[allow(unsafe_code)]
+        let group = unsafe { libc::tcgetpgrp(master) };
+        process_group(group)
     }
 
     /// ConPTY has no foreground process group: the shell Templum started is it.
@@ -1276,6 +1282,13 @@ fn file_stem(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
+/// The process group `tcgetpgrp` answered, when there is one: it says 0 (macOS, once the shell
+/// has ended) or less when there is none.
+#[cfg(any(unix, test))]
+fn process_group(raw: i32) -> Option<u32> {
+    u32::try_from(raw).ok().filter(|&group| group > 0)
+}
+
 #[cfg(windows)]
 fn default_shell_name() -> String {
     "powershell".to_string()
@@ -1339,6 +1352,13 @@ mod tests {
         assert_ne!(read, 0, "{}", io::Error::last_os_error());
         // Windows ends the higher levels first; a shell or an agent starts at 0x280.
         assert!(level > 0x280, "level {level:#x}");
+    }
+
+    #[test]
+    fn no_foreground_group_is_no_process() {
+        assert_eq!(process_group(0), None);
+        assert_eq!(process_group(-1), None);
+        assert_eq!(process_group(4242), Some(4242));
     }
 
     #[test]
