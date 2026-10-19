@@ -11,7 +11,8 @@ use gpui_kit::component::{Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, BoxShadow, ClickEvent, Context, MouseButton,
-    MouseDownEvent, SharedString, TestSupportExt, Window, div, point, px, relative,
+    MouseDownEvent, SharedString, SpringAnimation, SpringConfig, TestSupportExt, Window, div,
+    point, px, relative,
 };
 
 use crate::grid::hsla;
@@ -25,6 +26,9 @@ const HEIGHT: f32 = 36.0;
 /// While it has the keyboard or text, at most the canvas's width less this.
 const WIDE_W: f32 = 640.0;
 const SIDES: f32 = 32.0;
+/// It grows and shrinks between the two, eased out: critically damped (no overshoot), there in
+/// about 0.18 s; at once with less motion.
+const GROW: SpringConfig = SpringConfig::new(1369.0, 74.0, 1.0);
 /// How long the working line's band takes to sweep across.
 const SWEEP: std::time::Duration = std::time::Duration::from_millis(1600);
 
@@ -123,7 +127,7 @@ pub(crate) fn render(
         .items_center()
         .gap(px(8.0))
         .px(px(14.0))
-        .map(|el| if footer { el.w_full() } else { el.w(px(width)) })
+        .when(footer, |el| el.w_full())
         .min_h(px(HEIGHT))
         .rounded(px(18.0))
         .bg(ui.surface)
@@ -287,7 +291,17 @@ pub(crate) fn render(
                 })
         }
     };
-    Some(pill.test_support().into_any_element())
+    let pill = pill.test_support();
+    Some(if footer {
+        pill.into_any_element()
+    } else {
+        pill.with_spring(
+            "agent-pill-grow",
+            SpringAnimation::new(GROW).to(px(width)),
+            |el, w| el.w(w),
+        )
+        .into_any_element()
+    })
 }
 
 /// The last action under way, as its row says while it runs: "Opening an agent…".
