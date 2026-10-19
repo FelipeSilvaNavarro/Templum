@@ -649,10 +649,12 @@ fn strays_are_the_program_what_it_left_in_a_session_of_its_own_and_never_the_she
     let flag = dir.path().join("f");
     // Unique: only what this test started carries it.
     let id = format!("t-strays-{}", std::process::id());
+    // `setsid` through Perl: macOS has no `setsid` command.
+    const SETSID: &str = "perl -MPOSIX -e \"setsid; exec @ARGV\"";
     // Seconds apart: start times are whole seconds.
     let script = format!(
-        "(setsid sleep 37 &); sleep 31 & sleep 1.2; \
-         sh -c 'sleep 1.2; (setsid sh -c \"sleep 2 && touch {}\" &); exec sleep 33' & wait",
+        "({SETSID} sleep 37 &); sleep 31 & sleep 1.2; \
+         sh -c 'sleep 1.2; ({SETSID} sh -c \"sleep 2 && touch {}\" &); exec sleep 33' & wait",
         flag.display()
     );
     let mut shell = std::process::Command::new("sh")

@@ -983,10 +983,12 @@ fn stop_agent_ends_what_an_agent_that_quit_left_running(cx: &mut TestAppContext)
     let dir = tempfile::tempdir().unwrap();
     let flag = dir.path().join("f");
     // Its "agent" (`cat`) leaves a job a second later (start times are whole seconds), then quits
-    // at Ctrl+D; the shell waits in a builtin `read`.
+    // at Ctrl+D; the shell waits in a builtin `read`. `setsid` through Perl: macOS has no
+    // `setsid` command.
+    const SETSID: &str = "perl -MPOSIX -e \"setsid; exec @ARGV\"";
     ws.update(cx, |ws, _| {
         ws.command = Some(jobs(&format!(
-            "sh -c 'sleep 1.2; (setsid sh -c \"sleep 3 && touch {}\" &); exec cat'; \
+            "sh -c 'sleep 1.2; ({SETSID} sh -c \"sleep 3 && touch {}\" &); exec cat'; \
              while read -r x; do :; done",
             flag.display()
         )))
