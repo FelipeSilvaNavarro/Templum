@@ -3231,3 +3231,27 @@ fn overview_lists_the_tasks_it_handed(cx: &mut TestAppContext) {
         "{text}"
     );
 }
+
+#[gpui_kit::test]
+fn the_pill_shows_at_its_width_and_grows_when_it_has_the_keyboard(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let width = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            f32::from(window.find("agent-pill").bounds().size.width)
+        })
+        .unwrap()
+    };
+    assert_eq!(
+        width(cx),
+        300.0,
+        "no growing from nothing when it first shows"
+    );
+    // With less motion it is there at once.
+    no_motion(cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.toggle_agent(window, cx))
+    })
+    .unwrap();
+    assert_eq!(width(cx), 640.0);
+}

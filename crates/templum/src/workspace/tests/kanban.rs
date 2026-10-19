@@ -17,6 +17,8 @@ fn the_board_button_opens_a_block_with_the_board_list(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.click("tool-kanban", cx);
+        // The view landed where it glides to show the new block.
+        ws.update(cx, |ws, _| ws.space.flight = None);
         window.render_frame(cx);
     })
     .unwrap();
@@ -54,13 +56,13 @@ fn two_blocks_on_one_board_show_the_same_cards(cx: &mut TestAppContext) {
                 ws.show_board(b, board, cx);
                 let todo = ws.boards.board(board).unwrap().columns[0].id;
                 ws.space.appearing.clear();
+                ws.space.flight = None;
                 (a, b, board, todo)
             })
         })
         .unwrap();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        // Through the block on top: it covers most of the other.
         let add = gpui_kit::ElementId::Name(format!("add-card-{}-{todo}", b.0).into());
         window.click(add, cx);
         window.render_frame(cx);
@@ -146,6 +148,7 @@ fn the_wheel_over_a_kanban_block_stays_in_it_and_ctrl_zooms(cx: &mut TestAppCont
                 let block = ws.space.canvas.top().unwrap();
                 ws.new_board(block, cx);
                 ws.space.appearing.clear();
+                ws.space.flight = None;
                 let board = ws.space.kanban(block).unwrap().board.unwrap();
                 (block, ws.boards.board(board).unwrap().columns[1].id)
             })
@@ -671,35 +674,59 @@ fn the_open_card_adds_checks_and_deletes_checklist_items(cx: &mut TestAppContext
 }
 
 #[gpui_kit::test]
-fn the_assignee_menu_offers_the_agent_sessions_of_every_workspace(cx: &mut TestAppContext) {
+fn the_assignee_menu_offers_the_agent_sessions_wired_to_the_board(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let main = first_id(&ws, cx);
-    let main_uid = ws.update(cx, |ws, _| {
+    let (kanban, board, _) = board_with_a_card(handle, &ws, cx);
+    let main_uid = ws.update(cx, |ws, cx| {
         ws.space.terminal_mut(main).unwrap().seen.agent = Some("claude".into());
+        assert!(ws.connect(main, kanban, cx));
         ws.space.uids[&main].clone()
     });
     let other_uid = cx
         .update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
+                ws.new_terminal(window, cx);
+                let loose = ws.space.canvas.top().unwrap();
+                ws.space.terminal_mut(loose).unwrap().flags_for = Some("codex".into()); // not wired
+                // Another workspace's kanban block shows the same board.
                 ws.new_space(window, cx);
+                ws.add_kanban_at(Point::new(900.0, 0.0), window, cx);
+                let shows = ws.space.canvas.top().unwrap();
+                ws.show_board(shows, board, cx);
                 ws.new_terminal(window, cx);
                 let id = ws.space.canvas.top().unwrap();
                 ws.space.terminal_mut(id).unwrap().flags_for = Some("codex".into());
+                assert!(ws.connect(id, shows, cx));
                 ws.new_terminal(window, cx); // runs no agent: not offered
                 ws.space.uids[&id].clone()
             })
         })
         .unwrap();
     ws.read_with(cx, |ws, cx| {
-        let sessions = ws.agent_sessions(cx);
+        let sessions = ws.agent_sessions(board, cx);
         let ids: Vec<&str> = sessions.iter().map(|(uid, _)| uid.as_str()).collect();
         assert_eq!(
             ids,
             [other_uid.as_str(), main_uid.as_str()],
-            "the active workspace first"
+            "the wired ones, the active workspace first"
         );
-        assert_eq!(sessions[0].1, ws.uid_title(&other_uid, cx).unwrap());
-        assert!(sessions[1].1.ends_with(" — Main"), "{}", sessions[1].1);
+        let title = ws.uid_title(&other_uid, cx).unwrap();
+        assert!(sessions[0].1.starts_with(&title), "{}", sessions[0].1);
+        assert!(
+            sessions[0].1.ends_with(&format!(" · {other_uid}")),
+            "{}",
+            sessions[0].1
+        );
+        assert!(
+            sessions[1].1.ends_with(&format!(" · {main_uid} — Main")),
+            "{}",
+            sessions[1].1
+        );
+        assert!(
+            ws.agent_sessions(board + 1, cx).is_empty(),
+            "another board's"
+        );
     });
 }
 
@@ -713,7 +740,8 @@ fn a_session_chosen_in_the_assignee_menu_is_one_step_and_the_dialog_stays(cx: &m
         ws.space.terminal_mut(main).unwrap().seen.agent = Some("claude".into());
         ws.space.uids[&main].clone()
     });
-    let (_, board, card) = board_with_a_card(handle, &ws, cx);
+    let (kanban, board, card) = board_with_a_card(handle, &ws, cx);
+    ws.update(cx, |ws, cx| assert!(ws.connect(main, kanban, cx)));
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
             let current = ws.boards.card(board, card).cloned().unwrap();
@@ -971,8 +999,9 @@ fn the_assignee_menu_lists_a_gone_block_first_and_every_agent_in_its_submenu(
         ws.space.terminal_mut(main).unwrap().seen.agent = Some("claude".into());
         ws.space.uids[&main].clone()
     });
-    let (_, board, card) = board_with_a_card(handle, &ws, cx);
-    ws.update(cx, |ws, _| {
+    let (kanban, board, card) = board_with_a_card(handle, &ws, cx);
+    ws.update(cx, |ws, cx| {
+        assert!(ws.connect(main, kanban, cx));
         ws.edit_boards(|b| {
             b.edit_card(board, card, |c| {
                 c.assignee = Some(Assignee::Block("zzzzz".into()))

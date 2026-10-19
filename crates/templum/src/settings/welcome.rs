@@ -109,8 +109,8 @@ pub(crate) fn welcome_groups(
                     .text_size(px(13.0))
                     .text_color(ui.title)
                     .child(
-                        "None found yet. Right-click the canvas ▸ AI agent lists them all, each \
-                         with how to install it.",
+                        "None found yet. Settings ▸ Agents lists them all, each with how to \
+                         install it.",
                     )
                     .test_support()
                     .into_any_element()

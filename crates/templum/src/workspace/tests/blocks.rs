@@ -77,15 +77,29 @@ fn shortcuts_open_and_close_terminals(cx: &mut TestAppContext) {
             ws.space.canvas.top(),
             "the new terminal is focused"
         );
-        // The startup block already sits at the viewport center: the new one cascades.
+        // The startup block already sits at the viewport center: the new one goes on its right,
+        // tops level, two dots of the grid apart.
         let [first, second] = ws.space.canvas.blocks() else {
             unreachable!()
         };
         assert_eq!(
-            (second.rect.x - first.rect.x, second.rect.y - first.rect.y),
-            (templum_canvas::CASCADE, templum_canvas::CASCADE)
+            (
+                second.rect.x - first.rect.right(),
+                second.rect.y - first.rect.y
+            ),
+            (48.0, 0.0)
         );
     });
+    // Off the view's right, it is shown: the view glides just enough to show it whole.
+    cx.update_window(handle, |_, window, cx| {
+        let ws = ws.read(cx);
+        let vp = ws.viewport(window);
+        let view = templum_canvas::Size::new(vp.w, vp.h - crate::toolbar::SPACE);
+        let (camera, rect) = (ws.space.canvas.camera, ws.space.canvas.blocks()[1].rect);
+        assert!(ws.space.flight.is_some(), "the view glides");
+        assert_eq!(camera.reveal(rect, view), camera, "{rect:?} shown");
+    })
+    .unwrap();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.press(CLOSE, cx);
@@ -142,6 +156,65 @@ fn dragging_the_title_moves_the_block(cx: &mut TestAppContext) {
     let after = ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect);
     assert_eq!((after.x - before.x, after.y - before.y), (100.0, 50.0));
     assert_eq!((after.w, after.h), (before.w, before.h));
+}
+
+#[gpui_kit::test]
+fn the_wheel_moves_the_canvas_under_a_held_block_which_stays_under_the_pointer(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let screen = |ws: &Workspace| {
+        let camera = &ws.space.canvas.camera;
+        let r = ws.space.canvas.get(id).unwrap().rect;
+        (
+            camera.to_screen(Point::new(r.x, r.y)),
+            camera.origin,
+            camera.zoom(),
+        )
+    };
+    let held = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let from = window.find(("title", id.0 as usize)).bounds().center();
+            let to = point(from.x + px(100.), from.y + px(50.));
+            window.dispatch_event(
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: from,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                    position: to,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+            (f32::from(to.x), f32::from(to.y))
+        })
+        .unwrap();
+    let before = ws.read_with(cx, |ws, _| screen(ws));
+    // A mouse's wheel, which zooms the canvas when nothing is held.
+    cx.update_window(handle, |_, window, cx| {
+        wheel(
+            window,
+            cx,
+            held,
+            ScrollDelta::Lines(point(0.0, -3.0)),
+            false,
+        );
+    })
+    .unwrap();
+    let after = ws.read_with(cx, |ws, _| screen(ws));
+    assert_eq!(after.2, before.2, "no zoom while a block is held");
+    assert_ne!(after.1, before.1, "the canvas moved");
+    assert_eq!(after.0, before.0, "the block stayed under the pointer");
 }
 
 #[gpui_kit::test]

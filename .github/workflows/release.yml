@@ -1,7 +1,9 @@
 name: Release
 
 # Tag `vX.Y.Z` (pushed by publish.sh) → installers and portable builds for every platform → a published GitHub
-# Release whose notes are the tag's CHANGELOG section, with a .sha256 beside each file. A `-rc.N` tag is a prerelease.
+# Release with them, the one-line installers (install.sh, install.ps1) and a .sha256 beside each file. Its notes say how
+# to install and what each file is (.github/release-notes.md), then the tag's CHANGELOG section. A `-rc.N` tag is a
+# prerelease.
 # Run it manually (workflow_dispatch) for a dry run: the builds are uploaded as workflow artifacts only.
 on:
   push:
@@ -88,14 +90,22 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      # releases/latest/download/install.sh is what the README and the notes tell people to run.
+      - run: cp install.sh install.ps1 dist/
       - run: (cd dist && for file in *; do sha256sum "$file" > "$file.sha256"; done)
-      # publish.sh wrote the release's CHANGELOG section; a prerelease has none, so GitHub lists its commits.
+      # How to install, then the CHANGELOG section publish.sh wrote; a prerelease has none, so GitHub lists its commits.
       - run: |
           version=${GITHUB_REF_NAME#v}
-          awk -v heading="## $version" '$0 == heading { on = 1; next } on && /^## / { exit } on' CHANGELOG.md > notes.md
-          flags=()
+          sed "s/{version}/$version/g" .github/release-notes.md > notes.md
+          awk -v heading="## $version" '$0 == heading { on = 1; next } on && /^## / { exit } on' CHANGELOG.md > changes.md
+          flags=(--notes-file notes.md)
           [[ $version == *-* ]] && flags+=(--prerelease)
-          if grep -q '[^[:space:]]' notes.md; then flags+=(--notes-file notes.md); else flags+=(--generate-notes); fi
+          if grep -q '[^[:space:]]' changes.md; then
+            printf "\n## What's new\n" >> notes.md
+            cat changes.md >> notes.md
+          else
+            flags+=(--generate-notes)
+          fi
           gh release create "$GITHUB_REF_NAME" dist/* --title "Templum $version" "${flags[@]}" --repo "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ github.token }}

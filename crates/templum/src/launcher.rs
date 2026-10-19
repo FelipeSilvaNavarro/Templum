@@ -18,7 +18,6 @@ use gpui_kit::{
 };
 use templum_canvas::Point;
 
-use crate::grid::hsla;
 use crate::theme::Ui;
 use crate::workspace::{Workspace, show_notification};
 
@@ -51,50 +50,31 @@ fn label(folder: &Path) -> (String, String) {
 pub(crate) type Open = dyn Fn(&Path, &mut Window, &mut App) -> Option<templum_canvas::BlockId>;
 
 /// Asks where `agent` runs, then opens it there with its block's top-left corner at `at`.
-/// `installed`: its command was found; if not, the dialog says how to install it.
 pub(crate) fn ask_folder(
     ws: &Workspace,
     agent: AgentEntry,
     at: Point,
-    installed: bool,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
     let entity = cx.entity();
-    let program = agent.program().to_string();
-    // One of Templum's own says how to install it; for one of the user's, the command may be off.
-    let help = (!installed).then(|| match agent.install {
-        Some(install) => (
-            format!("{program} isn't installed on this computer. To install it:"),
-            install.to_string(),
-        ),
-        None => (
-            format!("{program} wasn't found on this computer. Its command, in Settings ▸ Agents:"),
-            agent.command.clone(),
-        ),
-    });
     let id = agent.id.clone();
     let open: Rc<Open> = Rc::new(move |folder, window, cx| {
         entity.update(cx, |ws, cx| ws.launch_agent(&id, folder, at, window, cx))
     });
-    ask_folder_for(ws, format!("Open {}", agent.title), help, open, window, cx);
+    ask_folder_for(ws, format!("Open {}", agent.title), open, window, cx);
 }
 
 /// Asks for a folder: this workspace's own, the home one, the recent ones, the system's picker,
-/// or a typed path; `open` gets the choice. `help`: a note and a command shown above the list
-/// (an agent that isn't installed).
+/// or a typed path; `open` gets the choice.
 pub(crate) fn ask_folder_for(
     ws: &Workspace,
     title: String,
-    help: Option<(String, String)>,
     open: Rc<Open>,
     window: &mut Window,
     cx: &mut Context<Workspace>,
 ) {
     let ui = ws.ui;
-    let warn = hsla(ws.theme.palette.ansi[3], 1.0);
-    // The terminal's font: the install command is to copy into one.
-    let mono = ws.cell.font.family.clone();
     // The workspace's own folder comes first, then the home folder, each once.
     let pinned = ws.space.folder.clone().filter(|f| f.is_dir());
     let home = std::env::home_dir().filter(|h| h.is_dir() && Some(h) != pinned.as_ref());
@@ -172,18 +152,6 @@ pub(crate) fn ask_folder_for(
                     .flex()
                     .flex_col()
                     .gap(px(8.0))
-                    .when_some(help.clone(), |el, (note, command)| {
-                        el.child(
-                            div()
-                                .px(px(10.0))
-                                .py(px(8.0))
-                                .rounded(px(8.0))
-                                .bg(ui.card)
-                                .text_size(px(12.0))
-                                .child(div().text_color(warn).child(note))
-                                .child(div().font_family(mono.clone()).child(command)),
-                        )
-                    })
                     .children(pinned)
                     .children(home)
                     .when(!recent.is_empty(), |el| {

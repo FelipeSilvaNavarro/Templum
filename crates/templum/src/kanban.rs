@@ -754,7 +754,8 @@ fn edit_typed(ws: &mut Workspace, typed: &Cell<bool>, f: impl FnOnce(&mut Boards
 }
 
 /// The open card's assignee button, showing `who`: its menu gives the card to anyone, one
-/// agent session running now, or any session of an agent. Each choice is one Ctrl+Z step.
+/// agent session running now and wired to a kanban block of the board, or any session of an
+/// agent. Each choice is one Ctrl+Z step.
 fn assignee_menu(
     ws: &Entity<Workspace>,
     board: u64,
@@ -771,7 +772,7 @@ fn assignee_menu(
         .dropdown_menu(move |menu, window, cx| {
             let set = |to| give(ws.clone(), board, card, to);
             let ws_now = ws.read(cx);
-            let mut sessions = ws_now.agent_sessions(cx);
+            let mut sessions = ws_now.agent_sessions(board, cx);
             // The current block first when it runs no agent now (closed, or its agent quit).
             if let Some(Assignee::Block(uid)) = &current
                 && !sessions.iter().any(|(s, _)| s == uid)

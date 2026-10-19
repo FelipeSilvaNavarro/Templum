@@ -302,9 +302,13 @@ pub fn session_ids(procs: &[Proc], dirs: &Dirs, now: u64) -> Vec<Option<String>>
 
 /// Whether `agent` still has its session `id` to resume. Gemini CLI deletes a session that has
 /// no message yet when it exits, and can't resume one it doesn't find
-/// (`tmp/<project>/chats/session-<time>-<the id's first 8>.jsonl`); the others are taken to.
-/// `home`: an account's state folder, where its agent keeps them.
+/// (`tmp/<project>/chats/session-<time>-<the id's first 8>.jsonl`); Claude Code, one with no file
+/// ([`claude::session_kept`]); the others are taken to. `home`: an account's state folder,
+/// where its agent keeps them.
 pub fn session_kept(agent: &str, id: &str, dirs: &Dirs, home: Option<&Path>) -> bool {
+    if agent == "claude" {
+        return (home.or(dirs.claude.as_deref())).is_none_or(|dir| claude::session_kept(dir, id));
+    }
     let (Some(dir), "gemini") = (home.or(dirs.gemini.as_deref()), agent) else {
         return true;
     };
@@ -543,6 +547,36 @@ mod tests {
             session_kept("grok", id, &dirs, None),
             "the others keep theirs"
         );
+    }
+
+    #[test]
+    fn a_claude_session_is_kept_only_while_its_file_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join("claude");
+        let dirs = Dirs {
+            relay: dir.path().join("relay"),
+            claude: Some(claude.clone()),
+            codex: None,
+            qwen: None,
+            gemini: None,
+        };
+        let id = "0405f089-64c4-4a4e-bfe7-5e6c2de3e0a6";
+        assert!(
+            session_kept("claude", id, &dirs, None),
+            "no folder: can't tell"
+        );
+        let project = claude.join("projects/-home-u-my-app");
+        std::fs::create_dir_all(&project).unwrap();
+        assert!(
+            !session_kept("claude", id, &dirs, None),
+            "never written, or deleted"
+        );
+        std::fs::write(project.join(format!("{id}.jsonl")), "{}").unwrap();
+        assert!(session_kept("claude", id, &dirs, None));
+        // An account's, in its own folder only.
+        let account = dir.path().join("claude2");
+        std::fs::create_dir_all(account.join("projects/-srv")).unwrap();
+        assert!(!session_kept("claude", id, &dirs, Some(&account)));
     }
 
     #[test]

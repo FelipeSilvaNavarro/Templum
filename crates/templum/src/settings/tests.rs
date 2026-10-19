@@ -119,3 +119,27 @@ fn only_families_with_i_and_m_are_loaded_on_linux() {
         "without fc-list, the built-in list"
     );
 }
+
+#[test]
+fn an_agent_not_installed_says_how_to_install_it() {
+    let agents = crate::agents::effective(
+        &crate::config::parse("[agents]\nmine = { name = \"Mine\", command = \"mine --go\" }\n")
+            .unwrap()
+            .agents,
+        &[],
+        None,
+    );
+    let of = |id: &str| agents.iter().find(|a| a.id == id).unwrap();
+    let (claude, mine) = (of("claude"), of("mine"));
+    let install = claude.install.unwrap();
+    assert_eq!(
+        super::agents::description(claude, false),
+        format!("Not installed · {install}")
+    );
+    assert_eq!(super::agents::description(claude, true), claude.command);
+    assert_eq!(
+        super::agents::description(mine, false),
+        "Yours · not found · mine --go"
+    );
+    assert_eq!(super::agents::description(mine, true), "Yours · mine --go");
+}

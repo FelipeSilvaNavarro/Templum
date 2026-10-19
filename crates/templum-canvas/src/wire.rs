@@ -52,37 +52,56 @@ impl Curve {
     /// gap between them across is the wider, else between their top and bottom. A rect of no
     /// size is a point: the pointer, while the Wire tool draws.
     pub fn between(a: Rect, b: Rect) -> Curve {
-        let (ca, cb) = (center(a), center(b));
         let across = (b.x - a.right()).max(a.x - b.right());
         let down = (b.y - a.bottom()).max(a.y - b.bottom());
         if across >= down {
-            let (from, to) = if cb.x >= ca.x {
-                (Point::new(a.right(), ca.y), Point::new(b.x, cb.y))
-            } else {
-                (Point::new(a.x, ca.y), Point::new(b.right(), cb.y))
-            };
-            // Halfway across, each end pulls the curve out square to its edge.
-            let pull = (to.x - from.x) / 2.0;
-            Curve {
-                from,
-                c1: Point::new(from.x + pull, from.y),
-                c2: Point::new(to.x - pull, to.y),
-                to,
-            }
+            sides(a, b)
         } else {
-            let (from, to) = if cb.y >= ca.y {
-                (Point::new(ca.x, a.bottom()), Point::new(cb.x, b.y))
-            } else {
-                (Point::new(ca.x, a.y), Point::new(cb.x, b.bottom()))
-            };
-            let pull = (to.y - from.y) / 2.0;
-            Curve {
-                from,
-                c1: Point::new(from.x, from.y + pull),
-                c2: Point::new(to.x, to.y - pull),
-                to,
+            ends(a, b)
+        }
+    }
+
+    /// The curve from `a` to `b` over none of `others` (the blocks around) when one is: that of
+    /// [`Curve::between`], else between the other pair of edges, else an elbow from a side of one
+    /// to the top or bottom of the other; with none, the one over the fewest. Only the rects
+    /// between the two can be in the way, and the first clear curve wins: a wire with nothing in
+    /// its way costs one look.
+    pub fn around(a: Rect, b: Rect, others: impl Iterator<Item = Rect>) -> Curve {
+        let first = Curve::between(a, b);
+        let span = a.union(&b);
+        let near: Vec<Rect> = others.filter(|r| r.intersects(&span)).collect();
+        let over = |c: &Curve| {
+            let points: Vec<Point> = (1..SEGMENTS)
+                .map(|i| c.at(i as f32 / SEGMENTS as f32))
+                .collect();
+            (near.iter())
+                .filter(|r| points.iter().any(|p| r.contains(*p)))
+                .count()
+        };
+        let mut best = (over(&first), first);
+        let across = (b.x - a.right()).max(a.x - b.right());
+        let down = (b.y - a.bottom()).max(a.y - b.bottom());
+        let others = [
+            (across > 0.0).then(|| sides(a, b)),
+            (down > 0.0).then(|| ends(a, b)),
+            elbow(a, b),
+            elbow(b, a).map(|c| Curve {
+                from: c.to,
+                c1: c.c2,
+                c2: c.c1,
+                to: c.from,
+            }),
+        ];
+        for curve in others.into_iter().flatten() {
+            if best.0 == 0 {
+                break;
+            }
+            let n = over(&curve);
+            if n < best.0 {
+                best = (n, curve);
             }
         }
+        best.1
     }
 
     /// The point `t` of the way along it: 0 is `from`, 1 is `to`.
@@ -109,6 +128,68 @@ impl Curve {
                 r.union(&Rect::corners(*p, *p))
             })
     }
+}
+
+/// Between the sides of `a` and `b` that face each other across, leaving square to them.
+fn sides(a: Rect, b: Rect) -> Curve {
+    let (ca, cb) = (center(a), center(b));
+    let (from, to) = if cb.x >= ca.x {
+        (Point::new(a.right(), ca.y), Point::new(b.x, cb.y))
+    } else {
+        (Point::new(a.x, ca.y), Point::new(b.right(), cb.y))
+    };
+    // Halfway across, each end pulls the curve out square to its edge.
+    let pull = (to.x - from.x) / 2.0;
+    Curve {
+        from,
+        c1: Point::new(from.x + pull, from.y),
+        c2: Point::new(to.x - pull, to.y),
+        to,
+    }
+}
+
+/// Between the top and bottom of `a` and `b` that face each other, leaving square to them.
+fn ends(a: Rect, b: Rect) -> Curve {
+    let (ca, cb) = (center(a), center(b));
+    let (from, to) = if cb.y >= ca.y {
+        (Point::new(ca.x, a.bottom()), Point::new(cb.x, b.y))
+    } else {
+        (Point::new(ca.x, a.y), Point::new(cb.x, b.bottom()))
+    };
+    let pull = (to.y - from.y) / 2.0;
+    Curve {
+        from,
+        c1: Point::new(from.x, from.y + pull),
+        c2: Point::new(to.x, to.y - pull),
+        to,
+    }
+}
+
+/// An elbow from the side of `a` facing `b` to the top or bottom of `b` facing `a`, rounded at its
+/// corner; None when `b`'s middle isn't past that side, or `a`'s past that top or bottom.
+fn elbow(a: Rect, b: Rect) -> Option<Curve> {
+    let (ca, cb) = (center(a), center(b));
+    let x = if cb.x > a.right() {
+        a.right()
+    } else if cb.x < a.x {
+        a.x
+    } else {
+        return None;
+    };
+    let y = if ca.y < b.y {
+        b.y
+    } else if ca.y > b.bottom() {
+        b.bottom()
+    } else {
+        return None;
+    };
+    let corner = Point::new(cb.x, ca.y);
+    Some(Curve {
+        from: Point::new(x, ca.y),
+        c1: corner,
+        c2: corner,
+        to: Point::new(cb.x, y),
+    })
 }
 
 fn center(r: Rect) -> Point {
@@ -176,6 +257,30 @@ mod tests {
         }
         assert_eq!(s.at(0.5), Point::new(200.0, 125.0));
         assert_eq!(s.bounds(), Rect::new(100.0, 25.0, 200.0, 200.0));
+    }
+
+    /// The wire from a block to the third of a column beside it doesn't run under the second:
+    /// it takes the gap between them; with nothing in the way, it is the usual one.
+    #[test]
+    fn a_wire_goes_around_a_block_in_its_way() {
+        let parent = Rect::new(0.0, 0.0, 600.0, 400.0);
+        let second = Rect::new(648.0, 348.0, 500.0, 300.0);
+        let third = Rect::new(648.0, 696.0, 500.0, 300.0);
+        assert_eq!(
+            Curve::around(parent, third, std::iter::empty()),
+            Curve::between(parent, third)
+        );
+        assert!(
+            (1..SEGMENTS)
+                .any(|i| second.contains(Curve::between(parent, third).at(i as f32 / 32.0))),
+            "the usual one runs under it"
+        );
+        let c = Curve::around(parent, third, [second].into_iter());
+        assert_eq!(
+            (c.from, c.to),
+            (Point::new(600.0, 200.0), Point::new(648.0, 846.0))
+        );
+        assert!((0..=SEGMENTS).all(|i| !second.contains(c.at(i as f32 / 32.0))));
     }
 
     #[test]

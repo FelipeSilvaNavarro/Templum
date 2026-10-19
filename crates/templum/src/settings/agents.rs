@@ -23,10 +23,7 @@ use crate::workspace::{Workspace, show_notification};
 pub(super) fn agent_row(ws: &Workspace, entity: &Entity<Workspace>, agent: &AgentEntry) -> Row {
     let ui = ws.ui;
     let id = agent.id.clone();
-    let description = match agent.builtin {
-        Some(_) => agent.command.clone(),
-        None => format!("Yours · {}", agent.command),
-    };
+    let description = description(agent, templum_terminal::installed(agent.program()));
     let show = {
         let (e, agent) = (entity.clone(), agent.clone());
         Switch::new(ElementId::Name(format!("show-agent-{id}").into()))
@@ -75,6 +72,17 @@ pub(super) fn agent_row(ws: &Workspace, entity: &Entity<Workspace>, agent: &Agen
         .reset(agent.builtin.is_some() && agent.changed, move |_, cx| {
             e.update(cx, |ws, cx| ws.remove_agent(&reset_id, cx))
         })
+}
+
+/// What an agent's row says under its title: its command, or how to install it when its program
+/// isn't found (the canvas's menu greys it out).
+pub(super) fn description(agent: &AgentEntry, installed: bool) -> String {
+    match agent.install {
+        Some(install) if !installed => format!("Not installed · {install}"),
+        _ if agent.builtin.is_some() => agent.command.clone(),
+        _ if !installed => format!("Yours · not found · {}", agent.command),
+        _ => format!("Yours · {}", agent.command),
+    }
 }
 
 /// "Add an agent", under the agents.

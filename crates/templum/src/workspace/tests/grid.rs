@@ -286,10 +286,12 @@ fn a_new_block_takes_half_of_the_focused_tile(cx: &mut TestAppContext) {
     assert_eq!(c.bottom(), area.bottom());
 }
 
-/// New blocks get places on the canvas where the view was, off each other's.
+/// New blocks get places on the canvas where the view was, off each other's: in the middle of
+/// the view the canvas had, else beside what is there, level with it.
 #[gpui_kit::test]
 fn new_blocks_land_apart_on_the_canvas_in_the_view_left(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
+    let first = first_id(&ws, cx);
     let camera = far_camera(&ws, cx);
     press(handle, TOGGLE, cx);
     press(handle, NEW, cx);
@@ -298,10 +300,10 @@ fn new_blocks_land_apart_on_the_canvas_in_the_view_left(cx: &mut TestAppContext)
         panic!("two new terminals");
     };
     press(handle, TOGGLE, cx);
-    let (b, c) = (rect_of(&ws, cx, second), rect_of(&ws, cx, third));
-    assert_eq!(
-        (c.x - b.x, c.y - b.y),
-        (templum_canvas::CASCADE, templum_canvas::CASCADE)
+    let (a, b, c) = (
+        rect_of(&ws, cx, first),
+        rect_of(&ws, cx, second),
+        rect_of(&ws, cx, third),
     );
     let center = cx
         .update_window(handle, |_, window, cx| {
@@ -309,16 +311,25 @@ fn new_blocks_land_apart_on_the_canvas_in_the_view_left(cx: &mut TestAppContext)
             camera.to_world(ws.center(window))
         })
         .unwrap();
-    assert!(
-        (b.x + b.w / 2.0 - center.x).abs() < 1.0 && (b.y + b.h / 2.0 - center.y).abs() < 1.0,
+    let at = Rect::new(center.x - b.w / 2.0, center.y - b.h / 2.0, b.w, b.h);
+    assert_eq!(
+        b,
+        templum_canvas::room_at(&[a], at),
         "{b:?} around {center:?}"
     );
+    assert_eq!(c, templum_canvas::room_at(&[a, b], at));
+    assert!(!b.intersects(&c) && !a.intersects(&b) && !a.intersects(&c));
 }
 
 #[gpui_kit::test]
 fn a_terminal_beside_a_tile_lands_beside_its_place_on_the_canvas(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let (handle, ws) = open(cx);
+    // The startup terminal out of the editor's way: nothing on its right.
+    let startup = first_id(&ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(startup).unwrap().rect.x += 5000.0;
+    });
     let editor = open_editor(handle, &ws, cx, dir.path());
     let home = rect_of(&ws, cx, editor);
     ws.update(cx, |ws, _| ws.space.focused = Some(editor));

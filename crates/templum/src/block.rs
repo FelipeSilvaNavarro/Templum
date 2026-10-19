@@ -188,6 +188,19 @@ pub(crate) fn render(
         .text_color(if focused { ui.title } else { ui.title_dim })
         .child(title(ws, body, cx))
         .test_support();
+    // An agent's block name, which agents call it by (`z0yfd`), after its title.
+    let name = match body {
+        Body::Terminal(pane) if pane.seen.agent.is_some() && !uid.is_empty() => Some(
+            div()
+                .id(("block-name", n))
+                .flex_none()
+                .text_size(px(TITLE_FONT * if labeled { 1.0 } else { z }))
+                .text_color(ui.title_dim)
+                .child(uid.to_string())
+                .test_support(),
+        ),
+        _ => None,
+    };
     // A terminal's state: on the left of its header, or in its label.
     let dot = match body {
         Body::Terminal(pane) if live => status_dot(ws, pane).map(|(color, text)| {
@@ -287,6 +300,7 @@ pub(crate) fn render(
             .bg(bg)
             .children(label_dot)
             .child(title_text)
+            .children(name)
     } else {
         div()
             .id(("title", n))
@@ -303,6 +317,7 @@ pub(crate) fn render(
             .gap(px(4.0 * z))
             .children(mark)
             .child(title_text)
+            .children(name)
             .children(clock)
     }
     // The title is where the block is held to move it: an open hand over it, a closed one

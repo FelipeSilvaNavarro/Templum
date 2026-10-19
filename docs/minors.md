@@ -211,6 +211,17 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   with the PKGBUILD the release attaches (`[package.metadata.packager.pacman]` in `crates/templum/Cargo.toml`). Fix:
   in release.yml, after `cargo packager`, rewrite a prerelease's `pkgver` with `_` for `-` and set the source URL's
   version from `$GITHUB_REF_NAME` instead of `${pkgver}`.
+- [ ] **install.ps1 answers a version with no release with PowerShell's own error.** `$env:TEMPLUM_VERSION = "9.9.9"`
+  prints "Response status code does not indicate success: 404 (Not Found)." (`install.ps1`, the first
+  `Invoke-WebRequest`), where install.sh says "couldn't download … of Templum 9.9.9". Fix: catch it around the
+  download and throw "templum: no Templum $version at https://github.com/KingDasWinx/Templum/releases".
+- [ ] **install.sh on macOS replaces a running Templum.app under it.** The `Darwin` branch deletes the bundle and
+  copies the new one, and macOS can kill an app whose signed code changes while it runs. Fix: copy to
+  `.Templum.app.update` beside it and swap the folders, as `templum-update`'s `apply.rs` does, or ask to quit
+  Templum first when `pgrep -x templum` finds it.
+- [ ] **install.sh in a Rosetta shell on Apple Silicon installs the Intel build.** `uname -m` says `x86_64` there,
+  so the Mac gets `Templum_<v>_x64.dmg`, which runs translated, slower. Fix: take `aarch64` when
+  `sysctl -n hw.optional.arm64` prints 1.
 
 ## Commit messages
 
@@ -279,6 +290,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   `crates/templum/src/workspace/selection.rs`): resuming it would put two agents on one conversation, so a copied
   Claude Code terminal pastes as a shell in its folder. Fix: type the agent's own command (not its resume command)
   into the pasted shell.
+- [ ] **A held block doesn't move the canvas near its edge.** A block dragged by its title stops at the canvas's
+  edge: the camera goes there only for the selection rectangle (`marquee_edge`,
+  `crates/templum/src/workspace/selection.rs`) and the wheel (`on_background_scroll`, `input.rs`). A person must let
+  go, pan, and grab it again (or scroll while holding it). Fix: keep the pointer and the last frame's time in
+  `Drag::Canvas` as `Drag::Marquee` does, and a per-frame `move_edge` that pans by `edge_scroll` and re-applies the
+  gesture.
 
 ## Notes
 
@@ -1321,6 +1338,20 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   `spawn_agent` with `fork` from one of them says it can't, though `pi --fork <id>` and `grok --resume <id>
   --fork-session` exist, since Templum couldn't find the fork's own session to resume it after a restart. Fix: give a
   fork a `--session-id` Templum picks, once each agent takes one with its fork flag.
+
+## Placing new blocks
+
+Left by kanban card 53 (blocks Templum places line up, 48 apart); line numbers are those of `development` after it.
+
+- [ ] **A new editor moves the view even when its folder dialog is cancelled.** `new_editor`
+  (`crates/templum/src/workspace/files.rs:23`) finds the editor's place, and glides the view there, before the folder
+  dialog opens; cancelling it leaves the view moved for an editor that never opens. Fix: find the place, and glide,
+  in the dialog's answer (`ask_editor_folder`'s callback) instead.
+- [ ] **A column of subagents stops being one once the person nudges a block in it.** `free_spot`
+  (`crates/templum-canvas/src/canvas.rs`) counts a wired block as on a side's line only when its edge is within half a
+  unit of the line; a subagent dragged a few units off it, the next one goes the way of the connections instead (still
+  48 from everything, but maybe not under the others). Fix: count a block whose edge is within the snap distance
+  (`SNAP_PX`, in world units) of the line, and line the new one up with it.
 
 ## Keeping the canvas
 

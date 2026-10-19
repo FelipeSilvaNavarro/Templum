@@ -67,7 +67,7 @@ use gpui_kit::{
 };
 use templum_canvas::{
     Block, BlockId, Camera, CameraFlight, Canvas, Color, Drawing, Gesture, Guide, Point, Rect,
-    ShapeKind, Size, Tile, Wire, chrome, free_spot,
+    ShapeKind, Size, Tile, Wire, chrome, free_spot, room_at,
 };
 use templum_git::GitError;
 use templum_terminal::{Notify, Snapshot, Terminal};
@@ -661,14 +661,31 @@ impl Space {
             .unwrap_or(block.rect)
     }
 
-    /// A spot for a block of `size` beside `anchors` (the first preferred) that overlaps no block
-    /// nor drawing ([`free_spot`]): to the right of a lone anchor, top-aligned, when nothing is
-    /// there. Blocks are where they sit on the canvas, also in grid mode.
+    /// A spot for a block of `size` beside `anchors` (a block, then those wired to it) that keeps
+    /// off every block and drawing ([`free_spot`]): to the right of a lone anchor, top-aligned, when
+    /// nothing is there; down the column its wired blocks already started.
     pub(super) fn room_beside(&self, anchors: &[Rect], size: Size) -> Rect {
-        let taken: Vec<Rect> = (self.canvas.blocks().iter().map(|b| self.home(b)))
+        free_spot(&self.taken(), anchors, size)
+    }
+
+    /// A spot for a block of `size` centered on `center` (the view's middle), or beside the
+    /// blocks there, level with one ([`room_at`]).
+    pub(super) fn room_around(&self, center: Point, size: Size) -> Rect {
+        let at = Rect::new(
+            center.x - size.w / 2.0,
+            center.y - size.h / 2.0,
+            size.w,
+            size.h,
+        );
+        room_at(&self.taken(), at)
+    }
+
+    /// What a new block keeps off: every block where it sits on the canvas (also in grid mode),
+    /// and every drawing.
+    fn taken(&self) -> Vec<Rect> {
+        (self.canvas.blocks().iter().map(|b| self.home(b)))
             .chain(self.ink.iter().map(Drawing::bounds))
-            .collect();
-        free_spot(&taken, anchors, size)
+            .collect()
     }
 
     /// The block on top among those drawn.

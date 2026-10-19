@@ -103,7 +103,7 @@ Opened by the header's button, **All checklists…** in the block's menu, **Chec
   ("5 min ago") and where it is open ("Open", "Open in Workspace 2");
 - the field on top finds checklists by their name and their items' text, in any case;
 - a click opens one, and **New checklist** adds one, where [a checklist opens](#a-checklist-block);
-- the trash deletes a checklist on its **second** click ("Delete for good" shows after the first); the block that
+- the trash deletes a checklist on its **second** click ("Click again to delete" shows after the first); the block that
   showed it shows none.
 
 ## Agents

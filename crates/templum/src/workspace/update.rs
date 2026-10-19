@@ -378,7 +378,7 @@ impl Workspace {
             return;
         };
         let (folder, command) = (folder.clone(), command.clone());
-        let rect = self.new_terminal_rect(window);
+        let rect = self.new_terminal_rect(window, cx);
         let Some(pane) = self
             .spawn_block(rect, Some(folder), window, cx)
             .and_then(|id| self.space.terminal(id))

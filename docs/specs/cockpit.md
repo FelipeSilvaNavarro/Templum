@@ -157,7 +157,7 @@ separated by hairlines:
 | Group | Buttons | What a click does |
 |---|---|---|
 | Pointer | **Select** (`mouse-pointer-2`), **Hand** (`hand`), **Wire** (`cable`) | Select is the normal state. Hand pans with any drag and zooms with the wheel, over blocks too, like holding Alt ([navigation.md](navigation.md)); it stays on until Select is clicked or Esc is pressed. Wire wires two blocks ([connections.md](connections.md#wires)); it stays on until another tool is picked or Esc is pressed. |
-| Blocks | **Terminal** (`square-terminal`), **Note** (`sticky-note`), **Kanban** (`layout-dashboard`), **Editor** (`file-code-2`), **Git** (`git-branch`), **Docker** (`container`), **AI agent** (`bot`) | Adds that block at the viewport's center (cascading like a new terminal does) and focuses it. Editor and Git first ask for a folder, as agents do. AI agent opens the agents menu above the button, the same list as the canvas menu. The tool goes back to Select at once. |
+| Blocks | **Terminal** (`square-terminal`), **Note** (`sticky-note`), **Kanban** (`layout-dashboard`), **Editor** (`file-code-2`), **Git** (`git-branch`), **Docker** (`container`), **AI agent** (`bot`) | Adds that block at the viewport's center (beside what is there, as a new terminal does) and focuses it. Editor and Git first ask for a folder, as agents do. AI agent opens the agents menu above the button, the same list as the canvas menu. The tool goes back to Select at once. |
 | Drawing | **Pen** (`pencil`), **Highlighter** (`highlighter`), **Shapes** (`shapes`), **Eraser** (`eraser`) | Drawing tools stay on until Select is clicked or Esc is pressed. Shapes opens a small popover above the button: Line, Arrow, Rectangle, Ellipse; the chosen one becomes the tool and the button shows its icon. |
 
 - **Stroke options** appear as a second, smaller pill right above the toolbar while a drawing tool is on: the
@@ -272,7 +272,7 @@ close, resize, move, focus, hover lift, pop-in and fade-out, menus, zoom.
   menu): every note, the most recently changed first; each row its title, when it last changed ("5 min ago"), where
   it is open ("Open", "Open in Workspace 2") and its next line with text. The field on top finds notes by their text,
   in any case. A click opens a note: as a tab of the block the dialog was opened from, where it is open already, or
-  in a new block. **New note** adds one. The trash deletes a note on its **second** click ("Delete for good" shows
+  in a new block. **New note** adds one. The trash deletes a note on its **second** click ("Click again to delete" shows
   after the first), from every block that shows it.
 - **Saved as it is typed:** each change to a note's text goes into the notes at once, and they are written to
   `notes.json` in the data folder with the canvas's snapshot (every 5 s, and when Templum quits). A canvas is written
@@ -614,7 +614,8 @@ the output is a terminal's, searchable and scrollable, and Templum has nothing t
   folder picker), command, **Remove when it exits**, **Interactive** (off: `-d`). The dialog shows the `docker run`
   line it builds, and **Run** types it into a terminal block next to the Docker block: a pull, an error or an
   interactive process is then visible, and the user sees the command they would have typed.
-- Terminal blocks opened here are placed snapped to the Docker block's right, cascading.
+- Terminal blocks opened here go beside the Docker block, as any block Templum opens beside another
+  ([Spawning](connections.md#spawning)).
 
 ### Images
 
@@ -661,8 +662,8 @@ the `events()` reader, and the command builders (`run_line(RunSpec)`, `logs_line
 
 ## Shared pieces
 
-- **Placing a block next to another** (`Workspace::add_beside(anchor: BlockId, size)`): to the right of the anchor
-  with a 24-unit gap, top-aligned, cascading down by 32 while that spot's top-left is taken, like `place_new`.
+- **Placing a block next to another** (`Space::room_beside`, `templum_canvas::free_spot`): to the right of the
+  anchor, 48 units apart, top-aligned, past what is in the way ([Spawning](connections.md#spawning)).
   Git, Docker and the editor use it for terminals and editors they open.
 - **Typing a command into a new terminal block:** `Workspace::open_terminal_with(folder, command, at)`, what
   `launch_agent` does today, made reusable.

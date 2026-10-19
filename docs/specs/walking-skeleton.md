@@ -175,7 +175,7 @@ use Cmd.
 
 | Linux / Windows | macOS | Action |
 |---|---|---|
-| Ctrl+Shift+T | Cmd+T | New terminal at the viewport center (`place_new` cascades) |
+| Ctrl+Shift+T | Cmd+T | New terminal at the viewport center, or beside what is there ([Spawning](connections.md#spawning)) |
 | Ctrl+Shift+W | Cmd+W | Close the focused terminal |
 | Ctrl+Shift+C | Cmd+C | Copy the selection; does nothing without one |
 | Ctrl+Shift+V | Cmd+V | Paste |
@@ -226,7 +226,7 @@ Every item runs in CI on Linux, macOS and Windows.
 - `add`/`remove`/`raise` order.
 - `visible` culling.
 - `Gesture` move, resize with min-size clamp, and pan.
-- `place_new` cascade.
+- `room_at`: at the viewport center, or beside what is there.
 - `grid_size`/`block_size` round trip.
 
 **`templum-terminal`:**

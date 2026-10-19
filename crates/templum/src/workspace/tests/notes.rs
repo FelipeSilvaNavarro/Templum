@@ -27,7 +27,11 @@ fn new_note(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppCon
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.press(NEW_NOTE, cx);
-        ws.update(cx, |ws, _| ws.space.appearing.clear());
+        // Popped in, and the view landed where it glides to show it.
+        ws.update(cx, |ws, _| {
+            ws.space.appearing.clear();
+            ws.space.flight = None;
+        });
         window.render_frame(cx);
     })
     .unwrap();
