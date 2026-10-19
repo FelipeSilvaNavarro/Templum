@@ -75,12 +75,16 @@ impl Workspace {
     }
 
     /// The folders the popup's folder menu offers: the repositories this workspace's terminals
-    /// work in, then the recent folders; each once, the one shown left out.
+    /// work in, then the recent folders; each once, the one shown left out, by where they really
+    /// are (Git names a repository by its real path, macOS's temporary folders through a link).
     pub(crate) fn git_folders(&self) -> Vec<PathBuf> {
-        let shown = self
+        let real = |f: &Path| f.canonicalize().unwrap_or_else(|_| f.to_path_buf());
+        let mut seen: Vec<PathBuf> = self
             .space
             .git()
-            .map(|g| g.repo().map_or(&g.folder, |r| &r.root));
+            .map(|g| real(g.repo().map_or(&g.folder, |r| &r.root)))
+            .into_iter()
+            .collect();
         let mut folders: Vec<PathBuf> = Vec::new();
         let terminals = self.space.terminals().filter_map(|(_, p)| {
             let folder = p.seen.folder.as_deref()?;
@@ -90,7 +94,9 @@ impl Workspace {
                 .map(Path::to_path_buf)
         });
         for f in terminals.chain(self.space.recent.iter().cloned()) {
-            if Some(&f) != shown && !folders.contains(&f) {
+            let at = real(&f);
+            if !seen.contains(&at) {
+                seen.push(at);
                 folders.push(f);
             }
         }

@@ -329,6 +329,23 @@ fn changing_the_gits_folder_forgets_the_old_repository(cx: &mut TestAppContext) 
     });
 }
 
+/// A repository chosen through a link (macOS's temporary folders are one) isn't offered again
+/// under its real path, which Git names it by.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn the_folder_menu_leaves_out_the_repository_shown_through_a_link(cx: &mut TestAppContext) {
+    let repo = git_repo();
+    let links = tempfile::tempdir().unwrap();
+    let link = links.path().join("repo");
+    std::os::unix::fs::symlink(repo.path(), &link).unwrap();
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, &link);
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.git().unwrap().repo().is_some());
+        assert_eq!(ws.git_folders(), Vec::<std::path::PathBuf>::new());
+    });
+}
+
 #[gpui_kit::test]
 fn the_git_popup_opens_terminals_in_its_repository_and_lists_them(cx: &mut TestAppContext) {
     let repo = git_repo();
