@@ -824,6 +824,8 @@ pub struct Terminal {
     id: String,
     /// Someone typed into it ([`Terminal::had_input`]).
     input: AtomicBool,
+    /// How many times input reached its program ([`Terminal::inputs`]).
+    inputs: AtomicU64,
 }
 
 impl Terminal {
@@ -920,6 +922,7 @@ impl Terminal {
             shell_name,
             id,
             input: AtomicBool::new(false),
+            inputs: AtomicU64::new(0),
         })
     }
 
@@ -1081,7 +1084,19 @@ impl Terminal {
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {
         self.term.0.lock_unfair().scroll_display(Scroll::Bottom);
         self.term.touched();
+        self.send(bytes);
+    }
+
+    fn send(&self, bytes: impl Into<Cow<'static, [u8]>>) {
+        self.inputs.fetch_add(1, Ordering::Relaxed);
         let _ = self.pty.send(Msg::Input(bytes.into()));
+    }
+
+    /// How many times input reached its program: a key, text, a paste, what the app wrote, a
+    /// click, a drag, the wheel (as arrows too). Not a mouse move with no button down, nor its
+    /// answers to the program's queries: they answer no dialog.
+    pub fn inputs(&self) -> u64 {
+        self.inputs.load(Ordering::Relaxed)
     }
 
     /// `write`, for input someone gave: a key, a paste, typed text ([`Terminal::had_input`]).
@@ -1135,6 +1150,10 @@ impl Terminal {
         };
         drop(term);
         match encode_mouse(&input, mode) {
+            Some(bytes) if input.button.is_some() => {
+                self.send(bytes);
+                true
+            }
             Some(bytes) => {
                 let _ = self.pty.send(Msg::Input(bytes.into()));
                 true
@@ -1225,9 +1244,7 @@ impl Terminal {
                 ..KeyInput::default()
             };
             let arrow = encode_key(&key, mode).expect("arrow keys always encode");
-            let _ = self.pty.send(Msg::Input(
-                arrow.repeat(lines.unsigned_abs() as usize).into(),
-            ));
+            self.send(arrow.repeat(lines.unsigned_abs() as usize));
         } else {
             term.scroll_display(Scroll::Delta(lines));
             drop(term);

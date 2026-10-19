@@ -251,6 +251,7 @@ impl Workspace {
         let Some(pane) = self.space.terminal(to) else {
             return;
         };
+        pane.person_typed();
         pane.term.type_in(text);
         let space = self.space.id.clone();
         self.reveal(&space, to, window, cx);
@@ -614,7 +615,6 @@ impl Workspace {
                         typed: Default::default(),
                         keyed: Default::default(),
                         scrolled: Default::default(),
-                        clicked: Default::default(),
                         submitted: 0,
                         dialogs: 0,
                         speaks: false,

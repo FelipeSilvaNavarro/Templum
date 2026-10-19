@@ -1346,7 +1346,11 @@ fn an_allow_after_the_person_typed_in_it_asks_again(cx: &mut TestAppContext) {
         "send_keys",
         json!({"block": uid, "keys": ["1"]}),
     );
-    ws.read_with(cx, |ws, _| ws.space.terminal(busy).unwrap().person_typed());
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(busy).unwrap();
+        pane.person_typed();
+        pane.term.text("1");
+    });
     answer(handle, &ws, cx, crate::chat::Answer::Once);
     super::bus::after(cx, 1_000);
     assert!(answers.try_recv().is_err(), "it still waits");
@@ -1388,6 +1392,110 @@ fn an_allow_after_the_persons_mouse_reached_it_asks_again(cx: &mut TestAppContex
         wheel(window, cx, at, ScrollDelta::Lines(point(0., 1.)), false);
     })
     .unwrap();
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    super::bus::after(cx, 1_000);
+    assert!(answers.try_recv().is_err(), "it still waits");
+    assert!(ws.read_with(cx, |ws, _| ws.templum_agent.approvals[0].changed));
+}
+
+/// A full-screen program that didn't ask for the mouse (Codex) gets the wheel as ↑/↓: scrolling
+/// it to read the command moves its dialog's choice, and Allow presses nothing on it.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_allow_after_the_wheel_moved_a_full_screen_program_asks_again(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    super::terminals::program_asks("\x1b[?1049h", handle, &ws, cx, |m| m.full_screen);
+    let uid = ws.update(cx, |ws, _| {
+        let pane = ws.space.terminal_mut(id).unwrap();
+        assert!(!pane.term.shared().modes().mouse);
+        pane.seen.agent = Some("codex".into());
+        ws.space.uids[&id].clone()
+    });
+    let answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "send_keys",
+        json!({"block": uid, "keys": ["enter"]}),
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let body = window.find(("body", id.0 as usize)).bounds().origin;
+        let at = (f32::from(body.x) + 20., f32::from(body.y) + 20.);
+        wheel(window, cx, at, ScrollDelta::Lines(point(0., -1.)), false);
+    })
+    .unwrap();
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    super::bus::after(cx, 1_000);
+    assert!(answers.try_recv().is_err(), "it still waits");
+    assert!(ws.read_with(cx, |ws, _| ws.templum_agent.approvals[0].changed));
+}
+
+/// Another agent wired to it types or presses keys in it while the approval waits: Allow presses
+/// nothing. Nothing else reached it since, the next Allow presses its keys.
+#[gpui_kit::test]
+fn an_allow_after_another_agent_typed_in_it_asks_again(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let mine = first_id(&ws, cx);
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    let terminal = ws.update(cx, |ws, cx| {
+        assert!(ws.connect(mine, busy, cx));
+        ws.space.terminal(mine).unwrap().term.id().to_string()
+    });
+    let typing = [
+        (
+            "send_to_terminal",
+            json!({"block": uid, "text": "2", "enter": true}),
+        ),
+        ("send_keys", json!({"block": uid, "keys": ["down"]})),
+    ];
+    for (conn, (tool, args)) in (7..).zip(typing) {
+        let answers = control_later(
+            handle,
+            &ws,
+            cx,
+            conn,
+            "send_keys",
+            json!({"block": uid, "keys": ["1"]}),
+        );
+        let _typed = super::bus::call_later(handle, &ws, cx, &terminal, 1, tool, args);
+        super::bus::after(cx, 1_000);
+        answer(handle, &ws, cx, crate::chat::Answer::Once);
+        assert!(answers.try_recv().is_err(), "{tool}: it still waits");
+        assert!(ws.read_with(cx, |ws, _| ws.templum_agent.approvals[0].changed));
+        answer(handle, &ws, cx, crate::chat::Answer::Once);
+        super::bus::after(cx, 1_000);
+        let (failed, text) = super::bus::result_of(&answers.try_recv().unwrap());
+        assert!(
+            !failed && text.starts_with("Pressed 1 key"),
+            "{tool}: {text}"
+        );
+    }
+}
+
+/// The person sends a note's text to it with "Send to ▸" while the approval waits: Allow presses
+/// nothing; and a task's second Enter won't send their line.
+#[gpui_kit::test]
+fn an_allow_after_the_person_sent_text_to_it_asks_again(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (busy, uid) = busy_terminal(handle, &ws, cx);
+    let answers = control_later(
+        handle,
+        &ws,
+        cx,
+        7,
+        "send_keys",
+        json!({"block": uid, "keys": ["enter"]}),
+    );
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.send_to(busy, "yes", window, cx))
+    })
+    .unwrap();
+    assert!(ws.read_with(cx, |ws, _| {
+        ws.space.terminal(busy).unwrap().keyed.get().is_some()
+    }));
     answer(handle, &ws, cx, crate::chat::Answer::Once);
     super::bus::after(cx, 1_000);
     assert!(answers.try_recv().is_err(), "it still waits");
@@ -1443,8 +1551,14 @@ fn an_allow_after_its_block_came_back_asks_again(cx: &mut TestAppContext) {
 #[cfg(unix)]
 #[gpui_kit::test]
 fn a_title_that_changes_asks_nothing_again(cx: &mut TestAppContext) {
-    let script = r"printf '\033]2;one\007'; read x; printf '\033]2;two\007'; exec cat";
-    let command = ("sh".to_string(), vec!["-c".to_string(), script.to_string()]);
+    // It changes its title by itself: input reaching it would ask again.
+    let dir = tempfile::tempdir().unwrap();
+    let go = dir.path().join("go");
+    let script = format!(
+        r"printf '\033]2;one\007'; until [ -e '{}' ]; do sleep 0.05; done; printf '\033]2;two\007'; exec cat",
+        go.display()
+    );
+    let command = ("sh".to_string(), vec!["-c".to_string(), script]);
     let (handle, ws) = open_as(cx, Some(command), None, None);
     let first = first_id(&ws, cx);
     let title = |ws: &Entity<Workspace>, cx: &mut TestAppContext, want: &str| {
@@ -1464,9 +1578,7 @@ fn a_title_that_changes_asks_nothing_again(cx: &mut TestAppContext) {
         "send_to_terminal",
         json!({"block": uid, "text": "hi"}),
     );
-    ws.read_with(cx, |ws, _| {
-        ws.space.terminal(first).unwrap().term.write(&b"\n"[..])
-    });
+    std::fs::write(&go, "").unwrap();
     title(&ws, cx, "two");
     answer(handle, &ws, cx, crate::chat::Answer::Once);
     super::bus::after(cx, 1_000);

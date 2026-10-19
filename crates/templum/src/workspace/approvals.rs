@@ -126,9 +126,10 @@ impl Workspace {
     /// since: a terminal's own (one brought back with Ctrl+Z is another), what runs in it (its
     /// agent, or its command by when it started: one started since is another; its shell back in
     /// front), what its agent asks and which of its waits that is (two dialogs in the same words
-    /// are two), when the person last typed or clicked in it (a dialog queued behind the one they
-    /// answered there shows with no hook); a block's title and an editor's unsaved files. Not a
-    /// terminal's title: an agent animates its own while it works.
+    /// are two), how much input reached its program (the person's keys, clicks and wheel,
+    /// another agent's: a dialog queued behind the one they answered shows with no hook, a
+    /// selection moved); a block's title and an editor's unsaved files. Not a terminal's title:
+    /// an agent animates its own while it works.
     fn facts(&self, call: &ControlCall, cx: &App) -> String {
         let block = |uid: &String| {
             let (space, id) = self.find_block(uid)?;
@@ -140,15 +141,14 @@ impl Workspace {
                         _ => None,
                     };
                     format!(
-                        "{} {:?} {:?} {asks:?} {} {} {} {:?} {:?}",
+                        "{} {:?} {:?} {asks:?} {} {} {} {:?}",
                         pane.term.id(),
                         self.agent_name(pane),
                         pane.term.status().running,
                         pane.dialogs,
                         pane.shell_in_front(),
                         pane.term.exited(),
-                        pane.keyed.get(),
-                        pane.clicked.get()
+                        pane.term.inputs()
                     )
                 }
                 None => {

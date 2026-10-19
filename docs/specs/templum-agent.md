@@ -176,9 +176,10 @@ A dangerous call ([The gate](#the-gate)) waits. Templum shows the approval in th
   it taking the keyboard, and clicks within 0.5 s of it showing, are ignored, as the balloon's are.
 - **Several** wait in turn, the oldest shown, with "1 of 3".
 - **It answers what it showed:** an Allow after its block changed (its agent asks something else, or another dialog in
-  the same words; another program or its shell is in front; it was closed and brought back with Ctrl+Z; the person
-  typed or clicked in it) runs nothing: the approval says what is there now and waits for a new click, once seen, as a
-  new one does. A terminal's title changing doesn't count: an agent animates its own while it works.
+  the same words; another program or its shell is in front; it was closed and brought back with Ctrl+Z; any input
+  reached its program: the person's keys, clicks or wheel, also as the ↑/↓ a full-screen program gets, text sent with
+  "Send to ▸", another agent's) runs nothing: the approval says what is there now and waits for a new click, once seen,
+  as a new one does. A terminal's title changing doesn't count: an agent animates its own while it works.
 - **Telling the person:** the pill turns yellow (above). When the window is in the background, or the pill can't be
   seen (the workspaces screen, the welcome, the pill turned off), a system notification "Templum Agent asks: *Close
   "Codex · api"?*"; clicking it brings the window and opens the chat at the approval. The short sound of
