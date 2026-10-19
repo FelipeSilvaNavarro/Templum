@@ -1,5 +1,228 @@
 # Changelog
 
+## 0.1.3
+
+### Features
+
+- A wire with a block in its way takes another path, down the gap beside a column or around an elbow
+- An agent's block shows its name (z0yfd) beside its title, the one agents call it by
+- A subagent's own agents open on its right, not back toward the agent that opened it
+- Blocks Templum opens line up, 48 apart, instead of landing scattered or piled up
+- Install Templum with one command: install.sh on Linux and macOS, install.ps1 on Windows
+- Scroll while holding a block to move the canvas under it, the block staying under the pointer
+- The Templum Agent's pill grows and shrinks smoothly when it takes or gives back the keyboard
+- Agents that aren't installed are greyed out in the AI agent menu, and Settings ▸ Agents shows each one's install command
+- The Templum Agent's pill and chat buttons say what they do on hover
+- The Templum Agent waits for a line a terminal prints, or hears of it in its chat while it works
+- The Templum Agent stops what runs in a terminal, asking you first unless it opened it
+- See what the Templum Agent's run costs, and ask it to catch you up
+- The Templum Agent runs at most N agents at once
+- The Templum Agent hands tasks to agents and waits for them
+- The agents the Templum Agent runs tell it when they finish
+- Blocks the Templum Agent made wear its mark and glow when it acts
+- Approve or deny the Templum Agent's dangerous actions
+- The Templum Agent's chat, its rows linked to the canvas
+- The prompt pill: Ctrl+Shift+Space to ask Templum
+- Talk to the Templum Agent: its engine started, resumed, stopped and saved
+- Dangerous calls wait for the person's approval
+- The Templum Agent opens agents with their model, effort and prompt
+- The Templum Agent makes workspaces, blocks and wires
+- The Templum Agent writes cards, notes and checklists
+- Templum serves the control server, its overview and its reads
+- Settings ▸ Templum Agent: its agent, model, effort and pill
+- Templum control, the Templum Agent's own MCP bridge
+- The control server's tools and which of them ask the person
+- Run the Templum Agent's engine as a child process
+- Keep the Templum Agent's conversation as rows, saved across restarts
+- The words Claude Code is started with as the Templum Agent
+- Read Claude Code's stream for the Templum Agent's chat
+- Agents remove a worktree, or merge it back once you allow it
+- Wait_for without wait watches a terminal and types the match back
+- A block shows the schedules its agent set, and its menu cancels them
+- Schedule hands a text to an agent, a terminal or yourself at a time or every few minutes
+- A plan shows in its block's balloon, rendered, with Approve and Reject
+- Propose_plan asks the person to approve or reject a plan
+- Saved roles open an agent with its model, flags and instructions
+- Spawn_agent forks your own session into a new agent block
+- Agents replace a note's text and edit or delete a checklist's items
+- Agents open their own note, checklist or a terminal running a command
+- Wait_for waits for a line that matches a pattern, as "Ready in" or ERROR
+- Stop_agent ends an agent you opened and everything it left running
+- Log in to an account, and delete it with its folder
+- Add and edit an agent's accounts in Settings ▸ Agents
+- Generate and Gemini CLI's extension use the account's folder
+- A card for an account, and spawn_agent on one
+- Plan limits and their notifications per account
+- An account's block comes back on its account and its own session
+- An account opens on its own folder and names its block
+- An account is one more agent, on its own folder
+- Accounts of an agent in config.toml
+- Share an account's items with another folder by links, never its login
+- Know where each agent keeps its settings, sessions and login
+- Claim_card refuses a card meant for another agent, and agents see theirs
+- Agents set a card's priority, checklist and who it is for
+- A card can be given to anyone, any session of an agent, or one session
+- A card has a checklist, checked and added to in its dialog
+- The open card is redone, with Delete card away from Done and a priority
+- A card shows its id, priority and checklist progress
+- Pi tells Templum its turns, and gets its MCP server where Pi has MCP
+- Qwen Code gets Templum's server and hooks, opened from the canvas or typed in a terminal
+- An opencode or kilo typed in a terminal gets Templum's server and plugin
+- The OpenCode and Kilo Code Templum opens get its MCP server and tell their turns
+- A copilot typed in a fish or PowerShell terminal gets Templum's server and hooks
+- A copilot typed in a bash or zsh terminal gets Templum's server and hooks
+- The Copilot CLI Templum opens gets its MCP server, its hooks and its instructions
+- Templum hears GitHub Copilot CLI's hooks
+- Copilot CLI, Cursor CLI and Crush come back on their own conversation after a restart
+- A Gemini CLI opened without Templum's extension offers to install it
+- Spawn_agent starts Copilot CLI, Grok Build, Pi and ten more on a model and an effort
+- A claude or codex typed in a fish or PowerShell terminal gets Templum's server and hooks
+- A claude or codex typed in a bash or zsh terminal gets Templum's server and hooks
+- An agent's question makes a sound, and lights its workspace when unseen
+- Answer an agent's questions from the keyboard
+- An agent's options can show a preview beside them
+- An agent asks several questions at once, with checkboxes, Other and a note
+- The block under the pointer takes the keyboard, no click needed
+- A checklist block shows one checklist, with no tabs
+- A dot shows on a block's corner as the pointer comes near it
+- An agent that finishes its kanban card comments on it
+- An agent's question opens a large dialog over its terminal
+- Let agents read a wired checklist, check its items and add new ones
+- Drag checklist items to reorder them
+- Find, open and delete checklists in the Checklists dialog
+- Keep checklists and their blocks across restarts
+- Edit a checklist's name and items in place, Enter adding the next
+- Add checklist blocks: tabs of checklists you tick, from the toolbar and Add
+- Offer the home folder as Personal space in the folder dialog of agents, editors and Git
+- Offer the workspace's folder first in the folder dialog of agents, editors and Git
+- Run beside the installed Templum with --dev, keeping its own workspaces and settings
+- Show the agent's name and a spinner while it starts, not its shell typing it
+- Zoom with the mouse wheel while Select is on, as with the hand
+- Stop opening a terminal on a double-click
+- Open Git from a button at the sidebar's foot instead of a canvas block
+- Show Templum's logo in its installers, its window and the system
+- Agents asked for open as Templum blocks, not hidden subagents
+
+### Fixes
+
+- Better claude resume
+- A card's assignee menu lists only the agents wired to its board, each with its folder and block id
+- The Notes and Checklists dialogs ask "Click again to delete" on the trash's first click, instead of "Delete for good"
+- The Git popup's folder menu no longer offers the repository it shows again under another path (macOS's temporary folders)
+- A terminal whose shell has ended no longer crashes Templum on macOS
+- An approval shows fillers, variation selectors and every other invisible character as its code point
+- A wire's approval isn't asked again because you typed in one of its terminals
+- An approval is asked again after anything else reached its terminal's program
+- The Templum Agent knows it skips your approval only on a block it opened in this conversation
+- An approval shows line separators, annotations and tag characters as their code points
+- An approval is asked again after you typed or clicked in its terminal
+- A wire's approval is asked again when either of your terminals changed
+- An approval isn't asked again each time a terminal's title changes
+- Allow never answers another dialog in the same words, nor a block brought back with Ctrl+Z
+- An approval asked again says it changed since you looked
+- An approval shows the Templum Agent's reason on one line with its hidden characters, and a long one is refused
+- The Templum Agent knows you allow its delegate and interrupt first, unless it opened the block
+- The Templum Agent's tools say a task's end comes back into its chat, not into a terminal
+- New chat drops the prompt of an agent the Templum Agent opened that wasn't typed yet
+- The Templum Agent asks you before handing a task to an agent it didn't open
+- Text too long for its approval to show is refused before the Templum Agent asks you
+- The Templum Agent can't read a hidden folder of your home, like ~/.ssh, even when a block sits there
+- The Templum Agent presses no keys in an agent at work on another agent's task
+- An Allow given after the agent moved to another dialog presses nothing and asks again
+- Wiring an agent to your terminal asks you first
+- The approval shows every line the Templum Agent would type
+- A digit meant for the pill no longer answers the Templum Agent's approval
+- A conversation whose session Claude Code deleted goes on in a new one
+- The Templum Agent never reads your home or past its folders
+- The Templum Agent knows when it works, what each turn cost, and lets go of old tasks
+- Templum schedule in a plain terminal is refused instead of dropping every delivery
+- Remove_worktree asks again about ignored files in a tracked build or dist folder
+- Remove_worktree doesn't ask about a cache that ignores itself, as pytest's or ruff's
+- A schedule goes only to an agent, never typed into a plain terminal
+- Merge_worktree names the first few of the ignored files a merge would overwrite
+- A schedule to a block whose spawned agent never started types into its shell, as to any terminal
+- Remove_worktree doesn't ask about the caches tests and tools leave, as .pytest_cache
+- On Windows a schedule never types into a remote shell you reached with ssh
+- A schedule never types after letters you typed at a prompt and didn't send
+- A schedule types into a terminal only while its shell waits at an empty prompt
+- Remove_worktree asks before deleting the files git ignores in a worktree, as a .env
+- Replace_note never leaves a note blank, also when the passage is its whole text
+- Merge_worktree merges the worktree's branch, never a tag of the same name
+- Remove_worktree refuses while your tree has a detached HEAD, as merge_worktree does
+- A merge you allowed into a branch never goes into another you checked out since
+- Merge_worktree never writes over a file git ignores in your tree, as a .env
+- Stop_agent ends what an agent left running after it quit, also once a snapshot found it gone
+- A schedule set right after spawn_agent never types into the shell its agent leaves
+- Stop_agent on Windows never ends Git Bash's own shell, nor a process that took a gone agent's pid
+- A schedule set for an agent never types into the shell it left
+- Stop_agent leaves the daemons you or your shell started before the agent
+- A worktree changed since you allowed it isn't deleted or merged
+- Never remove or merge a worktree an agent took off its branch
+- Refuse Templum's folder for accounts written with "..", and never delete it then
+- Never move your files when an account's folder is a link to one of yours
+- Refuse account ids that differ only by case
+- Refuse any agent's own folder, or one in or around another account's
+- Never link an account's item to itself
+- Never move the files of a folder you chose for an account
+- Set up the accounts an account shares from before it
+- Refuse the home folder, or a folder of other files, for an account
+- Keep the agent's own folder when Templum starts in an account's block
+- Never give a new account the folder another one left
+- Delete an account folder that is a link without touching its target
+- Refuse an account folder in Templum's folder for accounts
+- Refuse an account folder that isn't a full path
+- Keep an account's choices while its folder is typed, and say more
+- A boards.json edited by hand with an odd checklist or labels no longer loses every board
+- Checklist items or cards given the same id by hand no longer tick or delete together
+- Edit_card's check and uncheck declare a plain list, which every agent's client takes
+- A card for one of your agents started by a path or a .exe is taken by its blocks
+- Dragging a card near a block's edge no longer scrolls the board beside it
+- Pasted lines make an item each, and only the board under a drag scrolls
+- Dragging a card near the edge of a column or the board scrolls it
+- Copilot --help and --version typed in a terminal reach AWS's Copilot CLI as typed
+- Qwen mcp list and Qwen Code's other commands typed in a terminal work
+- Claude and codex typed in fish older than 3.2 start again
+- An OpenCode subagent's permission or question turns its block yellow
+- A task handed to Copilot CLI comes back with its answer
+- Turning off Agents in Templum disconnects Gemini CLI and every agent already running
+- A claude or codex not installed, typed in a fish older than 3.2, is told as fish tells it
+- What is piped into a claude or codex typed in a PowerShell terminal reaches it
+- A claude or codex installed while a zsh terminal is open runs when typed there, without a rehash
+- A claude or codex typed in a terminal keeps a PowerShell a,b whole, runs under bash's set -e, and one not installed is told as the shell tells it
+- A key pressed into a reopened terminal whose shell couldn't start no longer closes its block
+- Agents in a second Templum opened from a Templum terminal no longer talk to the first one
+- Templum reopened right after quitting opens its canvas instead of an empty second window
+- A reopened terminal that ends as it starts keeps the saved canvas also while the window is minimized
+- Closing a reopened terminal with Ctrl+D or exit right away no longer stops the canvas from saving
+- A reopened agent is kept when Templum closes before the agent is up
+- A second Templum no longer empties the first one's canvas
+- Keep the saved canvas when a reopened terminal's shell ends as it starts
+- Keep the canvas's terminals when Windows signs out, restarts or shuts down with Templum open
+- A Gemini CLI extension installed before waits for questions too
+- A long answer typed back to an agent keeps its message
+- A click on an agent's question gives it the keyboard
+- A question's fields take spaces, Enter acts once, and keep the keyboard
+- An answer after the agent stopped waiting is typed into its terminal
+- Agents wait a week for Templum's tools, so a question can wait for you
+- No dot shows on a block's corner any more
+- Generate writes good commit messages from Templum's own rules
+- A handed task comes back only when it ends or gets stuck
+- Never bring back an empty item with Ctrl+Z after typing in it
+- Give a new id to an id a hand-edited checklists.json repeats
+- Never bring back an empty item with Ctrl+Z after an agent's change
+- Stop a held Backspace in the name instead of closing the block
+- Wrap long items and names at the block's width, at every zoom
+- Leave Claude's Co-Authored-By line out of commit messages Generate writes
+- Download the Arch package from its GitHub Release in the published PKGBUILD
+- List agents installed where only .bashrc or .zshrc put them on PATH
+- Find programs installed on Windows while Templum is open
+- Open the macOS app after Open Anyway instead of "damaged"
+
+### Performance
+
+- A long chat stays smooth: only the rows in view are drawn
+- The chat's memory stays flat while the Templum Agent writes
+
 ## 0.1.2
 
 ### Features

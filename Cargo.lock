@@ -6784,7 +6784,7 @@ dependencies = [
 
 [[package]]
 name = "templum"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "chrono",
  "embed-resource",
@@ -6810,7 +6810,7 @@ dependencies = [
 
 [[package]]
 name = "templum-agent"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "futures",
  "serde",
@@ -6820,18 +6820,18 @@ dependencies = [
 
 [[package]]
 name = "templum-canvas"
-version = "0.1.2"
+version = "0.1.3"
 
 [[package]]
 name = "templum-git"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "tempfile",
 ]
 
 [[package]]
 name = "templum-mcp"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "futures",
  "serde",
@@ -6842,7 +6842,7 @@ dependencies = [
 
 [[package]]
 name = "templum-terminal"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "alacritty_terminal",
  "libc",
@@ -6856,7 +6856,7 @@ dependencies = [
 
 [[package]]
 name = "templum-update"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "flate2",
  "semver",
@@ -6870,7 +6870,7 @@ dependencies = [
 
 [[package]]
 name = "templum-usage"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "chrono",
  "junction",
