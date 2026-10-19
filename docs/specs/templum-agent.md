@@ -179,7 +179,8 @@ A dangerous call ([The gate](#the-gate)) waits. Templum shows the approval in th
   the same words; another program or its shell is in front; it was closed and brought back with Ctrl+Z; any input
   reached its program: the person's keys, clicks or wheel, also as the ↑/↓ a full-screen program gets, text sent with
   "Send to ▸", another agent's) runs nothing: the approval says what is there now and waits for a new click, once seen,
-  as a new one does. A terminal's title changing doesn't count: an agent animates its own while it works.
+  as a new one does. A wire types nothing: input reaching its terminals doesn't count for it. A terminal's title
+  changing doesn't count: an agent animates its own while it works.
 - **Telling the person:** the pill turns yellow (above). When the window is in the background, or the pill can't be
   seen (the workspaces screen, the welcome, the pill turned off), a system notification "Templum Agent asks: *Close
   "Codex · api"?*"; clicking it brings the window and opens the chat at the approval. The short sound of

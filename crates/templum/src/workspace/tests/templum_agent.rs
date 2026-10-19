@@ -1502,6 +1502,25 @@ fn an_allow_after_the_person_sent_text_to_it_asks_again(cx: &mut TestAppContext)
     assert!(ws.read_with(cx, |ws, _| ws.templum_agent.approvals[0].changed));
 }
 
+/// A wire types nothing: the person typing in one of its terminals while its approval waits
+/// doesn't ask it again.
+#[gpui_kit::test]
+fn a_wire_isnt_asked_again_when_the_person_typed_in_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (_, a) = busy_terminal(handle, &ws, cx);
+    let (b, b_uid) = busy_terminal(handle, &ws, cx);
+    let waiting = control_later(handle, &ws, cx, 7, "connect", json!({"a": a, "b": b_uid}));
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(b).unwrap();
+        pane.person_typed();
+        pane.term.text("ls");
+    });
+    answer(handle, &ws, cx, crate::chat::Answer::Once);
+    let (failed, text) = super::bus::result_of(&waiting.try_recv().expect("wired"));
+    assert!(!failed, "{text}");
+    assert_eq!(ws.read_with(cx, |ws, _| ws.space.wires.len()), 1);
+}
+
 /// A block closed and brought back with Ctrl+Z keeps its id, with another terminal in it: an Allow
 /// given to the one the person saw presses nothing in the other, also when it asks the same.
 #[gpui_kit::test]
