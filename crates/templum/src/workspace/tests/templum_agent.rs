@@ -817,6 +817,12 @@ fn its_prompt_is_typed_under_the_templum_agents_line(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn an_unknown_agent_or_a_bad_effort_opens_nothing(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
+    // Claude Code as a program every computer has: refused for its connection, not for being
+    // missing.
+    ws.update(cx, |ws, _| {
+        let claude = ws.agents.iter_mut().find(|a| a.id == "claude").unwrap();
+        claude.command = if cfg!(windows) { "cmd" } else { "sh" }.into();
+    });
     let shown = ws.read_with(cx, |ws, _| ws.space.id.clone());
     let blocks = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
         ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len())
@@ -2087,7 +2093,7 @@ fn the_pill_is_hidden_when_turned_off(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn not_installed_says_so(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
-    ws.update(cx, |ws, _| ws.templum_agent.installed = Some(false));
+    ws.update(cx, |ws, _| ws.templum_agent.installed = false);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         assert!(window.try_find("agent-missing").is_some());
@@ -2100,7 +2106,7 @@ fn not_installed_says_so(cx: &mut TestAppContext) {
     })
     .unwrap();
     assert!(panel_open(&ws, cx), "a click opens Settings");
-    ws.update(cx, |ws, _| ws.templum_agent.installed = Some(true));
+    ws.update(cx, |ws, _| ws.templum_agent.installed = true);
     assert_eq!(
         ws.read_with(cx, |ws, _| crate::chat::pill::rest(ws)),
         "Ask Templum"

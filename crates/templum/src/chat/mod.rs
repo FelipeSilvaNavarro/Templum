@@ -75,9 +75,10 @@ pub(crate) struct TemplumAgent {
     pub approval_focus: Option<FocusHandle>,
     pub words: Option<Entity<InputState>>,
     _words: Option<Subscription>,
-    /// Whether Claude Code is installed, as the tests say it.
+    /// Whether Claude Code is installed, as the tests say it: yes unless they say otherwise,
+    /// whatever this computer has.
     #[cfg(test)]
-    pub installed: Option<bool>,
+    pub installed: bool,
     /// The fake engine the tests run instead of Claude Code.
     #[cfg(test)]
     pub launch: Option<templum_agent::Launch>,
@@ -123,7 +124,7 @@ impl Default for TemplumAgent {
             words: None,
             _words: None,
             #[cfg(test)]
-            installed: None,
+            installed: true,
             #[cfg(test)]
             launch: None,
             #[cfg(test)]
@@ -195,10 +196,10 @@ impl TemplumAgent {
     /// Whether the engine's program can be run.
     pub fn installed(&self) -> bool {
         #[cfg(test)]
-        if let Some(installed) = self.installed {
-            return installed;
-        }
-        templum_terminal::installed("claude")
+        let installed = self.installed;
+        #[cfg(not(test))]
+        let installed = templum_terminal::installed("claude");
+        installed
     }
 }
 
