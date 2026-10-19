@@ -75,7 +75,8 @@ subscribers after the first answer, `rate_limits.five_hour` and `rate_limits.sev
 - **Stale files:** a relay file older than the agent's process (2 s of slack) is ignored. Relay files older than 8
   days are deleted when Templum starts.
 - **Plan limits** are the account's: they come from the newest relay file that has them, or from asking Claude
-  Code, whichever is newer.
+  Code, whichever is newer. With several accounts of an agent ([accounts.md](accounts.md#usage-and-limits)),
+  each account's limits are its own row.
 - **Asking Claude Code:** the status line doesn't carry `rate_limits` for every plan (a Max plan's had none on
   2.1.286), so every 5 minutes, while `claude_limits` is on, Templum runs
   `claude --setting-sources local -p /usage --output-format stream-json --verbose --no-session-persistence` in an

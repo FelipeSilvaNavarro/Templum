@@ -36,6 +36,39 @@ pub(crate) fn dir() -> Option<PathBuf> {
     )
 }
 
+/// How long a Templum starting waits for one quitting (still saving) to let go of the data
+/// folder: reopened right after quitting, it isn't a second Templum.
+pub(crate) const QUITTING: Duration = Duration::from_secs(3);
+
+/// Takes the data folder `dir` for this Templum while the file returned stays open
+/// (docs/specs/persistence.md, One Templum per data folder): `WouldBlock` when another Templum
+/// still has it after `wait`. The system lets go when Templum ends, also when it crashes.
+pub(crate) fn lock(dir: &Path, wait: Duration) -> io::Result<std::fs::File> {
+    std::fs::create_dir_all(dir)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("templum.lock"))?;
+    let until = std::time::Instant::now() + wait;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) if std::time::Instant::now() < until => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
+/// `dir` for `--dev`: its sibling `<name>-dev` (`~/.local/share/templum-dev`).
+pub(crate) fn dev(dir: PathBuf) -> PathBuf {
+    let mut name = dir.file_name().unwrap_or_default().to_os_string();
+    name.push("-dev");
+    dir.with_file_name(name)
+}
+
 fn dir_from(
     os: &str,
     appdata: Option<OsString>,
@@ -326,6 +359,9 @@ pub(crate) struct Saved {
     /// The wires between the items, by their `uid`s; an older Templum ignores them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wires: Vec<SavedWire>,
+    /// The workspace's Git; an older Templum ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<SavedGit>,
 }
 
 /// Grid mode's tree of tiles: an item, by its index in `items`, or a pair. `split` is "beside"
@@ -427,6 +463,7 @@ pub(crate) enum Item {
     Terminal(TerminalItem),
     Kanban(KanbanItem),
     Note(NoteItem),
+    Checklist(ChecklistItem),
     Editor(EditorItem),
     Git(GitItem),
 }
@@ -437,6 +474,7 @@ impl Item {
             Item::Terminal(t) => &mut t.rect,
             Item::Kanban(k) => &mut k.rect,
             Item::Note(n) => &mut n.rect,
+            Item::Checklist(c) => &mut c.rect,
             Item::Editor(e) => &mut e.rect,
             Item::Git(g) => &mut g.rect,
         }
@@ -448,6 +486,7 @@ impl Item {
             Item::Terminal(t) => &t.uid,
             Item::Kanban(k) => &k.uid,
             Item::Note(n) => &n.uid,
+            Item::Checklist(c) => &c.uid,
             Item::Editor(e) => &e.uid,
             Item::Git(g) => &g.uid,
         }
@@ -458,6 +497,7 @@ impl Item {
             Item::Terminal(t) => t.uid = uid,
             Item::Kanban(k) => k.uid = uid,
             Item::Note(n) => n.uid = uid,
+            Item::Checklist(c) => c.uid = uid,
             Item::Editor(e) => e.uid = uid,
             Item::Git(g) => g.uid = uid,
         }
@@ -490,6 +530,25 @@ pub(crate) struct NoteItem {
     pub color: Option<crate::board::Label>,
 }
 
+/// A checklist block (docs/specs/checklist.md).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ChecklistItem {
+    /// The block's id for agents and wires (docs/specs/connections.md).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub uid: String,
+    pub rect: SavedRect,
+    /// The checklist it shows, by its id in `checklists.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checklist: Option<u64>,
+    /// A file from before one checklist per block: the checklists it showed as tabs, in order,
+    /// read, never written. The block shows the one on screen.
+    #[serde(default, skip_serializing)]
+    pub checklists: Vec<u64>,
+    /// Before that too: the tab on screen, by its index in `checklists`.
+    #[serde(default, skip_serializing)]
+    pub active: usize,
+}
+
 /// An editor block (docs/specs/cockpit.md, section 7).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct EditorItem {
@@ -510,14 +569,19 @@ pub(crate) struct EditorItem {
     pub tree: bool,
 }
 
-/// A Git block (docs/specs/cockpit.md, section 8).
+/// A Git block of an older Templum: read, never written. Its Git becomes the workspace's.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct GitItem {
-    /// The block's id for agents and wires (docs/specs/connections.md); a file from before has
-    /// none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub uid: String,
     pub rect: SavedRect,
+    #[serde(flatten)]
+    pub git: SavedGit,
+}
+
+/// A workspace's Git (docs/specs/git.md): the popup's folder and what it was showing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct SavedGit {
     pub folder: String,
     /// The tab shown: "changes", "history", "branches" or "stashes".
     #[serde(default = "changes")]
@@ -667,6 +731,13 @@ pub(crate) struct TerminalItem {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// The account whose variable its shell has (docs/specs/accounts.md, Its block): its agent
+    /// is that account. One Templum doesn't know gives a plain terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// The role `spawn_agent` opened it as: its words typed again on resume, while it exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -704,16 +775,20 @@ pub(crate) struct Layout {
     pub recent: Vec<PathBuf>,
     /// The agents to look for in the terminals.
     pub agents: std::sync::Arc<Vec<templum_terminal::Detect>>,
+    /// The accounts: a terminal's account names its agent found there.
+    pub accounts: std::sync::Arc<Vec<crate::agents::Home>>,
     pub ink: Vec<InkItem>,
     pub grid: Option<SavedTile>,
     pub wires: Vec<SavedWire>,
+    pub git: Option<SavedGit>,
 }
 
 pub(crate) enum LayoutBlock {
     /// A terminal as the UI thread knows it: its id, rect, opener, model and effort, and as its
     /// agent the one they were typed for (else the one last seen); its folder, agent and session
-    /// come from its processes, read in the background.
-    Terminal(TerminalItem, Processes),
+    /// come from its processes, read in the background. While the agent of its saved item, typed
+    /// back, isn't up yet, that item: its folder, agent and session are kept.
+    Terminal(TerminalItem, Processes, Option<Box<TerminalItem>>),
     /// Any other kind: its item, complete, built on the UI thread.
     Saved(Item),
 }
@@ -727,12 +802,27 @@ impl Layout {
             .blocks
             .iter()
             .filter_map(|b| match b {
-                LayoutBlock::Terminal(_, p) => Some(p.clone()),
+                LayoutBlock::Terminal(_, p, _) => Some(p.clone()),
                 LayoutBlock::Saved(_) => None,
             })
             .collect();
-        let inspections = templum_terminal::inspect(&processes, &self.agents);
-        let sessions = data.map_or_else(Vec::new, |data| session_ids(&inspections, data));
+        let homes: Vec<Option<&crate::agents::Home>> = self
+            .blocks
+            .iter()
+            .filter_map(|b| match b {
+                LayoutBlock::Terminal(item, _, _) => Some(
+                    item.account
+                        .as_deref()
+                        .and_then(|a| self.accounts.iter().find(|h| h.id == a)),
+                ),
+                LayoutBlock::Saved(_) => None,
+            })
+            .collect();
+        let inspections =
+            name_accounts(templum_terminal::inspect(&processes, &self.agents), &homes);
+        let sessions = data.map_or_else(Vec::new, |data| {
+            session_ids(&procs(&inspections, &homes), data)
+        });
         let mut sessions = sessions.into_iter();
         let mut found = inspections.iter().cloned();
         let saved = Saved {
@@ -746,16 +836,27 @@ impl Layout {
                 .blocks
                 .iter()
                 .map(|b| match b {
-                    LayoutBlock::Terminal(item, _) => {
+                    LayoutBlock::Terminal(item, _, resuming) => {
                         // One answer per terminal, in order.
                         let found = found.next().unwrap_or_default();
+                        let session = sessions.next().flatten();
+                        // Its saved agent, typed back, isn't up yet: the next start resumes it
+                        // still.
+                        if let Some(saved) = resuming.as_ref().filter(|_| found.agent.is_none()) {
+                            return Item::Terminal(TerminalItem {
+                                folder: saved.folder.clone(),
+                                agent: saved.agent.clone(),
+                                session: saved.session.clone(),
+                                ..item.clone()
+                            });
+                        }
                         // The model and the effort are the agent the UI thread knew there: gone,
                         // or another one found (typed by hand), they aren't its.
                         let theirs = item.agent.is_none() || item.agent == found.agent;
                         Item::Terminal(TerminalItem {
                             folder: found.folder.and_then(utf8),
                             // The agent's files first: they follow a switch inside it.
-                            session: sessions.next().flatten().or(found.session),
+                            session: session.or(found.session),
                             agent: found.agent,
                             model: item.model.clone().filter(|_| theirs),
                             effort: item.effort.clone().filter(|_| theirs),
@@ -770,26 +871,58 @@ impl Layout {
             ink: self.ink,
             grid: self.grid,
             wires: self.wires,
+            git: self.git,
         };
         (saved, inspections)
     }
 }
 
-/// The session each terminal's agent has open, in order, from the agents' files.
-fn session_ids(found: &[templum_terminal::Inspection], data: &Path) -> Vec<Option<String>> {
-    let procs: Vec<templum_usage::Proc> = found
-        .iter()
-        .map(|f| templum_usage::Proc {
-            agent: f.agent.clone().unwrap_or_default(),
-            pid: f.pid.unwrap_or(0),
-            started: f.started.unwrap_or(0),
-            cwd: f.folder.clone(),
-            // The relay's file isn't read for a session's id.
-            terminal: String::new(),
+/// What a snapshot found in each terminal, in order, with the agent of a terminal's account
+/// (`homes`, one per terminal) named by that account.
+fn name_accounts(
+    found: Vec<templum_terminal::Inspection>,
+    homes: &[Option<&crate::agents::Home>],
+) -> Vec<templum_terminal::Inspection> {
+    found
+        .into_iter()
+        .zip(homes.iter().chain(std::iter::repeat(&None)))
+        .map(|(mut f, home)| {
+            f.agent = crate::agents::in_block(f.agent.as_deref(), *home);
+            f
         })
-        .collect();
+        .collect()
+}
+
+/// The processes of what `name_accounts` found: an account's is its agent's, in the account's
+/// folder.
+fn procs(
+    found: &[templum_terminal::Inspection],
+    homes: &[Option<&crate::agents::Home>],
+) -> Vec<templum_usage::Proc> {
+    found
+        .iter()
+        .zip(homes.iter().chain(std::iter::repeat(&None)))
+        .map(|(f, home)| {
+            let agent = f.agent.clone().unwrap_or_default();
+            let home = home.filter(|h| h.id == agent);
+            templum_usage::Proc {
+                agent: home.map_or(agent, |h| h.agent.clone()),
+                pid: f.pid.unwrap_or(0),
+                started: f.started.unwrap_or(0),
+                cwd: f.folder.clone(),
+                // The relay's file isn't read for a session's id.
+                terminal: String::new(),
+                home: home.map(|h| h.state.clone()),
+                account: home.map(|h| h.id.clone()),
+            }
+        })
+        .collect()
+}
+
+/// The session each process has open, in order, from the agents' files.
+fn session_ids(procs: &[templum_usage::Proc], data: &Path) -> Vec<Option<String>> {
     let dirs = templum_usage::Dirs::of(data);
-    templum_usage::session_ids(&procs, &dirs, crate::notes::now())
+    templum_usage::session_ids(procs, &dirs, crate::notes::now())
 }
 
 /// A path as JSON can hold it.
@@ -847,6 +980,22 @@ pub(crate) fn read<T: DeserializeOwned>(path: &Path) -> Loaded<T> {
     }
 }
 
+/// Makes an edited file's ids (`ids`: all of them, in the file's order) safe to use: an id met
+/// before gets a new one, so deleting one thing never deletes another, and so does 0, an item's
+/// missing id (ids start at 1); `next_id` passes them all, so none is given out twice.
+pub(crate) fn unique_ids<'a>(ids: impl IntoIterator<Item = &'a mut u64>, next_id: &mut u64) {
+    let ids: Vec<&mut u64> = ids.into_iter().collect();
+    let mut next = ids.iter().map(|id| **id).fold(*next_id, u64::max);
+    let mut seen = std::collections::HashSet::new();
+    for id in ids {
+        if *id == 0 || !seen.insert(*id) {
+            next += 1;
+            *id = next;
+        }
+    }
+    *next_id = next;
+}
+
 /// Writes a workspace's canvas through [`write_newest`].
 pub(crate) fn save(dir: &Path, id: &str, saved: &Saved, generation: u64) -> io::Result<()> {
     let text = serde_json::to_string_pretty(saved).map_err(io::Error::other)?;
@@ -891,6 +1040,52 @@ mod tests {
     }
 
     #[test]
+    fn a_canvas_with_a_checklist_reads_back_equal() {
+        let item = Item::Checklist(ChecklistItem {
+            uid: "4qm2a".into(),
+            rect: SavedRect {
+                x: 1.0,
+                y: 2.0,
+                w: 320.0,
+                h: 360.0,
+            },
+            checklist: Some(3),
+            checklists: Vec::new(),
+            active: 0,
+        });
+        let text = serde_json::to_string(&item).unwrap();
+        assert!(text.contains(r#""kind":"checklist""#), "{text}");
+        assert!(text.contains(r#""checklist":3"#), "{text}");
+        assert_eq!(serde_json::from_str::<Item>(&text).unwrap(), item);
+        let Item::Checklist(mut none) = item else {
+            unreachable!()
+        };
+        none.checklist = None;
+        let text = serde_json::to_string(&Item::Checklist(none)).unwrap();
+        assert!(!text.contains(r#""checklist":"#), "{text}");
+    }
+
+    /// A file from before one checklist per block names its tabs: they are read, never written.
+    #[test]
+    fn a_checklist_blocks_old_tabs_are_read_and_not_written() {
+        let text = r#"{"kind":"checklist","rect":{"x":0,"y":0,"w":320,"h":360},
+                      "checklists":[3,5],"active":1}"#;
+        let item: Item = serde_json::from_str(text).unwrap();
+        let Item::Checklist(c) = &item else {
+            panic!("{item:?}")
+        };
+        assert_eq!(
+            (c.checklist, c.checklists.clone(), c.active),
+            (None, vec![3, 5], 1)
+        );
+        let back = serde_json::to_string(&item).unwrap();
+        assert!(
+            !back.contains("checklists") && !back.contains("active"),
+            "{back}"
+        );
+    }
+
+    #[test]
     fn a_terminal_keeps_who_opened_it_its_model_and_effort() {
         let text = r#"{"kind":"terminal","rect":{"x":0,"y":0,"w":1,"h":1},"agent":"codex",
                       "opened_by":"b7k2m","model":"gpt-5.6-luna","effort":"high"}"#;
@@ -930,39 +1125,105 @@ mod tests {
     }
 
     #[test]
-    fn a_git_item_round_trips_and_its_tab_defaults_to_changes() {
+    fn a_terminal_keeps_its_role() {
+        let text = r#"{"kind":"terminal","rect":{"x":0,"y":0,"w":1,"h":1},"agent":"codex",
+                      "role":"reviewer"}"#;
+        let item: Item = serde_json::from_str(text).unwrap();
+        let Item::Terminal(t) = &item else {
+            panic!("{item:?}")
+        };
+        assert_eq!(t.role.as_deref(), Some("reviewer"));
+        let back = serde_json::to_string(&item).unwrap();
+        assert!(back.contains(r#""role":"reviewer""#), "{back}");
+        let older: Item =
+            serde_json::from_str(r#"{"kind":"terminal","rect":{"x":0,"y":0,"w":1,"h":1}}"#)
+                .unwrap();
+        let Item::Terminal(o) = &older else {
+            panic!("{older:?}")
+        };
+        assert_eq!(o.role, None);
+        assert!(!serde_json::to_string(&older).unwrap().contains("role"));
+    }
+
+    #[test]
+    fn an_items_account_is_kept() {
+        let text = r#"{"kind":"terminal","rect":{"x":0,"y":0,"w":1,"h":1},"agent":"claude2",
+                      "account":"claude2"}"#;
+        let item: Item = serde_json::from_str(text).unwrap();
+        let Item::Terminal(t) = &item else {
+            panic!("{item:?}")
+        };
+        assert_eq!(t.account.as_deref(), Some("claude2"));
+        let back = serde_json::to_string(&item).unwrap();
+        assert!(back.contains(r#""account":"claude2""#), "{back}");
+        let older: Item =
+            serde_json::from_str(r#"{"kind":"terminal","rect":{"x":0,"y":0,"w":1,"h":1}}"#)
+                .unwrap();
+        let Item::Terminal(o) = &older else {
+            panic!("{older:?}")
+        };
+        assert_eq!(o.account, None);
+        assert!(!serde_json::to_string(&older).unwrap().contains("account"));
+    }
+
+    #[test]
+    fn an_accounts_agent_is_named_by_it_and_read_in_its_folder() {
+        use templum_terminal::Inspection;
+        let home = crate::agents::Home {
+            id: "claude2".into(),
+            agent: "claude".into(),
+            state: PathBuf::from("/data/accounts/claude2"),
+        };
+        let found = |agent: &str, pid: u32| Inspection {
+            agent: Some(agent.into()),
+            pid: Some(pid),
+            ..Default::default()
+        };
+        let homes = [Some(&home), None, Some(&home)];
+        let named = name_accounts(
+            vec![found("claude", 7), found("claude", 8), found("codex", 9)],
+            &homes,
+        );
+        let agents: Vec<_> = named.iter().map(|f| f.agent.as_deref()).collect();
+        assert_eq!(agents, [Some("claude2"), Some("claude"), Some("codex")]);
+        let procs = procs(&named, &homes);
+        assert_eq!(
+            (
+                procs[0].agent.as_str(),
+                &procs[0].home,
+                procs[0].account.as_deref()
+            ),
+            ("claude", &Some(home.state.clone()), Some("claude2"))
+        );
+        assert_eq!((procs[1].agent.as_str(), &procs[1].home), ("claude", &None));
+        assert_eq!((procs[2].agent.as_str(), &procs[2].home), ("codex", &None));
+    }
+
+    #[test]
+    fn an_old_git_block_still_reads_and_a_workspaces_git_round_trips() {
+        // An older Templum's Git block: read, with its tab defaulting to Changes.
         let text = r#"{"kind":"git","rect":{"x":1,"y":2,"w":800,"h":560},"folder":"/p"}"#;
         let item: Item = serde_json::from_str(text).unwrap();
         let Item::Git(g) = &item else {
             panic!("{item:?}")
         };
-        assert_eq!(g.folder, "/p");
-        assert_eq!(g.tab, "changes");
-        let back = serde_json::to_string(&item).unwrap();
-        assert!(back.contains(r#""kind":"git""#), "{back}");
-        assert!(back.contains(r#""tab":"changes""#), "{back}");
-        assert!(!back.contains("summary"), "no message, no key: {back}");
+        assert_eq!(
+            (g.git.folder.as_str(), g.git.tab.as_str()),
+            ("/p", "changes")
+        );
+        // The workspace's Git, with a commit message being written, comes back as it was.
+        let mut saved = sample();
+        let mut git = g.git.clone();
+        git.summary = "Fix the build".into();
+        git.diff = "split".into();
+        saved.git = Some(git.clone());
+        let back = serde_json::to_string(&saved).unwrap();
         assert!(!back.contains("lists"), "not folded, no key: {back}");
-        assert!(!back.contains(r#""diff""#), "unified, no key: {back}");
-        let mut split = g.clone();
-        split.diff = "split".into();
-        let back = serde_json::to_string(&Item::Git(split)).unwrap();
-        assert!(back.contains(r#""diff":"split""#), "{back}");
-        let item: Item =
-            serde_json::from_str(&text.replace(r#""folder""#, r#""tab":"history","folder""#))
-                .unwrap();
-        let Item::Git(g) = item else { unreachable!() };
-        assert_eq!(g.tab, "history");
-        assert_eq!((g.summary.as_str(), g.description.as_str()), ("", ""));
-        // A commit message being written comes back.
-        let mut draft = g.clone();
-        draft.summary = "Fix the build".into();
-        draft.description = "It broke.".into();
-        let back = serde_json::to_string(&Item::Git(draft.clone())).unwrap();
-        let Item::Git(g) = serde_json::from_str(&back).unwrap() else {
-            unreachable!()
-        };
-        assert_eq!(g, draft);
+        let read: Saved = serde_json::from_str(&back).unwrap();
+        assert_eq!(read.git, Some(git));
+        saved.git = None;
+        let back = serde_json::to_string(&saved).unwrap();
+        assert!(!back.contains(r#""git""#), "none, no key: {back}");
     }
 
     fn sample() -> Saved {
@@ -988,6 +1249,8 @@ mod tests {
                     opened_by: None,
                     model: None,
                     effort: None,
+                    account: None,
+                    role: None,
                 }),
                 Item::Terminal(TerminalItem {
                     uid: String::new(),
@@ -1003,6 +1266,8 @@ mod tests {
                     opened_by: None,
                     model: None,
                     effort: None,
+                    account: None,
+                    role: None,
                 }),
                 Item::Kanban(KanbanItem {
                     uid: String::new(),
@@ -1020,6 +1285,7 @@ mod tests {
             ink: Vec::new(),
             grid: None,
             wires: Vec::new(),
+            git: None,
         }
     }
 
@@ -1102,6 +1368,12 @@ mod tests {
             Some(PathBuf::from("C:/Users/u/AppData/Roaming").join("templum"))
         );
         assert_eq!(dir_from("linux", None, None, None), None);
+    }
+
+    #[test]
+    fn dev_keeps_its_own_folder_beside_the_installed_one() {
+        let base = PathBuf::from("/home/u").join(".config");
+        assert_eq!(dev(base.join("templum")), base.join("templum-dev"));
     }
 
     #[test]
@@ -1587,6 +1859,30 @@ mod tests {
         set_aside(d.path(), "never-saved").unwrap();
     }
 
+    #[test]
+    fn one_templum_holds_a_data_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let first = lock(d.path(), Duration::ZERO).unwrap();
+        let second = lock(d.path(), Duration::from_millis(100)).unwrap_err();
+        assert_eq!(second.kind(), io::ErrorKind::WouldBlock);
+        drop(first);
+        // A shell another test is starting holds the file until its exec (fork): a moment.
+        lock(d.path(), Duration::from_secs(1)).expect("free once the first Templum ends");
+    }
+
+    /// Reopened right after quitting: the first Templum, still saving, lets go in a moment.
+    #[test]
+    fn a_templum_waits_for_the_one_quitting() {
+        let d = tempfile::tempdir().unwrap();
+        let first = lock(d.path(), Duration::ZERO).unwrap();
+        let quitting = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            drop(first);
+        });
+        lock(d.path(), QUITTING).expect("taken once the first is done");
+        quitting.join().unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_folder_that_isnt_utf8_is_left_out() {
@@ -1613,8 +1909,11 @@ mod tests {
                         opened_by: Some("b7k2m".into()),
                         model: Some("opus".into()),
                         effort: Some("high".into()),
+                        account: None,
+                        role: None,
                     },
                     Processes::default(),
+                    None,
                 ),
                 LayoutBlock::Saved(Item::Kanban(KanbanItem {
                     uid: String::new(),
@@ -1631,16 +1930,21 @@ mod tests {
                         opened_by: None,
                         model: None,
                         effort: None,
+                        account: None,
+                        role: None,
                     },
                     Processes::default(),
+                    None,
                 ),
             ],
             focused: Some(1),
             recent: vec![PathBuf::from("/a"), PathBuf::from("/b")],
             agents: Default::default(),
+            accounts: Default::default(),
             ink: Vec::new(),
             grid: None,
             wires: Vec::new(),
+            git: None,
         };
         let (saved, _) = layout.snapshot(None);
         assert_eq!(saved.recent, ["/a", "/b"], "recent folders, newest first");
@@ -1674,6 +1978,7 @@ mod tests {
                 Item::Terminal(t) => t.rect,
                 Item::Kanban(k) => k.rect,
                 Item::Note(n) => n.rect,
+                Item::Checklist(c) => c.rect,
                 Item::Editor(e) => e.rect,
                 Item::Git(g) => g.rect,
             })
@@ -1708,15 +2013,20 @@ mod tests {
                     opened_by: Some("b7k2m".into()),
                     model: Some("gpt-5.6-luna".into()),
                     effort: Some("high".into()),
+                    account: None,
+                    role: None,
                 },
                 Processes::default(),
+                None,
             )],
             focused: None,
             recent: Vec::new(),
             agents: Default::default(),
+            accounts: Default::default(),
             ink: Vec::new(),
             grid: None,
             wires: Vec::new(),
+            git: None,
         };
         let (saved, _) = layout.snapshot(None);
         let Item::Terminal(t) = &saved.items[0] else {

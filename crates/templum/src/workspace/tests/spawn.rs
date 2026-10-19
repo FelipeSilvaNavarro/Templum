@@ -21,7 +21,7 @@ fn said_twice(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) {
 
 /// The startup terminal at (40, 100), 400 × 300, the camera at 100% on the origin, and Claude Code
 /// and Codex started as `cat` in front of the new terminals' shells (`agent_cat`).
-fn spawner(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, BlockId) {
+pub(super) fn spawner(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, BlockId) {
     let (handle, ws) = open(cx);
     let mine = first_id(&ws, cx);
     ws.update(cx, |ws, _| {
@@ -41,7 +41,7 @@ fn spawner(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, Bloc
 }
 
 /// The block spawned beside `mine`: the other end of its newest wire.
-fn spawned(ws: &Entity<Workspace>, cx: &mut TestAppContext, mine: BlockId) -> BlockId {
+pub(super) fn spawned(ws: &Entity<Workspace>, cx: &mut TestAppContext, mine: BlockId) -> BlockId {
     ws.read_with(cx, |ws, _| {
         let wire = ws
             .space
@@ -165,7 +165,7 @@ fn spawn_agent_types_its_model_and_effort_first(cx: &mut TestAppContext) {
         ),
         (json!({ "agent": "gemini", "effort": "high" }), "no effort"),
         (
-            json!({ "agent": "copilot", "model": "gpt-5" }),
+            json!({ "agent": "amp", "model": "gpt-5" }),
             "a model or an effort",
         ),
         (
@@ -355,10 +355,11 @@ fn a_prompt_waits_for_the_agents_input_to_take_pastes(cx: &mut TestAppContext) {
     }
 }
 
-/// A spawned agent's task gives no answer within the time a task gets: its caller hears it failed,
-/// as of a task handed over without `wait`.
+/// A spawned agent's task gives no answer within the time a task gets: it may still work, so its
+/// caller hears nothing of that, as of a task handed over without `wait`; only that it seems stuck,
+/// its screen still for 30 seconds.
 #[gpui_kit::test]
-fn a_spawns_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) {
+fn a_spawns_task_past_its_timeout_isnt_told(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
     let (terminal, _) = me(&ws, cx, mine);
     // Mine runs Claude Code and asks its person: the notice waits, to be read here.
@@ -379,7 +380,7 @@ fn a_spawns_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) 
     let new = spawned(&ws, cx, mine);
     in_front(&ws, cx, new, true);
     found(&ws, cx, new);
-    let (theirs, uid) = me(&ws, cx, new);
+    let (theirs, _) = me(&ws, cx, new);
     let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
     let mut looks = 0;
     while ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some()) {
@@ -395,8 +396,10 @@ fn a_spawns_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) 
     let told: Vec<String> = ws.read_with(cx, |ws, _| {
         ws.notices.iter().map(|n| n.text.clone()).collect()
     });
-    let within = format!("No answer from {uid} within 600 seconds");
-    assert!(told.iter().any(|t| t.contains(&within)), "{told:?}");
+    assert!(
+        told.len() == 1 && told[0].contains("waits for its person: it seems stuck"),
+        "{told:?}"
+    );
 }
 
 /// The person types into a spawned agent before its prompt is (its trust question answered): that
@@ -612,7 +615,12 @@ fn a_spawned_agent_that_never_started_is_let_go(cx: &mut TestAppContext) {
     let (handle, ws, mine) = spawner(cx);
     let (terminal, _) = me(&ws, cx, mine);
     let folder = tempfile::tempdir().unwrap();
-    let spawn = json!({ "agent": "codex", "folder": folder.path(), "prompt": "say hi" });
+    let spawn = json!({
+        "agent": "codex",
+        "folder": folder.path(),
+        "prompt": "say hi",
+        "model": "gpt-5.6-luna",
+    });
     call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
     let new = spawned(&ws, cx, mine);
     let (_, uid) = me(&ws, cx, new);
@@ -628,6 +636,9 @@ fn a_spawned_agent_that_never_started_is_let_go(cx: &mut TestAppContext) {
         let pane = ws.space.terminal(new).unwrap();
         assert!(pane.prompt.is_none() && pane.handed.is_none());
         assert_eq!(pane.seen.agent, None);
+        // A schedule set now takes it for a terminal, not for an agent that may still start.
+        assert_eq!(pane.agent(), None);
+        assert_eq!((&pane.model, &pane.effort), (&None, &None));
     });
     let (failed, text) = answered(&waiting);
     assert!(
@@ -862,4 +873,940 @@ fn a_spawned_agent_fits_where_nothing_is_toward_the_callers_connections(cx: &mut
             "toward its connection, on its left: {rect:?}"
         );
     });
+}
+
+/// `spawn_agent` opens an account by its id, on its folder, with its agent's model.
+#[gpui_kit::test]
+fn spawn_agent_opens_an_account(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let mine = first_id(&ws, cx);
+    super::agents::with_agents(
+        &ws,
+        cx,
+        &format!(
+            "[agents.claude]\ncommand = \"cat\"\n{}",
+            super::agents::CLAUDE2
+        ),
+    );
+    ws.update(cx, |ws, _| {
+        ws.command = Some(jobs("echo \"dir=$CLAUDE_CONFIG_DIR;\"; cat; true"));
+    });
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "claude2", "folder": folder.path(), "model": "opus" });
+    let (failed, text) = call(handle, &ws, cx, &terminal, "spawn_agent", spawn);
+    assert!(!failed, "{text}");
+    let new = spawned(&ws, cx, mine);
+    let account = data.path().join("accounts").join("claude2");
+    screen_with(&ws, cx, new, &format!("dir={};", account.display()));
+    screen_with(&ws, cx, new, "cat --model opus");
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(new).unwrap();
+        assert_eq!(pane.account.as_deref(), Some("claude2"));
+        assert_eq!(pane.agent(), Some("claude2"));
+    });
+}
+
+/// `stop_agent` ends the program in a terminal the caller opened and what it left running, ends
+/// the task it handed there without a notice, and keeps the shell (docs/specs/agent-tools.md,
+/// stop_agent).
+#[gpui_kit::test]
+fn stop_agent_ends_what_the_caller_opened_and_what_it_left_running(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let dir = tempfile::tempdir().unwrap();
+    let flag = dir.path().join("f");
+    // Its "agent" (`cat`, in place of the `sh` that started it) leaves a job that would write a
+    // file later; once they end, the shell waits in a builtin `read`, at its prompt with nothing
+    // below it.
+    ws.update(cx, |ws, _| {
+        ws.command = Some(jobs(&format!(
+            "printf '\\033[?2004h'; sh -c '(sleep 2 && touch {}) & exec cat'; while read -r x; do :; done",
+            flag.display()
+        )))
+    });
+    let spawn = json!({ "agent": "codex", "folder": dir.path(), "prompt": "go" });
+    assert!(!call(handle, &ws, cx, &terminal, "spawn_agent", spawn).0);
+    let new = spawned(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, new);
+    in_front(&ws, cx, new, true);
+    found(&ws, cx, new);
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "stop_agent",
+        json!({ "block": them }),
+    );
+    assert!(!failed, "{text}");
+    assert!(
+        text.starts_with(&format!("Stopped {them}: ended ")),
+        "{text}"
+    );
+    assert!(text.ends_with("Its shell is at its prompt."), "{text}");
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(new).unwrap();
+        assert!(
+            pane.handed.is_none() && pane.prompt.is_none(),
+            "its task ended"
+        );
+        assert!(!pane.term.exited(), "the shell stays");
+    });
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(!flag.exists(), "its job wrote its file");
+    in_front(&ws, cx, new, false);
+    let again = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "stop_agent",
+        json!({ "block": them }),
+    );
+    assert_eq!(
+        again,
+        (
+            true,
+            format!("Nothing runs in {them}: its shell is at its prompt.")
+        )
+    );
+}
+
+/// What an agent left running in a session of its own (as Claude Code's Bash tool does) still ends
+/// with `stop_agent` once a snapshot found that agent gone, until the person types at the prompt.
+#[gpui_kit::test]
+fn stop_agent_ends_what_an_agent_that_quit_left_running(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let dir = tempfile::tempdir().unwrap();
+    let flag = dir.path().join("f");
+    // Its "agent" (`cat`) leaves a job a second later (start times are whole seconds), then quits
+    // at Ctrl+D; the shell waits in a builtin `read`. `setsid` through Perl: macOS has no
+    // `setsid` command.
+    const SETSID: &str = "perl -MPOSIX -e \"setsid; exec @ARGV\"";
+    ws.update(cx, |ws, _| {
+        ws.command = Some(jobs(&format!(
+            "sh -c 'sleep 1.2; ({SETSID} sh -c \"sleep 3 && touch {}\" &); exec cat'; \
+             while read -r x; do :; done",
+            flag.display()
+        )))
+    });
+    let spawn = json!({ "agent": "codex", "folder": dir.path() });
+    assert!(!call(handle, &ws, cx, &terminal, "spawn_agent", spawn).0);
+    let new = spawned(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, new);
+    in_front(&ws, cx, new, true);
+    let p = ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().term.processes());
+    let cat = templum_terminal::Detect {
+        id: "codex".into(),
+        names: vec!["sh".into(), "cat".into()],
+        packages: Vec::new(),
+    };
+    let seen = templum_terminal::inspect(&[p], &[cat]).pop().unwrap();
+    assert!(seen.started.is_some(), "{seen:?}");
+    snapshot(handle, &ws, cx, new, seen);
+    std::thread::sleep(Duration::from_millis(1500));
+    ws.read_with(cx, |ws, _| {
+        ws.space.terminal(new).unwrap().term.write(&b"\x04"[..])
+    });
+    in_front(&ws, cx, new, false);
+    snapshot(handle, &ws, cx, new, Default::default());
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "stop_agent",
+        json!({ "block": them }),
+    );
+    assert!(!failed, "{text}");
+    assert!(
+        text.starts_with(&format!("Stopped {them}: ended ")) && text.contains("left running"),
+        "{text}"
+    );
+    std::thread::sleep(Duration::from_millis(3000));
+    assert!(!flag.exists(), "its job wrote its file");
+    // Once the person typed at the prompt, what runs there is theirs.
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(new).unwrap();
+        assert!(pane.agent_since().is_some());
+        pane.person_typed();
+        assert_eq!(pane.agent_since(), None);
+    });
+}
+
+#[gpui_kit::test]
+fn stop_agent_refuses_its_own_block_and_one_it_didnt_open(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let own = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "stop_agent",
+        json!({ "block": uid }),
+    );
+    assert_eq!(
+        own,
+        (
+            true,
+            "This block is yours: stop_agent stops another block.".into()
+        )
+    );
+    // A terminal the person opened, wired by them.
+    let dir = tempfile::tempdir().unwrap();
+    let other = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let id = ws
+                    .terminal_beside(Some(mine), dir.path(), None, window, cx)
+                    .unwrap();
+                assert!(ws.connect(mine, id, cx));
+                ws.space.uids[&id].clone()
+            })
+        })
+        .unwrap();
+    let theirs = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "stop_agent",
+        json!({ "block": other }),
+    );
+    assert_eq!(
+        theirs,
+        (
+            true,
+            format!(
+                "Only the person stops {other}: you didn't open it. interrupt presses Esc in it."
+            )
+        )
+    );
+}
+
+/// A canvas the last snapshot saved: the terminal `uid` ran `agent` on `session`.
+fn saved_with(uid: &str, agent: &str, session: &str) -> crate::session::Saved {
+    serde_json::from_value(json!({
+        "version": 1, "camera": { "x": 0, "y": 0, "zoom": 1 },
+        "items": [{ "kind": "terminal", "uid": uid, "rect": { "x": 0, "y": 0, "w": 1, "h": 1 },
+                    "agent": agent, "session": session }],
+    }))
+    .unwrap()
+}
+
+/// `spawn_agent` with `fork` types the caller's own agent's fork command on the session the last
+/// snapshot found, and its prompt says it is a copy (docs/specs/agent-tools.md, spawn_agent with
+/// fork).
+#[gpui_kit::test]
+fn a_fork_types_the_callers_fork_command_with_its_session(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let session = "0d5e5f4b-1c2d-4e3f-8a9b-0c1d2e3f4a5b";
+    // The caller runs Claude Code, and the last snapshot found its session.
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(mine).unwrap().seen.agent = Some("claude".into());
+        ws.space.saved = Some(saved_with(&uid, "claude", session));
+    });
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "spawn_agent",
+        json!({ "fork": true, "prompt": "go on" }),
+    );
+    assert!(
+        !failed && text.starts_with("Opened a fork of your session as "),
+        "{text}"
+    );
+    let new = spawned(&ws, cx, mine);
+    screen_with(&ws, cx, new, &format!("--resume {session} --fork-session"));
+    in_front(&ws, cx, new, true);
+    found(&ws, cx, new);
+    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+    let mut looks = 0;
+    while ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some()) {
+        assert!(looks < 20, "its prompt was never typed");
+        std::thread::sleep(Duration::from_millis(100));
+        after(cx, look);
+        looks += 1;
+    }
+    enter(cx);
+    screen_with(
+        &ws,
+        cx,
+        new,
+        &format!("You are a copy of the agent in {uid}"),
+    );
+}
+
+#[gpui_kit::test]
+fn a_fork_refuses_another_agent_and_a_session_not_found(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(mine).unwrap().seen.agent = Some("claude".into())
+    });
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "spawn_agent",
+            json!({ "fork": true })
+        ),
+        (
+            true,
+            "A fork needs a prompt: it tells the copy what to do.".into()
+        )
+    );
+    let go = |agent: Option<&str>| match agent {
+        Some(a) => json!({ "fork": true, "prompt": "x", "agent": a }),
+        None => json!({ "fork": true, "prompt": "x" }),
+    };
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "spawn_agent", go(None)),
+        (
+            true,
+            "Templum doesn't know your session yet: try again in a few seconds.".into()
+        )
+    );
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "spawn_agent", go(Some("codex"))),
+        (
+            true,
+            "A fork is a copy of your own agent, claude: leave agent out.".into()
+        )
+    );
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(mine).unwrap().seen.agent = Some("gemini".into())
+    });
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "spawn_agent", go(None)),
+        (
+            true,
+            "Gemini CLI can't fork a session: forks are for Claude Code and Codex.".into()
+        )
+    );
+}
+
+/// A role opens its agent on its model and effort with its words, and its instructions go with
+/// the prompt (docs/specs/agent-tools.md, Roles).
+#[gpui_kit::test]
+fn a_role_opens_its_agent_with_its_words_and_its_instructions_go_with_the_prompt(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    ws.update(cx, |ws, _| {
+        ws.config.roles.insert(
+            "reviewer".into(),
+            crate::config::Role {
+                agent: "codex".into(),
+                model: Some("gpt-5.6-luna".into()),
+                effort: Some("high".into()),
+                args: Some("-s read-only".into()),
+                instructions: Some("Never edit files.".into()),
+            },
+        );
+    });
+    let told = ws.read_with(cx, |ws, cx| ws.instructions(&terminal, cx));
+    assert!(
+        told.contains(
+            "list_blocks gives the current list. Roles for spawn_agent: reviewer (codex). When"
+        ),
+        "{told}"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "spawn_agent",
+        json!({ "role": "reviewer", "folder": dir.path(), "prompt": "review HEAD" }),
+    );
+    assert!(!failed, "{text}");
+    let new = spawned(&ws, cx, mine);
+    screen_with(
+        &ws,
+        cx,
+        new,
+        "-m gpt-5.6-luna -c model_reasoning_effort=high -s read-only",
+    );
+    in_front(&ws, cx, new, true);
+    found(&ws, cx, new);
+    let look = crate::workspace::spawn::READY_LOOK.as_millis() as u64;
+    let mut looks = 0;
+    while ws.read_with(cx, |ws, _| ws.space.terminal(new).unwrap().prompt.is_some()) {
+        assert!(looks < 20, "its prompt was never typed");
+        std::thread::sleep(Duration::from_millis(100));
+        after(cx, look);
+        looks += 1;
+    }
+    enter(cx);
+    screen_with(&ws, cx, new, "as reviewer]");
+    screen_with(&ws, cx, new, "Your role, reviewer:");
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.space.terminal(new).unwrap().role.as_deref(),
+            Some("reviewer")
+        )
+    });
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "spawn_agent",
+            json!({ "role": "reviewer" })
+        ),
+        (
+            true,
+            "The role reviewer's instructions go with a prompt: give one.".into()
+        )
+    );
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "spawn_agent",
+            json!({ "role": "tester", "prompt": "x" })
+        ),
+        (true, "There's no role tester. Roles: reviewer.".into())
+    );
+}
+
+/// Opens an agent in the worktree `name` of `repo`, as `spawn_agent` does: its block, its uid,
+/// and the worktree's folder.
+fn in_worktree(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    (terminal, mine): (&str, BlockId),
+    repo: &std::path::Path,
+    (conn, name): (u64, &str),
+) -> (BlockId, String, std::path::PathBuf) {
+    let spawn = json!({ "agent": "codex", "folder": repo, "worktree": name });
+    let answers = call_later(handle, ws, cx, terminal, conn, "spawn_agent", spawn);
+    let (failed, text) = answer_soon(cx, &answers);
+    assert!(!failed, "{text}");
+    let worker = spawned(ws, cx, mine);
+    let (_, them) = me(ws, cx, worker);
+    (worker, them, repo.join(".worktrees").join(name))
+}
+
+/// The balloon of block `mine` drawn, long enough ago for presses to count; then its yes (allow)
+/// or its no (deny) pressed.
+fn press_balloon(handle: AnyWindowHandle, cx: &mut TestAppContext, mine: BlockId, what: &str) {
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    after(cx, 600);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click(crate::balloon::part(mine.0 as usize, what), cx);
+    })
+    .unwrap();
+}
+
+/// `merge_worktree` refuses while an agent works in the worktree or the person's branch has
+/// changes, asks the person, then merges; `remove_worktree` removes a merged one at once
+/// (docs/specs/agent-tools.md, remove_worktree and merge_worktree).
+#[gpui_kit::test]
+fn merge_worktree_asks_the_person_then_merges_and_remove_worktree_removes_it(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "w"));
+    std::fs::write(wt.join("a.txt"), "new\n").unwrap();
+    git_run(&wt, &["commit", "-qam", "change"]);
+    let merge = json!({ "worktree": "w", "folder": root });
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "merge_worktree", merge.clone()),
+        (
+            true,
+            format!("{them} works in it: stop_agent or close_block it first.")
+        )
+    );
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::write(root.join("a.txt"), "the person's\n").unwrap();
+    let (failed, text) = call(handle, &ws, cx, &terminal, "merge_worktree", merge.clone());
+    assert!(
+        failed && text.starts_with("main has changes not committed in "),
+        "{text}"
+    );
+    git_run(&root, &["checkout", "--", "a.txt"]);
+    let answers = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        5,
+        "merge_worktree",
+        merge.clone(),
+    );
+    assert!(answers.try_recv().is_err(), "it waits for the person");
+    let line = ws.read_with(cx, |ws, cx| {
+        ws.allow_line(ws.balloon(&terminal).unwrap().0, cx)
+    });
+    assert!(
+        line.ends_with(" wants to merge w (1 commits) into main."),
+        "{line}"
+    );
+    press_balloon(handle, cx, mine, "allow");
+    let (failed, text) = answer_soon(cx, &answers);
+    assert_eq!(
+        (failed, text.as_str()),
+        (
+            false,
+            "Merged w into main (1 commit). remove_worktree removes it."
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("a.txt")).unwrap(),
+        "new\n"
+    );
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "merge_worktree", merge),
+        (true, "w has nothing main doesn't.".into())
+    );
+    let remove = json!({ "worktree": "w", "folder": root });
+    let answers = call_later(handle, &ws, cx, &terminal, 6, "remove_worktree", remove);
+    assert_eq!(
+        answer_soon(cx, &answers),
+        (false, "Removed the worktree w and its branch.".into())
+    );
+    assert!(!wt.exists());
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "remove_worktree",
+            json!({ "worktree": "w", "folder": root })
+        ),
+        (
+            true,
+            "There's no worktree w in this repository: git worktree list shows them.".into()
+        )
+    );
+}
+
+/// Work in a worktree is lost only once the person says Delete; Keep keeps it; a merge that
+/// would conflict is aborted; a request waits its turn after the others of its block.
+#[gpui_kit::test]
+fn remove_worktree_with_work_in_it_asks_before_discarding_and_keep_keeps_it(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "d"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::write(wt.join("b.txt"), "work\n").unwrap();
+    let remove = |discard: bool| json!({ "worktree": "d", "folder": root, "discard": discard });
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "remove_worktree", remove(false)),
+        (
+            true,
+            "d has 1 changed files and 0 commits not merged into main: merge_worktree merges \
+             them, discard: true loses them."
+                .into()
+        )
+    );
+    // A question first: the request waits its turn, "1 of 2".
+    let question = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        4,
+        "ask_user",
+        json!({ "question": "Ready?", "options": ["Yes"] }),
+    );
+    let answers = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        5,
+        "remove_worktree",
+        remove(true),
+    );
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.balloon(&terminal).map(|(_, n)| n)),
+        Some(2)
+    );
+    press_balloon(handle, cx, mine, "q0-option-0");
+    assert_eq!(answer_soon(cx, &question), (false, "Yes".into()));
+    let line = ws.read_with(cx, |ws, cx| {
+        ws.allow_line(ws.balloon(&terminal).unwrap().0, cx)
+    });
+    assert!(
+        line.ends_with(
+            " wants to delete the worktree d, with 1 changed files and 0 commits not merged."
+        ),
+        "{line}"
+    );
+    press_balloon(handle, cx, mine, "deny");
+    assert_eq!(
+        answer_soon(cx, &answers),
+        (true, "The person said no.".into())
+    );
+    assert!(wt.join("b.txt").exists(), "kept");
+    let answers = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        6,
+        "remove_worktree",
+        remove(true),
+    );
+    press_balloon(handle, cx, mine, "allow");
+    assert_eq!(
+        answer_soon(cx, &answers),
+        (false, "Removed the worktree d and its branch.".into())
+    );
+    assert!(!wt.exists());
+    // A merge that would conflict is aborted, nothing left half done.
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (7, "c"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::write(wt.join("a.txt"), "theirs\n").unwrap();
+    git_run(&wt, &["commit", "-qam", "theirs"]);
+    std::fs::write(root.join("a.txt"), "ours\n").unwrap();
+    git_run(&root, &["commit", "-qam", "ours"]);
+    let merge = json!({ "worktree": "c", "folder": root });
+    let answers = call_later(handle, &ws, cx, &terminal, 8, "merge_worktree", merge);
+    press_balloon(handle, cx, mine, "allow");
+    assert_eq!(
+        answer_soon(cx, &answers),
+        (
+            true,
+            "The merge would conflict in a.txt: merge main into c and resolve them there, then \
+             merge again."
+                .into()
+        )
+    );
+    assert!(!root.join(".git/MERGE_HEAD").exists());
+    assert_eq!(
+        std::fs::read_to_string(root.join("a.txt")).unwrap(),
+        "ours\n"
+    );
+}
+
+/// A worktree an agent took off its branch (a detached HEAD, another branch) is neither removed
+/// nor merged: its commits, or that other branch, would be lost or left out.
+#[gpui_kit::test]
+fn a_worktree_off_its_branch_is_refused(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "x"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    git_run(&wt, &["checkout", "-q", "--detach"]);
+    std::fs::write(wt.join("a.txt"), "detached\n").unwrap();
+    git_run(&wt, &["commit", "-qam", "detached"]);
+    let refused = "The worktree x has a detached HEAD, not its branch x: check out x there first.";
+    for tool in ["remove_worktree", "merge_worktree"] {
+        let args = json!({ "worktree": "x", "folder": root, "discard": true });
+        let args = if tool == "merge_worktree" {
+            json!({ "worktree": "x", "folder": root })
+        } else {
+            args
+        };
+        assert_eq!(
+            call(handle, &ws, cx, &terminal, tool, args),
+            (true, refused.to_string()),
+            "{tool}"
+        );
+    }
+    git_run(&wt, &["checkout", "-q", "-b", "other"]);
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "merge_worktree",
+            json!({ "worktree": "x", "folder": root })
+        ),
+        (
+            true,
+            "The worktree x is on other now, not on its branch x: check out x there first.".into()
+        )
+    );
+    assert!(wt.exists());
+}
+
+/// What the person allowed is checked again when they answer: work made in the worktree since
+/// the question isn't lost with it.
+#[gpui_kit::test]
+fn a_worktree_changed_since_the_question_isnt_deleted(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "d"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::write(wt.join("b.txt"), "work\n").unwrap();
+    let remove = json!({ "worktree": "d", "folder": root, "discard": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 5, "remove_worktree", remove);
+    // More work while the person reads the question.
+    std::fs::write(wt.join("c.txt"), "more work\n").unwrap();
+    press_balloon(handle, cx, mine, "allow");
+    assert_eq!(
+        answer_soon(cx, &answers),
+        (
+            true,
+            "d changed since the person was asked: ask again.".into()
+        )
+    );
+    assert!(wt.join("c.txt").exists(), "kept");
+}
+
+/// A merge the person allowed into one branch doesn't go into another checked out there since.
+#[gpui_kit::test]
+fn a_merge_allowed_into_a_branch_isnt_made_into_another(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "m"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::write(wt.join("a.txt"), "new\n").unwrap();
+    git_run(&wt, &["commit", "-qam", "change"]);
+    let merge = json!({ "worktree": "m", "folder": root });
+    let answers = call_later(handle, &ws, cx, &terminal, 5, "merge_worktree", merge);
+    // The person checks out another branch while they read the question.
+    git_run(&root, &["checkout", "-q", "-b", "other"]);
+    press_balloon(handle, cx, mine, "allow");
+    assert_eq!(
+        answer_soon(cx, &answers),
+        (
+            true,
+            format!(
+                "{} is on other now, not on main as the person was told: ask again.",
+                root.display()
+            )
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("a.txt")).unwrap(),
+        "one\n"
+    );
+}
+
+/// Where the worktree goes back has a detached HEAD: neither removed (its commits would count as
+/// merged into a HEAD a checkout leaves behind) nor merged.
+#[gpui_kit::test]
+fn a_worktree_going_back_to_a_detached_head_is_refused(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "h"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::write(wt.join("a.txt"), "new\n").unwrap();
+    git_run(&wt, &["commit", "-qam", "change"]);
+    // The person's tree detached at the worktree's commit: nothing looks unmerged there.
+    git_run(&root, &["checkout", "-q", "--detach", "h"]);
+    let refused = format!(
+        "{} has a detached HEAD: check out the branch h goes back to first.",
+        root.display()
+    );
+    for tool in ["remove_worktree", "merge_worktree"] {
+        let args = json!({ "worktree": "h", "folder": root });
+        assert_eq!(
+            call(handle, &ws, cx, &terminal, tool, args),
+            (true, refused.clone()),
+            "{tool}"
+        );
+    }
+    assert!(wt.exists());
+}
+
+/// Removing a worktree deletes what git ignores in it: a `.env` is named, and goes only once the
+/// person says Delete; a build folder goes without a word.
+#[gpui_kit::test]
+fn remove_worktree_names_the_ignored_files_it_would_delete(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    std::fs::write(root.join(".gitignore"), ".env\ntarget/\n").unwrap();
+    git_run(&root, &["add", ".gitignore"]);
+    git_run(&root, &["commit", "-qm", "Ignore"]);
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "e"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::write(wt.join(".env"), "SECRET=x\n").unwrap();
+    std::fs::create_dir(wt.join("target")).unwrap();
+    std::fs::write(wt.join("target").join("o"), "o\n").unwrap();
+    let remove = json!({ "worktree": "e", "folder": root });
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "remove_worktree", remove),
+        (
+            true,
+            "e has files git ignores, which removing it deletes: .env. discard: true deletes them."
+                .into()
+        )
+    );
+    assert!(wt.join(".env").exists());
+    let discard = json!({ "worktree": "e", "folder": root, "discard": true });
+    let answers = call_later(handle, &ws, cx, &terminal, 5, "remove_worktree", discard);
+    let line = ws.read_with(cx, |ws, cx| {
+        ws.allow_line(ws.balloon(&terminal).unwrap().0, cx)
+    });
+    assert!(
+        line.ends_with(
+            " wants to delete the worktree e, with 0 changed files and 0 commits not merged, and \
+             files git ignores: .env."
+        ),
+        "{line}"
+    );
+    press_balloon(handle, cx, mine, "allow");
+    assert_eq!(
+        answer_soon(cx, &answers),
+        (false, "Removed the worktree e and its branch.".into())
+    );
+    assert!(!wt.exists());
+}
+
+/// A merge that would write over files git ignores in the person's tree is refused, naming the
+/// first few of them.
+#[gpui_kit::test]
+fn merge_worktree_names_a_few_of_the_ignored_files_it_would_overwrite(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let repo = committed_repo();
+    let root = repo.path().canonicalize().unwrap();
+    std::fs::write(root.join(".gitignore"), "deps/\n").unwrap();
+    git_run(&root, &["add", ".gitignore"]);
+    git_run(&root, &["commit", "-qm", "Ignore"]);
+    std::fs::create_dir(root.join("deps")).unwrap();
+    std::fs::write(root.join("deps").join("x.js"), "the person's\n").unwrap();
+    let (_, them, wt) = in_worktree(handle, &ws, cx, (&terminal, mine), &root, (1, "m"));
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "close_block",
+            json!({ "block": them })
+        )
+        .0
+    );
+    std::fs::create_dir(wt.join("deps")).unwrap();
+    for i in 1..=7 {
+        std::fs::write(wt.join("deps").join(format!("{i}.js")), "agent's\n").unwrap();
+    }
+    git_run(&wt, &["add", "-f", "deps"]);
+    git_run(&wt, &["commit", "-qm", "Deps"]);
+    let merge = json!({ "worktree": "m", "folder": root });
+    assert_eq!(
+        call(handle, &ws, cx, &terminal, "merge_worktree", merge),
+        (
+            true,
+            format!(
+                "The merge would overwrite deps/1.js, deps/2.js, deps/3.js, deps/4.js, deps/5.js \
+                 and 2 more, ignored in {}: move it first.",
+                root.display()
+            )
+        )
+    );
 }

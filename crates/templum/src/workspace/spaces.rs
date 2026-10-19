@@ -9,6 +9,7 @@ use templum_canvas::{BlockId, Rect, chrome};
 
 use crate::alert;
 use crate::board;
+use crate::checklists;
 use crate::notes;
 use crate::prompt;
 use crate::session;
@@ -58,6 +59,29 @@ impl Workspace {
                 eprintln!("templum: {message}");
                 show_notification(window, cx, Notification::error(message));
                 self.boards_frozen = true;
+            }
+            Some(Loaded::Nothing) | None => {}
+        }
+        match self.data_dir.as_deref().map(checklists::load) {
+            Some(Loaded::Saved(checklists)) => {
+                self.checklists_saved = Some(checklists.clone());
+                self.checklists = checklists;
+            }
+            Some(Loaded::Moved { to, why }) => {
+                let message = format!(
+                    "Couldn't read the checklists ({why}); they were kept as {}",
+                    to.display()
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::warning(message));
+            }
+            Some(Loaded::Unreadable(why)) => {
+                let message = format!(
+                    "Couldn't read the checklists ({why}); they won't be saved this session"
+                );
+                eprintln!("templum: {message}");
+                show_notification(window, cx, Notification::error(message));
+                self.checklists_frozen = true;
             }
             Some(Loaded::Nothing) | None => {}
         }
@@ -249,7 +273,7 @@ impl Workspace {
 
     /// Adds an empty workspace after the last one, hidden: its id. The index is the caller's
     /// to write.
-    fn make_space(&mut self) -> String {
+    pub(super) fn make_space(&mut self) -> String {
         let dir = self.data_dir.clone();
         let id = session::next_id(|id| {
             self.spaces().any(|s| s.id == id)
@@ -312,16 +336,9 @@ impl Workspace {
             ws.quiet = true;
             let mut moved = Vec::new();
             for (r, mut body, uid) in taken {
-                match &mut body {
-                    // Its commands in flight answer the block it was: they never come back to it.
-                    Body::Git(git) => {
-                        git.busy = false;
-                        git.acting = 0;
-                        git.queued.clear();
-                    }
-                    // Its find field searches the block by the id it had.
-                    Body::Terminal(pane) => pane.find = None,
-                    _ => {}
+                // Its find field searches the block by the id it had.
+                if let Body::Terminal(pane) = &mut body {
+                    pane.find = None;
                 }
                 let id = ws.add_block(Rect::new(r.x + dx, r.y + dy, r.w, r.h), body);
                 if let Some(uid) = uid {
@@ -331,11 +348,6 @@ impl Workspace {
             }
             ws.quiet = false;
             ws.space.pristine = false;
-            for id in &moved {
-                if ws.space.git(*id).is_some() {
-                    ws.look_up_git(*id, window, cx);
-                }
-            }
             (ws.space.name.clone(), moved)
         });
         self.write_index(window, cx);
@@ -541,7 +553,7 @@ impl Workspace {
         if at == self.active {
             self.switch_to(if at > 0 { at - 1 } else { 1 }, window, cx);
         }
-        let known = self.known_agents();
+        let (known, accounts) = (self.known_agents(), self.known_accounts());
         // A snapshot still being written is older: it can't replace this one.
         self.generation += 1;
         let generation = self.generation;
@@ -549,7 +561,7 @@ impl Workspace {
         let Some(space) = self.others.iter_mut().find(|s| s.id == id && !s.stopped) else {
             return;
         };
-        let (saved, _) = space.layout(known, cx).snapshot(dir.as_deref());
+        let (saved, _) = space.layout(known, accounts, cx).snapshot(dir.as_deref());
         let mut failed = None;
         // Written even when it looks unchanged: a snapshot in flight may have written an older one.
         if let Some(dir) = dir.filter(|_| !space.frozen)

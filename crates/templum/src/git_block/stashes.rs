@@ -7,7 +7,6 @@ use gpui_kit::{
     AnyElement, ClickEvent, Context, ElementId, MouseButton, MouseDownEvent, TestSupportExt, div,
     px,
 };
-use templum_canvas::BlockId;
 
 use super::widgets::icon_button;
 use super::{FONT, Git, LISTS_W, ROW_H, diff_view, words};
@@ -18,20 +17,18 @@ use crate::workspace::Workspace;
 /// The Stashes tab: Stash changes…, the list, and the shown stash's diff on the right.
 pub(super) fn stashes(
     ws: &Workspace,
-    id: BlockId,
     git: &Git,
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    let n = id.0 as usize;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
     let rows = git.stashes.iter().enumerate().map(|(i, s)| {
         let index = s.index;
         div()
-            .id(ElementId::Name(format!("git-stash-{n}-{i}").into()))
+            .id(ElementId::Name(format!("git-stash-{i}").into()))
             .flex()
             .items_center()
             .gap(px(8.0 * z))
@@ -55,18 +52,13 @@ pub(super) fn stashes(
                     .text_color(ui.title_dim)
                     .child(templum_git::ago(now, s.time)),
             )
-            .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                ws.show_stash(id, index, window, cx)
-            }))
+            .on_click(
+                cx.listener(move |ws, _: &ClickEvent, window, cx| ws.show_stash(index, window, cx)),
+            )
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
-                    ws.open_menu(
-                        Target::GitStash { block: id, index },
-                        e.position,
-                        window,
-                        cx,
-                    );
+                    ws.open_menu(Target::GitStash { index }, e.position, window, cx);
                     cx.stop_propagation();
                 }),
             )
@@ -87,31 +79,29 @@ pub(super) fn stashes(
                 .gap(px(6.0 * z))
                 .p(px(6.0 * z))
                 .child(
-                    button(("git-stash-changes", n), "Stash changes…", ui, z)
+                    button("git-stash-changes", "Stash changes…", ui, z)
                         .tooltip(|window, cx| Tooltip::new(words::tip("Stash")).build(window, cx))
                         .when(git.status.entries.is_empty() || git.acting > 0, |el| {
                             el.opacity(0.5)
                         })
                         .when(!git.status.entries.is_empty() && git.acting == 0, |el| {
                             el.on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                                ws.stash_changes(id, window, cx)
+                                ws.stash_changes(window, cx)
                             }))
                         })
                         .test_support(),
                 )
                 .child(div().flex_1())
                 .child(
-                    icon_button(("git-fold-lists", n), IconName::PanelLeftClose, ui, z)
+                    icon_button("git-fold-lists", IconName::PanelLeftClose, ui, z)
                         .tooltip(|window, cx| Tooltip::new("Fold the lists").build(window, cx))
-                        .on_click(
-                            cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(id, cx)),
-                        )
+                        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(cx)))
                         .test_support(),
                 ),
         )
         .child(
             div()
-                .id(("git-stash-list", n))
+                .id("git-stash-list")
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
@@ -124,6 +114,6 @@ pub(super) fn stashes(
         .min_h(px(0.0))
         .flex()
         .when(!git.lists_folded, |el| el.child(left))
-        .child(diff_view::panel(ws, id, git, z, cx))
+        .child(diff_view::panel(ws, git, z, cx))
         .into_any_element()
 }

@@ -6,6 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use alacritty_terminal::event::{Event, EventListener, WindowSize};
 use alacritty_terminal::event_loop::{EventLoop, EventLoopSender, Msg};
@@ -21,7 +22,7 @@ use alacritty_terminal::vte::ansi::CursorStyle;
 use crate::agent::{Detect, agent_of};
 use crate::input::{KeyInput, MouseInput, encode_key, encode_mouse, paste_bytes, typed_bytes};
 use crate::palette::{self, Palette};
-use crate::tap::{Mark, Status, Tap};
+use crate::tap::{Mark, Pattern, Status, Tap};
 
 /// Called (coalesced) when a terminal has something new to show.
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
@@ -36,7 +37,9 @@ pub(crate) struct Shared {
     /// the lock.
     pub(crate) dirty: AtomicBool,
     title: Mutex<Option<String>>,
-    exited: AtomicBool,
+    /// When the terminal was made, and when its shell ended: how long the shell lived.
+    born: Instant,
+    exited: OnceLock<Instant>,
     /// Reported to CSI 14 t (text area size) queries.
     size: Mutex<WindowSize>,
     /// PTY input: set right after the event loop exists, since the Term needs the listener first.
@@ -49,6 +52,10 @@ pub(crate) struct Shared {
     pub(crate) folder: Mutex<Option<PathBuf>>,
     /// Each command's state, by the number of its prompt's mark.
     pub(crate) marks: Mutex<HashMap<u32, Mark>>,
+    /// The watches on its printed lines: each one's id, its pattern and the first line that
+    /// matched it. `watching` spares the reader thread the lock while there are none.
+    watches: Mutex<Vec<(u64, Pattern, Option<String>)>>,
+    watching: AtomicBool,
 }
 
 impl Shared {
@@ -58,13 +65,54 @@ impl Shared {
             pending: AtomicBool::new(false),
             dirty: AtomicBool::new(true),
             title: Mutex::new(None),
-            exited: AtomicBool::new(false),
+            born: Instant::now(),
+            exited: OnceLock::new(),
             size: Mutex::new(size),
             pty: OnceLock::new(),
             palette: Mutex::new(palette),
             status: Mutex::default(),
             folder: Mutex::default(),
             marks: Mutex::default(),
+            watches: Mutex::default(),
+            watching: AtomicBool::new(false),
+        }
+    }
+
+    /// Adds a watch for `pattern` on the lines printed from now on; its id.
+    pub(crate) fn watch(&self, pattern: Pattern) -> u64 {
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let mut watches = self.watches.lock().unwrap();
+        watches.push((id, pattern, None));
+        self.watching.store(true, Ordering::Release);
+        id
+    }
+
+    /// The first line that matched the watch `id`, once one did.
+    pub(crate) fn hit(&self, id: u64) -> Option<String> {
+        let watches = self.watches.lock().unwrap();
+        watches.iter().find(|w| w.0 == id)?.2.clone()
+    }
+
+    pub(crate) fn unwatch(&self, id: u64) {
+        let mut watches = self.watches.lock().unwrap();
+        watches.retain(|w| w.0 != id);
+        self.watching.store(!watches.is_empty(), Ordering::Release);
+    }
+
+    /// A watch is set: the reader thread keeps the line being printed.
+    pub(crate) fn watched(&self) -> bool {
+        self.watching.load(Ordering::Acquire)
+    }
+
+    /// A line was printed: each watch with no match yet whose pattern it matches keeps it.
+    pub(crate) fn heard(&self, line: &[u8]) {
+        let line = String::from_utf8_lossy(line);
+        let mut watches = self.watches.lock().unwrap();
+        for (_, pattern, hit) in watches.iter_mut().filter(|w| w.2.is_none()) {
+            if pattern.is_match(&line) {
+                *hit = Some(line.clone().into_owned());
+            }
         }
     }
 
@@ -133,7 +181,7 @@ impl EventListener for Listener {
             // Exit comes after the child's last output has been read (ChildExit comes before).
             // Uncoalesced: a block off screen is never re-armed, and must still close.
             Event::Exit => {
-                s.exited.store(true, Ordering::Release);
+                let _ = s.exited.set(Instant::now());
                 s.wake_now();
             }
             Event::Wakeup => s.wake(),
@@ -412,13 +460,20 @@ fn inspect_one(system: &sysinfo::System, p: &Processes, known: &[Detect]) -> Ins
             .filter(|cwd| !cwd.as_os_str().is_empty())
             .map(Path::to_path_buf)
     };
+    // The shell's folder: its own word, else the OS's.
+    let shell = || {
+        reported(p)
+            .or_else(|| p.foreground.map(Pid::from_u32).and_then(cwd))
+            .or_else(|| p.shell.map(Pid::from_u32).and_then(cwd))
+    };
     let found = candidates(system, p)
         .into_iter()
         .find_map(|pid| Some((pid, agent_in(system.process(pid)?, known)?)));
     match found {
-        // Its folder: under PowerShell, the shell's own doesn't follow `cd`, but programs it starts do.
+        // Its folder: under PowerShell, the shell's own doesn't follow `cd`, but programs it starts
+        // do. One the OS won't tell is the shell's.
         Some((pid, agent)) => Inspection {
-            folder: cwd(pid),
+            folder: cwd(pid).or_else(shell),
             session: system.process(pid).and_then(|process| {
                 let args = args(process);
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -429,9 +484,7 @@ fn inspect_one(system: &sysinfo::System, p: &Processes, known: &[Detect]) -> Ins
             started: system.process(pid).map(sysinfo::Process::start_time),
         },
         None => Inspection {
-            folder: reported(p)
-                .or_else(|| p.foreground.map(Pid::from_u32).and_then(cwd))
-                .or_else(|| p.shell.map(Pid::from_u32).and_then(cwd)),
+            folder: shell(),
             ..Inspection::default()
         },
     }
@@ -474,30 +527,77 @@ fn candidates(system: &sysinfo::System, p: &Processes) -> Vec<sysinfo::Pid> {
     descendants(system, Pid::from_u32(shell))
 }
 
-/// `root` and every process below it, nearest first. A child started before its parent names
-/// a parent that died and whose pid was taken again (Windows keeps stale parent ids): it isn't
-/// followed.
+/// A process of the OS's table, as [`below`] and [`front`] read it.
+#[derive(Clone, Copy, Debug)]
+struct Proc {
+    pid: u32,
+    parent: Option<u32>,
+    started: u64,
+}
+
+/// The processes of `system`, threads left out.
+fn table(system: &sysinfo::System) -> Vec<Proc> {
+    system
+        .processes()
+        .values()
+        .filter(|p| p.thread_kind().is_none())
+        .map(|p| Proc {
+            pid: p.pid().as_u32(),
+            parent: p.parent().map(sysinfo::Pid::as_u32),
+            started: p.start_time(),
+        })
+        .collect()
+}
+
+/// `root` and every process below it, nearest first.
 fn descendants(system: &sysinfo::System, root: sysinfo::Pid) -> Vec<sysinfo::Pid> {
-    let started = |pid| system.process(pid).map_or(0, sysinfo::Process::start_time);
+    below(&table(system), root.as_u32())
+        .into_iter()
+        .map(sysinfo::Pid::from_u32)
+        .collect()
+}
+
+/// `root` and every process of `table` below it, nearest first. A child started before its
+/// parent names a parent that died and whose pid was taken again (Windows keeps stale parent
+/// ids): it isn't followed.
+fn below(table: &[Proc], root: u32) -> Vec<u32> {
     let mut found = vec![root];
     let mut i = 0;
     while i < found.len() {
         let parent = found[i];
-        let children: Vec<_> = system
-            .processes()
+        let since = table
             .iter()
-            .filter(|(pid, process)| {
-                process.parent() == Some(parent)
-                    && process.thread_kind().is_none()
-                    && process.start_time() >= started(parent)
-                    && !found.contains(pid)
-            })
-            .map(|(pid, _)| *pid)
+            .find(|p| p.pid == parent)
+            .map_or(0, |p| p.started);
+        let children: Vec<u32> = table
+            .iter()
+            .filter(|p| p.parent == Some(parent) && p.started >= since && !found.contains(&p.pid))
+            .map(|p| p.pid)
             .collect();
         found.extend(children);
         i += 1;
     }
     found
+}
+
+/// The program in front of the innermost of `shells` where the OS can't tell (Windows): `agent`,
+/// the agent's pid and start time a snapshot found, while that process is still below the shell
+/// (its pid not taken again since), else the shell's oldest child. Never one of `shells`.
+fn front(table: &[Proc], shells: &[u32], agent: Option<(u32, u64)>) -> Option<u32> {
+    let shell = *shells.last()?;
+    let under = below(table, shell);
+    let ours = |pid: u32| !shells.contains(&pid) && under.contains(&pid);
+    if let Some((pid, started)) = agent
+        && ours(pid)
+        && table.iter().any(|p| p.pid == pid && p.started == started)
+    {
+        return Some(pid);
+    }
+    table
+        .iter()
+        .filter(|p| p.parent == Some(shell) && ours(p.pid))
+        .min_by_key(|p| (p.started, p.pid))
+        .map(|p| p.pid)
 }
 
 /// A process to end later: its pid, and when it started, since a pid can be taken again.
@@ -560,6 +660,132 @@ pub fn kill_left(procs: &[Running]) {
     }
 }
 
+/// The processes that are a terminal's shell, `process` the one Templum started, named `name`, run
+/// from the file `exe`, with `children` (each one's pid and file, oldest first): it, and the shell
+/// it runs where it only starts one: macOS's `login` (its first child), Git for Windows'
+/// `bin\bash.exe` and `bin\sh.exe` (the `usr\bin\bash.exe` beside them). `stop_agent` never ends
+/// them.
+pub fn shells_of(process: u32, name: &str, exe: &str, children: &[(u32, String)]) -> Vec<u32> {
+    let mut shells = vec![process];
+    if name == "login" {
+        shells.extend(children.first().map(|(pid, _)| *pid));
+    } else if let Some(real) = git_bash(exe) {
+        let shell = children.iter().find(|(_, e)| e.eq_ignore_ascii_case(&real));
+        shells.extend(shell.map(|(pid, _)| *pid));
+    }
+    shells
+}
+
+/// The shell Git for Windows' `exe` starts when it is `<Git>\bin\bash.exe` or `<Git>\bin\sh.exe`,
+/// a wrapper: `<Git>\usr\bin\bash.exe`.
+fn git_bash(exe: &str) -> Option<String> {
+    let lower = exe.to_ascii_lowercase();
+    let end = ["\\bin\\bash.exe", "\\bin\\sh.exe"]
+        .into_iter()
+        .find(|end| lower.ends_with(end))?;
+    Some(format!(
+        "{}\\usr\\bin\\bash.exe",
+        &exe[..exe.len() - end.len()]
+    ))
+}
+
+/// What `stop_agent` ends in the terminal whose `TEMPLUM_TERMINAL` is `terminal`
+/// (docs/specs/agent-tools.md#stop_agent): `program` and every process below it, and every process
+/// carrying `terminal` in its environment whose parent is neither one of `shells` nor below them,
+/// what a tool's shell left when it quit, even in a session of its own, started after the program
+/// did (`since` without one: when its agent did; neither, none). Never one of `shells`, a job
+/// started from them, nor a daemon started before the program (an ssh-agent or a tmux server from
+/// the shell's startup files); a process whose environment can't be read is no orphan. Read before
+/// any signal, while the children still name their parents.
+pub fn strays(
+    terminal: &str,
+    shells: &[u32],
+    program: Option<u32>,
+    since: Option<u64>,
+) -> Vec<Running> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        ProcessRefreshKind::new().with_environ(UpdateKind::Always),
+    );
+    let shells: Vec<Pid> = shells.iter().map(|s| Pid::from_u32(*s)).collect();
+    let mut kept: Vec<Pid> = Vec::new();
+    for shell in &shells {
+        kept.extend(descendants(&system, *shell));
+    }
+    let mut found: Vec<Pid> = program
+        .map(Pid::from_u32)
+        .filter(|p| !shells.contains(p))
+        .map(|p| descendants(&system, p))
+        .unwrap_or_default();
+    let variable = format!("TEMPLUM_TERMINAL={terminal}");
+    // Start times are whole seconds: one in the program's own second is taken for older.
+    let after = program
+        .and_then(|p| system.process(Pid::from_u32(p)))
+        .map(sysinfo::Process::start_time)
+        .or(since);
+    for (pid, process) in system.processes() {
+        let orphan = process.thread_kind().is_none()
+            && after.is_some_and(|after| process.start_time() > after)
+            && !process.parent().is_some_and(|p| kept.contains(&p))
+            && process.environ().iter().any(|v| *v == *variable);
+        if orphan && !shells.contains(pid) && !found.contains(pid) {
+            found.push(*pid);
+        }
+    }
+    found
+        .into_iter()
+        .filter_map(|pid| {
+            Some(Running {
+                pid: pid.as_u32(),
+                started: system.process(pid)?.start_time(),
+            })
+        })
+        .collect()
+}
+
+/// Asks those of `procs` that still run, and are still the same process, to end: SIGTERM on Unix
+/// (an agent saves its session on it), TerminateProcess on Windows. [`kill_left`] ends what is left.
+pub fn terminate(procs: &[Running]) {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, Signal, System};
+    let pids: Vec<Pid> = procs.iter().map(|p| Pid::from_u32(p.pid)).collect();
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), ProcessRefreshKind::new());
+    for running in procs {
+        if let Some(process) = system.process(Pid::from_u32(running.pid))
+            && process.start_time() == running.started
+            && process.status() != ProcessStatus::Zombie
+            && process.kill_with(Signal::Term).is_none()
+        {
+            process.kill();
+        }
+    }
+}
+
+/// The level Windows ends this process at when the session ends, before every program at the
+/// default 0x280: the first of the range applications may take.
+#[cfg(windows)]
+const SHUTDOWN_LEVEL: u32 = 0x3FF;
+
+/// Asks Windows to end this process before the programs in its terminals at sign-out, restart
+/// and shutdown. Every process starts at the same level, and Windows ends those in any order: it
+/// could end the shells and agents first, while Templum, still running, closes their blocks and
+/// then saves the canvas without them.
+#[cfg(windows)]
+pub fn quit_before_terminals() {
+    use windows_sys::Win32::System::Threading::SetProcessShutdownParameters;
+    // SAFETY: two numbers in, no pointers; it only sets this process's place in the order.
+    #[allow(unsafe_code)]
+    let set = unsafe { SetProcessShutdownParameters(SHUTDOWN_LEVEL, 0) };
+    if set == 0 {
+        eprintln!(
+            "templum: couldn't ask Windows to close Templum before its terminals: {}",
+            io::Error::last_os_error()
+        );
+    }
+}
+
 pub struct SpawnOptions {
     pub cols: u16,
     pub rows: u16,
@@ -596,6 +822,10 @@ pub struct Terminal {
     /// Unique among the terminals of every Templum running; its programs see it as
     /// `TEMPLUM_TERMINAL`.
     id: String,
+    /// Someone typed into it ([`Terminal::had_input`]).
+    input: AtomicBool,
+    /// How many times input reached its program ([`Terminal::inputs`]).
+    inputs: AtomicU64,
 }
 
 impl Terminal {
@@ -625,6 +855,10 @@ impl Terminal {
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
         env.insert("TEMPLUM_TERMINAL".into(), id.clone());
+        // Read again for each terminal: a program installed since Templum started is found.
+        if let Some(path) = crate::path_var().and_then(|p| p.into_string().ok()) {
+            env.insert("PATH".into(), path);
+        }
         env.extend(opts.env.iter().cloned());
         if let Some(dir) = &opts.integration {
             // Without a command, alacritty runs $SHELL: as a login shell on macOS.
@@ -687,6 +921,8 @@ impl Terminal {
             rows: opts.rows,
             shell_name,
             id,
+            input: AtomicBool::new(false),
+            inputs: AtomicU64::new(0),
         })
     }
 
@@ -711,7 +947,13 @@ impl Terminal {
     }
 
     pub fn exited(&self) -> bool {
-        self.shared.exited.load(Ordering::Acquire)
+        self.shared.exited.get().is_some()
+    }
+
+    /// How long its shell lived, once it ended.
+    pub fn lived(&self) -> Option<Duration> {
+        let ended = self.shared.exited.get()?;
+        Some(ended.duration_since(self.shared.born))
     }
 
     /// The current folder of the program in the terminal's foreground: the shell the user types
@@ -734,6 +976,82 @@ impl Terminal {
         }
     }
 
+    /// Its shell's processes ([`shells_of`]): empty once it exited.
+    pub fn shells(&self) -> Vec<u32> {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+        let Some(pid) = self.pid.filter(|_| !self.exited()) else {
+            return Vec::new();
+        };
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            ProcessRefreshKind::new().with_exe(UpdateKind::Always),
+        );
+        let exe = |p: &sysinfo::Process| {
+            p.exe()
+                .map(|e| e.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        let (name, file) = system
+            .process(Pid::from_u32(pid))
+            .map(|p| (p.name().to_string_lossy().into_owned(), exe(p)))
+            .unwrap_or_default();
+        let mut children: Vec<&sysinfo::Process> = system
+            .processes()
+            .values()
+            .filter(|p| p.parent() == Some(Pid::from_u32(pid)) && p.thread_kind().is_none())
+            .collect();
+        children.sort_by_key(|p| p.start_time());
+        let children: Vec<(u32, String)> = children
+            .iter()
+            .map(|p| (p.pid().as_u32(), exe(p)))
+            .collect();
+        shells_of(pid, &name, &file, &children)
+    }
+
+    /// The program in front of its shell, by pid and name: the leader of the PTY's foreground
+    /// process group when it isn't one of `shells` (Unix); on Windows, which can't tell who is in
+    /// front, `agent` (the agent's pid and start time a snapshot found) while it still runs below
+    /// the shell, else the shell's oldest child ([`front`]).
+    pub fn program(&self, shells: &[u32], agent: Option<(u32, u64)>) -> Option<(u32, String)> {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+        let mut system = System::new();
+        let pid = if cfg!(windows) {
+            system.refresh_processes_specifics(ProcessesToUpdate::All, ProcessRefreshKind::new());
+            front(&table(&system), shells, agent)?
+        } else {
+            let front = self.foreground().filter(|f| !shells.contains(f))?;
+            let pids = [Pid::from_u32(front)];
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&pids),
+                ProcessRefreshKind::new(),
+            );
+            front
+        };
+        let name = system.process(Pid::from_u32(pid))?.name();
+        Some((pid, name.to_string_lossy().into_owned()))
+    }
+
+    /// Looks for `pattern` in each line it prints from now on, escape sequences dropped, until
+    /// [`Terminal::unwatch`]; the watch's id, for [`Terminal::hit`].
+    pub fn watch(&self, pattern: Pattern) -> u64 {
+        self.shared.watch(pattern)
+    }
+
+    /// The first line that matched the watch `id`, once one did.
+    pub fn hit(&self, id: u64) -> Option<String> {
+        self.shared.hit(id)
+    }
+
+    pub fn unwatch(&self, id: u64) {
+        self.shared.unwatch(id);
+    }
+
+    /// How many watches it has.
+    pub fn watching(&self) -> usize {
+        self.shared.watches.lock().unwrap().len()
+    }
+
     /// What the shell (with shell integration) and its programs told about their commands, and
     /// how often they asked for attention.
     pub fn status(&self) -> Status {
@@ -741,10 +1059,16 @@ impl Terminal {
     }
 
     /// The PTY's foreground process group: its leader is the shell (or the program it runs).
+    /// Not rustix's `tcgetpgrp`: macOS answers 0 once the shell has ended, which rustix makes a
+    /// `Pid` that can't be 0 (a panic in debug builds, undefined behavior in release ones).
     #[cfg(unix)]
     fn foreground(&self) -> Option<u32> {
-        let group = rustix::termios::tcgetpgrp(self.master.as_ref()?).ok()?;
-        u32::try_from(group.as_raw_nonzero().get()).ok()
+        use std::os::fd::AsRawFd as _;
+        let master = self.master.as_ref()?.as_raw_fd();
+        // SAFETY: a plain call on the PTY master `self.master` keeps open; no pointers.
+        #[allow(unsafe_code)]
+        let group = unsafe { libc::tcgetpgrp(master) };
+        process_group(group)
     }
 
     /// ConPTY has no foreground process group: the shell Templum started is it.
@@ -766,7 +1090,35 @@ impl Terminal {
     pub fn write(&self, bytes: impl Into<Cow<'static, [u8]>>) {
         self.term.0.lock_unfair().scroll_display(Scroll::Bottom);
         self.term.touched();
+        self.send(bytes);
+    }
+
+    fn send(&self, bytes: impl Into<Cow<'static, [u8]>>) {
+        self.inputs.fetch_add(1, Ordering::Relaxed);
         let _ = self.pty.send(Msg::Input(bytes.into()));
+    }
+
+    /// How many times input reached its program: a key, text, a paste, what the app wrote, a
+    /// click, a drag, the wheel (as arrows too). Not a mouse move with no button down, nor its
+    /// answers to the program's queries: they answer no dialog.
+    pub fn inputs(&self) -> u64 {
+        self.inputs.load(Ordering::Relaxed)
+    }
+
+    /// `write`, for input someone gave: a key, a paste, typed text ([`Terminal::had_input`]).
+    /// Once the shell ended, input reaches nothing and ends nothing: it doesn't count.
+    fn input(&self, bytes: impl Into<Cow<'static, [u8]>>) {
+        if !self.exited() {
+            self.input.store(true, Ordering::Relaxed);
+        }
+        self.write(bytes);
+    }
+
+    /// Someone, the person or an agent, pressed a key, pasted or typed text into it
+    /// (`key`, `press`, `text`, `paste`, `type_in`): a shell that ends then was ended, it didn't
+    /// fail to start. What the app itself writes (`write`) doesn't count.
+    pub fn had_input(&self) -> bool {
+        self.input.load(Ordering::Relaxed)
     }
 
     /// Sends a key press. Returns false for printable text, which must come through the
@@ -775,7 +1127,7 @@ impl Terminal {
         let mode = *self.term.0.lock_unfair().mode();
         match encode_key(input, mode) {
             Some(bytes) => {
-                self.write(bytes);
+                self.input(bytes);
                 true
             }
             None => false,
@@ -788,7 +1140,7 @@ impl Terminal {
         if !self.key(key)
             && let Some(text) = key.key_char
         {
-            self.write(text.as_bytes().to_vec());
+            self.input(text.as_bytes().to_vec());
         }
     }
 
@@ -804,6 +1156,10 @@ impl Terminal {
         };
         drop(term);
         match encode_mouse(&input, mode) {
+            Some(bytes) if input.button.is_some() => {
+                self.send(bytes);
+                true
+            }
             Some(bytes) => {
                 let _ = self.pty.send(Msg::Input(bytes.into()));
                 true
@@ -812,13 +1168,18 @@ impl Terminal {
         }
     }
 
+    /// Sends what the keyboard typed as text (letters, an IME's, a dead key's), raw.
+    pub fn text(&self, text: &str) {
+        self.input(text.as_bytes().to_vec());
+    }
+
     pub fn paste(&self, text: &str) {
-        self.write(paste_bytes(text, self.bracketed()));
+        self.input(paste_bytes(text, self.bracketed()));
     }
 
     /// Types `text` in for the person to send: never presses Enter (see [`typed_bytes`]).
     pub fn type_in(&self, text: &str) {
-        self.write(typed_bytes(text, self.bracketed()));
+        self.input(typed_bytes(text, self.bracketed()));
     }
 
     /// The program asked for pastes to be bracketed.
@@ -889,9 +1250,7 @@ impl Terminal {
                 ..KeyInput::default()
             };
             let arrow = encode_key(&key, mode).expect("arrow keys always encode");
-            let _ = self.pty.send(Msg::Input(
-                arrow.repeat(lines.unsigned_abs() as usize).into(),
-            ));
+            self.send(arrow.repeat(lines.unsigned_abs() as usize));
         } else {
             term.scroll_display(Scroll::Delta(lines));
             drop(term);
@@ -921,6 +1280,13 @@ fn file_stem(path: &str) -> String {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string())
+}
+
+/// The process group `tcgetpgrp` answered, when there is one: it says 0 (macOS, once the shell
+/// has ended) or less when there is none.
+#[cfg(any(unix, test))]
+fn process_group(raw: i32) -> Option<u32> {
+    u32::try_from(raw).ok().filter(|&group| group > 0)
 }
 
 #[cfg(windows)]
@@ -973,6 +1339,27 @@ pub(crate) fn feed_heard(term: &SharedTerm, bytes: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_ends_templum_before_the_programs_in_its_terminals() {
+        use windows_sys::Win32::System::Threading::GetProcessShutdownParameters;
+        quit_before_terminals();
+        let (mut level, mut flags) = (0, 0);
+        // SAFETY: two valid places for the two numbers it writes.
+        #[allow(unsafe_code)]
+        let read = unsafe { GetProcessShutdownParameters(&mut level, &mut flags) };
+        assert_ne!(read, 0, "{}", io::Error::last_os_error());
+        // Windows ends the higher levels first; a shell or an agent starts at 0x280.
+        assert!(level > 0x280, "level {level:#x}");
+    }
+
+    #[test]
+    fn no_foreground_group_is_no_process() {
+        assert_eq!(process_group(0), None);
+        assert_eq!(process_group(-1), None);
+        assert_eq!(process_group(4242), Some(4242));
+    }
 
     #[test]
     fn modes_say_what_the_program_asked_for() {
@@ -1102,12 +1489,9 @@ mod tests {
         let (_, shared) = headless(10, 2);
         let listener = Listener(shared.clone());
         listener.send_event(Event::ChildExit(std::process::ExitStatus::default()));
-        assert!(
-            !shared.exited.load(Ordering::Acquire),
-            "output may still be unread"
-        );
+        assert!(shared.exited.get().is_none(), "output may still be unread");
         listener.send_event(Event::Exit);
-        assert!(shared.exited.load(Ordering::Acquire));
+        assert!(shared.exited.get().is_some());
     }
 
     #[test]
@@ -1155,7 +1539,82 @@ mod tests {
             2,
             "not held back by the coalescing"
         );
-        assert!(shared.exited.load(Ordering::Acquire));
+        assert!(shared.exited.get().is_some());
+    }
+
+    /// Windows can't tell who is in front: under Git Bash's wrapper and its real shell, the
+    /// program is the agent a snapshot found while it is still the same process below the shell,
+    /// else the shell's oldest child; never the real shell, nor a process that took the agent's
+    /// pid after it quit.
+    #[test]
+    fn on_windows_the_program_is_the_agent_still_below_the_shell_else_its_oldest_child() {
+        let p = |pid, parent, started| Proc {
+            pid,
+            parent: Some(parent),
+            started,
+        };
+        // Git's bin\bash.exe 10 starts the real bash 11; Claude Code 12 (and its node 13), then
+        // a job the person started, 14; 20 is elsewhere.
+        let tree = [
+            p(10, 1, 100),
+            p(11, 10, 100),
+            p(14, 11, 300),
+            p(12, 11, 200),
+            p(13, 12, 201),
+            p(20, 1, 50),
+        ];
+        let shells = [10, 11];
+        assert_eq!(front(&tree, &shells, Some((14, 300))), Some(14));
+        assert_eq!(front(&tree, &shells, None), Some(12), "the oldest child");
+        assert_eq!(
+            front(&tree, &shells, Some((20, 50))),
+            Some(12),
+            "not below the shell"
+        );
+        assert_eq!(front(&tree, &shells, Some((11, 100))), Some(12));
+        // The agent 12 quit; its pid was taken again by a job started after the person's 14.
+        let taken = [
+            p(10, 1, 100),
+            p(11, 10, 100),
+            p(14, 11, 300),
+            p(12, 11, 400),
+        ];
+        assert_eq!(front(&taken, &shells, Some((12, 200))), Some(14));
+        let idle = [p(10, 1, 100), p(11, 10, 100)];
+        assert_eq!(
+            front(&idle, &shells, None),
+            None,
+            "the real shell isn't the program"
+        );
+        assert_eq!(front(&idle, &[], None), None);
+    }
+
+    #[test]
+    fn an_agent_whose_folder_the_os_wont_tell_is_in_its_shells() {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+        // This test's process as the agent, read without folders: as one the OS won't tell of.
+        let me = std::process::id();
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[Pid::from_u32(me)]),
+            ProcessRefreshKind::new().with_cmd(UpdateKind::Always),
+        );
+        let exe = std::env::current_exe().unwrap();
+        let name = exe.file_stem().unwrap().to_string_lossy().to_lowercase();
+        let known = [Detect {
+            id: "agent".into(),
+            names: vec![name],
+            packages: Vec::new(),
+        }];
+        let reported = tempfile::tempdir().unwrap();
+        let p = Processes {
+            shell: Some(me),
+            foreground: None,
+            reported: Some(reported.path().to_path_buf()),
+        };
+        let found = inspect_one(&system, &p, &known);
+        assert_eq!(found.agent.as_deref(), Some("agent"));
+        assert_eq!(found.folder.as_deref(), Some(reported.path()));
     }
 
     #[test]

@@ -11,10 +11,10 @@ use std::time::Duration;
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, ElementId, Entity, EntityId, FocusHandle, ScrollHandle, SharedString,
-    Subscription, UniformListScrollHandle, Window,
+    App, Context, ElementId, Entity, EntityId, FocusHandle, ScrollHandle, Subscription,
+    UniformListScrollHandle, Window,
 };
-use templum_canvas::{BlockId, Rect, Size};
+use templum_canvas::Size;
 use templum_git::{Branch, Commit, CommitFile, Entry, GitError, Operation, Repo, Stash, Status};
 
 use crate::session;
@@ -32,15 +32,11 @@ mod view;
 pub(crate) mod widgets;
 pub(crate) mod words;
 
-pub(crate) use view::body;
+pub(crate) use view::popup;
 pub(crate) use widgets::field;
 
-/// A new Git block's size, and the smallest one (world units).
-pub(crate) const SIZE: Size = Size {
-    w: 1200.0,
-    h: 760.0,
-};
-pub(crate) const MIN: Size = Size { w: 640.0, h: 420.0 };
+/// The Git popup's size, pixels; a smaller window gets a smaller one.
+pub(crate) const SIZE: Size = Size { w: 760.0, h: 540.0 };
 /// Past this many changed files, a Filter files field shows above the lists.
 pub(crate) const FILTER_PAST: usize = 15;
 /// The lists' column width and the rows' height, world units.
@@ -626,13 +622,9 @@ impl Git {
         )
     }
 
-    pub fn title(&self) -> SharedString {
-        self.name().into()
-    }
-
     /// As the canvas file holds it. The commit message being written is kept, unless Amend
     /// filled it with the last commit's.
-    pub fn item(&self, rect: Rect, cx: &App) -> session::GitItem {
+    pub fn saved(&self, cx: &App) -> session::SavedGit {
         let draft = |text: &str| {
             if self.amend {
                 String::new()
@@ -640,9 +632,7 @@ impl Git {
                 text.to_string()
             }
         };
-        session::GitItem {
-            uid: String::new(),
-            rect: rect.into(),
+        session::SavedGit {
             folder: self.folder.to_string_lossy().into_owned(),
             tab: self.tab.name().to_string(),
             summary: draft(&self.summary.read(cx).value()),
@@ -661,8 +651,8 @@ impl Git {
     }
 }
 
-pub(crate) fn row_id(block: BlockId, list: &str, i: usize) -> ElementId {
-    ElementId::Name(format!("git-row-{}-{list}-{i}", block.0).into())
+pub(crate) fn row_id(list: &str, i: usize) -> ElementId {
+    ElementId::Name(format!("git-row-{list}-{i}").into())
 }
 
 #[cfg(test)]

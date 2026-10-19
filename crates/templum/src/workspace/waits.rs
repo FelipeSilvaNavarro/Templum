@@ -2,22 +2,31 @@
 //! person. Each keeps its reply channel in `Workspace::waits` until it is answered, its deadline
 //! passes, its call is cancelled or its connection ends, or its block closes.
 
-use std::time::Duration;
+use std::cell::Cell;
+use std::time::{Duration, Instant};
 
-use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::prelude::*;
+use gpui_kit::component::input::InputState;
 use gpui_kit::{App, Context, Entity, Focusable as _, Subscription, Window};
 use serde_json::Value;
+use templum_canvas::{BlockId, Level};
+use templum_mcp::ask::{Ask, Form};
 use templum_mcp::tools::Event;
 use templum_mcp::{Replier, Reply, tools};
+use templum_terminal::Pattern;
 
 use super::bus::{Outcome, target};
 use super::{AgentState, Pane, Workspace};
+use crate::alert::Alert;
 
+/// How long after the dialog first shows a question its keys and clicks are ignored: someone
+/// typing or clicking in the terminal as it appears doesn't answer it.
+pub(crate) const TOO_SOON: Duration = Duration::from_millis(500);
 /// The lines of an agent's screen a turn's wait that times out gives.
 pub(super) const LAST_LINES: usize = 40;
+/// The lines of its terminal a `wait_for` with a pattern gives after the line that matched.
+pub(super) const PRINTED_LINES: usize = 20;
 /// How often a `wait_for` a command or an alert looks at its terminal's counters.
-const EVENT_LOOK: Duration = Duration::from_millis(250);
+pub(super) const EVENT_LOOK: Duration = Duration::from_millis(250);
 /// How long after a hook says its agent waits for its person its screen is read: the hook comes
 /// before its dialog is drawn (it may answer the dialog; Codex's drew 25 ms after).
 const DRAWN: Duration = Duration::from_millis(300);
@@ -34,31 +43,80 @@ pub(crate) struct Wait {
     /// another workspace.
     pub from: String,
     pub what: Waiting,
+    /// When the balloon first drew it, by the executor's clock.
+    pub shown: Cell<Option<Instant>>,
 }
+
+/// A field of a question's dialog, and what it hears from it.
+pub(crate) type Field = (Entity<InputState>, Subscription);
 
 /// What a wait waits for.
 pub(crate) enum Waiting {
-    /// `ask_user`: one of `options`, or what the person types in `field` when there are none.
+    /// `ask_user` (docs/specs/ask-user.md): its questions, what the person picked, each
+    /// question's Other field, and the note (asked with `questions` only). `wait` makes the
+    /// fields. `away`: Esc gave the keyboard back to the terminal, until a press on the dialog.
+    /// `stopped`: its client gave up on the call; the answer is typed into its terminal.
     Question {
-        text: String,
-        options: Vec<String>,
-        field: Option<(Entity<InputState>, Subscription)>,
+        ask: Ask,
+        form: Form,
+        others: Vec<Field>,
+        note: Option<Field>,
+        away: bool,
+        stopped: bool,
+        /// A plan's Markdown frame's scroll (`propose_plan`).
+        scroll: crate::markdown::PreviewScroll,
     },
-    /// `connect`: the person's Allow or Deny to wiring the asking block to block `to` (its block
-    /// id).
-    Connect { to: String },
+    /// The person's yes or no to what an agent asks to do (docs/specs/agent-tools.md, Asking the
+    /// person): `then`, done once they said yes.
+    Allow { then: Approved },
     /// `delegate` with `wait`, `wait_for_idle`: the end of the turn of the agent in the terminal
     /// `of` (the block `uid`).
     Turn { of: String, uid: String },
     /// `wait_for`: `event` in the terminal `of` (the block `uid`). `since`: the commands that had
     /// finished there and the alerts it had sent when the call came (`Status.finished`,
-    /// `Status.attention`).
+    /// `Status.attention`). `watch`: for `Event::Output`, the id of the watch set on the terminal
+    /// and its pattern's text, unwatched when the wait ends however it ends.
     Event {
         of: String,
         uid: String,
         event: Event,
         since: (u64, u64),
+        watch: Option<(u64, String)>,
     },
+}
+
+/// What a request with two buttons does once the person says yes.
+pub(crate) enum Approved {
+    /// `connect`: wires the asking block to the block `to` (its block id). Allow, Deny.
+    Connect { to: String },
+    /// `remove_worktree` with `discard`: removes the worktree `name` of `repo`, losing its
+    /// `changed` files, `unmerged` commits and the files git ignores there, `ignored`. Delete, Keep.
+    RemoveWorktree {
+        repo: templum_git::Repo,
+        name: String,
+        changed: usize,
+        unmerged: u32,
+        ignored: Vec<String>,
+    },
+    /// `merge_worktree`: merges the worktree `name`'s `unmerged` commits into `into`, the branch
+    /// of `repo`'s working tree. Merge, Cancel.
+    MergeWorktree {
+        repo: templum_git::Repo,
+        name: String,
+        unmerged: u32,
+        into: String,
+    },
+}
+
+impl Approved {
+    /// Its two buttons' words: yes, then no.
+    pub(crate) fn buttons(&self) -> (&'static str, &'static str) {
+        match self {
+            Approved::Connect { .. } => ("Allow", "Deny"),
+            Approved::RemoveWorktree { .. } => ("Delete", "Keep"),
+            Approved::MergeWorktree { .. } => ("Merge", "Cancel"),
+        }
+    }
 }
 
 /// A tool call that waits, as `serve` hands it over: where its answer goes.
@@ -70,53 +128,61 @@ pub(super) struct Asked {
 }
 
 impl Wait {
+    /// Not drawn yet, or drawn under TOO_SOON ago: a press on it is ignored.
+    pub fn too_soon(&self, cx: &App) -> bool {
+        self.shown
+            .get()
+            .is_none_or(|at| cx.background_executor().now().duration_since(at) < TOO_SOON)
+    }
+
     /// What it asks the person, on one line: the dot's tooltip.
     pub fn summary(&self) -> String {
         match &self.what {
-            Waiting::Question { text, .. } => text.lines().next().unwrap_or_default().to_string(),
-            Waiting::Connect { to } => format!("connect to {to}"),
+            Waiting::Question { ask, .. } => ask.summary(),
+            Waiting::Allow {
+                then: Approved::Connect { to },
+            } => format!("connect to {to}"),
+            Waiting::Allow {
+                then: Approved::RemoveWorktree { name, .. },
+            } => format!("delete the worktree {name}"),
+            Waiting::Allow {
+                then: Approved::MergeWorktree { name, .. },
+            } => format!("merge {name}"),
             Waiting::Turn { .. } | Waiting::Event { .. } => String::new(),
         }
     }
 }
 
 impl Workspace {
-    /// Keeps `asked` until what it waits for comes, or `seconds` pass; a question without options
-    /// gets its field. The person hears of a request when its block isn't on screen.
+    /// Keeps `asked` until what it waits for comes, or `seconds` pass (None: no deadline); a
+    /// question gets its fields. The person hears of a request when its block isn't on screen.
     pub(super) fn wait(
         &mut self,
         asked: Asked,
         mut what: Waiting,
-        seconds: u64,
+        seconds: Option<u64>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.next_wait += 1;
         let key = self.next_wait;
-        if let Waiting::Question { options, field, .. } = &mut what
-            && options.is_empty()
+        if let Waiting::Question {
+            ask, others, note, ..
+        } = &mut what
         {
-            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Your answer"));
-            let events = cx.subscribe_in(
-                &input,
-                window,
-                move |ws, _, event: &InputEvent, window, cx| {
-                    if let InputEvent::PressEnter { .. } = event {
-                        ws.send_field(key, window, cx);
-                    }
-                },
-            );
-            *field = Some((input, events));
+            (*others, *note) = super::questions::fields(key, ask, window, cx);
         }
         // ponytail: one timer per wait, left to run out once it is answered (it then finds
-        // nothing); a call waits an hour at most.
-        cx.spawn(async move |ws, cx| {
-            cx.background_executor()
-                .timer(Duration::from_secs(seconds))
-                .await;
-            ws.update(cx, |ws, cx| ws.expire(key, seconds, cx)).ok();
-        })
-        .detach();
+        // nothing); a call waits an hour at most, a question a day.
+        if let Some(seconds) = seconds {
+            cx.spawn(async move |ws, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_secs(seconds))
+                    .await;
+                ws.update(cx, |ws, cx| ws.expire(key, seconds, cx)).ok();
+            })
+            .detach();
+        }
         let wait = Wait {
             key,
             conn: asked.conn,
@@ -124,21 +190,21 @@ impl Workspace {
             reply: asked.reply,
             from: asked.from,
             what,
+            shown: Cell::new(None),
         };
         let looks = matches!(
             wait.what,
             Waiting::Event {
-                event: Event::CommandFinished | Event::Attention,
+                event: Event::CommandFinished | Event::Output | Event::Attention,
                 ..
             }
         );
-        if matches!(
-            wait.what,
-            Waiting::Question { .. } | Waiting::Connect { .. }
-        ) {
+        if matches!(wait.what, Waiting::Question { .. } | Waiting::Allow { .. }) {
             self.tell_asking(&wait, window, cx);
-            // Its block waits for its person now.
-            self.needs_you(&wait.from, Some(&wait.summary()), true, cx);
+            self.chime(cx);
+            // Its block waits for its person now. The agent that handed it a task hears nothing:
+            // the person sees the balloon, and that agent can't answer it.
+            self.needs_you(&wait.from, Some(&wait.summary()), false, cx);
         }
         self.waits.push(wait);
         if looks {
@@ -147,13 +213,17 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Answers the wait `key`, once: it is gone after. False when it already was.
+    /// Answers the wait `key`, once: it is gone after. False when it already was. A question
+    /// whose call was cancelled goes without an answer: MCP sends none to a cancelled call.
     pub(super) fn answer(&mut self, key: u64, reply: Reply, cx: &mut Context<Self>) -> bool {
         let Some(i) = self.waits.iter().position(|w| w.key == key) else {
             return false;
         };
         let wait = self.waits.remove(i);
-        let _ = wait.reply.send(tools::tool_result(&wait.id, &reply));
+        self.unwatch(&wait);
+        if !matches!(wait.what, Waiting::Question { stopped: true, .. }) {
+            let _ = wait.reply.send(tools::tool_result(&wait.id, &reply));
+        }
         cx.notify();
         true
     }
@@ -171,12 +241,21 @@ impl Workspace {
             tools::tail(&lines, tools::MAX_TEXT).to_string()
         };
         let reply = match &wait.what {
-            Waiting::Question { .. } | Waiting::Connect { .. } => Reply::err(format!(
+            Waiting::Question { .. } | Waiting::Allow { .. } => Reply::err(format!(
                 "No one answered within {seconds} seconds; the request was withdrawn."
             )),
             Waiting::Turn { of, uid } => Reply::err(format!(
                 "No answer from {uid} within {seconds} seconds; it may still be working \
                  (wait_for_idle(\"{uid}\") waits again). The last lines of its screen:\n{}",
+                screen(of)
+            )),
+            Waiting::Event {
+                of,
+                uid,
+                watch: Some((_, pattern)),
+                ..
+            } => Reply::err(format!(
+                "No line matching \"{pattern}\" in {uid} within {seconds} seconds. Its last lines:\n{}",
                 screen(of)
             )),
             Waiting::Event { of, uid, event, .. } => Reply::err(format!(
@@ -189,9 +268,27 @@ impl Workspace {
     }
 
     /// MCP's `notifications/cancelled` for the call `id` of connection `conn`: dropped, with no
-    /// answer (the client wants none).
+    /// answer (the client wants none). A question stays, its answer to be typed into its
+    /// terminal (docs/specs/ask-user.md, When the client stops waiting).
     pub(super) fn cancel(&mut self, conn: u64, id: &Value, cx: &mut Context<Self>) {
-        self.waits.retain(|w| w.conn != conn || w.id != *id);
+        let gone: Vec<Wait> = self
+            .waits
+            .extract_if(.., |w| {
+                if w.conn != conn || w.id != *id {
+                    return false;
+                }
+                match &mut w.what {
+                    Waiting::Question { stopped, .. } => {
+                        *stopped = true;
+                        false
+                    }
+                    _ => true,
+                }
+            })
+            .collect();
+        for wait in &gone {
+            self.unwatch(wait);
+        }
         cx.notify();
     }
 
@@ -205,8 +302,25 @@ impl Workspace {
     /// The connection `conn` ended (its agent quit, its command exited): what it waited for has
     /// no one to answer.
     pub(super) fn closed(&mut self, conn: u64, cx: &mut Context<Self>) {
-        self.waits.retain(|w| w.conn != conn);
+        let gone: Vec<Wait> = self.waits.extract_if(.., |w| w.conn == conn).collect();
+        for wait in &gone {
+            self.unwatch(wait);
+        }
         cx.notify();
+    }
+
+    /// A wait ends, however it ends: the watch it set on its terminal goes, or the terminal's
+    /// reader thread would keep its lines for good.
+    fn unwatch(&self, wait: &Wait) {
+        if let Waiting::Event {
+            of,
+            watch: Some((id, _)),
+            ..
+        } = &wait.what
+            && let Some(pane) = self.pane(of)
+        {
+            pane.term.unwatch(*id);
+        }
     }
 
     /// Each frame: a wait whose block is gone (closed, its shell exited, its workspace stopped)
@@ -224,13 +338,16 @@ impl Workspace {
 
     /// Why `wait` can't be answered any more, if so.
     fn orphaned(&self, wait: &Wait) -> Option<Reply> {
-        if self.caller(&wait.from).is_none() {
+        // The Templum Agent asks from no block.
+        if wait.from != templum_agent::ASKER && self.caller(&wait.from).is_none() {
             return Some(Reply::err(
                 "Your block was closed; the request was withdrawn.",
             ));
         }
         match &wait.what {
-            Waiting::Connect { to } if !self.uid_taken(to) => Some(Reply::err(format!(
+            Waiting::Allow {
+                then: Approved::Connect { to },
+            } if !self.uid_taken(to) => Some(Reply::err(format!(
                 "{to} was closed; the request was withdrawn."
             ))),
             Waiting::Turn { of, uid } if self.pane(of).is_none() => {
@@ -240,45 +357,9 @@ impl Workspace {
                 Some(Reply::err(format!("{uid} was closed while you waited.")))
             }
             Waiting::Question { .. }
-            | Waiting::Connect { .. }
+            | Waiting::Allow { .. }
             | Waiting::Turn { .. }
             | Waiting::Event { .. } => None,
-        }
-    }
-
-    /// The person's answer to the question `key`: an option, or what they typed. The keyboard
-    /// goes back to the canvas when the question's field had it.
-    pub(crate) fn answer_question(
-        &mut self,
-        key: u64,
-        text: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let typing = self
-            .waits
-            .iter()
-            .any(|w| w.key == key && field_focused(w, window, cx));
-        if self.answer(key, Reply::ok(text), cx) && typing {
-            window.focus(&self.focus_handle, cx);
-        }
-    }
-
-    /// Send, or Enter in a question's field: its text answers, unless it is blank.
-    pub(crate) fn send_field(&mut self, key: u64, window: &mut Window, cx: &mut Context<Self>) {
-        let typed = self
-            .waits
-            .iter()
-            .find(|w| w.key == key)
-            .and_then(|w| match &w.what {
-                Waiting::Question {
-                    field: Some((input, _)),
-                    ..
-                } => Some(input.read(cx).value().to_string()),
-                _ => None,
-            });
-        if let Some(text) = typed.filter(|t| !t.trim().is_empty()) {
-            self.answer_question(key, text, window, cx);
         }
     }
 
@@ -303,53 +384,117 @@ impl Workspace {
         let asked = self
             .waits
             .iter()
-            .any(|w| w.from == from && matches!(&w.what, Waiting::Connect { to } if to == block));
+            .any(|w| {
+                w.from == from
+                    && matches!(&w.what, Waiting::Allow { then: Approved::Connect { to } } if to == block)
+            });
         if asked {
             return Outcome::Now(Reply::err(format!(
                 "You already asked to connect to {block}; the person hasn't answered yet."
             )));
         }
         Outcome::Wait(
-            Waiting::Connect {
-                to: block.to_string(),
-            },
-            timeout,
+            Box::new(Waiting::Allow {
+                then: Approved::Connect {
+                    to: block.to_string(),
+                },
+            }),
+            Some(timeout),
         )
     }
 
-    /// The person's Allow (`allow`) or Deny to the request to connect `key`. Allow wires the two
-    /// blocks, a step Ctrl+Z takes back, as wiring by hand is.
-    pub(crate) fn answer_connect(&mut self, key: u64, allow: bool, cx: &mut Context<Self>) {
-        let Some(wait) = self.waits.iter().find(|w| w.key == key) else {
+    /// The person's yes (`yes`) or no to the request `key`: Allow wires the two blocks, a step
+    /// Ctrl+Z takes back, as wiring by hand is; Delete and Merge run on the background executor,
+    /// the request gone from the balloon at once, and answer once git is done.
+    pub(crate) fn answer_allow(&mut self, key: u64, yes: bool, cx: &mut Context<Self>) {
+        let Some(at) = self.waits.iter().position(|w| w.key == key) else {
             return;
         };
-        let Waiting::Connect { to } = &wait.what else {
+        let Waiting::Allow { then } = &self.waits[at].what else {
             return;
         };
-        let to = to.clone();
-        let reply = match self.caller(&wait.from) {
-            _ if !allow => Reply::err(format!("The person didn't connect you to {to}.")),
-            None => Reply::err("Your block was closed; the request was withdrawn."),
-            Some((space_id, me)) => {
-                let other = self
-                    .space_named(&space_id)
-                    .and_then(|space| space.block_by_uid(&to));
-                match other {
-                    Some(other) => {
-                        self.in_space(&space_id, |ws| ws.connect(me, other, cx));
-                        Reply::ok(format!("Connected to {to}."))
-                    }
-                    None => Reply::err(format!("{to} isn't in your workspace any more.")),
-                }
+        let from = self.waits[at].from.clone();
+        let job = match (yes, then) {
+            (false, Approved::Connect { to }) => Err(Reply::err(format!(
+                "The person didn't connect you to {to}."
+            ))),
+            (false, _) => Err(Reply::err("The person said no.")),
+            (true, Approved::Connect { to }) => {
+                let to = to.clone();
+                Err(self.connect_for(&from, &to, cx))
             }
+            (true, then) => match self.worktree_still(&from, then) {
+                Err(refused) => Err(refused),
+                Ok(()) => match then {
+                    Approved::RemoveWorktree { repo, name, .. } => {
+                        Ok(self.worktree_remove(repo.clone(), name.clone(), true, cx))
+                    }
+                    Approved::MergeWorktree {
+                        repo,
+                        name,
+                        unmerged,
+                        into,
+                    } => Ok(self.worktree_merge(
+                        repo.clone(),
+                        name.clone(),
+                        into.clone(),
+                        *unmerged,
+                        cx,
+                    )),
+                    // Answered by the arm above.
+                    Approved::Connect { .. } => Err(Reply::err("Connected.")),
+                },
+            },
         };
-        self.answer(key, reply, cx);
+        self.seen_asking(&from);
+        match job {
+            Err(reply) => {
+                self.answer(key, reply, cx);
+            }
+            Ok(job) => {
+                let Some(at) = self.waits.iter().position(|w| w.key == key) else {
+                    return;
+                };
+                let wait = self.waits.remove(at);
+                cx.notify();
+                cx.spawn(async move |_, _| {
+                    let reply = job.await;
+                    let _ = wait.reply.send(tools::tool_result(&wait.id, &reply));
+                })
+                .detach();
+            }
+        }
     }
 
-    /// "*Claude Code* wants to connect to *Dev server*": a request to connect as the person reads
-    /// it, the blocks by their titles.
-    pub(crate) fn connect_line(&self, wait: &Wait, cx: &App) -> String {
-        let Waiting::Connect { to } = &wait.what else {
+    /// `connect`'s Allow: the terminal `from`'s block wired to the block `to` of its workspace.
+    fn connect_for(&mut self, from: &str, to: &str, cx: &mut Context<Self>) -> Reply {
+        let Some((space_id, me)) = self.caller(from) else {
+            return Reply::err("Your block was closed; the request was withdrawn.");
+        };
+        let other = self
+            .space_named(&space_id)
+            .and_then(|space| space.block_by_uid(to));
+        match other {
+            Some(other) => {
+                self.in_space(&space_id, |ws| ws.connect(me, other, cx));
+                Reply::ok(format!("Connected to {to}."))
+            }
+            None => Reply::err(format!("{to} isn't in your workspace any more.")),
+        }
+    }
+
+    /// The person answered a request of the terminal `from`: they saw its block, whose alert
+    /// (`tell_asking`'s, or any other) goes, as seeing a block clears its alert.
+    pub(super) fn seen_asking(&mut self, from: &str) {
+        if let Some(pane) = self.pane_mut(from) {
+            pane.alert = None;
+        }
+    }
+
+    /// "*Claude Code* wants to connect to *Dev server*": a request as the person reads it, the
+    /// blocks by their titles (docs/specs/agent-tools.md, Asking the person).
+    pub(crate) fn allow_line(&self, wait: &Wait, cx: &App) -> String {
+        let Waiting::Allow { then } = &wait.what else {
             return String::new();
         };
         let Some((space_id, me)) = self.caller(&wait.from) else {
@@ -358,19 +503,62 @@ impl Workspace {
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let title = |id| self.about(&space.blocks[&id], cx).1;
         let from = title(me);
-        let target = space.block_by_uid(to).map_or_else(|| to.clone(), title);
-        format!("{from} wants to connect to {target}")
+        match then {
+            Approved::Connect { to } => {
+                let target = space.block_by_uid(to).map_or_else(|| to.clone(), title);
+                format!("{from} wants to connect to {target}")
+            }
+            Approved::RemoveWorktree {
+                name,
+                changed,
+                unmerged,
+                ignored,
+                ..
+            } => {
+                let ignored = match ignored.as_slice() {
+                    [] => String::new(),
+                    files => format!(
+                        ", and files git ignores: {}",
+                        super::worktrees::listed(files)
+                    ),
+                };
+                format!(
+                    "{from} wants to delete the worktree {name}, with {changed} changed files and \
+                     {unmerged} commits not merged{ignored}."
+                )
+            }
+            Approved::MergeWorktree {
+                name,
+                unmerged,
+                into,
+                ..
+            } => format!("{from} wants to merge {name} ({unmerged} commits) into {into}."),
+        }
     }
 
     /// What the agent in terminal `terminal` asks the person, oldest first: the first, and how
     /// many.
     pub(crate) fn balloon(&self, terminal: &str) -> Option<(&Wait, usize)> {
         let mut asking = self.waits.iter().filter(|w| {
-            w.from == terminal
-                && matches!(w.what, Waiting::Question { .. } | Waiting::Connect { .. })
+            w.from == terminal && matches!(w.what, Waiting::Question { .. } | Waiting::Allow { .. })
         });
         let first = asking.next()?;
         Some((first, 1 + asking.count()))
+    }
+
+    /// The terminal whose dialog has the keyboard: one of its fields has it, or its block does
+    /// (focused, the workspace holding the keyboard), its oldest request is a question, and Esc
+    /// didn't give the keyboard back.
+    pub(crate) fn balloon_keys(&self, window: &Window, cx: &App) -> Option<&str> {
+        if let Some(terminal) = self.balloon_typing(window, cx) {
+            return Some(terminal);
+        }
+        if !self.canvas_has_keys(window) {
+            return None;
+        }
+        let pane = self.space.focused_terminal()?;
+        let (wait, _) = self.balloon(pane.term.id())?;
+        matches!(wait.what, Waiting::Question { away: false, .. }).then_some(wait.from.as_str())
     }
 
     /// The terminal whose balloon's field has the keyboard, if one does: the keys are the field's.
@@ -381,15 +569,35 @@ impl Workspace {
             .map(|w| w.from.as_str())
     }
 
-    /// The person isn't looking at the asking block (it is in another workspace, outside the
-    /// view, or hidden by grid mode): a notification says what it asks; clicking it shows the
-    /// block.
-    fn tell_asking(&self, wait: &Wait, window: &mut Window, cx: &mut Context<Self>) {
+    /// A request's short sound, unless `[connections] sound` is off or one played under
+    /// `chime::GAP` ago.
+    pub(super) fn chime(&mut self, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        let recent = self
+            .last_chime
+            .is_some_and(|at| now.duration_since(at) < crate::chime::GAP);
+        if self.config.connections.sound && !recent {
+            self.last_chime = Some(now);
+            crate::chime::play();
+        }
+    }
+
+    /// The person doesn't see the asking block's dialog (the block is in another workspace,
+    /// outside the view, hidden by grid mode, or too small on screen for its dialog to be drawn,
+    /// or the window is in the background): a notification says what it asks, clicking it shows
+    /// the block; and the block gets an alert, as a bell gives one (its workspace's dot,
+    /// `go_to_waiting`).
+    fn tell_asking(&mut self, wait: &Wait, window: &mut Window, cx: &mut Context<Self>) {
         let Some((space_id, me)) = self.caller(&wait.from) else {
             return;
         };
-        let shown = space_id == self.space.id
+        // As `block::render` draws it: in full, or worked in.
+        let full = self.space.focused == Some(me)
+            || templum_canvas::level(self.cell.font_size, self.space.rest) == Level::Full;
+        let shown = window.is_window_active()
+            && space_id == self.space.id
             && self.space.shown(me)
+            && full
             && self
                 .space
                 .canvas
@@ -401,17 +609,39 @@ impl Workspace {
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let (_, title, _) = self.about(&space.blocks[&me], cx);
         let text = match &wait.what {
-            Waiting::Question { text, .. } => format!("Asks you: {text}"),
-            Waiting::Connect { .. } => self.connect_line(wait, cx),
+            Waiting::Question { ask, .. } if ask.plan.is_some() => {
+                format!("Asks you to approve a plan: {}", ask.summary())
+            }
+            Waiting::Question { ask, .. } => match ask.questions.len() - 1 {
+                0 => format!("Asks you: {}", ask.summary()),
+                more => format!("Asks you: {} (and {more} more)", ask.summary()),
+            },
+            Waiting::Allow { .. } => self.allow_line(wait, cx),
             Waiting::Turn { .. } | Waiting::Event { .. } => return,
         };
+        if let Some(pane) = self.pane_mut(&wait.from) {
+            pane.alert = Some(Alert::Attention(Some(text.clone())));
+        }
         self.notify_from(space_id, me, title, text, window, cx);
     }
 
     /// `wait_for` from the terminal `from`: `event` in the terminal `block`. `idle` is
     /// `wait_for_idle`; `needs_you` answers at once when its agent, or its balloon, already asks
-    /// its person; the others wait for the next command or alert.
-    pub(super) fn wait_for(&self, from: &str, block: &str, event: Event, timeout: u64) -> Outcome {
+    /// its person; `output` waits for a line matching `pattern`, at once when one of its last
+    /// `lines` does, or with `wait` false keeps watching while the caller works, its match typed
+    /// back; the others wait for the next command or alert.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn wait_for(
+        &mut self,
+        from: &str,
+        block: &str,
+        event: Event,
+        timeout: u64,
+        pattern: Option<String>,
+        lines: usize,
+        wait: bool,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
         if event == Event::Idle {
             return self.wait_for_idle(from, block, timeout);
         }
@@ -424,7 +654,26 @@ impl Workspace {
         if to == me {
             return Outcome::Now(Reply::err("This block is yours: wait for another block."));
         }
-        let Some(pane) = space.terminal(to) else {
+        let at = (space_id.as_str(), to);
+        self.event_wait(from, at, block, event, timeout, pattern, lines, wait, cx)
+    }
+
+    /// The body of `wait_for` but `idle`, for any asker `by` (a terminal's `TEMPLUM_TERMINAL`, or
+    /// the Templum Agent's word): `event` in the terminal block `to` of `space`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn event_wait(
+        &mut self,
+        by: &str,
+        (space_id, to): (&str, BlockId),
+        block: &str,
+        event: Event,
+        timeout: u64,
+        pattern: Option<String>,
+        lines: usize,
+        wait: bool,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
+        let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
         let of = pane.term.id().to_string();
@@ -437,14 +686,58 @@ impl Workspace {
                 return Outcome::Now(waiting_for_person(block, what.as_deref(), &pane.tail()));
             }
         }
+        let watch = match pattern.filter(|_| event == Event::Output) {
+            Some(text) => {
+                let pattern = match Pattern::new(&text) {
+                    Ok(pattern) => pattern,
+                    Err(refused) => return Outcome::Now(Reply::err(refused)),
+                };
+                // Set before looking back: a line printed meanwhile is seen.
+                let id = self.watch_add(&of, pattern.clone()).expect("its pane");
+                let back = pane.term.shared().lines(lines.min(tools::MAX_LINES));
+                if let Some(line) = back
+                    .iter()
+                    .filter(|_| lines > 0)
+                    .find(|l| pattern.is_match(l))
+                {
+                    pane.term.unwatch(id);
+                    return Outcome::Now(printed(block, &text, line, pane));
+                }
+                Some((id, text))
+            }
+            None => None,
+        };
+        if let Some((watch, pattern)) = watch.clone().filter(|_| !wait) {
+            let until = cx.background_executor().now() + Duration::from_secs(timeout);
+            let watch = super::schedules::Watch {
+                id: 0,
+                by: by.to_string(),
+                of,
+                uid: block.to_string(),
+                pattern: pattern.clone(),
+                watch,
+                timeout,
+                until,
+            };
+            let id = self.watch_keep(watch, cx);
+            let back = if by == templum_agent::ASKER {
+                "comes back into this chat"
+            } else {
+                "is typed into your terminal"
+            };
+            return Outcome::Now(Reply::ok(format!(
+                "Watching {block} for \"{pattern}\" as w{id}: a match {back}."
+            )));
+        }
         let status = pane.term.status();
         let what = Waiting::Event {
             of,
             uid: block.to_string(),
             event,
             since: (status.finished, status.attention),
+            watch,
         };
-        Outcome::Wait(what, timeout)
+        Outcome::Wait(Box::new(what), Some(timeout))
     }
 
     /// The block of the terminal `terminal` waits for its person (its agent asks for `what`, or
@@ -523,6 +816,7 @@ impl Workspace {
             uid,
             event,
             since,
+            watch,
         } = &wait.what
         else {
             return false;
@@ -547,6 +841,13 @@ impl Workspace {
                 }
                 Reply::ok(text)
             }
+            Event::Output => match watch
+                .as_ref()
+                .and_then(|(id, p)| Some((pane.term.hit(*id)?, p)))
+            {
+                Some((line, pattern)) => printed(uid, pattern, &line, pane),
+                None => return true,
+            },
             Event::Attention if status.attention > since.1 => Reply::ok(match status.message {
                 Some(message) => format!("{uid} asks for attention: {message}"),
                 None => format!("{uid} rang its bell."),
@@ -558,13 +859,25 @@ impl Workspace {
     }
 }
 
-/// The question's field has the keyboard.
-fn field_focused(wait: &Wait, window: &Window, cx: &App) -> bool {
-    matches!(
-        &wait.what,
-        Waiting::Question { field: Some((input, _)), .. }
-            if input.read(cx).focus_handle(cx).is_focused(window)
-    )
+/// One of the question's fields has the keyboard.
+pub(super) fn field_focused(wait: &Wait, window: &Window, cx: &App) -> bool {
+    let Waiting::Question { others, note, .. } = &wait.what else {
+        return false;
+    };
+    others
+        .iter()
+        .chain(note)
+        .any(|(input, _)| input.read(cx).focus_handle(cx).is_focused(window))
+}
+
+/// How long a question waits, seconds: the shorter of the call's `timeout` and the setting's
+/// minutes when not 0; with neither, until it is answered (None).
+pub(super) fn deadline(call: Option<u64>, setting_minutes: u64) -> Option<u64> {
+    let setting = (setting_minutes > 0).then_some(setting_minutes * 60);
+    match (call, setting) {
+        (Some(call), Some(setting)) => Some(call.min(setting)),
+        (call, setting) => call.or(setting),
+    }
 }
 
 /// `wait_for(needs_you)`'s answer: block `uid` waits for its person, for `what` when it says,
@@ -586,6 +899,17 @@ fn awaited(event: Event) -> &'static str {
         Event::Idle => "end of its turn",
         Event::NeedsYou => "wait for its person",
         Event::CommandFinished => "finished command",
+        Event::Output => "line matching its pattern",
         Event::Attention => "call for attention",
     }
+}
+
+/// The answer to a `wait_for` with `pattern`: the block `uid` printed `line`, and its last lines.
+fn printed(uid: &str, pattern: &str, line: &str, pane: &Pane) -> Reply {
+    let last = pane.term.shared().lines(PRINTED_LINES).join("\n");
+    Reply::ok(format!(
+        "{uid} printed a line matching \"{pattern}\":\n{}\nIts last lines:\n{}",
+        tools::tail(line, tools::MAX_TEXT),
+        tools::tail(&last, tools::MAX_TEXT)
+    ))
 }

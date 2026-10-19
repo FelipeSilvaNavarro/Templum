@@ -579,3 +579,156 @@ fn a_tree_is_ended_even_when_it_ignores_hangup() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// The process among `parent`'s children whose arguments end with `last`, by sysinfo.
+#[cfg(unix)]
+fn child_running(parent: u32, last: &str) -> u32 {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        ProcessRefreshKind::new().with_cmd(UpdateKind::Always),
+    );
+    system
+        .processes()
+        .iter()
+        .find(|(_, p)| {
+            p.parent() == Some(Pid::from_u32(parent))
+                && p.cmd().last().is_some_and(|a| a.to_string_lossy() == last)
+        })
+        .map(|(pid, _)| pid.as_u32())
+        .unwrap_or_else(|| panic!("no child of {parent} ends with {last}"))
+}
+
+/// `pid` runs, and isn't a zombie.
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), ProcessRefreshKind::new());
+    system
+        .process(pid)
+        .is_some_and(|p| p.status() != ProcessStatus::Zombie)
+}
+
+/// The processes carrying `TEMPLUM_TERMINAL=id` whose arguments end with `last`.
+#[cfg(unix)]
+fn carriers(id: &str, last: &str) -> Vec<templum_terminal::Running> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        ProcessRefreshKind::new()
+            .with_cmd(UpdateKind::Always)
+            .with_environ(UpdateKind::Always),
+    );
+    let variable = format!("TEMPLUM_TERMINAL={id}");
+    system
+        .processes()
+        .values()
+        .filter(|p| {
+            p.environ().iter().any(|v| *v == *variable)
+                && p.cmd().last().is_some_and(|a| a.to_string_lossy() == last)
+        })
+        .map(|p| templum_terminal::Running {
+            pid: p.pid().as_u32(),
+            started: p.start_time(),
+        })
+        .collect()
+}
+
+/// What `stop_agent` ends: the program in front, what runs below it, and what a tool's shell left
+/// in a session of its own (as Claude Code's Bash tool does) carrying the terminal's variable,
+/// started after the program; never the shell, a job the person started from it, nor a daemon
+/// started before the program (an ssh-agent from the shell's startup files).
+#[cfg(unix)]
+#[test]
+fn strays_are_the_program_what_it_left_in_a_session_of_its_own_and_never_the_shell() {
+    let dir = tempfile::tempdir().unwrap();
+    let flag = dir.path().join("f");
+    // Unique: only what this test started carries it.
+    let id = format!("t-strays-{}", std::process::id());
+    // `setsid` through Perl: macOS has no `setsid` command.
+    const SETSID: &str = "perl -MPOSIX -e \"setsid; exec @ARGV\"";
+    // Seconds apart: start times are whole seconds.
+    let script = format!(
+        "({SETSID} sleep 37 &); sleep 31 & sleep 1.2; \
+         sh -c 'sleep 1.2; ({SETSID} sh -c \"sleep 2 && touch {}\" &); exec sleep 33' & wait",
+        flag.display()
+    );
+    let mut shell = std::process::Command::new("sh")
+        .args(["-c", &script])
+        .env("TEMPLUM_TERMINAL", &id)
+        .spawn()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(2800));
+    let program = child_running(shell.id(), "33");
+    let person = child_running(shell.id(), "31");
+    let daemon = carriers(&id, "37");
+    assert_eq!(daemon.len(), 1, "the daemon started");
+    let found = templum_terminal::strays(&id, &[shell.id()], Some(program), None);
+    let pids: Vec<u32> = found.iter().map(|r| r.pid).collect();
+    assert!(pids.contains(&program), "{pids:?}");
+    assert!(
+        !pids.contains(&shell.id()) && !pids.contains(&person),
+        "{pids:?}"
+    );
+    assert!(
+        !pids.contains(&daemon[0].pid),
+        "started before the program: {pids:?}"
+    );
+    assert!(pids.len() >= 3, "the orphan sh and its sleep: {pids:?}");
+    templum_terminal::terminate(&found);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(!flag.exists(), "the orphan wrote its file");
+    assert!(process_alive(person), "the person's job stays");
+    assert!(process_alive(daemon[0].pid), "the daemon stays");
+    // Without a program, only what started after `since`: here nothing.
+    let since = daemon[0].started;
+    assert!(templum_terminal::strays(&id, &[shell.id()], None, Some(since)).is_empty());
+    templum_terminal::kill_left(&daemon);
+    templum_terminal::kill_left(&templum_terminal::tree(&[shell.id()]));
+    let _ = shell.wait();
+}
+
+#[test]
+fn the_shell_is_logins_child_when_the_terminal_runs_login() {
+    let children = [(11, "/bin/zsh".to_string()), (12, "/bin/sleep".to_string())];
+    assert_eq!(
+        templum_terminal::shells_of(10, "login", "/usr/bin/login", &children),
+        [10, 11]
+    );
+    assert_eq!(
+        templum_terminal::shells_of(10, "zsh", "/bin/zsh", &children[1..]),
+        [10]
+    );
+}
+
+/// Git for Windows' `bin\bash.exe` only starts the real shell, `usr\bin\bash.exe`: both are the
+/// terminal's shell, never what `stop_agent` ends. A bash run directly (MSYS2's) starts none.
+#[test]
+fn the_shell_is_the_real_bash_git_bash_starts() {
+    let real = (11, "C:\\Program Files\\Git\\usr\\bin\\bash.exe".to_string());
+    let wrapper = "C:\\Program Files\\Git\\bin\\bash.exe";
+    assert_eq!(
+        templum_terminal::shells_of(10, "bash.exe", wrapper, std::slice::from_ref(&real)),
+        [10, 11]
+    );
+    let sh = "C:\\Program Files\\Git\\bin\\SH.EXE";
+    assert_eq!(
+        templum_terminal::shells_of(10, "sh.exe", sh, std::slice::from_ref(&real)),
+        [10, 11]
+    );
+    let agent = (12, "C:\\Users\\u\\.local\\bin\\claude.exe".to_string());
+    assert_eq!(
+        templum_terminal::shells_of(11, "bash.exe", &real.1, &[agent]),
+        [11]
+    );
+    let msys = "C:\\msys64\\usr\\bin\\bash.exe";
+    let nested = (12, msys.to_string());
+    assert_eq!(
+        templum_terminal::shells_of(10, "bash.exe", msys, &[nested]),
+        [10]
+    );
+}

@@ -8,12 +8,14 @@ use templum_canvas::Wire;
 
 use super::bus::{after, answered, call, call_later, event, me, screen_with};
 #[cfg(unix)]
-use super::bus::{result_of, screen_until};
+use super::bus::{bus_note, result_of, screen_until};
 use super::*;
 
 /// Two terminals side by side and wired: mine at (40, 100) and theirs at (900, 100), 700 × 300
 /// each, theirs running Codex as far as Templum knows; the camera at 100% on the origin.
-fn two_agents(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>, BlockId, BlockId) {
+pub(super) fn two_agents(
+    cx: &mut TestAppContext,
+) -> (AnyWindowHandle, Entity<Workspace>, BlockId, BlockId) {
     agents_running(cx, None)
 }
 
@@ -104,7 +106,9 @@ pub(super) fn snapshot(
     .unwrap();
     let done = vec![(space, vec![(id, found)], saved, None)];
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.snapshot_done(done, None, None, window, cx))
+        ws.update(cx, |ws, cx| {
+            ws.snapshot_done(done, None, None, None, window, cx)
+        })
     })
     .unwrap();
 }
@@ -1049,11 +1053,11 @@ fn a_dialog_its_asker_waits_for_isnt_typed_too(cx: &mut TestAppContext) {
     assert!(notices(&ws, cx).is_empty(), "{:?}", notices(&ws, cx));
 }
 
-/// A task's agent asks its person through Templum (`ask_user`): its balloon asks, and the agent
-/// that handed it the task hears so, as of a dialog.
+/// A task's agent asks its person through Templum (`ask_user`): its balloon asks, which the person
+/// sees and the agent that handed it the task can't answer: that agent hears nothing.
 #[cfg(unix)]
 #[gpui_kit::test]
-fn a_balloon_in_a_task_is_told(cx: &mut TestAppContext) {
+fn a_balloon_in_a_task_isnt_told(cx: &mut TestAppContext) {
     let (handle, ws, mine, theirs) = two_agents(cx);
     let (terminal, _) = me(&ws, cx, mine);
     let (worker, them) = me(&ws, cx, theirs);
@@ -1081,21 +1085,16 @@ fn a_balloon_in_a_task_is_told(cx: &mut TestAppContext) {
     let _asked = call_later(handle, &ws, cx, &worker, 2, "ask_user", asked);
     after(cx, 300);
     let told = notices(&ws, cx);
-    assert!(
-        told.len() == 1
-            && told[0].1.starts_with("[task t1 from ")
-            && told[0].1.contains(&format!(
-                "({them}) waits for its person: Ship it?] Its screen is in the pasted text.\n"
-            )),
-        "{told:?}"
-    );
+    assert!(told.is_empty(), "{told:?}");
+    let shown = ws.read_with(cx, |ws, _| ws.balloon(&worker).is_some());
+    assert!(shown, "the person sees it");
 }
 
-/// A task handed over without `wait` gives no answer within its timeout: its asker hears it
-/// failed, and later its end too. One it waits for hears its timeout from its call.
+/// A task handed over without `wait` gives no answer within its timeout: it may still work, so its
+/// asker hears nothing then, only its end later. One it waits for hears its timeout from its call.
 #[cfg(unix)]
 #[gpui_kit::test]
-fn a_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) {
+fn a_task_past_its_timeout_comes_back_only_at_its_end(cx: &mut TestAppContext) {
     let (handle, ws, mine, theirs) = two_agents(cx);
     let (terminal, _) = me(&ws, cx, mine);
     let (worker, them) = me(&ws, cx, theirs);
@@ -1116,17 +1115,7 @@ fn a_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) {
     screen_with(&ws, cx, theirs, "think");
     after(cx, 2000);
     after(cx, 1000);
-    let t = told(cx);
-    assert!(
-        t.len() == 1
-            && t[0].starts_with("[task t1 from ")
-            && t[0].contains(": failed in ")
-            && t[0].contains(&format!(
-                "] What happened is in the pasted text.\nNo answer from {them} within 2 seconds; it may still be \
-                 working, and its end comes back too."
-            )),
-        "{t:?}"
-    );
+    assert!(told(cx).is_empty(), "{:?}", told(cx));
     ws.read_with(cx, |ws, _| {
         assert_eq!(
             ws.space
@@ -1150,7 +1139,7 @@ fn a_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) {
     after(cx, 1000);
     let t = told(cx);
     assert!(
-        t.len() == 2 && t[1].contains(": done in ") && t[1].ends_with("\nLate."),
+        t.len() == 1 && t[0].contains(": done in ") && t[0].ends_with("\nLate."),
         "{t:?}"
     );
     // With `wait`: its call says it timed out, and nothing is typed.
@@ -1162,7 +1151,7 @@ fn a_task_past_its_timeout_comes_back_as_failed(cx: &mut TestAppContext) {
     after(cx, 2000);
     assert!(answered(&answers).0, "timed out");
     after(cx, 1000);
-    assert_eq!(told(cx).len(), 2);
+    assert_eq!(told(cx).len(), 1);
 }
 
 /// The agent whose task it is changes it while its agent works: typed at once, under a line naming
@@ -1205,14 +1194,6 @@ fn a_change_from_the_asker_goes_into_its_task(cx: &mut TestAppContext) {
     send(cx, json!({ "event": "stopped", "message": "B" }));
     assert_eq!(answered(&answers), (false, "B".to_string()));
     // Its timeout starts again from the change's.
-    asker(&ws, cx, mine);
-    event(
-        handle,
-        &ws,
-        cx,
-        &terminal,
-        json!({ "event": "needs_you", "message": "Allow Edit?" }),
-    );
     call(
         handle,
         &ws,
@@ -1230,21 +1211,10 @@ fn a_change_from_the_asker_goes_into_its_task(cx: &mut TestAppContext) {
         (failed, text),
         (false, format!("Typed into {them} as a change to task t2."))
     );
-    // Its Enter goes while the test's clock runs: else no Enter, and the task ends untaken.
-    screen_with(&ws, cx, theirs, "count to 9");
-    after(cx, 2000);
-    after(cx, 1000);
-    assert!(
-        notices(&ws, cx).is_empty(),
-        "the first deadline passed quietly"
-    );
-    after(cx, 2000);
-    after(cx, 1000);
-    let told = notices(&ws, cx);
-    assert!(
-        told.len() == 1 && told[0].1.contains("within 5 seconds"),
-        "{told:?}"
-    );
+    ws.read_with(cx, |ws, _| {
+        let handed = ws.space.terminal(theirs).unwrap().handed.as_ref().unwrap();
+        assert!(handed.until >= handed.since + std::time::Duration::from_secs(5));
+    });
     // A spawned agent whose prompt still waits.
     ws.update(cx, |ws, _| {
         let pane = ws.space.terminal_mut(theirs).unwrap();
@@ -2045,7 +2015,10 @@ pub(super) fn prints(
 /// The answer on `answers`, the test's clock running a look at a time: the terminal's own thread
 /// reads what `cat` prints back.
 #[cfg(unix)]
-fn heard(cx: &mut TestAppContext, answers: &std::sync::mpsc::Receiver<String>) -> (bool, String) {
+pub(super) fn heard(
+    cx: &mut TestAppContext,
+    answers: &std::sync::mpsc::Receiver<String>,
+) -> (bool, String) {
     let deadline = Instant::now() + std::time::Duration::from_secs(10);
     loop {
         after(cx, 250);
@@ -2164,6 +2137,119 @@ fn a_wait_for_times_out_goes_with_its_block_and_shows_no_balloon(cx: &mut TestAp
         answered(&closed),
         (true, format!("{them} was closed while you waited."))
     );
+}
+
+/// How many watches the terminal of block `id` has.
+#[cfg(unix)]
+fn watching(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> usize {
+    ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().term.watching())
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn wait_for_a_pattern_answers_on_the_printed_line(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    let answers = call_later(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        7,
+        "wait_for",
+        json!({ "block": them, "pattern": "Ready in \\d+" }),
+    );
+    after(cx, 250);
+    assert!(answers.try_recv().is_err(), "nothing printed yet");
+    assert_eq!(watching(&ws, cx, theirs), 1);
+    prints(&ws, cx, theirs, b"starting\r  Ready in 312 ms\r");
+    let (failed, text) = heard(cx, &answers);
+    assert!(!failed, "{text}");
+    assert!(
+        text.starts_with(&format!(
+            "{them} printed a line matching \"Ready in \\d+\":\n  Ready in 312 ms\nIts last lines:\n"
+        )),
+        "{text}"
+    );
+    assert_eq!(watching(&ws, cx, theirs), 0, "answered, its watch goes");
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn wait_for_a_pattern_with_lines_answers_from_what_is_there(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    prints(&ws, cx, theirs, b"Local: http://localhost:5173\r");
+    screen_until(&ws, cx, theirs, |shown| shown.contains("localhost:5173"));
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "wait_for",
+        json!({ "block": them, "pattern": "Local:", "lines": 20 }),
+    );
+    assert!(
+        !failed && text.contains("Local: http://localhost:5173"),
+        "{text}"
+    );
+    assert_eq!(watching(&ws, cx, theirs), 0);
+    let bad = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "wait_for",
+        json!({ "block": them, "pattern": "(" }),
+    );
+    assert!(
+        bad.0
+            && bad
+                .1
+                .starts_with("\"pattern\" isn't a regular expression: "),
+        "{bad:?}"
+    );
+}
+
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_pattern_wait_leaves_no_watch_behind(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (_, them) = me(&ws, cx, theirs);
+    let never = |timeout: u64| json!({ "block": them, "pattern": "never", "timeout": timeout });
+    // Its timeout.
+    let answers = call_later(handle, &ws, cx, &terminal, 8, "wait_for", never(1));
+    assert_eq!(watching(&ws, cx, theirs), 1);
+    after(cx, 1_100);
+    let (failed, text) = answered(&answers);
+    assert!(
+        failed
+            && text.starts_with(&format!(
+                "No line matching \"never\" in {them} within 1 seconds. Its last lines:\n"
+            )),
+        "{text}"
+    );
+    assert_eq!(watching(&ws, cx, theirs), 0);
+    // Its connection's end.
+    let _answers = call_later(handle, &ws, cx, &terminal, 9, "wait_for", never(60));
+    assert_eq!(watching(&ws, cx, theirs), 1);
+    bus_note(handle, &ws, cx, 9, templum_mcp::bus::CLOSED, json!({}));
+    assert_eq!(watching(&ws, cx, theirs), 0);
+    // Its cancel.
+    let _answers = call_later(handle, &ws, cx, &terminal, 10, "wait_for", never(60));
+    assert_eq!(watching(&ws, cx, theirs), 1);
+    bus_note(
+        handle,
+        &ws,
+        cx,
+        10,
+        "notifications/cancelled",
+        json!({ "requestId": 10 }),
+    );
+    assert_eq!(watching(&ws, cx, theirs), 0);
 }
 
 /// `cat` in block `id` prints `text` back, and the test waits until its screen shows it.
@@ -2402,8 +2488,10 @@ fn a_hooked_agent_gone_still_keeps_its_task_and_says_so(cx: &mut TestAppContext)
     let stuck = Some(AgentState::NeedsYou(Some(STUCK_TEXT.into())));
     assert_eq!(state_of(&ws, cx, theirs), stuck);
     ws.read_with(cx, |ws, _| {
-        let handed = &ws.space.terminal(theirs).unwrap().handed;
-        assert!(handed.is_some(), "its task stays handed over");
+        let pane = ws.space.terminal(theirs).unwrap();
+        assert!(pane.handed.is_some(), "its task stays handed over");
+        // Another wait: an approval written before it is asked again.
+        assert_eq!(pane.dialogs, 1);
     });
     let (failed, text) = answered(&needs_you);
     assert!(!failed && text.contains("it seems stuck"), "{text}");

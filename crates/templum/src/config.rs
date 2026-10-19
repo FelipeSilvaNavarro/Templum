@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
@@ -40,9 +40,55 @@ pub(crate) struct Config {
     pub usage: UsageConfig,
     pub updates: UpdatesConfig,
     pub connections: ConnectionsConfig,
+    pub templum_agent: TemplumAgentConfig,
+    pub canvas: CanvasConfig,
     /// `[agents.<id>]`: changes to one of Templum's AI agents (only what differs), or an agent of
     /// the user's own.
     pub agents: BTreeMap<String, AgentConfig>,
+    /// `[roles.<id>]`: ways to open an agent `spawn_agent` takes by name.
+    pub roles: BTreeMap<String, Role>,
+}
+
+/// A saved way to open an agent (docs/specs/agent-tools.md, Roles): which agent, its model and
+/// effort, words for its command line (its own flags: the tools it may use), and instructions
+/// typed with its prompt.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct Role {
+    /// An id of Settings ▸ Agents, an account too.
+    pub agent: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// One line, typed after its model and effort, as an `[agents]` command is.
+    pub args: Option<String>,
+    pub instructions: Option<String>,
+}
+
+impl Role {
+    /// `spawn` opened as the role `id`: the call's own agent, model and effort win over the
+    /// role's; its instructions go with the prompt, which they need; its words ride along.
+    pub fn spawn(
+        &self,
+        id: &str,
+        mut spawn: templum_mcp::tools::Spawn,
+    ) -> Result<templum_mcp::tools::Spawn, String> {
+        spawn.agent = spawn.agent.or_else(|| Some(self.agent.clone()));
+        spawn.model = spawn.model.or_else(|| self.model.clone());
+        spawn.effort = spawn.effort.or_else(|| self.effort.clone());
+        let instructions = self.instructions.as_deref().map(str::trim);
+        if let Some(instructions) = instructions.filter(|i| !i.is_empty()) {
+            let Some(prompt) = spawn.prompt.as_deref() else {
+                return Err(format!(
+                    "The role {id}'s instructions go with a prompt: give one."
+                ));
+            };
+            spawn.prompt = Some(format!(
+                "Your role, {id}:\n{instructions}\n\nYour task:\n{prompt}"
+            ));
+        }
+        spawn.args = self.args.clone().filter(|a| !a.trim().is_empty());
+        Ok(spawn)
+    }
 }
 
 /// One AI agent's settings. For Templum's own, each missing key keeps its default; one of the
@@ -63,6 +109,12 @@ pub(crate) struct AgentConfig {
     pub generate: Option<String>,
     /// Its models for commit messages, the recommended one first.
     pub models: Option<Vec<String>>,
+    /// An account: the agent it is another folder of (docs/specs/accounts.md).
+    pub of: Option<String>,
+    /// An account's folder; missing: `<data>/accounts/<id>`.
+    pub folder: Option<String>,
+    /// An account's items shared, by key: the agent's id or another account of it.
+    pub share: Option<BTreeMap<String, String>>,
 }
 
 /// Letters, digits, `-` and `_`: an agent's id is a key in the saved canvas and in this file.
@@ -273,18 +325,74 @@ impl Default for UpdatesConfig {
     }
 }
 
-/// `[connections]`: Templum's MCP server and hooks for the agents it opens
-/// (docs/specs/connections.md).
+/// `[connections]`: Templum's MCP server and hooks for the agents it opens or that are typed in
+/// its terminals (docs/specs/connections.md).
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct ConnectionsConfig {
-    /// The Claude Code and Codex Templum opens get its MCP server and hooks.
+    /// The agents Templum opens, or that are typed in its terminals, get its MCP server and hooks;
+    /// off, the bus answers no agent (docs/specs/connections.md, The switch reaches every agent).
     pub enabled: bool,
+    /// How long an agent's question waits for its answer, minutes, 0 to 1440; 0: until answered
+    /// (docs/specs/ask-user.md).
+    pub question_timeout: u64,
+    /// A short sound when an agent asks the person something.
+    pub sound: bool,
 }
 
 impl Default for ConnectionsConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            question_timeout: 0,
+            sound: true,
+        }
+    }
+}
+
+/// `[templum_agent]`: the agent the chat at the bottom of the canvas runs on
+/// (docs/specs/templum-agent.md#config).
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct TemplumAgentConfig {
+    /// The engine's id: `claude`.
+    pub agent: String,
+    /// Its model; empty is the agent's own default.
+    pub model: String,
+    /// Its effort, one of the agent's; empty is its default.
+    pub effort: String,
+    /// The prompt pill at the bottom of the canvas; off, the shortcut still opens it.
+    pub pill: bool,
+    /// How many of its tasks may run at once.
+    pub max_agents: u32,
+}
+
+impl Default for TemplumAgentConfig {
+    fn default() -> Self {
+        Self {
+            agent: "claude".into(),
+            model: String::new(),
+            effort: String::new(),
+            pill: true,
+            max_agents: 4,
+        }
+    }
+}
+
+/// `[canvas]`.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct CanvasConfig {
+    /// The block under the pointer takes the keyboard once the pointer moves, no click needed
+    /// (docs/specs/navigation.md). Grid mode's tiles always do.
+    pub focus_follows_pointer: bool,
+}
+
+impl Default for CanvasConfig {
+    fn default() -> Self {
+        Self {
+            focus_follows_pointer: true,
+        }
     }
 }
 
@@ -384,8 +492,15 @@ impl Config {
     }
 }
 
-/// Parses and validates config.toml. The error is ready to show to the user.
+/// `parse_in` without Templum's data folder.
+#[cfg(test)]
 pub(crate) fn parse(text: &str) -> Result<Config, String> {
+    parse_in(text, None)
+}
+
+/// Parses and validates config.toml, with Templum's data folder `data` (accounts' folders are
+/// in it). The error is ready to show to the user.
+pub(crate) fn parse_in(text: &str, data: Option<&Path>) -> Result<Config, String> {
     let config: Config = toml::from_str(text).map_err(|e| {
         let (line, column) = e.span().map_or((1, 1), |s| line_col(text, s.start));
         format!("{FILE}, line {line}, column {column}: {}", e.message())
@@ -413,6 +528,36 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
         "0 and 100000",
         scrollback.to_string(),
     )?;
+    let question = config.connections.question_timeout;
+    range(
+        "connections.question_timeout",
+        question <= 1440,
+        "0 and 1440",
+        question.to_string(),
+    )?;
+    let agent = &config.templum_agent;
+    if agent.agent != "claude" {
+        return Err(format!(
+            "{FILE}: templum_agent.agent is claude (it is {:?})",
+            agent.agent
+        ));
+    }
+    let claude = templum_terminal::Agent::from_name("claude").expect("Claude Code");
+    fn blank(v: &str) -> Option<&str> {
+        (!v.is_empty()).then_some(v)
+    }
+    if let Err(why) = claude.launch_args(blank(&agent.model), None) {
+        return Err(format!("{FILE}: templum_agent.model: {why}"));
+    }
+    if let Err(why) = claude.launch_args(None, blank(&agent.effort)) {
+        return Err(format!("{FILE}: templum_agent.effort: {why}"));
+    }
+    range(
+        "templum_agent.max_agents",
+        (1..=16).contains(&agent.max_agents),
+        "1 and 16",
+        agent.max_agents.to_string(),
+    )?;
     let message = &config.git.commit_message;
     range(
         "git.commit_message.timeout",
@@ -432,6 +577,25 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
             "{FILE}: usage.warn must be 0, 80, 90 or 95 (it is {warn})"
         ));
     }
+    for (id, role) in &config.roles {
+        if !valid_agent_id(id) {
+            return Err(format!(
+                "{FILE}: roles.{id:?}: a role's id is letters, digits, - and _"
+            ));
+        }
+        if role.agent.trim().is_empty() {
+            return Err(format!(
+                "{FILE}: roles.{id}.agent is needed (the agent it opens)"
+            ));
+        }
+        if role
+            .args
+            .as_deref()
+            .is_some_and(|a| a.contains(['\n', '\r']))
+        {
+            return Err(format!("{FILE}: roles.{id}.args is one line"));
+        }
+    }
     // Shortcuts are part of the file's validity: an invalid one keeps the last valid config.
     Keymap::new(&config.keys, cfg!(target_os = "macos"))?;
     for (id, agent) in &config.agents {
@@ -441,6 +605,10 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
             ));
         }
         let ours = templum_terminal::Agent::from_name(id).is_some();
+        if agent.of.is_some() || agent.folder.is_some() || agent.share.is_some() {
+            check_account(id, &config.agents, data)?;
+            continue;
+        }
         let blank = |v: &Option<String>| v.as_deref().is_none_or(|v| v.trim().is_empty());
         if (!ours || agent.command.is_some()) && blank(&agent.command) {
             return Err(format!(
@@ -465,13 +633,175 @@ pub(crate) fn parse(text: &str) -> Result<Config, String> {
     Ok(config)
 }
 
-/// `<dir>/config.toml`. No folder or no file: the defaults.
-pub(crate) fn load(dir: Option<&Path>) -> Result<Config, String> {
+/// The account `id` of `agents` (an entry with `of`), checked: its agent has accounts, no other
+/// account's id is its own but for case, it takes nothing its agent has, each share names an item
+/// and one of its agent's folders without coming back to it, and its folder is no agent's own,
+/// not the home folder, apart from every other account's, and neither in nor around Templum's
+/// folder for accounts (`<data>/accounts`, whose folders are deleted with their account). Folders
+/// are compared with their links followed (`resolved`).
+pub(crate) fn check_account(
+    id: &str,
+    agents: &BTreeMap<String, AgentConfig>,
+    data: Option<&Path>,
+) -> Result<(), String> {
+    let account = &agents[id];
+    let of = account.of.as_deref().unwrap_or_default();
+    let kind = templum_usage::accounts::kind(of)
+        .filter(|_| templum_terminal::Agent::from_name(id).is_none());
+    let Some(kind) = kind else {
+        let ids: Vec<&str> = templum_usage::accounts::kinds()
+            .iter()
+            .map(|k| k.agent)
+            .collect();
+        return Err(format!(
+            "{FILE}: agents.{id}.of is an agent with accounts ({}), and an account's id isn't one of Templum's agents",
+            ids.join(", ")
+        ));
+    };
+    // One folder on macOS and Windows: deleting one would delete the other's login.
+    let twin = agents
+        .iter()
+        .find(|(other, a)| *other != id && other.eq_ignore_ascii_case(id) && a.of.is_some());
+    if let Some((other, _)) = twin {
+        return Err(format!(
+            "{FILE}: agents.{id}: {other} is the same id but for case, one folder on macOS and Windows: rename one"
+        ));
+    }
+    for (key, set) in [
+        ("command", account.command.is_some()),
+        ("resume", account.resume.is_some()),
+        ("generate", account.generate.is_some()),
+        ("models", account.models.is_some()),
+    ] {
+        if set {
+            return Err(format!(
+                "{FILE}: agents.{id}.{key}: an account runs its agent's command"
+            ));
+        }
+    }
+    let of_same = |other: &str| {
+        agents
+            .get(other)
+            .is_some_and(|a| a.of.as_deref() == Some(of))
+    };
+    for (key, target) in account.share.iter().flatten() {
+        if kind.item(key).is_none() {
+            let keys: Vec<&str> = kind.items.iter().map(|i| i.key).collect();
+            return Err(format!(
+                "{FILE}: agents.{id}.share.{key}: not one of {of}'s items ({})",
+                keys.join(", ")
+            ));
+        }
+        if target != of && !of_same(target) {
+            return Err(format!(
+                "{FILE}: agents.{id}.share.{key}: {target} is neither {of} nor one of its accounts"
+            ));
+        }
+        // Following the key from account to account ends at the agent's own folder.
+        let mut seen = vec![id];
+        let mut at = target.as_str();
+        while at != of {
+            if seen.contains(&at) {
+                return Err(format!(
+                    "{FILE}: agents.{id}.share.{key}: {target} shares it back"
+                ));
+            }
+            seen.push(at);
+            match agents[at].share.as_ref().and_then(|s| s.get(key)) {
+                Some(next) if next == of || of_same(next) => at = next,
+                _ => break,
+            }
+        }
+    }
+    if let Some(folder) = account.folder.as_deref().filter(|f| !f.trim().is_empty()) {
+        let path = crate::launcher::expand(folder);
+        // A relative one would be each block's working folder's.
+        if !path.is_absolute() {
+            let start = if cfg!(windows) {
+                "C:\\ or ~\\"
+            } else {
+                "/ or ~/"
+            };
+            return Err(format!(
+                "{FILE}: agents.{id}.folder: {folder} isn't a full path: start it with {start}"
+            ));
+        }
+        let refuse = |why: String| Err(format!("{FILE}: agents.{id}.folder: {folder} {why}"));
+        let real = resolved(&path);
+        let home = std::env::home_dir();
+        if home.as_deref().is_some_and(|home| resolved(home) == real) {
+            return refuse("is your home folder: choose a folder of its own".to_string());
+        }
+        if let Some(accounts) = data.map(|data| resolved(&data.join("accounts"))) {
+            if real.starts_with(&accounts) {
+                return refuse("is Templum's folder for accounts: leave Folder empty".to_string());
+            }
+            if accounts.starts_with(&real) {
+                return refuse(
+                    "holds Templum's folder for accounts: choose a folder of its own".to_string(),
+                );
+            }
+        }
+        let state = resolved(&kind.state_dir(&path));
+        for other in templum_usage::accounts::kinds() {
+            let own = other.own_folder(std::env::var_os(other.var), home.as_deref());
+            if own.is_some_and(|own| resolved(&other.state_dir(&own)) == state) {
+                return refuse(format!("is {}'s own folder", other.agent));
+            }
+        }
+        for (other, a) in agents
+            .iter()
+            .filter(|(other, a)| *other != id && a.of.is_some())
+        {
+            let Some(theirs) = a.folder.as_deref().filter(|f| !f.trim().is_empty()) else {
+                continue;
+            };
+            let theirs = resolved(&crate::launcher::expand(theirs));
+            if real == theirs {
+                return refuse(format!("is {other}'s folder"));
+            }
+            if real.starts_with(&theirs) {
+                return refuse(format!("is in {other}'s folder: choose one apart"));
+            }
+            if theirs.starts_with(&real) {
+                return refuse(format!("holds {other}'s folder: choose one apart"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `path` with its links followed as far as it exists (the rest as written), to compare folders:
+/// a link's target and the link, a case variant on macOS and Windows, a `\\?\` path. A `..` after
+/// a folder that isn't there is the folder before it, as once it is made.
+pub(crate) fn resolved(path: &Path) -> PathBuf {
+    let follow = |path: &Path| {
+        path.ancestors()
+            .find_map(|a| Some(a.canonicalize().ok()?.join(path.strip_prefix(a).ok()?)))
+            .unwrap_or_else(|| path.to_path_buf())
+    };
+    // What exists is followed first, so a `..` after a link is the OS's.
+    let mut plain = PathBuf::new();
+    for part in follow(path).components() {
+        match part {
+            Component::ParentDir => {
+                plain.pop();
+            }
+            Component::CurDir => {}
+            part => plain.push(part),
+        }
+    }
+    // Back up, it may be an existing folder again (`<data>/nothing/../accounts`).
+    follow(&plain)
+}
+
+/// `<dir>/config.toml`, with Templum's data folder `data`. No folder or no file: the defaults.
+pub(crate) fn load(dir: Option<&Path>, data: Option<&Path>) -> Result<Config, String> {
     let Some(path) = dir.map(|d| d.join(FILE)) else {
         return Ok(Config::default());
     };
     match std::fs::read_to_string(&path) {
-        Ok(text) => parse(&text),
+        Ok(text) => parse_in(&text, data),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Config::default()),
         Err(e) => Err(format!("couldn't read {}: {e}", path.display())),
     }
@@ -833,6 +1163,9 @@ pub(crate) fn template(macos: bool) -> String {
         "## A system notification when Templum is in the background and a long command ends or\n",
         "## a terminal asks for attention.\n",
         "# notifications = true\n\n",
+        "[canvas]\n",
+        "## The block under the pointer takes the keyboard once the pointer moves, no click needed.\n",
+        "# focus_follows_pointer = true\n\n",
         "[usage]\n",
         "## When a plan limit's reset is notified: \"off\", \"reached\" (95% or more of it was used),\n",
         "## \"half\" or \"always\".\n",
@@ -847,9 +1180,28 @@ pub(crate) fn template(macos: bool) -> String {
         "## asks before restarting into it.\n",
         "# check = true\n\n",
         "[connections]\n",
-        "## The Claude Code and Codex Templum opens get its MCP server and hooks: they can read and\n",
-        "## type into the blocks wired to them (docs/specs/connections.md).\n",
-        "# enabled = true\n\n",
+        "## The agents Templum opens, or that are typed in its terminals, get its MCP server and\n",
+        "## hooks: they can read and type into the blocks wired to them (docs/specs/connections.md).\n",
+        "# enabled = true\n",
+        "## How long an agent's question waits for your answer, in minutes; 0 waits until you answer.\n",
+        "# question_timeout = 0\n",
+        "## A short sound when an agent asks you something.\n",
+        "# sound = true\n\n",
+        "[roles]\n",
+        "## Ways spawn_agent opens an agent by name (docs/specs/agent-tools.md#roles): its agent, and\n",
+        "## optionally its model, effort, args (the agent's own flags) and instructions. For example:\n",
+        "## reviewer = { agent = \"claude\", model = \"opus\", effort = \"high\", args = \"--tools Read,Grep,Glob,Bash\", instructions = \"You review code and report each finding as a card. Never edit files.\" }\n\n",
+        "[templum_agent]\n",
+        "## The agent the Templum Agent runs on (docs/specs/templum-agent.md): claude.\n",
+        "# agent = \"claude\"\n",
+        "## Its model; empty is the agent's own default.\n",
+        "# model = \"\"\n",
+        "## Its effort: low, medium, high, xhigh or max for Claude Code; empty is the agent's default.\n",
+        "# effort = \"\"\n",
+        "## The prompt pill at the bottom of the canvas; off, Ctrl+Shift+Space still opens it.\n",
+        "# pill = true\n",
+        "## How many of its tasks may run at once.\n",
+        "# max_agents = 4\n\n",
         "[git]\n",
         "# program = \"git\"   # a name on PATH, or a path\n\n",
         "[keys]\n",
@@ -934,7 +1286,7 @@ mod tests {
         assert!(text.contains("# my settings"), "{text}");
         assert!(text.contains("light = \"One Light\" # sunny"), "{text}");
         assert!(text.contains("[font]\nsize = 16"), "{text}");
-        let c = load(Some(d.path())).unwrap();
+        let c = load(Some(d.path()), None).unwrap();
         assert_eq!(
             (c.theme.light.as_str(), c.theme.dark.as_str()),
             ("One Light", "One Dark")
@@ -946,7 +1298,10 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let dir = d.path().join("templum");
         save_theme(&dir, false, "Catppuccin Frappé").unwrap();
-        assert_eq!(load(Some(&dir)).unwrap().theme.light, "Catppuccin Frappé");
+        assert_eq!(
+            load(Some(&dir), None).unwrap().theme.light,
+            "Catppuccin Frappé"
+        );
     }
 
     #[test]
@@ -1219,10 +1574,10 @@ scrollback = 500
     #[test]
     fn load_gives_defaults_without_a_file_and_errors_for_a_bad_one() {
         let d = tempfile::tempdir().unwrap();
-        assert_eq!(load(Some(d.path())).unwrap(), Config::default());
-        assert_eq!(load(None).unwrap(), Config::default());
+        assert_eq!(load(Some(d.path()), None).unwrap(), Config::default());
+        assert_eq!(load(None, None).unwrap(), Config::default());
         write(d.path(), "[font\n");
-        assert!(load(Some(d.path())).unwrap_err().contains("line 1"));
+        assert!(load(Some(d.path()), None).unwrap_err().contains("line 1"));
     }
 
     #[test]
@@ -1362,6 +1717,67 @@ scrollback = 500
     }
 
     #[test]
+    fn the_templum_agent_runs_on_claude_with_its_pill_unless_set() {
+        let agent = parse("").unwrap().templum_agent;
+        assert_eq!(
+            (
+                agent.agent.as_str(),
+                agent.model.as_str(),
+                agent.effort.as_str()
+            ),
+            ("claude", "", "")
+        );
+        assert!(agent.pill);
+        assert_eq!(agent.max_agents, 4);
+        let set =
+            parse("[templum_agent]\nmodel = \"opus\"\neffort = \"high\"\npill = false\n").unwrap();
+        assert_eq!(
+            (
+                set.templum_agent.model.as_str(),
+                set.templum_agent.effort.as_str()
+            ),
+            ("opus", "high")
+        );
+        assert!(!set.templum_agent.pill);
+        let err = parse("[templum_agent]\nagent = \"gemini\"\n").unwrap_err();
+        assert!(err.contains("templum_agent.agent is claude"), "{err}");
+        let err = parse("[templum_agent]\neffort = \"ultra\"\n").unwrap_err();
+        assert!(
+            err.contains("templum_agent.effort") && err.contains("low, medium, high, xhigh or max"),
+            "{err}"
+        );
+        let err = parse("[templum_agent]\nmodel = \"opus; rm -rf /\"\n").unwrap_err();
+        assert!(err.contains("templum_agent.model"), "{err}");
+        let err = parse("[templum_agent]\nmax_agents = 17\n").unwrap_err();
+        assert!(
+            err.contains("templum_agent.max_agents must be between 1 and 16"),
+            "{err}"
+        );
+        assert!(parse("[templum_agent]\nmax_agents = 0\n").is_err());
+        let t = template(false);
+        assert!(t.contains("[templum_agent]\n"), "{t}");
+        for key in ["agent", "model", "effort", "pill", "max_agents"] {
+            assert!(t.contains(&format!("\n# {key} = ")), "{key}");
+        }
+    }
+
+    #[test]
+    fn questions_wait_until_answered_and_make_a_sound_unless_set() {
+        let connections = parse("").unwrap().connections;
+        assert_eq!(connections.question_timeout, 0);
+        assert!(connections.sound);
+        let set = parse("[connections]\nquestion_timeout = 1440\nsound = false\n").unwrap();
+        assert_eq!(set.connections.question_timeout, 1440);
+        assert!(!set.connections.sound);
+        let err = parse("[connections]\nquestion_timeout = 1441\n").unwrap_err();
+        assert!(
+            err.contains("connections.question_timeout must be between 0 and 1440"),
+            "{err}"
+        );
+        assert!(parse("[connections]\nquestion_timeout = -1\n").is_err());
+    }
+
+    #[test]
     fn updates_are_checked_unless_turned_off() {
         assert!(parse("").unwrap().updates.check);
         assert!(!parse("[updates]\ncheck = false\n").unwrap().updates.check);
@@ -1375,6 +1791,49 @@ scrollback = 500
         assert!(c.shell.integration && c.terminal.notifications);
         let c = parse("[shell]\nintegration = false\n[terminal]\nnotifications = false\n").unwrap();
         assert!(!c.shell.integration && !c.terminal.notifications);
+    }
+
+    #[test]
+    fn focus_follows_the_pointer_unless_turned_off() {
+        assert!(parse("").unwrap().canvas.focus_follows_pointer);
+        let c = parse("[canvas]\nfocus_follows_pointer = false\n").unwrap();
+        assert!(!c.canvas.focus_follows_pointer);
+    }
+
+    /// `[roles.<id>]`: a way to open an agent, read whole; a role breaking the rules is a config
+    /// error naming it (docs/specs/agent-tools.md, Roles).
+    #[test]
+    fn a_role_reads_back_and_a_bad_one_is_named() {
+        let c = parse(
+            "[roles.reviewer]\nagent = \"claude\"\nmodel = \"opus\"\neffort = \"high\"\n\
+             args = \"--tools Read,Grep\"\ninstructions = \"\"\"\nNever edit files.\n\"\"\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            c.roles["reviewer"],
+            Role {
+                agent: "claude".into(),
+                model: Some("opus".into()),
+                effort: Some("high".into()),
+                args: Some("--tools Read,Grep".into()),
+                instructions: Some("Never edit files.\n".into()),
+            }
+        );
+        for (text, names) in [
+            ("[roles.reviewer]\nmodel = \"opus\"\n", "roles.reviewer"),
+            ("[roles.reviewer]\nagent = \" \"\n", "roles.reviewer"),
+            (
+                "[roles.reviewer]\nagent = \"claude\"\nargs = \"a\\nb\"\n",
+                "roles.reviewer",
+            ),
+            (
+                "[roles.\"re view\"]\nagent = \"claude\"\n",
+                "roles.\"re view\"",
+            ),
+        ] {
+            let err = parse(text).unwrap_err();
+            assert!(err.contains(names), "{text}: {err}");
+        }
     }
 
     #[test]
@@ -1396,6 +1855,7 @@ scrollback = 500
         assert_eq!(c.font.family.as_deref(), Some("JetBrains Mono"));
         assert_eq!(c.shell.program.as_deref(), Some("fish"));
         assert_eq!(c.shell.args, ["--login"]);
+        assert_eq!(c.roles["reviewer"].agent, "claude");
     }
 
     #[test]
@@ -1426,7 +1886,7 @@ scrollback = 500
             !text.contains("[keys]"),
             "removing from a missing table adds nothing: {text}"
         );
-        let c = load(Some(d.path())).unwrap();
+        let c = load(Some(d.path()), None).unwrap();
         assert_eq!((c.font.size, c.font.family), (20.0, None));
         assert_eq!(c.terminal.scrollback, 500);
     }
@@ -1482,6 +1942,245 @@ scrollback = 500
         assert!(err.contains("model"), "unknown keys still fail: {err}");
     }
 
+    const ACCOUNTS: &str = concat!(
+        "[agents.claude2]\n",
+        "of = \"claude\"\n",
+        "name = \"Claude Code 2\"\n",
+        "show = true\n",
+        "share = { settings = \"claude\", instructions = \"claude\", skills = \"claude\", plugins = \"claude\", sessions = \"claude\" }\n",
+        "[agents.claude3]\n",
+        "of = \"claude\"\n",
+        "[agents.claude4]\n",
+        "of = \"claude\"\n",
+        "share = { settings = \"claude3\", skills = \"claude3\", output-styles = \"claude3\", history = \"claude3\" }\n",
+    );
+
+    #[test]
+    fn accounts_parse_with_their_shares() {
+        let c = parse(ACCOUNTS).unwrap();
+        let claude2 = &c.agents["claude2"];
+        assert_eq!(claude2.of.as_deref(), Some("claude"));
+        assert_eq!(claude2.share.as_ref().unwrap()["skills"], "claude");
+        assert_eq!(c.agents["claude3"].share, None, "everything its own");
+        assert_eq!(
+            c.agents["claude4"].share.as_ref().unwrap()["skills"],
+            "claude3"
+        );
+    }
+
+    #[test]
+    fn an_account_is_refused_what_it_inherits() {
+        for key in [
+            "command = \"x\"",
+            "resume = \"\"",
+            "generate = \"x\"",
+            "models = [\"a\"]",
+        ] {
+            let err = parse(&format!("[agents.claude2]\nof = \"claude\"\n{key}\n")).unwrap_err();
+            let name = key.split(' ').next().unwrap();
+            assert!(
+                err.contains(&format!(
+                    "agents.claude2.{name}: an account runs its agent's command"
+                )),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_accounts_shares_are_checked() {
+        let cases = [
+            (
+                "[agents.claude2]\nof = \"claude\"\nshare = { nope = \"claude\" }\n",
+                "agents.claude2.share.nope",
+            ),
+            (
+                "[agents.claude2]\nof = \"claude\"\nshare = { skills = \"codex\" }\n",
+                "agents.claude2.share.skills",
+            ),
+            (
+                "[agents.codex2]\nof = \"codex\"\n[agents.claude2]\nof = \"claude\"\nshare = { skills = \"codex2\" }\n",
+                "agents.claude2.share.skills",
+            ),
+            (
+                "[agents.claude3]\nof = \"claude\"\nshare = { skills = \"claude4\" }\n[agents.claude4]\nof = \"claude\"\nshare = { skills = \"claude3\" }\n",
+                "share.skills: claude",
+            ),
+            (
+                "[agents.claude2]\nof = \"claude\"\nshare = { skills = \"claude2\" }\n",
+                "agents.claude2.share.skills",
+            ),
+        ];
+        for (text, needle) in cases {
+            let err = parse(text).unwrap_err();
+            assert!(err.contains(needle), "{text}\n{err}");
+        }
+        let err = parse(cases[3].0).unwrap_err();
+        assert!(err.contains("shares it back"), "{err}");
+    }
+
+    #[test]
+    fn two_accounts_cant_share_a_folder() {
+        let err = parse(concat!(
+            "[agents.claude2]\nof = \"claude\"\nfolder = \"~/srv/work\"\n",
+            "[agents.claude3]\nof = \"claude\"\nfolder = \"~/srv/work/\"\n",
+        ))
+        .unwrap_err();
+        assert!(err.contains(".folder: ~/srv/work"), "{err}");
+        parse("[agents.claude2]\nof = \"claude\"\nfolder = \"~/srv/work\"\n").unwrap();
+    }
+
+    #[test]
+    fn an_account_folder_isnt_in_templums_folder_for_accounts() {
+        let data = std::env::home_dir().unwrap().join("templum-data");
+        for folder in [
+            "~/templum-data/accounts",
+            "~/templum-data/accounts/claude3/x",
+        ] {
+            let text = format!("[agents.claude2]\nof = \"claude\"\nfolder = \"{folder}\"\n");
+            let err = parse_in(&text, Some(&data)).unwrap_err();
+            assert!(
+                err.contains(&format!(
+                    "agents.claude2.folder: {folder} is Templum's folder for accounts"
+                )),
+                "{err}"
+            );
+        }
+        let text = "[agents.claude2]\nof = \"claude\"\nfolder = \"~/templum-data/w\"\n";
+        parse_in(text, Some(&data)).unwrap();
+    }
+
+    #[test]
+    fn an_account_folder_isnt_the_home_folder() {
+        for folder in ["~", "~/"] {
+            let text = format!("[agents.claude2]\nof = \"claude\"\nfolder = \"{folder}\"\n");
+            let err = parse(&text).unwrap_err();
+            assert!(
+                err.contains(&format!(
+                    "agents.claude2.folder: {folder} is your home folder"
+                )),
+                "{err}"
+            );
+        }
+    }
+
+    /// Every agent's own folder (another agent's files: Codex's account on ~/.claude), however
+    /// its variable sets it.
+    #[test]
+    fn an_account_folder_is_no_agents_own() {
+        let home = std::env::home_dir();
+        for (of, owner) in [
+            ("claude", "claude"),
+            ("codex", "claude"),
+            ("pi", "codex"),
+            ("claude", "gemini"),
+        ] {
+            let kind = templum_usage::accounts::kind(owner).unwrap();
+            let own = kind
+                .own_folder(std::env::var_os(kind.var), home.as_deref())
+                .unwrap();
+            let folder = kind.state_dir(&own);
+            let text = format!(
+                "[agents.{of}9]\nof = \"{of}\"\nfolder = '{}'\n",
+                folder.display()
+            );
+            let err = parse(&text).unwrap_err();
+            assert!(
+                err.contains(&format!("is {owner}'s own folder")),
+                "{text}\n{err}"
+            );
+        }
+    }
+
+    /// Folders are compared with their links followed: one in another, around Templum's folder
+    /// for accounts, or a link to either, is refused.
+    #[cfg(unix)]
+    #[test]
+    fn an_account_folder_is_apart_from_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let (w, data) = (dir.path().join("w"), dir.path().join("data"));
+        std::fs::create_dir_all(w.join("skills")).unwrap();
+        std::fs::create_dir_all(data.join("accounts/claude3")).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&w, &link).unwrap();
+        let to_data = dir.path().join("to-data");
+        std::os::unix::fs::symlink(&data, &to_data).unwrap();
+        let two = |a: &Path, b: &Path| {
+            let text = format!(
+                "[agents.claude2]\nof = \"claude\"\nfolder = '{}'\n[agents.claude3]\nof = \"claude\"\nfolder = '{}'\n",
+                a.display(),
+                b.display()
+            );
+            parse_in(&text, Some(&data)).map(|_| ()).unwrap_err()
+        };
+        assert!(two(&w, &w.join("skills")).contains("holds claude3's folder"));
+        assert!(two(&w.join("skills"), &w).contains("is in claude3's folder"));
+        assert!(
+            two(&link, &w).contains("is claude3's folder"),
+            "through a link"
+        );
+        assert!(
+            two(&link.join("new"), &w).contains("is in claude3's folder"),
+            "not made yet"
+        );
+        let one = |a: &Path| {
+            let text = format!(
+                "[agents.claude2]\nof = \"claude\"\nfolder = '{}'\n",
+                a.display()
+            );
+            parse_in(&text, Some(&data)).map(|_| ())
+        };
+        let err = one(&to_data.join("accounts/claude3")).unwrap_err();
+        assert!(err.contains("is Templum's folder for accounts"), "{err}");
+        let err = one(&to_data).unwrap_err();
+        assert!(err.contains("holds Templum's folder for accounts"), "{err}");
+        let err = one(&data.join("nothing/../accounts/claude3")).unwrap_err();
+        assert!(err.contains("is Templum's folder for accounts"), "{err}");
+        let err = one(&w.join("new/../../data/accounts")).unwrap_err();
+        assert!(err.contains("is Templum's folder for accounts"), "{err}");
+        one(&w.join("skills")).unwrap();
+        one(&dir.path().join("apart")).unwrap();
+    }
+
+    /// `claude2` and `Claude2` would be one folder on macOS and Windows.
+    #[test]
+    fn account_ids_differ_more_than_by_case() {
+        let err = parse("[agents.Claude2]\nof = \"claude\"\n[agents.claude2]\nof = \"claude\"\n")
+            .unwrap_err();
+        assert!(err.contains("is the same id but for case"), "{err}");
+        parse("[agents.Claude2]\nof = \"claude\"\n[agents.claude3]\nof = \"claude\"\n").unwrap();
+    }
+
+    #[test]
+    fn an_account_folder_is_a_full_path() {
+        for folder in ["claude-work", ".claude", "~bob/x", "C:foo"] {
+            let err = parse(&format!(
+                "[agents.claude2]\nof = \"claude\"\nfolder = \"{folder}\"\n"
+            ))
+            .unwrap_err();
+            assert!(
+                err.contains(&format!(
+                    "agents.claude2.folder: {folder} isn't a full path"
+                )),
+                "{err}"
+            );
+        }
+        parse("[agents.claude2]\nof = \"claude\"\nfolder = \"~/w\"\n").unwrap();
+        parse("[agents.claude2]\nof = \"claude\"\nfolder = \"\"\n").unwrap();
+    }
+
+    #[test]
+    fn of_must_have_accounts() {
+        let err = parse("[agents.aider2]\nof = \"aider\"\n").unwrap_err();
+        assert!(err.contains("agents.aider2.of"), "{err}");
+        assert!(err.contains("claude, codex"), "{err}");
+        let err = parse("[agents.codex]\nof = \"claude\"\n").unwrap_err();
+        assert!(
+            err.contains("agents.codex.of"),
+            "one of Templum's agents isn't an account: {err}"
+        );
+    }
+
     #[test]
     fn an_agent_is_saved_and_removed_whole() {
         let d = tempfile::tempdir().unwrap();
@@ -1493,14 +2192,14 @@ scrollback = 500
             &[Edit::set("agents", "claude".to_string(), value)],
         )
         .unwrap();
-        let c = load(Some(d.path())).unwrap();
+        let c = load(Some(d.path()), None).unwrap();
         assert_eq!(
             c.agents["claude"].command.as_deref(),
             Some("claude --model opus")
         );
         assert_eq!(c.agents["codex"].show, Some(false), "the others stay");
         save_edits(d.path(), &[Edit::remove("agents", "claude".to_string())]).unwrap();
-        let c = load(Some(d.path())).unwrap();
+        let c = load(Some(d.path()), None).unwrap();
         assert!(!c.agents.contains_key("claude"), "back to the default");
         let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
         assert!(text.contains("# mine"), "{text}");
@@ -1539,7 +2238,7 @@ scrollback = 500
         assert!(text.contains("# family = \"JetBrains Mono\""), "{text}");
         assert!(text.contains("# mode = \"system\""), "{text}");
         assert!(!text.contains("size") && !text.contains("light"), "{text}");
-        assert_eq!(load(Some(d.path())).unwrap(), Config::default());
+        assert_eq!(load(Some(d.path()), None).unwrap(), Config::default());
     }
 
     #[test]
@@ -1651,13 +2350,20 @@ scrollback = 500
         .unwrap();
         let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
         assert!(text.contains("program = \"/opt/git\" # mine"), "{text}");
-        let c = load(Some(d.path())).unwrap();
+        let c = load(Some(d.path()), None).unwrap();
         assert_eq!(
             (c.git.program.as_str(), c.git.commit_message.timeout),
             ("/opt/git", 90)
         );
         save_edits(d.path(), &[Edit::remove("git.commit_message", "timeout")]).unwrap();
-        assert_eq!(load(Some(d.path())).unwrap().git.commit_message.timeout, 60);
+        assert_eq!(
+            load(Some(d.path()), None)
+                .unwrap()
+                .git
+                .commit_message
+                .timeout,
+            60
+        );
         // Removing from a table that isn't there adds nothing.
         save_edits(d.path(), &[Edit::remove("git.nothing", "x")]).unwrap();
         let text = std::fs::read_to_string(d.path().join(FILE)).unwrap();
@@ -1692,7 +2398,7 @@ scrollback = 500
             text.contains("[git.repositories.\"/home/u/my.proj\"]"),
             "{text}"
         );
-        let c = load(Some(d.path())).unwrap();
+        let c = load(Some(d.path()), None).unwrap();
         for r in roots {
             assert_eq!(
                 c.git.repositories[r].commit_instructions.as_deref(),
@@ -1707,7 +2413,7 @@ scrollback = 500
             )],
         )
         .unwrap();
-        let c = load(Some(d.path())).unwrap();
+        let c = load(Some(d.path()), None).unwrap();
         assert_eq!(
             c.git
                 .repositories

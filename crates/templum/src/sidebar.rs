@@ -1,5 +1,5 @@
 //! The workspaces sidebar: a tile per workspace (click: show it; right-click: rename, delete),
-//! and + for a new one. See docs/specs/workspaces.md.
+//! and + for a new one; the Git button at its foot. See docs/specs/workspaces.md.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
@@ -67,22 +67,62 @@ pub(crate) fn render(ws: &Workspace, cx: &mut Context<Workspace>) -> impl IntoEl
         .tooltip(|window, cx| Tooltip::new("New workspace").build(window, cx))
         .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.add_space(window, cx)))
         .test_support();
+    let open = ws.git_open && ws.space.git.is_some();
+    let git = div()
+        .id("git-button")
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center()
+        .size(px(TILE))
+        .rounded(px(10.0))
+        .cursor_pointer()
+        .when(open, move |el| el.bg(ui.pressed))
+        .hover(move |s| s.bg(ui.hover))
+        .active(move |s| s.bg(ui.pressed))
+        .child(
+            Icon::new(IconName::GitBranch)
+                .size(px(16.0))
+                .text_color(ui.title),
+        )
+        .tooltip(|window, cx| Tooltip::new("Git").build(window, cx))
+        .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_git(window, cx)))
+        .test_support();
     div()
         .id("sidebar")
         .flex()
         .flex_col()
         .items_center()
         .flex_shrink_0()
-        .gap(px(8.0))
         .w(px(WIDTH))
         .h_full()
         .py(px(10.0))
         .border_r_1()
         .border_color(ui.hairline)
-        .overflow_y_scroll()
-        .child(screen)
-        .children(tiles)
-        .child(plus)
+        .child(
+            div()
+                .id("sidebar-workspaces")
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(8.0))
+                .flex_1()
+                .min_h(px(0.0))
+                .w_full()
+                .overflow_y_scroll()
+                .child(screen)
+                .children(tiles)
+                .child(plus),
+        )
+        // Apart, in the corner: Git isn't a workspace.
+        .child(
+            div()
+                .pt(px(8.0))
+                .mt(px(8.0))
+                .border_t_1()
+                .border_color(ui.hairline)
+                .child(git),
+        )
 }
 
 /// One workspace: its face, a bar when active (in its color, or the accent), a dot while an

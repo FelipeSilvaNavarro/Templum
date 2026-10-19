@@ -9,11 +9,19 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, Task, Window};
 use serde_json::json;
 use templum_canvas::BlockId;
+use templum_mcp::ask::Form;
 use templum_mcp::{Bus, Call, Incoming, Message, Reply, rpc, tools};
 
 use super::delegate::ENTER_AFTER;
-use super::waits::{Asked, Waiting};
+use super::waits::{Asked, Waiting, deadline};
 use super::{AgentState, Body, Pane, Space, Workspace, show_notification};
+
+/// A tool call's answer while connections are off.
+pub(super) const CONNECTIONS_OFF: &str = "Connections are off: turn on Agents in Templum (Settings ▸ Connections) to use Templum's tools.";
+
+/// `initialize`'s instructions while connections are off.
+const OFF_INSTRUCTIONS: &str =
+    "Connections are off in Templum's settings: Templum's tools won't work here.";
 
 /// Starts the bus in the data folder, and the task that hands its messages to the workspace.
 /// Without a data folder (the bench), or when the socket can't be made, there is none.
@@ -37,6 +45,9 @@ pub(super) fn start(
         }
     };
     let env = terminal_env(&bus, data);
+    if let Some(gemini) = templum_usage::Dirs::of(data).gemini {
+        templum_usage::gemini::refresh(data, &gemini, cfg!(windows));
+    }
     let task = cx.spawn_in(window, async move |ws, cx| {
         while let Some(message) = rx.next().await {
             if ws
@@ -54,17 +65,17 @@ pub(super) fn start(
 pub(super) enum Outcome {
     /// Its answer, now.
     Now(Reply),
-    /// It waits for this, at most these many seconds (`waits.rs`).
-    Wait(Waiting, u64),
+    /// It waits for this, at most these many seconds (`waits.rs`); None: until it comes.
+    Wait(Box<Waiting>, Option<u64>),
     /// A job answers it when it is done (`spawn_agent` making a worktree).
     Later(Task<Reply>),
 }
 
 /// What every terminal gets while the bus runs: its address and Templum's folder first in
-/// PATH, where `templum` is this Templum.
-fn terminal_env(bus: &Bus, data: &Path) -> Vec<(String, String)> {
+/// PATH, where `templum` is this Templum. Taken for each terminal: PATH may have changed since.
+pub(super) fn terminal_env(bus: &Bus, data: &Path) -> Vec<(String, String)> {
     let mut env = vec![("TEMPLUM_BUS".to_string(), bus.env.clone())];
-    let path = std::env::var_os("PATH").unwrap_or_default();
+    let path = templum_terminal::path_var().unwrap_or_default();
     if let Some(path) = templum_folder(data).and_then(|folder| first_on_path(folder, &path)) {
         env.push(("PATH".to_string(), path));
     }
@@ -145,15 +156,25 @@ impl Workspace {
             incoming,
             reply,
         } = message;
+        if hello.client == "control" {
+            return self.serve_control(hello, conn, incoming, reply, window, cx);
+        }
+        // Connections off: an agent's server and hooks get nothing, the command line works.
+        let off = !self.config.connections.enabled && hello.client != "cli";
         match incoming {
             Incoming::Request { id, method, params } => {
                 let answer = match method.as_str() {
                     "initialize" => {
-                        let instructions = self.instructions(&hello.terminal, cx);
+                        let instructions = if off {
+                            OFF_INSTRUCTIONS.to_string()
+                        } else {
+                            self.instructions(&hello.terminal, cx)
+                        };
                         rpc::result(&id, tools::initialize_result(&params, &instructions))
                     }
                     "ping" => rpc::result(&id, json!({})),
                     "tools/list" => rpc::result(&id, tools::list()),
+                    "tools/call" if off => tools::tool_result(&id, &Reply::err(CONNECTIONS_OFF)),
                     "tools/call" => {
                         let name = params["name"].as_str().unwrap_or_default();
                         if hello.client == "mcp" {
@@ -176,7 +197,7 @@ impl Workspace {
                                         reply,
                                         from: hello.terminal,
                                     };
-                                    self.wait(asked, what, seconds, window, cx);
+                                    self.wait(asked, *what, seconds, window, cx);
                                     return;
                                 }
                                 Outcome::Later(job) => {
@@ -194,6 +215,8 @@ impl Workspace {
                 };
                 let _ = reply.send(answer);
             }
+            Incoming::Notification { method, .. }
+                if off && method == templum_mcp::hooks::METHOD => {}
             Incoming::Notification { method, params } if method == templum_mcp::hooks::METHOD => {
                 if let Ok(event) = serde_json::from_value(params) {
                     self.agent_event(&hello.terminal, event, cx);
@@ -293,6 +316,9 @@ impl Workspace {
             AgentEvent::NeedsYou { message } => {
                 // Already waiting: the same dialog (Claude Code's notification about it).
                 let new = !matches!(pane.state, Some(AgentState::NeedsYou(_)));
+                if new || message.is_some() {
+                    pane.dialogs += 1;
+                }
                 pane.state = Some(AgentState::NeedsYou(message.clone()));
                 self.needs_you(terminal, message.as_deref(), new, cx);
             }
@@ -319,6 +345,29 @@ impl Workspace {
             pane.typed.set(false);
             cx.notify();
         }
+    }
+
+    /// Types `text` into the terminal `terminal`, then Enter ENTER_AFTER later, as a task's: an
+    /// agent may take keys that come in one burst for a paste, where Enter is a new line. True once
+    /// Enter went; false when the terminal closed first.
+    pub(super) fn type_then_enter(
+        &self,
+        terminal: String,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<bool> {
+        if let Some(pane) = self.pane(&terminal) {
+            pane.term.type_in(text);
+        }
+        cx.spawn(async move |ws, cx| {
+            cx.background_executor().timer(ENTER_AFTER).await;
+            ws.update(cx, |ws, _| {
+                ws.pane(&terminal)
+                    .map(|pane| pane.term.write(&b"\r"[..]))
+                    .is_some()
+            })
+            .unwrap_or(false)
+        })
     }
 
     /// The block whose terminal is `terminal` (its `TEMPLUM_TERMINAL`): its workspace's id and
@@ -375,6 +424,11 @@ impl Workspace {
                     text.push_str(&format!("folder: {}\n", folder.display()));
                 }
                 text.push_str(&format!("workspace: {}", space.name));
+                let uid = space.uids.get(&me).cloned().unwrap_or_default();
+                for line in self.schedule_lines(terminal, &uid) {
+                    text.push('\n');
+                    text.push_str(&line);
+                }
                 Reply::ok(text)
             }
             Call::ListBlocks => Reply::ok(self.block_lines(space, me, cx).join("\n")),
@@ -387,53 +441,14 @@ impl Workspace {
                     Ok(id) => id,
                     Err(reply) => return Outcome::Now(reply),
                 };
-                let Some(pane) = space.terminal(id) else {
-                    return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
-                };
-                let shared = pane.term.shared();
-                if last_command {
-                    match shared.last_command() {
-                        Some(text) => Reply::ok(tools::tail(&text, tools::MAX_TEXT)),
-                        None => Reply::err(format!(
-                            "No command has finished in {block} yet (it needs the shell's integration)."
-                        )),
-                    }
-                } else {
-                    Reply::ok(tools::tail(
-                        &shared.lines(lines).join("\n"),
-                        tools::MAX_TEXT,
-                    ))
-                }
+                self.terminal_text((&space_id, id), &block, lines, last_command)
             }
             Call::SendToTerminal { block, text, enter } => {
                 let id = match target(space, me, &block) {
                     Ok(id) => id,
                     Err(reply) => return Outcome::Now(reply),
                 };
-                let Some(pane) = space.terminal(id) else {
-                    return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
-                };
-                pane.term.type_in(&text);
-                if !enter {
-                    return Outcome::Now(Reply::ok(format!("Typed into {block}.")));
-                }
-                // As a task's: an agent may take keys that come in one burst for a paste, where
-                // Enter is a new line. Answered after it: a caller that waits for each answer
-                // (a script's `templum send` twice) gets its texts and Enters in order.
-                let terminal = pane.term.id().to_string();
-                return Outcome::Later(cx.spawn(async move |ws, cx| {
-                    cx.background_executor().timer(ENTER_AFTER).await;
-                    let entered = ws.update(cx, |ws, _| {
-                        ws.pane(&terminal)
-                            .map(|pane| pane.term.write(&b"\r"[..]))
-                            .is_some()
-                    });
-                    if entered.unwrap_or(false) {
-                        Reply::ok(format!("Typed into {block}."))
-                    } else {
-                        Reply::err(format!("{block} was closed before its Enter."))
-                    }
-                }));
+                return self.type_text((&space_id, id), &block, &text, enter, cx);
             }
             Call::Notify { text } => {
                 let (_, title, _) = self.about(&space.blocks[&me], cx);
@@ -448,7 +463,14 @@ impl Workspace {
                 task,
                 wait,
                 timeout,
-            } => return self.delegate(terminal, &block, &task, wait, timeout, cx),
+            } => return self.delegate(terminal, &block, &task, wait, timeout, None, cx),
+            Call::Schedule {
+                block,
+                text,
+                when,
+                every,
+            } => self.schedule(terminal, &block, &text, when, every, cx),
+            Call::CancelSchedule { schedule } => self.cancel_schedule(terminal, &schedule),
             Call::ReplyTo { block, text } => self.reply_to(terminal, &block, &text, cx),
             Call::WaitForIdle { block, timeout } => {
                 return self.wait_for_idle(terminal, &block, timeout);
@@ -458,24 +480,17 @@ impl Workspace {
                 block,
                 event,
                 timeout,
-            } => return self.wait_for(terminal, &block, event, timeout),
+                pattern,
+                lines,
+                wait,
+            } => return self.wait_for(terminal, &block, event, timeout, pattern, lines, wait, cx),
             Call::Wire { a, b } => self.wire_blocks(terminal, &a, &b, cx),
             Call::ListCards { board, card } => {
                 self.list_cards(terminal, board.as_deref(), card, cx)
             }
-            Call::CreateCard {
-                board,
-                column,
-                title,
-                description,
-            } => self.create_card(
-                terminal,
-                board.as_deref(),
-                column.as_deref(),
-                &title,
-                description,
-                cx,
-            ),
+            Call::CreateCard(new) => self.create_card(terminal, new, cx),
+            Call::CreateBlock(args) => self.create_block(terminal, args, window, cx),
+            Call::EditCard(edit) => self.edit_card(terminal, edit, cx),
             Call::MoveCard { card, column } => self.move_card(terminal, card, &column, cx),
             Call::CommentCard { card, text } => self.comment_card(terminal, card, &text, cx),
             Call::ClaimCard { card } => self.claim_card(terminal, card, cx),
@@ -483,22 +498,63 @@ impl Workspace {
             Call::AppendNote { block, text } => {
                 self.append_note(terminal, &block, &text, window, cx)
             }
+            Call::ReadChecklist { block } => self.read_checklist(terminal, &block),
+            Call::CheckItem { block, item, done } => {
+                self.check_item(terminal, &block, item, done, cx)
+            }
+            Call::AddItems { block, text } => self.add_items(terminal, &block, &text, cx),
+            Call::ReplaceNote { block, text, old } => {
+                self.replace_note(terminal, &block, &text, old.as_deref(), window, cx)
+            }
+            Call::EditItem { block, item, text } => {
+                self.edit_item(terminal, &block, item, &text, cx)
+            }
+            Call::DeleteItem { block, item } => self.remove_item(terminal, &block, item, cx),
             Call::OpenFile { path, line } => self.open_file_for(terminal, &path, line, window, cx),
-            Call::GitStatus { block } => return self.git_status(terminal, block.as_deref(), cx),
             Call::SendKeys { block, keys } => return self.send_keys(terminal, &block, keys, cx),
             Call::Interrupt { block } => return self.interrupt(terminal, &block, cx),
+            Call::StopAgent { block } => self.stop_agent(terminal, &block, cx),
+            Call::RemoveWorktree {
+                worktree,
+                folder,
+                discard,
+            } => {
+                return self.remove_worktree(terminal, &worktree, folder.as_deref(), discard, cx);
+            }
+            Call::MergeWorktree { worktree, folder } => {
+                return self.merge_worktree(terminal, &worktree, folder.as_deref());
+            }
             Call::CloseBlock { block } => self.close_block(terminal, &block, window, cx),
-            Call::AskUser {
-                question,
-                options,
+            Call::ProposePlan {
+                plan,
+                title,
                 timeout,
             } => {
+                let ask = templum_mcp::ask::plan(title, plan);
                 let what = Waiting::Question {
-                    text: question,
-                    options,
-                    field: None,
+                    form: Form::new(&ask),
+                    ask,
+                    others: Vec::new(),
+                    note: None,
+                    away: false,
+                    stopped: false,
+                    scroll: Default::default(),
                 };
-                return Outcome::Wait(what, timeout);
+                let seconds = deadline(timeout, self.config.connections.question_timeout);
+                return Outcome::Wait(Box::new(what), seconds);
+            }
+            Call::AskUser { ask, timeout } => {
+                let what = Waiting::Question {
+                    form: Form::new(&ask),
+                    ask,
+                    others: Vec::new(),
+                    note: None,
+                    away: false,
+                    stopped: false,
+                    scroll: Default::default(),
+                };
+                let seconds = deadline(timeout, self.config.connections.question_timeout);
+                return Outcome::Wait(Box::new(what), seconds);
             }
         })
     }
@@ -539,8 +595,8 @@ impl Workspace {
             ),
             Body::Kanban(_) => ("kanban", title(), None),
             Body::Note(_) => ("note", title(), None),
+            Body::Checklist(_) => ("checklist", title(), None),
             Body::Editor(e) => ("editor", title(), Some(e.folder.clone())),
-            Body::Git(_) => ("git", title(), body.folder()),
         };
         (kind, clean_title(&title), folder)
     }
@@ -573,19 +629,7 @@ impl Workspace {
                 } else {
                     "not connected"
                 };
-                let state = space
-                    .terminal(b.id)
-                    .filter(|pane| pane.seen.agent.is_some())
-                    .and_then(|pane| pane.state.as_ref())
-                    .map(|state| match state {
-                        AgentState::Working => ", working".to_string(),
-                        AgentState::Idle => ", idle".to_string(),
-                        AgentState::NeedsYou(Some(what)) if !what.is_empty() => {
-                            format!(", waiting for its person: {}", clean_title(what))
-                        }
-                        AgentState::NeedsYou(_) => ", waiting for its person".to_string(),
-                    })
-                    .unwrap_or_default();
+                let state = agent_state(space, b.id);
                 format!("{uid}  {kind}  {title}{folder}  {tie}{state}")
             })
             .collect()
@@ -623,13 +667,40 @@ impl Workspace {
                     .join(", ")
             }
         };
+        // The person's roles, by id and agent: at most ROLES_TOLD.
+        let mut roles: Vec<String> = self
+            .config
+            .roles
+            .iter()
+            .take(ROLES_TOLD)
+            .map(|(id, role)| format!("{id} ({})", flat(&role.agent)))
+            .collect();
+        if self.config.roles.len() > ROLES_TOLD {
+            roles.push("…".into());
+        }
+        let roles = match roles.is_empty() {
+            true => String::new(),
+            false => format!(" Roles for spawn_agent: {}.", roles.join(", ")),
+        };
+        // Agents first: Claude Code shows its own Agent tool whole and Templum's tools by name
+        // only, Codex weighs the first 512 characters most, and Claude Code cuts at 4096 the
+        // block lists may outgrow.
         format!(
-            "You are block {uid}, {title:?}, in Templum workspace {:?}. Connected to you: {}. In this \
+            "In Templum, an agent the person asks for is a block on this canvas: start one with \
+             spawn_agent, or hand work to an agent connected to you with delegate. Your built-in \
+             subagents run hidden inside you, where the person can't see them: use them only when \
+             the person asks for a subagent. \
+             You are block {uid}, {title:?}, in Templum workspace {:?}. Connected to you: {}. In this \
              workspace, not connected (ask with connect): {}. Name blocks by these ids. You may only read \
              or write your own block and those connected to you; connect asks the person for another. \
-             list_blocks gives the current list. When a connected kanban has your task, move its card \
-             to Doing when you start and to Review when you are done (Done when the board has no \
-             Review); write what the next agent needs to know in the connected note. A task you \
+             list_blocks gives the current list.{roles} When a connected kanban has your task, claim its \
+             card (claim_card: a card for another agent isn't yours) and move it to Doing when you \
+             start; check its checklist's items as you finish them (edit_card); when you are done, \
+             comment on it what you did and what the next agent needs to know (comment_card), then \
+             move it to Review (Done when the board has no Review); write what the next agent needs \
+             to know in the connected note too, and check the items of a connected checklist as you \
+             finish them. For work of several steps, open your own checklist with create_block and \
+             check its items as you go. A task you \
              hand over without wait comes back typed into your terminal as [task …]: it isn't the \
              person writing.",
             space.name,
@@ -639,8 +710,28 @@ impl Workspace {
     }
 }
 
+/// The turn of the agent in block `id`, as `list_blocks` says it: `, working`, `, idle`, `,
+/// waiting for its person: <what>`; nothing for a block with no agent, or one not yet heard.
+pub(super) fn agent_state(space: &Space, id: BlockId) -> String {
+    space
+        .terminal(id)
+        .filter(|pane| pane.seen.agent.is_some())
+        .and_then(|pane| pane.state.as_ref())
+        .map(|state| match state {
+            AgentState::Working => ", working".to_string(),
+            AgentState::Idle => ", idle".to_string(),
+            AgentState::NeedsYou(Some(what)) if !what.is_empty() => {
+                format!(", waiting for its person: {}", clean_title(what))
+            }
+            AgentState::NeedsYou(_) => ", waiting for its person".to_string(),
+        })
+        .unwrap_or_default()
+}
+
 /// The most characters of a title an agent is told.
 const TITLE_CHARS: usize = 60;
+/// The most roles the instructions name.
+const ROLES_TOLD: usize = 10;
 
 /// Text as agents are told it, on one line: no control characters, no invisible ones (zero
 /// widths, direction overrides, soft hyphens, tags, which can carry hidden text), its line breaks

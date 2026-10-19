@@ -20,15 +20,17 @@ use crate::motion;
 use crate::theme::Ui;
 use crate::workspace::Workspace;
 
+pub(crate) mod accounts;
 mod agents;
 mod colors;
-mod connections;
+pub(crate) mod connections;
 mod edits;
 mod fields;
 mod fonts;
 mod git;
 mod row;
 mod sections;
+mod templum_agent;
 #[cfg(test)]
 mod tests;
 mod updates;
@@ -56,6 +58,7 @@ const WIDTH: f32 = 480.0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Section {
     Appearance,
+    Canvas,
     Font,
     Terminal,
     Shell,
@@ -63,14 +66,16 @@ pub(crate) enum Section {
     Git,
     Agents,
     Connections,
+    TemplumAgent,
     Usage,
     Updates,
     Shortcuts,
 }
 
 impl Section {
-    pub const ALL: [Section; 11] = [
+    pub const ALL: [Section; 13] = [
         Section::Appearance,
+        Section::Canvas,
         Section::Font,
         Section::Terminal,
         Section::Shell,
@@ -78,6 +83,7 @@ impl Section {
         Section::Git,
         Section::Agents,
         Section::Connections,
+        Section::TemplumAgent,
         Section::Usage,
         Section::Updates,
         Section::Shortcuts,
@@ -86,6 +92,7 @@ impl Section {
     fn title(self) -> &'static str {
         match self {
             Section::Appearance => "Appearance",
+            Section::Canvas => "Canvas",
             Section::Font => "Font",
             Section::Terminal => "Terminal",
             Section::Shell => "Shell",
@@ -93,6 +100,7 @@ impl Section {
             Section::Git => "Git",
             Section::Agents => "Agents",
             Section::Connections => "Connections",
+            Section::TemplumAgent => "Templum Agent",
             Section::Usage => "Usage",
             Section::Updates => "Updates",
             Section::Shortcuts => "Shortcuts",
@@ -103,6 +111,7 @@ impl Section {
     fn tab_id(self) -> &'static str {
         match self {
             Section::Appearance => "settings-tab-appearance",
+            Section::Canvas => "settings-tab-canvas",
             Section::Font => "settings-tab-font",
             Section::Terminal => "settings-tab-terminal",
             Section::Shell => "settings-tab-shell",
@@ -110,6 +119,7 @@ impl Section {
             Section::Git => "settings-tab-git",
             Section::Agents => "settings-tab-agents",
             Section::Connections => "settings-tab-connections",
+            Section::TemplumAgent => "settings-tab-templum-agent",
             Section::Usage => "settings-tab-usage",
             Section::Updates => "settings-tab-updates",
             Section::Shortcuts => "settings-tab-shortcuts",
@@ -134,6 +144,10 @@ impl Section {
             Section::Connections => Some(
                 "What the agents in the canvas get from Templum: its MCP server, to read and type \
                  into the blocks wired to them, and its hooks, for the dot on their terminal.",
+            ),
+            Section::TemplumAgent => Some(
+                "The chat at the bottom of the canvas: an agent that builds and runs the canvas for \
+                 you, and asks before anything it can't take back.",
             ),
             Section::Usage => Some(
                 "Claude Code's and Codex's plan limits, shown in the title bar, and each agent's \
@@ -303,7 +317,10 @@ pub(crate) fn render(
                     )
                 })
                 .child(div().mt(px(4.0)).child(card))
-                .when(section == Section::Agents, |el| el.child(add_agent(ui, cx)))
+                .when(section == Section::Agents, |el| {
+                    el.child(add_agent(ui, cx))
+                        .child(accounts::accounts(ws, &entity, cx))
+                })
                 .when(section == Section::Appearance, |el| {
                     el.child(colors::theme_card(ws, window, cx))
                 }),

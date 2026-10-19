@@ -7,12 +7,11 @@ use crate::git_block::diff_view::Row;
 fn hunk_at(
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
-    id: BlockId,
     staged: bool,
     path: &str,
     hunk: usize,
 ) -> usize {
-    git_of(ws, cx, id, |g| {
+    git_of(ws, cx, |g| {
         g.panel
             .rows
             .iter()
@@ -26,21 +25,15 @@ fn hunk_at(
     })
 }
 
-fn hunk_button(id: BlockId, what: &str, ix: usize) -> gpui_kit::ElementId {
-    gpui_kit::ElementId::Name(format!("git-hunk-{what}-{}-{ix}", id.0).into())
+fn hunk_button(what: &str, ix: usize) -> gpui_kit::ElementId {
+    gpui_kit::ElementId::Name(format!("git-hunk-{what}-{ix}").into())
 }
 
 /// Scrolls the panel so row `ix` is drawn, and draws a frame.
-fn scroll_to(
-    handle: AnyWindowHandle,
-    ws: &Entity<Workspace>,
-    cx: &mut TestAppContext,
-    id: BlockId,
-    ix: usize,
-) {
+fn scroll_to(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext, ix: usize) {
     ws.update(cx, |ws, _| {
         ws.space
-            .git(id)
+            .git()
             .unwrap()
             .panel
             .scroll
@@ -55,17 +48,11 @@ fn click_hunk(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
-    id: BlockId,
     ix: usize,
     what: &str,
 ) {
-    scroll_to(handle, ws, cx, id, ix);
-    click_row_button(
-        handle,
-        cx,
-        ("git-hunk", ix).into(),
-        hunk_button(id, what, ix),
-    );
+    scroll_to(handle, ws, cx, ix);
+    click_row_button(handle, cx, ("git-hunk", ix).into(), hunk_button(what, ix));
 }
 
 #[gpui_kit::test]
@@ -75,19 +62,19 @@ fn the_hunk_buttons_stage_unstage_and_discard_one_hunk(cx: &mut TestAppContext) 
     let repo = three_hunk_repo();
     let data = tempfile::tempdir().unwrap();
     let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
-    let id = open_git(handle, &ws, cx, repo.path());
-    let ix = hunk_at(&ws, cx, id, false, "a.txt", 1);
-    click_hunk(handle, &ws, cx, id, ix, "stage");
+    open_git(handle, &ws, cx, repo.path());
+    let ix = hunk_at(&ws, cx, false, "a.txt", 1);
+    click_hunk(handle, &ws, cx, ix, "stage");
     assert_eq!(
         git_run(repo.path(), &["diff", "--cached", "--numstat"]),
         "1\t1\ta.txt\n",
         "the middle hunk alone"
     );
-    let ix = hunk_at(&ws, cx, id, true, "a.txt", 0);
-    click_hunk(handle, &ws, cx, id, ix, "unstage");
+    let ix = hunk_at(&ws, cx, true, "a.txt", 0);
+    click_hunk(handle, &ws, cx, ix, "unstage");
     assert_eq!(git_run(repo.path(), &["diff", "--cached", "--numstat"]), "");
-    let ix = hunk_at(&ws, cx, id, false, "a.txt", 2);
-    click_hunk(handle, &ws, cx, id, ix, "discard");
+    let ix = hunk_at(&ws, cx, false, "a.txt", 2);
+    click_hunk(handle, &ws, cx, ix, "discard");
     cx.update_window(handle, |_, window, cx| {
         assert!(window.has_active_dialog(cx), "asks first");
         window.within("dialog").click("ok", cx);
@@ -116,11 +103,11 @@ fn a_hunk_that_changed_since_it_was_read_is_refused(cx: &mut TestAppContext) {
     no_motion(cx);
     let repo = three_hunk_repo();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let ix = hunk_at(&ws, cx, id, false, "a.txt", 1);
+    open_git(handle, &ws, cx, repo.path());
+    let ix = hunk_at(&ws, cx, false, "a.txt", 1);
     // A terminal stages the whole file; the panel still shows the read before it.
     git_run(repo.path(), &["add", "a.txt"]);
-    click_hunk(handle, &ws, cx, id, ix, "stage");
+    click_hunk(handle, &ws, cx, ix, "stage");
     assert_eq!(
         notification_count(handle, cx),
         1,
@@ -131,7 +118,7 @@ fn a_hunk_that_changed_since_it_was_read_is_refused(cx: &mut TestAppContext) {
         "3\t3\ta.txt\n",
         "nothing else changed"
     );
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert!(g.panel.files.iter().all(|s| s.staged), "read again")
     });
 }
@@ -143,48 +130,39 @@ fn a_new_file_or_ignored_whitespace_has_no_hunk_buttons_and_open_goes_to_the_hun
     let repo = three_hunk_repo();
     std::fs::write(repo.path().join("n.txt"), "x\n").unwrap();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    let a = hunk_at(&ws, cx, id, false, "a.txt", 0);
-    let new = hunk_at(&ws, cx, id, false, "n.txt", 0);
-    scroll_to(handle, &ws, cx, id, a);
+    open_git(handle, &ws, cx, repo.path());
+    let a = hunk_at(&ws, cx, false, "a.txt", 0);
+    let new = hunk_at(&ws, cx, false, "n.txt", 0);
+    scroll_to(handle, &ws, cx, a);
     cx.update_window(handle, |_, window, _| {
-        assert!(window.try_find(hunk_button(id, "stage", a)).is_some());
+        assert!(window.try_find(hunk_button("stage", a)).is_some());
     })
     .unwrap();
-    scroll_to(handle, &ws, cx, id, new);
+    scroll_to(handle, &ws, cx, new);
     cx.update_window(handle, |_, window, _| {
+        assert!(window.try_find(hunk_button("open", new)).is_some(), "drawn");
         assert!(
-            window.try_find(hunk_button(id, "open", new)).is_some(),
-            "drawn"
-        );
-        assert!(
-            window.try_find(hunk_button(id, "stage", new)).is_none(),
+            window.try_find(hunk_button("stage", new)).is_none(),
             "a new file's own buttons do it"
         );
     })
     .unwrap();
-    scroll_to(handle, &ws, cx, id, a);
-    cx.update_window(handle, |_, window, cx| {
-        window.click(("git-ignore-ws", n), cx)
-    })
-    .unwrap();
+    scroll_to(handle, &ws, cx, a);
+    cx.update_window(handle, |_, window, cx| window.click("git-ignore-ws", cx))
+        .unwrap();
     settle(handle, cx);
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
+        assert!(window.try_find(hunk_button("open", a)).is_some(), "drawn");
         assert!(
-            window.try_find(hunk_button(id, "open", a)).is_some(),
-            "drawn"
-        );
-        assert!(
-            window.try_find(hunk_button(id, "stage", a)).is_none(),
+            window.try_find(hunk_button("stage", a)).is_none(),
             "the patch would miss the whitespace"
         );
     })
     .unwrap();
     // Open on the middle hunk: the editor at its first line, 12 (three of context before 15).
-    let b = hunk_at(&ws, cx, id, false, "a.txt", 1);
-    click_hunk(handle, &ws, cx, id, b, "open");
+    let b = hunk_at(&ws, cx, false, "a.txt", 1);
+    click_hunk(handle, &ws, cx, b, "open");
     ws.read_with(cx, |ws, cx| {
         let e = ws
             .space

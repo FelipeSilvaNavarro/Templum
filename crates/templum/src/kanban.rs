@@ -2,21 +2,26 @@
 //! and the dialog of an open card. Everything is drawn at the block's zoom `z`, like a
 //! terminal's text. See docs/specs/kanban.md.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Instant;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::dialog::DialogButtonProps;
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::dialog::Confirm;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_kit::component::{Icon, WindowExt as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+use gpui_kit::component::{Icon, Sizable as _, WindowExt as _};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, FontWeight, MouseButton,
-    MouseDownEvent, Render, ScrollWheelEvent, SharedString, TestSupportExt, Window, div, point, px,
+    AnyElement, App, BoxShadow, ClickEvent, ClipboardItem, Context, DragMoveEvent, ElementId,
+    Entity, FontWeight, MouseButton, MouseDownEvent, Render, ScrollHandle, ScrollWheelEvent,
+    SharedString, TestSupportExt, Window, div, point, px, relative,
 };
-use templum_canvas::{BlockId, Size};
+use templum_canvas::{BlockId, EDGE_ZONE, Point, Rect, Size, edge_scroll};
 
-use crate::board::{Board, Boards, Card, Column, Comment, Label};
+use crate::board::{Assignee, Board, Boards, Card, Column, Comment, Label, Priority};
+use crate::checklists;
 use crate::grid::hsla;
 use crate::menu::Target;
 use crate::notes;
@@ -64,12 +69,13 @@ struct ColumnDrag {
     column: u64,
 }
 
-/// What follows the pointer while dragging: the card or column's title, at the canvas's zoom.
-struct DragPreview {
-    text: SharedString,
-    width: f32,
-    z: f32,
-    ui: Ui,
+/// What follows the pointer while dragging: the card or column's title (a checklist's item), at
+/// the canvas's zoom.
+pub(crate) struct DragPreview {
+    pub text: SharedString,
+    pub width: f32,
+    pub z: f32,
+    pub ui: Ui,
 }
 
 impl Render for DragPreview {
@@ -97,6 +103,120 @@ impl Render for DragPreview {
     }
 }
 
+/// How fast a drag at `pointer` scrolls a container at `bounds` (both in pixels) along its
+/// axis, in world units a second, positive toward the end: the canvas's edge rule measured in
+/// world units, so the zone and the speed scale with the zoom `z`. Zero when the pointer is
+/// outside the container across the axis (over another column), or more than a zone past its
+/// ends: every container hears every drag, another block's too.
+pub(crate) fn drag_speed(pointer: Point, bounds: Rect, vertical: bool, z: f32) -> f32 {
+    let local = Point::new((pointer.x - bounds.x) / z, (pointer.y - bounds.y) / z);
+    let size = Size {
+        w: bounds.w / z,
+        h: bounds.h / z,
+    };
+    let ((across, width), (along, length)) = if vertical {
+        ((local.x, size.w), (local.y, size.h))
+    } else {
+        ((local.y, size.h), (local.x, size.w))
+    };
+    if !(0.0..=width).contains(&across) || !(-EDGE_ZONE..=length + EDGE_ZONE).contains(&along) {
+        return 0.0;
+    }
+    let speed = edge_scroll(local, size);
+    if vertical { speed.y } else { speed.x }
+}
+
+/// A scroll container that scrolls while a drag holds the pointer near its edge: its handle,
+/// the speed the last drag move gave (world units a second), and when it last moved.
+#[derive(Default)]
+struct EdgeScroll {
+    handle: ScrollHandle,
+    speed: f32,
+    at: Option<Instant>,
+}
+
+/// The `EdgeScroll` of the container `key`, kept across frames, moved by this frame's step;
+/// asks for the next frame while it scrolls.
+fn edge_scroll_state(
+    key: impl Into<ElementId>,
+    vertical: bool,
+    z: f32,
+    window: &mut Window,
+    cx: &mut App,
+) -> Entity<EdgeScroll> {
+    let edge = window.use_keyed_state(key, cx, |_, _| EdgeScroll::default());
+    let dragging = cx.has_active_drag();
+    if step(&edge, vertical, z, dragging, Instant::now(), cx) {
+        window.request_animation_frame();
+    }
+    edge
+}
+
+/// One frame of scrolling while a drag is near an edge: the offset moves by the speed × `z` ×
+/// the time since the last frame (at most 0.05 s, so a stalled frame doesn't jump; none the
+/// first time), within the container's ends. True while it scrolls. A drag that ended, a
+/// pointer out of the zone, or an end reached stops it at once.
+fn step(
+    edge: &Entity<EdgeScroll>,
+    vertical: bool,
+    z: f32,
+    dragging: bool,
+    now: Instant,
+    cx: &mut App,
+) -> bool {
+    edge.update(cx, |e, _| {
+        if !dragging || e.speed == 0.0 {
+            e.speed = 0.0;
+            e.at = None;
+            return false;
+        }
+        let dt =
+            e.at.map_or(0.0, |at| now.duration_since(at).as_secs_f32().min(0.05));
+        e.at = Some(now);
+        let (offset, max) = (e.handle.offset(), e.handle.max_offset());
+        let by = px(e.speed * z * dt);
+        let moved = if vertical {
+            point(offset.x, (offset.y - by).clamp(-max.y, px(0.0)))
+        } else {
+            point((offset.x - by).clamp(-max.x, px(0.0)), offset.y)
+        };
+        e.handle.set_offset(moved);
+        // At an end it stops, asking for no more frames until the pointer moves again.
+        dt == 0.0 || moved != offset
+    })
+}
+
+/// A drag move over a container of `block`: its speed from where the pointer is; none while
+/// another block is on top there (every container hears every drag).
+fn on_edge<T: 'static>(
+    edge: &Entity<EdgeScroll>,
+    block: BlockId,
+    vertical: bool,
+    z: f32,
+    cx: &mut Context<Workspace>,
+) -> impl Fn(&DragMoveEvent<T>, &mut Window, &mut App) + 'static {
+    let edge = edge.clone();
+    cx.listener(move |ws, e: &DragMoveEvent<T>, window, cx| {
+        let (p, b) = (e.event.position, e.bounds);
+        let pointer = Point::new(p.x.into(), p.y.into());
+        let bounds = Rect {
+            x: b.origin.x.into(),
+            y: b.origin.y.into(),
+            w: b.size.width.into(),
+            h: b.size.height.into(),
+        };
+        let speed = if ws.block_under(p).is_some_and(|top| top != block) {
+            0.0
+        } else {
+            drag_speed(pointer, bounds, vertical, z)
+        };
+        edge.update(cx, |e, _| e.speed = speed);
+        if speed != 0.0 {
+            window.refresh();
+        }
+    })
+}
+
 fn name(prefix: &str, n: usize, id: u64) -> ElementId {
     ElementId::Name(format!("{prefix}-{n}-{id}").into())
 }
@@ -107,10 +227,11 @@ pub(crate) fn body(
     block: BlockId,
     kanban: Kanban,
     z: f32,
+    window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let view = match kanban.shown(ws) {
-        Some(board) => board_view(ws, block, board, z, cx),
+        Some(board) => board_view(ws, block, board, z, window, cx),
         None => list_view(ws, block, z, cx),
     };
     // The wheel scrolls what is in the block, and stops there; with Ctrl it zooms the canvas.
@@ -232,6 +353,7 @@ fn board_view(
     block: BlockId,
     board: &Board,
     z: f32,
+    window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
@@ -240,8 +362,9 @@ fn board_view(
     let columns: Vec<AnyElement> = board
         .columns
         .iter()
-        .map(|column| column_view(ws, n, board_id, column, z, cx))
+        .map(|column| column_view(ws, n, board_id, column, z, window, cx))
         .collect();
+    let edge = edge_scroll_state(("columns-scroll", n), false, z, window, cx);
     let add = div()
         .id(("add-column", n))
         .flex_shrink_0()
@@ -276,6 +399,10 @@ fn board_view(
         .gap(px(10.0 * z))
         .p(px(4.0 * z))
         .overflow_x_scroll()
+        .track_scroll(&edge.read(cx).handle)
+        // A card, or a column by its title, dragged near the left or right scrolls the columns.
+        .on_drag_move(on_edge::<CardDrag>(&edge, block, false, z, cx))
+        .on_drag_move(on_edge::<ColumnDrag>(&edge, block, false, z, cx))
         .children(columns)
         .child(add)
         .test_support()
@@ -288,6 +415,7 @@ fn column_view(
     board: u64,
     column: &Column,
     z: f32,
+    window: &mut Window,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
@@ -345,6 +473,7 @@ fn column_view(
         .iter()
         .map(|card| card_view(ws, n, board, col, card, z, cx))
         .collect();
+    let edge = edge_scroll_state(name("cards-scroll", n, col), true, z, window, cx);
     let add = div()
         .id(name("add-card", n, col))
         .flex()
@@ -402,6 +531,9 @@ fn column_view(
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
+                .track_scroll(&edge.read(cx).handle)
+                // A card dragged near the top or bottom of the list scrolls it.
+                .on_drag_move(on_edge::<CardDrag>(&edge, BlockId(n as u64), true, z, cx))
                 .child(
                     div()
                         .flex()
@@ -410,11 +542,107 @@ fn column_view(
                         .px(px(6.0 * z))
                         .pb(px(6.0 * z))
                         .children(cards),
-                ),
+                )
+                .test_support(),
         )
         .child(add)
         .test_support()
         .into_any_element()
+}
+
+/// Who `assignee` is, as a card and its dialog show it: a block's title (its id when no
+/// workspace has it), or "Any Codex".
+pub(crate) fn assignee_label(ws: &Workspace, assignee: &Assignee, cx: &App) -> String {
+    match assignee {
+        Assignee::Block(uid) => ws.uid_title(uid, cx).unwrap_or_else(|| uid.clone()),
+        Assignee::Agent(id) => format!("Any {}", ws.agent_title(id)),
+    }
+}
+
+/// A priority's signal icon, in its color.
+fn priority_icon(ws: &Workspace, priority: Priority, size: f32) -> Icon {
+    let palette = ws.theme.palette;
+    let (icon, color) = match priority {
+        Priority::Low => (IconName::SignalLow, ws.ui.title_dim),
+        Priority::Medium => (IconName::SignalMedium, hsla(palette.ansi[3], 1.0)),
+        Priority::High => (IconName::SignalHigh, hsla(palette.ansi[1], 1.0)),
+    };
+    Icon::new(icon).size(px(size)).text_color(color)
+}
+
+/// A card's meta row, on every card: its id, priority, checklist, description, comments and,
+/// at the right, who it is for.
+fn meta_row(ws: &Workspace, n: usize, card: &Card, z: f32, cx: &App) -> impl IntoElement {
+    let ui = ws.ui;
+    let id = card.id;
+    let (done, all) = card.progress();
+    let count = card.comments.len();
+    let icon = |name: IconName| Icon::new(name).size(px(12.0 * z)).text_color(ui.title_dim);
+    div()
+        .flex()
+        .items_center()
+        .gap(px(8.0 * z))
+        .text_size(px(11.0 * z))
+        .text_color(ui.title_dim)
+        .child(
+            div()
+                .id(name("card-id", n, id))
+                .child(format!("#{id}"))
+                .test_support(),
+        )
+        .when_some(card.priority, |el, p| {
+            el.child(
+                div()
+                    .id(name("priority", n, id))
+                    .flex()
+                    .child(priority_icon(ws, p, 12.0 * z))
+                    .test_support(),
+            )
+        })
+        .when(all > 0, |el| {
+            let color = if done == all { ui.accent } else { ui.title_dim };
+            el.child(
+                div()
+                    .id(name("checklist", n, id))
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0 * z))
+                    .text_color(color)
+                    .child(
+                        Icon::new(IconName::ListChecks)
+                            .size(px(12.0 * z))
+                            .text_color(color),
+                    )
+                    .child(format!("{done}/{all}"))
+                    .test_support(),
+            )
+        })
+        .when(!card.description.is_empty(), |el| {
+            el.child(icon(IconName::FileText))
+        })
+        .when(count > 0, |el| {
+            el.child(
+                div()
+                    .id(name("comments", n, id))
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0 * z))
+                    .child(icon(IconName::MessageSquare))
+                    .child(count.to_string())
+                    .test_support(),
+            )
+        })
+        .when_some(card.assignee.as_ref(), |el, a| {
+            el.child(
+                div()
+                    .id(name("assignee", n, id))
+                    .ml_auto()
+                    .min_w_0()
+                    .truncate()
+                    .child(assignee_label(ws, a, cx))
+                    .test_support(),
+            )
+        })
 }
 
 fn card_view(
@@ -466,54 +694,7 @@ fn card_view(
             )
         })
         .child(div().text_size(px(13.0 * z)).child(title))
-        .when(
-            !card.description.is_empty() || !card.comments.is_empty() || card.assignee.is_some(),
-            |el| {
-                let count = card.comments.len();
-                let who = card
-                    .assignee
-                    .as_ref()
-                    .map(|uid| ws.uid_title(uid, cx).unwrap_or_else(|| uid.clone()));
-                el.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.0 * z))
-                        .text_size(px(11.0 * z))
-                        .text_color(ui.title_dim)
-                        .when(!card.description.is_empty(), |el| {
-                            el.child(
-                                Icon::new(IconName::FileText)
-                                    .size(px(12.0 * z))
-                                    .text_color(ui.title_dim),
-                            )
-                        })
-                        .when(count > 0, |el| {
-                            el.child(
-                                div()
-                                    .id(name("comments", n, id))
-                                    .child(if count == 1 {
-                                        "1 comment".to_string()
-                                    } else {
-                                        format!("{count} comments")
-                                    })
-                                    .test_support(),
-                            )
-                        })
-                        .when_some(who, |el, who| {
-                            el.child(
-                                div()
-                                    .id(name("assignee", n, id))
-                                    .ml_auto()
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(who)
-                                    .test_support(),
-                            )
-                        }),
-                )
-            },
-        )
+        .child(meta_row(ws, n, card, z, cx))
         .drag_over::<CardDrag>(move |s, _, _, _| s.border_color(ui.accent))
         .on_drag(CardDrag { board, card: id }, move |_, _, _, cx| {
             let text = preview_title.clone();
@@ -572,6 +753,118 @@ fn edit_typed(ws: &mut Workspace, typed: &Cell<bool>, f: impl FnOnce(&mut Boards
     }
 }
 
+/// The open card's assignee button, showing `who`: its menu gives the card to anyone, one
+/// agent session running now, or any session of an agent. Each choice is one Ctrl+Z step.
+fn assignee_menu(
+    ws: &Entity<Workspace>,
+    board: u64,
+    card: u64,
+    current: Option<Assignee>,
+    who: String,
+) -> impl IntoElement {
+    let ws = ws.clone();
+    Button::new("card-assignee")
+        .small()
+        .outline()
+        .dropdown_caret(true)
+        .label(who)
+        .dropdown_menu(move |menu, window, cx| {
+            let set = |to| give(ws.clone(), board, card, to);
+            let ws_now = ws.read(cx);
+            let mut sessions = ws_now.agent_sessions(cx);
+            // The current block first when it runs no agent now (closed, or its agent quit).
+            if let Some(Assignee::Block(uid)) = &current
+                && !sessions.iter().any(|(s, _)| s == uid)
+            {
+                let label = assignee_label(ws_now, &Assignee::Block(uid.clone()), cx);
+                sessions.insert(0, (uid.clone(), label));
+            }
+            let agents: Vec<(String, String)> = ws_now
+                .agents
+                .iter()
+                .map(|a| (a.id.clone(), a.title.clone()))
+                .collect();
+            let mut menu = menu.item(
+                PopupMenuItem::new("Anyone")
+                    .checked(current.is_none())
+                    .on_click(set(None)),
+            );
+            if !sessions.is_empty() {
+                menu = menu.separator().label("Sessions");
+                for (uid, label) in sessions {
+                    let to = Assignee::Block(uid);
+                    menu = menu.item(
+                        PopupMenuItem::new(label)
+                            .checked(current.as_ref() == Some(&to))
+                            .on_click(set(Some(to))),
+                    );
+                }
+            }
+            let (ws, current) = (ws.clone(), current.clone());
+            menu.separator()
+                .submenu("Any session of", window, cx, move |mut menu, _, _| {
+                    for (id, title) in &agents {
+                        let to = Assignee::Agent(id.clone());
+                        menu = menu.item(
+                            PopupMenuItem::new(title.clone())
+                                .checked(current.as_ref() == Some(&to))
+                                .on_click(give(ws.clone(), board, card, Some(to))),
+                        );
+                    }
+                    menu
+                })
+        })
+}
+
+/// A paste into "Add an item": several lines are an item each, added at once (the field is
+/// one line); a single line is pasted into it as usual.
+fn paste_items(
+    ws: Entity<Workspace>,
+    board: u64,
+    card: u64,
+) -> impl Fn(&ClipboardItem, &mut Window, &mut App) -> bool + 'static {
+    move |clip, _, cx| {
+        let Some(text) = clip.text().filter(|t| t.contains('\n')) else {
+            return false;
+        };
+        let items = checklists::parse_items(&text);
+        ws.update(cx, |ws, cx| {
+            ws.edit_boards(|b| b.add_items(board, card, &items));
+            cx.notify();
+        });
+        true
+    }
+}
+
+/// A click that gives the card to `to`.
+fn give(
+    ws: Entity<Workspace>,
+    board: u64,
+    card: u64,
+    to: Option<Assignee>,
+) -> impl Fn(&ClickEvent, &mut Window, &mut App) + 'static {
+    move |_, _, cx| {
+        let to = to.clone();
+        ws.update(cx, |ws, cx| {
+            ws.edit_boards(|b| b.edit_card(board, card, |c| c.assignee = to));
+            cx.notify();
+        })
+    }
+}
+
+/// Where a card is, as its dialog says it: "In {column} on {board}".
+fn place(boards: &Boards, board: u64, card: u64) -> String {
+    let Some(b) = boards.board(board) else {
+        return String::new();
+    };
+    let column = b
+        .columns
+        .iter()
+        .find(|c| c.cards.iter().any(|x| x.id == card))
+        .map_or("", |c| c.title.as_str());
+    format!("In {column} on {}", b.name)
+}
+
 /// The open card: title, description and labels apply as they change. `new`: the title is
 /// selected, to type over "New card".
 pub(crate) fn open_card(
@@ -583,14 +876,34 @@ pub(crate) fn open_card(
 ) {
     let card = current.id;
     let ws = cx.entity();
-    let title = cx.new(|cx| InputState::new(window, cx).default_value(current.title));
+    let title = cx.new(|cx| InputState::new(window, cx).default_value(current.title.clone()));
     let title_focus = title.clone();
     let description = cx.new(|cx| {
         TextareaState::new(window, cx)
             .rows(5)
-            .default_value(current.description)
+            .default_value(current.description.clone())
     });
     let comment = cx.new(|cx| TextareaState::new(window, cx).rows(2));
+    let item = cx.new(|cx| InputState::new(window, cx).placeholder("Add an item"));
+    // Enter adds what is typed (a line per item) and empties the field; it needs the window.
+    {
+        let ws = ws.clone();
+        window
+            .subscribe(&item, cx, move |input, event: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = event {
+                    let items = checklists::parse_items(&input.read(cx).value());
+                    if items.is_empty() {
+                        return;
+                    }
+                    ws.update(cx, |ws, cx| {
+                        ws.edit_boards(|b| b.add_items(board, card, &items));
+                        cx.notify();
+                    });
+                    input.update(cx, |input, cx| input.set_value("", window, cx));
+                }
+            })
+            .detach();
+    }
     // Subscribed through the app: the workspace these update isn't leased, and they need no
     // window. Enter in the title confirms the dialog by itself. The dialog's typing is one undo
     // step for the board (its fields undo each key): taken at its first change.
@@ -623,18 +936,31 @@ pub(crate) fn open_card(
         })
         .detach();
     }
+    // A card gone meanwhile (an agent, another block, Ctrl+Z) draws its last values.
+    let last = RefCell::new((current, String::new()));
     window.open_alert_dialog(cx, move |alert, _, cx| {
         let ws_now = ws.read(cx);
         let ui = ws_now.ui;
         let palette = ws_now.theme.palette;
-        let labels = ws_now
-            .boards
-            .card(board, card)
-            .map(|c| c.labels.clone())
-            .unwrap_or_default();
-        let toggles = Label::ALL.map(|label| {
-            let on = labels.contains(&label);
+        if let Some(c) = ws_now.boards.card(board, card) {
+            *last.borrow_mut() = (c.clone(), place(&ws_now.boards, board, card));
+        }
+        let (shown, place) = last.borrow().clone();
+        // Each change from the dialog is one step of the kanban's Ctrl+Z.
+        let edit = {
             let ws = ws.clone();
+            move |f: Rc<dyn Fn(&mut Boards)>| {
+                let ws = ws.clone();
+                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                    ws.update(cx, |ws, cx| {
+                        ws.edit_boards(|b| f(b));
+                        cx.notify();
+                    })
+                }
+            }
+        };
+        let toggles = Label::ALL.map(|label| {
+            let on = shown.labels.contains(&label);
             div()
                 .id(ElementId::Name(format!("label-{}", label.name()).into()))
                 .w(px(40.0))
@@ -651,29 +977,55 @@ pub(crate) fn open_card(
                     gpui_kit::transparent_black()
                 })
                 .cursor_pointer()
-                .on_click(move |_: &ClickEvent, _, cx| {
-                    ws.update(cx, |ws, cx| {
-                        ws.edit_boards(|b| b.toggle_label(board, card, label));
-                        cx.notify();
-                    })
-                })
+                .on_click(edit(Rc::new(move |b| b.toggle_label(board, card, label))))
                 .test_support()
         });
-        let (assignee, comments) = ws_now
-            .boards
-            .card(board, card)
-            .map(|c| (c.assignee.clone(), c.comments.clone()))
-            .unwrap_or_default();
+        let chips = std::iter::once(None)
+            .chain(Priority::ALL.map(Some))
+            .map(|p| {
+                let on = shown.priority == p;
+                let word = p.map_or("None", Priority::title);
+                div()
+                    .id(ElementId::Name(
+                        format!("priority-{}", p.map_or("none", Priority::name)).into(),
+                    ))
+                    .h(px(26.0))
+                    .px(px(10.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .text_size(px(12.0))
+                    .cursor_pointer()
+                    .map(|el| {
+                        if on {
+                            el.bg(ui.hover).border_color(ui.accent).text_color(ui.title)
+                        } else {
+                            el.border_color(ui.hairline)
+                                .text_color(ui.title_dim)
+                                .hover(move |s| s.bg(ui.hover))
+                        }
+                    })
+                    .when_some(p, |el, p| el.child(priority_icon(ws_now, p, 12.0)))
+                    .child(word)
+                    .on_click(edit(Rc::new(move |b| {
+                        b.edit_card(board, card, |c| c.priority = p)
+                    })))
+                    .test_support()
+            });
         let now = notes::now();
         let author = |by: &str| {
             if by == "you" {
                 "You".to_string()
+            } else if by == templum_agent::ASKER {
+                "Templum Agent".to_string()
             } else {
                 ws_now.uid_title(by, cx).unwrap_or_else(|| by.to_string())
             }
         };
-        let assignee = assignee.map(|uid| (author(&uid), ws.clone()));
-        let comments: Vec<_> = comments
+        let comments: Vec<_> = shown
+            .comments
             .iter()
             .map(|c| {
                 div()
@@ -691,15 +1043,9 @@ pub(crate) fn open_card(
             .collect();
         let add = {
             let (ws, comment) = (ws.clone(), comment.clone());
-            div()
-                .id("add-comment")
-                .px(px(10.0))
-                .py(px(4.0))
-                .rounded(px(6.0))
-                .text_size(px(12.0))
-                .cursor_pointer()
-                .hover(move |s| s.bg(ui.hover))
-                .child("Add comment")
+            Button::new("add-comment")
+                .small()
+                .label("Add comment")
                 .on_click(move |_: &ClickEvent, window, cx| {
                     let text = comment.read(cx).value().trim().to_string();
                     if text.is_empty() {
@@ -716,19 +1062,23 @@ pub(crate) fn open_card(
                     });
                     comment.update(cx, |c, cx| c.set_value("", window, cx));
                 })
-                .test_support()
         };
         let delete = {
             let ws = ws.clone();
+            let red = hsla(palette.ansi[1], 1.0);
             div()
                 .id("delete-card")
+                .h(px(28.0))
                 .px(px(10.0))
-                .py(px(4.0))
+                .flex()
+                .items_center()
+                .gap(px(6.0))
                 .rounded(px(6.0))
-                .text_size(px(12.0))
-                .text_color(hsla(palette.ansi[1], 1.0))
+                .text_size(px(13.0))
+                .text_color(red)
                 .cursor_pointer()
                 .hover(move |s| s.bg(ui.hover))
+                .child(Icon::new(IconName::Trash).size(px(14.0)).text_color(red))
                 .child("Delete card")
                 .on_click(move |_: &ClickEvent, window, cx| {
                     ws.update(cx, |ws, cx| {
@@ -739,62 +1089,266 @@ pub(crate) fn open_card(
                 })
                 .test_support()
         };
-        let field = |label: &'static str| {
+        let section = |label: &'static str| {
             div()
                 .text_size(px(12.0))
+                .font_weight(FontWeight::MEDIUM)
                 .text_color(ui.title_dim)
                 .child(label)
         };
+        // A section's header: its label at the left, a count at the right.
+        let header = |label: &'static str, count: Option<String>| {
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(section(label))
+                .when_some(count, |el, count| {
+                    el.child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(ui.title_dim)
+                            .child(count),
+                    )
+                })
+        };
+        let property = |label: &'static str| {
+            div()
+                .min_h(px(28.0))
+                .flex()
+                .items_center()
+                .gap(px(12.0))
+                .child(
+                    div()
+                        .w(px(84.0))
+                        .flex_shrink_0()
+                        .text_size(px(12.0))
+                        .text_color(ui.title_dim)
+                        .child(label),
+                )
+        };
+        let who = shown
+            .assignee
+            .as_ref()
+            .map_or_else(|| "Anyone".to_string(), |a| assignee_label(ws_now, a, cx));
+        let unassign = shown.assignee.is_some().then(|| {
+            div()
+                .id("unassign")
+                .size(px(24.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.0))
+                .cursor_pointer()
+                .hover(move |s| s.bg(ui.hover))
+                .child(
+                    Icon::new(IconName::Close)
+                        .size(px(12.0))
+                        .text_color(ui.title_dim),
+                )
+                .on_click(edit(Rc::new(move |b| {
+                    b.edit_card(board, card, |c| c.assignee = None)
+                })))
+                .test_support()
+        });
+        let count = shown.comments.len();
+        let (done, all) = shown.progress();
+        let items = shown.checklist.iter().map(|i| {
+            let (id, done) = (i.id, i.done);
+            let group = SharedString::from(format!("card-item-row-{id}"));
+            let check = div()
+                .id(ElementId::Name(format!("card-item-box-{id}").into()))
+                .flex_shrink_0()
+                .mt(px((13.0 * 1.5 - 14.0) / 2.0))
+                .size(px(14.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(3.0))
+                .border_1()
+                .border_color(if done { ui.accent } else { ui.title_dim })
+                .when(done, |el| {
+                    el.bg(ui.accent).child(
+                        Icon::new(IconName::Check)
+                            .size(px(10.0))
+                            .text_color(ui.surface),
+                    )
+                })
+                .cursor_pointer()
+                .on_click(edit(Rc::new(move |b| {
+                    b.set_item_done(board, card, id, !done);
+                })))
+                .test_support();
+            let delete = div()
+                .id(ElementId::Name(format!("card-item-delete-{id}").into()))
+                .flex_shrink_0()
+                .mt(px((13.0 * 1.5 - 16.0) / 2.0))
+                .size(px(16.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.0))
+                .opacity(0.0)
+                .group_hover(group.clone(), |s| s.opacity(1.0))
+                .cursor_pointer()
+                .hover(move |s| s.bg(ui.hover))
+                .child(
+                    Icon::new(IconName::Close)
+                        .size(px(10.0))
+                        .text_color(ui.title_dim),
+                )
+                .on_click(edit(Rc::new(move |b| b.remove_item(board, card, id))))
+                .test_support();
+            div()
+                .id(ElementId::Name(group.clone()))
+                .group(group)
+                .flex()
+                .items_start()
+                .gap(px(8.0))
+                .py(px(4.0))
+                .child(check)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .text_size(px(13.0))
+                        .line_height(relative(1.5))
+                        .when(done, |el| el.text_color(ui.title_dim).line_through())
+                        .child(i.text.clone()),
+                )
+                .child(delete)
+                .test_support()
+        });
+        let progress = (all > 0).then(|| {
+            div()
+                .h(px(4.0))
+                .mb(px(4.0))
+                .rounded_full()
+                .bg(ui.hover)
+                .child(
+                    div()
+                        .h_full()
+                        .w(relative(done as f32 / all as f32))
+                        .rounded_full()
+                        .bg(ui.accent),
+                )
+        });
         alert
-            .title("Card")
-            .w(px(520.0))
-            .button_props(DialogButtonProps::default().ok_text("Done"))
+            .title(
+                div()
+                    .id("card-number")
+                    .child(format!("Card #{card}"))
+                    .test_support(),
+            )
+            .description(place)
+            .w(px(560.0))
+            .footer(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(delete)
+                    .child(
+                        Button::new("card-done")
+                            .primary()
+                            .label("Done")
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    ),
+            )
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(8.0))
-                    .child(field("Title"))
+                    .gap(px(16.0))
                     .child(
                         div()
                             .id("card-title")
                             .child(Input::new(&title))
                             .test_support(),
                     )
-                    .child(field("Description"))
-                    .child(Textarea::new(&description))
-                    .child(field("Labels"))
-                    .child(div().flex().gap(px(6.0)).children(toggles))
-                    .when_some(assignee, |el, (who, ws)| {
-                        el.child(field("Assignee")).child(
-                            div().flex().items_center().gap(px(6.0)).child(who).child(
-                                div()
-                                    .id("unassign")
-                                    .cursor_pointer()
-                                    .hover(move |s| s.bg(ui.hover))
-                                    .child(Icon::new(IconName::Close).size(px(12.0)))
-                                    .on_click(move |_: &ClickEvent, _, cx| {
-                                        ws.update(cx, |ws, cx| {
-                                            ws.edit_boards(|b| {
-                                                b.edit_card(board, card, |c| c.assignee = None)
-                                            });
-                                            cx.notify();
-                                        })
-                                    })
-                                    .test_support(),
-                            ),
-                        )
-                    })
-                    .child(field("Comments"))
-                    .children(comments)
                     .child(
                         div()
-                            .id("comment-field")
-                            .child(Textarea::new(&comment))
+                            .id("card-properties")
+                            .flex()
+                            .flex_col()
+                            .gap(px(8.0))
+                            .child(
+                                property("Assignee")
+                                    .child(assignee_menu(
+                                        &ws,
+                                        board,
+                                        card,
+                                        shown.assignee.clone(),
+                                        who,
+                                    ))
+                                    .children(unassign),
+                            )
+                            .child(
+                                property("Priority")
+                                    .child(div().flex().gap(px(6.0)).children(chips)),
+                            )
+                            .child(
+                                property("Labels")
+                                    .child(div().flex().gap(px(6.0)).children(toggles)),
+                            )
                             .test_support(),
                     )
-                    .child(div().flex().justify_end().child(add))
-                    .child(div().flex().justify_end().child(delete)),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(section("Description"))
+                            .child(Textarea::new(&description)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(header(
+                                "Checklist",
+                                (all > 0).then(|| format!("{done}/{all}")),
+                            ))
+                            .child(
+                                div()
+                                    .id("card-checklist")
+                                    .flex()
+                                    .flex_col()
+                                    .children(progress)
+                                    .children(items)
+                                    .child(
+                                        div()
+                                            .id("card-item-field")
+                                            .mt(px(4.0))
+                                            // Enter adds the item: it mustn't confirm (close) the dialog.
+                                            .on_action(|_: &Confirm, _, cx| cx.stop_propagation())
+                                            .child(Input::new(&item).on_paste(paste_items(
+                                                ws.clone(),
+                                                board,
+                                                card,
+                                            )))
+                                            .test_support(),
+                                    )
+                                    .test_support(),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(header("Comments", (count > 0).then(|| count.to_string())))
+                            .child(div().flex().flex_col().gap(px(10.0)).children(comments))
+                            .child(
+                                div()
+                                    .id("comment-field")
+                                    .child(Textarea::new(&comment))
+                                    .test_support(),
+                            )
+                            .child(div().mt(px(2.0)).flex().justify_end().child(add)),
+                    ),
             )
     });
     // After opening: the dialog takes the focus when it opens.
@@ -804,4 +1358,91 @@ pub(crate) fn open_card(
             input.select_all(window, cx);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use templum_canvas::EDGE_SPEED;
+
+    #[test]
+    fn a_drag_scrolls_faster_near_an_edge_in_world_units_and_never_across_another_column() {
+        let column = Rect {
+            x: 100.0,
+            y: 50.0,
+            w: 260.0,
+            h: 400.0,
+        };
+        let at = Point::new;
+        assert_eq!(
+            drag_speed(at(230.0, 250.0), column, true, 1.0),
+            0.0,
+            "the middle"
+        );
+        let near = drag_speed(at(230.0, 440.0), column, true, 1.0);
+        assert!(near > 0.0 && near < EDGE_SPEED);
+        assert!(
+            drag_speed(at(230.0, 445.0), column, true, 1.0) > near,
+            "faster nearer"
+        );
+        assert_eq!(
+            drag_speed(at(230.0, 470.0), column, true, 1.0),
+            EDGE_SPEED,
+            "just past the edge"
+        );
+        // Every container hears a drag: one far past its edge (another block's) stays still.
+        assert_eq!(
+            drag_speed(at(230.0, 600.0), column, true, 1.0),
+            0.0,
+            "far past the edge"
+        );
+        assert_eq!(
+            drag_speed(at(230.0, 520.0), column, true, 2.0),
+            EDGE_SPEED,
+            "the zone past it is in world units too"
+        );
+        assert_eq!(
+            drag_speed(at(230.0, 60.0), column, true, 1.0),
+            -EDGE_SPEED * 0.75,
+            "up"
+        );
+        assert_eq!(
+            drag_speed(at(500.0, 445.0), column, true, 1.0),
+            0.0,
+            "over another column"
+        );
+        assert!(
+            drag_speed(at(355.0, 250.0), column, false, 1.0) > 0.0,
+            "sideways, for the row"
+        );
+        // The zone is 40 world units: 60 px from the bottom is in it at zoom 2 only.
+        let tall = Rect { h: 800.0, ..column };
+        assert_eq!(drag_speed(at(230.0, 790.0), tall, true, 1.0), 0.0);
+        assert!(drag_speed(at(230.0, 790.0), tall, true, 2.0) > 0.0);
+        // A list shorter than both zones (a small block far away) stays still at its middle.
+        let short = Rect { h: 60.0, ..column };
+        assert_eq!(drag_speed(at(230.0, 80.0), short, true, 1.0), 0.0);
+    }
+
+    #[gpui_kit::test]
+    fn a_drag_held_at_a_lists_end_or_ended_asks_for_no_more_frames(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let edge = cx.new(|_| EdgeScroll {
+                speed: 500.0,
+                ..EdgeScroll::default()
+            });
+            let t0 = Instant::now();
+            let later = t0 + std::time::Duration::from_millis(16);
+            assert!(
+                step(&edge, true, 1.0, true, t0, cx),
+                "the first frame starts the clock"
+            );
+            // An unlaid list has nothing to scroll: it is at its end, and stops there.
+            assert!(!step(&edge, true, 1.0, true, later, cx), "at the end");
+            assert!(!step(&edge, true, 1.0, false, later, cx), "the drag ended");
+            assert_eq!(edge.read(cx).speed, 0.0);
+        });
+    }
 }

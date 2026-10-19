@@ -90,6 +90,12 @@ Under these rows, a card for the theme in use: **Duplicate…** for a built-in o
 its colors as swatches with color pickers for one of yours, written to its file ([themes.md](themes.md#making-a-theme),
 [the color editor](themes.md#the-color-editor)).
 
+**Canvas**
+
+| Field | Control | Option |
+|---|---|---|
+| Focus follows the pointer | Switch, on by default: the block under the pointer takes the keyboard once it moves ([navigation.md](navigation.md#the-keyboard-follows-the-pointer)); grid mode's tiles always do | `canvas.focus_follows_pointer` |
+
 **Font**
 
 | Field | Control | Option |
@@ -116,6 +122,18 @@ when "i" and "m" advance by the same width at 14 pt, within 0.01 px.
 | Program | Text; empty means the default shell (`$SHELL`, or PowerShell on Windows) | `shell.program` (empty removes the key) |
 | Arguments | Text: separated by spaces, with `"…"` or `'…'` to keep spaces inside one argument | `shell.args` |
 | Start folder | Dropdown: Inherit from the focused block, Home, A folder… With "A folder…", a text field takes the path | `shell.working_directory` |
+
+**Connections** ([connections.md](connections.md#config), [ask-user.md](ask-user.md#settings))
+
+| Field | Control | Option |
+|---|---|---|
+| Agents in Templum | Switch, on by default: agents opened from the canvas or typed in a terminal get Templum's server and hooks; off, the bus answers none of them, those already running included | `connections.enabled` |
+| Questions wait | Number 0–1440 minutes, step 5: how long an agent's question waits for an answer; 0 waits until it is answered | `connections.question_timeout` |
+| Sound | Switch, on by default: a short sound when an agent asks something | `connections.sound` |
+
+**Agents** lists the agents ([agents.md](agents.md#changing-ours-adding-yours)), and under them their **Accounts**:
+another login of an agent on its own folder, and what it shares with the others
+([accounts.md](accounts.md#settings--agents--accounts)).
 
 **Shortcuts**
 

@@ -8,16 +8,18 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
-use gpui_kit::{ClickEvent, Entity, TestSupportExt, div, px};
+use gpui_kit::{App, ClickEvent, Entity, TestSupportExt, Window, div, px};
 
+use super::fields::QUESTION_TIMEOUT;
 use super::row::{Row, remove};
+use super::sections::number_row;
 use crate::config::Edit;
 use crate::grid::hsla;
 use crate::prompt;
 use crate::workspace::{TryIt, Workspace, templum_in};
 
 /// The questions Install and Remove ask: title, text, button.
-const INSTALL: (&str, &str, &str) = (
+pub(crate) const INSTALL: (&str, &str, &str) = (
     "Install Templum in Gemini CLI?",
     "Templum runs gemini extensions link with its extension. Every Gemini CLI you open then starts \
      Templum's server and hooks; outside Templum the server shows as disconnected. Remove takes it \
@@ -30,14 +32,21 @@ const REMOVE: (&str, &str, &str) = (
     "Remove",
 );
 
-pub(super) fn rows(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<Row> {
+pub(super) fn rows(
+    ws: &Workspace,
+    entity: &Entity<Workspace>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Vec<Row> {
     let on = ws.config.connections.enabled;
+    let sound = ws.config.connections.sound;
     let e = entity.clone();
+    let s = entity.clone();
     let mut rows = vec![
-        Row::new("connections.enabled", "Agents Templum opens")
+        Row::new("connections.enabled", "Agents in Templum")
             .description(
-                "Claude Code and Codex opened from the canvas get Templum's server and hooks: they \
-                 read and type into the blocks wired to them",
+                "Agents opened from the canvas or typed in a terminal get Templum's server and \
+                 hooks: they read and type into the blocks wired to them",
             )
             .control(Switch::new("connections-switch").checked(on).on_click(
                 move |on: &bool, _, cx| {
@@ -57,6 +66,30 @@ pub(super) fn rows(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<Row> {
                     c.connections.enabled = true
                 }),
             ),
+        number_row(ws, entity, &QUESTION_TIMEOUT, "Questions wait", window, cx).description(
+            "How long an agent's question waits for your answer, in minutes. 0 waits until you \
+             answer",
+        ),
+        Row::new("connections.sound", "Sound")
+            .description("A short sound when an agent asks you something")
+            .control(Switch::new("connections-sound").checked(sound).on_click(
+                move |on: &bool, _, cx| {
+                    let on = *on;
+                    s.update(cx, |ws, cx| {
+                        ws.edit(
+                            Edit::set("connections", "sound", on),
+                            |c| c.connections.sound = on,
+                            cx,
+                        )
+                    })
+                },
+            ))
+            .reset(
+                !sound,
+                remove(entity, "connections", "sound", |c| {
+                    c.connections.sound = true
+                }),
+            ),
     ];
     let Some(data) = ws.data_dir.as_deref().filter(|_| ws.bus.is_some()) else {
         rows.push(Row::new("connections.none", "No server").description(
@@ -69,9 +102,9 @@ pub(super) fn rows(ws: &Workspace, entity: &Entity<Workspace>) -> Vec<Row> {
     rows.push(
         Row::new("connections.command", "Other agents")
             .description(
-                "Grok Build, Pi, OpenCode or your own: add this command to their MCP servers. It \
-                 finds its block from the terminal it runs in; an agent that hands a server only \
-                 the variables it names needs TEMPLUM_BUS and TEMPLUM_TERMINAL",
+                "Grok Build, Cursor CLI, Kimi Code or your own: add this command to their MCP \
+                 servers. It finds its block from the terminal it runs in; an agent that hands a \
+                 server only the variables it names needs TEMPLUM_BUS and TEMPLUM_TERMINAL",
             )
             .control(Clipboard::new("connections-copy").value(command.clone()))
             .below(
@@ -121,7 +154,7 @@ fn gemini_row(ws: &Workspace, entity: &Entity<Workspace>, data: &Path) -> Row {
                         title,
                         text,
                         ok,
-                        move |_, cx| e.update(cx, |ws, cx| ws.setup_gemini(!installed, cx)),
+                        move |_, cx| e.update(cx, |ws, cx| ws.setup_gemini(!installed, None, cx)),
                         window,
                         cx,
                     );

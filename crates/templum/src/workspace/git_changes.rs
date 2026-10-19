@@ -4,7 +4,6 @@ use std::rc::Rc;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
-use templum_canvas::BlockId;
 use templum_git::{GitError, Repo};
 
 use crate::git_block;
@@ -29,14 +28,8 @@ impl Workspace {
     /// Commits with the form's message: what is staged, or every change (`Git::commit_all`).
     /// "Committed abc1234" with Undo commit, and the fields clear; with `push`, then pushes (a
     /// branch with no upstream asks to publish, as Push does).
-    pub(crate) fn git_commit(
-        &mut self,
-        id: BlockId,
-        push: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(git) = self.space.git(id) else {
+    pub(crate) fn git_commit(&mut self, push: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git() else {
             return;
         };
         if !git.can_commit(cx) {
@@ -46,7 +39,7 @@ impl Workspace {
         let Some(repo) = git.repo().cloned() else {
             return;
         };
-        let at = self.here(id);
+        let at = self.here();
         self.act_job(
             at,
             move || {
@@ -76,7 +69,6 @@ impl Workspace {
                             show_notification(window, cx, committed);
                             pushed = true;
                         } else {
-                            let block = at.block;
                             let undo: Extra = (
                                 "git-undo-commit",
                                 "Undo commit".into(),
@@ -85,7 +77,6 @@ impl Workspace {
                                           window: &mut Window,
                                           cx: &mut Context<Workspace>| {
                                         ws.undo_commit(
-                                            block,
                                             short.clone(),
                                             replaced.clone(),
                                             window,
@@ -99,10 +90,9 @@ impl Workspace {
                     }
                     Err(e) => notify_git_error(&entity, at.clone(), &e, Vec::new(), window, cx),
                 }
-                let block = at.block;
                 ws.after_action(at, window, cx);
                 if pushed {
-                    ws.push(block, window, cx);
+                    ws.push(window, cx);
                 }
             },
             window,
@@ -111,8 +101,8 @@ impl Workspace {
     }
 
     /// The left column's fold button: the diff takes the whole width, or gives it back.
-    pub(crate) fn toggle_lists(&mut self, id: BlockId, cx: &mut Context<Self>) {
-        if let Some(git) = self.space.git_mut(id) {
+    pub(crate) fn toggle_lists(&mut self, cx: &mut Context<Self>) {
+        if let Some(git) = self.space.git_mut() {
             git.lists_folded = !git.lists_folded;
             cx.notify();
         }
@@ -125,26 +115,14 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(id) = self
-            .space
-            .blocks
-            .iter()
-            .find_map(|(id, b)| b.git().filter(|g| g.owns_field(field)).map(|_| *id))
-        else {
-            return;
-        };
-        self.git_commit(id, false, window, cx);
+        if self.space.git().is_some_and(|g| g.owns_field(field)) {
+            self.git_commit(false, window, cx);
+        }
     }
 
     /// Amend on: the fields show the last commit's message; off: they clear.
-    pub(crate) fn set_amend(
-        &mut self,
-        id: BlockId,
-        on: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(git) = self.space.git_mut(id) else {
+    pub(crate) fn set_amend(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         git.amend = on;
@@ -158,7 +136,7 @@ impl Workspace {
         let Some(repo) = git.repo().cloned() else {
             return;
         };
-        let at = self.here(id);
+        let at = self.here();
         self.git_job(
             at,
             move || repo.last_message(),
@@ -195,18 +173,17 @@ impl Workspace {
     /// instead, after saying why.
     pub(crate) fn undo_commit(
         &mut self,
-        id: BlockId,
         short: String,
         replaced: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
+        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
             return;
         };
         let job_short = short.clone();
         self.act_job(
-            self.here(id),
+            self.here(),
             move || -> Result<Undone, GitError> {
                 // A commit made since: it is never the one taken back, pushed or not.
                 if !repo.head().is_ok_and(|h| h.starts_with(&job_short)) {
@@ -235,7 +212,7 @@ impl Workspace {
                         show_notification(window, cx, Notification::error(message));
                     }
                     Ok(Undone::Pushed) => {
-                        let (entity, block) = (cx.entity(), at.block);
+                        let entity = cx.entity();
                         prompt::confirm(
                             format!("Revert {short}?"),
                             "Pushed commits can't be removed for others; this adds a new commit that undoes it.",
@@ -243,7 +220,7 @@ impl Workspace {
                             move |window, cx| {
                                 let short = short.clone();
                                 entity.update(cx, |ws, cx| {
-                                    ws.git_action(block, move |repo| repo.revert(&short), window, cx)
+                                    ws.git_action(move |repo| repo.revert(&short), window, cx)
                                 })
                             },
                             window,
@@ -263,12 +240,7 @@ impl Workspace {
     }
 
     /// Asks the name, then the email, and writes both to the global config.
-    pub(crate) fn set_git_author(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn set_git_author(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ws = cx.entity();
         prompt::ask_text(
             "Your name for commits",
@@ -282,7 +254,7 @@ impl Workspace {
                 let ws = ws.clone();
                 // The next dialog opens once this one has closed.
                 window.defer(cx, move |window, cx| {
-                    ws.update(cx, |ws, cx| ws.ask_git_email(id, name, window, cx))
+                    ws.update(cx, |ws, cx| ws.ask_git_email(name, window, cx))
                 });
                 true
             },
@@ -294,7 +266,6 @@ impl Workspace {
     /// The second half of Set…: the email, then both are written.
     pub(super) fn ask_git_email(
         &mut self,
-        id: BlockId,
         name: String,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -313,7 +284,6 @@ impl Workspace {
                 let (name, program) = (name.clone(), program.clone());
                 ws.update(cx, |ws, cx| {
                     ws.git_action(
-                        id,
                         move |_| Repo::set_author(&program, &name, &email),
                         window,
                         cx,
@@ -329,13 +299,12 @@ impl Workspace {
     /// A click on the left column's row: it is marked, and the panel scrolls to that file.
     pub(crate) fn select_git_row(
         &mut self,
-        id: BlockId,
         list: git_block::List,
         path: String,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(git) = self.space.git_mut(id) else {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         let staged = git.in_staged(&path);
@@ -350,13 +319,8 @@ impl Workspace {
 
     /// Reads the whole working diff again in the background (after every status read): a
     /// result equal to what the panel shows changes nothing.
-    pub(crate) fn reload_git_panel(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(git) = self.space.git(id) else {
+    pub(crate) fn reload_git_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git() else {
             return;
         };
         let Some(repo) = git.repo().cloned() else {
@@ -367,7 +331,7 @@ impl Workspace {
             git.panel.ignore_ws,
             git.panel.whole.clone(),
         );
-        let at = self.here(id);
+        let at = self.here();
         self.git_job(
             at,
             move || repo.working_diff(&status, ignore_ws, &whole),
@@ -391,8 +355,8 @@ impl Workspace {
     }
 
     /// The file row's arrow, or the row itself: its rows show or hide.
-    pub(crate) fn toggle_fold(&mut self, id: BlockId, key: (bool, String), cx: &mut Context<Self>) {
-        let Some(git) = self.space.git_mut(id) else {
+    pub(crate) fn toggle_fold(&mut self, key: (bool, String), cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         let p = git.diff_mut();
@@ -404,8 +368,8 @@ impl Workspace {
     }
 
     /// Expand all (false) or Collapse all (true).
-    pub(crate) fn fold_all(&mut self, id: BlockId, folded: bool, cx: &mut Context<Self>) {
-        let Some(git) = self.space.git_mut(id) else {
+    pub(crate) fn fold_all(&mut self, folded: bool, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         let p = git.diff_mut();
@@ -424,23 +388,22 @@ impl Workspace {
     /// A fold's click: the file is read again with every line as context.
     pub(crate) fn show_whole(
         &mut self,
-        id: BlockId,
         key: (bool, String),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(git) = self.space.git_mut(id) else {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         if !git.panel.whole.contains(&key) {
             git.panel.whole.push(key);
         }
-        self.reload_git_panel(id, window, cx);
+        self.reload_git_panel(window, cx);
     }
 
     /// Show diff on a large or generated file.
-    pub(crate) fn show_large(&mut self, id: BlockId, key: (bool, String), cx: &mut Context<Self>) {
-        let Some(git) = self.space.git_mut(id) else {
+    pub(crate) fn show_large(&mut self, key: (bool, String), cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         let p = git.diff_mut();
@@ -453,14 +416,13 @@ impl Workspace {
     /// word, three the line.
     pub(crate) fn diff_press(
         &mut self,
-        id: BlockId,
         row: usize,
         x: gpui_kit::Pixels,
         clicks: usize,
         cx: &mut Context<Self>,
     ) {
         use crate::git_block::diff_view::select::{Pos, Selection, word_at};
-        let Some(git) = self.space.git_mut(id) else {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         let p = git.diff_mut();
@@ -489,15 +451,9 @@ impl Workspace {
     }
 
     /// The mouse moved over a line row with the button down: the selection's head follows.
-    pub(crate) fn diff_drag(
-        &mut self,
-        id: BlockId,
-        row: usize,
-        x: gpui_kit::Pixels,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn diff_drag(&mut self, row: usize, x: gpui_kit::Pixels, cx: &mut Context<Self>) {
         use crate::git_block::diff_view::select::Pos;
-        let Some(git) = self.space.git_mut(id) else {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         let p = git.diff_mut();
@@ -512,8 +468,8 @@ impl Workspace {
     }
 
     /// The mouse came up: a selection that never moved is no selection.
-    pub(crate) fn diff_release(&mut self, id: BlockId, cx: &mut Context<Self>) {
-        let Some(git) = self.space.git_mut(id) else {
+    pub(crate) fn diff_release(&mut self, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         let p = git.diff_mut();
@@ -525,42 +481,36 @@ impl Workspace {
     }
 
     /// Unified or Split, for every panel of the block.
-    pub(crate) fn set_split(&mut self, id: BlockId, on: bool, cx: &mut Context<Self>) {
-        if let Some(git) = self.space.git_mut(id) {
+    pub(crate) fn set_split(&mut self, on: bool, cx: &mut Context<Self>) {
+        if let Some(git) = self.space.git_mut() {
             git.set_split(on);
             cx.notify();
         }
     }
 
     /// Ignore whitespace on or off: the diff is read again with or without `-w`.
-    pub(crate) fn toggle_ignore_whitespace(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(git) = self.space.git_mut(id) else {
+    pub(crate) fn toggle_ignore_whitespace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         let p = git.diff_mut();
         p.ignore_ws = !p.ignore_ws;
         cx.notify();
-        self.reload_shown_diff(id, window, cx);
+        self.reload_shown_diff(window, cx);
     }
 
     /// Runs `job` on the block's repository in the background; its failure is a notification,
     /// and the block is read again either way.
     pub(crate) fn git_action(
         &mut self,
-        id: BlockId,
         job: impl FnOnce(&Repo) -> Result<(), GitError> + Send + 'static,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
+        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
             return;
         };
-        let at = self.here(id);
+        let at = self.here();
         self.act_job(
             at,
             move || job(&repo),
@@ -578,35 +528,33 @@ impl Workspace {
 
     pub(crate) fn stage(
         &mut self,
-        id: BlockId,
         paths: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.git_action(id, move |repo| repo.stage(&refs(&paths)), window, cx);
+        self.git_action(move |repo| repo.stage(&refs(&paths)), window, cx);
     }
 
     /// A file's box in the Changes checklist: checked, it is unstaged whole; unchecked or
     /// checked in part, it is staged whole.
     pub(crate) fn toggle_check(
         &mut self,
-        id: BlockId,
         path: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(check) = self
             .space
-            .git(id)
+            .git()
             .and_then(|g| g.status.entries.iter().find(|e| e.path == path))
             .map(git_block::Check::of)
         else {
             return;
         };
         if check == git_block::Check::Checked {
-            self.unstage(id, vec![path], window, cx);
+            self.unstage(vec![path], window, cx);
         } else {
-            self.stage(id, vec![path], window, cx);
+            self.stage(vec![path], window, cx);
         }
     }
 
@@ -614,12 +562,11 @@ impl Workspace {
     /// they are all unstaged; else they are all staged.
     pub(crate) fn check_all(
         &mut self,
-        id: BlockId,
         paths: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(git) = self.space.git(id) else {
+        let Some(git) = self.space.git() else {
             return;
         };
         let all = paths.iter().all(|p| {
@@ -630,20 +577,19 @@ impl Workspace {
                 .is_some_and(|e| git_block::Check::of(e) == git_block::Check::Checked)
         });
         if all {
-            self.unstage(id, paths, window, cx);
+            self.unstage(paths, window, cx);
         } else {
-            self.stage(id, paths, window, cx);
+            self.stage(paths, window, cx);
         }
     }
 
     pub(crate) fn unstage(
         &mut self,
-        id: BlockId,
         paths: Vec<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.git_action(id, move |repo| repo.unstage(&refs(&paths)), window, cx);
+        self.git_action(move |repo| repo.unstage(&refs(&paths)), window, cx);
     }
 
     /// A hunk's Stage (`unstage` false) or Unstage: `patch` applied on the index. One git
@@ -651,17 +597,16 @@ impl Workspace {
     /// reads again either way.
     pub(crate) fn apply_hunk(
         &mut self,
-        id: BlockId,
         patch: String,
         unstage: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
+        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
             return;
         };
         self.act_job(
-            self.here(id),
+            self.here(),
             move || repo.apply_patch(&patch, true, unstage),
             |ws, at, result, window, cx| {
                 if let Err(e) = result {
@@ -686,17 +631,16 @@ impl Workspace {
     /// Appends the path to the repository's .gitignore.
     pub(crate) fn ignore_path(
         &mut self,
-        id: BlockId,
         path: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
+        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
             return;
         };
         // Not a git command: a failure is said plainly, with nothing to run in a terminal.
         self.act_job(
-            self.here(id),
+            self.here(),
             move || repo.ignore(&path),
             |ws, at, written, window, cx| {
                 if let Err(e) = written {
@@ -711,40 +655,29 @@ impl Workspace {
         );
     }
 
-    pub(crate) fn abort_operation(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(op) = self.space.git(id).and_then(|g| g.operation) else {
+    pub(crate) fn abort_operation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(op) = self.space.git().and_then(|g| g.operation) else {
             return;
         };
-        self.git_action(id, move |repo| repo.abort(op), window, cx);
+        self.git_action(move |repo| repo.abort(op), window, cx);
     }
 
-    pub(crate) fn continue_operation(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(op) = self.space.git(id).and_then(|g| g.operation) else {
+    pub(crate) fn continue_operation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(op) = self.space.git().and_then(|g| g.operation) else {
             return;
         };
-        self.git_action(id, move |repo| repo.continue_(op), window, cx);
+        self.git_action(move |repo| repo.continue_(op), window, cx);
     }
 
     /// Opens a repository path in an editor beside the Git block, at the first hunk of the
     /// file as the panel shows it (Staged when nothing of it is left unstaged, else Changes).
     pub(crate) fn open_from_git(
         &mut self,
-        id: BlockId,
         path: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(git) = self.space.git(id) else {
+        let Some(git) = self.space.git() else {
             return;
         };
         let staged = git.in_staged(path);
@@ -752,14 +685,13 @@ impl Workspace {
             .panel
             .first_line(staged, path)
             .or_else(|| git.panel.first_line(!staged, path));
-        self.open_from_git_at(id, path, line, window, cx);
+        self.open_from_git_at(path, line, window, cx);
     }
 
     /// Opens a repository path in an editor beside the Git block, at `line` (the camera goes
     /// there).
     pub(crate) fn open_from_git_at(
         &mut self,
-        id: BlockId,
         path: &str,
         line: Option<u32>,
         window: &mut Window,
@@ -767,12 +699,12 @@ impl Workspace {
     ) {
         let Some(root) = self
             .space
-            .git(id)
+            .git()
             .and_then(|g| g.repo().map(|r| r.root.clone()))
         else {
             return;
         };
-        self.open_in_editor(&root, &root.join(path), line, Some(id), window, cx);
+        self.open_in_editor(&root, &root.join(path), line, None, window, cx);
     }
 }
 

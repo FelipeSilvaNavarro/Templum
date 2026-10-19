@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="crates/templum/icons/icon-dark.svg">
+    <img src="crates/templum/icons/icon.svg" width="128" height="128" alt="">
+  </picture>
+</p>
+
 # Templum
 
 An infinite canvas of terminals. Spawn as many terminals as you like, place them anywhere,
@@ -31,7 +38,6 @@ knowing. **Welcome** in the settings panel's footer shows it again.
 
 | Mouse | Result |
 |---|---|
-| Double-click empty canvas | New terminal there |
 | Drag a title bar / the bottom-right handle | Move / resize the block |
 | Drag a block near another | It snaps to the other's edges or center within 8 px, and a line shows which |
 | Drag empty canvas, or scroll over it | Pan |
@@ -41,7 +47,7 @@ knowing. **Welcome** in the settings panel's footer shows it again.
 | Click, drag or scroll in a program that uses the mouse (htop, vim, Claude Code full screen) | The program gets it; hold Shift to select text instead |
 | Ctrl+scroll, or pinch | Zoom |
 | Drag in a terminal (double-click: word, triple-click: line) | Select text |
-| Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board, Note, Editor or Git, where you clicked |
+| Right-click empty canvas | Menu: **AI agent ▸** (Claude Code, Codex, Gemini CLI and 17 more) or **Add ▸** Terminal, Kanban board, Note or Editor, where you clicked |
 | Right-click a block, card, column, board or workspace tile | Its menu (copy, paste, move to another workspace, edit, stop, delete, close…) |
 | With a drawing tool on, drag the canvas | Draw; Shift keeps lines at 45° and makes squares and circles |
 
@@ -51,7 +57,7 @@ knowing. **Welcome** in the settings panel's footer shows it again.
 | Ctrl+Shift+K | Cmd+Shift+K | New kanban board block |
 | Ctrl+Shift+M | Cmd+Shift+M | New note |
 | Ctrl+Shift+E | Cmd+Shift+E | New editor (asks for a folder) |
-| Ctrl+Shift+G | Cmd+Shift+G | New Git block (asks for a folder) |
+| Ctrl+Shift+G | Cmd+Shift+G | Show or hide the Git popup |
 | Ctrl+S | Cmd+S | Save the file (in an editor) |
 | Ctrl+W | Ctrl+W | Close the file's tab (in an editor) |
 | Ctrl+G | Cmd+G | Go to line (in an editor) |
@@ -141,6 +147,17 @@ as you make it.
   to have it.
 - Edits you make by hand to `config.toml` show up in the panel.
 
+## Templum Agent
+
+**Ctrl+Shift+Space** (**Cmd+Shift+Space** on macOS), or a click on the pill at the bottom of the canvas, asks the
+Templum Agent: a Claude Code of yours, run in the background with your login, that builds and runs the canvas for
+you. "Make a workspace for ~/proj with a kanban of 4 cards and a Claude Code per card" makes the workspace, the
+board and its cards, and opens the agents wired to it with their prompts. It doesn't write code: every agent it opens
+is a block you can watch, type into or stop. Each of its actions is a row in the chat; a click shows its block.
+Closing a block where something of yours runs, typing into a terminal or pressing keys in one waits for your
+**Allow once**, **Allow for this conversation** or **Deny**. Settings ▸ Templum Agent picks its model, its effort
+and hides the pill. The conversation is kept across restarts; **New chat** starts another.
+
 ## Kanban boards
 
 The toolbar's board button (or Ctrl+Shift+K) puts a kanban block on the canvas, Trello-style. Pick a board
@@ -170,11 +187,15 @@ as the language wants it (a real tab in Makefiles and Go).
 
 ## Git
 
-The toolbar's Git button (or Ctrl+Shift+G) asks for a folder and puts a Git block on its repository, with what
-GitHub Desktop and the editors' Git panels do. **Changes** lists what is staged and what isn't; a row shows its
-diff, and its buttons stage, unstage, discard (after asking) or open the file in an editor beside the block.
+The Git button at the bottom of the sidebar (or Ctrl+Shift+G) opens the workspace's Git in a popup over the
+canvas's bottom-left corner, with what GitHub Desktop and the editors' Git panels do; Esc or its ✕ closes it. Each
+workspace has its own. The first time, it opens on the repository the focused terminal works in (else another
+terminal's, else the workspace's folder, else the newest recent one; with none it asks for a folder). The ▾ beside
+the repository's name switches to another: one a terminal of the workspace works in, a recent folder, or any
+folder. **Changes** lists what is staged and what isn't; a row shows its diff, and its buttons stage, unstage,
+discard (after asking) or open the file in an editor.
 Below, a summary, a description, **Amend** and **Commit** (Ctrl+Enter from either field; with no author set, the
-block asks for `user.name` and `user.email`). **History** lists the commits with their files and diffs, filtered
+popup asks for `user.name` and `user.email`). **History** lists the commits with their files and diffs, filtered
 as you type; right-click one to check it out, make a branch or a tag from it, revert it or copy its hash.
 **Branches** checks out on a click, makes, renames, merges, deletes and publishes them, and offers **Stash and
 switch** when local changes are in the way. **Stashes** stashes, applies, pops and drops. The top bar has the
@@ -183,11 +204,11 @@ branch, ↑↓ against its upstream, **Fetch**, **Pull** (fast-forward only; oth
 offers Abort and, once nothing conflicts, Continue; a conflicted file has Use ours, Use theirs and Mark resolved.
 
 Everything runs through your own `git`, in the background, without ever waiting for input: a command that fails
-shows git's message, with **Details** and **Run in a terminal**, which opens a terminal beside the block with the
-command typed in, for you to read and run, so your credential helper or SSH agent does what it does in any
-terminal. The block refreshes
-every 2 seconds while it is on screen, after each action, and when a terminal of the workspace finishes a command
-in the repository, so `git add` in a terminal shows at once. Settings ▸ Tools names the `git` program.
+shows git's message, with **Details** and **Run in a terminal**, which opens a terminal in the middle of the view
+with the command typed in, for you to read and run, so your credential helper or SSH agent does what it does in any
+terminal. The popup refreshes every 2 seconds while it is open, after each action, and when a terminal of the
+workspace finishes a command in the repository, so `git add` in a terminal shows at once. Settings ▸ Tools names
+the `git` program.
 
 **Generate ✨**, beside the summary, has an AI agent write the commit message: Claude Code (`claude -p`) and
 Codex (`codex exec`) work as they are, any other agent once its generate command is set in Settings ▸ Agents.
@@ -200,7 +221,7 @@ chooses the agent and its model, and **Try it** runs it on a sample change.
 ## The toolbar
 
 The bar at the bottom of the canvas holds the tools: **Select** and **Hand** (move the canvas by dragging anywhere,
-over blocks too; Esc goes back to Select), then a button for each kind of block (terminal, note, kanban board, editor, Git) and
+over blocks too; Esc goes back to Select), then a button for each kind of block (terminal, note, kanban board, editor) and
 the AI agents, then the drawing tools.
 
 ## Drawing
@@ -250,11 +271,11 @@ the workspace's blocks, read and type into their own terminal, and send you a no
 question, or to be wired to another block, in a balloon on its block; hand a task to an agent wired to it and get its
 answer back (a dot travels along the wire meanwhile); and open another agent beside itself, in a new Git worktree if
 it likes. An agent wired to a kanban reads its cards and creates, moves, comments on and claims them; it reads a
-wired note and adds to it, opens a file at a line in an editor, and reads a Git block's status. The dot before a
+wired note and adds to it, and opens a file at a line in an editor. The dot before a
 Claude Code terminal's title shows it working (accent) or waiting for you (yellow,
 "Waiting for you: …"). In any Templum terminal, `templum blocks`, `templum whoami`, `templum read <block> -n 50`,
-`templum notify <text>`, `templum ask`, `templum delegate`, `templum spawn`, `templum kanban`, `templum note`,
-`templum open` and `templum git status` do the same from the command line.
+`templum notify <text>`, `templum ask`, `templum delegate`, `templum spawn`, `templum kanban`, `templum note`
+and `templum open` do the same from the command line.
 Every block has a short id (`b7k2m`) that lasts through restarts. Turn it off with `[connections] enabled = false`. See [docs/specs/connections.md](docs/specs/connections.md).
 
 ## Shell integration
@@ -305,6 +326,9 @@ blink = false
 scrollback = 10000
 notifications = true   # system notifications while Templum is in the background
 
+[canvas]
+focus_follows_pointer = true   # the block under the pointer takes the keyboard, no click needed
+
 [usage]
 reset = "reached"      # when a plan limit's reset is notified: "off" | "reached" | "half" | "always"
 warn = 90              # notify once at this much of a limit: 0 (never) | 80 | 90 | 95
@@ -315,7 +339,7 @@ hide = ["codex"]       # agents whose limits the title bar doesn't show
 check = true   # look for a new version at start and once a day, and download it
 
 [git]
-program = "git"   # the Git block's program: a name on PATH, or a path
+program = "git"   # the Git popup's program: a name on PATH, or a path
 
 [git.commit_message]   # Generate ✨: an AI agent writes the commit message
 agent = "claude"       # an agent with a generate command (Settings ▸ Agents)
@@ -341,9 +365,12 @@ every file:
 - **Linux** (x86_64 and ARM64): `.deb`, AppImage, or the bare executable in `templum-<target>.tar.gz`; a pacman
   package and its `PKGBUILD` on x86_64.
 
-What changed in each one is in [CHANGELOG.md](CHANGELOG.md). The builds are **unsigned** for now:
+What changed in each one is in [CHANGELOG.md](CHANGELOG.md). The builds aren't signed by an Apple or Microsoft
+account yet, so the system asks once:
 
-- **macOS:** right-click the app → *Open* → *Open* (only needed the first time).
+- **macOS:** drag Templum to Applications and open it; macOS says it can't verify it, choose *Done*. Then open
+  *System Settings* → *Privacy & Security*, scroll to *Security*, click *Open Anyway* beside Templum and confirm.
+  Or, in a terminal: `xattr -dr com.apple.quarantine /Applications/Templum.app`.
 - **Windows:** on the SmartScreen prompt, click *More info* → *Run anyway*.
 
 ### Updates

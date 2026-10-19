@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, Window};
@@ -9,6 +10,8 @@ use templum_canvas::{BlockId, Camera, Point, Rect, Size, chrome};
 
 use crate::agents::AgentEntry;
 use crate::board::{self, Boards};
+use crate::checklist::{self, Checklist};
+use crate::checklists::{self, Checklists};
 use crate::editor::{self, Editor};
 use crate::git_block::{self, Git};
 use crate::kanban::{self, Kanban};
@@ -16,7 +19,7 @@ use crate::note::{self, Note};
 use crate::notes;
 use crate::session;
 
-use super::{Body, MAX_COLS, MAX_ROWS, Workspace, show_notification};
+use super::{Body, MAX_COLS, MAX_ROWS, Pane, Workspace, show_notification};
 
 impl Workspace {
     /// Puts a saved canvas back: the camera, then each block back to front, each in its folder.
@@ -32,6 +35,9 @@ impl Workspace {
         let c = saved.camera;
         if c.x.is_finite() && c.y.is_finite() {
             self.space.canvas.camera = Camera::at(Point::new(c.x, c.y), c.zoom);
+        }
+        if let Some(git) = &saved.git {
+            self.restore_git(git, window, cx);
         }
         let mut ids = Vec::new();
         let mut gone = Vec::new();
@@ -61,7 +67,10 @@ impl Workspace {
             let id = self.spawn_block(rect, folder, window, cx);
             failed |= id.is_none();
             if let Some(id) = id {
-                self.restore_terminal(id, t, in_its_folder);
+                self.restore_terminal(id, t, in_its_folder, cx);
+                if let Some(pane) = self.space.terminal_mut(id) {
+                    pane.restored = true;
+                }
             }
             ids.push(id);
         }
@@ -109,12 +118,7 @@ impl Workspace {
             // A shell setting with a typo: fixing it must bring the canvas back, so it isn't
             // written over with the blocks that couldn't start.
             self.space.frozen = true;
-            let message =
-                "Some terminals couldn't start, so this session won't save their canvas: \
-                           the saved one stays for the next start"
-                    .to_string();
-            eprintln!("templum: {message}");
-            show_notification(window, cx, Notification::warning(message));
+            say_unstarted(window, cx);
         }
         if !gone.is_empty() {
             let message = format!(
@@ -133,13 +137,46 @@ impl Workspace {
         self.space.saved = Some(saved);
     }
 
+    /// Keeps the file of each workspace where a restored shell ended as it started
+    /// (`Pane::died_starting`), as when one can't start at all: its block stays, and its saved
+    /// canvas is the next start's. Before every save, also one before any frame (the window
+    /// minimized). True when it kept one more, to say so.
+    pub(super) fn keep_dead_starts(&mut self) -> bool {
+        let mut died = false;
+        for space in std::iter::once(&mut self.space).chain(&mut self.others) {
+            if !space.frozen && space.terminals().any(|(_, pane)| pane.died_starting()) {
+                space.frozen = true;
+                died = true;
+            }
+        }
+        died
+    }
+
     /// A saved terminal `saved`, just started as the terminal `id`: who opened it, and, when
     /// `resume`, its agent (one Templum knows) typed back with its session when it was found, and
     /// its model and effort when it can type them safely (a hand-edited file may hold others).
     /// The shell reads it once it is ready.
-    fn restore_terminal(&mut self, id: BlockId, saved: &session::TerminalItem, resume: bool) {
+    fn restore_terminal(
+        &mut self,
+        id: BlockId,
+        saved: &session::TerminalItem,
+        resume: bool,
+        cx: &mut Context<Self>,
+    ) {
+        // Its account, when Templum still has it: one deleted gives a plain terminal.
+        let account = saved
+            .account
+            .as_deref()
+            .and_then(|a| {
+                self.agents
+                    .iter()
+                    .find(|e| e.id == a && e.account.is_some())
+            })
+            .map(|e| e.id.clone());
         if let Some(pane) = self.space.terminal_mut(id) {
             pane.opened_by = saved.opened_by.clone();
+            pane.account = account;
+            pane.role = saved.role.clone();
         }
         let Some(agent) = saved
             .agent
@@ -152,13 +189,23 @@ impl Workspace {
         let session = saved.session.as_deref();
         let kept = match (session, &self.data_dir) {
             (Some(id), Some(data)) => {
-                templum_usage::session_kept(&agent.id, id, &templum_usage::Dirs::of(data))
+                let (of, home) = match &agent.account {
+                    Some(a) => (a.kind.agent, Some(a.kind.state_dir(&a.folder))),
+                    None => (agent.id.as_str(), None),
+                };
+                let dirs = templum_usage::Dirs::of(data);
+                templum_usage::session_kept(of, id, &dirs, home.as_deref())
             }
             _ => true,
         };
         let command = agent.resume_command_for(session, kept);
         let (model, effort) = (saved.model.as_deref(), saved.effort.as_deref());
-        let args = agent.launch_args(model, effort);
+        // Its role's words again, while the role exists; its instructions are in the conversation.
+        let words = saved
+            .role
+            .as_ref()
+            .and_then(|r| self.config.roles.get(r)?.args.clone());
+        let args = agent.launch_args_with(model, effort, words.as_deref());
         let line = format!(
             "{}\r",
             self.typed(
@@ -166,14 +213,18 @@ impl Workspace {
                 &format!("{command}{}", args.as_deref().unwrap_or(""))
             )
         );
-        let agent = agent.id.clone();
+        let (agent, title) = (agent.id.clone(), agent.title.clone());
         if let Some(pane) = self.space.terminal_mut(id) {
             pane.term.write(line.into_bytes());
             pane.seen.agent = Some(agent);
+            // A slow shell, or a question of its that takes the line: until the agent is up, the
+            // next start resumes it still.
+            pane.resuming = Some((std::time::Instant::now(), saved.clone()));
             if args.is_ok() {
                 (pane.model, pane.effort) = (saved.model.clone(), saved.effort.clone());
                 pane.flags_for = pane.seen.agent.clone();
             }
+            self.cover_start(id, title, cx);
         }
     }
 
@@ -192,8 +243,34 @@ impl Workspace {
                 let folder = t.folder.as_ref().map(PathBuf::from).filter(|f| f.is_dir());
                 // An agent resumes the folder's latest conversation: anywhere else, it's another one.
                 let in_its_folder = folder.is_some();
-                let id = self.spawn_block(rect, folder, window, cx)?;
-                self.restore_terminal(id, t, in_its_folder);
+                // The agent it resumes gets its variable, as the one it opened did.
+                let agent = t
+                    .agent
+                    .as_deref()
+                    .and_then(|a| self.agents.iter().find(|known| known.id == a))
+                    .filter(|_| in_its_folder)
+                    .cloned();
+                // Its account's variable, with or without its agent, even out of its folder.
+                let account = t
+                    .account
+                    .as_deref()
+                    .and_then(|a| {
+                        self.agents
+                            .iter()
+                            .find(|e| e.id == a && e.account.is_some())
+                    })
+                    .cloned();
+                if let Some(account) = &account {
+                    self.prepare_account(account, window, cx);
+                }
+                let mut vars = self.agent_vars(agent.as_ref(), &super::usage::in_env);
+                if let Some((name, folder)) = account.as_ref().and_then(AgentEntry::var)
+                    && !vars.iter().any(|(k, _)| k == name)
+                {
+                    vars.insert(0, (name.to_string(), folder.to_string_lossy().into_owned()));
+                }
+                let id = self.spawn_block_with(rect, folder, vars, window, cx)?;
+                self.restore_terminal(id, t, in_its_folder, cx);
                 Some(id)
             }
             session::Item::Kanban(k) => clamped_rect(k.rect.into(), kanban::MIN).map(|rect| {
@@ -222,26 +299,35 @@ impl Workspace {
                 let active = tabs.iter().position(|t| Some(t.id) == shown).unwrap_or(0);
                 Some(self.add_block(rect, Body::Note(Note { tabs, active })))
             }
-            session::Item::Git(g) => {
-                let id = clamped_rect(g.rect.into(), git_block::MIN).map(|rect| {
-                    let mut git = Git::new(
-                        PathBuf::from(&g.folder),
-                        git_block::Tab::from_name(&g.tab),
-                        window,
-                        cx,
-                    );
-                    git.lists_folded = g.lists == "folded";
-                    git.set_split(g.diff == "split");
-                    git.summary
-                        .update(cx, |s, cx| s.set_value(g.summary.clone(), window, cx));
-                    git.description
-                        .update(cx, |s, cx| s.set_value(g.description.clone(), window, cx));
-                    self.add_block(rect, Body::Git(Box::new(git)))
+            session::Item::Checklist(c) => {
+                let rect = clamped_rect(c.rect.into(), checklist::MIN)?;
+                // A file from before one checklist per block: its tab on screen, else the first
+                // of its tabs still there.
+                let tabs = c.checklists.get(c.active).into_iter().chain(&c.checklists);
+                // A checklist is open in one block at most, even named twice; a deleted one is
+                // gone.
+                let list = c.checklist.iter().chain(tabs).copied().find(|&id| {
+                    self.checklists.get(id).is_some() && self.checklist_open_at(id).is_none()
                 });
-                if let Some(id) = id {
-                    self.look_up_git(id, window, cx);
+                // Its other tabs' checklists stay in the Checklists dialog, but for blank ones:
+                // nothing is lost.
+                for &id in &c.checklists {
+                    if Some(id) != list && self.checklist_open_at(id).is_none() {
+                        self.drop_checklist_if_blank(id);
+                    }
                 }
-                id
+                let checklist = Checklist {
+                    list,
+                    editing: None,
+                };
+                Some(self.add_block(rect, Body::Checklist(checklist)))
+            }
+            // An older Templum's Git block: the workspace's Git, unless it has one.
+            session::Item::Git(g) => {
+                if self.space.git.is_none() {
+                    self.restore_git(&g.git, window, cx);
+                }
+                None
             }
             session::Item::Editor(e) => clamped_rect(e.rect.into(), editor::MIN).map(|rect| {
                 let folder = PathBuf::from(&e.folder);
@@ -266,9 +352,32 @@ impl Workspace {
         }
     }
 
+    /// The workspace's Git as it was saved, looked up again.
+    fn restore_git(&mut self, g: &session::SavedGit, window: &mut Window, cx: &mut Context<Self>) {
+        let mut git = Git::new(
+            PathBuf::from(&g.folder),
+            git_block::Tab::from_name(&g.tab),
+            window,
+            cx,
+        );
+        git.lists_folded = g.lists == "folded";
+        git.set_split(g.diff == "split");
+        git.summary
+            .update(cx, |s, cx| s.set_value(g.summary.clone(), window, cx));
+        git.description
+            .update(cx, |s, cx| s.set_value(g.description.clone(), window, cx));
+        self.space.git = Some(Box::new(git));
+        self.look_up_git(window, cx);
+    }
+
     /// The agents to look for in terminals, for a snapshot's background read.
     pub(super) fn known_agents(&self) -> Arc<Vec<templum_terminal::Detect>> {
-        Arc::new(self.agents.iter().map(AgentEntry::detect).collect())
+        Arc::new(crate::agents::detects(&self.agents))
+    }
+
+    /// The accounts, whose agent found in one's block is that account.
+    pub(super) fn known_accounts(&self) -> Arc<Vec<crate::agents::Home>> {
+        Arc::new(crate::agents::homes(&self.agents))
     }
 
     /// Every session::EVERY: reads the processes and writes each workspace's file in the
@@ -280,16 +389,19 @@ impl Workspace {
         if self.snapshotting {
             return;
         }
+        if self.keep_dead_starts() {
+            say_unstarted(window, cx);
+        }
         self.snapshotting = true;
         self.generation += 1;
         let generation = self.generation;
-        let known = self.known_agents();
+        let (known, accounts) = (self.known_agents(), self.known_accounts());
         // A stopped workspace's file holds its canvas until it starts: it isn't written.
         let jobs: Vec<_> = self
             .spaces()
             .filter(|s| !s.stopped)
             .map(|s| {
-                let layout = s.layout(known.clone(), cx);
+                let layout = s.layout(known.clone(), accounts.clone(), cx);
                 // A frozen workspace's file is never written, but its terminals are read.
                 let last = (!s.frozen).then(|| s.saved.clone());
                 (s.id.clone(), s.terminal_order(), layout, last)
@@ -299,8 +411,11 @@ impl Workspace {
             .then(|| self.boards.clone());
         let notes = (!self.notes_frozen && self.notes_saved.as_ref() != Some(&self.notes))
             .then(|| self.notes.clone());
+        let checklists = (!self.checklists_frozen
+            && self.checklists_saved.as_ref() != Some(&self.checklists))
+        .then(|| self.checklists.clone());
         cx.spawn_in(window, async move |ws, cx| {
-            let (done, boards, notes) = cx
+            let (done, boards, notes, checklists) = cx
                 .background_executor()
                 .spawn(async move {
                     let notes = notes.map(|n| {
@@ -324,11 +439,15 @@ impl Workspace {
                         let written = board::save(&dir, &b, generation);
                         (b, written)
                     });
-                    (done, boards, notes)
+                    let checklists = checklists.map(|c| {
+                        let written = checklists::save(&dir, &c, generation);
+                        (c, written)
+                    });
+                    (done, boards, notes, checklists)
                 })
                 .await;
             ws.update_in(cx, |ws, window, cx| {
-                ws.snapshot_done(done, boards, notes, window, cx)
+                ws.snapshot_done(done, boards, notes, checklists, window, cx)
             })
             .ok();
         })
@@ -340,6 +459,7 @@ impl Workspace {
         done: Vec<SpaceSnapshot>,
         boards: Option<(Boards, std::io::Result<()>)>,
         notes: Option<(notes::Notes, std::io::Result<()>)>,
+        checklists: Option<(Checklists, std::io::Result<()>)>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -362,14 +482,35 @@ impl Workspace {
             Some((_, Err(err))) => failed = Some(err),
             None => {}
         }
+        match checklists {
+            Some((checklists, Ok(()))) => {
+                wrote = true;
+                self.checklists_saved = Some(checklists);
+            }
+            Some((_, Err(err))) => failed = Some(err),
+            None => {}
+        }
+        let homes = crate::agents::homes(&self.agents);
         for (id, terminals, saved, written) in done {
             let gone = self
                 .space_by_id_mut(&id)
-                .map(|space| space.see(terminals))
+                .map(|space| space.see(terminals, &homes))
                 .unwrap_or_default();
             for terminal in gone {
                 self.agent_left(&terminal, cx);
             }
+            // An account found running: `/usage` asks its limits from now on.
+            let ran: Vec<String> = self
+                .space_by_id_mut(&id)
+                .map(|space| {
+                    space
+                        .terminals()
+                        .filter_map(|(_, p)| p.seen.agent.clone().filter(|_| p.seen.pid.is_some()))
+                        .filter(|a| homes.iter().any(|h| h.id == *a))
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.accounts_ran.extend(ran);
             match written {
                 None => {}
                 Some(Ok(())) => {
@@ -407,12 +548,19 @@ impl Workspace {
         let Some(dir) = self.data_dir.clone().filter(|_| !self.first_run_welcome()) else {
             return;
         };
+        self.keep_dead_starts();
         self.generation += 1;
         let generation = self.generation;
         if !self.boards_frozen && self.boards_saved.as_ref() != Some(&self.boards) {
             match board::save(&dir, &self.boards, generation) {
                 Ok(()) => self.boards_saved = Some(self.boards.clone()),
                 Err(err) => eprintln!("templum: couldn't save the boards: {err}"),
+            }
+        }
+        if !self.checklists_frozen && self.checklists_saved.as_ref() != Some(&self.checklists) {
+            match checklists::save(&dir, &self.checklists, generation) {
+                Ok(()) => self.checklists_saved = Some(self.checklists.clone()),
+                Err(err) => eprintln!("templum: couldn't save the checklists: {err}"),
             }
         }
         if !self.notes_frozen && self.notes_saved.as_ref() != Some(&self.notes) {
@@ -425,15 +573,16 @@ impl Workspace {
                 }
             }
         }
-        let known = self.known_agents();
+        let (known, accounts) = (self.known_agents(), self.known_accounts());
         for space in std::iter::once(&mut self.space).chain(&mut self.others) {
             if space.frozen || space.stopped {
                 continue;
             }
-            let (saved, _) = space.layout(known.clone(), cx).snapshot(Some(&dir));
-            if space.saved.as_ref() == Some(&saved) {
-                continue;
-            }
+            let (saved, _) = space
+                .layout(known.clone(), accounts.clone(), cx)
+                .snapshot(Some(&dir));
+            // Written even when it looks unchanged: a snapshot in flight may have written an
+            // older one.
             match session::save(&dir, &space.id, &saved, generation) {
                 Ok(()) => space.saved = Some(saved),
                 Err(err) => eprintln!("templum: couldn't save the canvas: {err}"),
@@ -458,6 +607,37 @@ impl Workspace {
     }
 }
 
+/// How soon a restored shell that ends, having run nothing, couldn't start.
+const DIES_STARTING: Duration = Duration::from_secs(10);
+
+impl Pane {
+    /// Restored with its canvas, its shell ended as it started, given no input: it couldn't
+    /// start (docs/specs/persistence.md, Errors). One ended by a Ctrl+D or an `exit` did.
+    pub(crate) fn died_starting(&self) -> bool {
+        self.restored
+            && !self.term.had_input()
+            && self
+                .term
+                .lived()
+                .is_some_and(|lived| ended_starting(lived, &self.term.status()))
+    }
+}
+
+/// A shell that lived `lived` ended as it started: within DIES_STARTING, before running a
+/// command (with shell integration, `exit` typed is one).
+fn ended_starting(lived: Duration, status: &templum_terminal::Status) -> bool {
+    lived < DIES_STARTING && status.running.is_none() && status.finished == 0
+}
+
+/// Terminals of a saved canvas couldn't start: their workspace's file is kept (`frozen`).
+pub(super) fn say_unstarted(window: &mut Window, cx: &mut App) {
+    let message = "Some terminals couldn't start, so this session won't save their canvas: \
+                   the saved one stays for the next start"
+        .to_string();
+    eprintln!("templum: {message}");
+    show_notification(window, cx, Notification::warning(message));
+}
+
 /// A saved rect made safe: None with a number that isn't finite; at least `min`.
 fn clamped_rect(r: Rect, min: Size) -> Option<Rect> {
     [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()).then(|| {
@@ -478,3 +658,27 @@ pub(super) type SpaceSnapshot = (
     session::Saved,
     Option<std::io::Result<()>>,
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use templum_terminal::Status;
+
+    #[test]
+    fn a_shell_couldnt_start_when_it_ended_soon_having_run_nothing() {
+        let soon = Duration::from_secs(1);
+        assert!(ended_starting(soon, &Status::default()));
+        // The person's `exit`, later; or at once, which shell integration tells.
+        assert!(!ended_starting(DIES_STARTING, &Status::default()));
+        let running = Status {
+            running: Some(std::time::Instant::now()),
+            ..Status::default()
+        };
+        assert!(!ended_starting(soon, &running));
+        let finished = Status {
+            finished: 1,
+            ..Status::default()
+        };
+        assert!(!ended_starting(soon, &finished));
+    }
+}

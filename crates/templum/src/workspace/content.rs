@@ -1,17 +1,30 @@
 //! The content tools (docs/specs/connections.md, Tools, batch 4): the cards of a kanban wired to the
-//! caller, a wired note, a file opened in an editor, a wired Git block's status.
+//! caller, a wired note, a wired checklist, a file opened in an editor.
 
 use std::path::Path;
 
-use gpui_kit::component::input::{EditorState, Position, RopeExt as _};
-use gpui_kit::{App, Context, Entity, Window};
+use gpui_kit::component::input::{Position, RopeExt as _};
+use gpui_kit::{App, Context, Window};
 use templum_mcp::{Reply, tools};
 
-use super::bus::{Outcome, flat, target};
+use super::bus::{flat, target};
+use super::ops::{NewBlock, Place};
 use super::{BlockId, Body, Space, Workspace};
-use crate::board::{Card, Comment};
+use crate::board::{Assignee, Card};
+use crate::checklists;
 use crate::editor::{Content, Editor};
-use crate::notes;
+
+/// The caller as cards name it: its block id, and the agent it runs.
+pub(super) type Caller = (String, Option<String>);
+
+fn caller(space: &Space, me: BlockId) -> Caller {
+    let uid = space.uids.get(&me).cloned().unwrap_or_default();
+    let agent = space
+        .terminal(me)
+        .and_then(|p| p.agent())
+        .map(str::to_string);
+    (uid, agent)
+}
 
 impl Workspace {
     /// The caller's workspace and block: `call` found it.
@@ -102,9 +115,12 @@ impl Workspace {
     }
 
     /// `b7k2m "Claude Code · api"`, `you`, or the id alone when no workspace has that block.
-    fn who(&self, uid: &str, cx: &App) -> String {
+    pub(super) fn who(&self, uid: &str, cx: &App) -> String {
         if uid == "you" {
             return "you".into();
+        }
+        if uid == templum_agent::ASKER {
+            return "Templum Agent".into();
         }
         match self.uid_title(uid, cx) {
             Some(title) => format!("{uid} {title:?}"),
@@ -112,16 +128,71 @@ impl Workspace {
         }
     }
 
-    fn no_column(&self, board: u64, column: &str) -> Reply {
-        let titles: Vec<String> = self
-            .boards
-            .board(board)
-            .map(|b| b.columns.iter().map(|c| flat(&c.title)).collect())
-            .unwrap_or_default();
-        Reply::err(format!(
-            "There's no column {column}. Its columns: {}.",
-            titles.join(", ")
-        ))
+    /// Whether a block running `pane_agent` runs `agent` to a card: the same agent, or one with
+    /// its program (the first word of their commands, as `program_name` reads it). A card for an
+    /// account is that account's only: its agent's other folders run the same program.
+    fn runs(&self, pane_agent: Option<&str>, agent: &str) -> bool {
+        if self
+            .agents
+            .iter()
+            .any(|a| a.id == agent && a.account.is_some())
+        {
+            return pane_agent == Some(agent);
+        }
+        let program = |id: &str| {
+            self.agents
+                .iter()
+                .find(|a| a.id == id)
+                .map(|a| templum_terminal::program_name(&a.command))
+                .filter(|p| !p.is_empty())
+        };
+        pane_agent.is_some_and(|pane| {
+            pane == agent || program(pane).is_some_and(|p| program(agent) == Some(p))
+        })
+    }
+
+    /// Whether `assignee` is the caller's: its block, or an agent it runs.
+    pub(super) fn is_callers(&self, assignee: &Assignee, caller: &Caller) -> bool {
+        match assignee {
+            Assignee::Block(uid) => *uid == caller.0,
+            Assignee::Agent(id) => self.runs(caller.1.as_deref(), id),
+        }
+    }
+
+    /// Ok when the caller may take `card`: it is for anyone, the caller's block, or an agent it
+    /// runs; otherwise `claim_card`'s refusal, saying why.
+    pub(super) fn may_take(&self, card: &Card, caller: &Caller, cx: &App) -> Result<(), Reply> {
+        let id = card.id;
+        match &card.assignee {
+            Some(Assignee::Block(uid)) if *uid != caller.0 => Err(Reply::err(format!(
+                "Card {id} is taken by {}. Ask the person to free it (the ✕ by its assignee in the \
+                 open card), or take another card.",
+                self.who(uid, cx)
+            ))),
+            Some(a @ Assignee::Agent(agent)) if !self.is_callers(a, caller) => {
+                let wanted = self.agent_title(agent);
+                Err(Reply::err(match &caller.1 {
+                    None => format!(
+                        "Card {id} is for any {wanted}, and Templum can't tell yet which agent you \
+                         are: try again in a few seconds."
+                    ),
+                    Some(mine) => format!(
+                        "Card {id} is for any {wanted}, and you are {}: take a card for you or for \
+                         anyone.",
+                        self.agent_title(mine)
+                    ),
+                }))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Who a card is for, as `move_card` says it: `b7k2m "Codex · api"`, or `any codex`.
+    pub(super) fn for_whom(&self, assignee: &Assignee, cx: &App) -> String {
+        match assignee {
+            Assignee::Block(uid) => self.who(uid, cx),
+            Assignee::Agent(id) => format!("any {id}"),
+        }
     }
 
     pub(super) fn list_cards(
@@ -132,132 +203,77 @@ impl Workspace {
         cx: &App,
     ) -> Reply {
         let (space, me) = self.caller_space(from);
-        if let Some(card) = card {
-            let board = match self.card_board(space, me, card) {
-                Ok(b) => b,
-                Err(refused) => return refused,
-            };
-            return Reply::ok(tools::tail(
-                &self.card_whole(board, card, cx),
-                tools::MAX_TEXT,
-            ));
-        }
-        let board = match self.board_for(space, me, board) {
-            Ok(b) => b,
-            Err(refused) => return refused,
+        let caller = caller(space, me);
+        let board = match card {
+            Some(card) => self.card_board(space, me, card),
+            None => self.board_for(space, me, board),
         };
-        let Some(b) = self.boards.board(board) else {
-            return Reply::err("That board was deleted.");
-        };
-        let mut text = format!("Board \"{}\" ({})", flat(&b.name), b.id);
-        for column in &b.columns {
-            text.push_str(&format!("\n{} ({}):", flat(&column.title), column.id));
-            if column.cards.is_empty() {
-                text.push_str(" no cards");
-            }
-            for c in &column.cards {
-                text.push_str(&format!("\n  {}", self.card_line(c, cx)));
-            }
+        match board {
+            Ok(board) => self.cards_of(board, card, Some(&caller), cx),
+            Err(refused) => refused,
         }
-        Reply::ok(tools::tail(&text, tools::MAX_TEXT))
     }
 
-    /// `5  Fix login  [red, green]  assignee b7k2m "Codex"  2 comments`
-    fn card_line(&self, c: &Card, cx: &App) -> String {
-        let mut line = format!("{}  {}", c.id, flat(&c.title));
-        if !c.labels.is_empty() {
-            let names: Vec<&str> = c.labels.iter().map(|l| l.name()).collect();
-            line.push_str(&format!("  [{}]", names.join(", ")));
+    /// Who `text` names for a card: anyone (None); an agent by its id or title in either case,
+    /// matched first; or a terminal block by its id, in any workspace.
+    pub(super) fn resolve_for(&self, text: &str) -> Result<Option<Assignee>, Reply> {
+        let text = text.trim();
+        if text.eq_ignore_ascii_case("anyone") {
+            return Ok(None);
         }
-        if let Some(uid) = &c.assignee {
-            line.push_str(&format!("  assignee {}", self.who(uid, cx)));
-        }
-        match c.comments.len() {
-            0 => {}
-            1 => line.push_str("  1 comment"),
-            n => line.push_str(&format!("  {n} comments")),
-        }
-        line
-    }
-
-    fn card_whole(&self, board: u64, card: u64, cx: &App) -> String {
-        let (Some(b), Some(c)) = (self.boards.board(board), self.boards.card(board, card)) else {
-            return String::new();
-        };
-        let column = b
-            .columns
+        if let Some(agent) = self
+            .agents
             .iter()
-            .find(|col| col.cards.iter().any(|x| x.id == card));
-        let indent = |text: &str| {
-            text.lines()
-                .map(|l| format!("  {l}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        let mut text = format!(
-            "Card {} on board \"{}\" ({}), column \"{}\"\n{}",
-            c.id,
-            flat(&b.name),
-            b.id,
-            column.map(|col| flat(&col.title)).unwrap_or_default(),
-            self.card_line(c, cx)
-        );
-        if !c.description.trim().is_empty() {
-            text.push_str(&format!("\ndescription:\n{}", indent(&c.description)));
+            .find(|a| a.id.eq_ignore_ascii_case(text) || a.title.eq_ignore_ascii_case(text))
+        {
+            return Ok(Some(Assignee::Agent(agent.id.clone())));
         }
-        let now = notes::now();
-        for comment in &c.comments {
-            text.push_str(&format!(
-                "\ncomment by {}, {}:\n{}",
-                self.who(&comment.by, cx),
-                notes::ago(comment.at, now),
-                indent(&comment.text)
-            ));
+        let terminal = self.spaces().any(|s| {
+            s.block_by_uid(text)
+                .is_some_and(|id| s.terminal(id).is_some())
+        });
+        if terminal {
+            return Ok(Some(Assignee::Block(text.to_string())));
         }
-        text
+        let ids: Vec<&str> = self.agents.iter().map(|a| a.id.as_str()).collect();
+        Err(Reply::err(format!(
+            "There's no agent or terminal block {text}. Agents: {}; or a terminal's block id, or \
+             anyone.",
+            ids.join(", ")
+        )))
     }
 
     pub(super) fn create_card(
         &mut self,
         from: &str,
-        board: Option<&str>,
-        column: Option<&str>,
-        title: &str,
-        description: Option<String>,
+        new: tools::NewCard,
         cx: &mut Context<Self>,
     ) -> Reply {
         let (space, me) = self.caller_space(from);
-        let board = match self.board_for(space, me, board) {
+        let board = match self.board_for(space, me, new.board.as_deref()) {
             Ok(b) => b,
             Err(refused) => return refused,
         };
-        if title.trim().is_empty() {
-            return Reply::err("A card needs a title.");
+        match self.card_new(board, new, cx) {
+            Ok(id) => Reply::ok(format!("Created card {id}.")),
+            Err(refused) => refused,
         }
-        let column = match column {
-            Some(name) => match self.boards.column_named(board, name) {
-                Some(c) => c,
-                None => return self.no_column(board, name),
-            },
-            None => match self.boards.board(board).and_then(|b| b.columns.first()) {
-                Some(c) => c.id,
-                None => return Reply::err("That board has no columns."),
-            },
-        };
-        let title = title.trim().to_string();
-        let id = self.edit_boards(|b| {
-            let id = b.add_card(board, column)?;
-            b.edit_card(board, id, |c| {
-                c.title = title;
-                c.description = description.unwrap_or_default();
-            });
-            Some(id)
-        });
-        cx.notify();
-        match id {
-            Some(id) => Reply::ok(format!("Created card {id}.")),
-            None => Reply::err("That column is gone."),
+    }
+
+    /// Sets a card's priority and who it is for, adds items, checks and unchecks them, on a card
+    /// of a kanban wired to the caller.
+    pub(super) fn edit_card(
+        &mut self,
+        from: &str,
+        edit: tools::CardEdit,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let (space, me) = self.caller_space(from);
+        if let Err(refused) = self.card_board(space, me, edit.card) {
+            return refused;
         }
+        let caller = caller(space, me);
+        self.card_edit(edit, Some(&caller), cx)
     }
 
     pub(super) fn move_card(
@@ -275,9 +291,41 @@ impl Workspace {
         let Some(to) = self.boards.column_named(board, column) else {
             return self.no_column(board, column);
         };
-        self.edit_boards(|b| b.move_card(board, card, to, None));
-        cx.notify();
-        Reply::ok(format!("Moved card {card} to {column}."))
+        let caller = caller(space, me);
+        let mine = caller.0.clone();
+        // Its last column, or Review: the card is done, and says so only through a comment.
+        let finished = self.boards.board(board).is_some_and(|b| {
+            b.columns.last().is_some_and(|c| c.id == to)
+                || b.columns
+                    .iter()
+                    .any(|c| c.id == to && c.title.trim().eq_ignore_ascii_case("review"))
+        });
+        let said = self
+            .boards
+            .card(board, card)
+            .and_then(|c| c.comments.last())
+            .is_some_and(|c| c.by == mine);
+        // Moving stays open to every wired agent; it says when the card is someone else's.
+        let theirs = self
+            .boards
+            .card(board, card)
+            .and_then(|c| c.assignee.as_ref())
+            .filter(|a| !self.is_callers(a, &caller))
+            .map(|a| self.for_whom(a, cx));
+        let moved = self.card_move(card, column, cx);
+        if moved.is_error {
+            return moved;
+        }
+        let mut text = moved.text;
+        if finished && !said {
+            text.push_str(
+                " Say on it what you did and what the next one needs to know: comment_card.",
+            );
+        }
+        if let Some(who) = theirs {
+            text.push_str(&format!(" It is for {who}, not you."));
+        }
+        Reply::ok(text)
     }
 
     pub(super) fn comment_card(
@@ -288,22 +336,11 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Reply {
         let (space, me) = self.caller_space(from);
-        let board = match self.card_board(space, me, card) {
-            Ok(b) => b,
-            Err(refused) => return refused,
-        };
-        if text.trim().is_empty() {
-            return Reply::err("A comment needs text.");
+        if let Err(refused) = self.card_board(space, me, card) {
+            return refused;
         }
         let by = space.uids.get(&me).cloned().unwrap_or_default();
-        let comment = Comment {
-            by,
-            text: text.trim_end().to_string(),
-            at: notes::now(),
-        };
-        self.edit_boards(|b| b.edit_card(board, card, |c| c.comments.push(comment)));
-        cx.notify();
-        Reply::ok(format!("Commented on card {card}."))
+        self.card_comment(card, text, &by, cx)
     }
 
     pub(super) fn claim_card(&mut self, from: &str, card: u64, cx: &mut Context<Self>) -> Reply {
@@ -312,50 +349,35 @@ impl Workspace {
             Ok(b) => b,
             Err(refused) => return refused,
         };
-        let mine = space.uids.get(&me).cloned().unwrap_or_default();
-        match self
-            .boards
-            .card(board, card)
-            .and_then(|c| c.assignee.clone())
-        {
-            Some(holder) if holder == mine => {
-                return Reply::ok(format!("Card {card} is already yours."));
-            }
-            Some(holder) => {
-                return Reply::err(format!(
-                    "Card {card} is taken by {}. Ask the person to free it (the ✕ by its assignee in \
-                     the open card), or take another card.",
-                    self.who(&holder, cx)
-                ));
-            }
-            None => {}
+        let caller = caller(space, me);
+        let Some(c) = self.boards.card(board, card) else {
+            return Reply::err(format!("Card {card} is gone."));
+        };
+        let mine = Assignee::Block(caller.0.clone());
+        if c.assignee.as_ref() == Some(&mine) {
+            return Reply::ok(format!("Card {card} is already yours."));
+        }
+        if let Err(refused) = self.may_take(c, &caller, cx) {
+            return refused;
         }
         self.edit_boards(|b| b.edit_card(board, card, |c| c.assignee = Some(mine)));
         cx.notify();
         Reply::ok(format!("Card {card} is yours."))
     }
 
-    /// The note block `block` wired to the caller, and the editor of the note it shows.
-    fn wired_note(&self, from: &str, block: &str) -> Result<Entity<EditorState>, Reply> {
+    /// The block `block` names, when it is wired to the caller: its workspace's id and its id.
+    fn wired(&self, from: &str, block: &str) -> Result<(String, BlockId), Reply> {
         let (space, me) = self.caller_space(from);
-        let id = target(space, me, block)?;
-        let Some(note) = space.blocks.get(&id).and_then(|b| b.note()) else {
-            return Err(Reply::err(format!("{block} isn't a note.")));
-        };
-        note.tab()
-            .map(|t| t.editor.clone())
-            .ok_or_else(|| Reply::err(format!("{block} shows no note.")))
+        Ok((space.id.clone(), target(space, me, block)?))
     }
 
     pub(super) fn read_note(&self, from: &str, block: &str, cx: &App) -> Reply {
-        match self.wired_note(from, block) {
-            Ok(editor) => Reply::ok(tools::tail(&editor.read(cx).value(), tools::MAX_TEXT)),
+        match self.wired(from, block) {
+            Ok((space, id)) => self.note_text((&space, id), block, cx),
             Err(refused) => refused,
         }
     }
 
-    /// Adds `text` at the note's end after a blank line, as one step of the note's own Ctrl+Z; the
-    /// person's caret and selection stay where they were.
     pub(super) fn append_note(
         &mut self,
         from: &str,
@@ -364,28 +386,198 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Reply {
-        let editor = match self.wired_note(from, block) {
-            Ok(editor) => editor,
+        match self.wired(from, block) {
+            Ok((space, id)) => self.note_append((&space, id), block, text, window, cx),
+            Err(refused) => refused,
+        }
+    }
+
+    /// `replace_note` from the terminal `from`: the note the wired note block `block` shows gets
+    /// `text`, whole or in place of its one passage `old`; one step of the note's Ctrl+Z.
+    pub(super) fn replace_note(
+        &mut self,
+        from: &str,
+        block: &str,
+        text: &str,
+        old: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let (space, id) = match self.wired(from, block) {
+            Ok(at) => at,
             Err(refused) => return refused,
         };
-        if text.trim().is_empty() {
-            return Reply::err("There's nothing to add.");
+        if let Err(refused) = self.note_editor((&space, id), block) {
+            return refused;
         }
-        editor.update(cx, |e, cx| {
-            let value = e.value();
-            let sep = if value.is_empty() || value.ends_with("\n\n") {
-                ""
-            } else if value.ends_with('\n') {
-                "\n"
-            } else {
-                "\n\n"
-            };
-            let (kept, end) = (e.selected_range(), value.len());
-            e.set_selected_range(end..end, cx);
-            e.insert(format!("{sep}{}", text.trim_end()), window, cx);
-            e.set_selected_range(kept, cx);
-        });
-        Reply::ok(format!("Added to the note in {block}."))
+        if let Err(refused) = self.note_replace(&space, id, text, old, window, cx) {
+            return Reply::err(refused);
+        }
+        cx.notify();
+        Reply::ok(match old {
+            Some(_) => format!("Replaced 1 passage of the note in {block}."),
+            None => format!("Replaced the note in {block}."),
+        })
+    }
+
+    /// The checklist the checklist block `block` wired to the caller shows.
+    fn wired_checklist(&self, from: &str, block: &str) -> Result<u64, Reply> {
+        let (space, id) = self.wired(from, block)?;
+        self.list_of((&space, id), block)
+    }
+
+    pub(super) fn read_checklist(&self, from: &str, block: &str) -> Reply {
+        match self.wired(from, block) {
+            Ok((space, id)) => self.checklist_text((&space, id), block),
+            Err(refused) => refused,
+        }
+    }
+
+    pub(super) fn check_item(
+        &mut self,
+        from: &str,
+        block: &str,
+        item: u64,
+        done: bool,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        match self.wired(from, block) {
+            Ok((space, id)) => self.item_check((&space, id), block, item, done, cx),
+            Err(refused) => refused,
+        }
+    }
+
+    /// `edit_item`: the text of an item of the checklist `block` shows; one Ctrl+Z step.
+    pub(super) fn edit_item(
+        &mut self,
+        from: &str,
+        block: &str,
+        item: u64,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let list = match self.wired_checklist(from, block) {
+            Ok(list) => list,
+            Err(refused) => return refused,
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            return Reply::err("delete_item removes an item");
+        }
+        if !self.item_edit(list, item, text) {
+            return self.no_item(list, item);
+        }
+        cx.notify();
+        Reply::ok(format!("Item {item} is now {text:?}."))
+    }
+
+    /// `delete_item`: an item of the checklist `block` shows, deleted as the row's × does; one
+    /// Ctrl+Z step.
+    pub(super) fn remove_item(
+        &mut self,
+        from: &str,
+        block: &str,
+        item: u64,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let list = match self.wired_checklist(from, block) {
+            Ok(list) => list,
+            Err(refused) => return refused,
+        };
+        if self
+            .checklists
+            .get(list)
+            .and_then(|l| l.item(item))
+            .is_none()
+        {
+            return self.no_item(list, item);
+        }
+        self.delete_item(list, item, cx);
+        self.agent_changed(list);
+        Reply::ok(format!("Deleted item {item}."))
+    }
+
+    pub(super) fn add_items(
+        &mut self,
+        from: &str,
+        block: &str,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        match self.wired(from, block) {
+            Ok((space, id)) => self.items_add((&space, id), block, text, cx),
+            Err(refused) => refused,
+        }
+    }
+
+    /// `create_block` from the terminal `from`: a note, a checklist or a terminal running a
+    /// command beside the caller, wired to it (docs/specs/agent-tools.md, create_block).
+    pub(super) fn create_block(
+        &mut self,
+        from: &str,
+        args: tools::NewBlockArgs,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let (space, me) = self.caller_space(from);
+        let space_id = space.id.clone();
+        let opener = space.uids.get(&me).cloned();
+        let (new, kind) = match args.kind {
+            tools::BlockKind::Note => (
+                NewBlock::Note {
+                    text: args.text.unwrap_or_default(),
+                },
+                "a note",
+            ),
+            tools::BlockKind::Checklist => (
+                NewBlock::Checklist {
+                    name: args.name.unwrap_or_default(),
+                    items: checklists::parse_items(args.items.as_deref().unwrap_or_default()),
+                },
+                "a checklist",
+            ),
+            tools::BlockKind::Terminal => match space.folder_for(me, args.folder.as_deref()) {
+                Ok(folder) => (
+                    NewBlock::Terminal {
+                        folder,
+                        command: args.command.clone(),
+                    },
+                    "a terminal",
+                ),
+                Err(refused) => return Reply::err(refused),
+            },
+        };
+        let folder = match &new {
+            NewBlock::Terminal { folder, .. } => Some(folder.clone()),
+            _ => None,
+        };
+        let id = match self.add_block_in(&space_id, new, Place::Near(me), opener, window, cx) {
+            Ok(id) => id,
+            Err(refused) => return Reply::err(refused),
+        };
+        let uid = self
+            .in_space(&space_id, |ws| {
+                ws.space.add_wire(me, id);
+                ws.space.uids.get(&id).cloned()
+            })
+            .flatten()
+            .unwrap_or_default();
+        cx.notify();
+        let mut said = format!("Opened {kind} as {uid}");
+        if let Some(folder) = folder {
+            said.push_str(&format!(" in {}", folder.display()));
+        }
+        if let Some(command) = &args.command {
+            said.push_str(&format!(", running {command:?}"));
+        }
+        said.push_str(", connected to you.");
+        if args.command.is_some() {
+            said.push_str(&format!(
+                " wait_for(block: \"{uid}\", pattern: …, lines: 50) waits for its line; stop_agent \
+                 ends it."
+            ));
+        }
+        Reply::ok(said)
     }
 
     /// `open_file` from `from`: the front-most wired editor whose folder holds the file, else a
@@ -513,67 +705,5 @@ impl Workspace {
             )),
             None => Reply::err(format!("Couldn't open {}.", given.display())),
         }
-    }
-
-    /// `git_status`: the wired Git block named, or the only one; git runs on the background
-    /// executor.
-    pub(super) fn git_status(
-        &self,
-        from: &str,
-        block: Option<&str>,
-        cx: &mut Context<Self>,
-    ) -> Outcome {
-        let (space, me) = self.caller_space(from);
-        let id = match block {
-            Some(uid) => match target(space, me, uid) {
-                Ok(id) => id,
-                Err(refused) => return Outcome::Now(refused),
-            },
-            None => {
-                let wired: Vec<BlockId> = space
-                    .canvas
-                    .blocks()
-                    .iter()
-                    .map(|b| b.id)
-                    .filter(|id| *id != me && space.wired(me, *id) && space.git(*id).is_some())
-                    .collect();
-                match wired.as_slice() {
-                    [one] => *one,
-                    [] => {
-                        return Outcome::Now(Reply::err(
-                            "No Git block is connected to you. Ask the person with connect.",
-                        ));
-                    }
-                    _ => {
-                        let ids: Vec<&str> = wired
-                            .iter()
-                            .filter_map(|id| space.uids.get(id).map(String::as_str))
-                            .collect();
-                        return Outcome::Now(Reply::err(format!(
-                            "Several Git blocks are connected to you: {}. Name one with block.",
-                            ids.join(", ")
-                        )));
-                    }
-                }
-            }
-        };
-        let uid = space.uids.get(&id).cloned().unwrap_or_default();
-        let Some(git) = space.git(id) else {
-            return Outcome::Now(Reply::err(format!("{uid} isn't a Git block.")));
-        };
-        let Some(repo) = git.repo().cloned() else {
-            return Outcome::Now(Reply::err(format!(
-                "{uid} shows no Git repository (yet: try again in a moment if it is still looking)."
-            )));
-        };
-        Outcome::Later(cx.background_executor().spawn(async move {
-            match repo.run(&["-c", "color.status=false", "status", "--short", "--branch"]) {
-                Ok(out) => Reply::ok(tools::tail(
-                    String::from_utf8_lossy(&out).trim_end(),
-                    tools::MAX_TEXT,
-                )),
-                Err(e) => Reply::err(format!("git status failed: {}", e.first_line())),
-            }
-        }))
     }
 }

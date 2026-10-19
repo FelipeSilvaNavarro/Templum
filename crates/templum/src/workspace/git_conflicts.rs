@@ -6,7 +6,6 @@ use std::time::SystemTime;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
-use templum_canvas::BlockId;
 use templum_git::conflict::{Region, Take, regions, resolve};
 use templum_git::trash;
 
@@ -49,7 +48,6 @@ impl Workspace {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn resolve_region(
         &mut self,
-        id: BlockId,
         path: String,
         region: usize,
         take: Take,
@@ -59,14 +57,14 @@ impl Workspace {
     ) {
         let Some(root) = self
             .space
-            .git(id)
+            .git()
             .and_then(|g| g.repo().map(|r| r.root.clone()))
         else {
             return;
         };
         let keep = self.trash.clone();
         self.act_job(
-            self.here(id),
+            self.here(),
             move || -> Result<(), Refused> {
                 let full = root.join(&path);
                 let bytes = std::fs::read(&full).map_err(Refused::Io)?;
@@ -122,18 +120,17 @@ impl Workspace {
     /// A copy that fails stops it: the file may hold hand edits git keeps nowhere.
     pub(crate) fn resolve_file(
         &mut self,
-        id: BlockId,
         path: String,
         side: templum_git::Side,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
+        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
             return;
         };
         let keep = self.trash.clone();
         self.act_job(
-            self.here(id),
+            self.here(),
             move || -> Result<(), Refused> {
                 let paths = [path.clone()];
                 let (files, size) = trash::measure(&repo.root, &paths);
@@ -173,19 +170,18 @@ impl Workspace {
     /// Mark resolved: stages the file; with conflict markers still in it, asks first.
     pub(crate) fn mark_resolved(
         &mut self,
-        id: BlockId,
         path: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(git) = self.space.git(id) else {
+        let Some(git) = self.space.git() else {
             return;
         };
         if !git.markers_left(&path) {
-            self.stage(id, vec![path], window, cx);
+            self.stage(vec![path], window, cx);
             return;
         }
-        let (entity, at) = (cx.entity(), self.here(id));
+        let (entity, at) = (cx.entity(), self.here());
         prompt::confirm(
             format!("Mark {path} resolved?"),
             "It still has conflict markers: Git will record them as they are.",
@@ -193,8 +189,8 @@ impl Workspace {
             move |window, cx| {
                 let (path, at) = (path.clone(), at.clone());
                 entity.update(cx, |ws, cx| {
-                    if ws.show_git_block(&at, window, cx) {
-                        ws.stage(at.block, vec![path], window, cx)
+                    if ws.show_git(&at, window, cx) {
+                        ws.stage(vec![path], window, cx)
                     }
                 })
             },

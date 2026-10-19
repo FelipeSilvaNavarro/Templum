@@ -4,8 +4,9 @@
 use gpui_kit::Focusable as _;
 use gpui_kit::component::input::EditorState;
 use serde_json::json;
+use templum_canvas::Wire;
 
-use super::bus::{call, me};
+use super::bus::{call, me, screen_with};
 use super::*;
 
 /// The startup terminal wired to a kanban block on a new board with one card ("New card") in To do:
@@ -31,7 +32,7 @@ fn list_cards_shows_the_wired_board_and_a_card_whole(cx: &mut TestAppContext) {
             b.edit_card(board, card, |c| {
                 c.title = "Fix\nlogin".into();
                 c.description = "It 500s.\nOn Safari.".into();
-                c.assignee = Some(uid.clone());
+                c.assignee = Some(crate::board::Assignee::Block(uid.clone()));
                 c.comments.push(crate::board::Comment {
                     by: "you".into(),
                     text: "Please".into(),
@@ -59,6 +60,47 @@ fn list_cards_shows_the_wired_board_and_a_card_whole(cx: &mut TestAppContext) {
         "{whole}"
     );
     assert!(whole.contains("you") && whole.contains("Please"), "{whole}");
+}
+
+/// An agent that moves a card to the board's last column, or to a Review one, is asked to say on
+/// it what it did, unless the card's newest comment is its own.
+#[gpui_kit::test]
+fn finishing_a_card_asks_for_a_comment_on_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, _, _, board, card) = wired_board(handle, &ws, cx);
+    let review = ws.update(cx, |ws, _| {
+        ws.edit_boards(|b| {
+            // To do, Doing, Review, Done.
+            let done = b.board(board)?.columns.last()?.id;
+            let id = b.add_column(board)?;
+            b.rename_column(board, id, "Review");
+            b.move_column(board, id, done);
+            Some(id)
+        })
+    });
+    assert!(review.is_some());
+    let to = |cx: &mut TestAppContext, column: &str| {
+        let (failed, text) = call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "move_card",
+            json!({ "card": card, "column": column }),
+        );
+        assert!(!failed, "{text}");
+        text
+    };
+    assert_eq!(to(cx, "Doing"), format!("Moved card {card} to Doing."));
+    let ask = "Say on it what you did and what the next one needs to know: comment_card.";
+    assert_eq!(
+        to(cx, "review"),
+        format!("Moved card {card} to review. {ask}")
+    );
+    assert_eq!(to(cx, "Done"), format!("Moved card {card} to Done. {ask}"));
+    let comment = json!({ "card": card, "text": "Fixed the parser; its docs are left." });
+    assert!(!call(handle, &ws, cx, &me, "comment_card", comment).0);
+    assert_eq!(to(cx, "Done"), format!("Moved card {card} to Done."));
 }
 
 #[gpui_kit::test]
@@ -126,7 +168,7 @@ fn create_move_comment_and_claim_change_the_board(cx: &mut TestAppContext) {
     assert!(!call(handle, &ws, cx, &me, "claim_card", json!({ "card": card })).0);
     ws.read_with(cx, |ws, _| {
         let c = ws.boards.card(board, card).unwrap();
-        assert_eq!(c.assignee.as_deref(), Some(uid.as_str()));
+        assert_eq!(c.assignee, Some(crate::board::Assignee::Block(uid.clone())));
         assert_eq!(
             (c.comments[0].by.as_str(), c.comments[0].text.as_str()),
             (uid.as_str(), "Done.")
@@ -155,7 +197,11 @@ fn claim_card_refuses_a_card_another_block_holds(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let (me, _, _, board, card) = wired_board(handle, &ws, cx);
     ws.update(cx, |ws, _| {
-        ws.edit_boards(|b| b.edit_card(board, card, |c| c.assignee = Some("zzzzz".into())))
+        ws.edit_boards(|b| {
+            b.edit_card(board, card, |c| {
+                c.assignee = Some(crate::board::Assignee::Block("zzzzz".into()))
+            })
+        })
     });
     let (failed, text) = call(handle, &ws, cx, &me, "claim_card", json!({ "card": card }));
     assert!(
@@ -168,9 +214,8 @@ fn claim_card_refuses_a_card_another_block_holds(cx: &mut TestAppContext) {
             .card(board, card)
             .unwrap()
             .assignee
-            .clone())
-            .as_deref(),
-        Some("zzzzz")
+            .clone()),
+        Some(crate::board::Assignee::Block("zzzzz".into()))
     );
 }
 
@@ -292,11 +337,31 @@ fn the_content_tools_are_refused_without_a_wire(cx: &mut TestAppContext) {
         ("create_card", json!({ "title": "x" })),
         ("read_note", json!({ "block": note_uid })),
         ("append_note", json!({ "block": note_uid, "text": "x" })),
-        ("git_status", json!({})),
         ("read_note", json!({ "block": kanban_uid })),
     ] {
         let (failed, text) = call(handle, &ws, cx, &me, tool, args.clone());
         assert!(failed, "{tool} {args}: {text}");
+    }
+}
+
+#[gpui_kit::test]
+fn the_checklist_tools_are_refused_without_a_wire(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let terminal = first_id(&ws, cx);
+    let (me, block, uid, _, build, _) = wired_checklist(handle, &ws, cx);
+    ws.update(cx, |ws, cx| {
+        assert!(ws.disconnect(Wire::new(terminal, block).unwrap(), cx))
+    });
+    for (tool, args) in [
+        ("read_checklist", json!({ "block": uid })),
+        ("check_item", json!({ "block": uid, "item": build })),
+        ("add_items", json!({ "block": uid, "text": "x" })),
+    ] {
+        let (failed, text) = call(handle, &ws, cx, &me, tool, args.clone());
+        assert!(
+            failed && text.contains("isn't connected to you"),
+            "{tool} {args}: {text}"
+        );
     }
 }
 
@@ -309,9 +374,13 @@ fn the_instructions_say_what_to_do_with_a_kanban_and_a_note(cx: &mut TestAppCont
     // Batch 8's sentence about tasks comes after it.
     assert!(
         text.contains(
-            "When a connected kanban has your task, move its card to Doing when you start and to \
-             Review when you are done (Done when the board has no Review); write what the next agent \
-             needs to know in the connected note."
+            "When a connected kanban has your task, claim its card (claim_card: a card for another \
+             agent isn't yours) and move it to Doing when you start; check its checklist's items as \
+             you finish them (edit_card); when you are done, comment on it what you did and what the \
+             next agent needs to know (comment_card), then move it to Review (Done when the board has \
+             no Review); write what the next agent needs to know in the connected note too, and check \
+             the items of a connected checklist as you finish them. For work of several steps, open \
+             your own checklist with create_block and check its items as you go."
         ),
         "{text}"
     );
@@ -765,32 +834,964 @@ fn an_editor_with_the_keyboard_showing_a_preview_gives_it_to_the_canvas(cx: &mut
     .unwrap();
 }
 
+/// The startup terminal wired to a checklist block showing "Deploy": "Build" (checked) and "Run
+/// the tests": (TEMPLUM_TERMINAL, block, its uid, the checklist, Build, Run the tests).
+fn wired_checklist(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> (String, BlockId, String, u64, u64, u64) {
+    let terminal = first_id(ws, cx);
+    let (block, list, build, tests) = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let list = ws.checklists.add(1);
+                ws.checklists.rename(list, "Deploy", 1);
+                let build = ws
+                    .checklists
+                    .add_item(list, None, "Build", true, 1)
+                    .unwrap();
+                let tests = ws
+                    .checklists
+                    .add_item(list, None, "Run the tests", false, 1);
+                let item = crate::session::Item::Checklist(crate::session::ChecklistItem {
+                    uid: String::new(),
+                    rect: Rect::new(900.0, 40.0, 320.0, 360.0).into(),
+                    checklist: Some(list),
+                    checklists: Vec::new(),
+                    active: 0,
+                });
+                ws.quiet = true;
+                let block = ws.add_saved(&item, window, cx).unwrap();
+                ws.quiet = false;
+                ws.space.appearing.clear();
+                assert!(ws.connect(terminal, block, cx));
+                (block, list, build, tests.unwrap())
+            })
+        })
+        .unwrap();
+    let (me, _) = me(ws, cx, terminal);
+    let uid = ws.read_with(cx, |ws, _| ws.space.uids[&block].clone());
+    (me, block, uid, list, build, tests)
+}
+
+fn items_of(ws: &Entity<Workspace>, cx: &mut TestAppContext, list: u64) -> Vec<(String, bool)> {
+    ws.read_with(cx, |ws, _| {
+        let list = ws.checklists.get(list).unwrap();
+        list.items
+            .iter()
+            .map(|i| (i.text.clone(), i.done))
+            .collect()
+    })
+}
+
 #[gpui_kit::test]
-fn git_status_matches_the_repository(cx: &mut TestAppContext) {
-    let repo = committed_repo();
-    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
-    std::fs::write(repo.path().join("new.txt"), "x\n").unwrap();
+fn read_checklist_reads_the_checklist_on_screen(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, _, uid, _, build, tests) = wired_checklist(handle, &ws, cx);
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "read_checklist",
+            json!({ "block": uid })
+        ),
+        (
+            false,
+            format!("Deploy (1/2)\n{build} [x] Build\n{tests} [ ] Run the tests")
+        )
+    );
+    let (_, blocks) = call(handle, &ws, cx, &me, "list_blocks", json!({}));
+    assert!(blocks.contains("checklist"), "{blocks}");
+    let terminal = ws.read_with(cx, |ws, _| ws.space.terminals().next().unwrap().0);
+    let (_, mine) = super::bus::me(&ws, cx, terminal);
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "read_checklist",
+        json!({ "block": mine }),
+    );
+    assert!(failed && text.contains("isn't a checklist"), "{text}");
+}
+
+#[gpui_kit::test]
+fn check_item_and_add_items_show_at_once_and_ctrl_z_takes_them_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, block, uid, list, _, tests) = wired_checklist(handle, &ws, cx);
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "check_item",
+            json!({ "block": uid, "item": tests })
+        ),
+        (false, format!("Item {tests} is checked."))
+    );
+    assert!(items_of(&ws, cx, list)[1].1);
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "check_item",
+        json!({ "block": uid, "item": 999 }),
+    );
+    assert!(failed, "{text}");
+    assert_eq!(
+        text,
+        "There's no item 999 in \"Deploy\". read_checklist shows its items."
+    );
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "add_items",
+        json!({ "block": uid, "text": "- [ ] Ship\n[x] Tag" }),
+    );
+    assert!(!failed, "{text}");
+    let ids: Vec<u64> = ws.read_with(cx, |ws, _| {
+        ws.checklists.get(list).unwrap().items[2..]
+            .iter()
+            .map(|i| i.id)
+            .collect()
+    });
+    assert_eq!(text, format!("Added items {}, {}.", ids[0], ids[1]));
+    assert_eq!(
+        items_of(&ws, cx, list)[2..],
+        [("Ship".to_string(), false), ("Tag".to_string(), true)]
+    );
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "add_items",
+        json!({ "block": uid, "text": " \n- " }),
+    );
+    assert!(failed && text == "There's nothing to add.", "{text}");
+    // Each call is one step.
+    let undo = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.focus_block(block, window, cx));
+            window.press(super::UNDO, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    };
+    undo(cx);
+    assert_eq!(items_of(&ws, cx, list).len(), 2, "Ship and Tag gone");
+    assert!(items_of(&ws, cx, list)[1].1);
+    undo(cx);
+    assert!(!items_of(&ws, cx, list)[1].1, "unchecked");
+}
+
+/// Review focus: an agent's change while the person edits an item keeps the field (its text and
+/// caret), shows the new items under it, and the person's typing after it is its own step.
+#[gpui_kit::test]
+fn add_items_while_the_person_edits_keeps_their_field(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, block, uid, list, build, _) = wired_checklist(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.edit_field(block, crate::checklist::Field::Item(build), window, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let input = ws.read_with(cx, |ws, _| {
+        let c = ws.space.blocks[&block].checklist().unwrap();
+        c.editing.as_ref().unwrap().input.clone()
+    });
+    cx.simulate_input(handle, "!");
+    input.update(cx, |i, cx| i.set_selected_range(2..2, cx));
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "add_items",
+        json!({ "block": uid, "text": "Ship" }),
+    );
+    assert!(!failed, "{text}");
+    input.read_with(cx, |i, _| {
+        assert_eq!(i.value().as_ref(), "Build!");
+        assert_eq!(i.cursor(), 2);
+    });
+    let texts = |cx: &mut TestAppContext| {
+        items_of(&ws, cx, list)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(texts(cx), ["Build!", "Run the tests", "Ship"]);
+    // Typed after the agent's change: a step of its own, taken back before the agent's.
+    input.update(cx, |i, cx| {
+        let end = i.value().len();
+        i.set_selected_range(end..end, cx)
+    });
+    cx.simulate_input(handle, "?");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        ws.update(cx, |ws, cx| ws.focus_block(block, window, cx));
+        window.press(super::UNDO, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(texts(cx), ["Build!", "Run the tests", "Ship"]);
+}
+
+/// A new item left empty goes from the undo steps an agent's change took while it was edited:
+/// Ctrl+Z never brings back an empty row nobody edits.
+#[gpui_kit::test]
+fn undoing_an_agents_add_during_a_new_items_edit_brings_back_no_empty_item(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let (me, block, uid, list, _, _) = wired_checklist(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.add_item_after(block, list, None, window, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "add_items",
+        json!({ "block": uid, "text": "Ship" }),
+    );
+    assert!(!failed, "{text}");
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        ws.update(cx, |ws, cx| ws.focus_block(block, window, cx));
+        window.press(super::UNDO, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let texts: Vec<_> = items_of(&ws, cx, list)
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect();
+    assert_eq!(texts, ["Build", "Run the tests"]);
+    assert!(
+        !ws.update(cx, |ws, cx| ws.undo_checklists(cx)),
+        "the new item's own step changes nothing now: skipped"
+    );
+}
+
+/// A new item typed in after an agent's change while it was empty: Ctrl+Z takes back the typing
+/// and the agent's change without an empty row nobody edits.
+#[gpui_kit::test]
+fn undoing_typing_after_an_agents_add_brings_back_no_empty_item(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, block, uid, list, _, _) = wired_checklist(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.add_item_after(block, list, None, window, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "add_items",
+        json!({ "block": uid, "text": "Ship" }),
+    );
+    assert!(!failed, "{text}");
+    cx.simulate_input(handle, "abc");
+    let texts = |cx: &mut TestAppContext| {
+        items_of(&ws, cx, list)
+            .into_iter()
+            .map(|(t, _)| t)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(texts(cx), ["Build", "Run the tests", "abc", "Ship"]);
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        ws.update(cx, |ws, cx| ws.focus_block(block, window, cx));
+        window.press(super::UNDO, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(texts(cx), ["Build", "Run the tests", "Ship"]);
+    cx.update_window(handle, |_, window, cx| {
+        window.press(super::UNDO, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert_eq!(texts(cx), ["Build", "Run the tests"]);
+}
+
+#[gpui_kit::test]
+fn create_and_edit_card_set_priority_who_and_checklist(cx: &mut TestAppContext) {
+    use crate::board::{Assignee, Priority};
+    let (handle, ws) = open(cx);
+    let (me, uid, _, board, _) = wired_board(handle, &ws, cx);
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "create_card",
+        json!({ "title": "v2", "priority": "High", "for": "codex", "checklist": "- Model\n- [x] Tools" }),
+    );
+    assert!(!failed, "{text}");
+    let card: u64 = text
+        .trim_start_matches("Created card ")
+        .trim_end_matches('.')
+        .parse()
+        .unwrap();
+    let (model, tools) = ws.read_with(cx, |ws, _| {
+        let c = ws.boards.card(board, card).unwrap();
+        assert_eq!(
+            (c.priority, c.assignee.clone()),
+            (Some(Priority::High), Some(Assignee::Agent("codex".into())))
+        );
+        (c.checklist[0].id, c.checklist[1].id)
+    });
+    let (_, list) = call(handle, &ws, cx, &me, "list_cards", json!({}));
+    assert!(
+        list.contains(&format!(
+            "{card}  v2  priority high  for any codex  checklist 1/2"
+        )),
+        "{list}"
+    );
+    let (_, whole) = call(handle, &ws, cx, &me, "list_cards", json!({ "card": card }));
+    assert!(
+        whole.contains(&format!(
+            "checklist:\n  {model} [ ] Model\n  {tools} [x] Tools"
+        )),
+        "{whole}"
+    );
+    let before = ws.read_with(cx, |ws, _| ws.boards.clone());
+    for (args, says) in [
+        (
+            json!({ "card": card, "for": "nobody" }),
+            "There's no agent or terminal block nobody".to_string(),
+        ),
+        (
+            json!({ "card": card, "check": 99_999 }),
+            format!("Card {card} has no item 99999"),
+        ),
+    ] {
+        let (failed, text) = call(handle, &ws, cx, &me, "edit_card", args);
+        assert!(failed && text.contains(&says), "{text}");
+    }
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.boards.clone()),
+        before,
+        "a refusal changes nothing"
+    );
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "edit_card",
+        json!({ "card": card, "priority": "none", "for": "claude code", "add_items": "Docs",
+                "check": model, "uncheck": [tools] }),
+    );
+    assert!(!failed, "{text}");
+    let docs = ws.read_with(cx, |ws, _| {
+        ws.boards.card(board, card).unwrap().checklist[2].id
+    });
+    assert_eq!(
+        text,
+        format!(
+            "Card {card}: priority none; for any claude; added item {docs}; checked {model}; unchecked {tools}."
+        )
+    );
+    ws.update(cx, |ws, cx| assert!(ws.undo_boards(cx)));
+    // Ctrl+Z keeps next_id: ids are never given out twice.
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.boards.boards.clone()),
+        before.boards,
+        "one Ctrl+Z step"
+    );
+    let (failed, _) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "edit_card",
+        json!({ "card": card, "for": "Anyone" }),
+    );
+    assert!(!failed);
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws
+            .boards
+            .card(board, card)
+            .unwrap()
+            .assignee
+            .clone()),
+        None
+    );
+    // A block's id names that block (creating is never gated: Task 7 gates edit_card's `for`).
+    let (_, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "create_card",
+        json!({ "title": "mine", "for": uid }),
+    );
+    let mine: u64 = text
+        .trim_start_matches("Created card ")
+        .trim_end_matches('.')
+        .parse()
+        .unwrap();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws
+            .boards
+            .card(board, mine)
+            .unwrap()
+            .assignee
+            .clone()),
+        Some(Assignee::Block(uid.clone()))
+    );
+}
+
+#[gpui_kit::test]
+fn claim_card_follows_who_a_card_is_for(cx: &mut TestAppContext) {
+    use crate::board::Assignee;
     let (handle, ws) = open(cx);
     let terminal = first_id(&ws, cx);
-    let git = open_git(handle, &ws, cx, repo.path());
-    let (me, _) = me(&ws, cx, terminal);
-    let answers = super::bus::call_later(handle, &ws, cx, &me, 1, "git_status", json!({}));
-    let (failed, text) = super::bus::answer_soon(cx, &answers);
+    let (me, uid, _, board, card) = wired_board(handle, &ws, cx);
+    let set = |cx: &mut TestAppContext, a: Option<Assignee>| {
+        ws.update(cx, |ws, _| {
+            ws.edit_boards(|b| b.edit_card(board, card, |c| c.assignee = a))
+        })
+    };
+    let runs = |cx: &mut TestAppContext, agent: Option<&str>| {
+        ws.update(cx, |ws, _| {
+            ws.space.terminal_mut(terminal).unwrap().seen.agent = agent.map(str::to_string)
+        })
+    };
+    let claim =
+        |cx: &mut TestAppContext| call(handle, &ws, cx, &me, "claim_card", json!({ "card": card }));
+    set(cx, Some(Assignee::Agent("codex".into())));
+    runs(cx, None);
+    let (failed, text) = claim(cx);
     assert!(
-        failed && text.contains("No Git block is connected to you"),
+        failed
+            && text
+                == format!(
+                    "Card {card} is for any Codex, and Templum can't tell yet which agent you are: \
+                     try again in a few seconds."
+                ),
         "{text}"
     );
-    ws.update(cx, |ws, cx| assert!(ws.connect(terminal, git, cx)));
-    let answers = super::bus::call_later(handle, &ws, cx, &me, 2, "git_status", json!({}));
-    let (failed, text) = super::bus::answer_soon(cx, &answers);
-    assert!(!failed, "{text}");
-    let expected = git_run(
-        repo.path(),
-        &["-c", "color.status=false", "status", "--short", "--branch"],
-    );
-    assert_eq!(text, expected.trim_end());
+    runs(cx, Some("claude"));
+    let (failed, text) = claim(cx);
     assert!(
-        text.starts_with("## main") && text.contains(" M a.txt") && text.contains("?? new.txt"),
+        failed
+            && text
+                == format!(
+                    "Card {card} is for any Codex, and you are Claude Code: take a card for you or \
+                     for anyone."
+                ),
         "{text}"
     );
+    runs(cx, Some("codex"));
+    let (_, list) = call(handle, &ws, cx, &me, "list_cards", json!({}));
+    assert!(list.contains("for any codex (you)"), "{list}");
+    assert_eq!(claim(cx), (false, format!("Card {card} is yours.")));
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws
+            .boards
+            .card(board, card)
+            .unwrap()
+            .assignee
+            .clone()),
+        Some(Assignee::Block(uid.clone()))
+    );
+    let (_, list) = call(handle, &ws, cx, &me, "list_cards", json!({}));
+    assert!(
+        list.contains(&format!("assignee {uid} ")) && list.contains("(you)"),
+        "{list}"
+    );
+    // move_card stays open, and says whose card it is.
+    set(cx, Some(Assignee::Agent("claude".into())));
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "move_card",
+        json!({ "card": card, "column": "Doing" }),
+    );
+    assert!(
+        !failed && text.ends_with(" It is for any claude, not you."),
+        "{text}"
+    );
+    // edit_card's `for` follows claim_card: no card for another agent given to itself...
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "edit_card",
+        json!({ "card": card, "for": uid }),
+    );
+    assert!(
+        failed && text.contains("is for any Claude Code, and you are Codex"),
+        "{text}"
+    );
+    // ...and no card another block holds freed or handed on; its checklist stays open.
+    set(cx, Some(Assignee::Block("zzzzz".into())));
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "edit_card",
+        json!({ "card": card, "for": "anyone" }),
+    );
+    assert!(failed && text.contains("taken by zzzzz"), "{text}");
+    let (_, text) = call(
+        handle,
+        &ws,
+        cx,
+        &me,
+        "move_card",
+        json!({ "card": card, "column": "To do" }),
+    );
+    assert!(text.ends_with(" It is for zzzzz, not you."), "{text}");
+    assert!(
+        !call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "edit_card",
+            json!({ "card": card, "add_items": "x" })
+        )
+        .0
+    );
+    // A person's agent that runs a built-in's program is that agent to a card, by a path too.
+    ws.update(cx, |ws, _| {
+        let mut work = ws.agents.iter().find(|a| a.id == "codex").unwrap().clone();
+        (work.id, work.title, work.builtin) = ("codex-work".into(), "Codex work".into(), None);
+        work.command = "~/bin/Codex.exe --profile work".into();
+        ws.agents.push(work);
+    });
+    set(cx, Some(Assignee::Agent("codex-work".into())));
+    assert_eq!(claim(cx), (false, format!("Card {card} is yours.")));
+}
+
+/// A card for an account is that account's only; one for its agent is any of the agent's blocks,
+/// the account's included.
+#[gpui_kit::test]
+fn a_card_for_an_account_is_its_own(cx: &mut TestAppContext) {
+    use crate::board::Assignee;
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    super::agents::with_agents(&ws, cx, super::agents::CLAUDE2);
+    let terminal = first_id(&ws, cx);
+    let (me, _, _, board, card) = wired_board(handle, &ws, cx);
+    let set = |cx: &mut TestAppContext, a: Assignee| {
+        ws.update(cx, |ws, _| {
+            ws.edit_boards(|b| b.edit_card(board, card, |c| c.assignee = Some(a)))
+        })
+    };
+    let runs = |cx: &mut TestAppContext, agent: &str| {
+        ws.update(cx, |ws, _| {
+            ws.space.terminal_mut(terminal).unwrap().seen.agent = Some(agent.to_string())
+        })
+    };
+    let claim =
+        |cx: &mut TestAppContext| call(handle, &ws, cx, &me, "claim_card", json!({ "card": card }));
+    set(cx, Assignee::Agent("claude2".into()));
+    runs(cx, "claude");
+    let (failed, text) = claim(cx);
+    assert!(
+        failed,
+        "Claude Code's own folder isn't Claude Code 2: {text}"
+    );
+    runs(cx, "claude2");
+    assert_eq!(claim(cx), (false, format!("Card {card} is yours.")));
+    set(cx, Assignee::Agent("claude".into()));
+    assert_eq!(
+        claim(cx),
+        (false, format!("Card {card} is yours.")),
+        "any Claude Code: its accounts run it"
+    );
+}
+
+/// The block at the other end of `mine`'s newest wire.
+fn newest_block(ws: &Entity<Workspace>, cx: &mut TestAppContext, mine: BlockId) -> BlockId {
+    ws.read_with(cx, |ws, _| {
+        let wire = ws
+            .space
+            .wires
+            .iter()
+            .rfind(|w| w.touches(mine))
+            .expect("wired to the caller");
+        if wire.a == mine { wire.b } else { wire.a }
+    })
+}
+
+/// `create_block` opens a note, a checklist or a terminal running a command beside the caller,
+/// wired to it, the keyboard and the camera kept; one Ctrl+Z closes it (docs/specs/agent-tools.md,
+/// create_block).
+#[gpui_kit::test]
+fn create_block_opens_each_kind_beside_the_caller_wired_to_it(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let mine = first_id(&ws, cx);
+    let (terminal, uid) = me(&ws, cx, mine);
+    let kept = ws.read_with(cx, |ws, _| (ws.space.focused, ws.space.canvas.camera));
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "create_block",
+        json!({ "kind": "checklist", "name": "Plan", "items": "- [ ] Read\n- [x] Plan" }),
+    );
+    assert!(
+        !failed
+            && text.starts_with("Opened a checklist as ")
+            && text.ends_with(", connected to you."),
+        "{text}"
+    );
+    let list = newest_block(&ws, cx, mine);
+    ws.read_with(cx, |ws, _| {
+        let shown = ws.space.blocks[&list].checklist().unwrap().list.unwrap();
+        let l = ws.checklists.get(shown).unwrap();
+        assert_eq!(l.name_shown(), "Plan");
+        let items: Vec<(&str, bool)> = l.items.iter().map(|i| (i.text.as_str(), i.done)).collect();
+        assert_eq!(items, [("Read", false), ("Plan", true)]);
+        assert!(ws.space.wired(mine, list));
+        assert_eq!(
+            (ws.space.focused, ws.space.canvas.camera),
+            kept,
+            "keyboard and camera stay"
+        );
+        let (a, b) = (
+            ws.space.canvas.get(mine).unwrap().rect,
+            ws.space.canvas.get(list).unwrap().rect,
+        );
+        assert!(!a.intersects(&b), "beside, covering nothing");
+    });
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "create_block",
+        json!({ "kind": "note", "text": "notes" }),
+    );
+    assert!(!failed && text.starts_with("Opened a note as "), "{text}");
+    let note = newest_block(&ws, cx, mine);
+    ws.read_with(cx, |ws, cx| {
+        let editor = ws.space.blocks[&note]
+            .note()
+            .unwrap()
+            .tab()
+            .unwrap()
+            .editor
+            .clone();
+        assert_eq!(editor.read(cx).value(), "notes");
+        assert_eq!(ws.space.focused, kept.0);
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let (failed, text) = call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "create_block",
+        json!({ "kind": "terminal", "folder": dir.path(), "command": "echo hello-from-create" }),
+    );
+    assert!(
+        !failed && text.contains("running \"echo hello-from-create\", connected to you."),
+        "{text}"
+    );
+    assert!(text.contains("stop_agent ends it."), "{text}");
+    let term = newest_block(&ws, cx, mine);
+    screen_with(&ws, cx, term, "hello-from-create");
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(term).unwrap();
+        assert_eq!(
+            pane.opened_by.as_deref(),
+            Some(uid.as_str()),
+            "the caller may stop and close it"
+        );
+    });
+    // One Ctrl+Z closes the newest block and its wire.
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| assert!(ws.undo_canvas(false, window, cx)))
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.canvas.get(term).is_none() && !ws.space.wired(mine, term));
+        assert!(ws.space.canvas.get(note).is_some(), "one step each");
+    });
+}
+
+#[gpui_kit::test]
+fn create_block_refuses_what_its_kind_doesnt_take(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let mine = first_id(&ws, cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let blocks = ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len());
+    let missing = std::env::temp_dir().join("templum-no-such-folder");
+    for (args, says) in [
+        (
+            json!({ "kind": "terminal", "folder": missing }),
+            format!("{} isn't a folder.", missing.display()),
+        ),
+        (
+            json!({ "kind": "note", "items": "x" }),
+            "\"name\" and \"items\" are for a checklist".to_string(),
+        ),
+    ] {
+        assert_eq!(
+            call(handle, &ws, cx, &terminal, "create_block", args),
+            (true, says)
+        );
+    }
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len()),
+        blocks,
+        "nothing opened"
+    );
+}
+
+/// The person puts `text` in the note block `note` (its editor `editor` has the keyboard after).
+fn set_note(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    editor: &Entity<EditorState>,
+    note: BlockId,
+    cx: &mut TestAppContext,
+    text: &str,
+) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(note, window, cx));
+        editor.update(cx, |e, cx| {
+            let end = e.value().len();
+            e.set_selected_range(0..end, cx);
+            e.replace(text.to_string(), window, cx);
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+fn note_text(editor: &Entity<EditorState>, cx: &mut TestAppContext) -> String {
+    editor.read_with(cx, |e, _| e.value().to_string())
+}
+
+/// Ctrl+Z in the note that has the keyboard.
+fn undo_note(handle: AnyWindowHandle, cx: &mut TestAppContext) {
+    cx.update_window(handle, |_, window, cx| {
+        window.press(UNDO, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
+/// `replace_note` replaces the whole text, or its one passage `old`, as one step of the note's
+/// Ctrl+Z each (docs/specs/agent-tools.md, Fixing a note or a checklist).
+#[gpui_kit::test]
+fn replace_note_replaces_the_text_or_one_passage_and_ctrl_z_takes_it_back(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, note, uid) = wired_note(handle, &ws, cx);
+    let editor = note_editor(&ws, cx, note);
+    set_note(
+        handle,
+        &ws,
+        &editor,
+        note,
+        cx,
+        "Plan\n- build\n- build\n- ship",
+    );
+    let replace = |old: Option<&str>, text: &str| match old {
+        Some(old) => json!({ "block": uid, "old": old, "text": text }),
+        None => json!({ "block": uid, "text": text }),
+    };
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "replace_note",
+            replace(Some("- build"), "x")
+        ),
+        (
+            true,
+            "\"- build\" is in the note 2 times: give more of the text around it.".into()
+        )
+    );
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "replace_note",
+            replace(Some("nope"), "x")
+        ),
+        (
+            true,
+            "\"nope\" isn't in the note: read_note shows it.".into()
+        )
+    );
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "replace_note",
+            replace(Some("- ship"), "- ship it")
+        ),
+        (false, format!("Replaced 1 passage of the note in {uid}."))
+    );
+    assert_eq!(note_text(&editor, cx), "Plan\n- build\n- build\n- ship it");
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "replace_note",
+            replace(None, "All new")
+        ),
+        (false, format!("Replaced the note in {uid}."))
+    );
+    assert_eq!(note_text(&editor, cx), "All new");
+    assert_eq!(
+        call(handle, &ws, cx, &me, "replace_note", replace(None, " ")),
+        (
+            true,
+            "That would empty the note: the person does that.".into()
+        )
+    );
+    // The whole text as the passage: the same.
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "replace_note",
+            replace(Some("All new"), " ")
+        ),
+        (
+            true,
+            "That would empty the note: the person does that.".into()
+        )
+    );
+    let id = ws.read_with(cx, |ws, _| {
+        ws.space.blocks[&note].note().unwrap().tab().unwrap().id
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.notes.get(id).unwrap().text.clone()),
+        "All new",
+        "kept in the notes"
+    );
+    undo_note(handle, cx);
+    assert_eq!(note_text(&editor, cx), "Plan\n- build\n- build\n- ship it");
+    undo_note(handle, cx);
+    assert_eq!(note_text(&editor, cx), "Plan\n- build\n- build\n- ship");
+}
+
+/// `edit_item` and `delete_item` fix a checklist, one step of Ctrl+Z each.
+#[gpui_kit::test]
+fn edit_item_and_delete_item_fix_a_checklist_one_ctrl_z_step_each(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (me, _block, uid, list, build, tests) = wired_checklist(handle, &ws, cx);
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "edit_item",
+            json!({ "block": uid, "item": build, "text": "Build it" })
+        ),
+        (false, format!("Item {build} is now \"Build it\"."))
+    );
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "delete_item",
+            json!({ "block": uid, "item": tests })
+        ),
+        (false, format!("Deleted item {tests}."))
+    );
+    assert_eq!(items_of(&ws, cx, list), [("Build it".to_string(), true)]);
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "edit_item",
+            json!({ "block": uid, "item": 999, "text": "x" })
+        ),
+        (
+            true,
+            "There's no item 999 in \"Deploy\". read_checklist shows its items.".into()
+        )
+    );
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "delete_item",
+            json!({ "block": uid, "item": 999 })
+        ),
+        (
+            true,
+            "There's no item 999 in \"Deploy\". read_checklist shows its items.".into()
+        )
+    );
+    assert_eq!(
+        call(
+            handle,
+            &ws,
+            cx,
+            &me,
+            "edit_item",
+            json!({ "block": uid, "item": build, "text": " " })
+        ),
+        (true, "delete_item removes an item".into())
+    );
+    ws.update(cx, |ws, cx| assert!(ws.undo_checklists(cx)));
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            ws.checklists.get(list).unwrap().item(tests).is_some(),
+            "the delete taken back"
+        )
+    });
+    ws.update(cx, |ws, cx| assert!(ws.undo_checklists(cx)));
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(
+            ws.checklists.get(list).unwrap().item(build).unwrap().text,
+            "Build"
+        )
+    });
 }

@@ -17,7 +17,6 @@ use gpui_kit::{
     AnyElement, ClickEvent, Context, ListHorizontalSizingBehavior, MouseButton, MouseUpEvent,
     Pixels, ShapedLine, TestSupportExt, UniformListScrollHandle, div, px, uniform_list,
 };
-use templum_canvas::BlockId;
 use templum_git::{FileDiff, WorkingDiff};
 
 pub(crate) use rows::{Note, Row, Shown, rows, split_rows};
@@ -412,15 +411,8 @@ pub(crate) fn files_word(n: usize) -> String {
 }
 
 /// The panel: its header, the sticky title, and the rows.
-pub(crate) fn panel(
-    ws: &Workspace,
-    id: BlockId,
-    git: &Git,
-    z: f32,
-    cx: &mut Context<Workspace>,
-) -> AnyElement {
+pub(crate) fn panel(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
-    let n = id.0 as usize;
     let p = git.diff();
     let row_h = row_height(z);
     let base = p.scroll.0.borrow().base_handle.clone();
@@ -430,14 +422,14 @@ pub(crate) fn panel(
     let header = bar(ui, z)
         .when(git.lists_folded, |el| {
             el.child(
-                icon_button(("git-unfold-lists", n), IconName::PanelLeftOpen, ui, z)
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(id, cx)))
+                icon_button("git-unfold-lists", IconName::PanelLeftOpen, ui, z)
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(cx)))
                     .test_support(),
             )
         })
         .child(
             div()
-                .id(("git-panel-title", n))
+                .id("git-panel-title")
                 .truncate()
                 .text_color(ui.title)
                 .child(p.title())
@@ -446,38 +438,34 @@ pub(crate) fn panel(
         .child(div().flex_1())
         .when(!matches!(p.source, Source::Blame { .. }), |el| {
             el.child(
-                small(("git-unified", n), "Unified", ui, z)
+                small("git-unified", "Unified", ui, z)
                     .when(!p.split, |el| el.bg(ui.card))
-                    .on_click(
-                        cx.listener(move |ws, _: &ClickEvent, _, cx| ws.set_split(id, false, cx)),
-                    )
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.set_split(false, cx)))
                     .test_support(),
             )
             .child(
-                small(("git-split", n), "Split", ui, z)
+                small("git-split", "Split", ui, z)
                     .when(p.split, |el| el.bg(ui.card))
-                    .on_click(
-                        cx.listener(move |ws, _: &ClickEvent, _, cx| ws.set_split(id, true, cx)),
-                    )
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.set_split(true, cx)))
                     .test_support(),
             )
         })
         .child(
-            small(("git-ignore-ws", n), "Ignore whitespace", ui, z)
+            small("git-ignore-ws", "Ignore whitespace", ui, z)
                 .when(p.ignore_ws, |el| el.bg(ui.card))
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.toggle_ignore_whitespace(id, window, cx)
+                    ws.toggle_ignore_whitespace(window, cx)
                 }))
                 .test_support(),
         )
         .child(
-            small(("git-expand-all", n), "Expand all", ui, z)
-                .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.fold_all(id, false, cx)))
+            small("git-expand-all", "Expand all", ui, z)
+                .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.fold_all(false, cx)))
                 .test_support(),
         )
         .child(
-            small(("git-collapse-all", n), "Collapse all", ui, z)
-                .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.fold_all(id, true, cx)))
+            small("git-collapse-all", "Collapse all", ui, z)
+                .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.fold_all(true, cx)))
                 .test_support(),
         );
     let body: AnyElement = if p.is_empty() {
@@ -491,7 +479,7 @@ pub(crate) fn panel(
         let sticky = bar(ui, z)
             .child(
                 div()
-                    .id(("git-sticky", n))
+                    .id("git-sticky")
                     .truncate()
                     .text_color(ui.title)
                     .child(top.map_or_else(|| " ".to_string(), |s| s.diff.path().to_string()))
@@ -500,12 +488,12 @@ pub(crate) fn panel(
             .child(div().flex_1())
             .children(top.map(|s| paint::counts(&s.diff, ui)));
         let (rows, files, entity) = (p.rows.clone(), p.files.clone(), cx.entity());
-        let list = uniform_list(("git-panel", n), rows.len(), move |range, _, cx| {
+        let list = uniform_list("git-panel", rows.len(), move |range, _, cx| {
             entity.update(cx, |ws, cx| {
                 let ws = &*ws;
-                let cursor = ws.space.git(id).and_then(|g| g.diff().cursor_row());
+                let cursor = ws.space.git().and_then(|g| g.diff().cursor_row());
                 range
-                    .map(|ix| paint::row(ws, id, &files, &rows, ix, cursor, row_h, z, cx))
+                    .map(|ix| paint::row(ws, &files, &rows, ix, cursor, row_h, z, cx))
                     .collect()
             })
         })
@@ -527,7 +515,7 @@ pub(crate) fn panel(
     // The keys act on the Changes tab alone.
     let keys = p.working().then(|| {
         bar(ui, z)
-            .id(("git-keys", n))
+            .id("git-keys")
             .text_size(px(11.0 * z))
             .child(if cfg!(target_os = "macos") {
                 "↑↓ file · [ ] hunk · s stage · u unstage · d discard · ⏎ open · c message · ⌘⏎ commit"
@@ -537,7 +525,7 @@ pub(crate) fn panel(
             .test_support()
     });
     div()
-        .id(("git-diff", n))
+        .id("git-diff")
         .flex_1()
         .min_w(px(0.0))
         .flex()
@@ -547,7 +535,7 @@ pub(crate) fn panel(
         .children(keys)
         .on_mouse_up(
             MouseButton::Left,
-            cx.listener(move |ws, _: &MouseUpEvent, _, cx| ws.diff_release(id, cx)),
+            cx.listener(move |ws, _: &MouseUpEvent, _, cx| ws.diff_release(cx)),
         )
         .test_support()
         .into_any_element()

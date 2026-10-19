@@ -42,6 +42,35 @@ pub(super) fn rows(
                 theme_row(ws, entity, names, true),
             ]
         }
+        Section::Canvas => {
+            let on = ws.config.canvas.focus_follows_pointer;
+            let e = entity.clone();
+            vec![
+                Row::new("canvas.focus_follows_pointer", "Focus follows the pointer")
+                    .description(
+                        "The block under the pointer takes the keyboard, no click needed. Grid \
+                         mode's tiles always do",
+                    )
+                    .control(Switch::new("focus-follows-switch").checked(on).on_click(
+                        move |on: &bool, _, cx| {
+                            let on = *on;
+                            e.update(cx, |ws, cx| {
+                                ws.edit(
+                                    Edit::set("canvas", "focus_follows_pointer", on),
+                                    |c| c.canvas.focus_follows_pointer = on,
+                                    cx,
+                                )
+                            })
+                        },
+                    ))
+                    .reset(
+                        !on,
+                        remove(entity, "canvas", "focus_follows_pointer", |c| {
+                            c.canvas.focus_follows_pointer = true
+                        }),
+                    ),
+            ]
+        }
         Section::Font => vec![
             font_family_row(ws, entity),
             number_row(ws, entity, &FONT_SIZE, "Size", window, cx)
@@ -212,9 +241,11 @@ pub(super) fn rows(
             ]
         }
         Section::Git => super::git::rows(ws, entity, window, cx),
+        // The accounts are under them (`accounts.rs`).
         Section::Agents => ws
             .agents
             .iter()
+            .filter(|agent| agent.account.is_none())
             .map(|agent| agent_row(ws, entity, agent))
             .collect(),
         Section::Usage => {
@@ -250,14 +281,25 @@ pub(super) fn rows(
                         }),
                     ),
             ];
-            // Which agents' limits the title bar's meter shows, in turn.
-            for agent in templum_usage::LIMITED {
-                let shown = !ws.config.usage.hide.iter().any(|a| a == agent);
+            // Which agents' limits the title bar's meter shows, in turn: an account's are its own.
+            let accounts = ws.agents.iter().filter(|a| {
+                a.account
+                    .as_ref()
+                    .is_some_and(|acc| templum_usage::LIMITED.contains(&acc.kind.agent))
+            });
+            let ids: Vec<String> = templum_usage::LIMITED
+                .iter()
+                .map(|a| a.to_string())
+                .chain(accounts.map(|a| a.id.clone()))
+                .collect();
+            for agent in ids {
+                let shown = !ws.config.usage.hide.contains(&agent);
                 let (e, r) = (entity.clone(), entity.clone());
+                let (on_agent, reset_agent) = (agent.clone(), agent.clone());
                 rows.push(
                     Row::new(
                         format!("usage.hide.{agent}"),
-                        format!("{} in the title bar", ws.agent_title(agent)),
+                        format!("{} in the title bar", ws.agent_title(&agent)),
                     )
                     .description("Its limits take turns with the others' in the title bar")
                     .control(
@@ -265,17 +307,18 @@ pub(super) fn rows(
                             .checked(shown)
                             .on_click(move |on: &bool, _, cx| {
                                 let on = *on;
-                                e.update(cx, |ws, cx| ws.show_in_title_bar(agent, on, cx))
+                                e.update(cx, |ws, cx| ws.show_in_title_bar(&on_agent, on, cx))
                             }),
                     )
                     .reset(!shown, move |_, cx| {
-                        r.update(cx, |ws, cx| ws.show_in_title_bar(agent, true, cx))
+                        r.update(cx, |ws, cx| ws.show_in_title_bar(&reset_agent, true, cx))
                     }),
                 );
             }
             rows
         }
-        Section::Connections => super::connections::rows(ws, entity),
+        Section::Connections => super::connections::rows(ws, entity, window, cx),
+        Section::TemplumAgent => super::templum_agent::rows(ws, entity, window, cx),
         Section::Updates => super::updates::rows(ws, entity),
         Section::Shortcuts => Command::ALL
             .map(|command| shortcut_row(ws, entity, command))

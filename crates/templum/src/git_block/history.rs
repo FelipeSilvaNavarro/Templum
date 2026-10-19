@@ -9,7 +9,6 @@ use gpui_kit::{
     AnyElement, Bounds, ClickEvent, Context, ElementId, Hsla, MouseButton, MouseDownEvent,
     PathBuilder, ScrollHandle, TestSupportExt, canvas, div, fill, point, px, size, uniform_list,
 };
-use templum_canvas::BlockId;
 use templum_git::Search;
 use templum_git::graph::GraphRow;
 
@@ -24,35 +23,27 @@ use crate::workspace::Workspace;
 /// The History tab: the list (or the commit shown) on the left, the diff panel on the right.
 pub(super) fn history(
     ws: &Workspace,
-    id: BlockId,
     git: &Git,
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let column = match &git.shown {
-        Some(shown) => commit_column(ws, id, shown, &git.details_scroll, z, cx),
-        None => list_column(ws, id, git, z, cx),
+        Some(shown) => commit_column(ws, shown, &git.details_scroll, z, cx),
+        None => list_column(ws, git, z, cx),
     };
     div()
         .flex_1()
         .min_h(px(0.0))
         .flex()
         .when(!git.lists_folded, |el| el.child(column))
-        .child(diff_view::panel(ws, id, git, z, cx))
+        .child(diff_view::panel(ws, git, z, cx))
         .into_any_element()
 }
 
 /// The left column: the search and the fold button over the commits' virtual list, each row
 /// two lines (subject and refs; short hash, author, age).
-fn list_column(
-    ws: &Workspace,
-    id: BlockId,
-    git: &Git,
-    z: f32,
-    cx: &mut Context<Workspace>,
-) -> AnyElement {
+fn list_column(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>) -> AnyElement {
     let ui = ws.ui;
-    let n = id.0 as usize;
     let commits = git.commits.clone();
     let (more, entity) = (git.more, cx.entity());
     let now = std::time::SystemTime::now()
@@ -63,17 +54,17 @@ fn list_column(
     let (graph, unpushed) = (git.graph.clone(), git.unpushed.clone());
     let lanes = graph.iter().map(|r| r.width).max().unwrap_or(0);
     let palette = [4, 2, 3, 5, 6, 1].map(|i| hsla(ws.theme.palette.ansi[i], 1.0));
-    let list = uniform_list(("git-history", n), rows, move |range, _, _| {
+    let list = uniform_list("git-history", rows, move |range, _, _| {
         range
             .map(|ix| {
                 if ix == commits.len() {
                     let entity = entity.clone();
-                    return button(("git-load-more", n), "Load more", ui, z)
+                    return button("git-load-more", "Load more", ui, z)
                         .m(px(6.0 * z))
                         .on_click(move |_: &ClickEvent, window, cx| {
                             entity.update(cx, |ws, cx| {
-                                let at = ws.here(id);
-                                let skip = ws.space.git(id).map_or(0, |g| g.commits.len());
+                                let at = ws.here();
+                                let skip = ws.space.git().map_or(0, |g| g.commits.len());
                                 ws.load_history(at, skip, window, cx)
                             })
                         })
@@ -141,13 +132,12 @@ fn list_column(
                             ),
                     )
                     .on_click(move |_: &ClickEvent, window, cx| {
-                        open.update(cx, |ws, cx| ws.show_commit(id, hash.clone(), window, cx))
+                        open.update(cx, |ws, cx| ws.show_commit(hash.clone(), window, cx))
                     })
                     .on_mouse_down(MouseButton::Right, move |e: &MouseDownEvent, window, cx| {
                         menu.update(cx, |ws, cx| {
                             ws.open_menu(
                                 Target::GitCommit {
-                                    block: id,
                                     hash: menu_hash.clone(),
                                 },
                                 e.position,
@@ -176,7 +166,7 @@ fn list_column(
             el.child(field(&git.search, z).flex_1())
         })
         .when(git.file.is_some(), |el| el.child(div().flex_1()))
-        .child(fold_button(id, ui, z, cx));
+        .child(fold_button(ui, z, cx));
     let chip = git.file.as_ref().map(|path| {
         div()
             .flex()
@@ -196,18 +186,18 @@ fn list_column(
                     .child(format!("History of {path}")),
             )
             .child(
-                small(("git-blame-toggle", n), "Blame", ui, z)
+                small("git-blame-toggle", "Blame", ui, z)
                     .when(git.blame, |el| el.bg(ui.card))
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.toggle_blame(id, window, cx)
+                        ws.toggle_blame(window, cx)
                     }))
                     .test_support(),
             )
             .child(
-                icon_button(("git-file-clear", n), IconName::Close, ui, z)
+                icon_button("git-file-clear", IconName::Close, ui, z)
                     .tooltip(|window, cx| Tooltip::new("The whole history").build(window, cx))
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.clear_file_history(id, window, cx)
+                        ws.clear_file_history(window, cx)
                     }))
                     .test_support(),
             )
@@ -227,20 +217,20 @@ fn list_column(
                 (Search::Code, "git-search-code", "Code"),
             ]
             .map(|(mode, name, label)| {
-                small((name, n), label, ui, z)
+                small(name, label, ui, z)
                     .when(git.search_mode == mode, |el| el.bg(ui.card))
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.set_search_mode(id, mode, window, cx)
+                        ws.set_search_mode(mode, window, cx)
                     }))
                     .test_support()
             }),
         )
         .child(div().flex_1())
         .child(
-            small(("git-all-branches", n), "All branches", ui, z)
+            small("git-all-branches", "All branches", ui, z)
                 .when(git.all_branches, |el| el.bg(ui.card))
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.toggle_all_branches(id, window, cx)
+                    ws.toggle_all_branches(window, cx)
                 }))
                 .test_support(),
         );
@@ -261,14 +251,12 @@ fn list_column(
 /// scrolls the panel to one). The whole column scrolls: a long message never hides the files.
 fn commit_column(
     ws: &Workspace,
-    id: BlockId,
     shown: &Shown,
     scroll: &ScrollHandle,
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    let n = id.0 as usize;
     let c = &shown.commit;
     let files = shown
         .files
@@ -278,7 +266,7 @@ fn commit_column(
             let (path, menu_path, hash) = (f.path.clone(), f.path.clone(), c.hash.clone());
             let active = shown.file.as_deref() == Some(&f.path);
             div()
-                .id(ElementId::Name(format!("git-commit-file-{n}-{i}").into()))
+                .id(ElementId::Name(format!("git-commit-file-{i}").into()))
                 .flex()
                 .items_center()
                 .gap(px(6.0 * z))
@@ -292,14 +280,13 @@ fn commit_column(
                 .child(badge(ws, f.change, z))
                 .child(div().truncate().child(f.path.clone()))
                 .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| {
-                    ws.show_commit_file(id, path.clone(), cx)
+                    ws.show_commit_file(path.clone(), cx)
                 }))
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
                         ws.open_menu(
                             Target::GitCommitFile {
-                                block: id,
                                 hash: hash.clone(),
                                 path: menu_path.clone(),
                             },
@@ -313,25 +300,24 @@ fn commit_column(
                 .test_support()
         })
         .collect::<Vec<_>>();
-    let top =
-        bar(ui, z)
-            .child(
-                icon_button(("git-commit-back", n), IconName::ArrowLeft, ui, z)
-                    .tooltip(|window, cx| Tooltip::new("Back to the commits").build(window, cx))
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.hide_commit(id, window, cx)
-                    }))
-                    .test_support(),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .truncate()
-                    .text_color(ui.title)
-                    .child(format!("Commit {}", c.short)),
-            )
-            .child(fold_button(id, ui, z, cx));
+    let top = bar(ui, z)
+        .child(
+            icon_button("git-commit-back", IconName::ArrowLeft, ui, z)
+                .tooltip(|window, cx| Tooltip::new("Back to the commits").build(window, cx))
+                .on_click(
+                    cx.listener(move |ws, _: &ClickEvent, window, cx| ws.hide_commit(window, cx)),
+                )
+                .test_support(),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .truncate()
+                .text_color(ui.title)
+                .child(format!("Commit {}", c.short)),
+        )
+        .child(fold_button(ui, z, cx));
     let details = div()
         .flex()
         .flex_col()
@@ -366,7 +352,7 @@ fn commit_column(
         .child(top)
         .child(
             div()
-                .id(("git-commit-details", n))
+                .id("git-commit-details")
                 .flex_1()
                 .min_h(px(0.0))
                 .overflow_y_scroll()
@@ -391,21 +377,11 @@ fn column(ui: Ui, z: f32) -> gpui_kit::Div {
 }
 
 /// Folds the left column: the panel takes the whole width.
-fn fold_button(
-    id: BlockId,
-    ui: Ui,
-    z: f32,
-    cx: &mut Context<Workspace>,
-) -> impl IntoElement + use<> {
-    icon_button(
-        ("git-fold-lists", id.0 as usize),
-        IconName::PanelLeftClose,
-        ui,
-        z,
-    )
-    .tooltip(|window, cx| Tooltip::new("Fold the lists").build(window, cx))
-    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(id, cx)))
-    .test_support()
+fn fold_button(ui: Ui, z: f32, cx: &mut Context<Workspace>) -> impl IntoElement + use<> {
+    icon_button("git-fold-lists", IconName::PanelLeftClose, ui, z)
+        .tooltip(|window, cx| Tooltip::new("Fold the lists").build(window, cx))
+        .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(cx)))
+        .test_support()
 }
 
 /// A row's graph: its lines (top to middle, middle to bottom) and its commit's dot, each lane

@@ -13,6 +13,7 @@ use gpui_kit::{
 use templum_canvas::{BlockId, Camera, Gesture, Guide, Point, Rect, dot_grid, dot_size};
 
 use crate::block;
+use crate::git_block;
 use crate::menu;
 use crate::motion;
 use crate::settings;
@@ -22,6 +23,9 @@ use crate::title_bar;
 use crate::toolbar;
 
 use super::{Drag, SAVE_DELAY, Tool, Workspace, hint_keys};
+
+/// The Git popup's distance from the window's edges and the sidebar, pixels.
+const GIT_GAP: f32 = 8.0;
 
 impl Workspace {
     /// Every BLINK: toggles a blinking cursor, and makes sure a steady one is shown.
@@ -80,10 +84,6 @@ impl Workspace {
                     .gap(px(10.0))
                     .text_size(px(13.0))
                     .child(row(keys(new), "New terminal"))
-                    .child(row(
-                        pill("Double-click").into_any_element(),
-                        "Open one where you click",
-                    ))
                     .child(row(
                         pill(if cfg!(target_os = "macos") {
                             "Hold Option"
@@ -297,10 +297,13 @@ impl Render for Workspace {
         };
         // The focused terminal's painting sets it again this frame, if its cursor blinks.
         self.cursor_blinks = false;
+        if self.keep_dead_starts() {
+            super::persist::say_unstarted(window, cx);
+        }
         let exited: Vec<BlockId> = self
             .space
             .terminals()
-            .filter(|(_, pane)| pane.term.exited())
+            .filter(|(_, pane)| pane.term.exited() && !pane.died_starting())
             .map(|(id, _)| id)
             .collect();
         // Nothing left to lose: no question.
@@ -493,8 +496,9 @@ impl Render for Workspace {
                             } else {
                                 ws.end_drag();
                                 ws.hover_program(e.position, &e.modifiers);
-                                ws.pointer_moved = true;
-                                ws.follow_pointer(window, cx);
+                                if ws.pointer.replace(e.position) != Some(e.position) {
+                                    ws.follow_pointer(window, cx);
+                                }
                             }
                         });
                     }
@@ -662,6 +666,59 @@ impl Render for Workspace {
             .as_ref()
             .map(|p| theme_picker::render(self, p, cx));
         let usage = self.usage_open.then(|| crate::usage::popover(self, cx));
+        // Over the canvas's bottom-left corner, beside the sidebar's Git button; a small window
+        // gets a smaller popup.
+        let git = self.space.git().filter(|_| self.git_open).map(|g| {
+            let (w, h) = (
+                git_block::SIZE.w.min(vp.w - 2.0 * GIT_GAP),
+                git_block::SIZE.h.min(vp.h - 2.0 * GIT_GAP),
+            );
+            let left = if self.sidebar { sidebar::WIDTH } else { 0.0 } + GIT_GAP;
+            div()
+                .absolute()
+                .left(px(left))
+                .bottom(px(GIT_GAP))
+                .w(px(w))
+                .h(px(h))
+                .child(git_block::popup(self, g, w, h, cx))
+        });
+        // Window chrome over the canvas's bottom center, above the toolbar: the zoom never scales it.
+        let open = self.templum_agent.open;
+        let waiting = self.templum_agent.approvals.len();
+        let approval = self.templum_agent.approvals.first().map(|a| {
+            let width = 640.0_f32.min(vp.w - 32.0);
+            crate::chat::approval::render(self, a, (1, waiting), width, window, cx)
+        });
+        let pill = (!tiled || open)
+            .then(|| crate::chat::pill::render(self, vp.w, open, window, cx))
+            .flatten();
+        let agent = match (open, pill) {
+            (true, Some(pill)) => {
+                crate::chat::panel::render(self, (vp.w, vp.h), pill, approval, window, cx)
+            }
+            (_, pill) if pill.is_some() || approval.is_some() => Some(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(8.0))
+                    .children(approval)
+                    .children(pill)
+                    .into_any_element(),
+            ),
+            _ => None,
+        }
+        .map(|pill| {
+            let left = if self.sidebar { sidebar::WIDTH } else { 0.0 };
+            div()
+                .absolute()
+                .left(px(left))
+                .right_0()
+                .bottom(px(toolbar::above(self)))
+                .flex()
+                .justify_center()
+                .child(pill)
+        });
         let screen = self
             .screen
             .as_ref()
@@ -697,6 +754,8 @@ impl Render for Workspace {
                     .when(self.sidebar, |el| el.child(sidebar::render(self, cx)))
                     .child(area),
             )
+            .children(git)
+            .children(agent)
             // Under what the title bar opens: the settings, the theme picker, the screen.
             .children(welcome)
             .children(panel)

@@ -8,7 +8,6 @@ use gpui_kit::{
     AnyElement, ClickEvent, Context, ElementId, MouseButton, MouseDownEvent, SharedString,
     TestSupportExt, div, px, uniform_list,
 };
-use templum_canvas::BlockId;
 use templum_git::{Change, Entry};
 
 use super::commit_form::commit_form;
@@ -21,21 +20,19 @@ use crate::workspace::Workspace;
 /// The Changes tab: the lists on the left, the selected row's diff on the right.
 pub(super) fn changes(
     ws: &Workspace,
-    id: BlockId,
     git: &Git,
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    let n = id.0 as usize;
     // Each list's header, then its rows, all one row tall: a virtual list builds only the ones
     // on screen, however many files changed.
     let items = git.listed(cx);
     let entity = cx.entity();
-    let lists = uniform_list(("git-lists", n), items.len(), move |range, _, cx| {
+    let lists = uniform_list("git-lists", items.len(), move |range, _, cx| {
         entity.update(cx, |ws, cx| {
             let ws = &*ws;
-            let Some(git) = ws.space.git(id) else {
+            let Some(git) = ws.space.git() else {
                 return Vec::new();
             };
             let s = &git.status;
@@ -54,9 +51,9 @@ pub(super) fn changes(
                                 .filter(|(w, _)| *w == which)
                                 .filter_map(|(_, i)| i.map(|i| entries[i]))
                                 .collect();
-                            header(ws, id, which, &shown, z, cx)
+                            header(ws, which, &shown, z, cx)
                         }
-                        Some(i) => row(ws, id, which, i, entries[i], z, cx),
+                        Some(i) => row(ws, which, i, entries[i], z, cx),
                     }
                 })
                 .collect()
@@ -81,9 +78,9 @@ pub(super) fn changes(
             })
             .when(!git.filtering(), |el| el.child(div().flex_1()))
             .child(
-                icon_button(("git-fold-lists", n), IconName::PanelLeftClose, ui, z)
+                icon_button("git-fold-lists", IconName::PanelLeftClose, ui, z)
                     .tooltip(|window, cx| Tooltip::new("Fold the lists").build(window, cx))
-                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(id, cx)))
+                    .on_click(cx.listener(move |ws, _: &ClickEvent, _, cx| ws.toggle_lists(cx)))
                     .test_support(),
             );
         body.child(
@@ -97,10 +94,10 @@ pub(super) fn changes(
                 .border_color(ui.hairline)
                 .child(top)
                 .child(lists)
-                .child(commit_form(ws, id, git, z, cx)),
+                .child(commit_form(ws, git, z, cx)),
         )
     };
-    body.child(diff_view::panel(ws, id, git, z, cx))
+    body.child(diff_view::panel(ws, git, z, cx))
         .into_any_element()
 }
 
@@ -108,16 +105,14 @@ pub(super) fn changes(
 /// checked, or none) and Discard all….
 fn header(
     ws: &Workspace,
-    id: BlockId,
     which: List,
     entries: &[&Entry],
     z: f32,
     cx: &mut Context<Workspace>,
 ) -> AnyElement {
     let ui = ws.ui;
-    let n = id.0 as usize;
     let paths: Vec<String> = entries.iter().map(|e| e.path.clone()).collect();
-    let disabled = ws.space.git(id).is_some_and(|g| g.acting > 0) || paths.is_empty();
+    let disabled = ws.space.git().is_some_and(|g| g.acting > 0) || paths.is_empty();
     let checks: Vec<Check> = entries.iter().map(|e| Check::of(e)).collect();
     let all = if checks.iter().all(|c| *c == Check::Checked) {
         Check::Checked
@@ -146,14 +141,14 @@ fn header(
             } else {
                 "Stage"
             };
-            let b = check_box(("git-check-all", n), all, ui, z)
+            let b = check_box("git-check-all", all, ui, z)
                 .tooltip(move |window, cx| Tooltip::new(words::named(tip)).build(window, cx));
             el.child(if disabled {
                 b.test_support()
             } else {
                 let paths = paths.clone();
                 b.on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.check_all(id, paths.clone(), window, cx)
+                    ws.check_all(paths.clone(), window, cx)
                 }))
                 .test_support()
             })
@@ -167,10 +162,10 @@ fn header(
             !disabled && which == List::Files && !unstaged.is_empty(),
             |el| {
                 el.child(
-                    small(("git-discard-all", n), "Discard all…", ui, z)
+                    small("git-discard-all", "Discard all…", ui, z)
                         .tooltip(|window, cx| Tooltip::new(words::tip("Discard")).build(window, cx))
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.discard(id, unstaged.clone(), window, cx)
+                            ws.discard(unstaged.clone(), window, cx)
                         }))
                         .test_support(),
                 )
@@ -183,7 +178,6 @@ fn header(
 /// shows its diff; a right-click, its menu.
 fn row(
     ws: &Workspace,
-    id: BlockId,
     which: List,
     i: usize,
     e: &Entry,
@@ -197,13 +191,12 @@ fn row(
         List::Files => e.unstaged.or(e.staged).unwrap_or(Change::Modified),
     };
     let path = e.path.clone();
-    let git = ws.space.git(id);
+    let git = ws.space.git();
     let selected = git
         .and_then(|g| g.selected.as_ref())
         .is_some_and(|s| s.0 == which && s.1 == e.path);
     let busy = git.is_some_and(|g| g.acting > 0);
-    let ids =
-        |what: &str| ElementId::Name(format!("git-{what}-{}-{}-{i}", id.0, which.name()).into());
+    let ids = |what: &str| ElementId::Name(format!("git-{what}-{}-{i}", which.name()).into());
     // Shown while the row is hovered; pressing one never counts as a click on the row.
     let hover_button = |what: &str, icon: IconName, tip: SharedString| {
         icon_button(ids(what), icon, ui, z)
@@ -230,7 +223,7 @@ fn row(
                         format!("Use the version from {first}").into(),
                     )
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.resolve_file(id, ours.clone(), templum_git::Side::Ours, window, cx)
+                        ws.resolve_file(ours.clone(), templum_git::Side::Ours, window, cx)
                     }))
                     .test_support()
                     .into_any_element(),
@@ -242,7 +235,7 @@ fn row(
                         format!("Use the version from {second}").into(),
                     )
                     .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                        ws.resolve_file(id, theirs.clone(), templum_git::Side::Theirs, window, cx)
+                        ws.resolve_file(theirs.clone(), templum_git::Side::Theirs, window, cx)
                     }))
                     .test_support()
                     .into_any_element(),
@@ -250,7 +243,7 @@ fn row(
                 buttons.push(
                     hover_button("resolved", IconName::Check, "Mark resolved".into())
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.mark_resolved(id, resolved.clone(), window, cx)
+                            ws.mark_resolved(resolved.clone(), window, cx)
                         }))
                         .test_support()
                         .into_any_element(),
@@ -263,7 +256,7 @@ fn row(
                     buttons.push(
                         hover_button("discard", IconName::Undo2, words::named("Discard").into())
                             .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                                ws.discard(id, vec![discard.clone()], window, cx)
+                                ws.discard(vec![discard.clone()], window, cx)
                             }))
                             .test_support()
                             .into_any_element(),
@@ -275,7 +268,7 @@ fn row(
         buttons.push(
             hover_button("open", IconName::FileCode, "Open".into())
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.open_from_git(id, &open, window, cx)
+                    ws.open_from_git(&open, window, cx)
                 }))
                 .test_support()
                 .into_any_element(),
@@ -298,13 +291,13 @@ fn row(
         } else {
             let path = path.clone();
             b.on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                ws.toggle_check(id, path.clone(), window, cx)
+                ws.toggle_check(path.clone(), window, cx)
             }))
             .test_support()
         }
     });
     div()
-        .id(row_id(id, which.name(), i))
+        .id(row_id(which.name(), i))
         .group("git-row")
         .w_full()
         .flex()
@@ -330,14 +323,13 @@ fn row(
         )
         .children(buttons)
         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-            ws.select_git_row(id, which, click.clone(), window, cx)
+            ws.select_git_row(which, click.clone(), window, cx)
         }))
         .on_mouse_down(
             MouseButton::Right,
             cx.listener(move |ws, ev: &MouseDownEvent, window, cx| {
                 ws.open_menu(
                     Target::GitRow {
-                        block: id,
                         list: which,
                         index: i,
                     },

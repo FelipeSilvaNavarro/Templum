@@ -2,6 +2,7 @@
 //! to tell from a process that it runs in a terminal, and what brings it back when a canvas is
 //! restored. Facts checked on 2026-10-10 against each agent's docs (see docs/specs/agents.md).
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// One agent's facts.
@@ -21,6 +22,9 @@ pub struct Spec {
     /// Added to its command, starts a new session with an id Templum picks (`{id}`): the block
     /// then knows its session from the process's arguments.
     pub new_id: Option<&'static str>,
+    /// Starts a new session that begins with the conversation of session `{id}`, in the shell's
+    /// folder, whose own new id its files name (docs/specs/agent-tools.md, spawn_agent with fork).
+    pub fork_id: Option<&'static str>,
     /// How to install it, for someone who hasn't.
     pub install: &'static str,
     /// Its process or script names (the program, a renamed process title, a native child).
@@ -37,6 +41,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("claude --continue"),
         resume_id: Some("claude --resume {id}"),
         new_id: None,
+        fork_id: Some("claude --resume {id} --fork-session"),
         install: "curl -fsSL https://claude.ai/install.sh | bash",
         names: &["claude"],
         packages: &["@anthropic-ai/claude-code"],
@@ -48,6 +53,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("codex resume --last"),
         resume_id: Some("codex resume {id}"),
         new_id: None,
+        fork_id: Some("codex fork -C . {id}"),
         install: "npm install -g @openai/codex",
         names: &["codex"],
         packages: &["@openai/codex"],
@@ -59,6 +65,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("gemini --resume"),
         resume_id: Some("gemini --resume {id}"),
         new_id: Some("--session-id {id}"),
+        fork_id: None,
         install: "npm install -g @google/gemini-cli",
         names: &["gemini"],
         packages: &["@google/gemini-cli"],
@@ -68,8 +75,9 @@ const SPECS: [Spec; 20] = [
         title: "GitHub Copilot CLI",
         command: "copilot",
         resume: None,
-        resume_id: None,
-        new_id: None,
+        resume_id: Some("copilot --session-id {id}"),
+        new_id: Some("--session-id {id}"),
+        fork_id: None,
         install: "curl -fsSL https://gh.io/copilot-install | bash",
         names: &["copilot"],
         packages: &["@github/copilot"],
@@ -78,9 +86,10 @@ const SPECS: [Spec; 20] = [
         id: "cursor",
         title: "Cursor CLI",
         command: "cursor-agent",
-        resume: None,
+        resume: Some("cursor-agent --continue"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl https://cursor.com/install -fsS | bash",
         names: &["cursor-agent"],
         packages: &["cursor-agent/"],
@@ -92,6 +101,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("opencode --continue"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -fsSL https://opencode.ai/install | bash",
         names: &["opencode"],
         packages: &["node_modules/opencode-ai/"],
@@ -103,6 +113,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("amp threads continue --last"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -fsSL https://ampcode.com/install.sh | bash",
         names: &["amp"],
         packages: &["@sourcegraph/amp"],
@@ -114,6 +125,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("kiro-cli chat --resume"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -fsSL https://cli.kiro.dev/install | bash",
         names: &["kiro-cli"],
         packages: &[],
@@ -125,6 +137,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("qwen --continue"),
         resume_id: Some("qwen --resume {id}"),
         new_id: None,
+        fork_id: None,
         install: "npm install -g @qwen-code/qwen-code@latest",
         names: &["qwen"],
         packages: &["@qwen-code/qwen-code"],
@@ -136,6 +149,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("grok --continue"),
         resume_id: Some("grok --resume {id}"),
         new_id: Some("--session-id {id}"),
+        fork_id: None,
         install: "curl -fsSL https://x.ai/cli/install.sh | bash",
         names: &["grok"],
         packages: &["@xai-official/grok"],
@@ -147,6 +161,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("kimi --continue"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash",
         names: &["kimi", "kimi-code"],
         packages: &["@moonshot-ai/kimi-code"],
@@ -158,6 +173,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("vibe --continue"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -LsSf https://mistral.ai/vibe/install.sh | bash",
         names: &["vibe"],
         packages: &[],
@@ -169,6 +185,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("aider --restore-chat-history"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -LsSf https://aider.chat/install.sh | sh",
         names: &["aider"],
         packages: &[],
@@ -180,6 +197,7 @@ const SPECS: [Spec; 20] = [
         resume: None,
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | bash",
         names: &["goose"],
         packages: &[],
@@ -188,9 +206,10 @@ const SPECS: [Spec; 20] = [
         id: "crush",
         title: "Crush",
         command: "crush",
-        resume: None,
+        resume: Some("crush --continue"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "npm install -g @charmland/crush",
         names: &["crush"],
         packages: &["@charmland/crush"],
@@ -202,6 +221,7 @@ const SPECS: [Spec; 20] = [
         resume: None,
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "curl -fsSL https://app.factory.ai/cli | sh",
         names: &["droid"],
         packages: &["node_modules/droid/"],
@@ -213,6 +233,7 @@ const SPECS: [Spec; 20] = [
         resume: None,
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "npm install -g @augmentcode/auggie",
         names: &["auggie"],
         packages: &["@augmentcode/auggie"],
@@ -224,6 +245,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("kilo --continue"),
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "npm install -g @kilocode/cli",
         names: &["kilo", "kilocode", ".kilo"],
         packages: &["@kilocode/cli"],
@@ -235,6 +257,7 @@ const SPECS: [Spec; 20] = [
         resume: None,
         resume_id: None,
         new_id: None,
+        fork_id: None,
         install: "npm install -g cline",
         names: &["cline", ".cline"],
         packages: &["node_modules/cline/"],
@@ -246,6 +269,7 @@ const SPECS: [Spec; 20] = [
         resume: Some("pi --continue"),
         resume_id: Some("pi --session-id {id}"),
         new_id: Some("--session-id {id}"),
+        fork_id: None,
         install: "curl -fsSL https://pi.dev/install.sh | sh",
         names: &["pi"],
         packages: &["@earendil-works/pi-coding-agent"],
@@ -256,6 +280,9 @@ const SPECS: [Spec; 20] = [
 /// before a model, the one before an effort, and the efforts it takes. Checked on 2026-10-16:
 /// Claude Code 2.1.286 (`claude --help`), Codex 0.154.0 (`codex --help`, `codex debug models`:
 /// a `-c` value that isn't TOML is a string, so no quotes), Gemini CLI 0.63.0 (`gemini --help`).
+/// The others on 2026-10-18: the `--help` of Copilot CLI 1.0.95, Cursor CLI, OpenCode 1.19.0,
+/// Grok Build and Pi 0.85.1, installed then; the references of Kiro CLI, Qwen Code, Kimi Code,
+/// Aider, Droid, Auggie, Kilo Code and Cline (docs/specs/agents.md, A model and an effort).
 struct Launch {
     id: &'static str,
     model: &'static str,
@@ -263,7 +290,7 @@ struct Launch {
     efforts: &'static [&'static str],
 }
 
-const LAUNCH: [Launch; 3] = [
+const LAUNCH: [Launch; 16] = [
     Launch {
         id: "claude",
         model: "--model ",
@@ -281,6 +308,84 @@ const LAUNCH: [Launch; 3] = [
         model: "-m ",
         effort: None,
         efforts: &[],
+    },
+    Launch {
+        id: "copilot",
+        model: "--model ",
+        effort: Some("--reasoning-effort "),
+        efforts: &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+    },
+    Launch {
+        id: "cursor",
+        model: "--model ",
+        effort: None,
+        efforts: &[],
+    },
+    Launch {
+        id: "opencode",
+        model: "--model ",
+        effort: None,
+        efforts: &[],
+    },
+    Launch {
+        id: "kiro",
+        model: "--model ",
+        effort: Some("--effort "),
+        efforts: &["low", "medium", "high", "xhigh", "max"],
+    },
+    Launch {
+        id: "qwen",
+        model: "--model ",
+        effort: None,
+        efforts: &[],
+    },
+    Launch {
+        id: "grok",
+        model: "--model ",
+        effort: Some("--reasoning-effort "),
+        efforts: &["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+    },
+    Launch {
+        id: "kimi",
+        model: "--model ",
+        effort: None,
+        efforts: &[],
+    },
+    Launch {
+        id: "aider",
+        model: "--model ",
+        effort: Some("--reasoning-effort "),
+        efforts: &["low", "medium", "high"],
+    },
+    Launch {
+        id: "droid",
+        model: "--model ",
+        effort: None,
+        efforts: &[],
+    },
+    Launch {
+        id: "auggie",
+        model: "--model ",
+        effort: None,
+        efforts: &[],
+    },
+    Launch {
+        id: "kilo",
+        model: "--model ",
+        effort: None,
+        efforts: &[],
+    },
+    Launch {
+        id: "cline",
+        model: "--model ",
+        effort: Some("--thinking "),
+        efforts: &["none", "low", "medium", "high", "xhigh"],
+    },
+    Launch {
+        id: "pi",
+        model: "--model ",
+        effort: Some("--thinking "),
+        efforts: &["off", "minimal", "low", "medium", "high", "xhigh", "max"],
     },
 ];
 
@@ -302,6 +407,12 @@ pub struct Agent(usize);
 impl Agent {
     pub const CLAUDE: Agent = Agent(0);
     pub const CODEX: Agent = Agent(1);
+    pub const GEMINI: Agent = Agent(2);
+    pub const COPILOT: Agent = Agent(3);
+    pub const OPENCODE: Agent = Agent(5);
+    pub const QWEN: Agent = Agent(8);
+    pub const KILO: Agent = Agent(17);
+    pub const PI: Agent = Agent(19);
 
     /// Every agent, in the order menus list them.
     pub fn all() -> impl Iterator<Item = Agent> {
@@ -351,6 +462,12 @@ impl Agent {
         typable(id).then(|| template.replace("{id}", id))
     }
 
+    /// What starts a fork of its session `id`, when it can fork one and `id` is one.
+    pub fn fork_session(self, id: &str) -> Option<String> {
+        let template = self.spec().fork_id?;
+        typable(id).then(|| template.replace("{id}", id))
+    }
+
     /// What its command takes to start a new session with the id `id`, when it can.
     pub fn new_session(self, id: &str) -> Option<String> {
         let template = self.spec().new_id?;
@@ -361,6 +478,14 @@ impl Agent {
     /// given to its new-session or its resume flag.
     pub fn session_in(self, args: &[&str]) -> Option<String> {
         let spec = self.spec();
+        // A fork's (`--fork-session`) name the session it started from, not its own.
+        let fork_flag = spec
+            .fork_id
+            .and_then(|f| f.split_whitespace().last())
+            .filter(|w| *w != "{id}");
+        if fork_flag.is_some_and(|flag| args.contains(&flag)) {
+            return None;
+        }
         // The word before `{id}`: `--session-id`, `--resume`, Codex's `resume`.
         let flags: Vec<&str> = [spec.new_id, spec.resume_id]
             .into_iter()
@@ -415,6 +540,14 @@ impl Agent {
             args += &format!(" {flag}{effort}");
         }
         Ok(args)
+    }
+
+    /// The efforts its command line takes from Templum, lowest first; none when it takes none.
+    pub fn efforts(self) -> &'static [&'static str] {
+        LAUNCH
+            .iter()
+            .find(|l| l.id == self.name())
+            .map_or(&[], |l| l.efforts)
     }
 
     /// How to tell it from its processes.
@@ -504,11 +637,149 @@ pub fn locate(program: &str) -> Option<PathBuf> {
     find_program(program, &program_dirs())
 }
 
-/// PATH, then the usual per-user install folders.
+/// PATH as a shell started now gets it. On Windows an installer writes it to the registry, and
+/// a program started before (Templum, or the Explorer that started it) keeps the old one: it is
+/// read from there, the system's then the user's, as Windows Terminal does, then the folders only
+/// Templum's own PATH has. Elsewhere Templum's own.
+#[cfg(windows)]
+pub fn path_var() -> Option<OsString> {
+    use windows_registry::{CURRENT_USER, Key, LOCAL_MACHINE};
+    let read = |key: &Key, path: &str| key.open(path).and_then(|k| k.get_string("Path")).ok();
+    let values: Vec<String> = [
+        read(
+            LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+        ),
+        read(CURRENT_USER, "Environment"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let own = std::env::var_os("PATH");
+    let own: Vec<PathBuf> = own.iter().flat_map(std::env::split_paths).collect();
+    let dirs = registry_path(&values, &own, |name| std::env::var(name).ok());
+    std::env::join_paths(dirs)
+        .ok()
+        .or_else(|| std::env::var_os("PATH"))
+}
+
+/// PATH as a shell started now gets it: Templum's own (see the Windows one).
+#[cfg(not(windows))]
+pub fn path_var() -> Option<OsString> {
+    std::env::var_os("PATH")
+}
+
+/// The folders of the registry's PATH values (`;`-separated, each `%NAME%` that `var` knows
+/// expanded), then those of `own` they lack: once each, in any case, with or without a final `\`.
+#[cfg(any(windows, test))]
+fn registry_path(
+    values: &[String],
+    own: &[PathBuf],
+    var: impl Fn(&str) -> Option<String>,
+) -> Vec<PathBuf> {
+    let key = |p: &Path| {
+        p.to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_lowercase()
+    };
+    let listed = values
+        .iter()
+        .flat_map(|v| v.split(';'))
+        .map(|dir| PathBuf::from(expand(dir.trim(), &var)));
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for dir in listed.chain(own.iter().cloned()) {
+        if !dir.as_os_str().is_empty() && !dirs.iter().any(|d| key(d) == key(&dir)) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
+/// `text` with each `%NAME%` that `var` knows replaced by its value; the others stay, as Windows
+/// leaves them.
+#[cfg(any(windows, test))]
+fn expand(text: &str, var: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('%') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('%') else { break };
+        out.push_str(&rest[..start]);
+        match var(&after[..end]) {
+            Some(value) => {
+                out.push_str(&value);
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('%');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The folders of the user's shell's PATH, once [`read_shell_path`] has read them.
+#[cfg(unix)]
+static SHELL_PATH: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+
+/// Reads, on a thread of its own, the PATH the user's shell sets up, for [`installed`]: an app
+/// started from a desktop menu or the Dock gets the session's, without what .bashrc or .zshrc
+/// add. Once, when Templum starts.
+#[cfg(unix)]
+pub fn read_shell_path() {
+    std::thread::spawn(|| {
+        let path = std::env::var("SHELL").ok().and_then(|s| shell_path(&s));
+        let _ = SHELL_PATH.set(path.iter().flat_map(std::env::split_paths).collect());
+    });
+}
+
+/// Printed before the PATH, to find it among what the shell's startup files print.
+#[cfg(unix)]
+const PATH_MARK: &str = "__TEMPLUM_PATH__";
+
+/// The PATH of `shell` started as a terminal starts it (login, interactive). None when it
+/// fails or takes over 5 seconds (a startup file waiting on a terminal).
+#[cfg(unix)]
+fn shell_path(shell: &str) -> Option<String> {
+    use std::io::BufRead as _;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(shell)
+        .args(["-l", "-i", "-c"])
+        .arg(format!("printf '\\n{PATH_MARK}%s\\n' \"$PATH\""))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    // Up to the mark, not to the end: a program the startup files leave running (an agent, a
+    // daemon) keeps the output open.
+    std::thread::spawn(move || {
+        let path = std::io::BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+            .find_map(|line| line.strip_prefix(PATH_MARK).map(str::to_string));
+        let _ = tx.send(path);
+    });
+    let path = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .ok()
+        .flatten();
+    let _ = child.kill();
+    let _ = child.wait();
+    path
+}
+
+/// PATH (as [`path_var`] reads it), the shell's, then the usual per-user install folders.
 fn program_dirs() -> Vec<PathBuf> {
-    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+    let mut dirs: Vec<PathBuf> = path_var()
         .map(|p| std::env::split_paths(&p).collect())
         .unwrap_or_default();
+    #[cfg(unix)]
+    dirs.extend(SHELL_PATH.get().into_iter().flatten().cloned());
     if let Some(home) = std::env::home_dir() {
         for sub in [
             ".local/bin",
@@ -736,6 +1007,18 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), SPECS.len(), "ids are unique");
+        for (agent, id) in [
+            (Agent::CLAUDE, "claude"),
+            (Agent::CODEX, "codex"),
+            (Agent::GEMINI, "gemini"),
+            (Agent::COPILOT, "copilot"),
+            (Agent::OPENCODE, "opencode"),
+            (Agent::QWEN, "qwen"),
+            (Agent::KILO, "kilo"),
+            (Agent::PI, "pi"),
+        ] {
+            assert_eq!(agent.name(), id);
+        }
         for agent in Agent::all() {
             let spec = agent.spec();
             assert_eq!(Agent::from_name(spec.id), Some(agent));
@@ -754,6 +1037,33 @@ mod tests {
             );
         }
         assert_eq!(Agent::from_name("rm -rf ~"), None);
+    }
+
+    /// Claude Code and Codex fork a session into a new one; the others can't (docs/specs/
+    /// agent-tools.md, Every agent).
+    #[test]
+    fn only_claude_code_and_codex_fork_a_session() {
+        let id = "0d5e5f4b-1c2d-4e3f-8a9b-0c1d2e3f4a5b";
+        assert_eq!(
+            Agent::CLAUDE.fork_session(id),
+            Some(format!("claude --resume {id} --fork-session"))
+        );
+        assert_eq!(
+            Agent::CODEX.fork_session(id),
+            Some(format!("codex fork -C . {id}"))
+        );
+        for other in ["gemini", "copilot", "opencode", "pi", "grok", "qwen"] {
+            assert_eq!(
+                Agent::from_name(other).unwrap().fork_session(id),
+                None,
+                "{other}"
+            );
+        }
+        assert_eq!(Agent::CLAUDE.fork_session("a;b"), None);
+        // A fork's arguments name the session it started from, not its own.
+        let args = ["claude", "--resume", id, "--fork-session"];
+        assert_eq!(Agent::CLAUDE.session_in(&args), None);
+        assert_eq!(Agent::CLAUDE.session_in(&args[..3]), Some(id.to_string()));
     }
 
     #[test]
@@ -777,8 +1087,15 @@ mod tests {
         // An id is typed into a shell: anything but letters, digits and `-` isn't one.
         assert_eq!(Agent::CLAUDE.resume_session("x; rm -rf ~"), None);
         assert_eq!(Agent::CLAUDE.resume_session(""), None);
-        // Copilot's resume may reopen another folder's session: a new one instead.
+        // Copilot's `--continue` may reopen another folder's session: a new one, or its own by id.
         assert_eq!(by("copilot").resume_command(), "copilot");
+        let uuid = "019a1f2e-7b3c-7d4e-8f5a-6b7c8d9e0f1a";
+        assert_eq!(
+            by("copilot").resume_session(uuid),
+            Some(format!("copilot --session-id {uuid}"))
+        );
+        assert_eq!(by("cursor").resume_command(), "cursor-agent --continue");
+        assert_eq!(by("crush").resume_command(), "crush --continue");
         assert_eq!(by("goose").resume_command(), "goose session");
     }
 
@@ -830,10 +1147,113 @@ mod tests {
         assert!(codex.launch_args(None, Some("HIGH")).is_err());
         let err = gemini.launch_args(None, Some("high")).unwrap_err();
         assert!(err.contains("no effort"), "{err}");
-        let err = agent("copilot")
-            .launch_args(Some("gpt-5"), None)
-            .unwrap_err();
-        assert!(err.contains("a model or an effort"), "{err}");
+        assert_eq!(
+            agent("copilot").launch_args(Some("gpt-5.4"), Some("none")),
+            ok(" --model gpt-5.4 --reasoning-effort none")
+        );
+        assert_eq!(
+            agent("grok").launch_args(Some("grok-5"), Some("max")),
+            ok(" --model grok-5 --reasoning-effort max")
+        );
+        assert_eq!(
+            agent("pi").launch_args(Some("anthropic/claude-opus-5-5"), Some("off")),
+            ok(" --model anthropic/claude-opus-5-5 --thinking off")
+        );
+        assert_eq!(
+            agent("kiro").launch_args(Some("claude-sonnet-5-5"), Some("xhigh")),
+            ok(" --model claude-sonnet-5-5 --effort xhigh")
+        );
+        assert_eq!(
+            agent("cline").launch_args(Some("gpt-5.4"), Some("none")),
+            ok(" --model gpt-5.4 --thinking none")
+        );
+        assert_eq!(
+            agent("aider").launch_args(Some("o4"), Some("medium")),
+            ok(" --model o4 --reasoning-effort medium")
+        );
+        for id in [
+            "opencode", "kilo", "cursor", "qwen", "kimi", "droid", "auggie",
+        ] {
+            assert_eq!(
+                agent(id).launch_args(Some("p/m-1"), None),
+                ok(" --model p/m-1"),
+                "{id}"
+            );
+        }
+        assert_eq!(
+            agent("opencode")
+                .launch_args(None, Some("high"))
+                .unwrap_err(),
+            "OpenCode takes no effort from Templum."
+        );
+        assert_eq!(
+            agent("aider").launch_args(None, Some("xhigh")).unwrap_err(),
+            "Aider's effort is low, medium or high."
+        );
+        assert_eq!(
+            agent("amp").launch_args(Some("x"), None).unwrap_err(),
+            "Templum doesn't give Amp a model or an effort."
+        );
+        assert!(
+            agent("crush").launch_args(Some("x"), None).is_err()
+                && agent("goose").launch_args(Some("x"), None).is_err()
+        );
+    }
+
+    /// Each installed agent's `--help` still names the flags `LAUNCH` types (run by hand after
+    /// changing an agent's words: Copilot's and OpenCode's mise shims rewrite mise's global
+    /// config at every run).
+    #[test]
+    #[ignore = "runs each installed agent's --help"]
+    fn installed_agents_take_the_flags_templum_types() {
+        let dirs = program_dirs();
+        for launch in &LAUNCH {
+            let agent = Agent::from_name(launch.id).unwrap();
+            let Some(program) = find_program(agent.program(), &dirs) else {
+                println!("skipped: {}", agent.program());
+                continue;
+            };
+            let mut command = std::process::Command::new(&program);
+            command
+                .args(agent.command().split_whitespace().skip(1))
+                .arg("--help")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            let mut child = command.spawn().expect("run the agent");
+            let started = std::time::Instant::now();
+            while child.try_wait().unwrap().is_none() {
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(20),
+                    "{}: --help took over 20 s",
+                    launch.id
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            let out = child.wait_with_output().unwrap();
+            let help = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
+            let word = |flag: &str| {
+                flag.split(['=', ' '])
+                    .find(|w| !w.is_empty())
+                    .unwrap()
+                    .to_string()
+            };
+            let model = word(launch.model);
+            assert!(
+                help.contains(&model),
+                "{}: no {model} in its --help",
+                launch.id
+            );
+            if let Some(effort) = launch.effort.filter(|e| !e.starts_with("-c ")) {
+                let effort = word(effort);
+                assert!(
+                    help.contains(&effort),
+                    "{}: no {effort} in its --help",
+                    launch.id
+                );
+            }
+            println!("checked: {}", launch.id);
+        }
     }
 
     #[test]
@@ -866,6 +1286,12 @@ mod tests {
             ("claude", &["claude", "--resume", id], Some(id)),
             ("claude", &["claude", "--continue"], None),
             ("copilot", &["copilot", "--resume", id], None),
+            ("copilot", &["copilot", "--session-id", id], Some(id)),
+            (
+                "copilot",
+                &["copilot", &format!("--session-id={id}")],
+                Some(id),
+            ),
         ];
         for (agent, args, want) in cases {
             assert_eq!(
@@ -899,5 +1325,52 @@ mod tests {
         let dirs = [d.path().join("missing"), d.path().into()];
         assert_eq!(find_program("fakeagent", &dirs), Some(file));
         assert_eq!(find_program("otheragent", &dirs), None);
+    }
+
+    /// A folder an installer just added to the user's PATH in the registry is found, before
+    /// Templum's own folders; `%NAME%` is expanded and a folder isn't listed twice.
+    #[test]
+    fn registry_path_puts_the_registrys_folders_first() {
+        let var = |name: &str| (name == "USERPROFILE").then(|| r"C:\Users\Ana".to_string());
+        let values = [
+            r"C:\Windows\system32;C:\Windows;".to_string(),
+            r"%USERPROFILE%\AppData\Local\Microsoft\WindowsApps;%MISSING%\bin;C:\NewTool\bin"
+                .to_string(),
+        ];
+        let own = [r"c:\windows\System32\".into(), r"C:\Launcher\bin".into()];
+        let dirs: Vec<String> = registry_path(&values, &own, var)
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect();
+        assert_eq!(
+            dirs,
+            [
+                r"C:\Windows\system32",
+                r"C:\Windows",
+                r"C:\Users\Ana\AppData\Local\Microsoft\WindowsApps",
+                r"%MISSING%\bin",
+                r"C:\NewTool\bin",
+                r"C:\Launcher\bin",
+            ]
+        );
+    }
+
+    /// The PATH the shell's startup files set is read past what they print.
+    #[cfg(unix)]
+    #[test]
+    fn shell_path_reads_past_what_startup_files_print() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tempfile::tempdir().unwrap();
+        let shell = d.path().join("fakesh");
+        // Run as `fakesh -l -i -c <command>`, like a login shell reading its .bashrc.
+        std::fs::write(
+            &shell,
+            "#!/bin/sh\necho Welcome back\nPATH=/from/rc:$PATH\nexport PATH\neval \"$4\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&shell, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = shell_path(&shell.to_string_lossy()).unwrap();
+        assert!(path.starts_with("/from/rc:"), "{path}");
+        assert_eq!(shell_path("/no/such/shell"), None);
     }
 }

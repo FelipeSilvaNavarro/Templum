@@ -11,7 +11,9 @@ mod snapshot;
 mod tap;
 mod terminal;
 
-pub use agent::{Agent, Detect, agent_of, installed, locate, program_name};
+#[cfg(unix)]
+pub use agent::read_shell_path;
+pub use agent::{Agent, Detect, agent_of, installed, locate, path_var, program_name};
 pub use alacritty_terminal::index::Side;
 pub use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Rgb};
 pub use find::{Find, Toward};
@@ -23,8 +25,10 @@ pub use link::{Target, resolve};
 pub use palette::Palette;
 pub use shells::{ShellOption, available_shells, default_shell, default_shell_label};
 pub use snapshot::{Bar, Cursor, Row, Run, Snapshot, Span};
-pub use tap::{Mark, Outcome, Status};
+pub use tap::{Mark, Outcome, Pattern, Status};
+#[cfg(windows)]
+pub use terminal::quit_before_terminals;
 pub use terminal::{
     Inspection, Modes, Notify, Processes, Running, SelectionKind, SharedTerm, SpawnOptions,
-    TermOptions, Terminal, inspect, kill_left, tree,
+    TermOptions, Terminal, inspect, kill_left, shells_of, strays, terminate, tree,
 };

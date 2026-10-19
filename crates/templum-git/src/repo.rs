@@ -63,6 +63,75 @@ impl std::error::Error for GitError {}
 /// 4 MB editable, too).
 pub const DIFF_LIMIT: usize = 4 * 1024 * 1024;
 
+/// A worktree `add_worktree` made, against the working tree it goes back to (`worktree_state`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorktreeState {
+    /// Its folder.
+    pub path: PathBuf,
+    /// The branch checked out in it: its own (`name`) as `add_worktree` made it, another one an
+    /// agent checked out there, or None on a detached HEAD.
+    pub branch: Option<String>,
+    /// The branch of the working tree it goes back to.
+    pub into: String,
+    /// Its files with changes, untracked ones included.
+    pub changed: usize,
+    /// Its HEAD's commits `into` doesn't have.
+    pub unmerged: u32,
+    /// The files with changes not committed where it goes back, tracked ones only.
+    pub into_changed: usize,
+    /// A merge, rebase or cherry-pick under way where it goes back.
+    pub busy: bool,
+    /// The files its HEAD has that a merge would write where it goes back over files git ignores
+    /// there, which git does without asking (a `.env` its branch tracks).
+    pub overwrites: Vec<String>,
+    /// Its files git ignores, which removing it deletes (a `.env`), but for what a build or a test
+    /// run makes again (`node_modules`, `target`, `.pytest_cache`); a folder an ignore pattern
+    /// names as `dir/`.
+    pub ignored: Vec<String>,
+}
+
+/// The folders a build, a package manager or a test run fills again: a worktree's ignored files in
+/// them aren't work [`WorktreeState::ignored`] tells of; nor a `*.egg-info` folder, nor the files
+/// of [`BUILT_FILES`].
+const BUILT: &[&str] = &[
+    "node_modules",
+    "target",
+    "build",
+    "dist",
+    "out",
+    ".next",
+    ".nuxt",
+    ".svelte-kit",
+    ".angular",
+    ".turbo",
+    ".parcel-cache",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".nox",
+    ".hypothesis",
+    "coverage",
+    "htmlcov",
+    ".nyc_output",
+    ".gradle",
+    ".dart_tool",
+    ".cache",
+];
+
+/// The logs and caches a package manager or a tool leaves.
+const BUILT_FILES: &[&str] = &[
+    "npm-debug.log",
+    "yarn-error.log",
+    "yarn-debug.log",
+    "pnpm-debug.log",
+    ".eslintcache",
+    ".coverage",
+];
+
 #[derive(Clone, Debug)]
 pub struct Repo {
     program: String,
@@ -459,14 +528,7 @@ impl Repo {
                 "'{name}' can't name a worktree: use letters, digits, '-', '_', '.' and '/'"
             )));
         }
-        // The main working tree is the list's first; a bare repository has none.
-        let list = self.text(&["worktree", "list", "--porcelain"])?;
-        let mut first = list.split("\n\n").next().unwrap_or_default().lines();
-        let main = first
-            .next()
-            .and_then(|l| l.strip_prefix("worktree "))
-            .map(PathBuf::from);
-        let Some(main) = main.filter(|_| !first.any(|l| l == "bare")) else {
+        let Some(main) = self.main_tree()? else {
             return Err(refused(
                 "a bare repository has no working tree to branch from".into(),
             ));
@@ -479,6 +541,178 @@ impl Repo {
         let dest = path.to_string_lossy().into_owned();
         self.run(&["worktree", "add", "-q", "-b", name, &dest])?;
         Ok(path)
+    }
+
+    /// The repository's main working tree: the first of `git worktree list`; None for a bare
+    /// repository, which has none.
+    fn main_tree(&self) -> Result<Option<PathBuf>, GitError> {
+        let list = self.text(&["worktree", "list", "--porcelain"])?;
+        let mut first = list.split("\n\n").next().unwrap_or_default().lines();
+        let main = first
+            .next()
+            .and_then(|l| l.strip_prefix("worktree "))
+            .map(PathBuf::from);
+        Ok(main.filter(|_| !first.any(|l| l == "bare")))
+    }
+
+    /// The worktree `add_worktree(name)` made (`.worktrees/<name>` of the main working tree), as
+    /// it stands against this working tree, where it goes back: None when there is no such
+    /// worktree, or `name` couldn't name one.
+    pub fn worktree_state(&self, name: &str) -> Result<Option<WorktreeState>, GitError> {
+        if !worktree_name_ok(name) {
+            return Ok(None);
+        }
+        let Some(main) = self.main_tree()? else {
+            return Ok(None);
+        };
+        let path = main.join(".worktrees").join(name);
+        let same = |p: &Path| match (p.canonicalize(), path.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => p == path,
+        };
+        let list = self.text(&["worktree", "list", "--porcelain"])?;
+        let Some(entry) = list.split("\n\n").find(|entry| {
+            entry
+                .lines()
+                .next()
+                .and_then(|l| l.strip_prefix("worktree "))
+                .is_some_and(|p| same(Path::new(p)))
+        }) else {
+            return Ok(None);
+        };
+        let branch = entry
+            .lines()
+            .find_map(|l| l.strip_prefix("branch refs/heads/"))
+            .map(str::to_string);
+        let Some(head) = entry.lines().find_map(|l| l.strip_prefix("HEAD ")) else {
+            return Ok(None);
+        };
+        let Some(tree) = Repo::discover(&self.program, &path)? else {
+            return Ok(None);
+        };
+        let lines = |text: String| text.lines().filter(|l| !l.is_empty()).count();
+        let changed = lines(tree.text(&["status", "--porcelain", "-uall"])?);
+        let into = self
+            .text(&["rev-parse", "--abbrev-ref", "HEAD"])?
+            .trim()
+            .to_string();
+        let unmerged = self
+            .text(&["rev-list", "--count", &format!("HEAD..{head}")])?
+            .trim()
+            .parse()
+            .unwrap_or(0);
+        let into_changed = lines(self.text(&["diff", "--name-only", "HEAD"])?);
+        let theirs = self.ignored()?;
+        let overwrites = self
+            .text(&["diff", "--name-only", "--diff-filter=A", "HEAD", head])?
+            .lines()
+            .filter(|file| {
+                theirs
+                    .iter()
+                    .any(|i| file == i || (i.ends_with('/') && file.starts_with(i.as_str())))
+            })
+            .map(str::to_string)
+            .collect();
+        // What a build makes again goes without a word: a folder of `BUILT`, and what is inside one
+        // when it ignores itself with a `*` (pytest's, ruff's, a virtualenv's), git then listing its
+        // `.gitignore` and the rest instead of the folder. Not what is in a tracked `build/ci/`.
+        let all = tree.ignored()?;
+        let built_dir = |dir: &str| {
+            let name = dir.rsplit('/').next().unwrap_or(dir);
+            BUILT.contains(&name) || name.ends_with(".egg-info")
+        };
+        let built = |entry: &&String| {
+            let whole = match entry.strip_suffix('/') {
+                Some(dir) => built_dir(dir),
+                None => BUILT_FILES.contains(&entry.rsplit('/').next().unwrap_or(entry)),
+            };
+            whole
+                || entry.match_indices('/').any(|(at, _)| {
+                    let dir = &entry[..at];
+                    built_dir(dir)
+                        && all
+                            .iter()
+                            .any(|i| i.strip_prefix(dir) == Some("/.gitignore"))
+                })
+        };
+        let ignored = all.iter().filter(|e| !built(e)).cloned().collect();
+        Ok(Some(WorktreeState {
+            path,
+            branch,
+            into,
+            changed,
+            unmerged,
+            into_changed,
+            busy: self.operation().is_some(),
+            overwrites,
+            ignored,
+        }))
+    }
+
+    /// The files git ignores in its working tree, a folder an ignore pattern names as `dir/`.
+    fn ignored(&self) -> Result<Vec<String>, GitError> {
+        let listed = self.text(&["status", "--porcelain", "--ignored=matching"])?;
+        Ok(listed
+            .lines()
+            .filter_map(|l| l.strip_prefix("!! "))
+            .map(str::to_string)
+            .collect())
+    }
+
+    /// Removes the worktree `add_worktree(name)` made, then its branch: with `force`, its changes
+    /// and its commits not merged are lost; without, git refuses to lose them. Refused while it
+    /// isn't on its own branch: a detached HEAD's commits, or another branch, would go with it.
+    pub fn remove_worktree(&self, name: &str, force: bool) -> Result<(), GitError> {
+        let refused = |why: String| GitError {
+            command: shown(&self.program, &["worktree", "remove", name]),
+            code: None,
+            stderr: format!("fatal: {why}"),
+            missing: false,
+        };
+        let state = self
+            .worktree_state(name)?
+            .ok_or_else(|| refused(format!("there's no worktree {name}")))?;
+        if state.branch.as_deref() != Some(name) {
+            return Err(refused(format!(
+                "the worktree {name} isn't on its branch {name}"
+            )));
+        }
+        let path = state.path.to_string_lossy().into_owned();
+        let mut args = vec!["worktree", "remove"];
+        if force {
+            args.push("--force");
+        }
+        args.push(&path);
+        self.run(&args)?;
+        self.delete_branch(name, force)
+    }
+
+    /// Merges the branch `branch` (never a tag of that name) into this working tree's branch:
+    /// Ok(Err(files)) when it would conflict in `files`, the merge then aborted, so nothing is left
+    /// half done.
+    pub fn merge_from(&self, branch: &str) -> Result<Result<(), Vec<String>>, GitError> {
+        // A tag of that name would be taken for it: then its full name, with git's words for it.
+        let tag = format!("refs/tags/{branch}");
+        let (full, words) = (
+            format!("refs/heads/{branch}"),
+            format!("Merge branch '{branch}'"),
+        );
+        let args = match self.run(&["show-ref", "--verify", "--quiet", &tag]) {
+            Ok(_) => vec!["merge", "--no-edit", "-m", &words, &full],
+            Err(_) => vec!["merge", "--no-edit", branch],
+        };
+        let Err(failed) = self.run(&args) else {
+            return Ok(Ok(()));
+        };
+        let conflicted = self.text(&["diff", "--name-only", "--diff-filter=U"])?;
+        let files: Vec<String> = conflicted.lines().map(str::to_string).collect();
+        if self.operation() == Some(Operation::Merge) {
+            self.run(&["merge", "--abort"])?;
+        }
+        if files.is_empty() {
+            return Err(failed);
+        }
+        Ok(Err(files))
     }
 
     /// `git commit -m message` (`--amend` with `amend`): the new commit's short hash.

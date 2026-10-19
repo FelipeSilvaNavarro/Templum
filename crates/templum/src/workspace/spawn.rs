@@ -1,7 +1,7 @@
 //! `spawn_agent` (docs/specs/connections.md, Spawning): a new agent block beside the caller, wired
 //! to it, in its folder, another, or a new Git worktree; its prompt typed once it is ready.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use gpui_kit::{Context, Window};
@@ -11,12 +11,19 @@ use templum_terminal::Agent;
 
 use super::bus::{Outcome, target};
 use super::delegate::TASK_LEAD;
-use super::history::Then;
+use super::ops::Place;
 use super::{AGENT_COLS, AGENT_ROWS, Handed, Prompt, Space, Workspace};
 use crate::agents::AgentEntry;
 
 /// How often a spawned agent's readiness for its prompt is looked at.
 pub(super) const READY_LOOK: Duration = Duration::from_secs(1);
+/// Who opens an agent: a block's agent with `spawn_agent` (its terminal's `TEMPLUM_TERMINAL` and
+/// its block), or the Templum Agent.
+pub(super) enum Opener {
+    Block { terminal: String, id: BlockId },
+    TemplumAgent,
+}
+
 /// How long after the spawn a shell may take to start its agent (its startup files): a snapshot
 /// that still finds none there lets it go, prompt and task (its folder's trust was declined, a
 /// question of its shell took the command).
@@ -32,16 +39,49 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Outcome {
-        let Some(entry) = self.agents.iter().find(|a| a.id == spawn.agent).cloned() else {
-            let ids: Vec<&str> = self.agents.iter().map(|a| a.id.as_str()).collect();
-            return Outcome::Now(Reply::err(format!(
-                "There's no agent {}. These are: {}.",
-                spawn.agent,
-                ids.join(", ")
-            )));
+        let spawn = match spawn.role.clone() {
+            None => spawn,
+            Some(id) => match self
+                .config
+                .roles
+                .get(&id)
+                .map(|role| role.spawn(&id, spawn))
+            {
+                Some(Ok(spawn)) => spawn,
+                Some(Err(refused)) => return Outcome::Now(Reply::err(refused)),
+                None if self.config.roles.is_empty() => {
+                    return Outcome::Now(Reply::err(
+                        "No roles are saved: [roles] in config.toml holds them.",
+                    ));
+                }
+                None => {
+                    let ids: Vec<&str> = self.config.roles.keys().map(String::as_str).collect();
+                    return Outcome::Now(Reply::err(format!(
+                        "There's no role {id}. Roles: {}.",
+                        ids.join(", ")
+                    )));
+                }
+            },
+        };
+        let (entry, fork) = if spawn.fork {
+            match self.fork_of(from, spawn.agent.as_deref()) {
+                Ok((entry, command)) => (entry, Some(command)),
+                Err(refused) => return Outcome::Now(Reply::err(refused)),
+            }
+        } else {
+            let agent = spawn.agent.as_deref().unwrap_or_default();
+            let Some(entry) = self.agents.iter().find(|a| a.id == agent).cloned() else {
+                let ids: Vec<&str> = self.agents.iter().map(|a| a.id.as_str()).collect();
+                return Outcome::Now(Reply::err(format!(
+                    "There's no agent {agent}. These are: {}.",
+                    ids.join(", ")
+                )));
+            };
+            (entry, None)
         };
         // Typed into a shell: anything it can't type safely opens nothing, a worktree included.
-        if let Err(why) = entry.launch_args(spawn.model.as_deref(), spawn.effort.as_deref()) {
+        let (model, effort) = (spawn.model.as_deref(), spawn.effort.as_deref());
+        if let Err(why) = entry.launch_args_with(model, effort, spawn.args.as_deref()) {
             return Outcome::Now(Reply::err(why));
         }
         if !templum_terminal::installed(entry.program()) {
@@ -53,31 +93,52 @@ impl Workspace {
         }
         let (space_id, me) = self.caller(from).expect("call found the caller");
         let space = self.space_named(&space_id).expect("the caller's workspace");
-        let here = space.blocks[&me]
-            .folder()
-            .or_else(|| space.terminal(me)?.seen.folder.clone());
-        let folder = match (spawn.folder.as_deref(), here) {
-            (Some(named), here) => {
-                let named = crate::launcher::expand(named);
-                match here {
-                    Some(here) if named.is_relative() => here.join(named),
-                    _ => named,
-                }
-            }
-            (None, Some(here)) => here,
-            (None, None) => {
-                return Outcome::Now(Reply::err(
-                    "Templum doesn't know your folder yet: name one with folder.",
-                ));
-            }
+        let folder = match space.folder_for(me, spawn.folder.as_deref()) {
+            Ok(folder) => folder,
+            Err(refused) => return Outcome::Now(Reply::err(refused)),
         };
-        if !folder.is_dir() {
-            return Outcome::Now(Reply::err(format!("{} isn't a folder.", folder.display())));
-        }
-        let Some(name) = spawn.worktree.clone() else {
-            return Outcome::Now(self.open_agent(from, &entry, &folder, &spawn, window, cx));
+        let (from, worktree) = (from.to_string(), spawn.worktree.clone());
+        let open =
+            move |ws: &mut Self, folder: &Path, window: &mut Window, cx: &mut Context<Self>| {
+                let Some((space, me)) = ws.caller(&from) else {
+                    return Reply::err("Your block was closed before the agent could open.");
+                };
+                let opener = Opener::Block {
+                    terminal: from.clone(),
+                    id: me,
+                };
+                let place = Place::Near(me);
+                ws.open_agent_in(
+                    &space,
+                    &entry,
+                    fork.as_deref(),
+                    folder,
+                    &spawn,
+                    place,
+                    &[me],
+                    opener,
+                    window,
+                    cx,
+                )
+                .0
+            };
+        self.in_worktree(folder, worktree, open, window, cx)
+    }
+
+    /// `open` in `folder`, at once; with `worktree`, in a new Git worktree of that name that git
+    /// makes on the background executor, the call answered once `open` ran there.
+    pub(super) fn in_worktree(
+        &mut self,
+        folder: PathBuf,
+        worktree: Option<String>,
+        open: impl FnOnce(&mut Self, &Path, &mut Window, &mut Context<Self>) -> Reply + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
+        let Some(name) = worktree else {
+            return Outcome::Now(open(self, &folder, window, cx));
         };
-        let (program, from) = (self.config.git.program().to_string(), from.to_string());
+        let program = self.config.git.program().to_string();
         Outcome::Later(cx.spawn_in(window, async move |ws, cx| {
             let made = cx
                 .background_executor()
@@ -96,71 +157,129 @@ impl Workspace {
                 .await;
             match made {
                 Ok(path) => ws
-                    .update_in(cx, |ws, window, cx| {
-                        ws.open_agent(&from, &entry, &path, &spawn, window, cx)
-                    })
+                    .update_in(cx, |ws, window, cx| open(ws, &path, window, cx))
                     .unwrap_or_else(|_| Reply::err("Templum closed.")),
                 Err(why) => Reply::err(why),
             }
         }))
     }
 
-    /// Opens `entry` in `folder` beside the caller (terminal `from`), where it overlaps nothing,
-    /// toward the blocks wired to the caller (`Space::room_near`), wired to it: one Ctrl+Z
-    /// closes both. The keyboard, the selection and the camera stay. Its agent starts on the
-    /// spawn's model and effort (checked by `spawn_agent`), and its prompt is typed once the
-    /// agent is ready, as a task the caller handed over.
-    fn open_agent(
+    /// The agent a fork from the terminal `from` opens (the caller's own, `named` when given)
+    /// and the command that forks the caller's session, as the last snapshot found it; why not.
+    fn fork_of(&self, from: &str, named: Option<&str>) -> Result<(AgentEntry, String), String> {
+        let (space_id, me) = self.caller(from).expect("call found the caller");
+        let space = self.space_named(&space_id).expect("the caller's workspace");
+        let pane = space.terminal(me).ok_or("Only an agent forks itself.")?;
+        // An account's block runs the account: its id is the agent's.
+        let own = pane
+            .account
+            .clone()
+            .or_else(|| pane.seen.agent.clone())
+            .ok_or("Templum doesn't see an agent in your block: only an agent forks itself.")?;
+        if named.is_some_and(|named| named != own) {
+            return Err(format!(
+                "A fork is a copy of your own agent, {own}: leave agent out."
+            ));
+        }
+        let entry = self
+            .agents
+            .iter()
+            .find(|a| a.id == own)
+            .cloned()
+            .ok_or_else(|| format!("{own} isn't an agent of Settings ▸ Agents."))?;
+        if entry.forking().is_none() {
+            return Err(format!(
+                "{} can't fork a session: forks are for Claude Code and Codex.",
+                entry.title
+            ));
+        }
+        let uid = space.uids.get(&me).map_or("", String::as_str);
+        space
+            .session_of(uid, &own)
+            .and_then(|session| entry.fork_command(&session))
+            .map(|command| (entry, command))
+            .ok_or_else(|| {
+                "Templum doesn't know your session yet: try again in a few seconds.".into()
+            })
+    }
+
+    /// Opens `entry` in `folder` in the workspace `space` at `place`, where it overlaps nothing,
+    /// wired to `wire_to`: one Ctrl+Z closes it and its wires. The keyboard, the selection and the
+    /// camera stay. Its agent starts on the spawn's model and effort (checked by the caller), with
+    /// `fork` typed instead of its start command for a fork of the opener's session, and its
+    /// prompt is typed once the agent is ready, as a task `opener` handed over. The answer, and
+    /// the new block's id when it opened.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn open_agent_in(
         &mut self,
-        from: &str,
+        space: &str,
         entry: &AgentEntry,
+        fork: Option<&str>,
         folder: &Path,
         spawn: &tools::Spawn,
+        place: Place,
+        wire_to: &[BlockId],
+        opener: Opener,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Reply {
-        let Some((space_id, me)) = self.caller(from) else {
-            return Reply::err("Your block was closed before the agent could open.");
-        };
+    ) -> (Reply, Option<String>) {
         let (model, effort) = (spawn.model.as_deref(), spawn.effort.as_deref());
-        let args = entry.launch_args(model, effort).unwrap_or_default();
-        // A task the caller hands over, under its `[from …]` line, as `delegate` types one.
-        let by = self
-            .space_named(&space_id)
-            .map(|space| self.signature(space, me, cx))
+        let args = entry
+            .launch_args_with(model, effort, spawn.args.as_deref())
             .unwrap_or_default();
+        // A task the opener hands over, under its `[from …]` line, as `delegate` types one.
+        let (by, asker, opened_by) = match &opener {
+            Opener::Block { terminal, id } => {
+                let home = self.space_named(space);
+                (
+                    home.map(|s| self.signature(s, *id, cx)).unwrap_or_default(),
+                    terminal.clone(),
+                    home.and_then(|s| s.uids.get(id).cloned()),
+                )
+            }
+            Opener::TemplumAgent => (
+                "Templum Agent".to_string(),
+                templum_agent::ASKER.to_string(),
+                Some(templum_agent::ASKER.to_string()),
+            ),
+        };
         let opened = self
-            .in_space(&space_id, |ws| {
+            .in_space(space, |ws| {
                 let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, ws.cell.size);
-                let rect = ws.space.room_near(me, size)?;
+                let center = ws.space.camera().to_world(ws.center(window));
+                let near = match place {
+                    Place::Near(id) => Some(id),
+                    Place::Free => None,
+                };
+                let rect = ws.space.spot(&place, size, center)?;
                 let kept = (
                     ws.space.focused,
                     ws.space.selected.clone(),
                     ws.space.selected_wire,
                 );
-                // In grid mode a new block takes half of the focused tile: the caller's.
-                ws.space.focused = Some(me);
-                let id =
-                    ws.start_agent(Some(entry), &entry.command, &args, folder, rect, window, cx);
+                // In grid mode a new block takes half of the focused tile: the one it opens near.
+                if near.is_some() {
+                    ws.space.focused = near;
+                }
+                let id = ws.start_agent(Some(entry), fork, &args, folder, rect, window, cx);
                 (ws.space.focused, ws.space.selected, ws.space.selected_wire) = kept;
                 let id = id?;
-                ws.space.add_wire(me, id);
-                // The caller may close it (`close_block`); a resume types its model again.
-                let opener = ws.space.uids.get(&me).cloned();
+                for to in wire_to {
+                    ws.space.add_wire(*to, id);
+                }
+                // Its opener may close it (`close_block`); a resume types its model again.
                 let pane = ws.space.terminal_mut(id)?;
-                pane.opened_by = opener;
+                pane.opened_by = opened_by.clone();
                 (pane.model, pane.effort) = (spawn.model.clone(), spawn.effort.clone());
+                pane.role = spawn.role.clone();
                 pane.flags_for = Some(entry.id.clone());
                 let terminal = ws.space.terminal(id)?.term.id().to_string();
                 Some((ws.space.uids.get(&id)?.clone(), terminal))
             })
             .flatten();
         let Some((uid, terminal)) = opened else {
-            return Reply::err(format!(
-                "Couldn't open {} in {}.",
-                entry.title,
-                folder.display()
-            ));
+            let why = format!("Couldn't open {} in {}.", entry.title, folder.display());
+            return (Reply::err(why), None);
         };
         let on = match (model, effort) {
             (Some(m), Some(e)) => format!(", on {m} ({e})"),
@@ -168,15 +287,46 @@ impl Workspace {
             (None, Some(e)) => format!(", with {e} effort"),
             (None, None) => String::new(),
         };
-        let mut said = format!(
-            "Opened {} as {uid} in {}, connected to you{on}.",
-            entry.title,
-            folder.display()
-        );
+        let wired = match &opener {
+            Opener::Block { .. } => ", connected to you".to_string(),
+            Opener::TemplumAgent if wire_to.is_empty() => String::new(),
+            Opener::TemplumAgent => {
+                let home = self.space_named(space);
+                let uids: Vec<String> = wire_to
+                    .iter()
+                    .filter_map(|id| home?.uids.get(id).cloned())
+                    .collect();
+                format!(", connected to {}", uids.join(", "))
+            }
+        };
+        let what = match fork {
+            Some(_) => "a fork of your session".to_string(),
+            None => entry.title.clone(),
+        };
+        let mut said = match opener {
+            Opener::Block { .. } => {
+                format!("Opened {what} as {uid} in {}{wired}{on}.", folder.display())
+            }
+            Opener::TemplumAgent => {
+                format!("Opened {what} as {uid} in {}{on}{wired}.", folder.display())
+            }
+        };
         if let Some(prompt) = spawn.prompt.as_ref() {
             self.next_task += 1;
             let id = self.next_task;
-            let text = format!("[from {by}, task t{id}] {TASK_LEAD}\n{prompt}");
+            // A fork that took itself for the original would answer its tasks too.
+            let copy = match (fork, &opened_by) {
+                (Some(_), Some(original)) => format!(
+                    "You are a copy of the agent in {original}, started from its conversation so \
+                     far, in a block of your own.\n\n"
+                ),
+                _ => String::new(),
+            };
+            let role = spawn
+                .role
+                .as_ref()
+                .map_or(String::new(), |r| format!(", as {r}"));
+            let text = format!("[from {by}, task t{id}{role}] {TASK_LEAD}\n{copy}{prompt}");
             let handed = Handed {
                 id,
                 // Its session starts with its task: all it spends is the task's.
@@ -185,9 +335,8 @@ impl Workspace {
                     tokens: Some(0),
                     ..Default::default()
                 }),
-                ..Handed::new(from, Duration::from_secs(tools::TASK_WAIT))
+                ..Handed::new(&asker, Duration::from_secs(tools::TASK_WAIT))
             };
-            let until = handed.until;
             if let Some(pane) = self.pane_mut(&terminal) {
                 pane.prompt = Some(Prompt {
                     text,
@@ -197,7 +346,6 @@ impl Workspace {
                 });
                 pane.handed = Some(handed);
             }
-            self.time_out(terminal.clone(), id, until, tools::TASK_WAIT, cx);
             // Every agent is looked at, hooks or not: Codex's SessionStart comes only with its
             // first prompt, and Claude Code's while it doesn't take pastes yet, after asking
             // whether to trust the folder (a typed Enter would answer that).
@@ -207,7 +355,7 @@ impl Workspace {
             ));
         }
         cx.notify();
-        Reply::ok(said)
+        (Reply::ok(said), Some(uid))
     }
 
     /// `close_block` from the terminal `from`: the block `block`, which it opened with
@@ -234,22 +382,7 @@ impl Workspace {
                 "Only the person closes {block}: you didn't open it."
             ));
         }
-        let terminal = space.terminal(id).map(|p| p.term.id().to_string());
-        if let Some(pane) = terminal.as_deref().and_then(|t| self.pane_mut(t))
-            && pane.handed.as_ref().is_some_and(|h| h.by == from)
-        {
-            pane.handed = None;
-        }
-        self.in_space(&space_id, |ws| {
-            ws.close_now(&[id], Then::New, window, cx);
-            // Its shell and agent end now: a ghost waits for a frame of its workspace, which one
-            // not shown, or a window not drawn, doesn't have.
-            ws.space.ghosts.retain(|g| g.block.id != id);
-        });
-        cx.notify();
-        Reply::ok(format!(
-            "Closed {block}. The person can bring it back with Ctrl+Z."
-        ))
+        self.block_close((&space_id, id), block, from, window, cx)
     }
 
     /// Looks, every READY_LOOK, whether the agent in `terminal` is ready for its prompt, until it
@@ -312,9 +445,35 @@ impl Workspace {
 }
 
 impl Space {
+    /// The folder `named` gives, relative to the folder of block `me` (`~` expanded), else that
+    /// folder: where `spawn_agent` and `create_block` open. Why not, when it isn't a folder or
+    /// Templum doesn't know `me`'s.
+    pub(super) fn folder_for(&self, me: BlockId, named: Option<&str>) -> Result<PathBuf, String> {
+        let here = self.blocks[&me]
+            .folder()
+            .or_else(|| self.terminal(me)?.seen.folder.clone());
+        let folder = match (named, here) {
+            (Some(named), here) => {
+                let named = crate::launcher::expand(named);
+                match here {
+                    Some(here) if named.is_relative() => here.join(named),
+                    _ => named,
+                }
+            }
+            (None, Some(here)) => here,
+            (None, None) => {
+                return Err("Templum doesn't know your folder yet: name one with folder.".into());
+            }
+        };
+        if !folder.is_dir() {
+            return Err(format!("{} isn't a folder.", folder.display()));
+        }
+        Ok(folder)
+    }
+
     /// A spot for a block of `size` beside block `id` that overlaps nothing, drawn toward the
     /// blocks wired to it (`room_beside`). None when `id` isn't on the canvas.
-    fn room_near(&self, id: BlockId, size: Size) -> Option<Rect> {
+    pub(super) fn room_near(&self, id: BlockId, size: Size) -> Option<Rect> {
         let home = |id| Some(self.home(self.canvas.get(id)?));
         let wired = self.wires.iter().filter(|w| w.touches(id));
         let anchors: Vec<Rect> = std::iter::once(home(id)?)

@@ -44,4 +44,98 @@ if [[ -z "${__templum_installed-}" ]]; then
     else
         PROMPT_COMMAND="__templum_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
     fi
+
+    # A `claude`, `codex` or `copilot` typed here gets Templum's MCP server and hooks: the words of
+    # TEMPLUM_CLAUDE_ARGS, TEMPLUM_CODEX_ARGS or TEMPLUM_COPILOT_ARGS, one per line, before the
+    # person's, unless they name Templum's already (docs/specs/connections.md, "Agents typed in a
+    # terminal"). Not over the person's own function; `function` keeps an alias of that name from
+    # breaking this.
+    __templum_agent() {
+        builtin local name="$1" w="$2" words
+        # A variable for this command only, unless the shell has one (the block Templum opened,
+        # the person's own).
+        if [[ -n "$4" ]]; then
+            [[ -n "${!3-}" ]] || builtin local -x "$3=$4"
+        fi
+        builtin shift 4
+        if [[ -z "$w" ]]; then
+            builtin command "$name" "$@"
+        else
+            # `read -d ''` fails at the end of its input: not a failure for `set -e`.
+            IFS=$'\n' builtin read -r -d '' -a words <<< "$w" || builtin true
+            builtin command "$name" "${words[@]}" "$@"
+        fi
+    }
+    if [[ -n "${TEMPLUM_CLAUDE_ARGS-}" ]] && ! builtin declare -F claude > /dev/null; then
+        function claude {
+            builtin local w="${TEMPLUM_CLAUDE_ARGS-}" a
+            for a in "$@"; do
+                case "$a" in --settings | --settings=* | --mcp-config | --mcp-config=*) w= ;; esac
+            done
+            __templum_agent claude "$w" "" "" "$@"
+        }
+    fi
+    if [[ -n "${TEMPLUM_CODEX_ARGS-}" ]] && ! builtin declare -F codex > /dev/null; then
+        function codex {
+            builtin local w="${TEMPLUM_CODEX_ARGS-}" a
+            for a in "$@"; do
+                case "$a" in mcp_servers.templum.*) w= ;; esac
+            done
+            __templum_agent codex "$w" "" "" "$@"
+        }
+    fi
+    # The others' words end with a path in Templum's folder, which only Templum types: none when
+    # the person's words hold it (docs/specs/connections.md, "Typed by hand: the shells").
+    if [[ -n "${TEMPLUM_COPILOT_ARGS-}" ]] && ! builtin declare -F copilot > /dev/null; then
+        function copilot {
+            builtin local w="${TEMPLUM_COPILOT_ARGS-}" nl=$'\n' last a
+            # Not before a subcommand (`copilot plugin list`) nor for the help or the version: AWS's
+            # `copilot` takes those too, and refuses Templum's words.
+            case "${1--}" in -*) ;; *) w= ;; esac
+            last="${w##*$nl}"
+            for a in "$@"; do
+                case "$a" in "$last" | -h | --help | -v | --version) w= ;; esac
+            done
+            __templum_agent copilot "$w" "" "" "$@"
+        }
+    fi
+    # OpenCode and Kilo Code take Templum's server and plugin from a variable.
+    if [[ -n "${TEMPLUM_OPENCODE_CONFIG-}" ]] && ! builtin declare -F opencode > /dev/null; then
+        function opencode {
+            __templum_agent opencode "" OPENCODE_CONFIG_CONTENT "${TEMPLUM_OPENCODE_CONFIG-}" "$@"
+        }
+    fi
+    if [[ -n "${TEMPLUM_KILO_CONFIG-}" ]] && ! builtin declare -F kilo > /dev/null; then
+        function kilo {
+            __templum_agent kilo "" KILO_CONFIG_CONTENT "${TEMPLUM_KILO_CONFIG-}" "$@"
+        }
+    fi
+    # Qwen Code: its server as a word, its hooks in the settings file its variable moves. It takes
+    # one --mcp-config: a person's own means none of Templum's. None before one of its commands,
+    # which refuse it (`qwen mcp list`); a plain word that isn't one is a prompt.
+    if [[ -n "${TEMPLUM_QWEN_ARGS-}" ]] && ! builtin declare -F qwen > /dev/null; then
+        function qwen {
+            builtin local w="${TEMPLUM_QWEN_ARGS-}" a
+            case "${1-}" in
+                agents | auth | batch | board | channel | extensions | hooks | mcp | review | sandbox | \
+                    serve | sessions | update) w= ;;
+            esac
+            for a in "$@"; do
+                case "$a" in --mcp-config | --mcp-config=*) w= ;; esac
+            done
+            __templum_agent qwen "$w" QWEN_CODE_SYSTEM_SETTINGS_PATH "${TEMPLUM_QWEN_SETTINGS-}" "$@"
+        }
+    fi
+    # Pi: its extension. Not before one of its commands, which it reads only as the first word.
+    if [[ -n "${TEMPLUM_PI_ARGS-}" ]] && ! builtin declare -F pi > /dev/null; then
+        function pi {
+            builtin local w="${TEMPLUM_PI_ARGS-}" nl=$'\n' last a
+            case "${1-}" in install | remove | uninstall | update | list | config | auth) w= ;; esac
+            last="${w##*$nl}"
+            for a in "$@"; do
+                case "$a" in "$last") w= ;; esac
+            done
+            __templum_agent pi "$w" "" "" "$@"
+        }
+    fi
 fi

@@ -4,8 +4,10 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::checklists::Item;
 use crate::session::{self, Loaded};
 
 /// The file format's version: raised only when an older Templum couldn't read the new files.
@@ -14,7 +16,8 @@ pub(crate) const VERSION: u32 = 1;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Boards {
     pub version: u32,
-    /// The last id given out: ids are unique across boards, columns and cards, never reused.
+    /// The last id given out: ids are unique across boards, columns, cards and checklist items,
+    /// never reused.
     #[serde(default)]
     pub next_id: u64,
     #[serde(default)]
@@ -45,15 +48,99 @@ pub(crate) struct Card {
     pub description: String,
     #[serde(
         default,
-        deserialize_with = "known_labels",
+        deserialize_with = "known",
         skip_serializing_if = "Vec::is_empty"
     )]
     pub labels: Vec<Label>,
-    /// The block id of the agent working on it (`claim_card`); the person frees it in the open card.
+    #[serde(
+        default,
+        deserialize_with = "known_priority",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub priority: Option<Priority>,
+    /// Who does it: none is anyone; `claim_card` makes it the claiming block.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub assignee: Option<String>,
+    pub assignee: Option<Assignee>,
+    #[serde(
+        default,
+        deserialize_with = "known",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub checklist: Vec<Item>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<Comment>,
+}
+
+/// Who a card is for: one block (one agent's session), or any session of an agent.
+/// Saved as one string: a block's bare id (as before), or `agent:<id>`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub(crate) enum Assignee {
+    Block(String),
+    Agent(String),
+}
+
+impl From<String> for Assignee {
+    fn from(text: String) -> Self {
+        match text.strip_prefix("agent:") {
+            Some(agent) => Assignee::Agent(agent.to_string()),
+            None => Assignee::Block(text),
+        }
+    }
+}
+
+impl From<Assignee> for String {
+    fn from(assignee: Assignee) -> Self {
+        match assignee {
+            Assignee::Block(uid) => uid,
+            Assignee::Agent(agent) => format!("agent:{agent}"),
+        }
+    }
+}
+
+/// A card's priority: a cue for the person and the agents; nothing sorts by it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Priority {
+    Low,
+    Medium,
+    High,
+}
+
+impl Priority {
+    pub const ALL: [Priority; 3] = [Priority::Low, Priority::Medium, Priority::High];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Priority::Low => "low",
+            Priority::Medium => "medium",
+            Priority::High => "high",
+        }
+    }
+
+    /// The priority `name` names, trimmed, in either case; none for another word ("none").
+    pub fn named(name: &str) -> Option<Priority> {
+        let name = name.trim();
+        Priority::ALL
+            .into_iter()
+            .find(|p| p.name().eq_ignore_ascii_case(name))
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Priority::Low => "Low",
+            Priority::Medium => "Medium",
+            Priority::High => "High",
+        }
+    }
+}
+
+/// A priority by its name; one Templum doesn't know is none (a typo mustn't lose the file).
+fn known_priority<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Priority>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(value
+        .as_str()
+        .and_then(|n| Priority::ALL.into_iter().find(|p| p.name() == n)))
 }
 
 /// A comment on a card: by an agent's block id, or `"you"` for the person; `at` in Unix seconds.
@@ -72,6 +159,12 @@ impl Card {
         } else {
             format!("{}\n\n{}", self.title, self.description)
         }
+    }
+
+    /// Its checklist's (done, all).
+    pub fn progress(&self) -> (usize, usize) {
+        let done = self.checklist.iter().filter(|i| i.done).count();
+        (done, self.checklist.len())
     }
 }
 
@@ -121,19 +214,22 @@ impl Label {
     }
 }
 
-/// Labels this Templum knows; others (from an edited file) are dropped.
 /// A label by its name; one Templum doesn't know is none (a typo mustn't lose the file).
 pub(crate) fn known_label<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Label>, D::Error> {
     let name = Option::<String>::deserialize(d)?;
     Ok(name.and_then(|n| Label::ALL.into_iter().find(|l| l.name() == n)))
 }
 
-fn known_labels<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Label>, D::Error> {
-    let names = Vec::<String>::deserialize(d)?;
-    Ok(names
-        .iter()
-        .filter_map(|n| Label::ALL.into_iter().find(|l| l.name() == n))
-        .collect())
+/// A list's entries that read (labels this Templum knows, checklist items); others, from an
+/// edited file, are dropped, and what isn't a list is none: a typo mustn't lose the file.
+fn known<'de, D: Deserializer<'de>, T: DeserializeOwned>(d: D) -> Result<Vec<T>, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Array(entries) => entries
+            .into_iter()
+            .filter_map(|e| serde_json::from_value(e).ok())
+            .collect(),
+        _ => Vec::new(),
+    })
 }
 
 impl Default for Boards {
@@ -168,16 +264,24 @@ impl Boards {
 
     /// "Board n" with To do, Doing and Done; returns its id.
     pub fn add_board(&mut self) -> u64 {
-        let name = (self.boards.len() + 1..)
-            .map(|n| format!("Board {n}"))
-            .find(|name| !self.boards.iter().any(|b| b.name == *name))
-            .expect("an unused name");
+        self.add_board_with(None, &["To do", "Doing", "Done"].map(String::from))
+    }
+
+    /// A board named `name` ("Board n" when None) with `columns`, in their order; returns its
+    /// id.
+    pub fn add_board_with(&mut self, name: Option<&str>, columns: &[String]) -> u64 {
+        let name = name.map(str::to_string).unwrap_or_else(|| {
+            (self.boards.len() + 1..)
+                .map(|n| format!("Board {n}"))
+                .find(|name| !self.boards.iter().any(|b| b.name == *name))
+                .expect("an unused name")
+        });
         let id = self.next();
-        let columns = ["To do", "Doing", "Done"]
-            .into_iter()
+        let columns = columns
+            .iter()
             .map(|title| Column {
                 id: self.next(),
-                title: title.into(),
+                title: title.clone(),
                 cards: Vec::new(),
             })
             .collect();
@@ -250,7 +354,9 @@ impl Boards {
             title: "New card".into(),
             description: String::new(),
             labels: Vec::new(),
+            priority: None,
             assignee: None,
+            checklist: Vec::new(),
             comments: Vec::new(),
         });
         Some(id)
@@ -301,6 +407,40 @@ impl Boards {
         }
     }
 
+    /// Adds items at the end of the card's checklist; returns their new ids (none when it's gone).
+    pub fn add_items(&mut self, board: u64, card: u64, items: &[(String, bool)]) -> Vec<u64> {
+        if self.card(board, card).is_none() {
+            return Vec::new();
+        }
+        let items: Vec<Item> = items
+            .iter()
+            .map(|(text, done)| Item {
+                id: self.next(),
+                text: text.clone(),
+                done: *done,
+            })
+            .collect();
+        let ids = items.iter().map(|i| i.id).collect();
+        self.edit_card(board, card, |c| c.checklist.extend(items));
+        ids
+    }
+
+    /// Checks or unchecks an item; false when the card has no such item.
+    pub fn set_item_done(&mut self, board: u64, card: u64, item: u64, done: bool) -> bool {
+        let mut found = false;
+        self.edit_card(board, card, |c| {
+            if let Some(i) = c.checklist.iter_mut().find(|i| i.id == item) {
+                i.done = done;
+                found = true;
+            }
+        });
+        found
+    }
+
+    pub fn remove_item(&mut self, board: u64, card: u64, item: u64) {
+        self.edit_card(board, card, |c| c.checklist.retain(|i| i.id != item));
+    }
+
     pub fn toggle_label(&mut self, board: u64, card: u64, label: Label) {
         self.edit_card(board, card, |card| {
             if let Some(i) = card.labels.iter().position(|l| *l == label) {
@@ -347,15 +487,14 @@ pub(crate) fn path(dir: &Path) -> PathBuf {
 pub(crate) fn load(dir: &Path) -> Loaded<Boards> {
     match session::read::<Boards>(&path(dir)) {
         Loaded::Saved(mut boards) => {
-            // An edited file's next_id may lag behind its ids: never give one out twice.
-            let ids = boards.boards.iter().flat_map(|b| {
-                std::iter::once(b.id).chain(
-                    b.columns
-                        .iter()
-                        .flat_map(|c| std::iter::once(c.id).chain(c.cards.iter().map(|x| x.id))),
-                )
+            let ids = boards.boards.iter_mut().flat_map(|b| {
+                std::iter::once(&mut b.id).chain(b.columns.iter_mut().flat_map(|c| {
+                    std::iter::once(&mut c.id).chain(c.cards.iter_mut().flat_map(|x| {
+                        std::iter::once(&mut x.id).chain(x.checklist.iter_mut().map(|i| &mut i.id))
+                    }))
+                }))
             });
-            boards.next_id = ids.fold(boards.next_id, u64::max);
+            session::unique_ids(ids, &mut boards.next_id);
             Loaded::Saved(boards)
         }
         other => other,
@@ -551,7 +690,7 @@ mod tests {
     fn assignee_and_comments_read_back_and_an_older_card_has_none() {
         let (mut boards, board, _, cards) = abc();
         boards.edit_card(board, cards[0], |c| {
-            c.assignee = Some("b7k2m".into());
+            c.assignee = Some(Assignee::Block("b7k2m".into()));
             c.comments.push(Comment {
                 by: "b7k2m".into(),
                 text: "On it.\nTwo lines.".into(),
@@ -578,12 +717,165 @@ mod tests {
             panic!("not read")
         };
         let card = &read.boards[0].columns[0].cards[0];
-        assert_eq!((card.assignee.as_deref(), card.comments.len()), (None, 0));
+        assert_eq!((card.assignee.clone(), card.comments.len()), (None, 0));
         save(d.path(), &read, 2).unwrap();
         let again = std::fs::read_to_string(path(d.path())).unwrap();
         assert!(
             !again.contains("assignee") && !again.contains("comments"),
             "{again}"
         );
+    }
+
+    #[test]
+    fn priority_checklist_and_an_agent_assignee_read_back_and_older_cards_have_none() {
+        let (mut boards, board, _, cards) = abc();
+        boards.add_items(
+            board,
+            cards[0],
+            &[("Model".into(), false), ("Tools".into(), true)],
+        );
+        boards.edit_card(board, cards[0], |c| {
+            c.priority = Some(Priority::High);
+            c.assignee = Some(Assignee::Agent("codex".into()));
+        });
+        boards.edit_card(board, cards[1], |c| {
+            c.assignee = Some(Assignee::Block("b7k2m".into()))
+        });
+        let d = tempfile::tempdir().unwrap();
+        save(d.path(), &boards, 1).unwrap();
+        assert_eq!(load(d.path()), Loaded::Saved(boards));
+        let text = std::fs::read_to_string(path(d.path())).unwrap();
+        for key in [
+            "\"priority\": \"high\"",
+            "\"assignee\": \"agent:codex\"",
+            "\"assignee\": \"b7k2m\"",
+            "\"text\": \"Model\"",
+            "\"done\": true",
+        ] {
+            assert!(text.contains(key), "{key}: {text}");
+        }
+        let old = r#"{"version":1,"boards":[{"id":1,"name":"B","columns":[{"id":2,"title":"T",
+            "cards":[{"id":3,"title":"x","assignee":"b7k2m","priority":"urgent"}]}]}]}"#;
+        std::fs::write(path(d.path()), old).unwrap();
+        let Loaded::Saved(read) = load(d.path()) else {
+            panic!("not read")
+        };
+        let card = &read.boards[0].columns[0].cards[0];
+        assert_eq!(
+            card.assignee,
+            Some(Assignee::Block("b7k2m".into())),
+            "an older assignee is a block"
+        );
+        assert_eq!(
+            (card.priority, card.checklist.len()),
+            (None, 0),
+            "an unknown priority is none"
+        );
+        // Nor a priority that isn't a word: the file still loads.
+        let odd = r#"{"version":1,"boards":[{"id":1,"name":"B","columns":[{"id":2,"title":"T",
+            "cards":[{"id":3,"title":"x","priority":2},{"id":4,"title":"y","priority":null}]}]}]}"#;
+        std::fs::write(path(d.path()), odd).unwrap();
+        let Loaded::Saved(odd) = load(d.path()) else {
+            panic!("a priority of 2 set the file aside")
+        };
+        assert!(
+            odd.boards[0].columns[0]
+                .cards
+                .iter()
+                .all(|c| c.priority.is_none())
+        );
+        let mut fresh = read.clone();
+        fresh.boards[0].columns[0].cards[0].assignee = None;
+        save(d.path(), &fresh, 2).unwrap();
+        let again = std::fs::read_to_string(path(d.path())).unwrap();
+        assert!(
+            !again.contains("priority")
+                && !again.contains("checklist")
+                && !again.contains("assignee"),
+            "{again}"
+        );
+    }
+
+    #[test]
+    fn checklist_items_get_new_ids_check_and_go() {
+        let (mut boards, board, columns, cards) = abc();
+        let ids = boards.add_items(board, cards[1], &[("a".into(), false), ("b".into(), true)]);
+        assert!(
+            ids.iter().all(|i| *i > cards[2] && *i > columns[2]),
+            "{ids:?}"
+        );
+        assert_eq!(boards.card(board, cards[1]).unwrap().progress(), (1, 2));
+        assert!(boards.set_item_done(board, cards[1], ids[0], true));
+        assert!(!boards.set_item_done(board, cards[1], 9_999, true));
+        assert!(
+            !boards.set_item_done(board, cards[0], ids[0], true),
+            "another card's item"
+        );
+        boards.remove_item(board, cards[1], ids[1]);
+        assert_eq!(boards.card(board, cards[1]).unwrap().progress(), (1, 1));
+        assert!(
+            boards
+                .add_items(board, 9_999, &[("x".into(), false)])
+                .is_empty()
+        );
+        // A hand-edited file whose item ids pass next_id: none is given out twice.
+        let d = tempfile::tempdir().unwrap();
+        let text = r#"{"version":1,"next_id":3,"boards":[{"id":1,"name":"B","columns":[{"id":2,"title":"T",
+            "cards":[{"id":3,"title":"x","checklist":[{"id":50,"text":"y"}]}]}]}]}"#;
+        std::fs::write(path(d.path()), text).unwrap();
+        let Loaded::Saved(read) = load(d.path()) else {
+            panic!("not read")
+        };
+        assert_eq!(read.next_id, 50);
+    }
+
+    #[test]
+    fn a_hand_edited_checklist_never_sets_the_file_aside() {
+        // No list, labels that aren't words or a list, an item with no id, a `done` that isn't true
+        // or false:
+        // the file loads with the items that read, an item with no id gets a new one.
+        let d = tempfile::tempdir().unwrap();
+        let text = r#"{"version":1,"next_id":9,"boards":[{"id":1,"name":"B","columns":[{"id":2,"title":"T",
+            "cards":[{"id":3,"title":"a","checklist":null,"labels":[2,"red"]},
+            {"id":4,"title":"b","checklist":[{"text":"Build"},{"id":5,"text":"Test","done":"yes"},
+                {"id":6,"text":"Ship","done":true}]},
+            {"id":7,"title":"c","checklist":"Build","labels":null}]}]}]}"#;
+        std::fs::write(path(d.path()), text).unwrap();
+        let Loaded::Saved(read) = load(d.path()) else {
+            panic!("a bad checklist set the file aside")
+        };
+        let cards = &read.boards[0].columns[0].cards;
+        assert_eq!(cards.len(), 3);
+        assert!(cards[0].checklist.is_empty() && cards[2].checklist.is_empty());
+        assert_eq!(cards[0].labels, [Label::Red]);
+        let items: Vec<_> = cards[1]
+            .checklist
+            .iter()
+            .map(|i| (i.id, i.text.as_str(), i.done))
+            .collect();
+        assert_eq!(items, [(10, "Build", false), (6, "Ship", true)]);
+        assert_eq!(read.next_id, 10);
+    }
+
+    #[test]
+    fn ids_given_twice_by_hand_get_new_ones_after_the_first() {
+        let d = tempfile::tempdir().unwrap();
+        let text = r#"{"version":1,"boards":[{"id":1,"name":"B","columns":[{"id":2,"title":"T",
+            "cards":[{"id":3,"title":"x","checklist":[{"id":5,"text":"a"},{"id":5,"text":"b"}]},
+            {"id":3,"title":"y"}]}]}]}"#;
+        std::fs::write(path(d.path()), text).unwrap();
+        let Loaded::Saved(mut read) = load(d.path()) else {
+            panic!("not read")
+        };
+        let column = &read.boards[0].columns[0];
+        let items: Vec<u64> = column.cards[0].checklist.iter().map(|i| i.id).collect();
+        assert_eq!(items, [5, 6]);
+        assert_eq!(column.cards[1].id, 7);
+        assert_eq!(read.next_id, 7);
+        // Ticking or deleting the second item leaves the first alone.
+        assert!(read.set_item_done(1, 3, 6, true));
+        assert_eq!(read.card(1, 3).unwrap().progress(), (1, 2));
+        read.remove_item(1, 3, 6);
+        assert_eq!(read.card(1, 3).unwrap().checklist[0].text, "a");
     }
 }

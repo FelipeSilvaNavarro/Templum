@@ -32,8 +32,28 @@ pub(crate) fn preview(
     z: f32,
 ) -> AnyElement {
     crate::editor::keep_list_rows(&scroll.handle, &scroll.zoom, z);
-    // gpui-kit 0.7.1's look at zoom 1: headings from 14 px, code 13 px, paragraphs 1 rem apart.
-    let style = TextViewStyle {
+    div()
+        .id(id)
+        .h_full()
+        .w(px(w.max(0.0) * z))
+        .overflow_y_scroll()
+        .track_scroll(&scroll.handle)
+        .text_size(px(font * z))
+        .px(px(6.0 * z))
+        .child(ScaledRem {
+            scale: z,
+            child: TextView::markdown(markdown, text)
+                .style(style(z))
+                .into_any_element(),
+        })
+        .test_support()
+        .into_any_element()
+}
+
+/// Markdown's look at zoom `z`: gpui-kit 0.7.1's at zoom 1, headings from 14 px, code 13 px,
+/// paragraphs 1 rem apart.
+pub(crate) fn style(z: f32) -> TextViewStyle {
+    TextViewStyle {
         paragraph_gap: rems(1.0),
         heading_base_font_size: px(14.0 * z),
         // Pinned at every zoom: with a 14 px base and no resolver gpui-kit sizes headings from
@@ -50,23 +70,7 @@ pub(crate) fn preview(
         })),
         code_block: StyleRefinement::default().text_size(px(13.0 * z)),
         ..TextViewStyle::default()
-    };
-    div()
-        .id(id)
-        .h_full()
-        .w(px(w.max(0.0) * z))
-        .overflow_y_scroll()
-        .track_scroll(&scroll.handle)
-        .text_size(px(font * z))
-        .px(px(6.0 * z))
-        .child(ScaledRem {
-            scale: z,
-            child: TextView::markdown(markdown, text)
-                .style(style)
-                .into_any_element(),
-        })
-        .test_support()
-        .into_any_element()
+    }
 }
 
 /// Lays out and paints its child with the window's rem size times `scale`: Markdown's spacing

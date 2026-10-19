@@ -10,7 +10,9 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
     let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
     ws.update(cx, |ws, _| {
         let agent = |id: &str| ws.agents.iter().find(|a| a.id == id).cloned();
-        let (claude, codex) = (agent("claude"), agent("codex"));
+        let (claude, codex, copilot) = (agent("claude"), agent("codex"), agent("copilot"));
+        let qwen = agent("qwen");
+        let pi = agent("pi");
         let typed = |name: &str| {
             templum_usage::claude::typed_path(
                 &data.path().join(name).to_string_lossy(),
@@ -59,6 +61,39 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
             ws.bus_env = env;
         }
         assert_eq!(ws.typed(None, "claude"), "claude");
+        // Copilot CLI: its server, its instructions and its plugin of hooks, in every shell.
+        let words = templum_usage::copilot::args(data.path(), cfg!(windows))
+            .unwrap()
+            .iter()
+            .map(|w| templum_usage::claude::typed_path(w, cfg!(windows)).unwrap())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(words.contains("--plugin-dir="), "{words}");
+        assert_eq!(
+            ws.typed(copilot.as_ref(), "copilot --session-id 0d5e"),
+            format!("copilot --session-id 0d5e {words}")
+        );
+        // Qwen Code: its server, its one `--mcp-config` last.
+        let qwen_words = templum_usage::qwen::args(data.path(), cfg!(windows)).unwrap();
+        let qwen_mcp = templum_usage::claude::typed_path(&qwen_words[0], cfg!(windows)).unwrap();
+        assert_eq!(
+            ws.typed(qwen.as_ref(), "qwen --resume 0d5e"),
+            format!("qwen --resume 0d5e {qwen_mcp}")
+        );
+        // Pi: its extension, `-e` and the file.
+        let pi_words = templum_usage::pi::args(data.path(), cfg!(windows)).unwrap();
+        let file = templum_usage::claude::typed_path(&pi_words[1], cfg!(windows)).unwrap();
+        assert_eq!(
+            ws.typed(pi.as_ref(), "pi --session-id 0d5e"),
+            format!("pi --session-id 0d5e -e {file}")
+        );
+        // Without `<data>/bin` on the terminal's PATH, the files' program can't be found.
+        let env = ws.bus_env.clone();
+        ws.bus_env.retain(|(k, _)| k != "PATH");
+        assert_eq!(ws.typed(pi.as_ref(), "pi"), "pi");
+        assert_eq!(ws.typed(copilot.as_ref(), "copilot"), "copilot");
+        assert_eq!(ws.typed(qwen.as_ref(), "qwen"), "qwen");
+        ws.bus_env = env;
         // Windows PowerShell 5.1 passes `args=["mcp"]` on as `args=[mcp]`; pwsh 7 doesn't.
         let shell = ws.config.shell.program.clone();
         ws.config.shell.program = Some("powershell".into());
@@ -70,6 +105,9 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
         }
         ws.config.shell.program = Some("WSL.exe".into());
         assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
+        assert_eq!(ws.typed(copilot.as_ref(), "copilot"), "copilot");
+        ws.config.shell.program = Some("powershell".into());
+        assert!(ws.typed(copilot.as_ref(), "copilot").contains("--plugin-dir="));
         ws.config.shell.program = Some("pwsh".into());
         assert!(
             ws.typed(codex.as_ref(), "codex")
@@ -83,6 +121,8 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
             format!("claude --settings {settings}")
         );
         assert_eq!(ws.typed(codex.as_ref(), "codex"), "codex");
+        assert_eq!(ws.typed(copilot.as_ref(), "copilot"), "copilot");
+        assert_eq!(ws.typed(qwen.as_ref(), "qwen"), "qwen");
         ws.config.usage.claude_limits = false;
         assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
         // Connections without the status line: the hooks still need the settings file.
@@ -98,6 +138,111 @@ fn the_agents_templum_opens_get_its_server_hooks_and_status_line(cx: &mut TestAp
         // Without a data folder, nothing would read what the relay writes.
         ws.data_dir = None;
         assert_eq!(ws.typed(claude.as_ref(), "claude"), "claude");
+    });
+}
+
+/// Every new terminal carries what Templum types after `claude` and `codex`, as raw words, for
+/// the ones a person types there; empty when there is nothing to give (docs/specs/connections.md,
+/// Agents typed in a terminal).
+#[gpui_kit::test]
+fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAppContext) {
+    let parent = tempfile::tempdir().unwrap();
+    let data = parent.path().join("Templum Data");
+    std::fs::create_dir(&data).unwrap();
+    let (_, ws) = open_in(cx, None, Some(data.clone()));
+    ws.update(cx, |ws, _| {
+        let word = |ws: &Workspace, key: &str| {
+            let env = ws.agent_env();
+            env.into_iter().find(|(k, _)| k == key).unwrap().1
+        };
+        let p = |name: &str| {
+            let path = data.join(name).to_string_lossy().into_owned();
+            if cfg!(windows) {
+                path.replace('\\', "/")
+            } else {
+                path
+            }
+        };
+        let claude = format!(
+            "--settings\n{}\n--mcp-config={}",
+            p("claude-statusline.json"),
+            p("mcp.json")
+        );
+        assert_eq!(word(ws, "TEMPLUM_CLAUDE_ARGS"), claude);
+        #[cfg(unix)]
+        {
+            let exe = crate::workspace::usage::program().unwrap();
+            let codex = templum_mcp::codex_args(&exe.to_string_lossy(), false, true).unwrap();
+            assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), codex.join("\n"));
+        }
+        let copilot = templum_usage::copilot::args(&data, cfg!(windows))
+            .unwrap()
+            .join("\n");
+        assert!(copilot.ends_with(&p("copilot/plugin")), "{copilot}");
+        assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), copilot);
+        let opencode = templum_usage::opencode::config(&data, cfg!(windows)).unwrap();
+        assert_eq!(word(ws, "TEMPLUM_OPENCODE_CONFIG"), opencode);
+        assert_eq!(word(ws, "TEMPLUM_KILO_CONFIG"), opencode);
+        let qwen = templum_usage::qwen::args(&data, cfg!(windows)).unwrap();
+        assert_eq!(word(ws, "TEMPLUM_QWEN_ARGS"), qwen.join("\n"));
+        let system = templum_usage::qwen::system_file();
+        let settings = match templum_usage::qwen::settings(&data, cfg!(windows), &system) {
+            Some(file) => file.to_string_lossy().into_owned(),
+            None => String::new(),
+        };
+        assert_eq!(word(ws, "TEMPLUM_QWEN_SETTINGS"), settings);
+        let pi = templum_usage::pi::args(&data, cfg!(windows)).unwrap();
+        assert_eq!(word(ws, "TEMPLUM_PI_ARGS"), pi.join("\n"));
+        ws.config.connections.enabled = false;
+        assert_eq!(word(ws, "TEMPLUM_PI_ARGS"), "");
+        assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), "");
+        assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), "");
+        assert_eq!(word(ws, "TEMPLUM_OPENCODE_CONFIG"), "");
+        assert_eq!(word(ws, "TEMPLUM_KILO_CONFIG"), "");
+        assert_eq!(word(ws, "TEMPLUM_QWEN_ARGS"), "");
+        assert_eq!(word(ws, "TEMPLUM_QWEN_SETTINGS"), "");
+        assert_eq!(
+            word(ws, "TEMPLUM_CLAUDE_ARGS"),
+            format!("--settings\n{}", p("claude-statusline.json"))
+        );
+        ws.config.usage.claude_limits = false;
+        assert_eq!(word(ws, "TEMPLUM_CLAUDE_ARGS"), "");
+        assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), "");
+        ws.config.connections.enabled = true;
+        ws.config.usage.claude_limits = true;
+        for program in ["powershell", "CMD.EXE"] {
+            ws.config.shell.program = Some(program.into());
+            assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), "", "{program}");
+            assert_eq!(word(ws, "TEMPLUM_CLAUDE_ARGS"), claude, "{program}");
+            assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), copilot, "{program}");
+        }
+        ws.config.shell.program = Some("WSL.exe".into());
+        assert_eq!(word(ws, "TEMPLUM_CLAUDE_ARGS"), "");
+        assert_eq!(word(ws, "TEMPLUM_CODEX_ARGS"), "");
+        assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), "");
+        ws.config.shell.program = None;
+        // Without `<data>/bin` on the terminal's PATH, the files' program can't be found.
+        ws.bus_env.retain(|(k, _)| k != "PATH");
+        assert_eq!(word(ws, "TEMPLUM_COPILOT_ARGS"), "");
+        assert_eq!(word(ws, "TEMPLUM_OPENCODE_CONFIG"), "");
+    });
+    // Without a data folder: both, empty, so none comes from a Templum this one was started from.
+    let (_, bare) = open_in(cx, None, None);
+    bare.update(cx, |ws, _| {
+        assert_eq!(
+            ws.agent_env(),
+            [
+                ("TEMPLUM_CLAUDE_ARGS".to_string(), String::new()),
+                ("TEMPLUM_CODEX_ARGS".to_string(), String::new()),
+                ("TEMPLUM_COPILOT_ARGS".to_string(), String::new()),
+                ("TEMPLUM_OPENCODE_CONFIG".to_string(), String::new()),
+                ("TEMPLUM_KILO_CONFIG".to_string(), String::new()),
+                ("TEMPLUM_QWEN_ARGS".to_string(), String::new()),
+                ("TEMPLUM_QWEN_SETTINGS".to_string(), String::new()),
+                ("TEMPLUM_PI_ARGS".to_string(), String::new()),
+                ("TEMPLUM_HOOKED".to_string(), String::new()),
+            ]
+        );
     });
 }
 
@@ -308,6 +453,13 @@ fn an_agent_is_taken_off_the_title_bar_and_back(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         window.click("settings-tab-usage", cx);
         window.render_frame(cx);
+        // The section's last row, below the fold of a small window.
+        window.scroll(
+            "settings-scroll",
+            ScrollDelta::Pixels(point(px(0.), px(-5000.))),
+            cx,
+        );
+        window.render_frame(cx);
         window.click("field-usage.hide.codex", cx);
         window.render_frame(cx);
         window.render_frame(cx);
@@ -342,16 +494,94 @@ fn claude_code_is_asked_for_its_limits_when_wanted(cx: &mut TestAppContext) {
     ws.update(cx, |ws, _| {
         let claude = ws.agents.iter_mut().find(|a| a.id == "claude").unwrap();
         claude.command = format!("{} --model opus", program.display());
+        let probe = data.path().join("usage").join("probe");
         assert_eq!(
-            ws.claude_poll_job(),
-            Some((program.clone(), data.path().join("usage").join("probe")))
+            ws.claude_poll_jobs(),
+            [("claude".to_string(), program.clone(), probe.clone(), None)]
         );
         ws.config.usage.claude_limits = false;
-        assert_eq!(ws.claude_poll_job(), None);
+        assert_eq!(ws.claude_poll_jobs(), []);
         ws.config.usage.claude_limits = true;
         ws.data_dir = None;
-        assert_eq!(ws.claude_poll_job(), None);
+        assert_eq!(ws.claude_poll_jobs(), []);
     });
+}
+
+/// Each Claude Code account seen running since Templum started is asked too, on its folder.
+#[gpui_kit::test]
+fn an_account_that_ran_is_asked_for_its_limits(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let program = data.path().join("my-claude");
+    std::fs::write(&program, "").unwrap();
+    let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    super::agents::with_agents(
+        &ws,
+        cx,
+        &format!(
+            "[agents.claude]\ncommand = '{}'\n{}",
+            program.display(),
+            super::agents::CLAUDE2
+        ),
+    );
+    ws.update(cx, |ws, _| {
+        assert_eq!(ws.claude_poll_jobs().len(), 1, "not run yet");
+        ws.accounts_ran.insert("claude2".into());
+        let jobs = ws.claude_poll_jobs();
+        let account = data.path().join("accounts").join("claude2");
+        assert_eq!(
+            jobs[1],
+            (
+                "claude2".to_string(),
+                program.clone(),
+                data.path().join("usage").join("probe"),
+                Some(account)
+            )
+        );
+    });
+}
+
+/// Each account is its own row of the meter, named by its name, and its own switch.
+#[gpui_kit::test]
+fn each_account_has_its_row_in_the_meter(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    super::agents::with_agents(&ws, cx, super::agents::CLAUDE2);
+    let now = crate::notes::now();
+    let limits = templum_usage::Limits {
+        windows: vec![templum_usage::Window {
+            minutes: 300,
+            used_percent: 40.0,
+            resets_at: now + 3600,
+            scope: None,
+        }],
+        at: now,
+    };
+    ws.update(cx, |ws, _| {
+        ws.limits = vec![
+            ("claude".into(), limits.clone()),
+            ("claude2".into(), limits),
+        ];
+        let shown: Vec<String> = crate::usage::meter_agents(ws, now)
+            .into_iter()
+            .map(|(id, _)| ws.agent_title(id))
+            .collect();
+        assert_eq!(shown, ["Claude Code", "Claude Code 2"]);
+        ws.config.usage.hide = vec!["claude2".into()];
+        let shown: Vec<&str> = crate::usage::meter_agents(ws, now)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(shown, ["claude"]);
+    });
+    cx.update_window(handle, |_, window, cx| window.click("settings-button", cx))
+        .unwrap();
+    settle_slide(handle, cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-tab-usage", cx);
+        window.render_frame(cx);
+        assert!(window.try_find("field-usage.hide.claude2").is_some());
+    })
+    .unwrap();
 }
 
 #[cfg(unix)]
@@ -360,7 +590,10 @@ fn gemini_cli_links_the_extension_or_says_why_not() {
     use crate::workspace::usage::gemini_run;
     let data = tempfile::tempdir().unwrap();
     // `true` and `false` stand in for gemini: whatever they are given, they succeed or fail.
-    assert_eq!(gemini_run(Some("true".into()), data.path(), true), Ok(()));
+    assert_eq!(
+        gemini_run(Some("true".into()), data.path(), true, None),
+        Ok(())
+    );
     assert!(
         data.path()
             .join("gemini")
@@ -368,8 +601,136 @@ fn gemini_cli_links_the_extension_or_says_why_not() {
             .exists(),
         "the extension is written first"
     );
-    let why = gemini_run(Some("false".into()), data.path(), false).unwrap_err();
+    let why = gemini_run(Some("false".into()), data.path(), false, None).unwrap_err();
     assert!(why.starts_with("Gemini CLI failed"), "{why}");
-    let why = gemini_run(None, data.path(), true).unwrap_err();
+    let why = gemini_run(None, data.path(), true, None).unwrap_err();
     assert!(why.contains("didn't find Gemini CLI"), "{why}");
+}
+
+/// A Gemini CLI opened without Templum's extension says so once per run, never on a restore
+/// (docs/specs/connections.md, Gemini CLI without its extension).
+#[gpui_kit::test]
+fn a_gemini_cli_without_the_extension_is_told_once(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let installed = std::env::home_dir()
+        .is_some_and(|home| templum_usage::gemini::installed(&home.join(".gemini")));
+    let open = |id: &str, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let entry = ws.agents.iter().find(|a| a.id == id).cloned().unwrap();
+                let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+                ws.start_agent(Some(&entry), None, "", folder.path(), rect, window, cx)
+                    .unwrap();
+            })
+        })
+        .unwrap();
+    };
+    let before = notification_count(handle, cx);
+    open("claude", cx);
+    assert_eq!(notification_count(handle, cx), before, "Claude Code");
+    // A restored Gemini CLI says nothing.
+    let item: crate::session::Item = serde_json::from_value(serde_json::json!({
+        "kind": "terminal",
+        "rect": { "x": 0.0, "y": 400.0, "w": 400.0, "h": 300.0 },
+        "folder": folder.path(),
+        "agent": "gemini",
+    }))
+    .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.add_saved(&item, window, cx).unwrap());
+    })
+    .unwrap();
+    assert_eq!(notification_count(handle, cx), before, "restored");
+    // Connections off: nothing to install it for.
+    ws.update(cx, |ws, _| ws.config.connections.enabled = false);
+    open("gemini", cx);
+    assert_eq!(notification_count(handle, cx), before, "off");
+    ws.update(cx, |ws, _| ws.config.connections.enabled = true);
+    open("gemini", cx);
+    let told = usize::from(!installed);
+    assert_eq!(notification_count(handle, cx), before + told, "once");
+    open("gemini", cx);
+    assert_eq!(notification_count(handle, cx), before + told, "not twice");
+}
+
+/// The OpenCode and Kilo Code Templum opens get their variable in their shell's environment,
+/// unless the person has their own (docs/specs/connections.md, OpenCode and Kilo Code).
+#[gpui_kit::test]
+fn blocks_templum_opens_get_their_agents_variable(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    ws.update(cx, |ws, _| {
+        let agent = |id: &str| ws.agents.iter().find(|a| a.id == id).cloned();
+        let (opencode, kilo, claude) = (agent("opencode"), agent("kilo"), agent("claude"));
+        let unset = |_: &str| false;
+        let config = templum_usage::opencode::config(data.path(), cfg!(windows)).unwrap();
+        assert_eq!(
+            ws.agent_vars(opencode.as_ref(), &unset),
+            [("OPENCODE_CONFIG_CONTENT".to_string(), config.clone())]
+        );
+        assert_eq!(
+            ws.agent_vars(kilo.as_ref(), &unset),
+            [("KILO_CONFIG_CONTENT".to_string(), config)]
+        );
+        assert_eq!(ws.agent_vars(claude.as_ref(), &unset), []);
+        // Qwen Code: its system settings file moved to Templum's, unless its own exists.
+        let qwen = agent("qwen");
+        let system = templum_usage::qwen::system_file();
+        let want: Vec<(String, String)> =
+            templum_usage::qwen::settings(data.path(), cfg!(windows), &system)
+                .map(|file| {
+                    let file = file.to_string_lossy().into_owned();
+                    ("QWEN_CODE_SYSTEM_SETTINGS_PATH".to_string(), file)
+                })
+                .into_iter()
+                .collect();
+        assert_eq!(ws.agent_vars(qwen.as_ref(), &unset), want);
+        let theirs = |name: &str| name == "QWEN_CODE_SYSTEM_SETTINGS_PATH";
+        assert_eq!(ws.agent_vars(qwen.as_ref(), &theirs), []);
+        assert_eq!(ws.agent_vars(None, &unset), []);
+        // The person's own wins.
+        let theirs = |name: &str| name == "OPENCODE_CONFIG_CONTENT";
+        assert_eq!(ws.agent_vars(opencode.as_ref(), &theirs), []);
+        assert_eq!(ws.agent_vars(kilo.as_ref(), &theirs).len(), 1);
+        // Without `<data>/bin` on the terminal's PATH, the plugin's program can't be found.
+        let env = ws.bus_env.clone();
+        ws.bus_env.retain(|(k, _)| k != "PATH");
+        assert_eq!(ws.agent_vars(opencode.as_ref(), &unset), []);
+        ws.bus_env = env;
+        ws.config.connections.enabled = false;
+        assert_eq!(ws.agent_vars(opencode.as_ref(), &unset), []);
+        // Every terminal gets an empty `TEMPLUM_HOOKED`: not a Templum's it was started from.
+        let hooked = ws
+            .agent_env()
+            .into_iter()
+            .find(|(k, _)| k == "TEMPLUM_HOOKED");
+        assert_eq!(hooked, Some(("TEMPLUM_HOOKED".to_string(), String::new())));
+    });
+}
+
+/// A Gemini CLI account with its own extensions, without Templum's, is told; one sharing them
+/// with a folder that has it isn't.
+#[gpui_kit::test]
+fn a_gemini_account_without_the_extension_is_told(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    super::agents::with_agents(
+        &ws,
+        cx,
+        concat!(
+            "[agents.gemini2]\nof = \"gemini\"\n",
+            "[agents.gemini3]\nof = \"gemini\"\nshare = { extensions = \"gemini2\" }\n",
+        ),
+    );
+    super::agents::launch(handle, &ws, cx, "gemini2", folder.path());
+    ws.read_with(cx, |ws, _| assert!(ws.gemini_told.contains("gemini2")));
+    let extensions = data
+        .path()
+        .join("accounts/gemini2/.gemini/extensions/templum");
+    std::fs::create_dir_all(&extensions).unwrap();
+    super::agents::launch(handle, &ws, cx, "gemini3", folder.path());
+    ws.read_with(cx, |ws, _| assert!(!ws.gemini_told.contains("gemini3")));
 }

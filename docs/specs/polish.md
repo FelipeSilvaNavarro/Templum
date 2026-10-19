@@ -97,7 +97,7 @@ foreground, and `c @ a` is color `c` with alpha `a`.
   `ring` around the card. It never changes the card's layout.
 - **Title bar buttons** are pills, with `hover` behind them on hover and `pressed` while pressed.
 - **The empty canvas** shows "Templum" large, a one-line subtitle, and the keys that open a terminal and the
-  settings (from the active keymap), plus "Double-click the canvas".
+  settings (from the active keymap), plus "Hold Alt" to move the canvas over blocks.
 - **Notifications** get the card radius (10 px).
 
 ## Settings panel

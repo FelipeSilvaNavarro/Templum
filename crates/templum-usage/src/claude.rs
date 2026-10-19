@@ -51,6 +51,9 @@ struct Status {
     rate_limits: Option<RateLimits>,
     workspace: Option<Workspace>,
     cwd: Option<PathBuf>,
+    /// The folder the Claude Code it came from was on, when its `CLAUDE_CONFIG_DIR` named one:
+    /// an account's (docs/specs/accounts.md, Usage and limits).
+    templum_config_dir: Option<PathBuf>,
 }
 
 #[derive(Default, Deserialize)]
@@ -94,17 +97,29 @@ struct Workspace {
 }
 
 /// The relay, given Claude Code's status line `input` in the terminal `terminal` (its
-/// `TEMPLUM_TERMINAL`): writes it to `relay_dir`, then runs the user's own status line, found
-/// in the project's settings or `claude_dir`'s, and returns what it printed. Never fails:
-/// Claude Code would show the error in its status line.
+/// `TEMPLUM_TERMINAL`): writes it to `relay_dir`, with `"templum_config_dir"` added when its
+/// `CLAUDE_CONFIG_DIR` named `config_dir`, then runs the user's own status line, found in the
+/// project's settings or `claude_dir`'s, and returns what it printed. Never fails: Claude Code
+/// would show the error in its status line.
 pub fn relay(
     input: &[u8],
     relay_dir: &Path,
     terminal: Option<&str>,
     claude_dir: Option<&Path>,
+    config_dir: Option<&Path>,
 ) -> Vec<u8> {
     if let Some(terminal) = terminal.filter(|t| valid_id(t)) {
-        let _ = write_atomic(&relay_dir.join(format!("{terminal}.json")), input);
+        let named = config_dir.and_then(|dir| {
+            let mut value: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_slice(input).ok()?;
+            value.insert(
+                "templum_config_dir".into(),
+                dir.to_string_lossy().into_owned().into(),
+            );
+            serde_json::to_vec(&value).ok()
+        });
+        let bytes = named.as_deref().unwrap_or(input);
+        let _ = write_atomic(&relay_dir.join(format!("{terminal}.json")), bytes);
     }
     let status: Status = serde_json::from_slice(input).unwrap_or_default();
     let project = status
@@ -123,7 +138,7 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_digit() || c == '-')
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let dir = path.parent().expect("a file in a folder");
     std::fs::create_dir_all(dir)?;
     let name = path.file_name().expect("a file name").to_string_lossy();
@@ -189,10 +204,7 @@ fn run(command: &str, input: &[u8]) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// Writes the settings file the Claude Code Templum opens is given, with Templum's data folder
-/// `data` and its program `exe`: Templum's status line when `status_line`, and the hooks that
-/// tell Templum its turns when `hooks`. Returns its path as typed after `--settings` in a shell;
-/// None when there is nothing to give, or a path can't be typed safely in every shell.
+/// `settings_file`'s path as typed after `--settings` in a shell.
 pub fn settings_arg(
     data: &Path,
     exe: &Path,
@@ -200,8 +212,23 @@ pub fn settings_arg(
     status_line: bool,
     hooks: bool,
 ) -> Option<String> {
+    let path = settings_file(data, exe, windows, status_line, hooks)?;
+    typed_path(&path.to_string_lossy(), windows)
+}
+
+/// Writes the settings file the Claude Code Templum opens is given, with Templum's data folder
+/// `data` and its program `exe`: Templum's status line when `status_line`, and the hooks that
+/// tell Templum its turns when `hooks`. Returns its path; None when there is nothing to give, or
+/// a path can't be typed safely in every shell.
+pub fn settings_file(
+    data: &Path,
+    exe: &Path,
+    windows: bool,
+    status_line: bool,
+    hooks: bool,
+) -> Option<PathBuf> {
     let path = data.join(SETTINGS);
-    let typed = typed_path(&path.to_string_lossy(), windows)?;
+    typed_path(&path.to_string_lossy(), windows)?;
     // Linux names a program replaced while it runs (an upgrade) "<path> (deleted)": the new one
     // is at the path.
     let exe = exe.to_string_lossy();
@@ -233,21 +260,29 @@ pub fn settings_arg(
         return None;
     }
     write_changed(&path, &serde_json::Value::Object(settings))?;
-    Some(typed)
+    Some(path)
+}
+
+/// `mcp_file`'s path as typed after `--mcp-config` in a shell.
+pub fn mcp_arg(data: &Path, exe: &Path, windows: bool) -> Option<String> {
+    let path = mcp_file(data, exe, windows)?;
+    typed_path(&path.to_string_lossy(), windows)
 }
 
 /// Writes the MCP config the Claude Code Templum opens is given: Templum's own server, `exe
-/// mcp`. Returns its path as typed after `--mcp-config` in a shell; None when it can't be.
-pub fn mcp_arg(data: &Path, exe: &Path, windows: bool) -> Option<String> {
+/// mcp`. Returns its path; None when it can't be typed safely in every shell.
+pub fn mcp_file(data: &Path, exe: &Path, windows: bool) -> Option<PathBuf> {
     let path = data.join(MCP);
-    let typed = typed_path(&path.to_string_lossy(), windows)?;
+    typed_path(&path.to_string_lossy(), windows)?;
     let exe = exe.to_string_lossy();
     let exe = exe.strip_suffix(" (deleted)").unwrap_or(&exe);
     let config = serde_json::json!({
-        "mcpServers": { "templum": { "type": "stdio", "command": exe, "args": ["mcp"] } }
+        "mcpServers": { "templum": {
+            "type": "stdio", "command": exe, "args": ["mcp"], "timeout": crate::MCP_TIMEOUT_MS
+        } }
     });
     write_changed(&path, &config)?;
-    Some(typed)
+    Some(path)
 }
 
 /// Writes `value` to `path` unless the file already holds it.
@@ -371,8 +406,21 @@ fn project_folder(cwd: &Path) -> String {
         .collect()
 }
 
-/// The plan limits in the newest relay file that has them: they are the account's.
-pub fn limits(relay_dir: &Path) -> Option<Limits> {
+/// The plan limits in the newest relay file that has them, of the Claude Code on `config_dir`
+/// (None: one whose `CLAUDE_CONFIG_DIR` named none): they are its account's.
+pub fn limits(relay_dir: &Path, config_dir: Option<&Path>) -> Option<Limits> {
+    limits_where(relay_dir, |dir| dir == config_dir)
+}
+
+/// The plan limits of Claude Code's own folder: the newest relay file's of a Claude Code on no
+/// folder of `accounts` (the person's shell may name one of its own with `CLAUDE_CONFIG_DIR`).
+pub fn own_limits(relay_dir: &Path, accounts: &[&Path]) -> Option<Limits> {
+    limits_where(relay_dir, |dir| dir.is_none_or(|d| !accounts.contains(&d)))
+}
+
+/// The plan limits in the newest relay file that has them, of a Claude Code whose folder (None:
+/// none named) `wanted` takes.
+fn limits_where(relay_dir: &Path, wanted: impl Fn(Option<&Path>) -> bool) -> Option<Limits> {
     let mut files: Vec<(u64, PathBuf)> = std::fs::read_dir(relay_dir)
         .ok()?
         .flatten()
@@ -383,6 +431,9 @@ pub fn limits(relay_dir: &Path) -> Option<Limits> {
     files.sort_by_key(|f| std::cmp::Reverse(f.0));
     files.into_iter().find_map(|(at, path)| {
         let status: Status = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        if !wanted(status.templum_config_dir.as_deref()) {
+            return None;
+        }
         let rate = status.rate_limits?;
         let windows: Vec<Window> = [(300, rate.five_hour), (10080, rate.seven_day)]
             .into_iter()
@@ -406,10 +457,14 @@ const POLL_TIMEOUT: Duration = Duration::from_secs(30);
 /// The plan's limits as Claude Code's `/usage` tells them, asked of `program` (Claude Code) at
 /// `now`: it reads its own login, asks nothing of the model and keeps no session. It runs in
 /// `dir`, an empty folder, with that folder's settings only, so the user's hooks and plugins
-/// don't run. None for an API key, which has no plan. Slow: off the UI thread.
-pub fn poll(program: &Path, dir: &Path, now: u64) -> Option<Limits> {
+/// don't run; on an account's folder `config_dir` when given. None for an API key, which has no
+/// plan. Slow: off the UI thread.
+pub fn poll(program: &Path, dir: &Path, config_dir: Option<&Path>, now: u64) -> Option<Limits> {
     std::fs::create_dir_all(dir).ok()?;
     let mut command = Command::new(program);
+    if let Some(config_dir) = config_dir {
+        command.env("CLAUDE_CONFIG_DIR", config_dir);
+    }
     command
         .args(["--setting-sources", "local", "-p", "/usage"])
         .args(["--output-format", "stream-json", "--verbose"])
@@ -546,6 +601,8 @@ mod tests {
             started,
             cwd: None,
             terminal: terminal.into(),
+            home: None,
+            account: None,
         }
     }
 
@@ -571,7 +628,13 @@ mod tests {
             r#"{"statusLine": {"type": "command", "command": "printf mine; wc -c >/dev/null"}}"#,
         )
         .unwrap();
-        let out = relay(STATUS.as_bytes(), &relay_dir, Some("12-3"), Some(&claude));
+        let out = relay(
+            STATUS.as_bytes(),
+            &relay_dir,
+            Some("12-3"),
+            Some(&claude),
+            None,
+        );
         assert_eq!(out, b"mine");
         assert_eq!(
             std::fs::read_to_string(relay_dir.join("12-3.json")).unwrap(),
@@ -594,11 +657,104 @@ mod tests {
             r#"{{"workspace": {{"project_dir": "{}"}}}}"#,
             project.display()
         );
-        let out = relay(input.as_bytes(), dir.path(), None, Some(&claude));
+        let out = relay(input.as_bytes(), dir.path(), None, Some(&claude), None);
         assert_eq!(out, b"shared");
         std::fs::write(project.join(".claude/settings.local.json"), line("local")).unwrap();
-        let out = relay(input.as_bytes(), dir.path(), None, Some(&claude));
+        let out = relay(input.as_bytes(), dir.path(), None, Some(&claude), None);
         assert_eq!(out, b"local");
+    }
+
+    #[test]
+    fn the_relay_names_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let relay_dir = dir.path().join("relay");
+        relay(
+            STATUS.as_bytes(),
+            &relay_dir,
+            Some("1-0"),
+            None,
+            Some(Path::new("/a")),
+        );
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(relay_dir.join("1-0.json")).unwrap()).unwrap();
+        assert_eq!(written["templum_config_dir"], "/a");
+        let input: serde_json::Value = serde_json::from_str(STATUS).unwrap();
+        for (key, value) in input.as_object().unwrap() {
+            assert_eq!(&written[key], value, "{key}");
+        }
+        relay(STATUS.as_bytes(), &relay_dir, Some("1-1"), None, None);
+        assert_eq!(
+            std::fs::read_to_string(relay_dir.join("1-1.json")).unwrap(),
+            STATUS
+        );
+        relay(
+            b"not json",
+            &relay_dir,
+            Some("1-2"),
+            None,
+            Some(Path::new("/a")),
+        );
+        assert_eq!(
+            std::fs::read(relay_dir.join("1-2.json")).unwrap(),
+            b"not json"
+        );
+    }
+
+    #[test]
+    fn limits_are_the_folders_own() {
+        let dir = tempfile::tempdir().unwrap();
+        for (terminal, folder, used) in [
+            ("1-0", "/a", "11"),
+            ("1-1", "/b", "22"),
+            ("1-2", "/c", "33"),
+        ] {
+            let status = STATUS.replace("23.5", used);
+            relay(
+                status.as_bytes(),
+                dir.path(),
+                Some(terminal),
+                None,
+                Some(Path::new(folder)),
+            );
+        }
+        let used = |folder: Option<&str>| {
+            limits(dir.path(), folder.map(Path::new)).map(|l| l.windows[0].used_percent)
+        };
+        assert_eq!(used(Some("/a")), Some(11.0));
+        assert_eq!(used(Some("/b")), Some(22.0));
+        assert_eq!(used(None), None, "the agent's own folder has none of these");
+        relay(STATUS.as_bytes(), dir.path(), Some("1-3"), None, None);
+        assert_eq!(used(None), Some(23.5));
+        assert_eq!(used(Some("/a")), Some(11.0));
+    }
+
+    /// A Claude Code on a folder no account has (the person's shell set `CLAUDE_CONFIG_DIR`)
+    /// is the agent's own: its limits stay the meter's.
+    #[test]
+    fn the_agents_own_limits_are_every_folder_but_its_accounts() {
+        let dir = tempfile::tempdir().unwrap();
+        let account = Path::new("/a");
+        let status = STATUS.replace("23.5", "11");
+        relay(
+            status.as_bytes(),
+            dir.path(),
+            Some("1-0"),
+            None,
+            Some(account),
+        );
+        let used = |dir: &Path| own_limits(dir, &[account]).map(|l| l.windows[0].used_percent);
+        assert_eq!(used(dir.path()), None, "the account's");
+        let path = dir.path().join("1-0.json");
+        set_modified(&path, now() - 100);
+        let shells = STATUS.replace("23.5", "44");
+        relay(
+            shells.as_bytes(),
+            dir.path(),
+            Some("1-1"),
+            None,
+            Some(Path::new("/home/u/.config/claude")),
+        );
+        assert_eq!(used(dir.path()), Some(44.0));
     }
 
     #[test]
@@ -612,8 +768,8 @@ mod tests {
         )
         .unwrap();
         let relay_dir = dir.path().join("relay");
-        assert!(relay(b"{}", &relay_dir, Some("../x"), Some(&claude)).is_empty());
-        assert!(relay(b"{}", &relay_dir, Some(""), Some(&claude)).is_empty());
+        assert!(relay(b"{}", &relay_dir, Some("../x"), Some(&claude), None).is_empty());
+        assert!(relay(b"{}", &relay_dir, Some(""), Some(&claude), None).is_empty());
         assert!(!relay_dir.exists());
     }
 
@@ -632,7 +788,7 @@ mod tests {
                 cost_usd: Some(3.1),
             }
         );
-        let l = limits(dir.path()).unwrap();
+        let l = limits(dir.path(), None).unwrap();
         assert_eq!(l.windows.len(), 2);
         assert_eq!(
             l.windows[0],
@@ -663,7 +819,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let broken = STATUS.replace(r#""resets_at": 1738857600"#, r#""resets_at": null"#);
         std::fs::write(dir.path().join("1-0.json"), broken).unwrap();
-        let l = limits(dir.path()).unwrap();
+        let l = limits(dir.path(), None).unwrap();
         assert_eq!(l.windows.len(), 1);
         assert_eq!(l.windows[0].minutes, 300);
         let s = session(&proc("1-0", now() - 60), dir.path(), None).unwrap();
@@ -682,7 +838,7 @@ mod tests {
         let newest = dir.path().join("1-2.json");
         std::fs::write(&newest, r#"{"session_id": "s3"}"#).unwrap();
         set_modified(&newest, now() + 5);
-        let l = limits(dir.path()).unwrap();
+        let l = limits(dir.path(), None).unwrap();
         assert_eq!(l.windows[0].used_percent, 60.0);
     }
 
@@ -833,12 +989,38 @@ mod tests {
         // Not typed in a shell: the path as it is.
         assert_eq!(
             written["mcpServers"]["templum"],
-            serde_json::json!({ "type": "stdio", "command": "/opt/Templum App/templum", "args": ["mcp"] })
+            serde_json::json!({ "type": "stdio", "command": "/opt/Templum App/templum", "args": ["mcp"], "timeout": 604_800_000 })
         );
         assert_eq!(
             mcp_arg(Path::new("/home/$x"), Path::new("/opt/templum"), false),
             None
         );
+    }
+
+    /// What a new terminal hands the `claude` a person types: the path itself, a space and all.
+    #[cfg(unix)]
+    #[test]
+    fn settings_file_is_the_path_unquoted() {
+        let parent = tempfile::tempdir().unwrap();
+        let dir = parent.path().join("Templum Data");
+        std::fs::create_dir(&dir).unwrap();
+        let exe = Path::new("/opt/templum");
+        let file = settings_file(&dir, exe, false, true, true).unwrap();
+        assert_eq!(file, dir.join(SETTINGS));
+        let written = std::fs::read(&file).unwrap();
+        assert_eq!(
+            settings_arg(&dir, exe, false, true, true),
+            Some(format!("\"{}\"", file.display()))
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), written);
+        let mcp = mcp_file(&dir, exe, false).unwrap();
+        assert_eq!(mcp, dir.join(MCP));
+        assert_eq!(
+            mcp_arg(&dir, exe, false),
+            Some(format!("\"{}\"", mcp.display()))
+        );
+        assert_eq!(settings_file(&dir, exe, false, false, false), None);
+        assert_eq!(mcp_file(Path::new("/home/$x"), exe, false), None);
     }
 
     /// As Claude Code 2.1.286 printed it for a Max plan.
@@ -891,7 +1073,7 @@ mod tests {
         std::fs::write(
             &program,
             format!(
-                "#!/bin/sh\necho \"$@\" > \"{}/args\"\ncat \"{}\"\n",
+                "#!/bin/sh\necho \"$@\" > \"{0}/args\"\necho \"$CLAUDE_CONFIG_DIR\" > \"{0}/config\"\ncat \"{1}\"\n",
                 dir.path().display(),
                 printed.display()
             ),
@@ -899,7 +1081,7 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
         let probe = dir.path().join("probe");
-        let l = poll(&program, &probe, 5).unwrap();
+        let l = poll(&program, &probe, None, 5).unwrap();
         assert_eq!(l.windows.len(), 3);
         assert!(probe.is_dir());
         let args = std::fs::read_to_string(dir.path().join("args")).unwrap();
@@ -908,6 +1090,11 @@ mod tests {
             "{args}"
         );
         assert!(args.contains("--no-session-persistence"), "{args}");
+        // An account's: on its folder.
+        let account = dir.path().join("accounts").join("claude2");
+        poll(&program, &probe, Some(&account), 5).unwrap();
+        let config = std::fs::read_to_string(dir.path().join("config")).unwrap();
+        assert_eq!(config.trim_end(), account.to_string_lossy());
     }
 
     #[test]

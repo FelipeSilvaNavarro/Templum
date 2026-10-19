@@ -35,6 +35,26 @@ fn wheel_on_empty_canvas_pans_and_ctrl_wheel_zooms(cx: &mut TestAppContext) {
     ws.read_with(cx, |ws, _| assert_eq!(ws.space.canvas.camera.zoom(), 1.1));
 }
 
+#[gpui_kit::test]
+fn with_select_a_mouse_wheel_on_the_canvas_zooms(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let o = ws.read(cx).origin;
+        wheel(
+            window,
+            cx,
+            (f32::from(o.x) + 30.0, f32::from(o.y) + 30.0),
+            ScrollDelta::Lines(point(0.0, 1.0)),
+            false,
+        );
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.canvas.camera.zoom(), 1.1);
+    });
+}
+
 #[cfg(target_os = "macos")]
 const ZOOM_OUT: &str = "cmd--";
 #[cfg(not(target_os = "macos"))]
@@ -425,40 +445,20 @@ fn block_layout(window: &Window, block: BlockId) -> std::collections::BTreeMap<S
         .collect()
 }
 
-// The canvas zoom magnifies the editor and the Git block like a photo: everything inside
-// doubles at zoom 2, nothing keeps a fixed size or moves around (hairline borders stay
-// 1 px, hence the few pixels of slack).
+// The canvas zoom magnifies the editor like a photo: everything inside doubles at zoom 2,
+// nothing keeps a fixed size or moves around (hairline borders stay 1 px, hence the few pixels
+// of slack).
 #[gpui_kit::test]
-fn zooming_scales_the_editor_and_git_blocks_like_a_photo(cx: &mut TestAppContext) {
+fn zooming_scales_the_editor_like_a_photo(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("a.rs"),
         "fn main() {\n    println!(\"hi\");\n}\n",
     )
     .unwrap();
-    let repo = committed_repo();
-    std::fs::write(repo.path().join("a.txt"), "zero\none\n").unwrap();
     let (handle, ws) = open(cx);
     let editor = open_editor(handle, &ws, cx, dir.path());
     click_file(handle, 0, cx);
-    let git = cx
-        .update_window(handle, |_, window, cx| {
-            ws.update(cx, |ws, cx| {
-                let id = ws
-                    .add_git_at(repo.path(), Point::new(40.0, 700.0), window, cx)
-                    .unwrap();
-                ws.space.appearing.clear();
-                ws.select_git_row(
-                    id,
-                    crate::git_block::List::Files,
-                    "a.txt".to_string(),
-                    window,
-                    cx,
-                );
-                id
-            })
-        })
-        .unwrap();
     settle(handle, cx);
     // Each block measured with the camera on it, at zoom 1 and 2.
     let layout = |cx: &mut TestAppContext, block: BlockId, at: Point, zoom: f32| {
@@ -489,24 +489,9 @@ fn zooming_scales_the_editor_and_git_blocks_like_a_photo(cx: &mut TestAppContext
             }
         }
     };
-    let tabs = [
-        crate::git_block::Tab::Changes,
-        crate::git_block::Tab::History,
-        crate::git_block::Tab::Branches,
-    ];
     let one = layout(cx, editor, Point::new(0.0, 0.0), 1.0);
     let two = layout(cx, editor, Point::new(0.0, 0.0), 2.0);
     compare("editor", &one, &two);
-    for tab in tabs {
-        cx.update_window(handle, |_, window, cx| {
-            ws.update(cx, |ws, cx| ws.set_git_tab(git, tab, window, cx))
-        })
-        .unwrap();
-        settle(handle, cx);
-        let one = layout(cx, git, Point::new(0.0, 660.0), 1.0);
-        let two = layout(cx, git, Point::new(0.0, 680.0), 2.0);
-        compare(tab.name(), &one, &two);
-    }
 }
 
 #[gpui_kit::test]
@@ -694,7 +679,7 @@ fn a_notes_rows_and_letters_glide_together(cx: &mut TestAppContext) {
     );
     // The zoom the text is drawn at, from its box (under the tabs): its rows are 1.5 x its
     // letters, exactly.
-    let tabs = crate::note::TABS_H;
+    let tabs = crate::tab_strip::TABS_H;
     let s = f32::from(text.size.height) / (inner.h - tabs);
     assert!(
         (mid - 1.5 * crate::note::FONT * s).abs() < 0.05,
@@ -801,7 +786,7 @@ fn a_notes_box_fills_its_frame_at_rest(cx: &mut TestAppContext) {
             })
             .unwrap();
         let pad = templum_canvas::chrome::PAD * zoom;
-        let tabs = crate::note::TABS_H * zoom;
+        let tabs = crate::tab_strip::TABS_H * zoom;
         let close = |a: gpui_kit::Pixels, b: f32| (f32::from(a) - b).abs() < 0.01;
         assert!(
             close(inner.origin.x, f32::from(frame.origin.x) + pad)
@@ -974,4 +959,123 @@ fn a_markdown_preview_zooms_like_a_photo(cx: &mut TestAppContext) {
             "{zoom}: {height} vs {base} at 1.0 ({heights:?})"
         );
     }
+}
+
+/// On the canvas the keyboard follows the pointer too (Settings ▸ Canvas, on by default): the
+/// block under it takes it once it moves, no click needed, and stays where it is in the stack. A
+/// note's editor lets go of it. A block coming under a still pointer doesn't take it.
+#[gpui_kit::test]
+fn on_the_canvas_the_keyboard_follows_the_pointer(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let focused = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.focused);
+    let stack = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let ids: Vec<BlockId> = ws.space.canvas.blocks().iter().map(|b| b.id).collect();
+            ids
+        })
+    };
+    assert_eq!(focused(cx), Some(note));
+    let before = stack(cx);
+    let over_terminal = at(&ws, cx, (240.0, 600.0));
+    point_at(handle, cx, over_terminal);
+    assert_eq!(focused(cx), Some(terminal), "no click needed");
+    assert_eq!(stack(cx), before, "the terminal stays under the others");
+    cx.update_window(handle, |_, window, cx| {
+        let ws = ws.read(cx);
+        assert!(!ws.space.blocks[&note].has_focus(window, cx));
+        assert!(ws.focus_handle.is_focused(window), "the terminal's keys");
+    })
+    .unwrap();
+    // The kanban block comes under the pointer, which hasn't moved: the keyboard stays.
+    let empty = at(&ws, cx, (700.0, 300.0));
+    point_at(handle, cx, empty);
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(kanban).unwrap().rect = Rect::new(600.0, 200.0, 220.0, 200.0)
+    });
+    frame(handle, cx);
+    frame(handle, cx);
+    assert_eq!(ws.read_with(cx, |ws, _| ws.space.hovered), Some(kanban));
+    assert_eq!(focused(cx), Some(terminal), "a still pointer");
+    // Some systems send a move where the pointer already is.
+    point_at(handle, cx, empty);
+    assert_eq!(focused(cx), Some(terminal), "nowhere new");
+    point_at(handle, cx, (empty.0 + 5.0, empty.1));
+    assert_eq!(focused(cx), Some(kanban), "the pointer moved");
+}
+
+/// The keyboard stays where it is with the setting off (a click focuses), while blocks are
+/// selected (the selection stays too), while a menu is open, while a button is held and while
+/// the keyboard is in the settings panel.
+#[gpui_kit::test]
+fn the_keyboard_doesnt_follow_the_pointer_when_it_shouldnt(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, note, terminal) = three_blocks(handle, &ws, cx);
+    let focused = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.focused);
+    let over_terminal = at(&ws, cx, (240.0, 600.0));
+    let over_kanban = at(&ws, cx, (150.0, 150.0));
+    ws.update(cx, |ws, _| ws.config.canvas.focus_follows_pointer = false);
+    point_at(handle, cx, over_terminal);
+    assert_eq!(focused(cx), Some(note), "turned off");
+    ws.update(cx, |ws, _| {
+        ws.config.canvas.focus_follows_pointer = true;
+        ws.space.focused = None;
+        ws.space.selected = vec![kanban, note];
+    });
+    point_at(handle, cx, over_kanban);
+    assert_eq!(focused(cx), None, "blocks are selected");
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.selected.clone()),
+        vec![kanban, note]
+    );
+    ws.update(cx, |ws, _| ws.space.selected.clear());
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Right,
+                position: point(px(over_terminal.0 + 500.0), px(over_terminal.1)),
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    assert!(ws.read_with(cx, |ws, _| ws.menu.is_some()));
+    point_at(handle, cx, over_terminal);
+    assert_eq!(focused(cx), None, "a menu is open");
+    ws.update(cx, |ws, _| ws.menu = None);
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: point(px(over_kanban.0), px(over_kanban.1)),
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    assert_eq!(focused(cx), None, "a button is held");
+    cx.update_window(handle, |_, window, cx| {
+        window.click("settings-button", cx);
+        let panel = ws.read(cx).settings_focus.clone();
+        window.focus(&panel, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    point_at(handle, cx, (over_terminal.0 + 5.0, over_terminal.1));
+    assert_eq!(focused(cx), None, "the keyboard is in the settings panel");
+    cx.update_window(handle, |_, window, cx| {
+        let canvas = ws.read(cx).focus_handle.clone();
+        window.focus(&canvas, cx);
+    })
+    .unwrap();
+    point_at(handle, cx, over_terminal);
+    assert_eq!(
+        focused(cx),
+        Some(terminal),
+        "the keyboard is back on the canvas"
+    );
 }

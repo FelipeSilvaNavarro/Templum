@@ -56,7 +56,7 @@ Steps at the top (Welcome · Look · Shell · Agents · Ready) show where one is
 - It is a modal: nothing under it gets the pointer, and a press beside the card closes nothing. The title bar stays
   usable, and what it opens (the theme picker, the workspaces screen) is drawn above it.
 - Fading out, it lets the canvas beside the card have the pointer at once; the card still takes its presses, so a
-  double-click on Skip opens no second terminal.
+  second click on Skip doesn't reach the canvas.
 
 ## Look
 

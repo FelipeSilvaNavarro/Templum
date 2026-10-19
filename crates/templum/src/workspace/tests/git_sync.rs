@@ -30,11 +30,10 @@ fn sync_gets_and_sends_in_one_click(cx: &mut TestAppContext) {
     git_run(other.path(), &["push", "-q"]);
     commit_in(repo.path(), "c.txt");
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
+    open_git(handle, &ws, cx, repo.path());
     // Diverged: the question first. Put my commits on top.
     no_motion(cx);
-    cx.update_window(handle, |_, window, cx| window.click(("git-sync", n), cx))
+    cx.update_window(handle, |_, window, cx| window.click("git-sync", cx))
         .unwrap();
     settle(handle, cx);
     cx.update_window(handle, |_, window, cx| {
@@ -44,7 +43,7 @@ fn sync_gets_and_sends_in_one_click(cx: &mut TestAppContext) {
     })
     .unwrap();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert_eq!((g.status.ahead, g.status.behind), (0, 0), "joined and sent");
         assert_eq!(g.sync, None, "no spinner left");
     });
@@ -58,7 +57,7 @@ fn sync_gets_and_sends_in_one_click(cx: &mut TestAppContext) {
     git_run(other.path(), &["pull", "-q", "--ff-only"]);
     commit_in(other.path(), "d.txt");
     git_run(other.path(), &["push", "-q"]);
-    cx.update_window(handle, |_, window, cx| window.click(("git-sync", n), cx))
+    cx.update_window(handle, |_, window, cx| window.click("git-sync", cx))
         .unwrap();
     settle(handle, cx);
     assert!(repo.path().join("d.txt").is_file(), "fast-forwarded");
@@ -71,12 +70,11 @@ fn publish_goes_to_the_only_remote_and_asks_among_several(cx: &mut TestAppContex
     let _remote = add_remote(repo.path());
     git_run(repo.path(), &["checkout", "-q", "-b", "topic"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    cx.update_window(handle, |_, window, cx| window.click(("git-sync", n), cx))
+    open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| window.click("git-sync", cx))
         .unwrap();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert_eq!(
             g.status.upstream.as_deref(),
             Some("origin/topic"),
@@ -96,8 +94,8 @@ fn publish_goes_to_the_only_remote_and_asks_among_several(cx: &mut TestAppContex
         ],
     );
     git_run(repo.path(), &["checkout", "-q", "-b", "next"]);
-    settle_read(handle, &ws, cx, id);
-    cx.update_window(handle, |_, window, cx| window.click(("git-sync", n), cx))
+    settle_read(handle, &ws, cx);
+    cx.update_window(handle, |_, window, cx| window.click("git-sync", cx))
         .unwrap();
     settle(handle, cx);
     cx.update_window(handle, |_, window, cx| {
@@ -108,7 +106,7 @@ fn publish_goes_to_the_only_remote_and_asks_among_several(cx: &mut TestAppContex
     })
     .unwrap();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert_eq!(g.status.upstream.as_deref(), Some("backup/next"))
     });
 }
@@ -117,13 +115,12 @@ fn publish_goes_to_the_only_remote_and_asks_among_several(cx: &mut TestAppContex
 fn without_a_remote_publish_says_so(cx: &mut TestAppContext) {
     let repo = committed_repo();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    cx.update_window(handle, |_, window, cx| window.click(("git-sync", n), cx))
+    open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| window.click("git-sync", cx))
         .unwrap();
     settle(handle, cx);
     assert_eq!(notification_count(handle, cx), 1, "No remote");
-    git_of(&ws, cx, id, |g| assert_eq!(g.status.upstream, None));
+    git_of(&ws, cx, |g| assert_eq!(g.status.upstream, None));
 }
 
 #[gpui_kit::test]
@@ -135,19 +132,18 @@ fn a_gone_upstream_offers_publish_not_sync(cx: &mut TestAppContext) {
     git_run(repo.path(), &["push", "-q", "origin", "--delete", "topic"]);
     git_run(repo.path(), &["fetch", "-q", "--prune"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    git_of(&ws, cx, id, |g| {
+    open_git(handle, &ws, cx, repo.path());
+    git_of(&ws, cx, |g| {
         assert!(g.status.gone);
         assert_eq!(
             crate::git_block::words::server_state(&g.status).0,
             "not published"
         );
     });
-    let n = id.0 as usize;
-    cx.update_window(handle, |_, window, cx| window.click(("git-sync", n), cx))
+    cx.update_window(handle, |_, window, cx| window.click("git-sync", cx))
         .unwrap();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| assert!(!g.status.gone, "published again"));
+    git_of(&ws, cx, |g| assert!(!g.status.gone, "published again"));
 }
 
 #[gpui_kit::test]
@@ -158,10 +154,9 @@ fn the_more_menu_fetches_and_lists_recently_discarded(cx: &mut TestAppContext) {
     commit_in(other.path(), "b.txt");
     git_run(other.path(), &["push", "-q"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
+    open_git(handle, &ws, cx, repo.path());
     cx.update_window(handle, |_, window, cx| {
-        window.click(("git-more", n), cx);
+        window.click("git-more", cx);
         window.render_frame(cx);
         assert!(ws.read(cx).menu.is_some());
         // Fetch, Pull, Push, —, Clone a repository… (no data folder: no Recently discarded…).
@@ -170,7 +165,7 @@ fn the_more_menu_fetches_and_lists_recently_discarded(cx: &mut TestAppContext) {
     })
     .unwrap();
     settle(handle, cx);
-    git_of(&ws, cx, id, |g| assert_eq!(g.status.behind, 1, "fetched"));
+    git_of(&ws, cx, |g| assert_eq!(g.status.behind, 1, "fetched"));
 }
 
 #[gpui_kit::test]
@@ -181,13 +176,12 @@ fn clone_from_a_folder_that_isnt_a_repository_opens_the_block_on_it(cx: &mut Tes
     let remote = add_remote(repo.path());
     let empty = tempfile::tempdir().unwrap();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, empty.path());
-    let n = id.0 as usize;
-    git_of(&ws, cx, id, |g| {
+    open_git(handle, &ws, cx, empty.path());
+    git_of(&ws, cx, |g| {
         assert!(matches!(g.found, crate::git_block::Found::NotARepo))
     });
     cx.update_window(handle, |_, window, cx| {
-        window.click(("git-clone", n), cx);
+        window.click("git-clone", cx);
         window.render_frame(cx);
         assert!(window.has_active_dialog(cx), "URL and destination");
     })
@@ -200,7 +194,7 @@ fn clone_from_a_folder_that_isnt_a_repository_opens_the_block_on_it(cx: &mut Tes
     })
     .unwrap();
     settle(handle, cx);
-    let root = git_of(&ws, cx, id, |g| g.repo().map(|r| r.root.clone()));
+    let root = git_of(&ws, cx, |g| g.repo().map(|r| r.root.clone()));
     assert_eq!(
         root.unwrap().canonicalize().unwrap(),
         empty.path().canonicalize().unwrap(),
@@ -214,11 +208,10 @@ fn a_failed_clone_says_why_and_leaves_no_folder(cx: &mut TestAppContext) {
     let parent = tempfile::tempdir().unwrap();
     std::fs::write(parent.path().join("keep.txt"), "").unwrap();
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, parent.path());
+    open_git(handle, &ws, cx, parent.path());
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
             ws.clone_repo(
-                id,
                 "/no/such/app.git".to_string(),
                 parent.path().display().to_string(),
                 window,
@@ -227,13 +220,13 @@ fn a_failed_clone_says_why_and_leaves_no_folder(cx: &mut TestAppContext) {
         })
     })
     .unwrap();
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert_eq!(g.sync, Some(crate::git_block::Sync::Cloning), "spinning")
     });
     settle(handle, cx);
     assert_eq!(notification_count(handle, cx), 1);
     assert!(!parent.path().join("app").exists(), "nothing half-made");
-    git_of(&ws, cx, id, |g| {
+    git_of(&ws, cx, |g| {
         assert_eq!(g.sync, None);
         assert!(matches!(g.found, crate::git_block::Found::NotARepo));
     });
@@ -250,9 +243,8 @@ fn sync_after_the_servers_branch_was_deleted_offers_publish(cx: &mut TestAppCont
     git_run(remote.path(), &["branch", "-q", "-D", "topic"]);
     commit_in(repo.path(), "c.txt");
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
-    let n = id.0 as usize;
-    cx.update_window(handle, |_, window, cx| window.click(("git-sync", n), cx))
+    open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| window.click("git-sync", cx))
         .unwrap();
     settle(handle, cx);
     assert_eq!(
@@ -291,9 +283,8 @@ fn the_sync_question_answered_after_a_switch_acts_on_its_own_repository(cx: &mut
     let y = committed_repo();
     let y_head = git_run(y.path(), &["rev-parse", "HEAD"]);
     let (handle, ws) = open(cx);
-    let in_x = open_git(handle, &ws, cx, x.path());
-    let n = in_x.0 as usize;
-    cx.update_window(handle, |_, window, cx| window.click(("git-sync", n), cx))
+    open_git(handle, &ws, cx, x.path());
+    cx.update_window(handle, |_, window, cx| window.click("git-sync", cx))
         .unwrap();
     settle(handle, cx);
     cx.update_window(handle, |_, window, cx| {
@@ -308,8 +299,7 @@ fn the_sync_question_answered_after_a_switch_acts_on_its_own_repository(cx: &mut
     })
     .unwrap();
     settle(handle, cx);
-    let in_y = open_git(handle, &ws, cx, y.path());
-    assert_eq!(in_y, in_x, "block ids repeat across workspaces");
+    open_git(handle, &ws, cx, y.path());
     cx.update_window(handle, |_, window, cx| {
         window.within("dialog").click("git-rebase", cx);
         window.render_frame(cx);
@@ -328,8 +318,8 @@ fn the_sync_question_answered_after_a_switch_acts_on_its_own_repository(cx: &mut
     );
 }
 
-// Review I2: a clone that ends after a switch opens on its own block, never on the one shown,
-// and with no click: the block itself opens on it.
+// Review I2: a clone that ends after a switch opens in its own workspace's Git, never in the one
+// shown, and with no click.
 #[gpui_kit::test]
 fn a_clone_finished_after_a_switch_opens_its_own_block_only(cx: &mut TestAppContext) {
     no_motion(cx);
@@ -338,12 +328,11 @@ fn a_clone_finished_after_a_switch_opens_its_own_block_only(cx: &mut TestAppCont
     let x = tempfile::tempdir().unwrap();
     let y = tempfile::tempdir().unwrap();
     let (handle, ws) = open(cx);
-    let in_x = open_git(handle, &ws, cx, x.path());
+    open_git(handle, &ws, cx, x.path());
     let first = ws.read_with(cx, |ws, _| ws.space.id.clone());
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
             ws.clone_repo(
-                in_x,
                 remote.path().display().to_string(),
                 x.path().display().to_string(),
                 window,
@@ -355,21 +344,23 @@ fn a_clone_finished_after_a_switch_opens_its_own_block_only(cx: &mut TestAppCont
         })
     })
     .unwrap();
-    let in_y = open_git(handle, &ws, cx, y.path());
-    assert_eq!(in_y, in_x, "block ids repeat across workspaces");
+    open_git(handle, &ws, cx, y.path());
     settle(handle, cx);
     assert!(x.path().join("a.txt").is_file(), "cloned");
-    git_of(&ws, cx, in_y, |g| {
+    git_of(&ws, cx, |g| {
         assert_eq!(g.folder, y.path(), "the block shown keeps its folder");
         assert!(matches!(g.found, crate::git_block::Found::NotARepo));
     });
     // Back in the first workspace, without a click: its block is on the clone.
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.reveal(&first, in_x, window, cx))
+        ws.update(cx, |ws, cx| {
+            let to = ws.order().iter().position(|s| s.id == first).unwrap();
+            ws.switch_to(to, window, cx)
+        })
     })
     .unwrap();
     settle(handle, cx);
-    let root = git_of(&ws, cx, in_x, |g| g.repo().map(|r| r.root.clone()));
+    let root = git_of(&ws, cx, |g| g.repo().map(|r| r.root.clone()));
     assert_eq!(
         root.unwrap().canonicalize().unwrap(),
         x.path().canonicalize().unwrap()
@@ -402,9 +393,9 @@ fn clone_from_a_repository_goes_beside_it(cx: &mut TestAppContext) {
     git_run(&bare, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     git_run(&proj, &["push", "-q", &bare.display().to_string(), "main"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, &proj);
+    open_git(handle, &ws, cx, &proj);
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.ask_clone(id, window, cx));
+        ws.update(cx, |ws, cx| ws.ask_clone(window, cx));
         window.render_frame(cx);
         assert!(window.has_active_dialog(cx));
     })
@@ -432,9 +423,9 @@ fn sync_on_a_branch_never_published_offers_publish(cx: &mut TestAppContext) {
     let remote = add_remote(repo.path());
     git_run(repo.path(), &["checkout", "-q", "-b", "new"]);
     let (handle, ws) = open(cx);
-    let id = open_git(handle, &ws, cx, repo.path());
+    open_git(handle, &ws, cx, repo.path());
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.sync_git(id, window, cx))
+        ws.update(cx, |ws, cx| ws.sync_git(window, cx))
     })
     .unwrap();
     settle(handle, cx);

@@ -12,12 +12,21 @@ publish.workspace = true
 alacritty_terminal = "=0.26.0"
 # Already in the tree (alacritty's): names the types of the PTY trait the shell-integration tap implements.
 polling = "3"
+# Already in the tree (gpui's): the patterns `wait_for` watches a terminal's lines for.
+regex = "1"
 # Already in the tree: reads a shell's current folder (for "new terminal in the same folder").
 sysinfo = { version = "0.31", default-features = false, features = ["system"] }
 
 [target.'cfg(unix)'.dependencies]
-# Already in the tree: the PTY's foreground process group (the shell the user types into).
-rustix = { version = "1.1", default-features = false, features = ["std", "termios"] }
+# Already in the tree (alacritty's): the PTY's foreground process group (the shell the user types
+# into). Not rustix's `tcgetpgrp`, which panics on the 0 macOS answers once the shell has ended.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# Already in the tree (GPUI's): PATH as an installer left it in the registry.
+windows-registry = "0.6"
+# Already in the tree (GPUI's): Templum's place in the order Windows ends programs at sign-out.
+windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3"

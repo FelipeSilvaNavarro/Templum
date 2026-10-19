@@ -29,20 +29,17 @@ const HOOKED: [&str; 6] = [
 /// Writes the extension to `<data>/gemini`, for Windows when `windows`, and returns its folder.
 /// None when Templum's program can't go in a hook's command, or a file can't be written.
 pub fn extension(data: &Path, windows: bool) -> Option<PathBuf> {
-    let bin = data
-        .join("bin")
-        .join(if windows { "templum.exe" } else { "templum" });
+    let bin = crate::bin(data, windows);
     let bin = bin.to_string_lossy();
-    let command = hook_command(&bin, windows)?;
+    let command = crate::hook_command(&bin, windows, "gemini")?;
     let hook = json!([{ "hooks": [{ "type": "command", "command": command, "timeout": 5000 }] }]);
     let hooks: serde_json::Map<String, serde_json::Value> = HOOKED
         .iter()
         .map(|event| (event.to_string(), hook.clone()))
         .collect();
     let folder = data.join("gemini");
-    // Gemini CLI gives up on a tool after 10 minutes unless told: Templum's waits last an hour
-    // at most (ms).
-    let server = json!({ "command": bin, "args": ["mcp"], "timeout": 3_600_000 });
+    // Gemini CLI gives up on a tool after 10 minutes unless told: a question may wait days.
+    let server = json!({ "command": bin, "args": ["mcp"], "timeout": crate::MCP_TIMEOUT_MS });
     write_changed(
         &folder.join("gemini-extension.json"),
         &json!({ "name": NAME, "version": "1.0.0", "mcpServers": { "templum": server } }),
@@ -52,19 +49,6 @@ pub fn extension(data: &Path, windows: bool) -> Option<PathBuf> {
         &json!({ "hooks": hooks }),
     )?;
     Some(folder)
-}
-
-/// `bin hook gemini`, as Gemini CLI runs a hook: through bash on Unix, PowerShell on Windows,
-/// with `bin` in single quotes. None when `bin` holds a `'` or a line break.
-pub fn hook_command(bin: &str, windows: bool) -> Option<String> {
-    if bin.is_empty() || bin.contains(['\'', '\n', '\r']) {
-        return None;
-    }
-    Some(if windows {
-        format!("& '{bin}' hook gemini")
-    } else {
-        format!("'{bin}' hook gemini")
-    })
 }
 
 /// What `gemini` is given to install the extension in `folder`, the person agreeing: a link,
@@ -81,6 +65,14 @@ pub fn link_args(folder: &Path) -> Vec<OsString> {
 /// Gemini CLI, whose folder is `gemini_dir` (`~/.gemini`), has the extension.
 pub fn installed(gemini_dir: &Path) -> bool {
     gemini_dir.join("extensions").join(NAME).exists()
+}
+
+/// Writes the extension again when Gemini CLI, whose folder is `gemini_dir`, has it: one
+/// installed by an older Templum gets this one's (a question's seven-day timeout).
+pub fn refresh(data: &Path, gemini_dir: &Path, windows: bool) {
+    if installed(gemini_dir) {
+        extension(data, windows);
+    }
 }
 
 #[cfg(test)]
@@ -105,7 +97,7 @@ mod tests {
                 "name": "templum",
                 "version": "1.0.0",
                 "mcpServers": {
-                    "templum": { "command": bin, "args": ["mcp"], "timeout": 3_600_000 }
+                    "templum": { "command": bin, "args": ["mcp"], "timeout": 604_800_000 }
                 },
             })
         );
@@ -122,6 +114,23 @@ mod tests {
                 "Notification": hook,
                 "SessionEnd": hook,
             }})
+        );
+    }
+
+    #[test]
+    fn an_installed_extension_is_written_again() {
+        let data = tempfile::tempdir().unwrap();
+        let gemini = tempfile::tempdir().unwrap();
+        let manifest = data.path().join("gemini").join("gemini-extension.json");
+        let old = json!({ "name": NAME, "mcpServers": { "templum": { "timeout": 3_600_000 } } });
+        write_changed(&manifest, &old).unwrap();
+        refresh(data.path(), gemini.path(), false);
+        assert_eq!(read(&manifest), old, "not installed: left alone");
+        std::fs::create_dir_all(gemini.path().join("extensions").join(NAME)).unwrap();
+        refresh(data.path(), gemini.path(), false);
+        assert_eq!(
+            read(&manifest)["mcpServers"]["templum"]["timeout"],
+            604_800_000
         );
     }
 
@@ -146,28 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hook_runs_templum_in_single_quotes_through_bash_or_powershell() {
-        assert_eq!(
-            hook_command("/home/u/.local/share/templum/bin/templum", false).as_deref(),
-            Some("'/home/u/.local/share/templum/bin/templum' hook gemini")
-        );
-        assert_eq!(
-            hook_command(
-                r"C:\Users\Jane Doe\AppData\Roaming\templum\bin\templum.exe",
-                true
-            )
-            .as_deref(),
-            Some(r"& 'C:\Users\Jane Doe\AppData\Roaming\templum\bin\templum.exe' hook gemini")
-        );
-        // Single quotes keep $, ` and " as they are; only a ' or a line break can't go inside.
-        assert_eq!(
-            hook_command("/home/$x/templum", false).as_deref(),
-            Some("'/home/$x/templum' hook gemini")
-        );
-        assert_eq!(hook_command("/home/o'neil/templum", false), None);
-        assert_eq!(hook_command("/home/o'neil/templum", true), None);
-        assert_eq!(hook_command("/home/a\nb/templum", false), None);
-        assert_eq!(hook_command("", false), None);
+    fn a_windows_extension_runs_templum_through_powershell() {
         let dir = tempfile::tempdir().unwrap();
         let folder = extension(dir.path(), true).unwrap();
         let bin = dir.path().join("bin").join("templum.exe");

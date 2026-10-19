@@ -26,11 +26,12 @@ const HELLO_MAX: usize = 4096;
 const HELLO_WAIT: Duration = Duration::from_secs(if cfg!(test) { 1 } else { 5 });
 
 /// Who a connection is for: the terminal it runs in (its `TEMPLUM_TERMINAL`), and what it is
-/// ("mcp", "cli" or "hook").
+/// ("mcp", "cli", "hook", or "control" for the Templum Agent's own server with its secret).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Hello {
     pub terminal: String,
     pub client: String,
+    pub control: Option<String>,
 }
 
 /// Sends an answer line back to the connection a request came on.
@@ -217,15 +218,22 @@ fn hello_of(line: &str, token: Option<&str>) -> Option<Hello> {
     (method == HELLO && params["token"].as_str() == token).then(|| Hello {
         terminal: params["terminal"].as_str().unwrap_or_default().to_string(),
         client: params["client"].as_str().unwrap_or_default().to_string(),
+        control: params["control"].as_str().map(str::to_string),
     })
 }
 
 /// A client's first line.
-pub fn hello_line(terminal: &str, client: &str, token: Option<&str>) -> String {
-    rpc::notification(
-        HELLO,
-        json!({ "terminal": terminal, "client": client, "token": token }),
-    )
+pub fn hello_line(
+    terminal: &str,
+    client: &str,
+    token: Option<&str>,
+    control: Option<&str>,
+) -> String {
+    let mut params = json!({ "terminal": terminal, "client": client, "token": token });
+    if let Some(control) = control {
+        params["control"] = json!(control);
+    }
+    rpc::notification(HELLO, params)
 }
 
 /// Connects to the bus at `env` (a `TEMPLUM_BUS`): the stream, and the token its hello carries.
@@ -460,8 +468,7 @@ mod tests {
 
     fn pong(message: Message) {
         if let Incoming::Request { id, .. } = &message.incoming {
-            let answer =
-                json!({ "terminal": message.hello.terminal, "client": message.hello.client });
+            let answer = json!({ "terminal": message.hello.terminal, "client": message.hello.client, "control": message.hello.control });
             let _ = message.reply.send(rpc::result(id, answer));
         }
     }
@@ -470,7 +477,7 @@ mod tests {
         let (mut stream, token) = connect(&bus.env).unwrap();
         time_limit(&stream);
         stream
-            .write_all(hello_line("123-4", "cli", token.as_deref()).as_bytes())
+            .write_all(hello_line("123-4", "cli", token.as_deref(), None).as_bytes())
             .unwrap();
         let reader = BufReader::new(stream.try_clone().unwrap());
         (stream, reader)
@@ -495,7 +502,7 @@ mod tests {
         assert_eq!(answer["id"], 1);
         assert_eq!(
             answer["result"],
-            json!({ "terminal": "123-4", "client": "cli" })
+            json!({ "terminal": "123-4", "client": "cli", "control": null })
         );
     }
 
@@ -544,7 +551,7 @@ mod tests {
         let (_dir, bus) = test_bus(pong);
         for first in [
             rpc::request(1, "ping", Value::Null),
-            hello_line("1-1", "cli", Some("wrong")),
+            hello_line("1-1", "cli", Some("wrong"), None),
         ] {
             let (mut stream, _) = connect(&bus.env).unwrap();
             time_limit(&stream);
@@ -562,7 +569,7 @@ mod tests {
         let (mut stream, token) = connect(&bus.env).unwrap();
         time_limit(&stream);
         let terminal = "1".repeat(HELLO_MAX);
-        let _ = stream.write_all(hello_line(&terminal, "cli", token.as_deref()).as_bytes());
+        let _ = stream.write_all(hello_line(&terminal, "cli", token.as_deref(), None).as_bytes());
         let _ = stream.write_all(rpc::request(2, "ping", Value::Null).as_bytes());
         assert_closed(stream);
         // Nothing sent: closed once the hello's time is up, before the test's own limit.
@@ -630,8 +637,8 @@ mod tests {
         });
         let limit = Duration::from_secs(5);
         let (mut bridge, token) = connect(&bus.env).unwrap();
-        let lines =
-            hello_line("123-4", "mcp", token.as_deref()) + &rpc::request(1, "ping", Value::Null);
+        let lines = hello_line("123-4", "mcp", token.as_deref(), None)
+            + &rpc::request(1, "ping", Value::Null);
         bridge.write_all(lines.as_bytes()).unwrap();
         // The agent closes the bridge's input: done.
         bridge.finish().unwrap();
@@ -650,7 +657,7 @@ mod tests {
         // A command that exits: its socket goes.
         let (mut command, token) = connect(&bus.env).unwrap();
         command
-            .write_all(hello_line("123-4", "cli", token.as_deref()).as_bytes())
+            .write_all(hello_line("123-4", "cli", token.as_deref(), None).as_bytes())
             .unwrap();
         command
             .write_all(rpc::request(1, "ping", Value::Null).as_bytes())

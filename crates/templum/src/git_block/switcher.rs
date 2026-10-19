@@ -58,8 +58,8 @@ pub(crate) fn open(
                             // The next dialog opens once this one has closed.
                             window.defer(cx, move |window, cx| {
                                 ws.update(cx, |ws, cx| {
-                                    if ws.show_git_block(&here, window, cx) {
-                                        ws.branch_from(here.block, None, window, cx)
+                                    if ws.show_git(&here, window, cx) {
+                                        ws.branch_from(None, window, cx)
                                     }
                                 })
                             });
@@ -75,8 +75,8 @@ pub(crate) fn open(
                     };
                     window.close_dialog(cx);
                     ws_pick.update(cx, |ws, cx| {
-                        if ws.show_git_block(&here_pick, window, cx) {
-                            ws.switch_branch(here_pick.block, name, remote, window, cx)
+                        if ws.show_git(&here_pick, window, cx) {
+                            ws.switch_branch(name, remote, window, cx)
                         }
                     });
                 }),

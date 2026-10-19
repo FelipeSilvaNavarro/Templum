@@ -352,7 +352,7 @@ pub(crate) fn render(
         }])
         .track_focus(&welcome.focus)
         .on_key_down(cx.listener(Workspace::on_welcome_key))
-        // Fading out, the card still takes its presses: a double-click on Skip opens no terminal.
+        // Fading out, the card still takes its presses: a second click on Skip isn't the canvas's.
         .occlude()
         .child(steps)
         .child(content)
@@ -629,10 +629,6 @@ fn good_to_know(ws: &Workspace) -> AnyElement {
     let rows: Vec<(AnyElement, &'static str)> = vec![
         (key(Command::NewTerminal), "A new terminal"),
         (
-            pill("Double-click"),
-            "A terminal where you click on the canvas",
-        ),
-        (
             pill(if cfg!(target_os = "macos") {
                 "Hold Option"
             } else {
@@ -642,7 +638,7 @@ fn good_to_know(ws: &Workspace) -> AnyElement {
         ),
         (
             pill("Right-click"),
-            "On the canvas: AI agents, notes, kanban, Git",
+            "On the canvas: terminals, AI agents, notes, kanban",
         ),
         (key(Command::GoToWaiting), "The terminal waiting for you"),
         (key(Command::Workspaces), "Your workspaces"),

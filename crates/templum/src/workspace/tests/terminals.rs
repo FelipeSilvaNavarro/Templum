@@ -36,7 +36,6 @@ fn ring(ws: &Entity<Workspace>, id: templum_canvas::BlockId, cx: &mut TestAppCon
     });
 }
 
-#[cfg(unix)]
 pub(super) fn set_active(handle: AnyWindowHandle, active: bool, cx: &mut TestAppContext) {
     if active {
         cx.update_window(handle, |_, window, _| window.activate_window())
@@ -219,6 +218,25 @@ fn tab_reaches_the_shell(cx: &mut TestAppContext) {
         first.starts_with(' '),
         "Tab never reached the shell; screen: {shown:?}"
     );
+}
+
+/// Letters the keyboard types count as the person's input, as a key does: a shell that ends after
+/// them was ended, it didn't fail to start (`Pane::died_starting`).
+#[gpui_kit::test]
+fn typed_letters_count_as_input(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.focus_block(id, window, cx));
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let had_input = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().term.had_input())
+    };
+    assert!(!had_input(cx));
+    cx.simulate_input(handle, "x");
+    assert!(had_input(cx));
 }
 
 #[gpui_kit::test]
@@ -448,9 +466,8 @@ fn cwd_of(ws: &Entity<Workspace>, cx: &mut TestAppContext, id: BlockId) -> std::
 }
 
 #[gpui_kit::test]
-fn a_new_terminal_starts_in_the_focused_editors_or_git_blocks_folder(cx: &mut TestAppContext) {
+fn a_new_terminal_starts_in_the_focused_editors_folder(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
-    let repo = git_repo();
     let (handle, ws) = open(cx);
     let new_terminal = |cx: &mut TestAppContext| {
         cx.update_window(handle, |_, window, cx| window.press(NEW, cx))
@@ -460,41 +477,6 @@ fn a_new_terminal_starts_in_the_focused_editors_or_git_blocks_folder(cx: &mut Te
     open_editor(handle, &ws, cx, dir.path());
     let id = new_terminal(cx);
     assert_eq!(cwd_of(&ws, cx, id), dir.path().canonicalize().unwrap());
-    open_git(handle, &ws, cx, repo.path());
-    let id = new_terminal(cx);
-    assert_eq!(cwd_of(&ws, cx, id), repo.path().canonicalize().unwrap());
-}
-
-#[gpui_kit::test]
-fn a_double_click_on_the_canvas_opens_in_the_folder_of_the_block_it_unfocused(
-    cx: &mut TestAppContext,
-) {
-    let dir = tempfile::tempdir().unwrap();
-    let start = tempfile::tempdir().unwrap();
-    // A TOML literal string: Windows backslashes need no escaping.
-    write_config(
-        dir.path(),
-        &format!(
-            "[shell]\nworking_directory = '{}'\n",
-            start.path().display()
-        ),
-    );
-    let (handle, ws) = open_with(cx, Some(dir.path().to_path_buf()));
-    write_config(dir.path(), "[shell]\nworking_directory = \"inherit\"\n");
-    reload(handle, &ws, cx);
-    cx.update_window(handle, |_, window, cx| {
-        window.render_frame(cx);
-        let o = ws.read(cx).origin;
-        let at = (f32::from(o.x) + 40.0, f32::from(o.y) + 40.0);
-        click(window, cx, at, 1);
-        click(window, cx, at, 2);
-    })
-    .unwrap();
-    let new = ws.read_with(cx, |ws, _| {
-        assert_eq!(ws.space.canvas.blocks().len(), 2);
-        ws.space.canvas.top().unwrap()
-    });
-    assert_eq!(cwd_of(&ws, cx, new), start.path().canonicalize().unwrap());
 }
 
 /// Output in a block off screen wakes the UI once and no more until the block is painted; a

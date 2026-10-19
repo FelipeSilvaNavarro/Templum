@@ -92,6 +92,28 @@ impl Workspace {
         }
     }
 
+    /// Every terminal running an agent, as (block id, label), for a card's assignee menu: the
+    /// active workspace first, then the others in the sidebar's order, each back to front. The
+    /// label is its title as agents see it, with " — {workspace}" outside the active one.
+    pub(crate) fn agent_sessions(&self, cx: &App) -> Vec<(String, String)> {
+        self.spaces()
+            .flat_map(|space| {
+                let active = std::ptr::eq(space, &self.space);
+                space.canvas.blocks().iter().filter_map(move |b| {
+                    space.terminal(b.id)?.agent()?;
+                    let uid = space.uids.get(&b.id)?.clone();
+                    let title = self.about(&space.blocks[&b.id], cx).1;
+                    let label = if active {
+                        title
+                    } else {
+                        format!("{title} — {}", space.name)
+                    };
+                    Some((uid, label))
+                })
+            })
+            .collect()
+    }
+
     /// Changes the boards with `f`, keeping them as they were for Ctrl+Z (when it changed
     /// them).
     pub(crate) fn edit_boards<R>(&mut self, f: impl FnOnce(&mut Boards) -> R) -> R {
@@ -118,20 +140,28 @@ impl Workspace {
         true
     }
 
-    /// A terminal in `folder`, placed to the right of `block`, with `command` typed in (not
-    /// run: Enter is the person's).
+    /// A terminal in `folder`, placed to the right of `beside` (None: at the viewport's center),
+    /// with `command` typed in (not run: Enter is the person's).
     pub(crate) fn terminal_beside(
         &mut self,
-        block: BlockId,
+        beside: Option<BlockId>,
         folder: &Path,
         command: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
-        let anchor = self.space.home(self.space.canvas.get(block)?);
         self.space.pristine = false;
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
-        let rect = self.space.room_beside(&[anchor], size);
+        let rect = match beside.and_then(|b| self.space.canvas.get(b)) {
+            Some(b) => self.space.room_beside(&[self.space.home(b)], size),
+            None => {
+                let center = self.space.camera().to_world(self.center(window));
+                self.space.canvas.place_new(
+                    size,
+                    Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
+                )
+            }
+        };
         let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx);
         if let (Some(id), Some(command)) = (id, command) {
             // Typed, not run: the person reads it and presses Enter (it may delete or push).
@@ -221,6 +251,7 @@ impl Workspace {
         let Some(pane) = self.space.terminal(to) else {
             return;
         };
+        pane.person_typed();
         pane.term.type_in(text);
         let space = self.space.id.clone();
         self.reveal(&space, to, window, cx);
@@ -281,12 +312,12 @@ impl Workspace {
         self.open(Rect::new(at.x, at.y, size.w, size.h), window, cx);
     }
 
-    /// A terminal in `folder`, its top-left corner at `at`, with an agent's `command` typed into
-    /// its shell;
-    /// the folder becomes this workspace's newest recent one.
+    /// A terminal in `folder`, its top-left corner at `at`, with the agent `agent`'s command (an
+    /// entry's id; one Templum doesn't know is typed as it is) typed into its shell; the folder
+    /// becomes this workspace's newest recent one.
     pub(crate) fn launch_agent(
         &mut self,
-        command: &str,
+        agent: &str,
         folder: &std::path::Path,
         at: Point,
         window: &mut Window,
@@ -301,41 +332,171 @@ impl Workspace {
         self.space.pristine = false;
         let size = chrome::block_size(AGENT_COLS, AGENT_ROWS, self.cell.size);
         let rect = Rect::new(at.x, at.y, size.w, size.h);
-        let entry = self.agents.iter().find(|a| a.command == command).cloned();
+        let entry = self.agents.iter().find(|a| a.id == agent).cloned();
+        let command = entry.is_none().then_some(agent);
         let id = self.start_agent(entry.as_ref(), command, "", folder, rect, window, cx)?;
         window.focus(&self.focus_handle, cx);
         Some(id)
     }
 
-    /// A terminal at `rect` in `folder` with the agent `entry`'s command (`command` for one
-    /// Templum doesn't know) typed into its shell, `args` after it (`launch_args`: a model and an
-    /// effort) and before what Templum adds. It is focused on the canvas; the keyboard stays
+    /// A terminal at `rect` in `folder` with `command` (None: the agent `entry`'s start command)
+    /// typed into its shell, `args` after it (`launch_args`: a model and an effort) and before
+    /// what Templum adds. It is focused on the canvas; the keyboard stays
     /// where it is. The folder becomes this workspace's newest recent one.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn start_agent(
         &mut self,
         entry: Option<&AgentEntry>,
-        command: &str,
+        command: Option<&str>,
         args: &str,
         folder: &Path,
         rect: Rect,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
-        let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx)?;
-        let command = entry.map_or_else(
-            || command.to_string(),
-            |a| a.start_command(&uuid::Uuid::new_v4().to_string()),
-        ) + args;
+        if let Some(entry) = entry {
+            self.prepare_account(entry, window, cx);
+        }
+        let vars = self.agent_vars(entry, &super::usage::in_env);
+        let id = self.spawn_block_with(rect, Some(folder.to_path_buf()), vars, window, cx)?;
+        let command = command
+            .map(str::to_string)
+            .or_else(|| entry.map(|a| a.start_command(&uuid::Uuid::new_v4().to_string())))
+            .unwrap_or_default()
+            + args;
         // The shell reads it once it is ready.
         let line = format!("{}\r", self.typed(entry, &command));
         // Known at once (Shift+Enter, closing), not at the next snapshot.
         let agent = entry.map(|a| a.id.clone());
+        let title = entry.map_or_else(
+            || templum_terminal::program_name(&command),
+            |a| a.title.clone(),
+        );
         let pane = self.space.terminal_mut(id).expect("just spawned");
         pane.term.write(line.into_bytes());
+        pane.account = entry.filter(|a| a.account.is_some()).map(|a| a.id.clone());
         pane.seen.agent = agent;
+        self.cover_start(id, title, cx);
         remember(&mut self.space.recent, folder.to_path_buf());
+        self.tell_gemini(entry, window, cx);
         Some(id)
+    }
+
+    /// Settings ▸ Agents ▸ Accounts ▸ Log in: a terminal of the account `id` at the view's
+    /// center, in the home folder, with its agent's login command typed and sent; the person logs
+    /// in there (docs/specs/accounts.md, Log in). Templum never reads nor writes the login.
+    pub(crate) fn log_in(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<BlockId> {
+        let entry = self
+            .agents
+            .iter()
+            .find(|a| a.id == id && a.account.is_some())
+            .cloned()?;
+        let kind = entry.account.as_ref()?.kind;
+        self.prepare_account(&entry, window, cx);
+        let vars = self.agent_vars(Some(&entry), &super::usage::in_env);
+        let rect = self.new_terminal_rect(window);
+        let block = self.spawn_block_with(rect, std::env::home_dir(), vars, window, cx)?;
+        let pane = self.space.terminal_mut(block)?;
+        // The shell reads it once it is ready.
+        pane.term
+            .write(format!("{}\r", kind.login_command).into_bytes());
+        pane.account = Some(entry.id.clone());
+        if let Some(hint) = kind.login_hint {
+            let agent = entry.builtin.map_or(kind.agent, |a| a.title());
+            show_notification(
+                window,
+                cx,
+                Notification::info(format!("Type {hint} in {agent} to log in.")),
+            );
+        }
+        window.focus(&self.focus_handle, cx);
+        Some(block)
+    }
+
+    /// Applies the account `entry`'s choices to its folder as it starts (docs/specs/accounts.md,
+    /// Making and changing it), and says what went wrong; nothing for an agent.
+    pub(crate) fn prepare_account(
+        &self,
+        entry: &AgentEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if entry.account.is_none() {
+            return;
+        }
+        let report = entry.apply(&self.agents, templum_usage::accounts::When::Starting);
+        self.tell_account(entry, &report, window, cx);
+    }
+
+    /// The notifications of what applying the account `entry`'s choices met: one for what
+    /// couldn't be done, one for what was kept aside or left, one per item its agent replaced
+    /// with its own copy.
+    pub(crate) fn tell_account(
+        &self,
+        entry: &AgentEntry,
+        report: &templum_usage::accounts::Report,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(account) = &entry.account else {
+            return;
+        };
+        if !report.problems.is_empty() {
+            let message = format!("{}: {}", entry.title, report.problems.join("; "));
+            eprintln!("templum: {message}");
+            show_notification(window, cx, Notification::warning(message));
+        }
+        if !report.kept.is_empty() {
+            let kept: Vec<String> = report
+                .kept
+                .iter()
+                .filter_map(|(_, aside)| {
+                    let name = aside.file_name()?.to_string_lossy().into_owned();
+                    let shared = name.rsplit_once(".own").map(|(item, _)| item.to_string())?;
+                    Some(format!("{shared} as {name}"))
+                })
+                .collect();
+            let message = format!(
+                "{} kept its own aside to share them: {} (in {}).",
+                entry.title,
+                kept.join(", "),
+                crate::agents::tilde(&account.folder)
+            );
+            show_notification(window, cx, Notification::info(message));
+        }
+        let path = |key: &str| {
+            account
+                .kind
+                .item(key)
+                .map(|i| i.paths[0].trim_end_matches('/'))
+        };
+        if !report.left.is_empty() {
+            let left: Vec<&str> = report.left.iter().filter_map(|k| path(k)).collect();
+            let message = format!(
+                "{} keeps its own {}: Templum never moves files in a folder you chose ({}).",
+                entry.title,
+                left.join(", "),
+                crate::agents::tilde(&account.folder)
+            );
+            show_notification(window, cx, Notification::info(message));
+        }
+        let agent = entry.builtin.map_or(account.kind.agent, |a| a.title());
+        for key in &report.replaced {
+            let Some(path) = path(key) else {
+                continue;
+            };
+            let message = format!(
+                "{}'s {path} isn't shared any more: {agent} wrote its own. Edit the account to \
+                 share it again.",
+                entry.title
+            );
+            show_notification(window, cx, Notification::warning(message));
+        }
     }
 
     /// The kanban block `block` shows `board`.
@@ -384,6 +545,18 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
+        self.spawn_block_with(rect, folder, Vec::new(), window, cx)
+    }
+
+    /// `spawn_block`, with `vars` in its shell's environment (`agent_vars`).
+    pub(super) fn spawn_block_with(
+        &mut self,
+        rect: Rect,
+        folder: Option<PathBuf>,
+        vars: Vec<(String, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<BlockId> {
         let (cols, rows) = chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
         let command = self.command.clone().or_else(|| {
             let shell = &self.config.shell;
@@ -404,7 +577,18 @@ impl Workspace {
                 .integration
                 .clone()
                 .filter(|_| self.config.shell.integration),
-            env: self.bus_env.clone(),
+            env: {
+                let mut env = match (&self.bus, &self.data_dir) {
+                    (Some(bus), Some(data)) => super::bus::terminal_env(bus, data),
+                    // Not the bus of a Templum this one was started from, which doesn't know its
+                    // terminals: an empty one names none.
+                    _ => vec![("TEMPLUM_BUS".to_string(), String::new())],
+                };
+                // For a `claude` or `codex` typed there, always (empty: not that Templum's either).
+                env.extend(self.agent_env());
+                env.extend(vars);
+                env
+            },
         };
         let start = folder.or_else(std::env::home_dir);
         let id = match Terminal::spawn(opts, self.notify.clone()) {
@@ -432,6 +616,7 @@ impl Workspace {
                         keyed: Default::default(),
                         scrolled: Default::default(),
                         submitted: 0,
+                        dialogs: 0,
                         speaks: false,
                         keys_from: None,
                         opened_by: None,
@@ -440,6 +625,12 @@ impl Workspace {
                         flags_for: None,
                         sent: None,
                         transcript: None,
+                        starting: None,
+                        restored: false,
+                        resuming: None,
+                        account: None,
+                        role: None,
+                        quit: None,
                     })),
                 );
                 self.added(id);
@@ -475,7 +666,8 @@ impl Workspace {
         let busy: Vec<String> = ids
             .iter()
             .filter_map(|id| {
-                let pane = self.space.terminal(*id)?;
+                // A shell that ended has nothing left to lose.
+                let pane = self.space.terminal(*id).filter(|p| !p.term.exited())?;
                 let why = alert::busy(&pane.term.status(), self.agent_name(pane))?;
                 Some(if one {
                     why
@@ -557,7 +749,7 @@ impl Workspace {
             .blocks()
             .iter()
             .filter(|b| ids.contains(&b.id))
-            .map(|b| (b.id, self.space.item_of(b, cx)))
+            .map(|b| (b.id, self.space.item_of(b)))
             .collect();
         // Their wires go with them; undoing the close brings them back.
         let wires: Vec<_> = self
@@ -598,6 +790,9 @@ impl Workspace {
             for note in body.note().map(Note::ids).unwrap_or_default() {
                 self.drop_if_blank(note);
             }
+            if let Some(list) = body.checklist().and_then(|c| c.list) {
+                self.drop_checklist_if_blank(list);
+            }
             self.space.ghosts.push(Ghost {
                 block,
                 body,
@@ -615,6 +810,8 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<(Block, Rect, Body)> {
+        // A checklist's field stops: its text is kept, an item left empty goes.
+        self.stop_editing(id, window, cx);
         self.release_focus(id, window, cx);
         let block = self.space.canvas.get(id).copied();
         let home = block.map(|b| self.space.home(&b));
@@ -682,21 +879,14 @@ impl Workspace {
                 }
             }
         }
-        // `git add` in a terminal shows in the block within a frame.
-        let repos: Vec<BlockId> = self
+        // `git add` in a terminal shows in the Git popup within a frame.
+        let in_repo = self
             .space
-            .blocks
-            .iter()
-            .filter_map(|(id, b)| {
-                let root = &b.git()?.repo()?.root;
-                finished_in
-                    .iter()
-                    .any(|f| f.starts_with(root))
-                    .then_some(*id)
-            })
-            .collect();
-        for id in repos {
-            self.refresh_git(id, window, cx);
+            .git()
+            .and_then(|g| g.repo())
+            .is_some_and(|r| finished_in.iter().any(|f| f.starts_with(&r.root)));
+        if self.git_open && in_repo {
+            self.refresh_git(window, cx);
         }
         let delivery = self.delivery(window);
         let ws = cx.entity().downgrade();
@@ -752,13 +942,29 @@ impl Workspace {
         }
     }
 
+    /// Block `id` comes to the top with the keyboard; nothing stays selected.
     pub(crate) fn focus_block(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        self.space.pristine = false;
         self.space.canvas.raise(id);
-        self.space.focused = Some(id);
         self.space.selected.clear();
         self.space.selected_ink = None;
         self.space.selected_wire = None;
+        self.give_keyboard(id, window, cx);
+    }
+
+    /// Block `id` takes the keyboard, where it is in the stack.
+    pub(super) fn give_keyboard(
+        &mut self,
+        id: BlockId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // The block that had the keyboard loses it: its checklist field stops. GPUI's blur would
+        // say so too, but only to a field drawn again since it took the keyboard.
+        if let Some(had) = self.space.focused {
+            self.stop_editing(had, window, cx);
+        }
+        self.space.pristine = false;
+        self.space.focused = Some(id);
         // What types inside the block takes the keyboard; anything else leaves it with the
         // workspace.
         if !self

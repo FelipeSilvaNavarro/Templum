@@ -28,16 +28,19 @@ fn a_workspace_shows_an_agent_from_its_last_snapshot() {
                 opened_by: None,
                 model: None,
                 effort: None,
+                account: None,
+                role: None,
             })],
             focused: None,
             recent: Vec::new(),
             ink: Vec::new(),
             grid: None,
             wires: Vec::new(),
+            git: None,
         }),
         ..crate::workspace::Space::default()
     };
-    let known = crate::agents::effective(&Default::default(), &[]);
+    let known = crate::agents::effective(&Default::default(), &[], None);
     assert!(with(Some("claude")).has_agent(&known));
     assert!(
         !with(Some("vim")).has_agent(&known),

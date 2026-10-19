@@ -6,7 +6,6 @@ use std::rc::Rc;
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
-use templum_canvas::BlockId;
 use templum_git::{Back, Status};
 
 use crate::git_block::{self, words};
@@ -16,17 +15,12 @@ use super::{Extra, Workspace, notify_git_error, notify_with, show_notification};
 
 impl Workspace {
     /// The branch pill: the branches read afresh, then the switcher.
-    pub(crate) fn open_branch_switcher(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(repo) = self.space.git(id).and_then(|g| g.repo().cloned()) else {
+    pub(crate) fn open_branch_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
             return;
         };
         self.git_job(
-            self.here(id),
+            self.here(),
             move || repo.branches(),
             |ws, at, branches, window, cx| {
                 let Ok(branches) = branches else {
@@ -46,13 +40,12 @@ impl Workspace {
     /// to them first; during a merge or a rebase it says to finish it.
     pub(crate) fn switch_branch(
         &mut self,
-        id: BlockId,
         name: String,
         remote: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(git) = self.space.git(id) else {
+        let Some(git) = self.space.git() else {
             return;
         };
         if let Some(op) = git.operation {
@@ -71,7 +64,7 @@ impl Workspace {
             .or_else(|| s.oid.as_ref().map(|o| o[..o.len().min(7)].to_string()))
             .unwrap_or_default();
         if s.entries.is_empty() {
-            self.switch_now(id, name, remote, None, window, cx);
+            self.switch_now(name, remote, None, window, cx);
             return;
         }
         let unpushed = unpushed(s)
@@ -81,15 +74,15 @@ impl Workspace {
             "You have {}. What should happen to them?",
             words::changed_files(s.entries.len())
         );
-        let (entity, block_at) = (cx.entity(), self.here(id));
+        let (entity, block_at) = (cx.entity(), self.here());
         // Answered later: on its own block, in its own workspace.
         let act = |leave: Option<String>| -> Act {
             let (entity, name, at) = (entity.clone(), name.clone(), block_at.clone());
             Rc::new(move |window, cx| {
                 let (name, leave) = (name.clone(), leave.clone());
                 entity.update(cx, |ws, cx| {
-                    if ws.show_git_block(&at, window, cx) {
-                        ws.switch_now(at.block, name, remote, leave, window, cx)
+                    if ws.show_git(&at, window, cx) {
+                        ws.switch_now(name, remote, leave, window, cx)
                     }
                 })
             })
@@ -117,8 +110,8 @@ impl Workspace {
                     primary: false,
                     act: Rc::new(move |window, cx| {
                         commit.update(cx, |ws, cx| {
-                            if ws.show_git_block(&commit_at, window, cx) {
-                                ws.focus_summary(commit_at.block, window, cx)
+                            if ws.show_git(&commit_at, window, cx) {
+                                ws.focus_summary(window, cx)
                             }
                         })
                     }),
@@ -139,14 +132,13 @@ impl Workspace {
     /// came back, and the branch left behind's commits not pushed.
     pub(crate) fn switch_now(
         &mut self,
-        id: BlockId,
         name: String,
         remote: bool,
         leave: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(git) = self.space.git(id) else {
+        let Some(git) = self.space.git() else {
             return;
         };
         let Some(repo) = git.repo().cloned() else {
@@ -156,11 +148,10 @@ impl Workspace {
         let here = git.status.branch.clone().unwrap_or_default();
         let (to, job_leave) = (name.clone(), leave.clone());
         self.act_job(
-            self.here(id),
+            self.here(),
             move || repo.switch(&to, remote, job_leave.as_deref()),
             move |ws, at, result, window, cx| {
                 let entity = cx.entity();
-                let block = at.block;
                 let local = if remote {
                     name.split_once('/').map_or(name.as_str(), |(_, b)| b)
                 } else {
@@ -189,9 +180,7 @@ impl Workspace {
                                 format!("Push {branch}").into(),
                                 Rc::new({
                                     let branch = branch.clone();
-                                    move |ws, window, cx| {
-                                        ws.push_branch(block, branch.clone(), window, cx)
-                                    }
+                                    move |ws, window, cx| ws.push_branch(branch.clone(), window, cx)
                                 }),
                             );
                             notify_with(
@@ -218,7 +207,6 @@ impl Workspace {
                                 format!("Leave them on {here}").into(),
                                 Rc::new(move |ws, window, cx| {
                                     ws.switch_now(
-                                        block,
                                         name.clone(),
                                         remote,
                                         Some(here.clone()),
@@ -240,13 +228,8 @@ impl Workspace {
 
     /// The Changes tab, its column shown, the summary with the keyboard (the `c` key, Commit
     /// first).
-    pub(crate) fn focus_summary(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(git) = self.space.git_mut(id) else {
+    pub(crate) fn focus_summary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         git.tab = git_block::Tab::Changes;
@@ -259,13 +242,11 @@ impl Workspace {
     /// Push `main` (from the unpushed notice): a branch not checked out, to its upstream.
     pub(crate) fn push_branch(
         &mut self,
-        id: BlockId,
         branch: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.git_sync(
-            id,
             git_block::Sync::Push,
             move |repo| repo.push_branch(&branch),
             |_, at, e, window, cx| {

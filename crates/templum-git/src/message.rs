@@ -13,17 +13,28 @@ use crate::diff::{new_binary_diff, new_file_diff};
 use crate::parse::{Change, parse_name_status};
 use crate::repo::{DIFF_LIMIT, GitError, Repo, until_cancelled};
 
-/// The request when the user hasn't written their own (Settings ▸ Git ▸ Prompt).
+/// The request when the user hasn't written their own (Settings ▸ Git ▸ Prompt): Templum's rules
+/// for a good commit message first, the person's last, after the diff, where an agent heeds them
+/// best (a long diff between drowns them); theirs win.
 pub const PROMPT: &str = "\
-Write the commit message for the changes below.
+You write git commit messages. This is a one-shot request from Templum's Generate button, not a \
+conversation: ask nothing, run no tools, explain nothing. Answer with the commit message alone.
 
-{instructions}
+The message:
+- Its first line is the summary, at most 72 characters, in Conventional Commits form: \
+type(scope): summary. The type is feat, fix, perf, refactor, docs, test, build, ci, chore or \
+style; the scope is the area changed, left out when there is none; the summary is in the \
+imperative mood (\"add\", not \"added\" or \"adds\"), with no period at the end.
+- Then a blank line and a body of a few short lines, wrapped at 72 characters, saying what \
+changed and why, when the summary alone doesn't say it; none for a change the summary says whole.
+- Plain text: no Markdown, no code fences, no quotes around it, nothing before or after it.
+- No credit to an AI or a tool: no Co-Authored-By or \"Generated with\" line.
+- Take the types, scopes, language and casing from this repository's last commits below; if they \
+follow another convention than Conventional Commits, follow theirs.
+- The person's own rules, if any, are at the end, after the diff: where they disagree with these \
+rules, the summary's form included, follow theirs.
 
-Answer with the message alone, in plain text: the first line is the summary, in at most 72 \
-characters; then a blank line; then what changed and why, in a few short lines. No code fences, \
-no quotes, nothing before or after the message.
-
-The last commits' summaries in this repository, to follow its style:
+The last commits' summaries in this repository, newest first:
 {recent_commits}
 
 The changed files:
@@ -32,6 +43,9 @@ The changed files:
 {truncated}
 The diff:
 {diff}
+
+The person's own rules:
+{instructions}
 ";
 
 /// Settings ▸ Git ▸ Try it's change: a small fix in a file of no repository, so none of the
@@ -191,8 +205,8 @@ impl Failure {
 
 /// Runs `command`, a generate command, through the user's login shell in `folder`: `{model}`
 /// is `model`; `request` is its standard input, or the file `{prompt_file}` names; the answer is
-/// its standard output, or what it wrote to the file `{output_file}` names. Stopped past
-/// `timeout`, or as soon as `cancel` is set.
+/// its standard output, or what it wrote to the file `{output_file}` names, with `env` set (an
+/// account's folder). Stopped past `timeout`, or as soon as `cancel` is set.
 pub fn run(
     command: &str,
     model: &str,
@@ -200,6 +214,7 @@ pub fn run(
     folder: &Path,
     timeout: Duration,
     cancel: &AtomicBool,
+    env: &[(String, String)],
 ) -> Result<String, Failure> {
     if cancel.load(Ordering::Relaxed) {
         return Err(Failure::Cancelled);
@@ -241,6 +256,10 @@ pub fn run(
         c.args(args)
             .arg(&line)
             .current_dir(folder)
+            // Claude Code's own commit rules end every message with a Co-Authored-By trailer:
+            // the user's instructions are the only rules (they ask for one there if they want it).
+            .env("CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS", "1")
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -420,6 +439,43 @@ mod tests {
         assert_eq!(fill("{}{{a}}", &[("a", "1")]), "{}{1}");
     }
 
+    /// Templum's own rules for a good commit come first; the person's come last, after the diff,
+    /// and win.
+    #[test]
+    fn the_default_request_has_templums_rules_then_the_persons() {
+        let files = ["M src/a.rs".to_string()];
+        let recent = ["feat(parser): read numbers".to_string()];
+        let text = request(
+            PROMPT,
+            &Request {
+                instructions: "Write the summary in Portuguese.",
+                files: &files,
+                diff: "+one\n",
+                recent: &recent,
+                max_bytes: 1024,
+            },
+        );
+        let at = |what: &str| {
+            text.find(what)
+                .unwrap_or_else(|| panic!("{what:?} in {text}"))
+        };
+        let rules = [
+            "not a conversation",
+            "Conventional Commits form: type(scope): summary",
+            "at most 72 characters",
+            "imperative mood",
+            "a blank line and a body",
+            "no code fences, no quotes",
+            "No credit to an AI",
+            "this repository's last commits",
+            "follow theirs.\n\n",
+        ];
+        let last_rule = rules.iter().map(|r| at(r)).max().unwrap();
+        let theirs = at("Write the summary in Portuguese.");
+        assert!(last_rule < at("feat(parser): read numbers") && at("+one") < theirs);
+        assert!(text.ends_with("The person's own rules:\nWrite the summary in Portuguese.\n"));
+    }
+
     #[test]
     fn a_request_has_every_file_and_says_when_its_diff_is_cut() {
         let files = ["M src/a.rs".to_string(), "A new.txt".to_string()];
@@ -511,16 +567,42 @@ mod tests {
             dir.path(),
             LONG,
             &never(),
+            &[],
         )
         .unwrap();
         assert_eq!(answer.trim(), "it's");
+    }
+
+    #[test]
+    fn claude_code_is_run_without_its_own_commit_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = if cfg!(windows) {
+            "echo $env:CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"
+        } else {
+            "echo $CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS"
+        };
+        let answer = run(line, "m", "r", dir.path(), LONG, &never(), &[]).unwrap();
+        assert_eq!(answer.trim(), "1");
+    }
+
+    #[test]
+    fn an_accounts_variable_is_set_on_the_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = if cfg!(windows) {
+            "echo $env:CLAUDE_CONFIG_DIR"
+        } else {
+            "echo $CLAUDE_CONFIG_DIR"
+        };
+        let env = [("CLAUDE_CONFIG_DIR".to_string(), "/acc".to_string())];
+        let answer = run(line, "m", "r", dir.path(), LONG, &never(), &env).unwrap();
+        assert_eq!(answer.trim(), "/acc");
     }
 
     #[cfg(unix)]
     #[test]
     fn the_request_goes_to_the_standard_input_or_the_prompt_file() {
         let dir = tempfile::tempdir().unwrap();
-        let answer = run("cat", "m", "the request\n", dir.path(), LONG, &never()).unwrap();
+        let answer = run("cat", "m", "the request\n", dir.path(), LONG, &never(), &[]).unwrap();
         assert_eq!(answer, "the request\n");
         let answer = run(
             "cat {prompt_file}",
@@ -529,6 +611,7 @@ mod tests {
             dir.path(),
             LONG,
             &never(),
+            &[],
         );
         assert_eq!(answer.unwrap(), "from a file\n");
     }
@@ -543,6 +626,7 @@ mod tests {
             dir.path(),
             LONG,
             &never(),
+            &[],
         );
         assert_eq!(answer.unwrap().trim(), "Fix it");
         assert_eq!(
@@ -561,7 +645,7 @@ mod tests {
         } else {
             "echo oops >&2; exit 3"
         };
-        let err = run(line, "m", "r", dir.path(), LONG, &never()).unwrap_err();
+        let err = run(line, "m", "r", dir.path(), LONG, &never(), &[]).unwrap_err();
         let Failure::Failed { code, stderr } = &err else {
             panic!("{err:?}")
         };
@@ -571,7 +655,7 @@ mod tests {
             assert!(err.details().contains("oops"), "{}", err.details());
         }
         assert_eq!(err.to_string(), "The agent's command failed (exit code 3)");
-        let err = run("exit 0", "m", "r", dir.path(), LONG, &never()).unwrap_err();
+        let err = run("exit 0", "m", "r", dir.path(), LONG, &never(), &[]).unwrap_err();
         assert!(matches!(err, Failure::Empty { .. }), "{err:?}");
         assert_eq!(err.to_string(), "The agent answered nothing");
     }
@@ -581,7 +665,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let started = Instant::now();
         let short = Duration::from_millis(500);
-        let err = run("sleep 20", "m", "r", dir.path(), short, &never()).unwrap_err();
+        let err = run("sleep 20", "m", "r", dir.path(), short, &never(), &[]).unwrap_err();
         assert_eq!(err, Failure::TimedOut(short));
         assert!(
             started.elapsed() < Duration::from_secs(10),
@@ -593,7 +677,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(300));
             flag.store(true, Ordering::Relaxed);
         });
-        let err = run("sleep 20", "m", "r", dir.path(), LONG, &cancel).unwrap_err();
+        let err = run("sleep 20", "m", "r", dir.path(), LONG, &cancel, &[]).unwrap_err();
         assert_eq!(err, Failure::Cancelled);
         assert!(started.elapsed() < Duration::from_secs(20));
     }
@@ -647,7 +731,7 @@ mod tests {
     fn the_request_is_kept_where_only_this_user_can_read_it() {
         let dir = tempfile::tempdir().unwrap();
         let line = "ls -ld \"$(dirname {prompt_file})\"; dirname {prompt_file}";
-        let answer = run(line, "m", "r", dir.path(), LONG, &never()).unwrap();
+        let answer = run(line, "m", "r", dir.path(), LONG, &never(), &[]).unwrap();
         let (listing, folder) = answer.trim().split_once('\n').unwrap();
         assert!(listing.starts_with("drwx------"), "{listing}");
         assert!(!std::path::Path::new(folder).exists(), "{folder} removed");
@@ -660,7 +744,16 @@ mod tests {
         let started = Instant::now();
         let short = Duration::from_millis(500);
         // The shell ends at once; the sleep it left keeps its standard output open.
-        let err = run("sleep 20 & echo hi", "m", "r", dir.path(), short, &never()).unwrap_err();
+        let err = run(
+            "sleep 20 & echo hi",
+            "m",
+            "r",
+            dir.path(),
+            short,
+            &never(),
+            &[],
+        )
+        .unwrap_err();
         assert_eq!(err, Failure::TimedOut(short));
         assert!(
             started.elapsed() < Duration::from_secs(10),

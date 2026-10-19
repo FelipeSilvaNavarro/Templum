@@ -7,7 +7,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
-use templum_canvas::BlockId;
 use templum_git::graph::graph;
 use templum_git::trash::{self, Kept};
 use templum_git::{Commit, CommitFile, FileDiff, GitError, HistoryQuery, Search};
@@ -61,12 +60,7 @@ impl Workspace {
     }
 
     /// Stash changes…: a message and whether untracked files go too.
-    pub(crate) fn stash_changes(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn stash_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ws = cx.entity();
         prompt::ask_text_and_flag(
             "Stash changes",
@@ -79,12 +73,7 @@ impl Workspace {
                     return false;
                 }
                 ws.update(cx, |ws, cx| {
-                    ws.git_action(
-                        id,
-                        move |repo| repo.stash_push(&message, untracked),
-                        window,
-                        cx,
-                    )
+                    ws.git_action(move |repo| repo.stash_push(&message, untracked), window, cx)
                 });
                 true
             },
@@ -95,9 +84,9 @@ impl Workspace {
 
     /// The stash at `index` as the Stashes tab shows it (with its hash, so a list changed
     /// meanwhile by a terminal is caught rather than acted on).
-    pub(super) fn shown_stash(&self, id: BlockId, index: usize) -> Option<templum_git::Stash> {
+    pub(super) fn shown_stash(&self, index: usize) -> Option<templum_git::Stash> {
         self.space
-            .git(id)?
+            .git()?
             .stashes
             .iter()
             .find(|s| s.index == index)
@@ -107,17 +96,15 @@ impl Workspace {
     /// Apply (or Pop: apply and drop) a stash.
     pub(crate) fn stash_apply(
         &mut self,
-        id: BlockId,
         index: usize,
         pop: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(stash) = self.shown_stash(id, index) else {
+        let Some(stash) = self.shown_stash(index) else {
             return;
         };
         self.git_action(
-            id,
             move |repo| {
                 if pop {
                     repo.stash_pop(&stash)
@@ -130,14 +117,8 @@ impl Workspace {
         );
     }
 
-    pub(crate) fn stash_drop(
-        &mut self,
-        id: BlockId,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(stash) = self.shown_stash(id, index) else {
+    pub(crate) fn stash_drop(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(stash) = self.shown_stash(index) else {
             return;
         };
         let ws = cx.entity();
@@ -148,7 +129,7 @@ impl Workspace {
             move |window, cx| {
                 let stash = stash.clone();
                 ws.update(cx, |ws, cx| {
-                    ws.git_action(id, move |repo| repo.stash_drop(&stash), window, cx)
+                    ws.git_action(move |repo| repo.stash_drop(&stash), window, cx)
                 })
             },
             window,
@@ -157,17 +138,11 @@ impl Workspace {
     }
 
     /// Shows a stash's changes, its new files too, in the Stashes tab's panel.
-    pub(crate) fn show_stash(
-        &mut self,
-        id: BlockId,
-        index: usize,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(stash) = self.shown_stash(id, index) else {
+    pub(crate) fn show_stash(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(stash) = self.shown_stash(index) else {
             return;
         };
-        let Some(git) = self.space.git_mut(id) else {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         git.stash_shown = Some(index);
@@ -177,7 +152,7 @@ impl Workspace {
         };
         let title = format!("stash@{{{}}} · {}", stash.index, stash.message);
         self.git_job(
-            self.here(id),
+            self.here(),
             move || repo.stash_diff(&stash, ignore_ws),
             move |ws, at, diff, _, cx| {
                 let Some(git) = ws.git_at(&at) else {
@@ -203,32 +178,27 @@ impl Workspace {
 
     /// The diff on screen, read again (Ignore whitespace changed): the working changes, the
     /// comparison, the commit shown, or the stash shown.
-    pub(crate) fn reload_shown_diff(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(git) = self.space.git(id) else {
+    pub(crate) fn reload_shown_diff(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git() else {
             return;
         };
         match git.tab {
             Tab::History => {
                 if let Some(shown) = &git.shown {
                     let hash = shown.commit.hash.clone();
-                    self.show_commit(id, hash, window, cx)
+                    self.show_commit(hash, window, cx)
                 }
             }
             Tab::Stashes => {
                 if let Some(index) = git.stash_shown {
-                    self.show_stash(id, index, window, cx)
+                    self.show_stash(index, window, cx)
                 }
             }
             Tab::Branches if git.compare.is_some() => {
-                let at = self.here(id);
+                let at = self.here();
                 self.load_compare(at, window, cx)
             }
-            _ => self.reload_git_panel(id, window, cx),
+            _ => self.reload_git_panel(window, cx),
         }
     }
 
@@ -313,12 +283,11 @@ impl Workspace {
     /// File history: History narrowed to `path`, through its renames.
     pub(crate) fn file_history(
         &mut self,
-        id: BlockId,
         path: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(git) = self.space.git_mut(id) else {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         git.tab = Tab::History;
@@ -333,19 +302,14 @@ impl Workspace {
         git.graph = Rc::new(Vec::new());
         git.more = false;
         cx.notify();
-        let at = self.here(id);
+        let at = self.here();
         // A block still looking its repository up reads the list once it has found it.
         self.refresh_lists_at(at, window, cx);
     }
 
     /// The file's chip ×: the whole history again.
-    pub(crate) fn clear_file_history(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(git) = self.space.git_mut(id) else {
+    pub(crate) fn clear_file_history(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         git.file = None;
@@ -357,7 +321,7 @@ impl Workspace {
         git.graph = Rc::new(Vec::new());
         git.more = false;
         cx.notify();
-        let at = self.here(id);
+        let at = self.here();
         self.load_history(at, 0, window, cx);
     }
 
@@ -365,13 +329,12 @@ impl Workspace {
     /// path at that commit) to its path now, after a copy of it in the trash.
     pub(crate) fn restore_version(
         &mut self,
-        id: BlockId,
         hash: String,
         then: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(git) = self.space.git(id) else {
+        let Some(git) = self.space.git() else {
             return;
         };
         let (Some(now), Some(short)) = (
@@ -388,7 +351,7 @@ impl Workspace {
         } else {
             "The file as it is now is replaced. This can't be undone."
         };
-        let (entity, at) = (cx.entity(), self.here(id));
+        let (entity, at) = (cx.entity(), self.here());
         prompt::confirm(
             format!("Restore {now} as it was in {short}?"),
             why,
@@ -402,7 +365,7 @@ impl Workspace {
                     at.clone(),
                 );
                 entity.update(cx, |ws, cx| {
-                    if ws.show_git_block(&at, window, cx) {
+                    if ws.show_git(&at, window, cx) {
                         ws.restore_now(at, hash, then, now, short, window, cx)
                     }
                 })
@@ -467,7 +430,7 @@ impl Workspace {
                 let entity = cx.entity();
                 match result {
                     Ok(Some(kept)) => {
-                        let (block, entry) = (at.block, kept.id);
+                        let entry = kept.id;
                         let undo: Extra = (
                             "git-undo",
                             "Undo".into(),
@@ -475,7 +438,7 @@ impl Workspace {
                                 move |ws: &mut Workspace,
                                       window: &mut Window,
                                       cx: &mut Context<Workspace>| {
-                                    ws.restore_discarded(block, entry.clone(), false, window, cx)
+                                    ws.restore_discarded(entry.clone(), false, window, cx)
                                 },
                             ),
                         );
@@ -501,11 +464,10 @@ impl Workspace {
         );
     }
 
-    /// File history (or Blame) from an editor's tree: the Git block open on the file's
-    /// repository, else a new one beside the editor; the canvas goes there.
+    /// File history (or Blame) from an editor's tree, in the Git popup: the workspace's Git
+    /// moves to the file's repository first when it shows another.
     pub(crate) fn history_from_tree(
         &mut self,
-        editor: BlockId,
         path: PathBuf,
         blame: bool,
         window: &mut Window,
@@ -526,47 +488,30 @@ impl Workspace {
             .join("/");
         let root_real = root.canonicalize().ok();
         let same = |a: &Path| a.canonicalize().ok() == root_real;
-        let open = self.space.blocks.iter().find_map(|(id, b)| {
-            b.git()
-                .filter(|g| g.repo().map_or(same(&g.folder), |r| same(&r.root)))
-                .map(|_| *id)
-        });
-        let id = match open {
-            Some(id) => id,
-            None => {
-                let Some(anchor) = self.space.canvas.get(editor).map(|b| self.space.home(b)) else {
-                    return;
-                };
-                let at = self.space.room_beside(&[anchor], git_block::SIZE).origin();
-                let Some(id) = self.add_git_at(&root, at, window, cx) else {
-                    return;
-                };
-                id
-            }
-        };
-        if blame {
-            self.blame_file(id, rel, None, window, cx);
-        } else {
-            self.file_history(id, rel, window, cx);
+        let open = self
+            .space
+            .git()
+            .is_some_and(|g| g.repo().map_or(same(&g.folder), |r| same(&r.root)));
+        if !open && !self.set_git_folder(&root, window, cx) {
+            return;
         }
-        let space = self.space.id.clone();
-        self.reveal(&space, id, window, cx);
+        if blame {
+            self.blame_file(rel, None, window, cx);
+        } else {
+            self.file_history(rel, window, cx);
+        }
+        self.open_git(window, cx);
     }
 
     /// All branches on or off: the list read again.
-    pub(crate) fn toggle_all_branches(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(git) = self.space.git_mut(id) else {
+    pub(crate) fn toggle_all_branches(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         git.all_branches = !git.all_branches;
         git.hide_shown();
         cx.notify();
-        let at = self.here(id);
+        let at = self.here();
         self.load_history(at, 0, window, cx);
     }
 
@@ -577,44 +522,42 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(id) = self.space.blocks.iter().find_map(|(id, b)| {
-            b.git()
-                .filter(|g| g.search.entity_id() == field)
-                .map(|_| *id)
-        }) else {
-            return;
-        };
-        self.run_search(id, window, cx);
+        if self
+            .space
+            .git()
+            .is_some_and(|g| g.search.entity_id() == field)
+        {
+            self.run_search(window, cx);
+        }
     }
 
-    pub(crate) fn run_search(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(git) = self.space.git_mut(id) else {
+    pub(crate) fn run_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         let text = git.search.read(cx).value().trim().to_string();
         git.searched = text;
         git.hide_shown();
         cx.notify();
-        let at = self.here(id);
+        let at = self.here();
         self.load_history(at, 0, window, cx);
     }
 
     /// A mode clicked: with a search on, it runs again in that mode.
     pub(crate) fn set_search_mode(
         &mut self,
-        id: BlockId,
         mode: Search,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(git) = self.space.git_mut(id) else {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         git.search_mode = mode;
         let again = !git.searched.is_empty();
         cx.notify();
         if again {
-            let at = self.here(id);
+            let at = self.here();
             self.load_history(at, 0, window, cx);
         }
     }
@@ -623,12 +566,11 @@ impl Workspace {
     /// and files, the panel its whole diff (against its first parent).
     pub(crate) fn show_commit(
         &mut self,
-        id: BlockId,
         hash: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(git) = self.space.git(id) else {
+        let Some(git) = self.space.git() else {
             return;
         };
         let Some(repo) = git.repo().cloned() else {
@@ -637,11 +579,11 @@ impl Workspace {
         let loaded = git.commits.iter().find(|c| c.hash == hash).cloned();
         let ignore_ws = git.history_panel.ignore_ws;
         let asked = hash.clone();
-        if let Some(git) = self.space.git_mut(id) {
+        if let Some(git) = self.space.git_mut() {
             git.showing = Some(hash.clone());
         }
         self.git_job(
-            self.here(id),
+            self.here(),
             move || -> Result<(Commit, Vec<CommitFile>, Vec<FileDiff>), GitError> {
                 let commit = match loaded {
                     Some(c) => c,
@@ -705,15 +647,15 @@ impl Workspace {
     }
 
     /// The commit column's ←: back to the list, the panel empty (or the file's blame again).
-    pub(crate) fn hide_commit(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(git) = self.space.git_mut(id) else {
+    pub(crate) fn hide_commit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         git.hide_shown();
         let blame = git.blame;
         cx.notify();
         if blame {
-            let at = self.here(id);
+            let at = self.here();
             self.load_blame(at, window, cx);
         }
     }
@@ -723,29 +665,23 @@ impl Workspace {
     /// found (`refresh_lists_at` loads the blame while `blame` is on).
     pub(crate) fn blame_file(
         &mut self,
-        id: BlockId,
         path: String,
         rev: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.file_history(id, path, window, cx);
-        if let Some(git) = self.space.git_mut(id) {
+        self.file_history(path, window, cx);
+        if let Some(git) = self.space.git_mut() {
             git.blame = true;
             git.blame_at = rev;
         }
-        let at = self.here(id);
+        let at = self.here();
         self.load_blame(at, window, cx);
     }
 
     /// The file's chip's Blame: off, the panel empties.
-    pub(crate) fn toggle_blame(
-        &mut self,
-        id: BlockId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(git) = self.space.git_mut(id) else {
+    pub(crate) fn toggle_blame(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         if git.file.is_none() {
@@ -763,7 +699,7 @@ impl Workspace {
             git.blame_at = None;
             git.hide_shown();
             cx.notify();
-            let at = self.here(id);
+            let at = self.here();
             self.load_blame(at, window, cx);
         }
     }
@@ -820,8 +756,8 @@ impl Workspace {
     }
 
     /// A file of the commit shown: the panel scrolls to it.
-    pub(crate) fn show_commit_file(&mut self, id: BlockId, path: String, cx: &mut Context<Self>) {
-        let Some(git) = self.space.git_mut(id) else {
+    pub(crate) fn show_commit_file(&mut self, path: String, cx: &mut Context<Self>) {
+        let Some(git) = self.space.git_mut() else {
             return;
         };
         if let Some(ix) = git.history_panel.row_of(false, &path) {
@@ -838,7 +774,6 @@ impl Workspace {
     /// Checkout… on a commit: warns about the detached state first.
     pub(crate) fn checkout_commit(
         &mut self,
-        id: BlockId,
         hash: String,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -851,7 +786,7 @@ impl Workspace {
             move |window, cx| {
                 let hash = hash.clone();
                 ws.update(cx, |ws, cx| {
-                    ws.git_action(id, move |repo| repo.checkout_commit(&hash), window, cx)
+                    ws.git_action(move |repo| repo.checkout_commit(&hash), window, cx)
                 })
             },
             window,
@@ -862,7 +797,6 @@ impl Workspace {
     /// New branch… from `from` (a commit; None: the current one): asks the name.
     pub(crate) fn branch_from(
         &mut self,
-        id: BlockId,
         from: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -880,7 +814,6 @@ impl Workspace {
                 let from = from.clone();
                 ws.update(cx, |ws, cx| {
                     ws.git_action(
-                        id,
                         move |repo| repo.new_branch(&name, from.as_deref()),
                         window,
                         cx,
@@ -893,13 +826,7 @@ impl Workspace {
         );
     }
 
-    pub(crate) fn tag_commit(
-        &mut self,
-        id: BlockId,
-        hash: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn tag_commit(&mut self, hash: String, window: &mut Window, cx: &mut Context<Self>) {
         let ws = cx.entity();
         prompt::ask_text(
             "New tag",
@@ -912,7 +839,7 @@ impl Workspace {
                 }
                 let hash = hash.clone();
                 ws.update(cx, |ws, cx| {
-                    ws.git_action(id, move |repo| repo.tag(&name, &hash), window, cx)
+                    ws.git_action(move |repo| repo.tag(&name, &hash), window, cx)
                 });
                 true
             },
@@ -923,7 +850,6 @@ impl Workspace {
 
     pub(crate) fn revert_commit(
         &mut self,
-        id: BlockId,
         hash: String,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -936,7 +862,7 @@ impl Workspace {
             move |window, cx| {
                 let hash = hash.clone();
                 ws.update(cx, |ws, cx| {
-                    ws.git_action(id, move |repo| repo.revert(&hash), window, cx)
+                    ws.git_action(move |repo| repo.revert(&hash), window, cx)
                 })
             },
             window,

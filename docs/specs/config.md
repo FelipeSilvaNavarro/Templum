@@ -114,10 +114,9 @@ On macOS the default shortcuts are `cmd-t`, `cmd-w`, `cmd-c`, `cmd-v`, `cmd-=` a
   - `program` and `args` replace the login shell for new terminals.
   - `working_directory`:
     - `"inherit"` (the default) starts a new terminal in the folder of the focused block: a terminal's current
-      folder, an editor's folder, a Git block's repository. This covers every way of opening one: the shortcut,
-      the toolbar and a double-click on the canvas (whose first click unfocuses the block: the terminal still
-      starts in that block's folder). With no focused block, a note or a kanban block, or when a terminal's folder
-      can't be read, the terminal starts in the home folder.
+      folder, an editor's folder. This covers every way of opening one: the shortcut and the toolbar. With no
+      focused block, a note or a kanban block, or when a terminal's folder can't be read, the terminal starts in
+      the home folder.
     - `"~"` is the home folder.
     - Any other string is a path. A leading `~/` means the home folder.
 - **`cursor`**
@@ -132,6 +131,13 @@ On macOS the default shortcuts are `cmd-t`, `cmd-w`, `cmd-c`, `cmd-v`, `cmd-=` a
     the picker, like Esc); other shortcuts wait.
   - `open_config` opens `config.toml` in the system's default editor. When the file doesn't exist, it first writes
     the commented template (see [Template](#template)).
+- **`roles`** (card 35, [agent-tools.md](agent-tools.md#roles))
+  - `[roles.<id>]`, an id of letters, digits, `-` and `_`: a way `spawn_agent` opens an agent by name. `agent` (an id
+    of Settings ▸ Agents, an account too) is needed; `model`, `effort`, `args` (one line: the agent's own flags, typed
+    after its model and effort) and `instructions` (typed with the prompt) are optional.
+  - A role breaking these is an error naming it (`roles.reviewer.agent is needed`), and the last valid config stays.
+  - A change applies to the next `spawn_agent`; a restored block types its role's `args` again while the role
+    exists.
 
 ### Template
 

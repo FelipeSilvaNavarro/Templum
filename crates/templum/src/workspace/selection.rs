@@ -131,14 +131,9 @@ impl Workspace {
     }
 
     /// The keyboard is on the canvas, not in a field: the workspace has it (a focused terminal's
-    /// keys go through it), or a focused Git block's own handle does.
+    /// keys go through it).
     pub(super) fn canvas_has_keys(&self, window: &Window) -> bool {
         self.focus_handle.is_focused(window)
-            || self
-                .space
-                .focused
-                .and_then(|id| self.space.git(id))
-                .is_some_and(|g| g.focus.is_focused(window))
     }
 
     /// Copies the selected blocks to the clipboard. False when none is selected.
@@ -149,7 +144,7 @@ impl Workspace {
             .blocks()
             .iter()
             .filter(|b| self.space.selected.contains(&b.id))
-            .map(|b| self.space.blocks[&b.id].item(self.space.home(b), cx))
+            .map(|b| self.space.blocks[&b.id].item(self.space.home(b)))
             .collect();
         if items.is_empty() {
             return false;
@@ -201,6 +196,13 @@ impl Workspace {
                         .iter()
                         .filter_map(|id| self.notes.duplicate(*id, now))
                         .collect();
+                }
+                // So is a checklist.
+                session::Item::Checklist(c) => {
+                    let now = crate::notes::now();
+                    c.checklist = c
+                        .checklist
+                        .and_then(|id| self.checklists.duplicate(id, now));
                 }
                 _ => {}
             }

@@ -14,7 +14,7 @@ use templum_terminal::Agent;
 use templum_usage::{Event, Limits, Proc, Session, Watch};
 
 use super::{Pane, TryIt, Workspace, show_notification};
-use crate::agents::AgentEntry;
+use crate::agents::{self, AgentEntry};
 use crate::config::Edit;
 use crate::notes;
 use crate::usage::{TURN_SECS, limit_name, meter_agents, resets_local};
@@ -26,19 +26,53 @@ pub(super) const CLAUDE_EVERY: Duration = Duration::from_secs(5 * 60);
 /// What a read found: each terminal's session, in the order asked, and each agent's limits.
 pub(crate) type Read = (Vec<Option<Session>>, Vec<(String, Limits)>);
 
-/// The agent of `pane` as the last snapshot found it, for a read of its session.
-pub(super) fn proc_of(pane: &Pane) -> Option<Proc> {
-    let seen = &pane.seen;
-    Some(Proc {
-        agent: seen.agent.clone()?,
-        pid: seen.pid?,
-        started: seen.started?,
-        cwd: seen.folder.clone(),
-        terminal: pane.term.id().to_string(),
-    })
+/// What Templum gives the Claude Code and Codex it opens or a person types (`Workspace::gives`):
+/// its data folder and program, whether connections are on with a bus, whether Codex's flags
+/// can be typed in the shell (not cmd nor Windows PowerShell 5.1), and whether `templum` is on
+/// the terminal's PATH (Codex's hooks run it).
+struct Gives {
+    data: PathBuf,
+    exe: PathBuf,
+    connected: bool,
+    codex: bool,
+    on_path: bool,
+}
+
+/// Qwen Code's settings file with Templum's hooks, for its variable; None when its own system file
+/// exists.
+fn qwen_settings(data: &Path, windows: bool) -> Option<String> {
+    let system = templum_usage::qwen::system_file();
+    templum_usage::qwen::settings(data, windows, &system).map(|f| f.to_string_lossy().into_owned())
+}
+
+/// Templum's own environment has `name`, not empty: the person's, which an agent's variable
+/// doesn't replace (`Workspace::agent_vars`).
+pub(super) fn in_env(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|v| !v.is_empty())
 }
 
 impl Workspace {
+    /// The agent of `pane` as the last snapshot found it, for a read of its session: an account's
+    /// is its agent, in the account's folder.
+    pub(super) fn proc_of(&self, pane: &Pane) -> Option<Proc> {
+        let seen = &pane.seen;
+        let id = seen.agent.clone()?;
+        let account = self
+            .agents
+            .iter()
+            .find(|a| a.id == id)
+            .and_then(|a| a.account.as_ref());
+        Some(Proc {
+            agent: account.map_or(id.clone(), |a| a.kind.agent.to_string()),
+            pid: seen.pid?,
+            started: seen.started?,
+            cwd: seen.folder.clone(),
+            terminal: pane.term.id().to_string(),
+            home: account.map(|a| a.kind.state_dir(&a.folder)),
+            account: account.map(|_| id),
+        })
+    }
+
     /// `command` as typed to start `agent` in a terminal (docs/specs/connections.md, What Templum
     /// types into each agent): the Claude Code Templum opens gets its settings file (the status
     /// line of the plan's limits, and the hooks) and its MCP server; Codex gets the server and
@@ -48,27 +82,160 @@ impl Workspace {
     /// aren't the shell's, nor without a data folder.
     pub(super) fn typed(&self, agent: Option<&AgentEntry>, command: &str) -> String {
         let builtin = agent.and_then(|a| a.builtin);
-        let (Some(data), Some(exe), false) = (&self.data_dir, program(), self.shell_is("wsl"))
-        else {
+        let Some(gives) = self.gives() else {
             return command.to_string();
         };
-        let connected = self.config.connections.enabled && self.bus.is_some();
         let windows = cfg!(windows);
-        // `terminal_env` puts `<data>/bin`, where `templum` is, first on it.
-        let on_path = self.bus_env.iter().any(|(k, _)| k == "PATH");
         let mut line = command.to_string();
         if builtin == Some(Agent::CLAUDE) {
             let limits = self.config.usage.claude_limits;
-            line.push_str(&claude_flags(data, &exe, windows, limits, connected));
+            line.push_str(&claude_flags(
+                &gives.data,
+                &gives.exe,
+                windows,
+                limits,
+                gives.connected,
+            ));
         } else if builtin == Some(Agent::CODEX)
-            && connected
-            && !self.shell_is("cmd")
-            && !self.shell_is("powershell")
-            && let Some(flags) = templum_mcp::codex_flags(&exe.to_string_lossy(), windows, on_path)
+            && gives.codex
+            && let Some(flags) =
+                templum_mcp::codex_flags(&gives.exe.to_string_lossy(), windows, gives.on_path)
         {
             line.push_str(&flags);
+        } else if let Some(words) = (gives.connected && gives.on_path)
+            .then(|| match builtin {
+                Some(Agent::COPILOT) => templum_usage::copilot::args(&gives.data, windows),
+                Some(Agent::QWEN) => templum_usage::qwen::args(&gives.data, windows),
+                Some(Agent::PI) => templum_usage::pi::args(&gives.data, windows),
+                _ => None,
+            })
+            .flatten()
+            .and_then(|w| typed_words(&w, windows))
+        {
+            line.push_str(&words);
         }
         line
+    }
+
+    /// What every new terminal's environment gets for the agents a person types there
+    /// (docs/specs/connections.md, Agents typed in a terminal; Typed by hand: the shells): the
+    /// words `typed` would append after each, unquoted, one per line. Each always, empty when
+    /// there is nothing to give, so a Templum started from another's terminal doesn't pass that
+    /// one's on.
+    pub(super) fn agent_env(&self) -> Vec<(String, String)> {
+        let windows = cfg!(windows);
+        let gives = self.gives();
+        let claude = gives.as_ref().map(|g| {
+            let limits = self.config.usage.claude_limits;
+            claude_args(&g.data, &g.exe, windows, limits, g.connected)
+        });
+        let codex = gives
+            .as_ref()
+            .filter(|g| g.codex)
+            .and_then(|g| templum_mcp::codex_args(&g.exe.to_string_lossy(), windows, g.on_path));
+        // The others' files run `<data>/bin/templum`: only where that is on the PATH.
+        let data = gives
+            .as_ref()
+            .filter(|g| g.connected && g.on_path)
+            .map(|g| g.data.as_path());
+        let qwen = data.and_then(|d| templum_usage::qwen::args(d, windows));
+        let words = |args: Option<Vec<String>>| args.unwrap_or_default().join("\n");
+        // The JSON `OPENCODE_CONFIG_CONTENT` and `KILO_CONFIG_CONTENT` take.
+        let opencode = data
+            .and_then(|d| templum_usage::opencode::config(d, windows))
+            .unwrap_or_default();
+        // Empty when Qwen Code's own system settings file exists.
+        let qwen_settings = data
+            .filter(|_| qwen.is_some())
+            .and_then(|d| qwen_settings(d, windows))
+            .unwrap_or_default();
+        [
+            ("TEMPLUM_CLAUDE_ARGS", words(claude)),
+            ("TEMPLUM_CODEX_ARGS", words(codex)),
+            (
+                "TEMPLUM_COPILOT_ARGS",
+                words(data.and_then(|d| templum_usage::copilot::args(d, windows))),
+            ),
+            ("TEMPLUM_OPENCODE_CONFIG", opencode.clone()),
+            ("TEMPLUM_KILO_CONFIG", opencode),
+            ("TEMPLUM_QWEN_ARGS", words(qwen)),
+            ("TEMPLUM_QWEN_SETTINGS", qwen_settings),
+            (
+                "TEMPLUM_PI_ARGS",
+                words(data.and_then(|d| templum_usage::pi::args(d, windows))),
+            ),
+            // An OpenCode or a Pi run here reports for its block, and sets it for what it starts.
+            ("TEMPLUM_HOOKED", String::new()),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect()
+    }
+
+    /// The variables the shell of a block Templum opens for `agent` gets: an account's folder
+    /// first, whatever Templum's environment has (docs/specs/accounts.md); then
+    /// (docs/specs/connections.md, OpenCode and Kilo Code) its server and plugin, for an agent
+    /// that takes them only from its environment, as `typed` says, none where `set(name)` says
+    /// the person's environment already has a non-empty one, which wins.
+    pub(super) fn agent_vars(
+        &self,
+        agent: Option<&AgentEntry>,
+        set: &dyn Fn(&str) -> bool,
+    ) -> Vec<(String, String)> {
+        let account = agent
+            .and_then(AgentEntry::var)
+            .map(|(name, folder)| (name.to_string(), folder.to_string_lossy().into_owned()));
+        account
+            .into_iter()
+            .chain(self.server_vars(agent, set))
+            .collect()
+    }
+
+    /// `agent_vars`' server and plugin.
+    fn server_vars(
+        &self,
+        agent: Option<&AgentEntry>,
+        set: &dyn Fn(&str) -> bool,
+    ) -> Vec<(String, String)> {
+        let builtin = agent.and_then(|a| a.builtin);
+        let name = match builtin {
+            Some(Agent::OPENCODE) => "OPENCODE_CONFIG_CONTENT",
+            Some(Agent::KILO) => "KILO_CONFIG_CONTENT",
+            Some(Agent::QWEN) => "QWEN_CODE_SYSTEM_SETTINGS_PATH",
+            _ => return Vec::new(),
+        };
+        let Some(gives) = self.gives().filter(|g| g.connected && g.on_path) else {
+            return Vec::new();
+        };
+        if set(name) {
+            return Vec::new();
+        }
+        let windows = cfg!(windows);
+        let value = match builtin {
+            Some(Agent::QWEN) => qwen_settings(&gives.data, windows),
+            _ => templum_usage::opencode::config(&gives.data, windows),
+        };
+        value
+            .map(|value| vec![(name.to_string(), value)])
+            .unwrap_or_default()
+    }
+
+    /// What Templum gives the agents it opens or a person types, as `typed` says; None without a
+    /// data folder or a program, or under WSL, where Templum's paths aren't the shell's.
+    fn gives(&self) -> Option<Gives> {
+        let (Some(data), Some(exe), false) = (&self.data_dir, program(), self.shell_is("wsl"))
+        else {
+            return None;
+        };
+        let connected = self.config.connections.enabled && self.bus.is_some();
+        Some(Gives {
+            data: data.clone(),
+            exe,
+            connected,
+            codex: connected && !self.shell_is("cmd") && !self.shell_is("powershell"),
+            // `terminal_env` puts `<data>/bin`, where `templum` is, first on it.
+            on_path: self.bus_env.iter().any(|(k, _)| k == "PATH"),
+        })
     }
 
     /// New terminals run the shell named `name` (its program's file name, in any case:
@@ -97,19 +264,20 @@ impl Workspace {
         let mut procs = Vec::new();
         for space in self.spaces() {
             for (id, pane) in space.terminals() {
-                if let Some(proc) = proc_of(pane) {
+                if let Some(proc) = self.proc_of(pane) {
                     keys.push((space.id.clone(), id));
                     procs.push(proc);
                 }
             }
         }
+        let homes = agents::usage_homes(&self.agents);
         // The next read replaces this one: a slow disk never piles reads up.
         self._usage = cx.spawn_in(window, async move |ws, cx| {
             let read = cx
                 .background_executor()
                 .spawn(async move {
                     let dirs = templum_usage::Dirs::of(&data);
-                    templum_usage::read(&procs, &dirs, notes::now())
+                    templum_usage::read(&procs, &dirs, &homes, notes::now())
                 })
                 .await;
             ws.update_in(cx, |ws, window, cx| ws.usage_done(keys, read, window, cx))
@@ -127,8 +295,18 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let mut limits = limits;
-        if let Some(polled) = &self.claude_polled {
-            templum_usage::merge(&mut limits, "claude", polled);
+        for (id, polled) in &self.claude_polled {
+            templum_usage::merge(&mut limits, id, polled);
+        }
+        // A Codex folder whose sessions another shares reads only its running processes': with
+        // none running, its limits stay as last read.
+        for home in agents::usage_homes(&self.agents)
+            .iter()
+            .filter(|h| h.sessions_shared)
+        {
+            if let Some((_, old)) = self.limits.iter().find(|(id, _)| *id == home.id) {
+                templum_usage::merge(&mut limits, &home.id, old);
+            }
         }
         let mut changed = self.limits != limits;
         self.limits = limits;
@@ -214,24 +392,46 @@ impl Workspace {
         show_notification(window, cx, notification);
     }
 
-    /// The Claude Code to ask for the plan's limits, and the empty folder to ask in; None when
-    /// the user turned it off, without a data folder, or when it isn't installed.
-    pub(super) fn claude_poll_job(&self) -> Option<(PathBuf, PathBuf)> {
-        let data = self.data_dir.as_ref()?;
-        if !self.config.usage.claude_limits {
-            return None;
-        }
-        let claude = self
+    /// What to ask for the plan's limits: by whose limits they are, the Claude Code to ask, the
+    /// empty folder to ask in and the account's folder (None: its own), for its own folder and
+    /// each Claude Code account a snapshot found running since Templum started. None when the
+    /// user turned it off, without a data folder, or when it isn't installed.
+    pub(super) fn claude_poll_jobs(&self) -> Vec<(String, PathBuf, PathBuf, Option<PathBuf>)> {
+        let Some(data) = self
+            .data_dir
+            .as_ref()
+            .filter(|_| self.config.usage.claude_limits)
+        else {
+            return Vec::new();
+        };
+        let Some(claude) = self
             .agents
             .iter()
-            .find(|a| a.builtin == Some(Agent::CLAUDE))?;
-        let program = claude.command.split_whitespace().next()?;
+            .find(|a| a.builtin == Some(Agent::CLAUDE))
+        else {
+            return Vec::new();
+        };
+        let Some(program) = claude.command.split_whitespace().next() else {
+            return Vec::new();
+        };
         let program = if program.contains(['/', '\\']) {
             PathBuf::from(program)
         } else {
-            templum_terminal::locate(program)?
+            let Some(found) = templum_terminal::locate(program) else {
+                return Vec::new();
+            };
+            found
         };
-        Some((program, data.join("usage").join("probe")))
+        let probe = data.join("usage").join("probe");
+        let accounts = self.agents.iter().filter_map(|a| {
+            let account = a.account.as_ref()?;
+            (account.kind.agent == "claude" && self.accounts_ran.contains(&a.id))
+                .then(|| (a.id.clone(), Some(account.folder.clone())))
+        });
+        std::iter::once((claude.id.clone(), None))
+            .chain(accounts)
+            .map(|(id, folder)| (id, program.clone(), probe.clone(), folder))
+            .collect()
     }
 
     /// Shows `agent`'s limits in the title bar, or stops (Settings ▸ Usage).
@@ -307,12 +507,75 @@ impl Workspace {
         }
     }
 
+    /// A Gemini CLI just opened (`entry`) without Templum's extension, while connections are on:
+    /// once per run, a notice whose click asks to install it.
+    pub(super) fn tell_gemini(
+        &mut self,
+        entry: Option<&AgentEntry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(entry) = entry.filter(|e| e.builtin == Some(Agent::GEMINI)) else {
+            return;
+        };
+        if self.gemini_told.contains(&entry.id) || !self.gives().is_some_and(|g| g.connected) {
+            return;
+        }
+        let Some(data) = &self.data_dir else {
+            return;
+        };
+        // An account's extensions are its folder's, or the folder it shares them with.
+        let dir = match &entry.account {
+            Some(a) => Some(a.kind.state_dir(&a.folder)),
+            None => templum_usage::Dirs::of(data).gemini,
+        };
+        if dir.is_some_and(|dir| templum_usage::gemini::installed(&dir)) {
+            return;
+        }
+        self.gemini_told.insert(entry.id.clone());
+        let account = entry.account.is_some().then(|| entry.id.clone());
+        let ws = cx.entity().downgrade();
+        let notification = Notification::new()
+            .with_type(NotificationType::Warning)
+            .title("Gemini CLI has no Templum tools or status dot")
+            .message(
+                "Click to install Templum's extension: every Gemini CLI you open after gets them.",
+            )
+            .delivery(self.delivery(window))
+            .on_click(move |_, window, cx| {
+                let (ws, account) = (ws.clone(), account.clone());
+                let (title, text, ok) = crate::settings::connections::INSTALL;
+                crate::prompt::confirm(
+                    title,
+                    text,
+                    ok,
+                    move |_, cx| {
+                        ws.update(cx, |ws, cx| ws.setup_gemini(true, account.as_deref(), cx))
+                            .ok();
+                    },
+                    window,
+                    cx,
+                );
+            });
+        show_notification(window, cx, notification);
+    }
+
     /// Settings ▸ Connections ▸ Gemini CLI: installs Templum's extension (`install`) or removes
-    /// it, in the background; Settings shows what went wrong, if anything did.
-    pub(crate) fn setup_gemini(&mut self, install: bool, cx: &mut Context<Self>) {
+    /// it, in the background, for Gemini CLI's own folder or the account `account`'s; Settings
+    /// shows what went wrong, if anything did.
+    pub(crate) fn setup_gemini(
+        &mut self,
+        install: bool,
+        account: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
         let Some(data) = self.data_dir.clone() else {
             return;
         };
+        let env = account
+            .and_then(|id| self.agents.iter().find(|a| a.id == id))
+            .and_then(AgentEntry::var)
+            .map(|(name, folder)| (name.to_string(), folder.to_string_lossy().into_owned()));
         if matches!(self.gemini_job, Some(TryIt::Running(_))) {
             return;
         }
@@ -321,9 +584,9 @@ impl Workspace {
         cx.spawn(async move |ws, cx| {
             let done = cx
                 .background_executor()
-                .spawn(
-                    async move { gemini_run(templum_terminal::locate("gemini"), &data, install) },
-                )
+                .spawn(async move {
+                    gemini_run(templum_terminal::locate("gemini"), &data, install, env)
+                })
                 .await;
             ws.update(cx, |ws, cx| {
                 ws.gemini_job = done.err().map(TryIt::Failed);
@@ -336,12 +599,14 @@ impl Workspace {
 }
 
 /// Runs Gemini CLI (`gemini`, where Templum found it, if it did) to link Templum's extension,
-/// written first (`install`), or to uninstall it; what went wrong, whole, if anything did.
+/// written first (`install`), or to uninstall it, with `env` (an account's folder); what went
+/// wrong, whole, if anything did.
 // ponytail: no deadline; a Gemini CLI that hangs keeps the button spinning until Templum quits.
 pub(super) fn gemini_run(
     gemini: Option<PathBuf>,
     data: &Path,
     install: bool,
+    env: Option<(String, String)>,
 ) -> Result<(), String> {
     use templum_usage::gemini;
     let program = gemini.ok_or("Templum didn't find Gemini CLI (gemini) on this computer.")?;
@@ -355,7 +620,10 @@ pub(super) fn gemini_run(
         gemini::UNLINK.iter().map(OsString::from).collect()
     };
     let mut command = std::process::Command::new(program);
-    command.args(args).stdin(std::process::Stdio::null());
+    command
+        .args(args)
+        .envs(env)
+        .stdin(std::process::Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
@@ -402,6 +670,50 @@ pub(super) fn claude_flags(
         flags.push_str(&format!(" --mcp-config {arg}"));
     }
     flags
+}
+
+/// `words`, each typed as a shell takes it (`typed_path`), each after a space; None when one can't
+/// be.
+fn typed_words(words: &[String], windows: bool) -> Option<String> {
+    words
+        .iter()
+        .map(|w| {
+            Some(format!(
+                " {}",
+                templum_usage::claude::typed_path(w, windows)?
+            ))
+        })
+        .collect()
+}
+
+/// `claude_flags` as the words a program gets, unquoted, Windows' `\` as `/`; the MCP config as
+/// one word, `--mcp-config=<path>`: alone, `--mcp-config` would take the person's words after it.
+pub(super) fn claude_args(
+    data: &Path,
+    exe: &Path,
+    windows: bool,
+    limits: bool,
+    connected: bool,
+) -> Vec<String> {
+    let word = |path: PathBuf| {
+        let path = path.to_string_lossy().into_owned();
+        if windows {
+            path.replace('\\', "/")
+        } else {
+            path
+        }
+    };
+    let mut args = Vec::new();
+    let Some(settings) =
+        templum_usage::claude::settings_file(data, exe, windows, limits, connected)
+    else {
+        return args;
+    };
+    args.extend(["--settings".to_string(), word(settings)]);
+    if connected && let Some(mcp) = templum_usage::claude::mcp_file(data, exe, windows) {
+        args.push(format!("--mcp-config={}", word(mcp)));
+    }
+    args
 }
 
 /// Templum's program as an agent should run it: the AppImage when it runs from one (its mount

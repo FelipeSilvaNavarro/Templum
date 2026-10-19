@@ -452,52 +452,38 @@ fn settle(handle: AnyWindowHandle, cx: &mut TestAppContext) {
     frame(handle, cx);
 }
 
-/// Waits for the block's next status read (a change made behind its back).
-fn settle_read(
-    handle: AnyWindowHandle,
-    ws: &Entity<Workspace>,
-    cx: &mut TestAppContext,
-    id: BlockId,
-) {
+/// Waits for the Git's next status read (a change made behind its back).
+fn settle_read(handle: AnyWindowHandle, ws: &Entity<Workspace>, cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.refresh_git(id, window, cx))
+        ws.update(cx, |ws, cx| ws.refresh_git(window, cx))
     })
     .unwrap();
     settle(handle, cx);
 }
 
-/// A Git block on `folder`, near the canvas's top-left, looked up and read.
+/// The Git popup open on `folder`, looked up and read.
 fn open_git(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
     folder: &std::path::Path,
-) -> BlockId {
-    let id = cx
-        .update_window(handle, |_, window, cx| {
-            ws.update(cx, |ws, cx| {
-                let id = ws
-                    .add_git_at(folder, Point::new(40.0, 40.0), window, cx)
-                    .unwrap();
-                // The size the tests were written at (a new block is 1200 × 760 now): their rows
-                // and buttons stay inside the window.
-                ws.space.canvas.get_mut(id).unwrap().rect = Rect::new(40.0, 40.0, 800.0, 560.0);
-                ws.space.appearing.clear();
-                id
-            })
+) {
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            assert!(ws.set_git_folder(folder, window, cx));
+            ws.open_git(window, cx);
         })
-        .unwrap();
+    })
+    .unwrap();
     settle(handle, cx);
-    id
 }
 
 fn git_of<T>(
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
-    id: BlockId,
     read: impl FnOnce(&crate::git_block::Git) -> T,
 ) -> T {
-    ws.read_with(cx, |ws, _| read(ws.space.git(id).unwrap()))
+    ws.read_with(cx, |ws, _| read(ws.space.git().unwrap()))
 }
 
 /// A repository with one commit holding a.txt ("one\n").
@@ -540,8 +526,8 @@ fn click_row_button(
     settle(handle, cx);
 }
 
-fn git_button(id: BlockId, what: &str, list: &str, i: usize) -> gpui_kit::ElementId {
-    gpui_kit::ElementId::Name(format!("git-{what}-{}-{list}-{i}", id.0).into())
+fn git_button(what: &str, list: &str, i: usize) -> gpui_kit::ElementId {
+    gpui_kit::ElementId::Name(format!("git-{what}-{list}-{i}").into())
 }
 
 /// A bare remote `origin` for `repo`, with its `main` pushed.
@@ -651,6 +637,23 @@ pub(super) fn board_with_a_card(
     .unwrap()
 }
 
+/// Moves the pointer to `to` (a window position), no button held, and draws.
+pub(super) fn point_at(handle: AnyWindowHandle, cx: &mut TestAppContext, to: (f32, f32)) {
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: point(px(to.0), px(to.1)),
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+        window.render_frame(cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+}
+
 /// A local canvas point as a window position.
 pub(super) fn at(ws: &Entity<Workspace>, cx: &mut TestAppContext, p: (f32, f32)) -> (f32, f32) {
     let o = ws.read_with(cx, |ws, _| ws.origin);
@@ -661,6 +664,7 @@ mod agents;
 mod block_ids;
 mod blocks;
 mod bus;
+mod checklists;
 mod config_reload;
 mod content;
 mod delegate;
@@ -699,7 +703,10 @@ mod settings_panel;
 mod shortcuts;
 // `cat` stands in for the agents.
 #[cfg(unix)]
+mod schedules;
+#[cfg(unix)]
 mod spawn;
+mod templum_agent;
 mod terminals;
 mod themes;
 mod update;

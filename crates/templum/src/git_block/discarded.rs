@@ -9,14 +9,12 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::dialog::DialogButtonProps;
 use gpui_kit::prelude::*;
 use gpui_kit::{App, Entity, Hsla, Window, div, px};
-use templum_canvas::BlockId;
 use templum_git::trash::Kept;
 
 use crate::workspace::Workspace;
 
 pub(crate) fn open(
     ws: Entity<Workspace>,
-    block: BlockId,
     kept: Vec<Kept>,
     dim: Hsla,
     window: &mut Window,
@@ -64,7 +62,7 @@ pub(crate) fn open(
                                     window.close_dialog(cx);
                                     let entry = entry.clone();
                                     ws.update(cx, |ws, cx| {
-                                        ws.restore_discarded(block, entry, false, window, cx)
+                                        ws.restore_discarded(entry, false, window, cx)
                                     });
                                 }),
                         )

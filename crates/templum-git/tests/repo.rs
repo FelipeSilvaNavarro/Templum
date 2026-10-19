@@ -2025,3 +2025,206 @@ fn sync_on_a_branch_never_published_says_so_not_deleted() {
     repo.run(&["checkout", "-q", "-b", "new"]).unwrap();
     assert_eq!(repo.sync().unwrap(), Synced::Unpublished);
 }
+
+/// Writes `name` in `root` and commits it in `repo` with `message`.
+fn commit_in(repo: &Repo, root: &Path, name: &str, text: &str, message: &str) {
+    write(root, name, text);
+    repo.stage(&[name]).unwrap();
+    repo.commit(message, false).unwrap();
+}
+
+fn branch_exists(repo: &Repo, name: &str) -> bool {
+    !repo.run(&["branch", "--list", name]).unwrap().is_empty()
+}
+
+/// A worktree Templum made: its changed files, its commits not merged into the branch of the
+/// working tree it goes back to, and that one's own changes to tracked files.
+#[test]
+fn a_worktrees_state_counts_its_changes_and_its_commits_not_merged() {
+    let (dir, repo) = committed();
+    assert_eq!(repo.worktree_state("w").unwrap(), None, "no such worktree");
+    assert_eq!(repo.worktree_state("../w").unwrap(), None, "not a name");
+    let path = repo.add_worktree("w").unwrap();
+    let state = repo.worktree_state("w").unwrap().unwrap();
+    assert_eq!(
+        (
+            state.branch.as_deref(),
+            state.into.as_str(),
+            state.changed,
+            state.unmerged,
+            state.into_changed,
+            state.busy
+        ),
+        (Some("w"), "main", 0, 0, 0, false)
+    );
+    assert_eq!(
+        state.path.canonicalize().unwrap(),
+        path.canonicalize().unwrap()
+    );
+    write(&path, "a.txt", "two\n");
+    write(&path, "new.txt", "new\n");
+    assert_eq!(repo.worktree_state("w").unwrap().unwrap().changed, 2);
+    let w = Repo::discover("git", &path).unwrap().unwrap();
+    w.stage(&["a.txt", "new.txt"]).unwrap();
+    w.commit("Two", false).unwrap();
+    let state = repo.worktree_state("w").unwrap().unwrap();
+    assert_eq!((state.changed, state.unmerged), (0, 1));
+    // Where it goes back: a tracked file changed counts, an untracked one doesn't.
+    write(dir.path(), "a.txt", "changed\n");
+    write(dir.path(), "loose.txt", "untracked\n");
+    assert_eq!(repo.worktree_state("w").unwrap().unwrap().into_changed, 1);
+}
+
+/// Read from a linked worktree that made it, a worktree goes back to that one's branch.
+#[test]
+fn a_worktree_made_from_a_worktree_goes_back_to_its_branch() {
+    let (_dir, repo) = committed();
+    let a_path = repo.add_worktree("a").unwrap();
+    let a = Repo::discover("git", &a_path).unwrap().unwrap();
+    commit_in(&a, &a_path, "b.txt", "b\n", "A's own");
+    a.add_worktree("w").unwrap();
+    let state = a.worktree_state("w").unwrap().unwrap();
+    assert_eq!(
+        (state.into.as_str(), state.unmerged),
+        ("a", 0),
+        "a's own commits aren't w's"
+    );
+    let from_main = repo.worktree_state("w").unwrap().unwrap();
+    assert_eq!((from_main.into.as_str(), from_main.unmerged), ("main", 1));
+}
+
+#[test]
+fn removing_a_worktree_with_changes_takes_force_and_deletes_its_branch() {
+    let (_dir, repo) = committed();
+    let path = repo.add_worktree("w").unwrap();
+    write(&path, "a.txt", "two\n");
+    assert!(repo.remove_worktree("w", false).is_err());
+    assert!(path.exists(), "kept");
+    repo.remove_worktree("w", true).unwrap();
+    assert!(!path.exists());
+    assert!(!branch_exists(&repo, "w"));
+    // A clean, merged one goes without force.
+    let path = repo.add_worktree("clean").unwrap();
+    repo.remove_worktree("clean", false).unwrap();
+    assert!(!path.exists() && !branch_exists(&repo, "clean"));
+}
+
+#[test]
+fn merging_a_worktree_back_takes_a_clean_commit_and_aborts_a_conflict() {
+    let (dir, repo) = committed();
+    let path = repo.add_worktree("w").unwrap();
+    let w = Repo::discover("git", &path).unwrap().unwrap();
+    commit_in(&w, &path, "c.txt", "c\n", "C");
+    assert_eq!(repo.merge_from("w").unwrap(), Ok(()));
+    assert_eq!(repo.worktree_state("w").unwrap().unwrap().unmerged, 0);
+    commit_in(&w, &path, "a.txt", "theirs\n", "W's");
+    commit_in(&repo, dir.path(), "a.txt", "ours\n", "Main's");
+    assert_eq!(
+        repo.merge_from("w").unwrap(),
+        Err(vec!["a.txt".to_string()])
+    );
+    assert_eq!(repo.operation(), None, "no merge left under way");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "ours\n"
+    );
+}
+
+/// What git ignores in a worktree goes when it is removed: the state names it, but for what a
+/// build or a test run fills again, also a cache that ignores itself (pytest's, ruff's), not a
+/// tracked folder of the same name.
+#[test]
+fn a_worktrees_state_names_its_ignored_files_but_build_folders() {
+    let (dir, repo) = committed();
+    commit_in(
+        &repo,
+        dir.path(),
+        ".gitignore",
+        ".env\nnode_modules/\ntarget/\ncoverage/\n*.egg-info/\n*.log\n",
+        "Ignore",
+    );
+    // A tracked folder named as one a build fills (Go's `build/ci/`): what git ignores in it stays.
+    commit_in(&repo, dir.path(), "build/ci/deploy.sh", "deploy\n", "CI");
+    let path = repo.add_worktree("w").unwrap();
+    assert_eq!(
+        repo.worktree_state("w").unwrap().unwrap().ignored,
+        Vec::<String>::new()
+    );
+    write(&path, ".env", "SECRET=x\n");
+    write(&path, "build/ci/.env", "TOKEN=x\n");
+    write(&path, "node_modules/x/i.js", "x\n");
+    write(&path, "crates/a/target/o", "o\n");
+    // A `*` in its own `.gitignore`: git lists what is inside, not the folder.
+    write(&path, ".pytest_cache/.gitignore", "*\n");
+    write(&path, ".pytest_cache/v/cache/nodeids", "[]\n");
+    write(&path, ".ruff_cache/.gitignore", "*\n");
+    write(&path, ".ruff_cache/0.6.0/12345", "x\n");
+    write(&path, "web/coverage/lcov.info", "TN:\n");
+    write(&path, "src/pkg.egg-info/PKG-INFO", "Name: pkg\n");
+    write(&path, "web/npm-debug.log", "0 info\n");
+    let state = repo.worktree_state("w").unwrap().unwrap();
+    assert_eq!(
+        (state.ignored.as_slice(), state.changed),
+        (&[".env".to_string(), "build/ci/.env".to_string()][..], 0)
+    );
+}
+
+/// A tag named as the worktree's branch, on an older commit, isn't what is merged.
+#[test]
+fn merging_a_worktree_back_merges_its_branch_not_a_tag_of_its_name() {
+    let (dir, repo) = committed();
+    let path = repo.add_worktree("w").unwrap();
+    let w = Repo::discover("git", &path).unwrap().unwrap();
+    repo.run(&["tag", "w"]).unwrap();
+    commit_in(&w, &path, "c.txt", "c\n", "C");
+    commit_in(&repo, dir.path(), "b.txt", "b\n", "Main's");
+    assert_eq!(repo.merge_from("w").unwrap(), Ok(()));
+    assert_eq!(repo.worktree_state("w").unwrap().unwrap().unmerged, 0);
+    assert_eq!(repo.last_message().unwrap(), "Merge branch 'w'");
+}
+
+/// A file the worktree's branch tracks that git ignores where it goes back (a `.env` added with
+/// `git add -f`) would be written over by a merge without a word: the state names it.
+#[test]
+fn a_worktrees_state_names_the_ignored_files_a_merge_would_overwrite() {
+    let (dir, repo) = committed();
+    commit_in(&repo, dir.path(), ".gitignore", ".env\ndeps/\n", "Ignore");
+    write(dir.path(), ".env", "SECRET=person\n");
+    write(dir.path(), "deps/x.js", "person's\n");
+    let path = repo.add_worktree("w").unwrap();
+    let w = Repo::discover("git", &path).unwrap().unwrap();
+    commit_in(&w, &path, "c.txt", "c\n", "C");
+    assert_eq!(
+        repo.worktree_state("w").unwrap().unwrap().overwrites,
+        Vec::<String>::new()
+    );
+    write(&path, ".env", "SECRET=agent\n");
+    write(&path, "deps/x.js", "agent's\n");
+    w.run(&["add", "-f", ".env", "deps/x.js"]).unwrap();
+    w.commit("Env", false).unwrap();
+    assert_eq!(
+        repo.worktree_state("w").unwrap().unwrap().overwrites,
+        [".env", "deps/x.js"]
+    );
+}
+
+/// A worktree whose HEAD left its branch (detached, or another branch checked out there) says so,
+/// and isn't removed: its commits, or the other branch, would be lost.
+#[test]
+fn a_worktree_off_its_branch_says_so_and_isnt_removed() {
+    let (_dir, repo) = committed();
+    let path = repo.add_worktree("w").unwrap();
+    let w = Repo::discover("git", &path).unwrap().unwrap();
+    w.run(&["checkout", "-q", "--detach"]).unwrap();
+    commit_in(&w, &path, "d.txt", "d\n", "On a detached HEAD");
+    let state = repo.worktree_state("w").unwrap().unwrap();
+    assert_eq!(state.branch, None, "detached");
+    assert_eq!(state.unmerged, 1, "its HEAD's commits count");
+    assert!(repo.remove_worktree("w", true).is_err());
+    assert!(path.exists(), "kept");
+    w.run(&["checkout", "-q", "-b", "other"]).unwrap();
+    let state = repo.worktree_state("w").unwrap().unwrap();
+    assert_eq!(state.branch.as_deref(), Some("other"));
+    assert!(repo.remove_worktree("w", true).is_err());
+    assert!(branch_exists(&repo, "other") && branch_exists(&repo, "w"));
+}

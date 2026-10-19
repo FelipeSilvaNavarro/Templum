@@ -9,7 +9,7 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
 
 ## Commands
 
-- Run: `cargo run -p templum`
+- Run: `cargo run -p templum` (`-- --dev` beside an installed Templum: own workspaces and settings in `templum-dev`)
 - Dev builds compile the dependencies optimized (`[profile.dev.package."*"]` in `Cargo.toml`), so `cargo run` is
   usable; performance is judged on `--release`.
 - Everything CI checks:
@@ -47,10 +47,10 @@ Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) before changing structure. Dec
   `.github/workflows/release.yml`, which builds every platform and publishes the GitHub Release.
 - **Performance:** pull requests that touch painting or `templum-terminal` run
   `cargo run --release -p templum -- --bench` (Linux) and paste its JSON line in the PR description (and
-  `--bench-mixed`, an agent cockpit: TUIs, editors, Git, a note, kanban; and `--bench-zoom=<kind>` for a change to
+  `--bench-mixed`, an agent cockpit: TUIs, editors, a note, kanban; and `--bench-zoom=<kind>` for a change to
   zooming, run from a real project folder: `cd ~/Documents/github/DaemonQuest &&
   ~/Documents/github/Templum/target/release/templum --bench-zoom=editor`; `--bench-far`, run the same way, for a
-  change to drawing at far zoom; and `--bench-git` for a change to the Git block's diff panel).
+  change to drawing at far zoom; and `--bench-git` for a change to the Git popup's diff panel).
   The bar is `p95_ms` <= 16.7 (see [ADR-0002](docs/adr/0002-ui-framework.md)).
 
 ## Before saying "done"

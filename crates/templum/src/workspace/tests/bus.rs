@@ -16,11 +16,25 @@ fn ask(
     method: &str,
     params: Value,
 ) -> Value {
+    ask_as(handle, ws, cx, terminal, "cli", method, params)
+}
+
+/// `ask`, by `client` (`cli`, `mcp`).
+pub(super) fn ask_as(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    terminal: &str,
+    client: &str,
+    method: &str,
+    params: Value,
+) -> Value {
     let (reply, answers) = std::sync::mpsc::channel();
     let message = Message {
         hello: Hello {
             terminal: terminal.into(),
-            client: "cli".into(),
+            client: client.into(),
+            control: None,
         },
         conn: 0,
         incoming: Incoming::Request {
@@ -77,6 +91,7 @@ pub(super) fn call_later(
         hello: Hello {
             terminal: terminal.into(),
             client: "mcp".into(),
+            control: None,
         },
         conn,
         incoming: Incoming::Request {
@@ -117,6 +132,7 @@ pub(super) fn bus_note(
         hello: Hello {
             terminal: String::new(),
             client: "mcp".into(),
+            control: None,
         },
         conn,
         incoming: Incoming::Notification {
@@ -132,6 +148,7 @@ pub(super) fn bus_note(
 }
 
 /// The answer that comes on `answers` within ten seconds, background jobs running meanwhile.
+#[cfg(unix)]
 pub(super) fn answer_soon(
     cx: &mut TestAppContext,
     answers: &std::sync::mpsc::Receiver<String>,
@@ -240,6 +257,15 @@ fn initialize_lists_the_tools_and_says_who_the_agent_is(cx: &mut TestAppContext)
         json!({ "protocolVersion": "2025-06-18" }),
     );
     let instructions = init["result"]["instructions"].as_str().unwrap();
+    // An agent asked for is a block, said first: before the block lists, which may grow past
+    // what Codex weighs most (512 characters) and Claude Code keeps (4096).
+    assert!(
+        instructions.starts_with(
+            "In Templum, an agent the person asks for is a block on this canvas: start one with \
+             spawn_agent"
+        ),
+        "{instructions}"
+    );
     // Titles and names in quotes: a title a program set can't pass for an instruction.
     assert!(
         instructions.contains(&format!("You are block {uid}, \""))
@@ -519,7 +545,7 @@ fn the_bus_answers_over_its_socket(cx: &mut TestAppContext) {
     std::thread::spawn(move || {
         use std::io::{BufRead as _, Write as _};
         let (mut stream, token) = templum_mcp::bus::connect(&env).unwrap();
-        let hello = templum_mcp::bus::hello_line(&terminal, "cli", token.as_deref());
+        let hello = templum_mcp::bus::hello_line(&terminal, "cli", token.as_deref(), None);
         let call = templum_mcp::rpc::request(
             1,
             "tools/call",
@@ -552,18 +578,85 @@ fn the_bus_answers_over_its_socket(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn terminals_get_the_bus_and_this_templum_first_on_their_path(cx: &mut TestAppContext) {
     let data = tempfile::tempdir().unwrap();
-    let script = "printf 'bus=%s;\\n' \"$TEMPLUM_BUS\"; command -v templum; exec cat";
+    // The first word Templum types after `claude`, for one a person types.
+    let script = "printf 'claude=%s;\\n' \"${TEMPLUM_CLAUDE_ARGS%%\n*}\"; \
+                  printf 'bus=%s;\\n' \"$TEMPLUM_BUS\"; command -v templum; exec cat";
     let command = ("sh".to_string(), vec!["-c".to_string(), script.to_string()]);
     let (_, ws) = open_as(cx, Some(command), None, Some(data.path().to_path_buf()));
     let env = ws.read_with(cx, |ws, _| ws.bus.as_ref().unwrap().env.clone());
     let first = first_id(&ws, cx);
     let shown = screen_with(&ws, cx, first, "bin/templum");
     assert!(shown.contains(&format!("bus={env};")), "{shown}");
+    assert!(shown.contains("claude=--settings;"), "{shown}");
     let link = data.path().join("bin").join("templum");
     assert_eq!(
         std::fs::read_link(&link).unwrap(),
         crate::workspace::usage::program().unwrap()
     );
+}
+
+/// A Templum with no bus, started from another's terminal: its terminals don't get the other's
+/// `TEMPLUM_BUS`, where they would talk as terminals it doesn't know, nor its words for `claude`.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn without_a_bus_terminals_name_none(cx: &mut TestAppContext) {
+    let script = "printf 'claude=%s;\\n' \"${TEMPLUM_CLAUDE_ARGS-unset}\"; \
+                  printf 'copilot=%s;\\n' \"${TEMPLUM_COPILOT_ARGS-unset}\"; \
+                  printf 'hooked=%s;\\n' \"${TEMPLUM_HOOKED-unset}\"; \
+                  printf 'bus=%s;\\n' \"${TEMPLUM_BUS-unset}\"; exec cat";
+    let command = ("sh".to_string(), vec!["-c".to_string(), script.to_string()]);
+    let (_, ws) = open_as(cx, Some(command), None, None);
+    let first = first_id(&ws, cx);
+    let shown = screen_with(&ws, cx, first, "bus=");
+    assert!(shown.contains("bus=;"), "{shown}");
+    assert!(shown.contains("claude=;"), "{shown}");
+    assert!(shown.contains("copilot=;"), "{shown}");
+    assert!(shown.contains("hooked=;"), "{shown}");
+}
+
+/// The OpenCode Templum opens gets `OPENCODE_CONFIG_CONTENT` in its shell's environment; a plain
+/// terminal doesn't.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_opencode_block_gets_its_config_in_its_environment(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    let script = "case \"$OPENCODE_CONFIG_CONTENT\" in *templum.js*) echo oc=yes;; *) echo oc=no;; esac; \
+                  exec cat";
+    let command = ("sh".to_string(), vec!["-c".to_string(), script.to_string()]);
+    let (handle, ws) = open_as(cx, Some(command), None, Some(data.path().to_path_buf()));
+    let first = first_id(&ws, cx);
+    screen_with(&ws, cx, first, "oc=no");
+    let id = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let entry = ws
+                    .agents
+                    .iter()
+                    .find(|a| a.id == "opencode")
+                    .cloned()
+                    .unwrap();
+                let rect = templum_canvas::Rect::new(0.0, 600.0, 400.0, 300.0);
+                ws.start_agent(Some(&entry), None, "", folder.path(), rect, window, cx)
+                    .unwrap()
+            })
+        })
+        .unwrap();
+    screen_with(&ws, cx, id, "oc=yes");
+    // Restored in its folder, it resumes with it too.
+    let item: crate::session::Item = serde_json::from_value(json!({
+        "kind": "terminal",
+        "rect": { "x": 500.0, "y": 600.0, "w": 400.0, "h": 300.0 },
+        "folder": folder.path(),
+        "agent": "opencode",
+    }))
+    .unwrap();
+    let restored = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.add_saved(&item, window, cx).unwrap())
+        })
+        .unwrap();
+    screen_with(&ws, cx, restored, "oc=yes");
 }
 
 /// An empty PATH entry is the current folder: Templum's folder goes first and adds none.
@@ -658,6 +751,7 @@ pub(super) fn event(
         hello: Hello {
             terminal: terminal.into(),
             client: "hook".into(),
+            control: None,
         },
         conn: 0,
         incoming: Incoming::Notification {
@@ -748,7 +842,7 @@ fn a_crashed_agents_state_never_comes_back(cx: &mut TestAppContext) {
     // The snapshot sees no agent any more, then the one typed by hand.
     ws.update(cx, |ws, _| {
         ws.space
-            .see(vec![(id, templum_terminal::Inspection::default())]);
+            .see(vec![(id, templum_terminal::Inspection::default())], &[]);
         ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into());
     });
     ws.read_with(cx, |ws, _| {
@@ -824,4 +918,91 @@ fn a_title_is_cleaned_before_an_agent_reads_it() {
     assert_eq!(long.chars().count(), 60, "{long}");
     assert!(long.ends_with("é…"), "{long}");
     assert_eq!(clean_title(&"a".repeat(60)), "a".repeat(60));
+}
+
+#[gpui_kit::test]
+fn the_switch_off_cuts_every_agent_but_not_the_command_line(cx: &mut TestAppContext) {
+    use crate::workspace::AgentState;
+    let data = tempfile::tempdir().unwrap();
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let id = first_id(&ws, cx);
+    let (terminal, uid) = me(&ws, cx, id);
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into())
+    });
+    event(handle, &ws, cx, &terminal, json!({ "event": "submitted" }));
+    let switch = |on: bool, cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                let mut config = ws.config.clone();
+                config.connections.enabled = on;
+                ws.apply_config(config, window, cx);
+            })
+        })
+        .unwrap();
+    };
+    let pane = |cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let pane = ws.space.terminal(id).unwrap();
+            (pane.state.clone(), pane.speaks)
+        })
+    };
+    assert_eq!(pane(cx), (Some(AgentState::Working), true));
+    switch(false, cx);
+    assert_eq!(
+        pane(cx),
+        (Some(AgentState::Working), false),
+        "read from its screen"
+    );
+    let init = ask_as(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "mcp",
+        "initialize",
+        json!({ "protocolVersion": "2025-06-18" }),
+    );
+    assert_eq!(
+        init["result"]["instructions"],
+        "Connections are off in Templum's settings: Templum's tools won't work here."
+    );
+    let whoami = |client: &str, cx: &mut TestAppContext| {
+        let answer = ask_as(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            client,
+            "tools/call",
+            json!({ "name": "whoami", "arguments": {} }),
+        );
+        let result = &answer["result"];
+        (
+            result["isError"] == true,
+            result["content"][0]["text"].as_str().unwrap().to_string(),
+        )
+    };
+    assert_eq!(
+        whoami("mcp", cx),
+        (
+            true,
+            "Connections are off: turn on Agents in Templum (Settings ▸ Connections) to use \
+             Templum's tools."
+                .to_string()
+        )
+    );
+    event(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        json!({ "event": "stopped", "message": "Done." }),
+    );
+    assert_eq!(pane(cx), (Some(AgentState::Working), false), "dropped");
+    let (failed, text) = whoami("cli", cx);
+    assert!(!failed && text.contains(&format!("id: {uid}")), "{text}");
+    switch(true, cx);
+    let (failed, text) = whoami("mcp", cx);
+    assert!(!failed && text.contains(&format!("id: {uid}")), "{text}");
 }

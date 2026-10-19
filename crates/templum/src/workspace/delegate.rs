@@ -4,6 +4,7 @@
 use std::time::{Duration, Instant};
 
 use gpui_kit::{App, Context, Task};
+use templum_agent::NoticeLevel;
 use templum_canvas::BlockId;
 use templum_mcp::{Reply, tools};
 use templum_terminal::{KEY_NAMES, named_key};
@@ -296,7 +297,23 @@ impl Workspace {
                 "This block is yours: send_keys presses keys in another block.",
             ));
         }
-        let Some(pane) = space.terminal(to) else {
+        let by = self.signature(space, me, cx);
+        self.keys_in(from, &by, (&space_id, to), block, keys, cx)
+    }
+
+    /// The body of `send_keys`, for any asker (a terminal's `TEMPLUM_TERMINAL`, or the Templum
+    /// Agent's word): `keys` pressed as `by` in the terminal block `to` of `space`, never into an
+    /// agent on another agent's task while it works.
+    pub(super) fn keys_in(
+        &mut self,
+        asker: &str,
+        by: &str,
+        (space_id, to): (&str, BlockId),
+        block: &str,
+        keys: Vec<String>,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
+        let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
         if let Some(bad) = keys.iter().find(|k| named_key(k).is_none()) {
@@ -305,19 +322,18 @@ impl Workspace {
             )));
         }
         let asks = matches!(pane.state, Some(AgentState::NeedsYou(_)));
-        if pane.task(Instant::now()).is_some_and(|h| h.by != from) && !asks {
+        if pane.task(Instant::now()).is_some_and(|h| h.by != asker) && !asks {
             return Outcome::Now(Reply::err(format!(
                 "{block} is on a task another agent handed it: only that agent presses keys in it \
                  while it works. wait_for_idle(\"{block}\") waits for its end."
             )));
         }
         let worker = pane.term.id().to_string();
-        let by = self.signature(space, me, cx);
         let said = match keys.len() {
             1 => format!("Pressed 1 key in {block}."),
             n => format!("Pressed {n} keys in {block}."),
         };
-        Outcome::Later(self.press_keys(worker, by, keys, said, cx))
+        Outcome::Later(self.press_keys(worker, by.to_string(), keys, said, cx))
     }
 
     /// `interrupt` from the terminal `from`: Esc once in the agent `block` while it works or waits
@@ -325,7 +341,6 @@ impl Workspace {
     /// with the prompt a spawn still keeps for it: typed later, it would start work no one awaits.
     /// The caller isn't told of that end: it knows (docs/specs/connections.md, Delegating 12).
     pub(super) fn interrupt(&mut self, from: &str, block: &str, cx: &mut Context<Self>) -> Outcome {
-        let now = Instant::now();
         let (space_id, me) = self.caller(from).expect("call found the caller");
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let to = match target(space, me, block) {
@@ -337,7 +352,23 @@ impl Workspace {
                 "This block is yours: interrupt stops another agent.",
             ));
         }
-        let Some(pane) = space.terminal(to) else {
+        let by = self.signature(space, me, cx);
+        self.interrupt_in(from, &by, (&space_id, to), block, cx)
+    }
+
+    /// The body of `interrupt`, for any asker: Esc once in the agent of block `to` of `space`,
+    /// pressed as `by`; `asker`'s task there ends first.
+    pub(super) fn interrupt_in(
+        &mut self,
+        asker: &str,
+        by: &str,
+        (space_id, to): (&str, BlockId),
+        block: &str,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
+        let now = Instant::now();
+        let from = asker;
+        let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
         if pane.seen.agent.is_none() || pane.shell_in_front() {
@@ -358,7 +389,7 @@ impl Workspace {
             )));
         }
         let worker = pane.term.id().to_string();
-        let by = self.signature(space, me, cx);
+        let by = by.to_string();
         let said = if mine {
             if let Some(pane) = self.pane_mut(&worker) {
                 pane.handed = None;
@@ -370,6 +401,71 @@ impl Workspace {
             format!("Pressed Esc in {block}.")
         };
         Outcome::Later(self.press_keys(worker, by, vec!["escape".into()], said, cx))
+    }
+
+    /// `stop_agent` from the terminal `from`: ends what runs in the terminal `block`, which the
+    /// caller opened, and what it left running (docs/specs/agent-tools.md#stop_agent).
+    pub(super) fn stop_agent(&mut self, from: &str, block: &str, cx: &mut Context<Self>) -> Reply {
+        let (space_id, me) = self.caller(from).expect("call found the caller");
+        let space = self.space_named(&space_id).expect("the caller's workspace");
+        let to = match target(space, me, block) {
+            Ok(to) => to,
+            Err(refused) => return refused,
+        };
+        if to == me {
+            return Reply::err("This block is yours: stop_agent stops another block.");
+        }
+        let Some(pane) = space.terminal(to) else {
+            return Reply::err(format!("{block} isn't a terminal."));
+        };
+        if pane.opened_by.is_none() || pane.opened_by.as_ref() != space.uids.get(&me) {
+            return Reply::err(format!(
+                "Only the person stops {block}: you didn't open it. interrupt presses Esc in it."
+            ));
+        }
+        self.stop_agent_in(from, (&space_id, to), block, cx)
+    }
+
+    /// The body of `stop_agent`, for any asker (a terminal's `TEMPLUM_TERMINAL`, or the Templum
+    /// Agent's word): ends what runs in the terminal block `to` of `space`. The task `asker` handed
+    /// it ends, its waits hearing so at once, with the prompt a spawn still keeps for it; the asker
+    /// isn't told of that end: it knows. Another agent's task there ends as when its agent leaves,
+    /// once a snapshot no longer finds it.
+    pub(super) fn stop_agent_in(
+        &mut self,
+        asker: &str,
+        (space_id, to): (&str, BlockId),
+        block: &str,
+        cx: &mut Context<Self>,
+    ) -> Reply {
+        let from = asker;
+        let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
+            return Reply::err(format!("{block} isn't a terminal."));
+        };
+        let worker = pane.term.id().to_string();
+        let stopped = match self.stop_in(space_id, to, cx) {
+            Ok(stopped) => stopped,
+            Err(refused) => return Reply::err(refused),
+        };
+        if let Some(pane) = self.pane_mut(&worker) {
+            pane.prompt = None;
+            if pane.handed.as_ref().is_some_and(|h| h.by == from) {
+                pane.handed = None;
+                self.end_turn(&worker, Reply::err("Stopped by you."), cx);
+            }
+        }
+        let count = |n| match n {
+            1 => "1 process".to_string(),
+            n => format!("{n} processes"),
+        };
+        let ended = match (stopped.program.as_str(), stopped.processes) {
+            ("", n) => format!("{} it left running", count(n)),
+            (program, 0) => format!("{program} and nothing else"),
+            (program, n) => format!("{program} and {} it started", count(n)),
+        };
+        Reply::ok(format!(
+            "Stopped {block}: ended {ended}. Its shell is at its prompt."
+        ))
     }
 
     /// Presses `keys` in the terminal `worker`, KEY_GAP apart, as keys `by` pressed (the person's,
@@ -583,7 +679,9 @@ impl Workspace {
     /// saying who hands it over; with `wait`, the call waits for its answer. Into an agent on the
     /// caller's own task (also past its deadline), it is a change to that task, typed at once: the
     /// end of the turn that takes it answers the task, whose timeout starts again
-    /// (docs/specs/connections.md, Delegating 11).
+    /// (docs/specs/connections.md, Delegating 11). `scheduled`: the schedule that hands it, which
+    /// its line names.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn delegate(
         &mut self,
         from: &str,
@@ -591,9 +689,9 @@ impl Workspace {
         task: &str,
         wait: bool,
         timeout: u64,
+        scheduled: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Outcome {
-        let now = Instant::now();
         let (space_id, me) = self.caller(from).expect("call found the caller");
         let space = self.space_named(&space_id).expect("the caller's workspace");
         let to = match target(space, me, block) {
@@ -605,7 +703,30 @@ impl Workspace {
                 "This block is yours: hand the task to another agent.",
             ));
         }
-        let Some(pane) = space.terminal(to) else {
+        let by = self.signature(space, me, cx);
+        let at = (space_id.as_str(), to);
+        self.hand_task(from, &by, at, block, task, wait, timeout, scheduled, cx)
+    }
+
+    /// The body of `delegate`, for any asker: the task typed into the agent of block `to` of
+    /// `space` under a line signed `by`, handed over by `asker` (a terminal's `TEMPLUM_TERMINAL`,
+    /// or the Templum Agent's word), who hears its end; `scheduled` as `delegate` takes it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn hand_task(
+        &mut self,
+        asker: &str,
+        by: &str,
+        (space_id, to): (&str, BlockId),
+        block: &str,
+        task: &str,
+        wait: bool,
+        timeout: u64,
+        scheduled: Option<u64>,
+        cx: &mut Context<Self>,
+    ) -> Outcome {
+        let now = Instant::now();
+        let from = asker;
+        let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
         if let Err(refused) = pane.takes_handing(block) {
@@ -628,14 +749,16 @@ impl Workspace {
         }
         let worker = pane.term.id().to_string();
         let usage = pane.usage.clone();
-        let by = self.signature(space, me, cx);
         let id = mine.unwrap_or_else(|| {
             self.next_task += 1;
             self.next_task
         });
         let line = match mine {
             Some(_) => format!("[from {by}, a change to task t{id}] {CHANGE_LEAD}\n{task}"),
-            None => format!("[from {by}, task t{id}] {TASK_LEAD}\n{task}"),
+            None => {
+                let from = scheduled.map_or(String::new(), |s| format!(", scheduled s{s}"));
+                format!("[from {by}, task t{id}{from}] {TASK_LEAD}\n{task}")
+            }
         };
         self.send_task(&worker, &line, true, cx);
         let until = Instant::now() + Duration::from_secs(timeout);
@@ -664,9 +787,8 @@ impl Workspace {
                 of: worker,
                 uid: block.to_string(),
             };
-            Outcome::Wait(what, timeout)
+            Outcome::Wait(Box::new(what), Some(timeout))
         } else {
-            self.time_out(worker, id, until, timeout, cx);
             Outcome::Now(Reply::ok(match mine {
                 Some(_) => format!("Typed into {block} as a change to task t{id}."),
                 None => format!("Handed to {block} as task t{id}."),
@@ -753,7 +875,20 @@ impl Workspace {
         if to == me {
             return Outcome::Now(Reply::err("This block is yours: wait for another agent."));
         }
-        let Some(pane) = space.terminal(to) else {
+        self.idle_wait(from, (&space_id, to), block, timeout)
+    }
+
+    /// The body of `wait_for_idle`, for any asker: the turn of the agent in block `to` of
+    /// `space`, waited for when it works or runs `asker`'s task.
+    pub(super) fn idle_wait(
+        &self,
+        asker: &str,
+        (space_id, to): (&str, BlockId),
+        block: &str,
+        timeout: u64,
+    ) -> Outcome {
+        let from = asker;
+        let Some(pane) = self.space_named(space_id).and_then(|s| s.terminal(to)) else {
             return Outcome::Now(Reply::err(format!("{block} isn't a terminal.")));
         };
         if pane.seen.agent.is_none() {
@@ -767,7 +902,7 @@ impl Workspace {
                 of: pane.term.id().to_string(),
                 uid: block.to_string(),
             };
-            return Outcome::Wait(what, timeout);
+            return Outcome::Wait(Box::new(what), Some(timeout));
         }
         Outcome::Now(Reply::ok(pane.answer.clone().unwrap_or_else(|| {
             format!("{block} is idle; Templum has heard no answer from it.")
@@ -820,10 +955,10 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let pane = self.pane(terminal);
-        let (word, lead) = if reply.is_error {
-            ("failed", FAILED_LEAD)
+        let (word, lead, level) = if reply.is_error {
+            ("failed", FAILED_LEAD, NoticeLevel::Failed)
         } else {
-            ("done", DONE_LEAD)
+            ("done", DONE_LEAD, NoticeLevel::Done)
         };
         let since = handed.since.elapsed().as_secs();
         let head = format!(
@@ -836,7 +971,7 @@ impl Workspace {
             .and_then(|p| p.transcript.as_deref())
             .map(|t| format!(", transcript {}", flat(t)))
             .unwrap_or_default();
-        let proc = pane.and_then(super::usage::proc_of);
+        let proc = pane.and_then(|p| self.proc_of(p));
         let (data, from, to, body) = (
             self.data_dir.clone(),
             handed.usage.clone(),
@@ -851,7 +986,7 @@ impl Workspace {
                     cx.background_executor()
                         .spawn(async move {
                             let dirs = templum_usage::Dirs::of(&data);
-                            templum_usage::read(&[proc], &dirs, crate::notes::now())
+                            templum_usage::read(&[proc], &dirs, &[], crate::notes::now())
                                 .0
                                 .pop()
                                 .flatten()
@@ -870,7 +1005,8 @@ impl Workspace {
                 let spent = spent(from.as_ref(), now.as_ref())
                     .map(|s| format!(", {s}"))
                     .unwrap_or_default();
-                ws.queue_notice(to, format!("{head}{spent}{transcript}] {lead}\n{body}"), cx);
+                let text = format!("{head}{spent}{transcript}] {lead}\n{body}");
+                ws.notice_to(to, text, &terminal, level, cx);
             });
         })
         .detach();
@@ -902,62 +1038,7 @@ impl Workspace {
             "[task t{id} from {} waits for its person{asks}] {SCREEN_LEAD}\n{screen}",
             self.signature_of(terminal, cx)
         );
-        self.queue_notice(by, text, cx);
-    }
-
-    /// The task `id` handed to the agent in `terminal`, awaited `until`, is told past its
-    /// `seconds` (`timed_out`).
-    pub(super) fn time_out(
-        &self,
-        terminal: String,
-        id: u64,
-        until: Instant,
-        seconds: u64,
-        cx: &mut Context<Self>,
-    ) {
-        // ponytail: one timer per task, left to run out once it ended (it then finds nothing), as
-        // each wait has one.
-        cx.spawn(async move |ws, cx| {
-            cx.background_executor()
-                .timer(Duration::from_secs(seconds))
-                .await;
-            let _ = ws.update(cx, |ws, cx| ws.timed_out(&terminal, id, until, seconds, cx));
-        })
-        .detach();
-    }
-
-    /// The task `id` handed to the agent in `terminal` gave no answer within its `seconds`: its
-    /// asker hears it failed, unless a call of its waits for it (that call tells), the task ended,
-    /// or a change set it another deadline than `until`. It stays handed over: its end still comes
-    /// (docs/specs/connections.md, Delegating 7, 10).
-    fn timed_out(
-        &mut self,
-        terminal: &str,
-        id: u64,
-        until: Instant,
-        seconds: u64,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(pane) = self.pane(terminal) else {
-            return;
-        };
-        let Some(handed) = pane
-            .handed
-            .as_ref()
-            .filter(|h| h.id == id && h.until == until)
-        else {
-            return;
-        };
-        if self.waits_on(&handed.by, terminal) {
-            return;
-        }
-        let why = format!(
-            "No answer from {} within {seconds} seconds; it may still be working, and its end \
-             comes back too. The last lines of its screen:\n{}",
-            self.uid_of(terminal),
-            tools::tail(&pane.tail(), tools::MAX_TEXT)
-        );
-        self.tell_end(terminal, handed, &Reply::err(why), cx);
+        self.notice_to(by, text, terminal, NoticeLevel::Waiting, cx);
     }
 
     /// Queues the notice `text` for the agent in the terminal `to`, then types what may go now.

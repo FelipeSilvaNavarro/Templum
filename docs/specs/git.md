@@ -5,6 +5,11 @@
 - **Replaces:** [cockpit.md](cockpit.md), section 8 (the Git block it describes is what this one starts from)
 - **Builds on:** [context-menus.md](context-menus.md), [agents.md](agents.md), [config.md](config.md)
 
+> **Since 2026-10-17 the Git is a popup, not a block.** Each workspace has one Git (`Space::git`), shown in a
+> popup over the canvas's bottom-left corner from the Git button at the sidebar's foot (see
+> [Layout](#1-layout-and-navigation)). Its content is the one below; where this spec says "the block", read "the
+> workspace's Git". Git blocks, their zoom and their card at far zoom are gone.
+
 ## Goal
 
 The Git block becomes the way to work with Git in Templum: reviewing what an agent changed, committing and
@@ -63,8 +68,20 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
 
 ## 1. Layout and navigation
 
-- **Size:** a new Git block opens 1200 × 760, at least 640 × 420. Blocks saved before keep their size; one smaller
-  than the minimum grows to it when the canvas loads, as every block does (`persist.rs` clamps rects).
+- **Where it shows:** a popup over the canvas's bottom-left corner, beside the sidebar, 760 × 540 (smaller in a
+  small window), drawn at a fixed scale: it never zooms with the canvas. The Git button (GitBranch icon) at the
+  sidebar's foot, apart from the workspaces under a hairline, or Ctrl+Shift+G (Cmd+Shift+G), opens and closes it;
+  so do Esc, while the Git has the keyboard and no field does, and its ✕.
+- **One Git per workspace:** switching workspace shows that workspace's repository. The first time the popup opens
+  in a workspace it picks the focused terminal's folder, else another terminal's, else the workspace's folder, else
+  the newest recent folder; with none, the folder dialog asks. Its status is read every 2 s only while the popup is
+  open, and when a terminal's command ends in the repository while it is open.
+- **Header:** the repository folder's name with ▾. A click opens the **folder menu**: the repositories this
+  workspace's terminals work in, then the workspace's recent folders (each once, the one shown left out), then
+  Choose another folder…, Refresh, Open a terminal here (at the view's center; the popup closes).
+- **Saved** in the workspace's file as an optional `git` object (`session::SavedGit`: folder, tab, summary,
+  description, the left column folded, Split). An older file's Git block item becomes the workspace's Git (its
+  folder, tab and commit message draft) and no block; items of kind `git` are never written again.
 - **Top bar,** left to right:
   - **the current branch** as a pill. A click opens the **branch switcher**: a search field over the local
     branches, then the remote ones; Enter switches (with [the switch flow](#switching-branches)); a last row
@@ -82,10 +99,9 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
 - **Body:** a left column, 300 world units, with the tab's list and, in Changes, the commit area under it; and the
   **diff panel** on the right, the same component in every tab. A button at the column's top folds it, so the diff
   takes the whole width; the block remembers it.
-- **Keyboard,** while the Git block has the focus. The block gets a focus handle of its own (today only its
-  fields have one, and `Body::focus_inner` gives a Git block nothing): a click on the block, or `focus_inner`,
-  focuses it, its key handler takes the keys below and stops them, and the workspace's shortcuts still work, as
-  in an editor block. `copy` copies the diff's selection while the block has the focus.
+- **Keyboard,** while the Git has the focus. It has a focus handle of its own: opening the popup, or a click in
+  it, focuses it, its key handler takes the keys below and stops them, and the workspace's shortcuts still work, as
+  in an editor block. `copy` copies the diff's selection while the Git has the focus.
 
 | Key | Does |
 |---|---|
@@ -93,16 +109,15 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
 | `[` / `]` | previous / next hunk |
 | `s` / `u` | stage / unstage the hunk under the keyboard cursor, or the selected file |
 | `d` | discard (asks first) |
-| Enter | open the file in an editor beside the block, at the hunk's line |
+| Enter | open the file in an editor, at the hunk's line |
 | `c` | focus the commit summary |
 | Ctrl+Enter (Cmd+Enter) | commit |
 | Ctrl+Shift+C (Cmd+C) | copy the diff's selection |
 
-  A line at the diff panel's foot names them. They only act while the block has the focus and no field does.
+  A line at the diff panel's foot names them. They only act while the Git has the focus and no field does.
 - **Empty states** say it in words with a useful button: "Nothing changed since the last commit" (History, switch
   branch), "No stashes", "No other branches" (+ New branch…).
-- **Zoom:** everything scales like a photo. The diff's rows follow the same rule as an editor's (whole pixels; the
-  block's body is drawn at the exact zooms while a zoom glides, see `block::exact_rows`).
+- **Zoom:** none; the popup keeps its scale whatever the canvas's zoom.
 
 ## 2. The diff panel
 
@@ -182,8 +197,8 @@ parent), **a stash**, and **a comparison** of two branches.
   - After a commit: "Committed a1b2c3d" with **Undo commit** ([Undoing a commit](#undoing-a-commit); only while
     that commit isn't on the upstream). The fields clear; the draft is kept across restarts as today. Undo puts
     the undone commit's message back in the fields, to fix and commit again.
-- **Open in editor** on a file row and on a hunk opens the file beside the block at that line (the camera goes
-  there).
+- **Open in editor** on a file row and on a hunk opens the file at that line in an editor of the workspace (one
+  whose folder holds it, else any, else a new one at the view's center; the camera goes there).
 
 ## 4. Safe actions
 
@@ -252,7 +267,7 @@ explains: "Pushed commits can't be removed for others; this adds a new commit th
 destination folder (default: the chosen folder; an empty or missing folder takes the clone itself, one holding files
 gets a folder named after the repository inside it, as `git clone <url>` does), cloned in the background, the button spinning meanwhile and a click on it
 cancelling, as Fetch's does (git writes its progress to stderr, which the block's runner reads only when the
-command ends; a progress bar would need a streaming runner, not worth it for a clone); when done, the block opens
+command ends; a progress bar would need a streaming runner, not worth it for a clone); when done, the Git opens
 on it. A clone that wants credentials fails with **Run in a terminal**, as other commands do.
 
 ## 5. Branches, comparison and conflicts
@@ -265,6 +280,14 @@ on it. A clone that wants credentials fails with **Run in a terminal**, as other
 - **Click:** switch, with [the switch flow](#switching-branches). **+ New branch…** from the current one (and, in
   History, from a chosen commit).
 - **Right-click:** **Compare with `main`**, Merge into *current*…, Rename…, Delete…, Publish, Copy name.
+
+### Worktrees an agent made
+
+`spawn_agent`'s `worktree` makes `.worktrees/<name>` on a branch of that name (connections.md). An agent removes it
+with `remove_worktree` (at once when it has no changes and its commits are merged; losing work only once the person
+says Delete in its balloon) and merges it back with `merge_worktree` (into the branch of its own folder, once the
+person says Merge; a conflict is aborted, naming the files): [agent-tools.md](agent-tools.md#remove_worktree-and-merge_worktree).
+Neither runs while a terminal block works in the worktree.
 
 ### Comparison
 
@@ -332,7 +355,7 @@ Each agent's dialog (Templum's and the user's) gets a **Commit messages** part:
 
 | Agent | Generate command | Models |
 |---|---|---|
-| Claude Code | `claude -p --model {model}` | `haiku` (recommended), `sonnet`, `opus` |
+| Claude Code | `claude -p --model {model} --tools= --setting-sources=` | `haiku` (recommended), `sonnet`, `opus` |
 | Codex | `codex exec -m {model} --sandbox read-only --ephemeral --skip-git-repo-check -o {output_file} -` | read from `~/.codex/models_cache.json` (entries with `"visibility": "list"`), else the list written |
 
 - A user's agent gets the same fields, empty; once filled, it is offered in Settings ▸ Git.
@@ -340,13 +363,24 @@ Each agent's dialog (Templum's and the user's) gets a **Commit messages** part:
   an app opened from a desktop menu; PowerShell on Windows), as typed in a terminal, so PATH, aliases and
   version managers work; placeholders are replaced by quoted paths. Its own runner, not `Repo::run`: that one
   gives the command no stdin and git's environment.
+- **No credit to the agent:** the command runs with `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1`, so Claude Code
+  leaves out its own commit rules, which end every message with a `Co-Authored-By: Claude` trailer. Templum's
+  rules (the request) and the Instructions are the only commit rules; someone who wants the trailer asks for it
+  there.
+- **A one-shot answer:** Claude Code's preset runs with no tools (`--tools=`) and none of the person's settings
+  (`--setting-sources=`: their hooks, plugins and MCP servers), so it answers the request instead of starting a
+  session in the repository (before, with them, it asked "what do you want me to do with this diff?", reviewed
+  the change in the person's language, or ran the tests and git). `=` and no value, as PowerShell 5.1 drops an
+  empty `""`. A provider set only in Claude Code's settings (its `env`) isn't read then: it goes in the shell's
+  environment, or the command is edited. Codex's preset already runs read-only and ephemeral.
 
 ### In Settings ▸ Git ▸ Commit messages
 
 - **Agent:** the agents with a generate command. **Model:** its list, the recommended one marked; another can be
   typed.
 - **Timeout** (default 60 s) and **Max diff size** (default 60 KB).
-- **Instructions:** the user's commit rules ("Conventional Commits, English, imperative, at most 72 characters").
+- **Instructions:** the user's commit rules ("Prefix the summary with the ticket id", "In Portuguese"), on top of
+  Templum's own, which they win over where they disagree.
 - **Prompt (advanced):** the request's text, editable, with the placeholders `{instructions}`, `{files}`,
   `{diff}`, `{recent_commits}`, `{truncated}`; **Reset to default**.
 - **Try it:** runs the command on a sample diff and shows the answer, or the whole error (exit code, stderr).
@@ -355,10 +389,15 @@ Each agent's dialog (Templum's and the user's) gets a **Commit messages** part:
 
 - Beside the summary, shown when the agent chosen in Settings ▸ Git has a generate command and its program is
   installed.
-- **The request:** the staged diff (with **Commit all changes**, every change), cut at Max diff size with the full
-  file list and `{truncated}` saying so; the 10 last commit subjects, to follow the repository's style; the
-  instructions (the repository's own when set, else the global ones); the format: first line the summary, a blank
-  line, then the description, no code fences.
+- **The request:** Templum's rules for a good commit message first: a one-shot request, not a conversation (ask
+  nothing, run no tools, explain nothing); the summary in Conventional Commits form, `type(scope): summary`, at
+  most 72 characters, imperative, no period; a blank line and a short body wrapped at 72 saying what changed and
+  why, when the summary doesn't say it all; plain text (no Markdown, fences or quotes); no credit to an AI or a
+  tool; the repository's own types, scopes, language and casing, or its own convention if it follows another.
+  Then the 10 last commit subjects, the changed files, and the staged diff (with **Commit all changes**, every
+  change), cut at Max diff size with the full file list and `{truncated}` saying so. Last, after the diff, where an
+  agent heeds them best (in real runs, rules before a long diff were half ignored), the instructions (the
+  repository's own when set, else the global ones), which win over Templum's rules.
 - **Runs in the background;** the button spins and a click on it cancels. The answer fills Summary and
   Description for the user to read; nothing is committed. A failure or a timeout: a notification with Details.
 - **First use:** once, a confirmation says the diff is sent to the agent's provider and uses the user's account;
@@ -427,8 +466,9 @@ headlessly.
 | `git_block/diff_view/` | The diff panel: its rows (file, hunk, lines, folded stretch), unified and split layouts, highlighting with the cache, the selection, the sticky title. |
 | `git_block/*.rs` | The tabs reorganized around the left column and the panel; the block's focus handle and key handler; the branch switcher; the banners; the Generate button, its spinner and the first-use confirmation (what `message.rs` runs). |
 | `config.rs`, `settings/` | `[agents]`'s `generate` and `models`; `[git.commit_message]`; `[git.repositories]` (an owned table name in `Edit`); the Git section and the agents dialog's new part. |
-| `workspace/` | `copy` for a focused Git block's selection; `Body::focus_inner` for a Git block. |
-| `session.rs` | The Git item's `diff` and `lists`. |
+| `workspace/` | `copy` for the focused Git's selection; `git_ops.rs`: opening, closing and pointing the workspace's Git (`toggle_git`, `open_git`, `close_git`, `set_git_folder`, `git_folders`, `poll_git`); `render.rs` places the popup. |
+| `sidebar.rs` | The Git button at the sidebar's foot. |
+| `session.rs` | `SavedGit`: the workspace's Git, with `diff` and `lists`. |
 
 **Data flow:** every git command still goes through the block's queue (`git_job`/`act_job`, one at a time, results
 dropped when the block changed folder); a diff is read in the background, parsed in `templum-git`, and turned into
@@ -478,7 +518,7 @@ date order.
 - History's graph rows, search modes, file history, Restore this version, Blame;
 - Generate with a fake agent command (a script that writes a known answer), its timeout and failure, the
   first-use confirmation written once; the settings' Try it;
-- the keyboard keys; the zoom keeping the diff like a photo (rows across `ZOOM_STEPS`).
+- the keyboard keys.
 
 **Manual (Hyprland):** a real agent session reviewed and committed; Generate with Claude Code and Codex.
 
@@ -487,7 +527,7 @@ date order.
 - The panel is a virtual list: only the rows on screen are built.
 - Reading and parsing a diff, and running an agent, happen off the UI thread.
 - Highlighting is per hunk, on first draw, cached.
-- `--bench-zoom=git` and a new `--bench-git` (a block with a 5,000-line diff, scrolling and zooming) stay at
+- `--bench-git` (the Git popup on a 5,000-line diff, its panel scrolling, Unified then Split) stays at
   p95 ≤ 16.7 ms.
 
 ## Delivery

@@ -48,6 +48,12 @@ jobs:
       - run: cargo install cargo-packager --locked --version 0.11.8
       - run: cargo build -p templum --release --locked --target ${{ matrix.target }}
       - run: cargo packager -p templum --release --target ${{ matrix.target }} --formats ${{ matrix.formats }} --out-dir "${{ github.workspace }}/dist"
+      # A bundle whose signature doesn't hold is "damaged" for whoever downloads it, with no way to open it.
+      - if: runner.os == 'macOS'
+        run: |
+          hdiutil attach -nobrowse -readonly -mountpoint "$RUNNER_TEMP/dmg" dist/*.dmg
+          codesign --verify --deep --strict --verbose=2 "$RUNNER_TEMP"/dmg/*.app
+          hdiutil detach "$RUNNER_TEMP/dmg"
       # The bare executable, for people who want to download and run it: a .tar.gz on Linux, the .exe on Windows.
       - if: runner.os == 'Linux'
         run: |

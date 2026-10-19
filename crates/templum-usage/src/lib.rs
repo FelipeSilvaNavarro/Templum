@@ -6,9 +6,14 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+pub mod accounts;
 pub mod claude;
 pub mod codex;
+pub mod copilot;
 pub mod gemini;
+pub mod opencode;
+pub mod pi;
+pub mod qwen;
 mod watch;
 
 pub use watch::{Event, REACHED, Watch};
@@ -38,6 +43,41 @@ pub struct Window {
     pub resets_at: u64,
     /// The model it is for ("Fable"); None: every model.
     pub scope: Option<String>,
+}
+
+/// How long the agents Templum opens wait for one of its tools, ms: seven days, so a question
+/// can wait for its person. Under JavaScript's largest timer (2³¹ − 1 ms, 24.8 days; a longer
+/// one fires at once), which Claude Code and Gemini CLI run on.
+pub const MCP_TIMEOUT_MS: u64 = 604_800_000;
+
+/// `<data>/bin/templum` (`templum.exe` on Windows), the link Templum points at itself at each
+/// start: the program the files it writes for agents run, the same whatever its version.
+pub fn bin(data: &Path, windows: bool) -> PathBuf {
+    data.join("bin")
+        .join(if windows { "templum.exe" } else { "templum" })
+}
+
+/// `path` as a word an agent gets: Windows' `\` written `/`, which every shell keeps.
+pub fn slashed(path: &Path, windows: bool) -> String {
+    let path = path.to_string_lossy();
+    if windows {
+        path.replace('\\', "/")
+    } else {
+        path.into_owned()
+    }
+}
+
+/// `bin hook <words>`, as an agent runs a hook: through bash on Unix, PowerShell on Windows, with
+/// `bin` in single quotes. None when `bin` holds a `'` or a line break.
+pub fn hook_command(bin: &str, windows: bool, words: &str) -> Option<String> {
+    if bin.is_empty() || bin.contains(['\'', '\n', '\r']) {
+        return None;
+    }
+    Some(if windows {
+        format!("& '{bin}' hook {words}")
+    } else {
+        format!("'{bin}' hook {words}")
+    })
 }
 
 /// The agents whose plan limits Templum reads, in the order it shows them.
@@ -98,6 +138,10 @@ pub struct Proc {
     pub cwd: Option<PathBuf>,
     /// Its terminal's `TEMPLUM_TERMINAL`.
     pub terminal: String,
+    /// Its account's state folder (docs/specs/accounts.md); None: its agent's own folder.
+    pub home: Option<PathBuf>,
+    /// Its account's id; None: its agent's own folder.
+    pub account: Option<String>,
 }
 
 /// Where the agents keep their files, and the relay its own.
@@ -139,37 +183,94 @@ pub fn relay_dir(data: &Path) -> PathBuf {
     data.join("usage").join("claude")
 }
 
-/// What the agents `procs` tell about their sessions, in order, and each agent's plan limits,
-/// at `now` (seconds since the epoch). Reads files: off the UI thread.
+/// A folder one of the agents whose limits Templum reads keeps its files in: its own (`id` is
+/// the agent's) or an account's (docs/specs/accounts.md, Usage and limits).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentHome {
+    /// Whose limits these are: the agent's id, or the account's.
+    pub id: String,
+    /// The agent's id.
+    pub agent: String,
+    /// Its state folder.
+    pub dir: PathBuf,
+    /// Its `sessions` are another Codex folder's too: its newest rollouts may be the other's.
+    pub sessions_shared: bool,
+}
+
+/// The `agent` processes among `procs`, by index, each with the folder it keeps its files in:
+/// its account's, else `own`.
+fn by_folder<'a>(
+    procs: &'a [Proc],
+    agent: &str,
+    own: Option<&'a Path>,
+) -> Vec<(&'a Path, Vec<usize>, Vec<&'a Proc>)> {
+    let mut groups: Vec<(&Path, Vec<usize>, Vec<&Proc>)> = Vec::new();
+    for (i, p) in procs.iter().enumerate().filter(|(_, p)| p.agent == agent) {
+        let Some(dir) = p.home.as_deref().or(own) else {
+            continue;
+        };
+        match groups.iter_mut().find(|(d, ..)| *d == dir) {
+            Some((_, at, ps)) => {
+                at.push(i);
+                ps.push(p);
+            }
+            None => groups.push((dir, vec![i], vec![p])),
+        }
+    }
+    groups
+}
+
+/// What the agents `procs` tell about their sessions, in order, and the plan limits of each of
+/// `homes`, by its id, at `now` (seconds since the epoch). Reads files: off the UI thread.
 pub fn read(
     procs: &[Proc],
     dirs: &Dirs,
+    homes: &[AgentHome],
     now: u64,
 ) -> (Vec<Option<Session>>, Vec<(String, Limits)>) {
     let mut sessions: Vec<Option<Session>> = procs
         .iter()
         .map(|p| match p.agent.as_str() {
-            "claude" => claude::session(p, &dirs.relay, dirs.claude.as_deref()),
+            "claude" => {
+                claude::session(p, &dirs.relay, p.home.as_deref().or(dirs.claude.as_deref()))
+            }
             _ => None,
         })
         .collect();
-    let mut limits = Vec::new();
-    if let Some(l) = claude::limits(&dirs.relay) {
-        limits.push(("claude".to_string(), l));
-    }
-    if let Some(dir) = &dirs.codex {
-        let (at, codex): (Vec<usize>, Vec<&Proc>) = procs
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.agent == "codex")
-            .unzip();
-        if !codex.is_empty() {
-            for (i, s) in at.into_iter().zip(codex::sessions(&codex, dir, now)) {
-                sessions[i] = s;
-            }
+    let codex = by_folder(procs, "codex", dirs.codex.as_deref());
+    for (dir, at, ps) in &codex {
+        for (&i, s) in at.iter().zip(codex::sessions(ps, dir, now)) {
+            sessions[i] = s;
         }
-        if let Some(l) = codex::limits(dir, now) {
-            limits.push(("codex".to_string(), l));
+    }
+    let mut limits = Vec::new();
+    for home in homes {
+        let found = match home.agent.as_str() {
+            // The agent's own: the relay files of a Claude Code on no account's folder.
+            "claude" if home.id == home.agent => {
+                let accounts: Vec<&Path> = homes
+                    .iter()
+                    .filter(|h| h.agent == "claude" && h.id != h.agent)
+                    .map(|h| h.dir.as_path())
+                    .collect();
+                claude::own_limits(&dirs.relay, &accounts)
+            }
+            "claude" => claude::limits(&dirs.relay, Some(&home.dir)),
+            // Its own processes' rollouts: the folder's newest may be another account's.
+            "codex" if home.sessions_shared => {
+                let files: Vec<PathBuf> = codex
+                    .iter()
+                    .filter(|(dir, ..)| *dir == home.dir)
+                    .flat_map(|(dir, _, ps)| codex::rollouts_of(ps, dir, now))
+                    .flatten()
+                    .collect();
+                codex::limits_of(&files)
+            }
+            "codex" => codex::limits(&home.dir, now),
+            _ => None,
+        };
+        if let Some(l) = found {
+            merge(&mut limits, &home.id, &l);
         }
     }
     (sessions, limits)
@@ -182,7 +283,7 @@ pub fn session_ids(procs: &[Proc], dirs: &Dirs, now: u64) -> Vec<Option<String>>
         .iter()
         .map(|p| {
             let dir = match p.agent.as_str() {
-                "claude" => dirs.claude.as_deref(),
+                "claude" => p.home.as_deref().or(dirs.claude.as_deref()),
                 // Qwen Code keeps the same file for each of its processes.
                 "qwen" => dirs.qwen.as_deref(),
                 _ => None,
@@ -190,12 +291,8 @@ pub fn session_ids(procs: &[Proc], dirs: &Dirs, now: u64) -> Vec<Option<String>>
             claude::session_id(p.pid, dir?)
         })
         .collect();
-    let (at, codex): (Vec<usize>, Vec<&Proc>) = procs
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| p.agent == "codex")
-        .unzip();
-    if let (Some(dir), false) = (&dirs.codex, codex.is_empty()) {
+    // Each Codex folder's processes together: an account's are in its own.
+    for (dir, at, codex) in by_folder(procs, "codex", dirs.codex.as_deref()) {
         for (i, id) in at.into_iter().zip(codex::session_ids(&codex, dir, now)) {
             ids[i] = id;
         }
@@ -206,8 +303,9 @@ pub fn session_ids(procs: &[Proc], dirs: &Dirs, now: u64) -> Vec<Option<String>>
 /// Whether `agent` still has its session `id` to resume. Gemini CLI deletes a session that has
 /// no message yet when it exits, and can't resume one it doesn't find
 /// (`tmp/<project>/chats/session-<time>-<the id's first 8>.jsonl`); the others are taken to.
-pub fn session_kept(agent: &str, id: &str, dirs: &Dirs) -> bool {
-    let (Some(dir), "gemini") = (&dirs.gemini, agent) else {
+/// `home`: an account's state folder, where its agent keeps them.
+pub fn session_kept(agent: &str, id: &str, dirs: &Dirs, home: Option<&Path>) -> bool {
+    let (Some(dir), "gemini") = (home.or(dirs.gemini.as_deref()), agent) else {
         return true;
     };
     let name = format!("-{}.jsonl", id.get(..8).unwrap_or(id));
@@ -258,6 +356,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_hook_runs_templum_in_single_quotes_through_bash_or_powershell() {
+        assert_eq!(
+            hook_command("/home/u/.local/share/templum/bin/templum", false, "gemini").as_deref(),
+            Some("'/home/u/.local/share/templum/bin/templum' hook gemini")
+        );
+        assert_eq!(
+            hook_command(
+                r"C:\Users\Jane Doe\AppData\Roaming\templum\bin\templum.exe",
+                true,
+                "gemini"
+            )
+            .as_deref(),
+            Some(r"& 'C:\Users\Jane Doe\AppData\Roaming\templum\bin\templum.exe' hook gemini")
+        );
+        // Single quotes keep $, ` and " as they are; only a ' or a line break can't go inside.
+        assert_eq!(
+            hook_command("/home/$x/templum", false, "gemini").as_deref(),
+            Some("'/home/$x/templum' hook gemini")
+        );
+        assert_eq!(hook_command("/home/o'neil/templum", false, "gemini"), None);
+        assert_eq!(hook_command("/home/o'neil/templum", true, "gemini"), None);
+        assert_eq!(hook_command("/home/a\nb/templum", false, "gemini"), None);
+        assert_eq!(hook_command("", false, "gemini"), None);
+        assert_eq!(
+            bin(Path::new("/d"), false),
+            Path::new("/d").join("bin").join("templum")
+        );
+        assert_eq!(
+            bin(Path::new("/d"), true),
+            Path::new("/d").join("bin").join("templum.exe")
+        );
+    }
+
+    #[test]
     fn the_newer_limits_win_and_keep_their_place() {
         let at = |at: u64| Limits {
             windows: Vec::new(),
@@ -297,12 +429,20 @@ mod tests {
             started: 0,
             cwd: Some("/srv".into()),
             terminal: "1-0".into(),
+            home: None,
+            account: None,
         };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let (sessions, limits) = read(&[proc("claude"), proc("aider")], &dirs, now);
+        let homes = [AgentHome {
+            id: "claude".into(),
+            agent: "claude".into(),
+            dir: data.join("claude"),
+            sessions_shared: false,
+        }];
+        let (sessions, limits) = read(&[proc("claude"), proc("aider")], &dirs, &homes, now);
         assert_eq!(sessions[0].as_ref().unwrap().cost_usd, Some(1.5));
         assert_eq!(sessions[1], None);
         assert_eq!(limits.len(), 1);
@@ -331,9 +471,49 @@ mod tests {
             started: 0,
             cwd: Some("/srv".into()),
             terminal: String::new(),
+            home: None,
+            account: None,
         };
         let ids = session_ids(&[proc("claude"), proc("qwen"), proc("gemini")], &dirs, 0);
         assert_eq!(ids, [Some("c-1".into()), Some("q-2".into()), None]);
+    }
+
+    #[test]
+    fn a_session_id_is_read_from_the_accounts_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let account = dir.path().join("accounts").join("claude2");
+        let sessions = account.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::write(
+            sessions.join("7.json"),
+            r#"{"pid": 7, "sessionId": "acc-1", "cwd": "/srv"}"#,
+        )
+        .unwrap();
+        let dirs = Dirs {
+            relay: dir.path().join("relay"),
+            claude: Some(dir.path().join("own")),
+            codex: None,
+            qwen: None,
+            gemini: Some(dir.path().join("gemini")),
+        };
+        let proc = |home: Option<PathBuf>| Proc {
+            agent: "claude".into(),
+            pid: 7,
+            started: 0,
+            cwd: Some("/srv".into()),
+            terminal: String::new(),
+            account: home.as_ref().map(|_| "claude2".into()),
+            home,
+        };
+        let ids = session_ids(&[proc(Some(account.clone())), proc(None)], &dirs, 0);
+        assert_eq!(ids, [Some("acc-1".into()), None]);
+        // Gemini CLI's session, in the account's folder only.
+        let id = "019a1f2e-7b3c-7d4e-8f5a-6b7c8d9e0f1a";
+        let chats = account.join("tmp/my-app/chats");
+        std::fs::create_dir_all(&chats).unwrap();
+        std::fs::write(chats.join("session-2026-10-14T10-00-019a1f2e.jsonl"), "{}").unwrap();
+        assert!(session_kept("gemini", id, &dirs, Some(&account)));
+        assert!(!session_kept("gemini", id, &dirs, None));
     }
 
     #[test]
@@ -347,18 +527,22 @@ mod tests {
             gemini: Some(dir.path().to_path_buf()),
         };
         let id = "019a1f2e-7b3c-7d4e-8f5a-6b7c8d9e0f1a";
-        assert!(!session_kept("gemini", id, &dirs), "no folder yet");
+        assert!(!session_kept("gemini", id, &dirs, None), "no folder yet");
         let chats = dir.path().join("tmp/my-app/chats");
         std::fs::create_dir_all(&chats).unwrap();
-        assert!(!session_kept("gemini", id, &dirs));
+        assert!(!session_kept("gemini", id, &dirs, None));
         std::fs::write(chats.join("session-2026-10-14T10-00-019a1f2e.jsonl"), "{}").unwrap();
-        assert!(session_kept("gemini", id, &dirs));
+        assert!(session_kept("gemini", id, &dirs, None));
         assert!(!session_kept(
             "gemini",
             "11111111-7b3c-7d4e-8f5a-6b7c8d9e0f1a",
-            &dirs
+            &dirs,
+            None
         ));
-        assert!(session_kept("grok", id, &dirs), "the others keep theirs");
+        assert!(
+            session_kept("grok", id, &dirs, None),
+            "the others keep theirs"
+        );
     }
 
     #[test]

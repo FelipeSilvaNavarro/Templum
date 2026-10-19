@@ -5,12 +5,15 @@
 - **Builds on:** [ARCHITECTURE.md](../ARCHITECTURE.md) (Zoom), [ADR-0002](../adr/0002-ui-framework.md),
   [navigation.md](navigation.md), [walking-skeleton.md](walking-skeleton.md) (which lists this under "Later")
 
+> **Since 2026-10-17 Git is not a block** but a popup drawn at a fixed scale ([git.md](git.md)): it has no level of
+> detail, and this spec's rules for Git blocks are gone.
+
 ## Goal
 
 Zoomed out, Templum stays smooth. At 25% the canvas shows 16 times the area it shows at 100%, and every block on
 screen is drawn in full: terminals shape every row, editors and notes run gpui-kit's whole editor with syntax
-highlighting, Git blocks build their lists, diff and commit fields, all at sizes nobody can read. Culling
-(`templum-canvas/src/canvas.rs:70-82`, `workspace/render.rs:240-259`) doesn't help: those blocks are on screen.
+highlighting, all at sizes nobody can read. Culling (`templum-canvas/src/canvas.rs:70-82`,
+`workspace/render.rs:240-259`) doesn't help: those blocks are on screen.
 
 Each block gets three levels of detail, picked by how big its text is **on screen** (font size × zoom), not by the
 zoom itself, like InDesign's "Greek Type Below":
@@ -27,7 +30,7 @@ every zoom.
 **Success criteria**
 
 1. At 33% and 25% (default fonts), no unfocused block shapes a terminal row or builds a gpui-kit `Editor`, a
-   Markdown view or a Git body.
+   Markdown view.
 2. Zoom still scales like a photo: changing level moves nothing. Bars sit on the letters' rows and columns, within
    1 px, at every zoom step, and turn into letters in place when zooming in. A level changes only when the camera
    comes to rest, never during a glide.
@@ -56,7 +59,6 @@ every zoom.
 |---|---|---|
 | A terminal's grid | `font.size`: 14 by default, 6 to 72 | `config.rs:73-88`, `340-346`, `settings/fields.rs:155-163`, `ws.cell.font_size` (`grid.rs:29-36`) |
 | An editor's file, a note | 13 | `editor.rs:38`, `note.rs:25` |
-| A Git block | 12 | `git_block/mod.rs:50` |
 | A kanban block (its card and column titles) | 13 | `kanban.rs:310`, `kanban.rs:467` |
 | A block's title | 12 | `block.rs:30` |
 
@@ -74,7 +76,7 @@ What the default sizes reach at each step (`camera.rs:6-8`):
 |---|---|---|---|---|---|
 | Terminal, 14 | 3.50 | 4.62 | 7.00 | 9.38 | ≥ 10.5 |
 | Editor, note, kanban, 13 | 3.25 | 4.29 | 6.50 | 8.71 | ≥ 9.75 |
-| Git, title, 12 | 3.00 | 3.96 | 6.00 | 8.04 | ≥ 9.0 |
+| Title, 12 | 3.00 | 3.96 | 6.00 | 8.04 | ≥ 9.0 |
 | **Level** | Silhouette | Silhouette | Full | Full | Full |
 
 - **Why 5.5 px:** it sits between the largest default size at 33% (4.62 px) and the smallest at 50% (6.0 px), so
@@ -83,8 +85,8 @@ What the default sizes reach at each step (`camera.rs:6-8`):
   17 pt or more stays Full at 33% (17 × 0.33 = 5.61 px): bigger text keeps its letters further out, as it should.
 - **Why 2.5 px:** under it a row is about 3 px tall and its bars 1 px lines, a gray texture that says nothing; the
   card says more and costs less. With today's steps and default fonts this never happens: it is a terminal font of
-  9 pt or less at 25% (9 × 0.25 = 2.25), or 7 pt or less at 33%. A Git block also draws its Card at the Silhouette
-  level, and rendered Markdown is left empty there (see [section 2](#2-what-each-block-draws)).
+  9 pt or less at 25% (9 × 0.25 = 2.25), or 7 pt or less at 33%. Rendered Markdown is left empty at the Silhouette
+  level (see [section 2](#2-what-each-block-draws)).
 - **The block's size on screen is not an input.** At 25% the smallest block (a 200 × 140 note) is still
   50 × 35 px; its title is clipped by its card like any text in it.
 
@@ -170,15 +172,6 @@ and it is unit-tested headlessly. `block::render` asks it for each block every f
   tinted card, empty. Its title (the note's first line) is on the label.
 - **Card:** the card and the label.
 
-### Git block
-
-At the Silhouette and Card levels a Git block is its **Card**: none of its body is built (`git_block/view.rs:37-139`):
-no top bar, tabs or lists, no diff panel with its rows shaped every frame (`git_block/diff_view/mod.rs:415-546`), no
-commit form, whose two gpui-kit fields do gpui-kit's per-frame work (`git_block/mod.rs:251-252`,
-`git_block/widgets.rs:83`). Its body is dozens of components laid out by GPUI, buttons and lists whose shape says
-little from afar; drawing them as boxes and bars would mean redoing that layout by hand. The label says which
-repository it is (`git_block/mod.rs:607-618`).
-
 ### Kanban block
 
 At the Silhouette level a kanban block is **drawn in full** (`kanban.rs:104-124`):
@@ -189,6 +182,10 @@ At the Silhouette level a kanban block is **drawn in full** (`kanban.rs:104-124`
 
 At the Card level it is its card and label. If `--bench-far` shows kanban blocks cost too much, they become Cards at
 the Silhouette level too ([Decisions](#decisions)).
+
+A checklist block ([checklist.md](checklist.md)) is drawn in full the same way, at every level its 13-unit items
+reach with today's zoom steps: a few short rows, no editor; below Full its title is the fixed-size label, as every
+block's.
 
 ### Drawings and the dot grid
 
@@ -254,7 +251,7 @@ next frame takes the map. With an agent writing a file shown far away, that is o
 
 1. **The block you work in is always Full,** at any zoom: the focused block (`space.focused`, `block.rs:91`), and any
    block where something holds the keyboard. That is checked with each focus handle's `is_focused` (the editors'
-   handles, a Git block's own focus and fields, a terminal's find field), which compares with the window's focus
+   handles, a terminal's find field), which compares with the window's focus
    directly (`gpui-pre-0.3.8 src/window.rs:507-509`), not through the last frame's element tree. Why: GPUI drops
    the focus of an element that isn't drawn (an empty focus path fires "focus lost", `window.rs:3393-3431`), and
    typing, the IME and the cursor need the Full body.
@@ -268,7 +265,7 @@ next frame takes the map. With an agent writing a file shown far away, that is o
 
 **What must keep working** (each has a test or a manual check):
 
-- Typing into a focused terminal, editor, note or Git field at 25%, with dead keys and the IME.
+- Typing into a focused terminal, editor or note at 25%, with dead keys and the IME.
 - Hover: the lift, the close button, the resize strips and grip.
 - Moving a block by its label; a double-click on the label frames the block ([navigation.md](navigation.md#framing-a-block)).
 - Resizing from the edges and the grip.
@@ -297,8 +294,6 @@ Every block's state lives in its `Body`, not in what is drawn, so Full → Silho
 | A note's text, cursor, undo, preview scroll | `Note` (`note.rs:37-43`, `211-217`) | Kept, the same way. |
 | A terminal's scrollback position and selection | alacritty's `Term`, the snapshot | Kept: the bars are drawn at the same position. |
 | A terminal's find field | `Pane::find` (`workspace/mod.rs:113-114`) | Kept, hidden below Full. |
-| A Git block's tab, selected row, diff and list scrolls, fields | `Git` (`git_block/mod.rs:207-307`), with explicit scroll handles | Kept. |
-| The scroll of a Git block's comparison list, commit details and stash list | GPUI element state (`git_block/branches.rs:205-210`, `history.rs:366-372`, `stashes.rs:113-118`) | GPUI keeps an element's state only while it is drawn (`window.rs:1145-1152`, `7176-7189`): these reset today when the block leaves the screen, and a Card would reset them without the block leaving. **These three get scroll handles stored in `Git`**, as its lists already have. "Recently discarded" is a dialog the window draws (`git_block/discarded.rs`): it keeps its scroll at every level. |
 | A kanban column's scroll | GPUI element state (`kanban.rs:202`, `277`, `403`) | Drawn in full at the Silhouette level, so kept; a kanban block never reaches the Card level with today's steps (13 px is 3.25 px at 25%). |
 
 ## 6. Cost
@@ -321,7 +316,7 @@ What a frame builds for one block:
   whole text (`display_map/text_wrapper.rs:337-345`).
 - **Editor or note, Silhouette:** one quad per word on screen: about 28 rows and 150 to 250 quads for a 900 × 600
   editor, about 80 for a 360 × 280 note. No `EditorState` update and no notify.
-- **A Git block below Full, and any block at the Card level:** the card and one label, a single short line shaped.
+- **Any block at the Card level:** the card and one label, a single short line shaped.
 
 At 25% a 1280 × 800 window shows about 20 blocks of the default sizes: today 20 full bodies, after this a few
 thousand quads and 20 labels.
@@ -337,7 +332,6 @@ thousand quads and 20 labels.
 | `templum/src/grid.rs` | Bars painted in place of shaped rows. |
 | `templum/src/silhouette.rs` (new) | The word map: taken from an `EditorState`, its staleness, its bars at a zoom (the math is pure and unit-tested here). |
 | `templum/src/editor.rs`, `note.rs` | The word map and the last-drawn zoom on each tab and note; the bodies below Full; `Tab::reload` drops the map. |
-| `templum/src/git_block/` | Scroll handles for the four lists in [section 5](#5-state-across-levels). |
 | `templum/src/bench.rs`, `main.rs` | `--bench-far`. |
 
 ## 8. Bench
@@ -345,10 +339,10 @@ thousand quads and 20 labels.
 **`--bench-far`** (new, next to `--bench-mixed`, `bench.rs:27-124`; flag in `main.rs:39-42`) reproduces the
 complaint: an agent cockpit seen from afar.
 
-- **Canvas:** 24 blocks, 6 per row in the mixed scenario's 950 × 750 slots (`bench.rs:34-36`): 8 terminals (5 run the
+- **Canvas:** 21 blocks, 6 per row in the mixed scenario's 950 × 750 slots (`bench.rs:34-36`): 8 terminals (5 run the
   mixed scenario's `TUI_LOOP`, `bench.rs:23-25`; 3 `cat` a large file), 6 editors each with one of the folder's
   largest text files open (`sample_file`, `bench.rs:373-401`, extended to the n largest), 4 notes holding the
-  folder's `README.md` (as `--bench-zoom=note` does, `bench.rs:159-166`), 3 Git blocks on the folder, and 3 kanban
+  folder's `README.md` (as `--bench-zoom=note` does, `bench.rs:159-166`), and 3 kanban
   blocks with `sample_board` (`bench.rs:403-420`). **No block focused**: the workspace keeps the keyboard, so every
   block is drawn at its level.
 - **Drive:** the camera rests at 33% for 5 s, then glides to 25% and rests there for 5 s, while panning in a circle
@@ -393,8 +387,7 @@ top, the text area's origin for a note and for an editor tab with 3 and 4 line-n
 - A terminal's bars sit on its cells: colored output at 25%, each bar the cell rectangle of its run.
 - At 25% the label's text is 12 px and the dot 8 px on screen; at 100% the header is as today.
 - State survives Full → Silhouette → Full: an editor's rows shown, cursor, selection, undo and tabs; a note's rows;
-  a terminal's scrollback position; a Git block's selected row and diff scroll; the four lists of
-  [section 5](#5-state-across-levels) through a Card.
+  a terminal's scrollback position.
 - The word map follows the text: a far editor whose file changes on disk shows the new text's bars a frame later;
   a canvas restored at 25% shows bars after its first frames.
 - At 25%: the wheel over a far terminal and over a far editor pans the canvas, and Ctrl+wheel zooms; after a click
@@ -408,7 +401,7 @@ top, the text area's origin for a note and for an editor tab with 3 and 4 line-n
   explicitly.
 
 **Manual (Hyprland):** a real cockpit (Claude Code in three terminals, Codex in one, editors on files the agents
-edit, notes, a Git block, a kanban block) at 33% and 25%: the bars look like the text, the colors read, nothing
+edit, notes, a kanban block) at 33% and 25%: the bars look like the text, the colors read, nothing
 flickers during glides, and nothing moves when a glide ends or when zooming back in (a screen recording of 50% ↔ 33%,
 watched frame by frame); typing into a far terminal with dead keys and fcitx5 at 25%; the status dots read at 25%;
 light and dark themes; the benches.
@@ -434,12 +427,10 @@ The code couldn't settle these; the maintainer chose on 2026-10-13:
    cursor. *Decision:* accepted. At 33% and 25% the canvas is mostly blocks, and a wheel that pans everywhere is
    what navigating there needs. The alternative, keeping the wheel on terminals only (cheap: their bars follow the
    scroll), makes the wheel act differently over a terminal and over an editor.
-2. **The kinds without bars.** A Git block becomes a Card; a Markdown note or file shown rendered is an empty
-   (tinted) card; a kanban block is drawn in full. *Decision:* as written. Revisit kanban if `--bench-far`
-   shows it costs. Bars for the Git diff panel's rows are possible later (its rows model is pure,
-   `git_block/diff_view/rows.rs`), but the rest of the block would still need its layout redone by hand.
+2. **The kinds without bars.** A Markdown note or file shown rendered is an empty (tinted) card; a kanban block is
+   drawn in full. *Decision:* as written. Revisit kanban if `--bench-far` shows it costs.
 3. **The threshold.** 5.5 px switches every default block between 50% and 33%. InDesign's default, 7 px, would turn
-   editors, notes and Git blocks to bars at 50% while 14-pt terminals keep their letters there. *Decision:*
+   editors and notes to bars at 50% while 14-pt terminals keep their letters there. *Decision:*
    5.5 px.
 
 ## Documentation

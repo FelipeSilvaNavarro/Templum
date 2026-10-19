@@ -61,13 +61,7 @@ impl Workspace {
         self.open_menu(menu::Target::Canvas(at), e.position, window, cx);
     }
 
-    pub(crate) fn hover_block(
-        &mut self,
-        id: BlockId,
-        hovered: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(crate) fn hover_block(&mut self, id: BlockId, hovered: bool, cx: &mut Context<Self>) {
         let next = if hovered {
             Some(id)
         } else if self.space.hovered == Some(id) {
@@ -79,7 +73,38 @@ impl Workspace {
             self.space.hovered = next;
             cx.notify();
         }
-        self.follow_pointer(window, cx);
+    }
+
+    /// The pointer moved with no button down: the block under it takes the keyboard, as
+    /// Hyprland's `follow_mouse` does. Only on a move, so a block coming under a still pointer
+    /// (a pan, a swap, a new block) doesn't take it. Not during a drag, nor while a menu is open
+    /// or the keyboard is outside the canvas and its blocks (a dialog, the settings panel, the
+    /// Git popup). A grid tile comes to the top; on the canvas, where blocks overlap, the block
+    /// keeps its place in the stack, only when the settings say so and nothing is selected
+    /// (the selection keeps the keyboard for Delete and Copy).
+    pub(super) fn follow_pointer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self
+            .space
+            .hovered
+            .filter(|id| self.space.shown(*id) && self.space.focused != Some(*id))
+        else {
+            return;
+        };
+        if self.drag.is_some()
+            || self.menu.is_some()
+            || !self.focus_handle.contains_focused(window, cx)
+        {
+            return;
+        }
+        if self.space.grid.is_some() {
+            self.focus_block(id, window, cx);
+        } else if self.config.canvas.focus_follows_pointer
+            && self.space.selected.is_empty()
+            && self.space.selected_ink.is_none()
+            && self.space.selected_wire.is_none()
+        {
+            self.give_keyboard(id, window, cx);
+        }
     }
 
     pub(super) fn local(&self, pos: PixelPoint<Pixels>) -> Point {
@@ -87,6 +112,12 @@ impl Workspace {
             f32::from(pos.x - self.origin.x),
             f32::from(pos.y - self.origin.y),
         )
+    }
+
+    /// The top block drawn under a window position.
+    pub(crate) fn block_under(&self, pos: PixelPoint<Pixels>) -> Option<BlockId> {
+        self.space
+            .block_at(self.space.canvas.camera.to_world(self.local(pos)))
     }
 
     pub(crate) fn begin_move(&mut self, id: BlockId, pos: PixelPoint<Pixels>) {
@@ -407,12 +438,13 @@ impl Workspace {
         }
     }
 
-    /// Copies the focused terminal's selection, or the focused Git block's diff selection.
-    pub(crate) fn copy_selection(&mut self, cx: &mut Context<Self>) {
+    /// Copies the Git popup's diff selection while it has the keyboard, else the focused
+    /// terminal's selection.
+    pub(crate) fn copy_selection(&mut self, window: &Window, cx: &mut Context<Self>) {
         let from_git = self
             .space
-            .focused
-            .and_then(|id| self.space.git(id))
+            .git()
+            .filter(|g| self.git_open && g.focus.contains_focused(window, cx))
             .and_then(|g| g.diff().selected_text());
         let text = from_git.or_else(|| {
             self.space
@@ -464,9 +496,9 @@ impl Workspace {
             let p = self.local(pos);
             let moved = (p.x - start.x).abs().max((p.y - start.y).abs());
             if moved < CLICK_SLOP {
-                self.unfocused = self.space.focused.take();
+                let unfocused = self.space.focused.take();
                 let had_wire = std::mem::replace(&mut self.space.selected_wire, wire);
-                if self.unfocused.is_some() || !self.space.selected.is_empty() || had_wire != wire {
+                if unfocused.is_some() || !self.space.selected.is_empty() || had_wire != wire {
                     self.space.selected.clear();
                     cx.notify();
                 }
@@ -493,7 +525,7 @@ impl Workspace {
             Command::GoToLine => self.go_to_line(window, cx),
             Command::Copy => {
                 if !self.copy_blocks(cx) {
-                    self.copy_selection(cx);
+                    self.copy_selection(window, cx);
                 }
             }
             // Blocks on the clipboard are pasted on the canvas, unless a field has the keyboard.
@@ -520,10 +552,11 @@ impl Workspace {
             Command::ThemePicker => self.toggle_theme_picker(cx),
             Command::OpenConfig => self.open_config(window, cx),
             Command::Settings => self.toggle_settings(window, cx),
+            Command::Agent => self.toggle_agent(window, cx),
             Command::NewKanban => self.new_kanban(window, cx),
             Command::NewNote => self.new_note(window, cx),
             Command::NewEditor => self.new_editor(window, cx),
-            Command::NewGit => self.new_git(window, cx),
+            Command::NewGit => self.toggle_git(window, cx),
             Command::NextWorkspace => self.cycle_space(1, window, cx),
             Command::PreviousWorkspace => self.cycle_space(-1, window, cx),
             Command::NewWorkspace => self.add_space(window, cx),
@@ -618,12 +651,19 @@ impl Workspace {
             }
             return;
         }
-        // A balloon's field has the keyboard: what it leaves (shortcuts aside) never reaches the
-        // shell of the focused terminal.
-        if self.balloon_typing(window, cx).is_some() {
-            if let Some(command) = command.filter(|c| !matches!(c, Command::Copy | Command::Paste))
+        // A balloon's dialog has the keyboard (docs/specs/ask-user.md, Keyboard): its keys first;
+        // what it leaves (shortcuts aside) never reaches the shell of the focused terminal.
+        if let Some(terminal) = self.balloon_keys(window, cx).map(str::to_string) {
+            let typing = self.balloon_typing(window, cx).is_some();
+            if self.question_key(&terminal, &e.keystroke, window, cx) {
+                cx.stop_propagation();
+            } else if let Some(command) =
+                command.filter(|c| !matches!(c, Command::Copy | Command::Paste))
             {
                 self.command_key(e, Some(command), window, cx);
+                cx.stop_propagation();
+            } else if !typing {
+                // Nor its text, which would go to the terminal's input handler.
                 cx.stop_propagation();
             }
             return;
@@ -708,6 +748,19 @@ impl Workspace {
                 .and_then(|id| self.space.blocks.get(&id))
                 .is_some_and(|b| b.kanban().is_some())
             && self.undo_boards(cx)
+        {
+            cx.stop_propagation();
+            return;
+        }
+        // Ctrl+Z on a checklist block undoes the last change to a checklist (in its field, the
+        // field's own: gpui-kit's input takes the key).
+        if undo_key(k, cfg!(target_os = "macos")) == Some(false)
+            && self
+                .space
+                .focused
+                .and_then(|id| self.space.blocks.get(&id))
+                .is_some_and(|b| b.checklist().is_some())
+            && self.undo_checklists(cx)
         {
             cx.stop_propagation();
             return;
@@ -800,15 +853,14 @@ impl Workspace {
         let p = self.local(e.position);
         // Drawings are hit only here, where no block is (blocks stop the press).
         let world = self.space.canvas.camera.to_world(p);
-        if e.modifiers.shift && e.click_count == 1 {
+        if e.modifiers.shift {
             self.space.selected_ink = None;
             self.space.selected_wire = None;
             self.begin_marquee(p);
             cx.notify();
             return;
         }
-        if e.click_count == 1
-            && self.tool == Tool::Select
+        if self.tool == Tool::Select
             && let Some(index) = self.ink_at(world)
         {
             self.space.selected_ink = Some(index);
@@ -826,22 +878,13 @@ impl Workspace {
         if self.space.selected_ink.take().is_some() {
             cx.notify();
         }
-        if e.click_count == 2 {
-            let at = self.space.canvas.camera.to_world(p);
-            // The first click took the focus: the new terminal still starts in its folder.
-            if self.space.focused.is_none() {
-                self.space.focused = self.unfocused.take();
-            }
-            self.add_terminal_at(at, window, cx);
-        } else {
-            // A wire, under the drawings: a click on it selects it (`release`). Wires run where
-            // people grab the canvas: a drag from one moves it, as from anywhere.
-            let wire = (e.click_count == 1 && self.tool == Tool::Select)
-                .then(|| self.wire_at(world))
-                .flatten();
-            self.drag = Some(Drag::Canvas(Gesture::pan(p)));
-            self.press = Some((p, wire));
-        }
+        // A wire, under the drawings: a click on it selects it (`release`). Wires run where people
+        // grab the canvas: a drag from one moves it, as from anywhere.
+        let wire = (self.tool == Tool::Select)
+            .then(|| self.wire_at(world))
+            .flatten();
+        self.drag = Some(Drag::Canvas(Gesture::pan(p)));
+        self.press = Some((p, wire));
     }
 
     pub(super) fn on_background_scroll(
@@ -856,8 +899,10 @@ impl Workspace {
         }
         self.space.pristine = false;
         let p = self.local(e.position);
-        // The hand (its tool, or Alt held) zooms without Ctrl: dragging moves the canvas.
-        if e.modifiers.control || e.modifiers.alt || self.tool == Tool::Hand {
+        // The hand (its tool, or Alt held) zooms without Ctrl: dragging moves the canvas. So does
+        // a mouse's wheel (steps, not a touchpad's pixels) with the selection tool.
+        let mouse_wheel = self.tool == Tool::Select && !e.delta.precise();
+        if e.modifiers.control || e.modifiers.alt || self.tool == Tool::Hand || mouse_wheel {
             self.zoom_acc += match e.delta {
                 ScrollDelta::Lines(d) => d.y * 50.0,
                 ScrollDelta::Pixels(d) => f32::from(d.y),
@@ -970,13 +1015,16 @@ impl EntityInputHandler for Workspace {
         &mut self,
         _: Option<Range<usize>>,
         text: &str,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.marked = None;
+        if self.balloon_keys(window, cx).is_some() {
+            return;
+        }
         if let Some(pane) = self.space.focused_terminal() {
             pane.person_typed();
-            pane.term.write(text.as_bytes().to_vec());
+            pane.term.text(text);
         }
         cx.notify();
     }

@@ -29,6 +29,21 @@ pub fn session_ids(procs: &[&Proc], codex_dir: &Path, now: u64) -> Vec<Option<St
 }
 
 /// The rollout of each of the Codex processes `procs`, in order: each process gets its own.
+pub fn rollouts_of(procs: &[&Proc], codex_dir: &Path, now: u64) -> Vec<Option<PathBuf>> {
+    files(procs, codex_dir, now)
+}
+
+/// The plan limits in the newest of the rollouts `files` (by modified time) that has them: the
+/// account's when several Codex folders share one `sessions/` and these are its own processes'.
+pub fn limits_of(files: &[PathBuf]) -> Option<Limits> {
+    let mut files: Vec<(u64, &PathBuf)> = files
+        .iter()
+        .filter_map(|f| Some((modified(f)?, f)))
+        .collect();
+    files.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    files.into_iter().find_map(|(at, f)| limits_in(f, at))
+}
+
 fn files(procs: &[&Proc], codex_dir: &Path, now: u64) -> Vec<Option<PathBuf>> {
     let earliest = procs.iter().map(|p| p.started).min().unwrap_or(now);
     let files = rollouts(codex_dir, earliest.saturating_sub(DAY), now + DAY);
@@ -331,6 +346,8 @@ mod tests {
             started,
             cwd: Some(cwd.into()),
             terminal: "1-0".into(),
+            home: None,
+            account: None,
         }
     }
 
@@ -453,6 +470,89 @@ mod tests {
         let p = proc("/srv/app", START);
         let found = sessions(&[&p], dir.path(), START + 60);
         assert_eq!(found[0].as_ref().unwrap().tokens, Some(333));
+    }
+
+    #[test]
+    fn shared_codex_sessions_give_each_its_processes_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mine = rollout(
+            dir.path(),
+            "mine",
+            "/srv/app",
+            "2026-10-08T22:15:12Z",
+            &[count(1, 1, LIMITS)],
+        );
+        let theirs = LIMITS.replace("2.0", "80.0");
+        let other = rollout(
+            dir.path(),
+            "other",
+            "/srv/web",
+            "2026-10-08T22:25:12Z",
+            &[count(1, 1, &theirs)],
+        );
+        let file = std::fs::File::options().write(true).open(&mine).unwrap();
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(START))
+            .unwrap();
+        // codex2's, the newer, is what the folder's newest says.
+        assert_eq!(
+            limits(dir.path(), START + 60).unwrap().windows[0].used_percent,
+            80.0
+        );
+        let p = proc("/srv/app", START - 1);
+        let files = rollouts_of(&[&p], dir.path(), START + 60);
+        assert_eq!(files, [Some(mine.clone())]);
+        let l = limits_of(&files.into_iter().flatten().collect::<Vec<_>>()).unwrap();
+        assert_eq!(l.windows[0].used_percent, 2.0, "its own process's file");
+        assert_eq!(
+            limits_of(&[other, mine]).unwrap().windows[0].used_percent,
+            80.0,
+            "the newest"
+        );
+        assert_eq!(limits_of(&[]), None);
+    }
+
+    #[test]
+    fn a_codex_whose_sessions_are_shared_reads_its_own_processes_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let mine = rollout(
+            dir.path(),
+            "mine",
+            "/srv/app",
+            "2026-10-08T22:15:12Z",
+            &[count(1, 1, LIMITS)],
+        );
+        let theirs = LIMITS.replace("2.0", "80.0");
+        rollout(
+            dir.path(),
+            "other",
+            "/srv/web",
+            "2026-10-08T22:25:12Z",
+            &[count(1, 1, &theirs)],
+        );
+        let file = std::fs::File::options().write(true).open(&mine).unwrap();
+        file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(START))
+            .unwrap();
+        let dirs = crate::Dirs {
+            relay: dir.path().join("relay"),
+            claude: None,
+            codex: Some(dir.path().to_path_buf()),
+            qwen: None,
+            gemini: None,
+        };
+        let home = |sessions_shared| crate::AgentHome {
+            id: "codex".into(),
+            agent: "codex".into(),
+            dir: dir.path().to_path_buf(),
+            sessions_shared,
+        };
+        let p = proc("/srv/app", START - 1);
+        let used = |shared| {
+            let (_, limits) =
+                crate::read(std::slice::from_ref(&p), &dirs, &[home(shared)], START + 60);
+            limits[0].1.windows[0].used_percent
+        };
+        assert_eq!(used(true), 2.0, "its own process's");
+        assert_eq!(used(false), 80.0, "the folder's newest");
     }
 
     #[test]

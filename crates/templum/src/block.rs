@@ -6,8 +6,9 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::base::animation::Lerp as _;
 use gpui_kit::base::motion::{Transition, transition};
-use gpui_kit::component::Icon;
+use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{Icon, Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, App, BoxShadow, ClickEvent, Context, ElementId, Hsla,
@@ -17,6 +18,7 @@ use gpui_kit::{
 use templum_canvas::{Block, BlockId, Edges, Level, Point, Rect, chrome};
 
 use crate::alert::{self, Alert};
+use crate::checklist;
 use crate::editor;
 use crate::git_block;
 use crate::grid::{self, hsla};
@@ -40,6 +42,8 @@ const EDGE: f32 = 6.0;
 /// dot in it is this wide: screen pixels, never zoomed.
 const LABEL_IN: f32 = 4.0;
 const DOT: f32 = 8.0;
+/// The Templum Agent's mark before a title, world units.
+const MARK: f32 = 10.0;
 
 /// `look` scales the block around its center (it is drawn at zoom × scale) and fades it.
 /// A block that isn't `live` is a ghost fading out: no controls, and clicks go through it.
@@ -60,8 +64,7 @@ pub(crate) fn render(
     let font = match body {
         Body::Editor(_) => editor::FONT,
         Body::Note(_) => note::FONT,
-        Body::Git(_) => git_block::FONT,
-        Body::Terminal(_) | Body::Kanban(_) => 0.0,
+        Body::Terminal(_) | Body::Kanban(_) | Body::Checklist(_) => 0.0,
     };
     let settled = if font == 0.0 || (ws.space.flight.is_none() && look.scale == 1.0) {
         z
@@ -101,7 +104,7 @@ pub(crate) fn render(
     // keyboard: GPUI drops the focus of what isn't drawn) is always Full, asked only below Full.
     let level = match body {
         // Drawn in full down to the Card level, which its 13 px never reach (3.25 px at 25%).
-        Body::Kanban(_) => Level::Full,
+        Body::Kanban(_) | Body::Checklist(_) => Level::Full,
         Body::Terminal(_) => templum_canvas::level(ws.cell.font_size, ws.space.rest),
         _ => templum_canvas::level(font, ws.space.rest),
     };
@@ -147,16 +150,43 @@ pub(crate) fn render(
     // Below Full the title is a label: never scaled, at the card's top-left corner, over the
     // header and the top of the body (docs/specs/level-of-detail.md, section 2).
     let labeled = templum_canvas::level(TITLE_FONT, ws.space.rest) != Level::Full;
+    // The Templum Agent's blocks wear its mark before their title, at the Full level.
+    let uid = ws.space.uids.get(&id).map_or("", String::as_str);
+    let mark = match body {
+        Body::Terminal(pane)
+            if !labeled && pane.opened_by.as_deref() == Some(templum_agent::ASKER) =>
+        {
+            Some(
+                div()
+                    .id(SharedString::from(format!("agent-mark-{uid}")))
+                    .flex_none()
+                    .child(
+                        Icon::new(IconName::Sparkles)
+                            .size(px(MARK * z))
+                            .text_color(ui.accent),
+                    )
+                    .test_support(),
+            )
+        }
+        _ => None,
+    };
+    // A block it just touched: its border goes to the accent twice.
+    let now = cx.background_executor().now();
+    let glow = ws
+        .templum_agent
+        .glow
+        .get(uid)
+        .and_then(|at| crate::chat::glow(*at, now));
+    if glow.is_some() {
+        window.request_animation_frame();
+    }
     let title_text = div()
         .id(("title-text", n))
         .truncate()
         .when(labeled, |el| el.min_w(px(0.0)))
         .text_size(px(TITLE_FONT * if labeled { 1.0 } else { z }))
         .text_color(if focused { ui.title } else { ui.title_dim })
-        .child(match body {
-            Body::Git(g) if labeled => format!("Git · {}", g.title()).into(),
-            body => title(ws, body, cx),
-        })
+        .child(title(ws, body, cx))
         .test_support();
     // A terminal's state: on the left of its header, or in its label.
     let dot = match body {
@@ -210,6 +240,34 @@ pub(crate) fn render(
         },
         _ => None,
     };
+    // After the title, at Full: a clock and how many schedules its agent set, which its tooltip
+    // lists (docs/specs/agent-tools.md, What the person sees).
+    let clock = match body {
+        Body::Terminal(pane) if live && !labeled && !ws.schedules.is_empty() => {
+            let uid = ws.space.uids.get(&id).cloned().unwrap_or_default();
+            let lines = ws.schedule_lines(pane.term.id(), &uid);
+            (!lines.is_empty()).then(|| {
+                let (count, tip) = (lines.len(), lines.join("\n"));
+                div()
+                    .id(ElementId::Name(format!("schedules-{n}").into()))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(3.0 * z))
+                    .text_size(px(11.0 * z))
+                    .text_color(ui.title_dim)
+                    .child(
+                        Icon::new(IconName::Clock)
+                            .size(px(11.0 * z))
+                            .text_color(ui.title_dim),
+                    )
+                    .child(count.to_string())
+                    .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                    .test_support()
+            })
+        }
+        _ => None,
+    };
     let title = if labeled {
         div()
             .id(("title", n))
@@ -240,8 +298,12 @@ pub(crate) fn render(
             // Clear of the fullscreen and close buttons on the right (and of a terminal's chip
             // on the left), and centered.
             .px(px(if chip.is_some() { 120.0 } else { 52.0 } * z))
+            .gap(px(6.0 * z))
             .overflow_hidden()
+            .gap(px(4.0 * z))
+            .children(mark)
             .child(title_text)
+            .children(clock)
     }
     // The title is where the block is held to move it: an open hand over it, a closed one
     // while it moves (CSS's grab and grabbing).
@@ -369,7 +431,28 @@ pub(crate) fn render(
     };
     // A note block's button to every note, on the left of its header (over the title: no move).
     let preview = match body {
-        Body::Note(_) if live && !labeled => Some(note::notes_button(ws, id, z, cx)),
+        Body::Note(_) if live && !labeled => Some(header_button(
+            ws,
+            ("notes", n).into(),
+            IconName::NotebookText,
+            "All notes",
+            z,
+            move |_, window, cx| note::open_notes(Some(id), window, cx),
+            cx,
+        )),
+        _ => None,
+    };
+    // A checklist block's button to every checklist, there too.
+    let all_checklists = match body {
+        Body::Checklist(_) if live && !labeled => Some(header_button(
+            ws,
+            ("checklists", n).into(),
+            IconName::ListChecks,
+            "All checklists",
+            z,
+            move |_, window, cx| checklist::open_checklists(Some(id), window, cx),
+            cx,
+        )),
         _ => None,
     };
     // An editor's file-tree toggle, on the left of its header (over the title: no move).
@@ -446,6 +529,7 @@ pub(crate) fn render(
         .children(chip)
         .children(boards)
         .children(preview)
+        .children(all_checklists)
         .children(tree_toggle)
         .when(hovered, |el| {
             el.child(fade_in(fullscreen, ("fullscreen-fade", n)))
@@ -461,9 +545,9 @@ pub(crate) fn render(
         .h(px((r.h - chrome::TITLE_H * z).max(0.0)))
         .p(px(chrome::PAD * z))
         .overflow_hidden();
-    let content =
-        match body {
-            Body::Terminal(pane) => frame
+    let content = match body {
+        Body::Terminal(pane) => {
+            frame
                 // At the Card level nothing is inside: the grid isn't painted, so the terminal isn't
                 // re-armed and its output asks for no frames, as off screen.
                 .when(live && level != Level::Card, |el| {
@@ -522,42 +606,40 @@ pub(crate) fn render(
                 .when_some(
                     pane.find.as_ref().filter(|_| live && level == Level::Full),
                     |el, bar| el.child(find_bar(ws, n, bar, z)),
-                ),
-            // A fading kanban block is drawn empty: its board is still live elsewhere.
-            Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, cx))),
-            // A fading note is drawn empty, like a kanban block.
-            // Below Full a note shown rendered is its tinted card, empty: gpui-kit's Markdown view
-            // has no layout to draw bars from.
-            Body::Note(n) => frame.when(live, |el| {
-                el.child(settled_box(
-                    block,
-                    settled,
-                    pull,
-                    note::body(ws, id, n, settled, level, cx),
-                ))
-            }),
-            // A fading editor is drawn empty, like a note.
-            Body::Editor(e) => frame.when(live, |el| {
-                el.child(settled_box(
-                    block,
-                    settled,
-                    pull,
-                    editor::body(ws, id, e, settled, level, cx),
-                ))
-            }),
-            // A fading Git block is drawn empty, like a note. Below Full it is its card: its body is
-            // dozens of components whose shape says little from afar, and its diff rows and commit
-            // fields would do their per-frame work for nothing.
-            Body::Git(g) => frame.when(live && level == Level::Full, |el| {
-                el.child(settled_box(
-                    block,
-                    settled,
-                    pull,
-                    git_block::body(ws, id, g, settled, cx),
-                ))
-            }),
+                )
+                .when_some(
+                    pane.starting
+                        .as_ref()
+                        .filter(|_| live && level != Level::Card),
+                    |el, s| el.child(starting_cover(ws, n, s.title.clone(), z)),
+                )
         }
-        .test_support();
+        // A fading kanban block is drawn empty: its board is still live elsewhere.
+        Body::Kanban(k) => frame.when(live, |el| el.child(kanban::body(ws, id, *k, z, window, cx))),
+        // A fading checklist block is drawn empty too: its checklists are live elsewhere.
+        Body::Checklist(c) => frame.when(live, |el| el.child(checklist::body(ws, id, c, z, cx))),
+        // A fading note is drawn empty, like a kanban block.
+        // Below Full a note shown rendered is its tinted card, empty: gpui-kit's Markdown view
+        // has no layout to draw bars from.
+        Body::Note(n) => frame.when(live, |el| {
+            el.child(settled_box(
+                block,
+                settled,
+                pull,
+                note::body(ws, id, n, settled, level, cx),
+            ))
+        }),
+        // A fading editor is drawn empty, like a note.
+        Body::Editor(e) => frame.when(live, |el| {
+            el.child(settled_box(
+                block,
+                settled,
+                pull,
+                editor::body(ws, id, e, settled, level, cx),
+            ))
+        }),
+    }
+    .test_support();
 
     let handle = div()
         .id(("handle", n))
@@ -604,7 +686,8 @@ pub(crate) fn render(
         .border_color(if marked {
             ui.accent
         } else {
-            ui.hairline.lerp(&ui.hover_border, lift)
+            let border = ui.hairline.lerp(&ui.hover_border, lift);
+            glow.map_or(border, |k| border.lerp(&ui.accent, k))
         })
         .bg(bg)
         .shadow(shadows)
@@ -613,9 +696,9 @@ pub(crate) fn render(
             // Nothing behind a block reacts to its clicks; wheel events still bubble
             // (title bar pans).
             el.block_mouse_except_scroll()
-                .on_hover(cx.listener(move |ws, hovered: &bool, window, cx| {
-                    ws.hover_block(id, *hovered, window, cx)
-                }))
+                .on_hover(
+                    cx.listener(move |ws, hovered: &bool, _, cx| ws.hover_block(id, *hovered, cx)),
+                )
                 // Blocking hides the workspace from pinch (it hit-tests like a click): zoom
                 // here too.
                 .on_pinch(cx.listener(|ws, e, window, cx| ws.on_pinch(e, window, cx)))
@@ -663,7 +746,7 @@ pub(crate) fn render(
         .when(hovered && !tiled, |el| {
             el.child(fade_in(handle, ("handle-fade", n)))
         })
-        // What its agent asks the person, over the terminal's top right corner, up close only.
+        // What its agent asks the person, a dialog centered on the terminal, up close only.
         .children(match body {
             Body::Terminal(pane) if live && level == Level::Full => {
                 crate::balloon::render(ws, id, pane.term.id(), z, cx)
@@ -674,15 +757,78 @@ pub(crate) fn render(
         .into_any_element()
 }
 
+/// Over an agent's terminal while it starts (`starting.rs`): its name and a spinner, not its
+/// shell typing the command.
+fn starting_cover(ws: &Workspace, n: usize, title: SharedString, z: f32) -> impl IntoElement {
+    div()
+        .id(("starting", n))
+        .absolute()
+        .inset_0()
+        .bg(ws.ui.surface)
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap(px(12.0 * z))
+        .child(Spinner::new().with_size(UiSize::Size(px(22.0 * z))))
+        .child(
+            div()
+                .text_size(px(15.0 * z))
+                .text_color(ws.ui.title)
+                .child(title),
+        )
+        .child(
+            div()
+                .text_size(px(12.0 * z))
+                .text_color(ws.ui.hint)
+                .child("Starting…"),
+        )
+        .test_support()
+}
+
+/// A button on the left of a block's header (over the title: no move), `tip` its tooltip.
+pub(crate) fn header_button(
+    ws: &Workspace,
+    id: ElementId,
+    icon: IconName,
+    tip: &'static str,
+    z: f32,
+    click: impl Fn(&mut Workspace, &mut Window, &mut Context<Workspace>) + 'static,
+    cx: &mut Context<Workspace>,
+) -> AnyElement {
+    let ui = ws.ui;
+    div()
+        .id(id)
+        .absolute()
+        .top(px(4.0 * z))
+        .left(px(4.0 * z))
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(20.0 * z))
+        .rounded(px(5.0 * z))
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .child(Icon::new(icon).size(px(12.0 * z)).text_color(ui.title))
+        .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+        .on_mouse_down(MouseButton::Left, |_: &MouseDownEvent, _, cx| {
+            cx.stop_propagation()
+        })
+        .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| click(ws, window, cx)))
+        .test_support()
+        .into_any_element()
+}
+
 /// A block's title: a terminal's, a kanban block's board, a note's first line, an editor's file,
 /// a Git block's repository.
 pub(crate) fn title(ws: &Workspace, body: &Body, cx: &App) -> SharedString {
     match body {
+        Body::Terminal(pane) if pane.died_starting() => "The shell ended".into(),
         Body::Terminal(pane) => SharedString::from(pane.term.title()),
         Body::Kanban(k) => k.title(ws),
         Body::Note(n) => n.title(cx),
+        Body::Checklist(c) => c.title(ws),
         Body::Editor(e) => e.title(),
-        Body::Git(g) => g.title(),
     }
 }
 
@@ -833,14 +979,17 @@ fn shadow(color: Hsla, focused: bool, lift: f32, z: f32) -> BoxShadow {
 /// text names the block that pressed keys in it, for ANSWERED_FOR.
 pub(crate) fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedString)> {
     let ansi = |i: usize| hsla(ws.theme.palette.ansi[i], 1.0);
-    let (color, text) = match &pane.alert {
-        Some(a @ Alert::Attention(_)) => (ansi(3), a.text()),
-        Some(a) if a.failed() => (ansi(1), a.text()),
-        Some(a) => (ansi(2), a.text()),
-        None => match ws.balloon(pane.term.id()) {
-            Some((wait, _)) => (ansi(3), format!("Waiting for you: {}", wait.summary())),
+    let (color, text) = match (&pane.alert, ws.balloon(pane.term.id())) {
+        // A request waits: its own alert ("Asks you: …") or a bell's says less than this.
+        (None | Some(Alert::Attention(_)), Some((wait, _))) => {
+            (ansi(3), format!("Waiting for you: {}", wait.summary()))
+        }
+        (Some(a @ Alert::Attention(_)), None) => (ansi(3), a.text()),
+        (Some(a), _) if a.failed() => (ansi(1), a.text()),
+        (Some(a), _) => (ansi(2), a.text()),
+        (None, None) => {
             // An agent the last snapshot no longer sees (it crashed) says nothing of its turn.
-            None => match pane.state.as_ref().filter(|_| pane.seen.agent.is_some()) {
+            match pane.state.as_ref().filter(|_| pane.seen.agent.is_some()) {
                 Some(AgentState::NeedsYou(asks)) => (
                     ansi(3),
                     asks.as_ref().map_or_else(
@@ -863,8 +1012,8 @@ pub(crate) fn status_dot(ws: &Workspace, pane: &Pane) -> Option<(Hsla, SharedStr
                         _ => return None,
                     }
                 }
-            },
-        },
+            }
+        }
     };
     Some(match pane.answered_by() {
         Some(by) => (color, format!("{text} · answered by {by}").into()),

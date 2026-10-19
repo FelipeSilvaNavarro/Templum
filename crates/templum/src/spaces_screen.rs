@@ -62,8 +62,8 @@ pub(crate) struct Counts {
     pub terminals: usize,
     pub notes: usize,
     pub boards: usize,
+    pub checklists: usize,
     pub editors: usize,
-    pub gits: usize,
     /// The agents running, by name, with how many.
     pub agents: Vec<(String, usize)>,
     /// Its programs were ended: the counts are its saved canvas's.
@@ -82,8 +82,8 @@ impl Counts {
             count(self.terminals, "terminal", "terminals"),
             count(self.notes, "note", "notes"),
             count(self.boards, "board", "boards"),
+            count(self.checklists, "checklist", "checklists"),
             count(self.editors, "editor", "editors"),
-            count(self.gits, "Git block", "Git blocks"),
         ]
         .into_iter()
         .flatten()
@@ -334,8 +334,10 @@ impl Workspace {
                     Item::Terminal(_) => counts.terminals += 1,
                     Item::Note(_) => counts.notes += 1,
                     Item::Kanban(_) => counts.boards += 1,
+                    Item::Checklist(_) => counts.checklists += 1,
                     Item::Editor(_) => counts.editors += 1,
-                    Item::Git(_) => counts.gits += 1,
+                    // A Git block of an older Templum: the workspace's Git once it starts.
+                    Item::Git(_) => {}
                 }
             }
             return counts;
@@ -350,8 +352,8 @@ impl Workspace {
                 }
                 Body::Note(_) => counts.notes += 1,
                 Body::Kanban(_) => counts.boards += 1,
+                Body::Checklist(_) => counts.checklists += 1,
                 Body::Editor(_) => counts.editors += 1,
-                Body::Git(_) => counts.gits += 1,
             }
         }
         counts
@@ -612,11 +614,14 @@ mod tests {
         counts.agent("Claude Code");
         counts.agent("Codex");
         counts.boards = 2;
-        counts.gits = 1;
         assert_eq!(
             counts.line(),
-            "3 terminals · 1 note · 2 boards · 1 Git block · 2 Claude Code running · 1 Codex running"
+            "3 terminals · 1 note · 2 boards · 2 Claude Code running · 1 Codex running"
         );
+        counts.checklists = 2;
+        assert!(counts.line().contains("2 boards · 2 checklists ·"));
+        counts.checklists = 1;
+        assert!(counts.line().contains("2 boards · 1 checklist ·"));
         assert_eq!(Counts::default().line(), "Empty");
         let stopped = Counts {
             terminals: 2,

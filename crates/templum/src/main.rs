@@ -8,6 +8,10 @@ mod balloon;
 mod bench;
 mod block;
 mod board;
+mod chat;
+mod checklist;
+mod checklists;
+mod chime;
 mod config;
 mod editor;
 mod gallery;
@@ -17,6 +21,7 @@ mod ink;
 mod kanban;
 mod keys;
 mod launcher;
+mod list_dialog;
 mod markdown;
 mod menu;
 mod motion;
@@ -29,6 +34,7 @@ mod sidebar;
 mod silhouette;
 mod space_dialog;
 mod spaces_screen;
+mod tab_strip;
 mod theme;
 mod theme_picker;
 mod title_bar;
@@ -40,6 +46,7 @@ mod wires;
 mod workspace;
 
 use gpui_kit::component::TitleBar;
+use gpui_kit::component::notification::Notification;
 use gpui_kit::{
     AppContext as _, Bounds, TitlebarOptions, WindowBackgroundAppearance, WindowBounds,
     WindowDecorations, WindowOptions, px, size,
@@ -70,6 +77,34 @@ fn main() {
     let zoom = std::env::args().find_map(|a| a.strip_prefix("--bench-zoom=").map(str::to_string));
     let git = std::env::args().any(|a| a == "--bench-git");
     let bench = mixed || far || zoom.is_some() || git || std::env::args().any(|a| a == "--bench");
+    // A build being worked on, beside the installed Templum: its own workspaces, settings and bus.
+    let dev = std::env::args().any(|a| a == "--dev");
+    // The agents installed where only .bashrc or .zshrc put them.
+    #[cfg(unix)]
+    if !bench {
+        templum_terminal::read_shell_path();
+    }
+    // At sign-out and shutdown the canvas is saved while its terminals still run.
+    #[cfg(windows)]
+    templum_terminal::quit_before_terminals();
+    let dirs = move |dir: Option<std::path::PathBuf>| if dev { dir.map(session::dev) } else { dir };
+    // The bench starts from one terminal and must not touch the user's saved canvas.
+    let data_dir = if bench { None } else { dirs(session::dir()) };
+    let config_dir = dirs(config::dir());
+    // One Templum per data folder: a second would restore the same canvas, resume the same
+    // agents and write over the first's files. It keeps nothing instead.
+    let lock = data_dir
+        .as_deref()
+        .map(|dir| session::lock(dir, session::QUITTING));
+    let second = match &lock {
+        Some(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock => true,
+        Some(Err(e)) => {
+            eprintln!("templum: couldn't lock the data folder: {e}");
+            false
+        }
+        _ => false,
+    };
+    let data_dir = data_dir.filter(|_| !second);
     gpui_kit::application()
         // Every Lucide icon, by name: the toolbar and the notes use ones outside the default set.
         .with_assets(gpui_kit::assets::AllAssets)
@@ -85,7 +120,7 @@ fn main() {
                     cx,
                 ))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Templum".into()),
+                    title: Some(if dev { "Templum (dev)" } else { "Templum" }.into()),
                     ..TitleBar::title_bar_options()
                 }),
                 window_background: WindowBackgroundAppearance::Opaque,
@@ -100,10 +135,13 @@ fn main() {
                 },
                 ..TitleBar::window_options()
             };
-            // The bench starts from one terminal and must not touch the user's saved canvas.
-            let data_dir = if bench { None } else { session::dir() };
             let (window, ws) = gpui_kit::open_window(options, cx, |window, cx| {
-                cx.new(|cx| Workspace::new(data_dir, window, cx))
+                if second {
+                    let message = "Templum is already open in another window: this one starts \
+                                   empty and keeps nothing, so the other's canvas stays as it is";
+                    workspace::show_notification(window, cx, Notification::warning(message));
+                }
+                cx.new(|cx| Workspace::new(config_dir, data_dir, window, cx))
             })
             .expect("failed to open window");
             if let Some(kind) = zoom {
@@ -118,6 +156,8 @@ fn main() {
             cx.on_window_closed(|cx, _| cx.quit()).detach();
             cx.activate(true);
         });
+    // Free before an installer starts the next Templum.
+    drop(lock);
     // Restart into an installer (Windows): it replaces Templum, so it starts once Templum is done.
     let installer = update::INSTALLER
         .lock()
@@ -143,14 +183,19 @@ fn relay() {
         .or_else(session::dir);
     let dirs = data.map(|data| templum_usage::Dirs::of(&data));
     let terminal = std::env::var("TEMPLUM_TERMINAL").ok();
+    // An account's Claude Code names its folder: its limits are that account's.
+    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from);
     let out = match &dirs {
         Some(dirs) => templum_usage::claude::relay(
             &input,
             &dirs.relay,
             terminal.as_deref(),
             dirs.claude.as_deref(),
+            config_dir.as_deref(),
         ),
-        None => templum_usage::claude::relay(&input, std::path::Path::new(""), None, None),
+        None => templum_usage::claude::relay(&input, std::path::Path::new(""), None, None, None),
     };
     let _ = std::io::stdout().write_all(&out);
 }

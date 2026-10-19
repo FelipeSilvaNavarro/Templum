@@ -60,6 +60,7 @@ What doesn't come back: the text that was on screen, and programs other than the
 | A saved canvas with no blocks (the user closed them all) | The empty canvas and its hint. |
 | A saved file Templum can't read ([Errors](#errors)) | As on a first run, without the welcome. |
 | `--bench` | As on a first run, without the welcome. Nothing is read or written. |
+| Another Templum is open on the same data folder ([One Templum per data folder](#one-templum-per-data-folder)) | The same as `--bench`, with a notice. |
 
 ## Agents
 
@@ -78,7 +79,8 @@ What doesn't come back: the text that was on screen, and programs other than the
   | Anything else (`vim`, `node server.js`, `node claude.js`, the shell itself) | None |
 
 - **The block's folder:** with an agent open, it is the agent process's folder. This matters on Windows, where
-  PowerShell's `cd` doesn't move PowerShell's own folder, but the programs it starts do run in the new one.
+  PowerShell's `cd` doesn't move PowerShell's own folder, but the programs it starts do run in the new one. When the
+  OS won't tell the agent's folder, it is the shell's.
 - **Restore:** right after the block's shell starts, Templum types the agent's resume command and Enter into it,
   only when the block starts in its saved folder. Anywhere else (a folder that's gone, or wasn't known) it would
   resume another folder's conversation.
@@ -90,6 +92,12 @@ What doesn't come back: the text that was on screen, and programs other than the
 
   The terminal buffers the typed text until the shell is ready. When the agent exits, the user is back in the shell.
   If the agent isn't installed, the shell says so ("command not found") and nothing else happens.
+- **Until the agent is up:** a snapshot that finds no agent in the block yet (a slow shell start, a question of the
+  shell that takes the typed line) saves the block's saved folder, agent and session, for a minute at most
+  (`STARTS_WITHIN`), so quitting meanwhile resumes it at the next start. Once a snapshot finds an agent there, what
+  it finds is saved.
+- **Accounts** ([accounts.md](accounts.md#its-block)): a terminal's item also keeps the account its shell
+  was opened for (`"account"`), whose variable its shell gets back.
 - **Safety:** the file stores only the agent's name and its session's id, never a command. A `"agent"` value other
   than `"claude"` or `"codex"` is ignored, and a `"session"` is typed only when it is letters, digits and `-`, so an
   edited file can't make Templum type anything else.
@@ -156,12 +164,33 @@ What doesn't come back: the text that was on screen, and programs other than the
   from the last one written. A move, a resize, a pan, a `cd` or an agent opening all show up in the next snapshot,
   with no event for each.
 - **On quit:** when the window closes or Templum quits, a last snapshot is written at once, next to the pending
-  `config.toml` save.
+  `config.toml` save, also when it looks unchanged: the file may hold an older one a snapshot still running wrote.
+- **At sign-out, restart and shutdown:** that last snapshot must still find every terminal running. A block whose
+  shell ended closes, so a save taken after the system ended the shells would write a canvas without them. Windows
+  ends programs by level, and every process starts at the same one (0x280), in any order: Templum takes a higher one
+  (`SetProcessShutdownParameters`), so Windows asks it to close, and it saves, before the programs in its terminals.
+  macOS quits the apps before the other processes, and Linux ends Templum at once on `SIGTERM`, with no last save:
+  the snapshot from up to 5 seconds before stays.
 - **Off the UI thread:** the UI thread only gathers each block's rect and process ids. Reading the processes
   (folders, agents) and writing the file run in a background task, so a snapshot never costs a frame. On quit the
   same work runs at once, before Templum exits.
 - **Safely:** the write goes through the temporary file and rename that `config.toml` uses, so a crash never leaves
   half a file. Writes take turns, so a quit during a background write can't mix the two.
+
+## One Templum per data folder
+
+- **The lock:** while it runs, Templum holds a lock on `templum.lock` in its data folder (the system's file lock,
+  which the system lets go of when Templum ends, also when it crashes).
+- **A second Templum** on the same data folder (a second click on the Start menu shortcut, another copy of the app)
+  can't take it, even after waiting 3 seconds for one that is quitting (still saving, when it was reopened right
+  after quitting). It starts as `--bench` does: one terminal, nothing of the data folder read or written (no canvas,
+  boards, notes or bus), and a notice says Templum is already open in another window. Otherwise it would restore
+  the same canvas, resume the same agents a second time, and write over the first one's file: what the person closed
+  in either would be what the next start finds.
+- **Why it doesn't bring the first window forward:** GPUI can't do that reliably everywhere. Wayland compositors
+  refuse a window that asks to come forward without the launcher's activation token, which GPUI doesn't take.
+- **`--dev`** has its own data folder, so it still runs beside an installed Templum.
+- **No lock:** when it can't be made (a read-only data folder, a file system without locks), Templum starts as usual.
 
 ## Errors
 
@@ -172,7 +201,8 @@ What doesn't come back: the text that was on screen, and programs other than the
 | Reading fails (permissions) | The same, without renaming, and nothing is written for the rest of the session, so the file isn't replaced. |
 | Writing fails (disk full, read-only) | A notification the first time. Templum keeps trying every 5 seconds without new notifications, and says when a write works again. |
 | A block's folder no longer exists | The shell starts in the home folder. One notification lists those blocks. |
-| A block's shell can't start | The block is skipped, with the notification a new block already gives. |
+| A block's shell can't start | The block is skipped, with the notification a new block already gives. The workspace's file isn't written for the rest of the session, and a notification says so: fixing the shell setting brings the canvas back. |
+| A restored block's shell ends as it starts (within 10 seconds, before running a command, with nothing typed, pasted or pressed into it) | As when it can't start, but the block stays with what the shell printed, titled "The shell ended", so the person sees why. Closing it asks nothing. A shell ended later, or by the person or an agent (Ctrl+D, `exit`), closes its block at once. |
 
 ## Architecture
 

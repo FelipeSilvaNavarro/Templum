@@ -57,6 +57,138 @@ impl Workspace {
         Ok(id)
     }
 
+    /// Saves an account from Settings ▸ Agents ▸ Accounts (docs/specs/accounts.md): `id` names
+    /// one already there, None a new one (its agent's id and the first free number). Its folder
+    /// then gets its choices, a real item in the way of a link kept aside in Templum's folder and
+    /// left in one the person chose. A change of folder waits for its blocks to close and for no
+    /// other account to share from it. Returns its id.
+    pub(crate) fn save_account(
+        &mut self,
+        id: Option<&str>,
+        draft: &agents::AccountDraft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<String, String> {
+        let pending = self.pending.as_ref().unwrap_or(&self.config);
+        let id = match id {
+            Some(id) => id.to_string(),
+            None => agents::new_account_id(&draft.of, self.data_dir.as_deref(), |x| {
+                pending.agents.keys().any(|k| k.eq_ignore_ascii_case(x))
+                    || self.agents.iter().any(|a| a.id.eq_ignore_ascii_case(x))
+            }),
+        };
+        if let Some(problem) = draft.problem(&id, &pending.agents, self.data_dir.as_deref()) {
+            return Err(problem);
+        }
+        let config = draft.to_config();
+        let mut all = pending.agents.clone();
+        all.insert(id.clone(), config.clone());
+        let list = agents::effective(&all, &agents::codex_models(), self.data_dir.as_deref());
+        let Some(entry) = list.iter().find(|a| a.id == id).cloned() else {
+            return Err("An account needs Templum's data folder".to_string());
+        };
+        let account = entry.account.as_ref().expect("an account");
+        let old = self
+            .agents
+            .iter()
+            .find(|a| a.id == id)
+            .and_then(|a| a.account.as_ref());
+        let moved = old.is_some_and(|old| old.folder != account.folder);
+        if moved && let Some(why) = self.account_in_use(&id) {
+            return Err(format!("{why} to change its folder"));
+        }
+        let key = id.clone();
+        self.edit(
+            Edit::set("agents", id.clone(), agents::to_value(&config)),
+            |c| {
+                c.agents.insert(key, config);
+            },
+            cx,
+        );
+        let report = entry.apply(&list, templum_usage::accounts::When::Saved);
+        self.tell_account(&entry, &report, window, cx);
+        Ok(id)
+    }
+
+    /// Why the account `id` can't be deleted or moved now, if it can't: a block of a running
+    /// workspace is its (its agent running there or only its shell), or another account shares
+    /// one of its items.
+    pub(crate) fn account_in_use(&self, id: &str) -> Option<String> {
+        let entry = self.agents.iter().find(|a| a.id == id)?;
+        let blocks = self
+            .spaces()
+            .filter(|s| !s.stopped)
+            .flat_map(|s| s.terminals())
+            .filter(|(_, p)| p.account.as_deref() == Some(id))
+            .count();
+        if blocks > 0 {
+            let s = if blocks == 1 { "" } else { "s" };
+            return Some(format!(
+                "{} has {blocks} block{s}: close them first",
+                entry.title
+            ));
+        }
+        self.agents.iter().filter(|a| a.id != id).find_map(|other| {
+            let (key, _) = other
+                .account
+                .as_ref()?
+                .share
+                .iter()
+                .find(|(_, to)| *to == id)?;
+            Some(format!(
+                "{} shares {}'s {key}: change it first",
+                other.title, entry.title
+            ))
+        })
+    }
+
+    /// Deletes the account `id` (docs/specs/accounts.md, Deleting an account), unless
+    /// `account_in_use` says why not: its entry, and the folder Templum made for it, its links
+    /// first (what they point at stays). A folder the person chose stays.
+    pub(crate) fn delete_account(
+        &mut self,
+        id: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        if let Some(why) = self.account_in_use(id) {
+            return Err(why);
+        }
+        let Some(entry) = self.agents.iter().find(|a| a.id == id).cloned() else {
+            return Err(format!("Templum has no account {id}"));
+        };
+        let Some(account) = entry.account else {
+            return Err(format!("{} isn't an account", entry.title));
+        };
+        // Never another account's folder (a config written before Templum refused it there),
+        // compared as `check_account` does.
+        let folder = crate::config::resolved(&account.folder);
+        let inside = self.agents.iter().find(|a| {
+            a.id != id
+                && a.account.as_ref().is_some_and(|other| {
+                    crate::config::resolved(&other.folder).starts_with(&folder)
+                })
+        });
+        if !account.chosen
+            && let Some(other) = inside
+        {
+            return Err(format!(
+                "{}'s folder is in {}'s: change it first",
+                other.title, entry.title
+            ));
+        }
+        if !account.chosen {
+            match templum_usage::accounts::delete(account.kind, &account.folder) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(format!("Couldn't delete {}: {e}", account.folder.display()));
+                }
+            }
+        }
+        self.remove_agent(id, cx);
+        Ok(())
+    }
+
     /// One of Templum's agents back to its defaults, or one of the user's deleted.
     pub(crate) fn remove_agent(&mut self, id: &str, cx: &mut Context<Self>) {
         let key = id.to_string();
@@ -177,7 +309,7 @@ impl Workspace {
     /// Reads config.toml again and applies what changed. An invalid file keeps the current
     /// config and says why.
     pub(crate) fn reload_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match config::load(self.config_dir.as_deref()) {
+        match config::load(self.config_dir.as_deref(), self.data_dir.as_deref()) {
             Ok(new) => {
                 if std::mem::take(&mut self.config_failed) {
                     show_notification(
@@ -229,7 +361,15 @@ impl Workspace {
             }
         }
         if self.config.agents != old.agents {
-            self.agents = agents::effective(&self.config.agents, &agents::codex_models());
+            self.agents = agents::effective(
+                &self.config.agents,
+                &agents::codex_models(),
+                self.data_dir.as_deref(),
+            );
+        }
+        let (agent, was) = (&self.config.templum_agent, &old.templum_agent);
+        if (&agent.agent, &agent.model, &agent.effort) != (&was.agent, &was.model, &was.effort) {
+            self.engine_settings_changed();
         }
         if self.config.agents != old.agents
             || self.config.git.commit_message != old.git.commit_message
@@ -239,6 +379,16 @@ impl Workspace {
                 &self.config.git.commit_message,
                 templum_terminal::installed,
             );
+        }
+        // Off: every agent's state is read from its screen again; its hooks are dropped.
+        if old.connections.enabled && !self.config.connections.enabled {
+            for space in std::iter::once(&mut self.space).chain(&mut self.others) {
+                for body in space.blocks.values_mut() {
+                    if let Some(pane) = body.terminal_mut() {
+                        pane.speaks = false;
+                    }
+                }
+            }
         }
         if self.config.keys != old.keys {
             let (keymap, warnings) = Keymap::new(&self.config.keys, cfg!(target_os = "macos"))
