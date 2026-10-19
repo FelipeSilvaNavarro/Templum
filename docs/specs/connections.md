@@ -80,7 +80,9 @@ agents without MCP, scripts and hooks.
   the ones that are. They follow Fullscreen. A tile's menu has neither: grid mode hides wires.
 - **A wire** is a curve from the edge of one block that faces the other to the edge of the other, drawn on the
   canvas below the blocks in the title's dim color, 2 units wide and never under a pixel. It follows its blocks as
-  they move or are resized.
+  they move or are resized. When another block is in its way, it takes another path: between the other pair of
+  edges (down the gap beside a column of blocks), else an elbow from a side of one to the top or bottom of the
+  other; only the blocks between its two are looked at, so a wire with nothing in its way costs one look.
 - **Selecting:** a click on a wire where no block or drawing covers it selects it (accent color); a drag from it
   moves the canvas as from anywhere, leaving the keyboard where it was and selecting nothing. Delete or Backspace
   removes it while no block has the keyboard (focusing, adding or selecting a block unselects it); Esc unselects;

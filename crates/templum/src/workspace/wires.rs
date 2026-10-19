@@ -74,12 +74,14 @@ impl Space {
             .map(|b| b.id)
     }
 
-    /// `wire`'s curve between its blocks' rects; None when one isn't on the canvas.
+    /// `wire`'s curve between its blocks' rects, around the blocks in its way
+    /// ([`Curve::around`]); None when one isn't on the canvas.
     pub(super) fn curve(&self, wire: Wire) -> Option<Curve> {
-        Some(Curve::between(
-            self.canvas.get(wire.a)?.rect,
-            self.canvas.get(wire.b)?.rect,
-        ))
+        let (a, b) = (self.canvas.get(wire.a)?.rect, self.canvas.get(wire.b)?.rect);
+        let others = (self.canvas.blocks().iter())
+            .filter(|o| o.id != wire.a && o.id != wire.b)
+            .map(|o| o.rect);
+        Some(Curve::around(a, b, others))
     }
 }
 
