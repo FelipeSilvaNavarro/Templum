@@ -951,13 +951,10 @@ mod tests {
             ..CommitMessage::default()
         };
         let account = commit_agent(&list, &chose("claude2"), |_| true).unwrap();
-        assert_eq!(
-            account.env,
-            Some((
-                "CLAUDE_CONFIG_DIR".to_string(),
-                "/data/accounts/claude2".to_string()
-            ))
-        );
+        let (var, dir) = account.env.clone().unwrap();
+        assert_eq!(var, "CLAUDE_CONFIG_DIR");
+        // As a path: Windows spells it with backslashes.
+        assert_eq!(Path::new(&dir), Path::new("/data/accounts/claude2"));
         assert_eq!(
             account.command,
             by(&list, "claude").generate.clone().unwrap()

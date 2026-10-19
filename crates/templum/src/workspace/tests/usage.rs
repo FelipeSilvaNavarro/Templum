@@ -518,7 +518,7 @@ fn an_account_that_ran_is_asked_for_its_limits(cx: &mut TestAppContext) {
         &ws,
         cx,
         &format!(
-            "[agents.claude]\ncommand = \"{}\"\n{}",
+            "[agents.claude]\ncommand = '{}'\n{}",
             program.display(),
             super::agents::CLAUDE2
         ),

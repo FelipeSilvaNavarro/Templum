@@ -1001,7 +1001,7 @@ fn a_chosen_folder_stays(cx: &mut TestAppContext) {
         &ws,
         cx,
         &format!(
-            "[agents.claude2]\nof = \"claude\"\nfolder = \"{}\"\n",
+            "[agents.claude2]\nof = \"claude\"\nfolder = '{}'\n",
             chosen.path().display()
         ),
     );
