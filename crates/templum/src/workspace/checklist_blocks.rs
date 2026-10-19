@@ -81,11 +81,7 @@ impl Workspace {
         let beside = into.and_then(|b| self.space.canvas.get(b).map(|b| self.space.home(b)));
         let at = match beside {
             Some(beside) => self.space.room_beside(&[beside], size).origin(),
-            None => {
-                let center = self.space.camera().to_world(self.center(window));
-                let near = Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0);
-                self.space.canvas.place_new(size, near).origin()
-            }
+            None => self.room_in_view(size, window, cx).origin(),
         };
         let block = self.add_checklist_block(at, id, window, cx);
         if beside.is_some() {

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use gpui_kit::component::input::EditorState;
 use gpui_kit::{App, Context, Entity, Task, Window};
-use templum_canvas::{BlockId, Rect, Size, chrome, free_spot};
+use templum_canvas::{BlockId, Rect, Size, chrome};
 use templum_mcp::{Reply, tools};
 use templum_terminal::Pattern;
 
@@ -1002,24 +1002,7 @@ impl Space {
     ) -> Option<Rect> {
         match place {
             Place::Near(id) => self.room_near(*id, size),
-            Place::Free => Some(self.free_at(Rect::new(
-                center.x - size.w / 2.0,
-                center.y - size.h / 2.0,
-                size.w,
-                size.h,
-            ))),
-        }
-    }
-
-    /// `at` when it covers no block nor drawing, else the nearest spot beside it that doesn't.
-    fn free_at(&self, at: Rect) -> Rect {
-        let taken: Vec<Rect> = (self.canvas.blocks().iter().map(|b| self.home(b)))
-            .chain(self.ink.iter().map(templum_canvas::Drawing::bounds))
-            .collect();
-        if taken.iter().any(|t| t.intersects(&at)) {
-            free_spot(&taken, &[at], Size::new(at.w, at.h))
-        } else {
-            at
+            Place::Free => Some(self.room_around(center, size)),
         }
     }
 }

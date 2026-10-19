@@ -265,10 +265,18 @@ later starts with none.
 ### Spawning
 
 `spawn_agent` opens a new agent block beside the caller, wired to it, in the caller's folder or the one it names.
-The block goes where it covers no block nor drawing, beside the caller or a block wired to it: of the spots right of,
-below, left of or above them (at their edge, or past what is in the way along that side), the one nearest the caller
-and its connections all together, so they draw it their way. Any block Templum opens beside another (a terminal from
-an editor's tree, `open_file`'s editor) covers nothing either.
+The block goes on a side of the caller, 48 units (two dots of the grid) from it: right or left of it with their tops
+level, below or above it with their left edges level, and 48 or more from every other block and drawing. When blocks
+wired to the caller already line up on one of those sides (its earlier subagents, its own note), it takes the first
+free place down that column or along that row: an agent's subagents form one column on its right, evenly spaced, and
+the next one takes a closed one's place. Else it goes the way of the caller's connections: of the spots right of,
+below, left of or above the caller or a block wired to it (at their edge, or past what is in the way along that side),
+the one nearest the caller and its connections all together, so they draw it their way. Any block Templum
+opens beside another (a terminal from an editor's tree, `open_file`'s editor) keeps off everything the same way.
+A block opened at the view's middle (a new terminal, note, kanban, editor or checklist, a paste, a block the Templum
+Agent opens near no block) goes there when nothing is within 48 of it; else in the nearest place 48 from a block there
+and level with it, so blocks opened in one view grow a tidy grid around its middle instead of piling up. When the
+person opens it and it lands out of view, the view glides just enough to show it whole.
 With a worktree name, Templum first runs `git worktree add -b <name> <repository>/.worktrees/<name>` from that
 folder's repository (and adds `.worktrees/` to the repository's `.git/info/exclude` once), and the agent starts
 there, so several agents can change one project at once without stepping on each other. A prompt is typed once the

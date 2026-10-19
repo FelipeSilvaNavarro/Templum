@@ -77,15 +77,29 @@ fn shortcuts_open_and_close_terminals(cx: &mut TestAppContext) {
             ws.space.canvas.top(),
             "the new terminal is focused"
         );
-        // The startup block already sits at the viewport center: the new one cascades.
+        // The startup block already sits at the viewport center: the new one goes on its right,
+        // tops level, two dots of the grid apart.
         let [first, second] = ws.space.canvas.blocks() else {
             unreachable!()
         };
         assert_eq!(
-            (second.rect.x - first.rect.x, second.rect.y - first.rect.y),
-            (templum_canvas::CASCADE, templum_canvas::CASCADE)
+            (
+                second.rect.x - first.rect.right(),
+                second.rect.y - first.rect.y
+            ),
+            (48.0, 0.0)
         );
     });
+    // Off the view's right, it is shown: the view glides just enough to show it whole.
+    cx.update_window(handle, |_, window, cx| {
+        let ws = ws.read(cx);
+        let vp = ws.viewport(window);
+        let view = templum_canvas::Size::new(vp.w, vp.h - crate::toolbar::SPACE);
+        let (camera, rect) = (ws.space.canvas.camera, ws.space.canvas.blocks()[1].rect);
+        assert!(ws.space.flight.is_some(), "the view glides");
+        assert_eq!(camera.reveal(rect, view), camera, "{rect:?} shown");
+    })
+    .unwrap();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.press(CLOSE, cx);

@@ -354,6 +354,11 @@ fn a_terminal_opened_from_the_tree_sits_beside_the_editor(cx: &mut TestAppContex
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("src")).unwrap();
     let (handle, ws) = open(cx);
+    // The startup terminal out of the editor's way: nothing on its right.
+    let startup = first_id(&ws, cx);
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(startup).unwrap().rect.x += 5000.0;
+    });
     let id = open_editor(handle, &ws, cx, dir.path());
     cx.update_window(handle, |_, window, cx| {
         window.right_click(("entry", 0usize), cx);

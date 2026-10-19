@@ -21,16 +21,7 @@ use super::{Body, Workspace, remember, show_notification};
 impl Workspace {
     /// Asks for a folder, then opens an editor on it at the viewport's center.
     pub(crate) fn new_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let center = self.space.camera().to_world(self.center(window));
-        let size = editor::SIZE;
-        let at = self
-            .space
-            .canvas
-            .place_new(
-                size,
-                Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
-            )
-            .origin();
+        let at = self.room_in_view(editor::SIZE, window, cx).origin();
         self.ask_editor_folder(at, window, cx);
     }
 
@@ -526,16 +517,7 @@ impl Workspace {
             let anchor = beside.and_then(|b| self.space.canvas.get(b).map(|b| self.space.home(b)));
             let at = match anchor {
                 Some(anchor) => self.space.room_beside(&[anchor], size).origin(),
-                None => {
-                    let center = self.space.camera().to_world(self.center(window));
-                    self.space
-                        .canvas
-                        .place_new(
-                            size,
-                            Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
-                        )
-                        .origin()
-                }
+                None => self.room_in_view(size, window, cx).origin(),
             };
             self.add_editor_at(folder, at, window, cx)
         });

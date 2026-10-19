@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use gpui_kit::component::{TITLE_BAR_HEIGHT, window_paddings};
 use gpui_kit::{Context, Window};
-use templum_canvas::{BlockId, Camera, CameraFlight, Point, Size};
+use templum_canvas::{BlockId, Camera, CameraFlight, Point, Rect, Size};
 
 use crate::sidebar;
 use crate::toolbar;
@@ -35,6 +35,11 @@ impl Workspace {
             self.join_grid(block, self.space.focused);
         }
         self.focus_block(block, window, cx);
+        self.show(rect, window, cx);
+    }
+
+    /// The camera glides just enough to show `rect` (world units) whole above the toolbar.
+    pub(super) fn show(&mut self, rect: Rect, window: &Window, cx: &mut Context<Self>) {
         let vp = self.viewport(window);
         let to = self
             .space
@@ -42,6 +47,20 @@ impl Workspace {
             .camera
             .reveal(rect, Size::new(vp.w, vp.h - toolbar::SPACE));
         self.fly(to, self.center(window), cx);
+    }
+
+    /// Where a block of `size` the person opens goes: the view's middle, or beside the blocks
+    /// there (`Space::room_around`); the camera glides to show it whole.
+    pub(super) fn room_in_view(
+        &mut self,
+        size: Size,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Rect {
+        let center = self.space.camera().to_world(self.center(window));
+        let rect = self.space.room_around(center, size);
+        self.show(rect, window, cx);
+        rect
     }
 
     /// A double-click on a block's title: the view glides to show the block centered, as large as

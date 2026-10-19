@@ -57,8 +57,10 @@ impl Workspace {
                 .filter(|b| b.id != id)
                 .map(|b| self.space.home(b))
                 .collect();
-            if let Some(b) = self.space.canvas.get_mut(id) {
-                b.rect = templum_canvas::cascade(b.rect, &taken);
+            if let Some(b) = self.space.canvas.get_mut(id)
+                && taken.iter().any(|t| t.intersects(&b.rect))
+            {
+                b.rect = templum_canvas::room_at(&taken, b.rect);
             }
             self.join_grid(id, before);
         }
@@ -169,13 +171,7 @@ impl Workspace {
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
         let rect = match beside.and_then(|b| self.space.canvas.get(b)) {
             Some(b) => self.space.room_beside(&[self.space.home(b)], size),
-            None => {
-                let center = self.space.camera().to_world(self.center(window));
-                self.space.canvas.place_new(
-                    size,
-                    Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
-                )
-            }
+            None => self.room_in_view(size, window, cx),
         };
         let id = self.spawn_block(rect, Some(folder.to_path_buf()), window, cx);
         if let (Some(id), Some(command)) = (id, command) {
@@ -293,16 +289,7 @@ impl Workspace {
 
     /// A kanban block at the viewport's center, showing the board list.
     pub(crate) fn new_kanban(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let center = self.space.camera().to_world(self.center(window));
-        let size = kanban::SIZE;
-        let at = self
-            .space
-            .canvas
-            .place_new(
-                size,
-                Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0),
-            )
-            .origin();
+        let at = self.room_in_view(kanban::SIZE, window, cx).origin();
         self.add_kanban_at(at, window, cx);
     }
 
@@ -414,7 +401,7 @@ impl Workspace {
         let kind = entry.account.as_ref()?.kind;
         self.prepare_account(&entry, window, cx);
         let vars = self.agent_vars(Some(&entry), &super::usage::in_env);
-        let rect = self.new_terminal_rect(window);
+        let rect = self.new_terminal_rect(window, cx);
         let block = self.spawn_block_with(rect, std::env::home_dir(), vars, window, cx)?;
         let pane = self.space.terminal_mut(block)?;
         // The shell reads it once it is ready.
@@ -994,21 +981,15 @@ impl Workspace {
     }
 
     pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rect = self.new_terminal_rect(window);
+        let rect = self.new_terminal_rect(window, cx);
         self.open(rect, window, cx);
     }
 
-    /// Where a new terminal goes: the view's center, clear of the other blocks.
-    pub(super) fn new_terminal_rect(&mut self, window: &Window) -> Rect {
+    /// Where a new terminal goes: the view's center, or beside the blocks there, shown.
+    pub(super) fn new_terminal_rect(&mut self, window: &Window, cx: &mut Context<Self>) -> Rect {
         self.space.pristine = false;
-        let vp = self.viewport(window);
         let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
-        let center = self
-            .space
-            .camera()
-            .to_world(Point::new(vp.w / 2.0, vp.h / 2.0));
-        let near = Point::new(center.x - size.w / 2.0, center.y - size.h / 2.0);
-        self.space.canvas.place_new(size, near)
+        self.room_in_view(size, window, cx)
     }
 
     pub(super) fn close_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {

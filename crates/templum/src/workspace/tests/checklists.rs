@@ -20,7 +20,11 @@ fn new_checklist(
         window.activate_window();
         window.render_frame(cx);
         window.click("tool-checklist", cx);
-        ws.update(cx, |ws, _| ws.space.appearing.clear());
+        // Popped in, and the view landed where it glides to show it.
+        ws.update(cx, |ws, _| {
+            ws.space.appearing.clear();
+            ws.space.flight = None;
+        });
         window.render_frame(cx);
     })
     .unwrap();

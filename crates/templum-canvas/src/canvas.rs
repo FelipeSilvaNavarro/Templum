@@ -11,10 +11,9 @@ pub struct Block {
     pub rect: Rect,
 }
 
-/// Offset applied by [`Canvas::place_new`] while a spot is taken.
-pub const CASCADE: f32 = 32.0;
-/// The gap between a block and one placed beside it (world units).
-pub const BESIDE: f32 = 24.0;
+/// The gap between a block and one Templum places beside it, and the least a block Templum
+/// places keeps from every other block and drawing (world units): two dots of the canvas's grid.
+pub const BESIDE: f32 = 48.0;
 
 #[derive(Debug, Default)]
 pub struct Canvas {
@@ -97,13 +96,6 @@ impl Canvas {
             .reduce(|a, b| a.union(&b))
     }
 
-    /// Where a new block of `size` goes: at `near`, shifted by [`CASCADE`] while another
-    /// block's top-left corner is within 8 units.
-    pub fn place_new(&self, size: Size, near: Point) -> Rect {
-        let taken: Vec<Rect> = self.blocks.iter().map(|b| b.rect).collect();
-        cascade(Rect::new(near.x, near.y, size.w, size.h), &taken)
-    }
-
     /// Frames every block; with none, back to 100% around the viewport center.
     pub fn fit_all(&mut self, viewport: Size) {
         match self.bounds() {
@@ -119,15 +111,46 @@ impl Canvas {
     }
 }
 
-/// Where a block of `size` goes beside `anchors` (a block and those wired to it), over no rect of
-/// `taken`: a BESIDE gap right of an anchor, below, left or above it, at its edge or a BESIDE
-/// gap past each rect in the way along that side. The spot nearest the anchors all together wins (the
-/// sum of its gaps to them), so a block's connections draw it their way; on a tie the first
-/// anchor's, in that order of sides. With none free, right of everything.
+/// Where a block of `size` goes beside `anchors` (a block, then those wired to it), [`BESIDE`] or
+/// more from every rect of `taken`. When blocks wired to it already line up on one of its sides,
+/// [`BESIDE`] from it (right or left of it with their tops level, below or above it with their
+/// left edges level), the new one takes the first free place down that column or along that row,
+/// so the blocks it opens line up evenly spaced; with lines on several sides, the longest (on a
+/// tie: right, below, left, above). Else the spot nearest the anchors all together (the sum of its
+/// gaps to them), so a block's connections draw it their way: [`BESIDE`] right of an anchor,
+/// below, left or above it, at its edge or past each rect in the way along that side; on a tie the
+/// first anchor's, in that order of sides. With none free, right of everything.
 pub fn free_spot(taken: &[Rect], anchors: &[Rect], size: Size) -> Rect {
     let first = anchors.first().copied().unwrap_or_default();
     let (w, h) = (size.w, size.h);
-    let clear = |spot: &Rect| !taken.iter().any(|t| t.intersects(spot));
+    let wired = anchors.get(1..).unwrap_or_default();
+    let on_line = |side: usize, p: &Rect| match side {
+        0 => (p.x - (first.right() + BESIDE)).abs() < 0.5,
+        1 => (p.y - (first.bottom() + BESIDE)).abs() < 0.5,
+        2 => (p.right() - (first.x - BESIDE)).abs() < 0.5,
+        _ => (p.bottom() - (first.y - BESIDE)).abs() < 0.5,
+    };
+    let (lined, side) = (0..4)
+        .map(|side| (wired.iter().filter(|p| on_line(side, p)).count(), side))
+        .max_by_key(|&(lined, side)| (lined, std::cmp::Reverse(side)))
+        .unwrap_or_default();
+    if lined > 0 {
+        let down = |x: f32| {
+            let pasts = taken.iter().map(|t| t.bottom() + BESIDE);
+            first_clear(taken, first.y, pasts, |y| Rect::new(x, y, w, h))
+        };
+        let along = |y: f32| {
+            let pasts = taken.iter().map(|t| t.right() + BESIDE);
+            first_clear(taken, first.x, pasts, |x| Rect::new(x, y, w, h))
+        };
+        return match side {
+            0 => down(first.right() + BESIDE),
+            1 => along(first.bottom() + BESIDE),
+            2 => down(first.x - BESIDE - w),
+            _ => along(first.y - BESIDE - h),
+        };
+    }
+    let clear = |spot: &Rect| keeps_off(taken, spot);
     let mut best: Option<(f32, Rect)> = None;
     for a in anchors {
         // Along a side: at the anchor's edge, then just past each rect in the way.
@@ -167,24 +190,64 @@ pub fn free_spot(taken: &[Rect], anchors: &[Rect], size: Size) -> Rect {
     )
 }
 
+/// Where a block goes that would sit at `at` (the view's middle): there when it is [`BESIDE`] or
+/// more from every rect of `taken`; else, of the places [`BESIDE`] from a rect of `taken` and level
+/// with it (right or left of it with their tops level, below or above it with their left edges
+/// level) that keep off the rest, the nearest `at`, so blocks opened in one view grow a tidy grid
+/// around its middle; on a tie right, below, left, above. With none, beside `at` ([`free_spot`]).
+pub fn room_at(taken: &[Rect], at: Rect) -> Rect {
+    if keeps_off(taken, &at) {
+        return at;
+    }
+    let (w, h) = (at.w, at.h);
+    let near = |spot: &Rect| gap(spot, &at).round();
+    taken
+        .iter()
+        .flat_map(|t| {
+            [
+                Rect::new(t.right() + BESIDE, t.y, w, h),
+                Rect::new(t.x, t.bottom() + BESIDE, w, h),
+                Rect::new(t.x - BESIDE - w, t.y, w, h),
+                Rect::new(t.x, t.y - BESIDE - h, w, h),
+            ]
+        })
+        .filter(|spot| keeps_off(taken, spot))
+        .min_by(|a, b| near(a).total_cmp(&near(b)))
+        .unwrap_or_else(|| free_spot(taken, &[at], at.size()))
+}
+
+/// `spot` is [`BESIDE`] or more from every rect of `taken` (half a unit spared for rounding).
+fn keeps_off(taken: &[Rect], spot: &Rect) -> bool {
+    let m = BESIDE - 0.5;
+    let room = Rect::new(spot.x - m, spot.y - m, spot.w + 2.0 * m, spot.h + 2.0 * m);
+    !taken.iter().any(|t| t.intersects(&room))
+}
+
+/// The first of `at(start)`, then `at` each of `pasts` beyond `start`, nearest first, that keeps
+/// off `taken`. The farthest keeps off everything, as `pasts` are [`BESIDE`] past each rect.
+fn first_clear(
+    taken: &[Rect],
+    start: f32,
+    pasts: impl Iterator<Item = f32>,
+    at: impl Fn(f32) -> Rect,
+) -> Rect {
+    let mut steps: Vec<f32> = std::iter::once(start)
+        .chain(pasts.filter(|&p| p > start))
+        .collect();
+    steps.sort_by(f32::total_cmp);
+    let last = steps.last().copied().unwrap_or(start);
+    steps
+        .into_iter()
+        .map(&at)
+        .find(|spot| keeps_off(taken, spot))
+        .unwrap_or_else(|| at(last))
+}
+
 /// How far apart two rects are: 0 when they touch or overlap.
 fn gap(a: &Rect, b: &Rect) -> f32 {
     let dx = (b.x - a.right()).max(a.x - b.right()).max(0.0);
     let dy = (b.y - a.bottom()).max(a.y - b.bottom()).max(0.0);
     dx.hypot(dy)
-}
-
-/// `rect`, shifted by [`CASCADE`] while one of `taken`'s top-left corners is within 8 units of
-/// its own.
-pub fn cascade(rect: Rect, taken: &[Rect]) -> Rect {
-    let mut p = rect.origin();
-    while taken
-        .iter()
-        .any(|t| (t.x - p.x).abs() < 8.0 && (t.y - p.y).abs() < 8.0)
-    {
-        p = Point::new(p.x + CASCADE, p.y + CASCADE);
-    }
-    Rect::new(p.x, p.y, rect.w, rect.h)
 }
 
 #[cfg(test)]
@@ -261,25 +324,13 @@ mod tests {
     }
 
     #[test]
-    fn place_new_cascades_off_taken_spots() {
-        let mut c = Canvas::default();
-        let size = Size::new(100.0, 50.0);
-        assert_eq!(c.place_new(size, Point::new(0.0, 0.0)), rect(0.0, 0.0));
-        c.add(rect(0.0, 0.0));
-        c.add(rect(CASCADE + 3.0, CASCADE - 2.0));
-        assert_eq!(
-            c.place_new(size, Point::new(1.0, 1.0)),
-            rect(1.0 + 2.0 * CASCADE, 1.0 + 2.0 * CASCADE)
-        );
-    }
-
-    #[test]
     fn a_free_spot_sits_to_the_right_and_slides_past_what_is_in_the_way() {
         let anchor = Rect::new(100.0, 50.0, 300.0, 200.0);
         let size = Size::new(100.0, 60.0);
         assert_eq!(
             free_spot(&[anchor], &[anchor], size),
-            Rect::new(100.0 + 300.0 + BESIDE, 50.0, 100.0, 60.0)
+            Rect::new(100.0 + 300.0 + 48.0, 50.0, 100.0, 60.0),
+            "two dots of the grid apart, tops level"
         );
         let small = Rect::new(100.0 + 300.0 + BESIDE + 3.0, 52.0, 10.0, 10.0);
         assert_eq!(
@@ -300,14 +351,14 @@ mod tests {
         let size = Size::new(100.0, 60.0);
         assert_eq!(
             free_spot(&[a], &[a], size),
-            Rect::new(424.0, 50.0, 100.0, 60.0),
+            Rect::new(448.0, 50.0, 100.0, 60.0),
             "alone: on its right"
         );
         // Its connection is below it: the new block goes between them.
         let below = Rect::new(100.0, 700.0, 300.0, 100.0);
         assert_eq!(
             free_spot(&[a, below], &[a, below], size),
-            Rect::new(100.0, 274.0, 100.0, 60.0)
+            Rect::new(100.0, 298.0, 100.0, 60.0)
         );
     }
 
@@ -315,10 +366,10 @@ mod tests {
     fn a_boxed_in_anchor_sends_the_block_beside_its_connection() {
         let a = Rect::new(100.0, 50.0, 300.0, 200.0);
         let walls = [
-            Rect::new(424.0, 0.0, 400.0, 400.0),
-            Rect::new(0.0, 274.0, 1000.0, 400.0),
-            Rect::new(-500.0, 0.0, 576.0, 400.0),
-            Rect::new(0.0, -500.0, 1000.0, 526.0),
+            Rect::new(448.0, 0.0, 400.0, 400.0),
+            Rect::new(0.0, 298.0, 1000.0, 400.0),
+            Rect::new(-500.0, 0.0, 552.0, 400.0),
+            Rect::new(0.0, -500.0, 1000.0, 502.0),
         ];
         let far = Rect::new(2000.0, 50.0, 200.0, 100.0);
         let taken: Vec<Rect> = [a, far].into_iter().chain(walls).collect();
@@ -326,14 +377,61 @@ mod tests {
         let spot = free_spot(&taken, &[a, far], size);
         assert!(clear(spot, &taken), "{spot:?}");
         assert!(
-            spot.x > 824.0 && spot.right() <= far.x - BESIDE + 0.5,
+            spot.x > 848.0 && spot.right() <= far.x - BESIDE + 0.5,
             "past the walls, toward its connection: {spot:?}"
         );
     }
 
-    /// Whatever is around, the spot found overlaps nothing.
+    /// Blocks opened one after the other beside a block (an agent's subagents) form a column on
+    /// its right, tops level with it, evenly spaced; one closed leaves a place the next one takes.
     #[test]
-    fn a_free_spot_never_overlaps() {
+    fn blocks_opened_beside_one_line_up_down_its_right() {
+        let parent = Rect::new(0.0, 0.0, 600.0, 400.0);
+        let size = Size::new(500.0, 300.0);
+        let mut opened: Vec<Rect> = Vec::new();
+        for _ in 0..4 {
+            let taken: Vec<Rect> = std::iter::once(parent).chain(opened.clone()).collect();
+            opened.push(free_spot(&taken, &taken, size));
+        }
+        let column: Vec<(f32, f32)> = opened.iter().map(|r| (r.x, r.y)).collect();
+        assert_eq!(
+            column,
+            [
+                (648.0, 0.0),
+                (648.0, 348.0),
+                (648.0, 696.0),
+                (648.0, 1044.0)
+            ]
+        );
+        opened.remove(1);
+        let taken: Vec<Rect> = std::iter::once(parent).chain(opened).collect();
+        assert_eq!(
+            free_spot(&taken, &taken, size).origin(),
+            Point::new(648.0, 348.0)
+        );
+    }
+
+    /// When its first block went another way (toward a connection on its left), the next ones
+    /// follow it down that side.
+    #[test]
+    fn the_next_blocks_follow_the_first_ones_side() {
+        let parent = Rect::new(0.0, 0.0, 600.0, 400.0);
+        let board = Rect::new(-3000.0, 0.0, 900.0, 540.0);
+        let size = Size::new(500.0, 300.0);
+        let mut taken = vec![parent, board];
+        for _ in 0..3 {
+            taken.push(free_spot(&taken, &taken, size));
+        }
+        let column: Vec<Point> = taken[2..].iter().map(Rect::origin).collect();
+        assert_eq!(
+            column,
+            [(-548.0, 0.0), (-548.0, 348.0), (-548.0, 696.0)].map(|(x, y)| Point::new(x, y))
+        );
+    }
+
+    /// Whatever is around, the spot found keeps [`BESIDE`] from everything.
+    #[test]
+    fn a_spot_keeps_its_distance_from_everything() {
         let mut seed: u32 = 7;
         let mut next = |n: u32| {
             seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
@@ -345,10 +443,43 @@ mod tests {
                 .collect();
             let anchors = [taken[0], taken[1], taken[2]];
             let size = Size::new(80.0 + next(700), 60.0 + next(500));
-            let spot = free_spot(&taken, &anchors, size);
-            assert_eq!(spot.size(), size);
-            assert!(clear(spot, &taken), "{spot:?} in {taken:?}");
+            let at = Rect::new(next(1600), next(1200), size.w, size.h);
+            for spot in [free_spot(&taken, &anchors, size), room_at(&taken, at)] {
+                assert_eq!(spot.size(), size);
+                for t in &taken {
+                    assert!(gap(&spot, t) >= BESIDE - 0.5, "{spot:?} by {t:?}");
+                }
+            }
         }
+    }
+
+    /// Blocks opened one after the other in the same view grow a grid around its middle, each
+    /// level with its neighbours, [`BESIDE`] apart; one where nothing is stays there.
+    #[test]
+    fn blocks_opened_in_one_view_grow_a_grid_around_its_middle() {
+        let at = Rect::new(0.0, 0.0, 600.0, 400.0);
+        let mut taken: Vec<Rect> = Vec::new();
+        for _ in 0..9 {
+            taken.push(room_at(&taken, at));
+        }
+        let at_ = |x: f32, y: f32| Rect::new(x, y, 600.0, 400.0);
+        let (left, right, above, below) = (-648.0, 648.0, -448.0, 448.0);
+        assert_eq!(
+            taken,
+            [
+                at,
+                at_(right, 0.0),
+                at_(0.0, below),
+                at_(left, 0.0),
+                at_(0.0, above),
+                at_(right, below),
+                at_(right, above),
+                at_(left, below),
+                at_(left, above),
+            ]
+        );
+        let elsewhere = Rect::new(5000.0, 0.0, 600.0, 400.0);
+        assert_eq!(room_at(&taken, elsewhere), elsewhere);
     }
 
     #[test]

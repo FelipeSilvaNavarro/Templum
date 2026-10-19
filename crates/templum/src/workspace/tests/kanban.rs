@@ -17,6 +17,8 @@ fn the_board_button_opens_a_block_with_the_board_list(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
         window.click("tool-kanban", cx);
+        // The view landed where it glides to show the new block.
+        ws.update(cx, |ws, _| ws.space.flight = None);
         window.render_frame(cx);
     })
     .unwrap();
@@ -54,13 +56,13 @@ fn two_blocks_on_one_board_show_the_same_cards(cx: &mut TestAppContext) {
                 ws.show_board(b, board, cx);
                 let todo = ws.boards.board(board).unwrap().columns[0].id;
                 ws.space.appearing.clear();
+                ws.space.flight = None;
                 (a, b, board, todo)
             })
         })
         .unwrap();
     cx.update_window(handle, |_, window, cx| {
         window.render_frame(cx);
-        // Through the block on top: it covers most of the other.
         let add = gpui_kit::ElementId::Name(format!("add-card-{}-{todo}", b.0).into());
         window.click(add, cx);
         window.render_frame(cx);
@@ -146,6 +148,7 @@ fn the_wheel_over_a_kanban_block_stays_in_it_and_ctrl_zooms(cx: &mut TestAppCont
                 let block = ws.space.canvas.top().unwrap();
                 ws.new_board(block, cx);
                 ws.space.appearing.clear();
+                ws.space.flight = None;
                 let board = ws.space.kanban(block).unwrap().board.unwrap();
                 (block, ws.boards.board(board).unwrap().columns[1].id)
             })

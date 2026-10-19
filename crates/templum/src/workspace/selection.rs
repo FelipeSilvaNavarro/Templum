@@ -158,8 +158,8 @@ impl Workspace {
         true
     }
 
-    /// Pastes the blocks on the clipboard, centered in the view (a cascade step off blocks
-    /// already there), and selects them. False when the clipboard holds no blocks.
+    /// Pastes the blocks on the clipboard, centered in the view (or beside the blocks already
+    /// there), and selects them. False when the clipboard holds no blocks.
     pub(super) fn paste_blocks(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(clip) = cx
             .read_from_clipboard()
@@ -177,6 +177,8 @@ impl Workspace {
             return false;
         };
         let (dx, dy) = self.landing(bounds, window);
+        let landed = Rect::new(bounds.x + dx, bounds.y + dy, bounds.w, bounds.h);
+        self.show(landed, window, cx);
         for item in &mut items {
             let rect = item.rect_mut();
             rect.x += dx;
@@ -218,12 +220,11 @@ impl Workspace {
         true
     }
 
-    /// Where blocks within `bounds` go to land in the view: centered, a cascade step off the
-    /// blocks already there; the offset to move them by.
+    /// Where blocks within `bounds` go to land in the view: centered, or beside the blocks
+    /// already there, level with one; the offset to move them by.
     pub(super) fn landing(&self, bounds: Rect, window: &Window) -> (f32, f32) {
         let center = self.space.camera().to_world(self.center(window));
-        let near = Point::new(center.x - bounds.w / 2.0, center.y - bounds.h / 2.0);
-        let at = self.space.canvas.place_new(bounds.size(), near);
+        let at = self.space.room_around(center, bounds.size());
         (at.x - bounds.x, at.y - bounds.y)
     }
 
