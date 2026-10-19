@@ -875,6 +875,35 @@ fn a_spawned_agent_fits_where_nothing_is_toward_the_callers_connections(cx: &mut
     });
 }
 
+/// An agent's subagents line up down its right, tops level, [`templum_canvas::BESIDE`] apart; a
+/// subagent's own agent goes on its right too, not back toward the agent that opened it.
+#[gpui_kit::test]
+fn spawned_agents_line_up_beside_their_opener(cx: &mut TestAppContext) {
+    let (handle, ws, mine) = spawner(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let folder = tempfile::tempdir().unwrap();
+    let spawn = json!({ "agent": "codex", "folder": folder.path() });
+    let mut opened = Vec::new();
+    for _ in 0..2 {
+        let (failed, text) = call(handle, &ws, cx, &terminal, "spawn_agent", spawn.clone());
+        assert!(!failed, "{text}");
+        opened.push(spawned(&ws, cx, mine));
+    }
+    let rect = |cx: &mut TestAppContext, id| {
+        ws.read_with(cx, |ws, _| ws.space.canvas.get(id).unwrap().rect)
+    };
+    let (caller, first, second) = (rect(cx, mine), rect(cx, opened[0]), rect(cx, opened[1]));
+    let gap = templum_canvas::BESIDE;
+    assert_eq!((first.x, first.y), (caller.right() + gap, caller.y));
+    assert_eq!((second.x, second.y), (first.x, first.bottom() + gap));
+    let (sub, _) = me(&ws, cx, opened[0]);
+    let (failed, text) = call(handle, &ws, cx, &sub, "spawn_agent", spawn);
+    assert!(!failed, "{text}");
+    let own = spawned(&ws, cx, opened[0]);
+    let own = rect(cx, own);
+    assert_eq!((own.x, own.y), (first.right() + gap, first.y));
+}
+
 /// `spawn_agent` opens an account by its id, on its folder, with its agent's model.
 #[gpui_kit::test]
 fn spawn_agent_opens_an_account(cx: &mut TestAppContext) {

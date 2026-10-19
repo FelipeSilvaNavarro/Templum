@@ -271,7 +271,8 @@ wired to the caller already line up on one of those sides (its earlier subagents
 free place down that column or along that row: an agent's subagents form one column on its right, evenly spaced, and
 the next one takes a closed one's place. Else it goes the way of the caller's connections: of the spots right of,
 below, left of or above the caller or a block wired to it (at their edge, or past what is in the way along that side),
-the one nearest the caller and its connections all together, so they draw it their way. Any block Templum
+the one nearest the caller and its connections all together, so they draw it their way. The block that opened the
+caller doesn't draw it: a subagent's own agents go on its right, not back over its opener's column. Any block Templum
 opens beside another (a terminal from an editor's tree, `open_file`'s editor) keeps off everything the same way.
 A block opened at the view's middle (a new terminal, note, kanban, editor or checklist, a paste, a block the Templum
 Agent opens near no block) goes there when nothing is within 48 of it; else in the nearest place 48 from a block there

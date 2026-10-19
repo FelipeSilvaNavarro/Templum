@@ -472,12 +472,18 @@ impl Space {
     }
 
     /// A spot for a block of `size` beside block `id` that overlaps nothing, drawn toward the
-    /// blocks wired to it (`room_beside`). None when `id` isn't on the canvas.
+    /// blocks wired to it, down the column the ones it opened started (`room_beside`); not toward
+    /// the block that opened it, behind it, so a subagent's own agents go on its other side. None
+    /// when `id` isn't on the canvas.
     pub(super) fn room_near(&self, id: BlockId, size: Size) -> Option<Rect> {
         let home = |id| Some(self.home(self.canvas.get(id)?));
-        let wired = self.wires.iter().filter(|w| w.touches(id));
+        let opener = (self.terminal(id).and_then(|p| p.opened_by.as_deref()))
+            .and_then(|uid| self.block_by_uid(uid));
+        let wired = (self.wires.iter().filter(|w| w.touches(id)))
+            .map(|w| if w.a == id { w.b } else { w.a })
+            .filter(|other| Some(*other) != opener);
         let anchors: Vec<Rect> = std::iter::once(home(id)?)
-            .chain(wired.filter_map(|w| home(if w.a == id { w.b } else { w.a })))
+            .chain(wired.filter_map(home))
             .collect();
         Some(self.room_beside(&anchors, size))
     }
