@@ -457,16 +457,28 @@ fn visible(line: &str) -> String {
         match c {
             '\0'..='\x1f' => out.push(char::from_u32(0x2400 + c as u32).unwrap_or('?')),
             '\x7f' => out.push('␡'),
-            // C1 controls, zero widths, the bidirectional marks and overrides that reorder a line,
-            // the line and paragraph separators that break it, interlinear annotations and tags.
+            // C1 controls; the line and paragraph separators that break a line, interlinear
+            // annotations; and Unicode's default-ignorable characters, which draw nothing: zero
+            // widths, the bidirectional marks and overrides that reorder a line, fillers,
+            // variation selectors, tags.
             '\u{80}'..='\u{9f}'
+            | '\u{ad}'
+            | '\u{34f}'
             | '\u{61c}'
+            | '\u{115f}'..='\u{1160}'
+            | '\u{17b4}'..='\u{17b5}'
+            | '\u{180b}'..='\u{180f}'
             | '\u{200b}'..='\u{200f}'
             | '\u{2028}'..='\u{202e}'
-            | '\u{2060}'..='\u{2069}'
+            | '\u{2060}'..='\u{206f}'
+            | '\u{3164}'
+            | '\u{fe00}'..='\u{fe0f}'
             | '\u{feff}'
-            | '\u{fff9}'..='\u{fffb}'
-            | '\u{e0000}'..='\u{e007f}' => out.push_str(&format!("⟨U+{:04X}⟩", c as u32)),
+            | '\u{ffa0}'
+            | '\u{fff0}'..='\u{fffb}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0000}'..='\u{e0fff}' => out.push_str(&format!("⟨U+{:04X}⟩", c as u32)),
             c => out.push(c),
         }
     }
@@ -521,5 +533,20 @@ mod tests {
                 1
             )
         );
+        // Every default-ignorable character draws nothing: fillers, variation selectors, a soft
+        // hyphen, joiners.
+        let hidden = [
+            0xad, 0x34f, 0x115f, 0x1160, 0x17b4, 0x17b5, 0x180b, 0x180e, 0x180f, 0x206a, 0x206f,
+            0x3164, 0xfe00, 0xfe0f, 0xffa0, 0xfff0, 0xfff8, 0x1bca0, 0x1bca3, 0x1d173, 0x1d17a,
+            0xe0100, 0xe01ef, 0xe0fff,
+        ];
+        for code in hidden {
+            let c = char::from_u32(code).unwrap();
+            assert_eq!(
+                typed(&format!("a{c}b")).0,
+                format!("a⟨U+{code:04X}⟩b"),
+                "U+{code:04X}"
+            );
+        }
     }
 }
