@@ -272,7 +272,7 @@ close, resize, move, focus, hover lift, pop-in and fade-out, menus, zoom.
   menu): every note, the most recently changed first; each row its title, when it last changed ("5 min ago"), where
   it is open ("Open", "Open in Workspace 2") and its next line with text. The field on top finds notes by their text,
   in any case. A click opens a note: as a tab of the block the dialog was opened from, where it is open already, or
-  in a new block. **New note** adds one. The trash deletes a note on its **second** click ("Delete for good" shows
+  in a new block. **New note** adds one. The trash deletes a note on its **second** click ("Click again to delete" shows
   after the first), from every block that shows it.
 - **Saved as it is typed:** each change to a note's text goes into the notes at once, and they are written to
   `notes.json` in the data folder with the canvas's snapshot (every 5 s, and when Templum quits). A canvas is written

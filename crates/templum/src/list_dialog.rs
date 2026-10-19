@@ -93,7 +93,7 @@ pub(crate) fn open(
                         .cursor_pointer()
                         .hover(move |s| s.bg(ui.hover).text_color(red))
                         .child(Icon::new(IconName::Trash).size(px(14.0)))
-                        .when(is_armed, |el| el.child("Delete for good"))
+                        .when(is_armed, |el| el.child("Click again to delete"))
                         // The row behind opens the entry: not on this press.
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_click(move |_: &ClickEvent, window, cx| {
