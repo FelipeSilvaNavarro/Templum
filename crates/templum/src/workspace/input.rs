@@ -898,6 +898,20 @@ impl Workspace {
             return;
         }
         self.space.pristine = false;
+        // A block held by its title: the wheel moves the canvas under it, a mouse's too, and the
+        // block stays under the pointer.
+        if matches!(
+            self.drag,
+            Some(Drag::Canvas(
+                Gesture::Move { .. } | Gesture::MoveGroup { .. }
+            ))
+        ) {
+            let d = e.delta.pixel_delta(px(self.cell.size.h));
+            self.pan_by(Point::new(f32::from(d.x), f32::from(d.y)));
+            self.drag_to(e.position, e.modifiers.shift, cx);
+            cx.notify();
+            return;
+        }
         let p = self.local(e.position);
         // The hand (its tool, or Alt held) zooms without Ctrl: dragging moves the canvas. So does
         // a mouse's wheel (steps, not a touchpad's pixels) with the selection tool.

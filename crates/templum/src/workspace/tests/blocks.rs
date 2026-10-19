@@ -145,6 +145,65 @@ fn dragging_the_title_moves_the_block(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_wheel_moves_the_canvas_under_a_held_block_which_stays_under_the_pointer(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    let screen = |ws: &Workspace| {
+        let camera = &ws.space.canvas.camera;
+        let r = ws.space.canvas.get(id).unwrap().rect;
+        (
+            camera.to_screen(Point::new(r.x, r.y)),
+            camera.origin,
+            camera.zoom(),
+        )
+    };
+    let held = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let from = window.find(("title", id.0 as usize)).bounds().center();
+            let to = point(from.x + px(100.), from.y + px(50.));
+            window.dispatch_event(
+                PlatformInput::MouseDown(MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: from,
+                    modifiers: Modifiers::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                    position: to,
+                    pressed_button: Some(MouseButton::Left),
+                    modifiers: Modifiers::default(),
+                }),
+                cx,
+            );
+            (f32::from(to.x), f32::from(to.y))
+        })
+        .unwrap();
+    let before = ws.read_with(cx, |ws, _| screen(ws));
+    // A mouse's wheel, which zooms the canvas when nothing is held.
+    cx.update_window(handle, |_, window, cx| {
+        wheel(
+            window,
+            cx,
+            held,
+            ScrollDelta::Lines(point(0.0, -3.0)),
+            false,
+        );
+    })
+    .unwrap();
+    let after = ws.read_with(cx, |ws, _| screen(ws));
+    assert_eq!(after.2, before.2, "no zoom while a block is held");
+    assert_ne!(after.1, before.1, "the canvas moved");
+    assert_eq!(after.0, before.0, "the block stayed under the pointer");
+}
+
+#[gpui_kit::test]
 fn a_dragged_block_snaps_to_a_neighbour_and_shows_a_guide_until_release(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);
     let first = first_id(&ws, cx);

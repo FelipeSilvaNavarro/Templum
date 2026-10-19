@@ -24,6 +24,12 @@ wheel scrolls its history. Templum gets two ways to move the canvas wherever the
 Alt alone types nothing in a terminal, and Alt+key still reaches it (the layer only takes the pointer). On the dev
 machine (Hyprland), window bindings use Super, so Alt with the mouse is free.
 
+## Holding a block
+
+While a block (or a selection) is held by its title, the wheel, or two fingers on a touchpad, pans the canvas, a
+mouse's wheel and Ctrl+wheel included, and the block stays under the pointer: it can be carried farther than the
+window shows without letting go.
+
 ## The middle button
 
 A drag with the middle mouse button pans the canvas anywhere, over blocks too, with no key held. Terminals don't

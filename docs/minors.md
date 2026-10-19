@@ -279,6 +279,12 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   `crates/templum/src/workspace/selection.rs`): resuming it would put two agents on one conversation, so a copied
   Claude Code terminal pastes as a shell in its folder. Fix: type the agent's own command (not its resume command)
   into the pasted shell.
+- [ ] **A held block doesn't move the canvas near its edge.** A block dragged by its title stops at the canvas's
+  edge: the camera goes there only for the selection rectangle (`marquee_edge`,
+  `crates/templum/src/workspace/selection.rs`) and the wheel (`on_background_scroll`, `input.rs`). A person must let
+  go, pan, and grab it again (or scroll while holding it). Fix: keep the pointer and the last frame's time in
+  `Drag::Canvas` as `Drag::Marquee` does, and a per-frame `move_edge` that pans by `edge_scroll` and re-applies the
+  gesture.
 
 ## Notes
 
