@@ -697,6 +697,7 @@ fn cat_agents(ws: &Entity<Workspace>, cx: &mut TestAppContext) {
 }
 
 /// The block id an `open_agent` answer names: `Opened … as <uid> in …`.
+#[cfg(unix)]
 fn opened_uid(text: &str) -> String {
     text.split(" as ")
         .nth(1)

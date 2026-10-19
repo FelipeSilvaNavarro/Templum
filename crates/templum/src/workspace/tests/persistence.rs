@@ -636,6 +636,7 @@ fn telling_its_folder() -> (String, Vec<String>) {
 }
 
 /// A saved terminal in `folder`, with `agent`, `session` and `account` when given.
+#[cfg(unix)]
 fn saved_terminal(
     folder: &std::path::Path,
     agent: Option<&str>,
@@ -653,6 +654,7 @@ fn saved_terminal(
     .unwrap()
 }
 
+#[cfg(unix)]
 fn restore(
     handle: AnyWindowHandle,
     ws: &Entity<Workspace>,

@@ -148,6 +148,7 @@ pub(super) fn bus_note(
 }
 
 /// The answer that comes on `answers` within ten seconds, background jobs running meanwhile.
+#[cfg(unix)]
 pub(super) fn answer_soon(
     cx: &mut TestAppContext,
     answers: &std::sync::mpsc::Receiver<String>,
