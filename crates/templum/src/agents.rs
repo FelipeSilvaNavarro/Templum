@@ -1143,6 +1143,8 @@ mod tests {
             by(&list, "gemini").resume_command_for(id, false),
             "gemini --session-id 0d5e5f4b-1c2d"
         );
+        // Claude Code has no file for it (never written, or deleted): a clean new one.
+        assert_eq!(by(&list, "claude").resume_command_for(id, false), "claude");
         let list = agents("[agents]\nclaude = { resume = \"claude -c --fast\" }\n");
         assert_eq!(
             by(&list, "claude").resume_command_for(id, true),

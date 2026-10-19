@@ -360,6 +360,18 @@ pub fn session_id(pid: u32, claude_dir: &Path) -> Option<String> {
     running(pid, claude_dir).map(|r| r.session_id)
 }
 
+/// Whether Claude Code still has its session `id` in `claude_dir` to resume
+/// (`projects/<project>/<id>.jsonl`): it writes the file with the conversation's first message,
+/// deletes old ones, and exits with "No conversation found" on one it doesn't find. A folder it
+/// can't read can't tell: kept.
+pub(crate) fn session_kept(claude_dir: &Path, id: &str) -> bool {
+    let Ok(projects) = std::fs::read_dir(claude_dir.join("projects")) else {
+        return true;
+    };
+    let name = format!("{id}.jsonl");
+    projects.flatten().any(|p| p.path().join(&name).is_file())
+}
+
 /// The context in tokens of the session's last answer, from its transcript.
 fn transcript(proc: &Proc, claude_dir: &Path) -> Option<Session> {
     let running = running(proc.pid, claude_dir)?;
