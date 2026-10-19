@@ -211,6 +211,17 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   with the PKGBUILD the release attaches (`[package.metadata.packager.pacman]` in `crates/templum/Cargo.toml`). Fix:
   in release.yml, after `cargo packager`, rewrite a prerelease's `pkgver` with `_` for `-` and set the source URL's
   version from `$GITHUB_REF_NAME` instead of `${pkgver}`.
+- [ ] **install.ps1 answers a version with no release with PowerShell's own error.** `$env:TEMPLUM_VERSION = "9.9.9"`
+  prints "Response status code does not indicate success: 404 (Not Found)." (`install.ps1`, the first
+  `Invoke-WebRequest`), where install.sh says "couldn't download … of Templum 9.9.9". Fix: catch it around the
+  download and throw "templum: no Templum $version at https://github.com/KingDasWinx/Templum/releases".
+- [ ] **install.sh on macOS replaces a running Templum.app under it.** The `Darwin` branch deletes the bundle and
+  copies the new one, and macOS can kill an app whose signed code changes while it runs. Fix: copy to
+  `.Templum.app.update` beside it and swap the folders, as `templum-update`'s `apply.rs` does, or ask to quit
+  Templum first when `pgrep -x templum` finds it.
+- [ ] **install.sh in a Rosetta shell on Apple Silicon installs the Intel build.** `uname -m` says `x86_64` there,
+  so the Mac gets `Templum_<v>_x64.dmg`, which runs translated, slower. Fix: take `aarch64` when
+  `sysctl -n hw.optional.arm64` prints 1.
 
 ## Commit messages
 
