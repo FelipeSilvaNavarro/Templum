@@ -6,6 +6,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::input::Textarea;
 use gpui_kit::component::kbd::Kbd;
 use gpui_kit::component::spinner::Spinner;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Sizable as _, Size as UiSize};
 use gpui_kit::prelude::*;
 use gpui_kit::{
@@ -177,6 +178,9 @@ pub(crate) fn render(
                         ws.open_agent_settings(window, cx)
                     }))
                     .child(engine(ws))
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Settings ▸ Templum Agent").build(window, cx)
+                    })
                     .test_support(),
             )
             .when(!text.trim().is_empty(), |el| {
@@ -199,20 +203,21 @@ pub(crate) fn render(
                                 .size(px(14.0))
                                 .text_color(ui.canvas),
                         )
+                        .tooltip(|window, cx| Tooltip::new("Send").build(window, cx))
                         .test_support(),
                 )
             }),
         _ if asks.is_some() => {
             let said = asks.map(|a| a.said.clone()).unwrap_or_default();
+            let asked: SharedString = format!("Templum Agent asks you: {said}").into();
+            let tip = asked.clone();
             // A click on it is for its field; Review is for the approval.
             pill.cursor_pointer()
                 .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_agent(window, cx)))
+                // The line may be cut short: the whole question.
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
                 .child(div().flex_none().size(px(8.0)).rounded_full().bg(yellow))
-                .child(line(
-                    format!("Templum Agent asks you: {said}").into(),
-                    "agent-asks",
-                    ui.title,
-                ))
+                .child(line(asked, "agent-asks", ui.title))
                 .child(
                     div()
                         .id("agent-review")
@@ -236,8 +241,14 @@ pub(crate) fn render(
         _ => {
             let shortcut = ws.keymap.first(Command::Agent);
             let under_way = working.then(|| doing(ws));
+            let tip = if installed {
+                "Ask the Templum Agent"
+            } else {
+                "Set up the Templum Agent"
+            };
             pill.cursor_pointer()
                 .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.toggle_agent(window, cx)))
+                .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
                 .child(match under_way {
                     Some(doing) => line(doing.into(), "agent-working", ui.title_dim),
                     None if installed => line(rest(ws).into(), "agent-rest", ui.title_dim),

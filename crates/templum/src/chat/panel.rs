@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::Icon;
+use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     Animation, AnimationExt as _, AnyElement, BoxShadow, ClickEvent, Context, ElementId,
@@ -56,7 +57,7 @@ pub(crate) fn render(
     }
     let ui = ws.ui;
     let rows = &agent.conversation.rows;
-    let button = |id: &'static str, icon: IconName| {
+    let button = |id: &'static str, icon: IconName, tip: &'static str| {
         div()
             .id(id)
             .flex()
@@ -67,6 +68,7 @@ pub(crate) fn render(
             .cursor_pointer()
             .hover(move |s| s.bg(ui.hover))
             .child(Icon::new(icon).size(px(14.0)).text_color(ui.title_dim))
+            .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
     };
     let header = div()
         .flex_none()
@@ -111,6 +113,7 @@ pub(crate) fn render(
                         cx.notify();
                     }))
                     .child(meter)
+                    .tooltip(|window, cx| Tooltip::new("Tasks under way").build(window, cx))
                     .test_support(),
             )
         })
@@ -134,18 +137,18 @@ pub(crate) fn render(
         })
         .when(agent.conversation.working, |el| {
             el.child(
-                button("agent-stop", IconName::CircleStop)
+                button("agent-stop", IconName::CircleStop, "Stop")
                     .on_click(cx.listener(|ws, _: &ClickEvent, _, cx| ws.stop_engine(cx)))
                     .test_support(),
             )
         })
         .child(
-            button("agent-new", IconName::MessageSquarePlus)
+            button("agent-new", IconName::MessageSquarePlus, "New chat")
                 .on_click(cx.listener(|ws, _: &ClickEvent, _, cx| ws.new_chat(cx)))
                 .test_support(),
         )
         .child(
-            button("agent-close", IconName::ChevronDown)
+            button("agent-close", IconName::ChevronDown, "Close")
                 .on_click(cx.listener(|ws, _: &ClickEvent, window, cx| ws.leave_agent(window, cx)))
                 .test_support(),
         );
