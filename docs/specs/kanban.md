@@ -234,9 +234,10 @@ The **Assignee** row ([layout](#the-open-card)) holds a dropdown button showing 
 Codex", a block's title), and, when there is one, a ✕ (`unassign`) that sets Anyone. Its menu:
 
 1. **Anyone**.
-2. A separator, the label **Sessions**, then one item per terminal block running an agent (as above), in every
-   workspace: the active one first, then the others in the sidebar's order, each back to front. An item reads the
-   block's title as agents see it (`Workspace::uid_title`), followed by " — {workspace name}" when the block is in
+2. A separator, the label **Sessions**, then one item per terminal block running an agent (as above) and wired to
+   a kanban block that shows the board, in every workspace: the active one first, then the others in the sidebar's
+   order, each back to front. An item reads the block's title as agents see it (`Workspace::uid_title`), its
+   folder's name and its id ("Claude Code · app · k3x9a"), followed by " — {workspace name}" when the block is in
    another workspace. The current block, when it is in none of them (closed, or its agent quit), comes first, by its
    title or its id. The section is left out when it would be empty.
 3. A separator and a submenu **Any session of**, listing every agent of `Workspace::agents` in their order, by title.
@@ -455,7 +456,7 @@ build them.
 - a card shows its id always, and its priority and checklist progress when it has them;
 - the open card sets a priority (one Ctrl+Z step), adds an item with Enter and stays open, checks and deletes it,
   frees its assignee, deletes the card from the footer, and closes with Done;
-- the assignee menu offers Anyone, the agent sessions of every workspace and every agent;
+- the assignee menu offers Anyone, the agent sessions wired to the board in every workspace, and every agent;
 - dragging a card near a long column's bottom scrolls its cards; near the board's right edge, its columns;
 - the tools: `list_cards` shows priority, assignee, `(you)` and progress, and the items with `card`; `create_card` and
   `edit_card` set them; `claim_card` takes a card for anyone or for its agent (or an agent running the same program),

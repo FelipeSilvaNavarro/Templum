@@ -92,22 +92,37 @@ impl Workspace {
         }
     }
 
-    /// Every terminal running an agent, as (block id, label), for a card's assignee menu: the
-    /// active workspace first, then the others in the sidebar's order, each back to front. The
-    /// label is its title as agents see it, with " — {workspace}" outside the active one.
-    pub(crate) fn agent_sessions(&self, cx: &App) -> Vec<(String, String)> {
+    /// The terminals running an agent wired to a kanban block that shows `board`, as (block id,
+    /// label), for a card's assignee menu: the active workspace first, then the others in the
+    /// sidebar's order, each back to front. The label is its title as agents see it, its folder's
+    /// name and its id ("Claude Code · app · k3x9a"), with " — {workspace}" outside the active
+    /// one.
+    pub(crate) fn agent_sessions(&self, board: u64, cx: &App) -> Vec<(String, String)> {
         self.spaces()
             .flat_map(|space| {
                 let active = std::ptr::eq(space, &self.space);
+                let kanbans: Vec<BlockId> = space
+                    .canvas
+                    .blocks()
+                    .iter()
+                    .filter(|b| space.kanban(b.id).is_some_and(|k| k.board == Some(board)))
+                    .map(|b| b.id)
+                    .collect();
                 space.canvas.blocks().iter().filter_map(move |b| {
                     space.terminal(b.id)?.agent()?;
+                    if !kanbans.iter().any(|&k| space.wired(b.id, k)) {
+                        return None;
+                    }
                     let uid = space.uids.get(&b.id)?.clone();
-                    let title = self.about(&space.blocks[&b.id], cx).1;
-                    let label = if active {
-                        title
-                    } else {
-                        format!("{title} — {}", space.name)
-                    };
+                    let (_, title, folder) = self.about(&space.blocks[&b.id], cx);
+                    let mut label = title;
+                    if let Some(name) = folder.as_deref().and_then(Path::file_name) {
+                        label = format!("{label} · {}", name.to_string_lossy());
+                    }
+                    label = format!("{label} · {uid}");
+                    if !active {
+                        label = format!("{label} — {}", space.name);
+                    }
                     Some((uid, label))
                 })
             })
