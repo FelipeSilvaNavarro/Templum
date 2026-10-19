@@ -40,7 +40,6 @@ impl Workspace {
         launcher::ask_folder_for(
             self,
             "Open an editor".to_string(),
-            None,
             Rc::new(move |folder, window, cx| {
                 entity.update(cx, |ws, cx| ws.add_editor_at(folder, at, window, cx))
             }),
@@ -85,7 +84,6 @@ impl Workspace {
         launcher::ask_folder_for(
             self,
             "Change the editor's folder".to_string(),
-            None,
             Rc::new(move |folder, window, cx| {
                 entity.update(cx, |ws, cx| ws.set_editor_folder(id, folder, window, cx))
             }),

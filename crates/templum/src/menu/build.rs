@@ -92,8 +92,8 @@ fn adding(
     )
 }
 
-/// The agents, installed first; the others say how to install them when chosen. `at`: where the
-/// agent's block goes.
+/// The agents, installed first; the others are greyed out (Settings ▸ Agents says how to install
+/// them). `at`: where the agent's block goes.
 fn agent_items(
     ws: &Entity<Workspace>,
     menu: PopupMenu,
@@ -104,9 +104,12 @@ fn agent_items(
         agents.into_iter().partition(|(_, installed)| *installed);
     let entry = |menu: PopupMenu, (agent, installed): (AgentEntry, bool)| {
         let title = SharedString::from(agent.title.clone());
-        menu.item(item(ws, title, None, move |ws, window, cx| {
-            launcher::ask_folder(ws, agent.clone(), at, installed, window, cx)
-        }))
+        menu.item(
+            item(ws, title, None, move |ws, window, cx| {
+                launcher::ask_folder(ws, agent.clone(), at, window, cx)
+            })
+            .disabled(!installed),
+        )
     };
     // Twenty agents: the list scrolls in a short window.
     let menu = found

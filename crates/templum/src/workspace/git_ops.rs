@@ -110,7 +110,6 @@ impl Workspace {
         launcher::ask_folder_for(
             self,
             "Open a Git repository".to_string(),
-            None,
             Rc::new(move |folder, window, cx| {
                 entity.update(cx, |ws, cx| {
                     if ws.set_git_folder(folder, window, cx) {

@@ -17,7 +17,7 @@ project folder you pick, and each workspace remembers the folders you opened age
 **Success criteria**
 
 1. **AI agent ▸** in the canvas menu lists every agent below; choosing one asks for a folder and opens it there.
-2. Agents that aren't installed say how to install them.
+2. Agents that aren't installed can't be chosen, and Settings ▸ Agents says how to install them.
 3. Each workspace keeps its recent folders across restarts.
 4. Every agent below is recognized in a terminal and comes back when the canvas is restored.
 5. All tests in [Testing](#testing) pass in CI on the 3 OS.
@@ -113,12 +113,12 @@ Left out: Amp (`--mode` only), Goose (`GOOSE_MODEL`, a variable), Crush (its TUI
 ## Opening one
 
 - **The menu:** right-click on the empty canvas, **AI agent ▸**. Installed agents come first; the others follow
-  under **Not installed**. The list scrolls.
+  under **Not installed**, greyed out: Settings ▸ Agents shows each one's install command ("Not installed · *command*")
+  under its name. The list scrolls.
 - **Installed** means its program was found in PATH, in the folders where npm, bun, cargo, Deno, Volta, Go and nvm
   install programs, or among mise's and asdf's shims. An app started from a desktop menu may not get the shell's
   PATH, and version managers add theirs only in the shell.
 - **Choosing one** opens a dialog, "Open *agent*":
-  - when it isn't installed, a note with its install command, in the terminal's font;
   - **The workspace's folder** (chosen in its edit dialog, [cockpit.md](cockpit.md)), when it has one, tagged
     "Workspace folder"; it isn't listed again among the recent ones;
   - **The home folder**, tagged "Personal space", to open an agent quickly outside any project; not shown when it is
