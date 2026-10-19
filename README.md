@@ -13,15 +13,6 @@
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-<!-- MEDIA: hero.mp4 — video, 25-30 s, 1920×1080, MP4 (H.264) under 10 MB, no sound needed. A tour of one
-     workspace: a few terminals and agents on the canvas, a pan and a zoom out to see them all, an agent wired to a
-     kanban moving a card, a switch to another workspace.
-     How to put a video here: GitHub doesn't play one from a path in the repository. Drag the MP4 into any comment box
-     on GitHub (an issue, a pull request), copy the https://github.com/user-attachments/assets/… link it writes, and
-     put it in place of the REPLACE line below, alone on its line, with an empty line above and below. -->
-
-https://github.com/user-attachments/assets/REPLACE-WITH-hero.mp4
-
 Templum puts every terminal on one canvas you pan and zoom, like a whiteboard: place them anywhere, resize them,
 group them by project. It is made for working with CLI agents such as Claude Code and Codex, side by side, wired to
 each other and to the boards and notes they work from.
@@ -50,11 +41,6 @@ each other and to the boards and notes they work from.
 - **Native and light.** Rust drawn on the GPU, no webview or Electron. macOS, Linux (Wayland and X11) and Windows.
   It follows your light or dark mode, takes any Alacritty theme, and updates itself.
 
-<!-- MEDIA: cockpit.png — screenshot, PNG 1800×1100 (the window, no desktop around it). A workspace at work: three
-     agents (Claude Code, Codex, Gemini CLI) wired to one kanban board, a note, the plan limits in the title bar.
-     Save it as docs/media/cockpit.png. -->
-<p align="center"><img src="docs/media/cockpit.png" width="900" alt="Three AI agents and a kanban board wired together on the canvas"></p>
-
 ## Install
 
 ### One command
@@ -80,14 +66,7 @@ or `$env:TEMPLUM_VERSION = "0.1.2"` before `irm`) installs another one. From the
 
 ### Or download a file
 
-Every [release](https://github.com/KingDasWinx/Templum/releases/latest) has these files. An **installer** puts
-Templum in your system; a **portable** file runs from wherever you keep it.
-
-| System | Installer | Portable |
-|---|---|---|
-| Windows (x64) | `…_x64-setup.exe` (for you only), `….msi` (for every user, needs an administrator) | `templum-x86_64-pc-windows-msvc.exe` |
-| macOS (Apple Silicon: `aarch64`, Intel: `x64`) | `.dmg`: open it, drag Templum to Applications | — |
-| Linux (x86_64, ARM64) | `.deb` for Debian and Ubuntu; `PKGBUILD` for Arch on x86_64 (`makepkg -si`) | `.AppImage`, or the bare executable in `templum-<arch>-unknown-linux-gnu.tar.gz` |
+Every [release](https://github.com/KingDasWinx/Templum/releases/latest) has these files.
 
 Each release's notes say what every file is for, and a `.sha256` beside each file has its checksum. The builds
 aren't signed by an Apple or Microsoft account yet, so a downloaded file asks once:
@@ -112,23 +91,6 @@ With [rustup](https://rustup.rs) and the prerequisites in [CONTRIBUTING.md](CONT
    cards.
 5. **Ask the Templum Agent.** Ctrl+Shift+Space (Cmd+Shift+Space on macOS), and say what you want on the canvas.
 
-<!-- MEDIA: welcome.png — screenshot, PNG 1600×1000. The first-run welcome on its Agents page, the agents found on
-     the computer listed. Save it as docs/media/welcome.png. -->
-<p align="center"><img src="docs/media/welcome.png" width="700" alt="The welcome, on its Agents page"></p>
-
-<!-- MEDIA: wire-and-delegate.mp4 — video, 20-25 s, 1920×1080, MP4 (H.264) under 10 MB. Wiring a Claude Code to a
-     kanban with the cable, then the agent claiming a card, moving it to Doing and handing a task to a second agent
-     (the dot runs along the wire). Upload it as hero.mp4 is (top of this file) and put its link in place of the
-     REPLACE line below. -->
-
-https://github.com/user-attachments/assets/REPLACE-WITH-wire-and-delegate.mp4
-
-<!-- MEDIA: templum-agent.mp4 — video, 20-30 s, 1920×1080, MP4 (H.264) under 10 MB. Ctrl+Shift+Space, a request
-     typed in the Templum Agent's chat, and the workspace it builds: a kanban with cards and an agent per card. Speed
-     up the waits. Upload it as hero.mp4 is and put its link in place of the REPLACE line below. -->
-
-https://github.com/user-attachments/assets/REPLACE-WITH-templum-agent.mp4
-
 The keys worth knowing (Cmd instead of Ctrl on macOS, and Cmd+T for a new terminal):
 
 | Keys | Action |
@@ -142,15 +104,6 @@ The keys worth knowing (Cmd instead of Ctrl on macOS, and Cmd+T for a new termin
 | Ctrl+, | Settings |
 
 Hold **Alt** (Option on macOS) to pan with a drag or zoom with the wheel anywhere, over blocks too.
-
-<!-- MEDIA: workspaces.png — screenshot, PNG 1800×1100. The workspaces screen (Ctrl+Shift+O): four or more
-     workspace cards with names, colors and icons, one with an agent running. Save it as docs/media/workspaces.png. -->
-<p align="center"><img src="docs/media/workspaces.png" width="900" alt="The workspaces screen, a card per project"></p>
-
-<!-- MEDIA: editor-git.png — screenshot, PNG 1800×1100. An editor block with a file open beside the agent that
-     changed it, and the Git popup showing that file's diff and a generated commit message. Save it as
-     docs/media/editor-git.png. -->
-<p align="center"><img src="docs/media/editor-git.png" width="900" alt="An editor beside an agent, and the Git popup showing a diff"></p>
 
 ## Learn more
 
