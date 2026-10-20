@@ -555,6 +555,17 @@ impl Render for Workspace {
             .child(layer)
             .children(labels)
             .children(blocks)
+            // The Select tool's wheel: a layer over the blocks sends it to the canvas before a
+            // block that isn't selected can scroll (`route_wheel`).
+            .when(self.tool == Tool::Select && !tiled, |el| {
+                el.child(
+                    div()
+                        .id("wheel")
+                        .absolute()
+                        .size_full()
+                        .on_scroll_wheel(cx.listener(Self::route_wheel)),
+                )
+            })
             // The drawings, above the blocks; with a drawing tool on, a layer over them takes the
             // pointer.
             .when(!tiled, |el| el.child(self.ink_layer(cx)))

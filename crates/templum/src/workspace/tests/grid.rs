@@ -161,6 +161,29 @@ fn the_camera_stays_put_in_grid_mode(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_tile_scrolls_with_the_wheel_even_when_not_selected(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let id = first_id(&ws, cx);
+    press(handle, TOGGLE, cx);
+    ws.update(cx, |ws, _| ws.space.focused = None);
+    let tile = rect_of(&ws, cx, id);
+    let at = at(&ws, cx, (tile.x + tile.w / 2.0, tile.y + tile.h / 2.0));
+    cx.update_window(handle, |_, window, cx| {
+        wheel(
+            window,
+            cx,
+            at,
+            ScrollDelta::Pixels(point(px(0.), px(60.))),
+            false,
+        )
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.terminal(id).unwrap().scrolled.get());
+    });
+}
+
+#[gpui_kit::test]
 fn a_snapshot_in_grid_mode_keeps_the_canvas(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let (handle, ws) = open_in(cx, None, Some(dir.path().to_path_buf()));

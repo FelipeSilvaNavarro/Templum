@@ -180,7 +180,8 @@ column.
 
 - **Drag and drop on a zoomed canvas:** the dragged card is drawn at the canvas's zoom, and drop targets come from
   the element tree, so they follow the zoom by themselves.
-- **Wheel events** over a kanban block stay in it, as over a terminal: a vertical wheel scrolls a column's cards,
+- **Wheel events** over a selected kanban block stay in it, as over a terminal (over any other block the wheel moves
+  the canvas: [navigation.md](navigation.md#the-wheel-over-blocks)): a vertical wheel scrolls a column's cards,
   a sideways one the row of columns, and Ctrl+wheel zooms the canvas. GPUI measures a scroll container's range
   from its own children, so the columns are the row's children, with no wrapper in between.
 

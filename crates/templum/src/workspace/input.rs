@@ -952,6 +952,30 @@ impl Workspace {
         self.press = Some((p, wire));
     }
 
+    /// The wheel over a block, with the Select tool: only a selected block, or the one with the
+    /// keyboard, scrolls its own content. Over any other block it moves the canvas as it does
+    /// over empty space, so a block that comes under a still pointer while the canvas is panned
+    /// doesn't take the wheel. The layer over the blocks asks this before their handlers do.
+    /// Grid mode's tiles always scroll: no camera moves there.
+    pub(super) fn route_wheel(
+        &mut self,
+        e: &ScrollWheelEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.space.grid.is_some() {
+            return;
+        }
+        let Some(id) = self.block_under(e.position) else {
+            return;
+        };
+        if self.space.focused == Some(id) || self.space.selected.contains(&id) {
+            return;
+        }
+        self.on_background_scroll(e, window, cx);
+        cx.stop_propagation();
+    }
+
     pub(super) fn on_background_scroll(
         &mut self,
         e: &ScrollWheelEvent,

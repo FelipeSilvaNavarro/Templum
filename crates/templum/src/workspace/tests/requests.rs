@@ -104,6 +104,9 @@ fn scroll_to(window: &mut Window, cx: &mut gpui_kit::App, n: usize, what: &str) 
     } else {
         return;
     };
+    // The pointer comes onto the balloon first, so its block has the keyboard: only a selected
+    // block's content takes the wheel.
+    window.hover(("balloon", n), cx);
     // At its left edge: a preview pane, on the right, keeps its own wheel.
     let at = (
         f32::from(balloon.left()) + 4.0,
