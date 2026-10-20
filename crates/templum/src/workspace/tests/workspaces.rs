@@ -30,6 +30,7 @@ fn a_workspace_shows_an_agent_from_its_last_snapshot() {
                 effort: None,
                 account: None,
                 role: None,
+                shell: None,
             })],
             focused: None,
             recent: Vec::new(),

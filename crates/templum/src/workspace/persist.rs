@@ -64,7 +64,8 @@ impl Workspace {
             };
             // An agent resumes the folder's latest conversation: anywhere else, it's another one.
             let in_its_folder = folder.is_some();
-            let id = self.spawn_block(rect, folder, window, cx);
+            let shell = t.shell.as_deref().and_then(|l| self.found_shell(l));
+            let id = self.spawn_block_with(rect, folder, Vec::new(), shell, window, cx);
             failed |= id.is_none();
             if let Some(id) = id {
                 self.restore_terminal(id, t, in_its_folder, cx);
@@ -228,6 +229,18 @@ impl Workspace {
         }
     }
 
+    /// The shell of that label among the shells found here. A saved terminal names its shell by
+    /// its label, never by a program: a file edited or from another computer can only pick a
+    /// shell this computer lists, and one that isn't here opens the default (the block forgets
+    /// it, and the canvas loses no block for a shell that is gone).
+    fn found_shell(&self, label: &str) -> Option<templum_terminal::ShellOption> {
+        let found = self.shells.iter().find(|s| s.label == label).cloned();
+        if found.is_none() {
+            eprintln!("templum: no shell {label:?} here: the default one opens");
+        }
+        found
+    }
+
     /// A block from a saved item, on top and focused. A terminal starts a fresh shell in the
     /// item's folder (the home folder when it is gone), resuming its agent there. None when its
     /// rect has a number that isn't finite, or its shell couldn't start.
@@ -269,7 +282,8 @@ impl Workspace {
                 {
                     vars.insert(0, (name.to_string(), folder.to_string_lossy().into_owned()));
                 }
-                let id = self.spawn_block_with(rect, folder, vars, window, cx)?;
+                let shell = t.shell.as_deref().and_then(|l| self.found_shell(l));
+                let id = self.spawn_block_with(rect, folder, vars, shell, window, cx)?;
                 self.restore_terminal(id, t, in_its_folder, cx);
                 Some(id)
             }

@@ -738,6 +738,12 @@ pub(crate) struct TerminalItem {
     /// The role `spawn_agent` opened it as: its words typed again on resume, while it exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// The shell it was opened with from a menu, by its label ("fish", "PowerShell 7"): started
+    /// again when it is among the shells found here, else the default. A label, never a program
+    /// or arguments: the file names a shell and runs no command (docs/specs/persistence.md,
+    /// Safety). Missing: the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -1251,6 +1257,7 @@ mod tests {
                     effort: None,
                     account: None,
                     role: None,
+                    shell: None,
                 }),
                 Item::Terminal(TerminalItem {
                     uid: String::new(),
@@ -1268,6 +1275,7 @@ mod tests {
                     effort: None,
                     account: None,
                     role: None,
+                    shell: None,
                 }),
                 Item::Kanban(KanbanItem {
                     uid: String::new(),
@@ -1911,6 +1919,7 @@ mod tests {
                         effort: Some("high".into()),
                         account: None,
                         role: None,
+                        shell: None,
                     },
                     Processes::default(),
                     None,
@@ -1932,6 +1941,7 @@ mod tests {
                         effort: None,
                         account: None,
                         role: None,
+                        shell: None,
                     },
                     Processes::default(),
                     None,
@@ -2015,6 +2025,7 @@ mod tests {
                     effort: Some("high".into()),
                     account: None,
                     role: None,
+                    shell: None,
                 },
                 Processes::default(),
                 None,

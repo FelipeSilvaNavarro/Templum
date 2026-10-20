@@ -266,6 +266,9 @@ pub(crate) struct Pane {
     /// ends what it left (docs/specs/agent-tools.md#stop_agent), until the person types into it
     /// or a snapshot finds another agent there.
     pub quit: Option<(u64, Instant)>,
+    /// The shell chosen for it in a menu (docs/specs/shells.md, The block keeps its shell); none:
+    /// it runs the default, and follows it.
+    pub shell: Option<templum_terminal::ShellOption>,
 }
 
 impl Pane {
@@ -289,6 +292,8 @@ impl Pane {
             effort: self.effort.clone(),
             account: self.account.clone(),
             role: self.role.clone(),
+            // The label: the file never holds a program to run (persistence.md, Safety).
+            shell: self.shell.as_ref().map(|s| s.label.clone()),
         }
     }
 
@@ -1155,7 +1160,8 @@ pub struct Workspace {
     _flush: Vec<Subscription>,
     /// Installed monospaced families, measured when the settings panel opens.
     pub(crate) fonts: Vec<SharedString>,
-    /// The shells found on this computer, and the default's name, read when the panel opens.
+    /// The shells found on this computer, and the default's name, read at start and when the
+    /// panel or the welcome opens.
     pub(crate) shells: Vec<templum_terminal::ShellOption>,
     pub(crate) default_shell: String,
     /// What the user typed in the panel's text fields that can't apply yet (an unclosed quote),
@@ -1536,8 +1542,9 @@ impl Workspace {
             save_error: None,
             _flush: flush,
             fonts: Vec::new(),
-            shells: Vec::new(),
-            default_shell: String::new(),
+            // Read before `start_space` restores the canvas: its terminals look their shells up.
+            shells: templum_terminal::available_shells(),
+            default_shell: templum_terminal::default_shell_label(),
             drafts: HashMap::new(),
             quit_armed: None,
             settings: None,

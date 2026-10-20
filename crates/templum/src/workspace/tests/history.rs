@@ -186,3 +186,33 @@ fn a_paste_is_one_step(cx: &mut TestAppContext) {
     .unwrap();
     assert_eq!(ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len()), 3);
 }
+
+/// Ctrl+Z brings a closed terminal back with its shell.
+#[gpui_kit::test]
+fn ctrl_z_brings_a_closed_terminal_back_with_its_shell(cx: &mut TestAppContext) {
+    use templum_terminal::ShellOption;
+    let (handle, ws) = open(cx);
+    let (program, args) = quiet();
+    let quiet_shell = ShellOption {
+        label: "Quiet".into(),
+        program,
+        args,
+    };
+    let id = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.shells = vec![quiet_shell.clone()];
+                ws.open_shell(Some(quiet_shell.clone()), None, window, cx);
+                let id = ws.space.canvas.top().unwrap();
+                ws.close(id, window, cx);
+                id
+            })
+        })
+        .unwrap();
+    press(handle, UNDO, cx);
+    ws.read_with(cx, |ws, _| {
+        let back = ws.space.top().unwrap();
+        assert_ne!(back, id, "a new block");
+        assert_eq!(ws.space.terminal(back).unwrap().shell, Some(quiet_shell));
+    });
+}

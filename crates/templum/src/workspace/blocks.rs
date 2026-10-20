@@ -8,7 +8,7 @@ use gpui_kit::component::Icon;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::{App, Context, SharedString, Window};
 use templum_canvas::{Block, BlockId, Point, Rect, chrome};
-use templum_terminal::{SpawnOptions, Terminal};
+use templum_terminal::{ShellOption, SpawnOptions, Terminal};
 
 use crate::agents::AgentEntry;
 use crate::alert::{self, Alert};
@@ -309,9 +309,29 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.space.pristine = false;
-        let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
-        self.open(Rect::new(at.x, at.y, size.w, size.h), window, cx);
+        self.open_shell(None, Some(at), window, cx);
+    }
+
+    /// A terminal running `shell` (None: the default) in the start folder, its top-left corner at
+    /// `at` (world units) with the default size, else where a new terminal goes. The block keeps
+    /// the shell (docs/specs/shells.md, The block keeps its shell).
+    pub(crate) fn open_shell(
+        &mut self,
+        shell: Option<ShellOption>,
+        at: Option<Point>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rect = match at {
+            Some(at) => {
+                self.space.pristine = false;
+                let size = chrome::block_size(DEFAULT_COLS, DEFAULT_ROWS, self.cell.size);
+                Rect::new(at.x, at.y, size.w, size.h)
+            }
+            None => self.new_terminal_rect(window, cx),
+        };
+        let folder = self.start_dir(window, cx);
+        self.spawn_block_with(rect, folder, Vec::new(), shell, window, cx);
     }
 
     /// A terminal in `folder`, its top-left corner at `at`, with the agent `agent`'s command (an
@@ -360,7 +380,7 @@ impl Workspace {
             self.prepare_account(entry, window, cx);
         }
         let vars = self.agent_vars(entry, &super::usage::in_env);
-        let id = self.spawn_block_with(rect, Some(folder.to_path_buf()), vars, window, cx)?;
+        let id = self.spawn_block_with(rect, Some(folder.to_path_buf()), vars, None, window, cx)?;
         let command = command
             .map(str::to_string)
             .or_else(|| entry.map(|a| a.start_command(&uuid::Uuid::new_v4().to_string())))
@@ -402,7 +422,7 @@ impl Workspace {
         self.prepare_account(&entry, window, cx);
         let vars = self.agent_vars(Some(&entry), &super::usage::in_env);
         let rect = self.new_terminal_rect(window, cx);
-        let block = self.spawn_block_with(rect, std::env::home_dir(), vars, window, cx)?;
+        let block = self.spawn_block_with(rect, std::env::home_dir(), vars, None, window, cx)?;
         let pane = self.space.terminal_mut(block)?;
         // The shell reads it once it is ready.
         pane.term
@@ -546,26 +566,33 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
-        self.spawn_block_with(rect, folder, Vec::new(), window, cx)
+        self.spawn_block_with(rect, folder, Vec::new(), None, window, cx)
     }
 
-    /// `spawn_block`, with `vars` in its shell's environment (`agent_vars`).
+    /// `spawn_block`, with `vars` in its shell's environment (`agent_vars`), running `shell` (None:
+    /// the workspace's command in the tests, else the `[shell]` of config.toml, else the default).
+    /// The block keeps `shell`.
     pub(super) fn spawn_block_with(
         &mut self,
         rect: Rect,
         folder: Option<PathBuf>,
         vars: Vec<(String, String)>,
+        shell: Option<ShellOption>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<BlockId> {
         let (cols, rows) = chrome::grid_size(chrome::content_rect(rect).size(), self.cell.size);
-        let command = self.command.clone().or_else(|| {
-            let shell = &self.config.shell;
-            shell
-                .program
-                .clone()
-                .map(|program| (program, shell.args.clone()))
-        });
+        let command = shell
+            .as_ref()
+            .map(|s| (s.program.clone(), s.args.clone()))
+            .or_else(|| self.command.clone())
+            .or_else(|| {
+                let shell = &self.config.shell;
+                shell
+                    .program
+                    .clone()
+                    .map(|program| (program, shell.args.clone()))
+            });
         let opts = SpawnOptions {
             cols,
             rows,
@@ -632,6 +659,7 @@ impl Workspace {
                         account: None,
                         role: None,
                         quit: None,
+                        shell,
                     })),
                 );
                 self.added(id);
@@ -980,8 +1008,7 @@ impl Workspace {
     }
 
     pub(crate) fn new_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let rect = self.new_terminal_rect(window, cx);
-        self.open(rect, window, cx);
+        self.open_shell(None, None, window, cx);
     }
 
     /// Where a new terminal goes: the view's center, or beside the blocks there, shown.

@@ -1032,3 +1032,37 @@ fn a_program_full_screen_gets_the_shortcuts_that_yield(cx: &mut TestAppContext) 
         assert_eq!(ws.space.canvas.blocks().len(), 2, "a new terminal");
     });
 }
+
+/// A terminal opened with a shell runs it, and its saved item names it by its label
+/// (docs/specs/shells.md, The block keeps its shell).
+#[gpui_kit::test]
+fn a_terminal_opened_with_a_shell_runs_it_and_saves_its_label(cx: &mut TestAppContext) {
+    use templum_terminal::ShellOption;
+    let (handle, ws) = open_as(cx, Some(agent_cat()), None, None);
+    let (program, args) = quiet();
+    let quiet_shell = ShellOption {
+        label: "Quiet".into(),
+        program,
+        args,
+    };
+    let id = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.open_shell(Some(quiet_shell.clone()), None, window, cx);
+                ws.space.canvas.top().unwrap()
+            })
+        })
+        .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(id).unwrap();
+        assert_eq!(pane.shell, Some(quiet_shell.clone()));
+        let item = pane.item(
+            templum_canvas::Rect::new(0.0, 0.0, 700.0, 450.0),
+            String::new(),
+        );
+        assert_eq!(item.shell.as_deref(), Some("Quiet"));
+        // `agent_cat` is `sh` on Unix: the chosen shell ran, not the workspace's.
+        #[cfg(unix)]
+        assert_eq!(pane.term.title(), "cat");
+    });
+}
