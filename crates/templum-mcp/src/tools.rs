@@ -745,7 +745,7 @@ pub fn list() -> Value {
                 "properties": {
                     "agent": {
                         "type": "string",
-                        "description": "Which agent: claude, codex, gemini, … or an account, like claude2 (an id of Settings ▸ Agents). Left out with fork.",
+                        "description": "Which agent: claude, codex, gemini, … or an account's name (Settings ▸ Agents ▸ Accounts). Left out with fork.",
                     },
                     "role": {
                         "type": "string",

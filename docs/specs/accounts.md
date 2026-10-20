@@ -3,7 +3,7 @@
 - **Date:** 2026-10-18
 - **Status:** Implemented (kanban card 37, "Múltiplas contas do claude"):
   [docs/plans/2026-10-18-agent-accounts.md](../plans/2026-10-18-agent-accounts.md). Accounts by name, each a command
-  in every shell, and the new dialog (kanban card 65, 2026-10-20): planned,
+  in every shell, and the new dialog (kanban card 65, 2026-10-20): Implemented,
   [docs/plans/2026-10-20-accounts-by-name.md](../plans/2026-10-20-accounts-by-name.md)
 - **Builds on:** [agents.md](agents.md) (the agents, Settings ▸ Agents, `[agents]`), [settings.md](settings.md),
   [usage.md](usage.md) (limits are an account's), [connections.md](connections.md) (`spawn_agent`, what is typed into
@@ -413,8 +413,8 @@ exit /b %errorlevel%
   depend on the folder. The variable is the shell's, not one command's: the agent typed again in that block, after
   it quits, is the same account.
 - **The person's own variable:** a shell whose startup files set the same variable again (an `export
-  CLAUDE_CONFIG_DIR=…` in `.bashrc`) runs the agent in that folder instead; Templum can't tell
-  ([Known limits](#known-limits)).
+  CLAUDE_CONFIG_DIR=…` in `.bashrc`) runs the agent in that folder instead; the snapshot reads the folder the agent
+  runs on, so the block is that folder's account, or none ([Typed in a terminal](#typed-in-a-terminal)).
 
 ### Its block
 
@@ -673,7 +673,6 @@ Each goes to [docs/minors.md](../minors.md) under **Agent accounts** with the co
 - An account taken out of config.toml by hand keeps its command, which still opens its folder.
 - A block where `claudinho` ran stays the account's after the agent quits, until another agent is found there.
 - A command made while `~/.local/bin` isn't on PATH works in other terminals only once the person adds it.
-- A shell whose startup files set the agent's variable again runs the agent in that folder, not the account's.
 - An agent that rewrites a shared file by a rename stops sharing it; Templum notices only at the account's next start.
 - A card for a deleted account keeps its id until the person changes it.
 - Claude Code syncs a claude.ai account's skills and plugins into `skills/synced/` and `plugins/synced/`: two accounts

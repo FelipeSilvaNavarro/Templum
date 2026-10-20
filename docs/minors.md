@@ -1514,6 +1514,49 @@ Left by the data-safety fixes after that review; line numbers are those of `deve
   Claude Code (claude2)'s: change it first", though deleting would only remove the link. Found by reading. Fix: skip
   the check when the account's folder is itself a link.
 
+Left by kanban card 65 (accounts by name, each a command in every shell); line numbers are those of `development` at
+db2baa3.
+
+- [ ] **A `.cmd` passes the person's words through cmd.** On Windows, `claudinho.cmd` ends in `claude %*`
+  (`files`, `crates/templum-usage/src/accounts/command.rs:157`): a word with `"`, `%` or `^` may reach the agent
+  changed, as with npm's commands. Fix: have the `.cmd` call a PowerShell script that passes its arguments through.
+- [ ] **The command is checked against the computer's programs only when Templum makes it.** `make_command`
+  (`crates/templum/src/agents.rs:515`) refuses an id that is already a program when it writes the command; one
+  installed later with the same name wins or loses by the order of the PATH, and nothing says so. Fix: look again at
+  each start and say on the row that the command is shadowed.
+- [ ] **An account taken out of config.toml by hand keeps its command.** `sync_commands`
+  (`crates/templum/src/workspace/preferences.rs:149`) only writes: the file, which still opens the account's folder,
+  stays in `~/.local/bin` until the person deletes it. Fix: at start, remove the commands that carry this data
+  folder's marker and whose id is no account.
+- [ ] **A block where `claudinho` ran stays the account's after the agent quits.** `Space::see`
+  (`crates/templum/src/workspace/mod.rs:877`) changes `Pane::account` only when it finds an agent with its variable:
+  once it quits, the block keeps the title and the Delete wait until another agent is found there. Fix: forget the
+  account when the agent that gave it is gone and the block's shell has no variable naming one.
+- [ ] **A command made while `~/.local/bin` isn't on the PATH works in other terminals only once the person adds it.**
+  `path_note` (`crates/templum/src/settings/accounts.rs:95`) says so under Accounts and in the dialog, with the line
+  to add; nothing checks that the person did. Fix: offer to add it to the shell's startup file, in a marked block.
+- [ ] **A dialog opened while the shell's PATH is still being read has no PATH note.** `path_note` waits for
+  `shell_path_pending` to be over and the dialog only redraws when something changes in it, so one opened in the
+  first seconds shows the note after the next key. Fix: redraw the dialog when `read_shell_path` finishes.
+- [ ] **The Accounts heading looks at the PATH at every frame.** `path_note` canonicalizes each folder of the PATH (on
+  Windows it reads the registry too) each time Settings ▸ Agents is drawn. Fix: ask once when the panel opens, and
+  again when `read_shell_path` finishes.
+- [ ] **An account of an agent whose command is a wrapper runs only its first word.** An agent set to `npx claude-code`
+  in Settings ▸ Agents makes a `claudinho` that runs `npx` with the person's words (`AgentEntry::program`). Fix: write
+  the whole command, quoted for each shell, in the command and in `TEMPLUM_ACCOUNTS`.
+- [ ] **Enter in the Edit dialog closes it without saving.** Only Create answers Enter (in the name field): in Edit
+  the dialog's own Enter closes it as Esc does. Fix: answer `Confirm` there with Save.
+- [ ] **Not checked by hand: a real click-through and typing `claudinho` in a Templum terminal.** Card 65's run could
+  not type or click into windows, so the dialog was looked at in screenshots of a dev build (light and dark, with a
+  temporary home) and the command was run from plain bash and fish against a fake `claude`; the typed path in a
+  Templum terminal is covered by the shell tests (bash, zsh, fish and PowerShell in a PTY). Not seen: the block
+  titled "Claude Code (claudinho)" with its status dot moving, with a real Claude Code. Fix: do the spec's "Manual
+  (card 65)" once.
+- [ ] **Not checked: macOS, Windows' cmd, PowerShell and Git Bash, and bash 3.2.** The commands, the functions in
+  bash 3.2 (macOS's), the agent's environment read through sysinfo on macOS and Windows, and `cargo check` of the
+  `templum` crate for Windows (its C dependencies need MSVC's `lib.exe`, missing here) are left to CI and to a run on
+  those systems. Fix: run `claudinho` in each by hand.
+
 ## Templum Agent
 
 Left by batch 1 of card 43 (docs/specs/templum-agent.md); line numbers are those of `templum-agent` at its Task 18.
