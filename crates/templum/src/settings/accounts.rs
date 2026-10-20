@@ -16,8 +16,10 @@ use gpui_kit::{
     AnyElement, App, ClickEvent, Context, Div, ElementId, Entity, FontWeight, Hsla, SharedString,
     TestSupportExt, Window, div, px,
 };
+use templum_terminal::ShellOption;
 use templum_usage::accounts::{Found, Kind};
 
+use super::agents::shell_choices;
 use super::row::{Row, menu_button};
 use crate::agents::{self, AccountDraft, AgentEntry, own_state, tilde};
 use crate::kanban::{danger, pill, segment, strip};
@@ -327,6 +329,11 @@ pub(crate) struct Form {
     theirs: BTreeMap<&'static str, PathBuf>,
     /// An edited account's command: its file, or why it has none.
     command: Option<Result<PathBuf, String>>,
+    /// The label of the shell it opens in; None: the default. The shells found and the default's
+    /// name, for the list.
+    shell: Option<String>,
+    shells: Vec<ShellOption>,
+    default_shell: String,
 }
 
 impl Form {
@@ -355,6 +362,9 @@ impl Form {
             share: BTreeMap::new(),
             theirs: BTreeMap::new(),
             command: entry.and_then(|e| ws.commands.get(&e.id).cloned()),
+            shell: entry.and_then(|e| e.shell.clone()),
+            shells: ws.shells.clone(),
+            default_shell: ws.default_shell_name(),
         };
         match account {
             Some(account) => {
@@ -470,6 +480,7 @@ impl Form {
                 entry.id.clone(),
                 AccountDraft {
                     share: self.share.clone(),
+                    shell: self.shell.clone(),
                     ..AccountDraft::of(entry)
                 },
             )),
@@ -478,6 +489,7 @@ impl Form {
                     of: kind.agent.to_string(),
                     show: true,
                     share: self.share.clone(),
+                    shell: self.shell.clone(),
                     ..AccountDraft::default()
                 };
                 (self.name.read(cx).value().to_string(), draft)
@@ -529,7 +541,8 @@ impl Render for Form {
                                 move |id, cx| f.update(cx, |f, cx| f.choose(&id, cx)),
                             )),
                     )
-                    .child(self.name_field(&agent, cx));
+                    .child(self.name_field(&agent, cx))
+                    .child(self.shell_field(&form));
             }
             Some(entry) => {
                 let command = match &self.command {
@@ -566,7 +579,8 @@ impl Render for Form {
                             .gap(px(6.0))
                             .child(label("Folder"))
                             .child(div().text_size(px(13.0)).child(folder)),
-                    );
+                    )
+                    .child(self.shell_field(&form));
             }
         }
         if !kind.items.is_empty() {
@@ -600,6 +614,40 @@ impl Render for Form {
 }
 
 impl Form {
+    /// The Shell list: Default, then the shells found without WSL, an account never running there
+    /// (docs/specs/shells.md, What works in WSL).
+    fn shell_field(&self, form: &Entity<Form>) -> Div {
+        let f = form.clone();
+        let options = shell_choices(
+            &self.default_shell,
+            &self.shells,
+            true,
+            self.shell.as_deref(),
+        );
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(self.ui.title)
+                    .child("Shell"),
+            )
+            .child(menu_button(
+                "menu-account-shell",
+                options,
+                self.shell.clone().unwrap_or_default().into(),
+                true,
+                move |value, cx| {
+                    f.update(cx, |f, cx| {
+                        f.shell = Some(value.to_string()).filter(|v| !v.is_empty());
+                        cx.notify();
+                    })
+                },
+            ))
+    }
+
     /// The name's label, field and the line under it: nothing while empty, the first rule it breaks
     /// in the theme's red, else what to type.
     fn name_field(&self, agent: &str, cx: &mut Context<Self>) -> Div {

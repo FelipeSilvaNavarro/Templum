@@ -911,6 +911,51 @@ fn editing_an_older_account_keeps_its_name_and_folder(cx: &mut TestAppContext) {
     assert_eq!(account.name.as_deref(), Some("Claude Code 2"), "{text}");
 }
 
+#[gpui_kit::test]
+fn the_account_dialog_sets_its_shell_without_wsl(cx: &mut TestAppContext) {
+    use templum_terminal::ShellOption;
+    let (_own, _commands) = account_dirs();
+    let (config, data) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    // claude3 was written by hand, for WSL: it opens the default, and Save keeps what is written.
+    std::fs::write(
+        config.path().join(crate::config::FILE),
+        "[agents.claude2]\nof = \"claude\"\n[agents.claude3]\nof = \"claude\"\nshell = \"WSL\"\n",
+    )
+    .unwrap();
+    let (handle, ws) = open_in(
+        cx,
+        Some(config.path().to_path_buf()),
+        Some(data.path().to_path_buf()),
+    );
+    open_accounts(handle, cx);
+    // Opening Settings read this computer's shells: the made-up ones come after.
+    let (program, args) = quiet();
+    ws.update(cx, |ws, _| {
+        ws.shells = vec![
+            ShellOption {
+                label: "WSL".into(),
+                program: "C:/Windows/System32/wsl.exe".into(),
+                args: vec![],
+            },
+            ShellOption {
+                label: "Quiet".into(),
+                program,
+                args,
+            },
+        ];
+    });
+    edit_account(handle, cx, "edit-account-claude2");
+    pick(handle, cx, "menu-account-shell", 1); // Default, Quiet: WSL is left out
+    create(handle, cx);
+    edit_account(handle, cx, "edit-account-claude3");
+    create(handle, cx);
+    ws.update(cx, |ws, _| ws.save());
+    let text = std::fs::read_to_string(config.path().join(crate::config::FILE)).unwrap();
+    let agents = crate::config::parse(&text).unwrap().agents;
+    assert_eq!(agents["claude2"].shell.as_deref(), Some("Quiet"), "{text}");
+    assert_eq!(agents["claude3"].shell.as_deref(), Some("WSL"), "{text}");
+}
+
 /// A folder set up by hand opens Edit on Custom, with its links read: one to the agent's own
 /// item is that choice, one elsewhere is the person's and has no dropdown.
 #[cfg(unix)]

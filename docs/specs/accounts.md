@@ -544,7 +544,11 @@ color from the theme. Esc and the ✕ close it without saving.
      "claudinho", focused when the dialog opens; it lowercases nothing by itself. Under it one line (12), updated at
      each key: nothing while empty; the first [rule](#its-name) broken in the theme's red (ANSI 1); else, in
      `title_dim` with the name in the accent: "Type claudinho in any terminal to open Claude Code on this account."
-  3. **Setup** (an agent with items; Crush has none): the label, then one strip of three segments in the look of the
+  3. **Shell** (`menu-account-shell`): the label and a dropdown of **Default (*name*)**, which follows Settings ▸
+     Shell, and every shell found except WSL, where an account would lose its folder
+     ([shells.md](shells.md#what-works-in-wsl)). A label that is none of them is last, as "*label* (not
+     available)", so Save keeps it.
+  4. **Setup** (an agent with items; Crush has none): the label, then one strip of three segments in the look of the
      card dialog's Priority strip (`account-setup-same`, `account-setup-fresh`, `account-setup-custom`):
      **Same as Claude Code** (chosen first), **Fresh**, **Custom**; under it one line (12, `title_dim`):
      - Same: "Everything but the login is your Claude Code's (~/.claude): settings, skills, plugins, sessions…". Every
@@ -555,7 +559,7 @@ color from the theme. Esc and the ✕ close it without saving.
        37's controls unchanged: **Share everything with** (`account-share-all`) and a row per item, Own or shared,
        with "Linked by you to …", the Developer Mode words and "Shared once Claude Code writes one" as before. Custom
        opens on the choices Same or Fresh last made.
-  4. **Notes** (11, `title_dim`), each when it applies: the [not on PATH](#its-command) note; a variable that wins over
+  5. **Notes** (11, `title_dim`), each when it applies: the [not on PATH](#its-command) note; a variable that wins over
      every account's login (as before); the agent's note (Claude Code's MCP servers).
 - **Footer** (a hairline over it, 20 at the sides, 12 up and down): at the right **Create claudinho**
   (`account-save`), the card dialog's solid accent button, its label following the name ("Create" while empty);
@@ -573,7 +577,7 @@ the dialog left open.
   at 16%, rounded 6) and "Account of Claude Code" (12, `ui.title`).
 - **Body:** **Command**: "Type claudinho in any terminal (~/.local/bin/claudinho)" or "No command: <why>";
   **Folder**: its folder as text (home as `~`), Templum's or the one chosen in an earlier Templum, with no field and
-  no **Choose…**; **Setup** opened on its shares (every item it can share shared with the agent: Same; none: Fresh;
+  no **Choose…**; **Shell**, the same list; **Setup** opened on its shares (every item it can share shared with the agent: Same; none: Fresh;
   otherwise Custom); the notes.
 - **Footer:** at the left **Delete account** (`delete-account`), the card dialog's red ghost button with the trash
   icon ([Deleting an account](#deleting-an-account)); at the right **Save** (`account-save`), the solid accent button.
