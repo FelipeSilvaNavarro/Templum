@@ -314,11 +314,40 @@ fn delegate_says_why_an_agent_has_no_tools(cx: &mut TestAppContext) {
         ),
         "{text}"
     );
+    // No `templum` to run in the agent's shell, in WSL (no `TEMPLUM_BUS` reaches it) or for Aider
+    // (no shell tool): the end of its turn, or its screen going still, is all there is.
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(theirs).unwrap().seen.agent = Some("aider".into())
+    });
+    let (_, text) = hand(cx);
+    assert!(
+        text.ends_with(
+            "(Aider has no MCP): its turn's end or its screen going still ends the task."
+        ),
+        "{text}"
+    );
+    ws.update(cx, |ws, _| {
+        let pane = ws.space.terminal_mut(theirs).unwrap();
+        pane.seen.agent = Some("claude".into());
+        pane.shell = Some(templum_terminal::ShellOption {
+            label: "wsl".into(),
+            program: "C:/Windows/System32/wsl.exe".into(),
+            args: Vec::new(),
+        });
+    });
+    let (_, text) = hand(cx);
+    assert!(
+        text.ends_with(
+            "(it runs in WSL, where Templum can't give it its server): its turn's end or its \
+             screen going still ends the task."
+        ),
+        "{text}"
+    );
     has_server(handle, &ws, cx, &worker, 7);
     let (failed, text) = hand(cx);
     assert_eq!(
         (failed, text.as_str()),
-        (false, format!("Handed to {them} as task t3.").as_str())
+        (false, format!("Handed to {them} as task t5.").as_str())
     );
 }
 
@@ -353,6 +382,7 @@ fn the_reason_an_agent_has_no_tools_is_the_first_that_fits(cx: &mut TestAppConte
         why(cx, "claude")
     );
     assert_eq!(why(cx, "pi"), "Pi has MCP only from 0.99");
+    assert_eq!(why(cx, "aider"), "Aider has no MCP");
     assert_eq!(
         why(cx, "gemini"),
         "Templum's Gemini CLI extension isn't installed (Settings ▸ Connections ▸ Gemini CLI ▸ Install)"
@@ -2684,6 +2714,7 @@ fn a_quiet_agent_keeps_its_task_and_its_waiting_master_hears_so(cx: &mut TestApp
             && text.starts_with(&format!(
                 "{them} hasn't answered task t1: its screen has been still for 5 seconds."
             ))
+            && text.contains("delegate to it again asks it for its answer, and interrupt ends it.")
             && text.contains("tick 3"),
         "{text}"
     );
@@ -2708,6 +2739,35 @@ fn a_quiet_agent_keeps_its_task_and_its_waiting_master_hears_so(cx: &mut TestApp
     assert_eq!((failed, text.as_str()), (false, "Answered task t1."));
     assert_eq!(answered(&idle), (false, "Line 42.".to_string()));
     assert_eq!(handed(&ws, cx), None);
+}
+
+/// The quiet error says `interrupt` ends the task, and it does, with the agent idle.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn interrupt_ends_a_quiet_agents_task(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    has_server(handle, &ws, cx, &worker, 7);
+    let task = json!({ "block": them, "task": "go", "wait": true });
+    let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    ticks(&ws, cx, theirs, 0, 4);
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    assert!(answered(&delegated).0, "told it went quiet");
+    assert_eq!(task_of(&ws, cx, theirs), Some(1));
+    let stop = json!({ "block": them });
+    let stopped = call_later(handle, &ws, cx, &terminal, 2, "interrupt", stop);
+    let (failed, text) = heard(cx, &stopped);
+    assert!(
+        !failed
+            && text.starts_with(&format!(
+                "Pressed Esc in {them}, and ended the task you handed it."
+            )),
+        "{text}"
+    );
+    assert_eq!(task_of(&ws, cx, theirs), None);
 }
 
 /// A master with no call waiting is told once, as a dialog is; the reply then ends the task once,

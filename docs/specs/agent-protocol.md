@@ -180,8 +180,8 @@ over):
 
 - the asker's calls that wait for the task get, as an error result (it is no answer), "k9x1d hasn't answered task t7:
   its screen has been still for 5 seconds. It may be done without replying, stopped, or asking its person. The task
-  stays open, and its reply still ends it: wait_for_idle waits for it, send_keys answers a dialog, and delegate to it
-  again asks it for its answer. The last lines of its screen:" and its last 40 lines;
+  stays open, and its reply still ends it: wait_for_idle waits for it, send_keys answers a dialog, delegate to it
+  again asks it for its answer, and interrupt ends it. The last lines of its screen:" and its last 40 lines;
 - an asker with no call waiting gets the notice `[task t7 from Codex · api (k9x1d) hasn't answered: its screen is
   still] Its screen is in the pasted text.` and the last 20 lines, as a dialog's notice is typed (its level
   Waiting for the Templum Agent);
@@ -218,14 +218,16 @@ task's end, the transcript the subagent's hooks named (Claude Code, Codex, Copil
 - `list_blocks` adds `, no Templum tools` to an agent's line when its terminal has none.
 - `delegate`'s answer to an agent without them adds why, and what ends its task: "Handed to k9x1d as task t7. k9x1d has
   no Templum tools (<why>): it can still answer with `templum reply -` in its shell; else its turn's end or its screen
-  going still ends the task."
+  going still ends the task." In WSL, where `TEMPLUM_BUS` and `templum` don't reach the shell, and for Aider, which has
+  no shell tool, the clause about `templum reply -` is left out.
 - **Why** (`no_tools_why`), the first that fits: "connections are off (Settings ▸ Connections ▸ Agents in Templum)";
   "it runs in WSL, where Templum can't give it its server"; Gemini CLI without the extension: "Templum's Gemini CLI
   extension isn't installed (Settings ▸ Connections ▸ Gemini CLI ▸ Install)"; Gemini CLI with it: "Gemini CLI starts no
-  server in a folder it doesn't trust"; Pi: "Pi has MCP only from 0.99"; Claude Code, Codex, Copilot CLI, OpenCode, Kilo
-  Code, Qwen Code: "its server hasn't connected: it is still starting, its start failed, or it was started without
-  Templum's words (command <agent>, a shell without Templum's integration)"; any other: "Templum can't give <title>
-  its server for one session: add `templum mcp` to its own MCP servers (Settings ▸ Connections ▸ Other agents)".
+  server in a folder it doesn't trust"; Pi: "Pi has MCP only from 0.99"; Aider: "Aider has no MCP"; Claude Code,
+  Codex, Copilot CLI, OpenCode, Kilo Code, Qwen Code: "its server hasn't connected: it is still starting, its start
+  failed, or it was started without Templum's words (command <agent>, a shell without Templum's integration)"; any
+  other: "Templum can't give <title> its server for one session: add `templum mcp` to its own MCP servers (Settings ▸
+  Connections ▸ Other agents)".
 
 ### 9. `reply` asks no permission
 

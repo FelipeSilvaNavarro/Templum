@@ -660,6 +660,18 @@ impl Workspace {
         self.tool_conns.values().any(|t| t == terminal)
     }
 
+    /// The terminal of `pane` runs WSL, which gets neither `TEMPLUM_BUS` nor a `templum` it can
+    /// run.
+    fn pane_in_wsl(&self, pane: &Pane) -> bool {
+        self.shell_is(pane.shell.as_ref().map(|s| s.program.as_str()), "wsl")
+    }
+
+    /// The agent of `pane`, without Templum's tools, can still run `templum reply -` in its
+    /// shell: not in WSL, nor Aider, which has no shell tool.
+    pub(super) fn replies_from_shell(&self, pane: &Pane) -> bool {
+        !self.pane_in_wsl(pane) && pane.seen.agent.as_deref() != Some("aider")
+    }
+
     /// Why the agent of `pane` has no Templum tools, the first reason that fits, as its master is
     /// told (docs/specs/agent-protocol.md, 8).
     pub(super) fn no_tools_why(&self, pane: &Pane) -> String {
@@ -669,10 +681,11 @@ impl Workspace {
         if !self.config.connections.enabled {
             return "connections are off (Settings ▸ Connections ▸ Agents in Templum)".into();
         }
-        if self.shell_is(pane.shell.as_ref().map(|s| s.program.as_str()), "wsl") {
+        if self.pane_in_wsl(pane) {
             return "it runs in WSL, where Templum can't give it its server".into();
         }
         match agent {
+            Some(aider) if aider.name() == "aider" => "Aider has no MCP".into(),
             Some(Agent::GEMINI) => {
                 // An account's extensions are its folder's.
                 let dir = match pane

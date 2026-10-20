@@ -765,9 +765,14 @@ impl Workspace {
         let usage = pane.usage.clone();
         // A task for an agent without Templum's tools says why, and what else ends it.
         let no_tools = (mine.is_none() && !self.has_tools(&worker)).then(|| {
+            let shell = if self.replies_from_shell(pane) {
+                "it can still answer with `templum reply -` in its shell; else "
+            } else {
+                ""
+            };
             format!(
-                " {block} has no Templum tools ({}): it can still answer with `templum reply -` \
-                 in its shell; else its turn's end or its screen going still ends the task.",
+                " {block} has no Templum tools ({}): {shell}its turn's end or its screen going \
+                 still ends the task.",
                 self.no_tools_why(pane)
             )
         });
@@ -1125,8 +1130,8 @@ impl Workspace {
                 "{} hasn't answered task t{id}: its screen has been still for {STILL} seconds. It \
                  may be done without replying, stopped, or asking its person. The task stays open, \
                  and its reply still ends it: wait_for_idle waits for it, send_keys answers a \
-                 dialog, and delegate to it again asks it for its answer. The last lines of its \
-                 screen:\n{}",
+                 dialog, delegate to it again asks it for its answer, and interrupt ends it. The \
+                 last lines of its screen:\n{}",
                 self.uid_of(terminal),
                 tools::tail(&lines, tools::MAX_TEXT)
             ));
