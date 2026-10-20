@@ -883,6 +883,13 @@ impl Space {
         let mut gone = Vec::new();
         for (id, mut seen) in found {
             if let Some(pane) = self.terminal_mut(id) {
+                // An agent found on a folder is that folder's account, typed by hand or not; an
+                // environment that couldn't be read keeps what the block had.
+                if let (Some(agent), Some(var)) = (seen.agent.as_deref(), &seen.folder_var) {
+                    pane.account = var
+                        .as_deref()
+                        .and_then(|folder| agents::account_of(agent, folder, homes));
+                }
                 let home = pane
                     .account
                     .as_deref()

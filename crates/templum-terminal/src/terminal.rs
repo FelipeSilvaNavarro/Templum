@@ -423,6 +423,10 @@ pub struct Inspection {
     /// The id of the session the agent was started on, from its arguments
     /// ([`Agent::session_in`](crate::Agent::session_in)); one of Templum's agents only.
     pub session: Option<String>,
+    /// What the agent's process has for its folder's variable ([`Detect::var`]): `None` when it
+    /// wasn't read (the agent has none, or the environment came back empty: another user's
+    /// process), `Some(None)` unset or empty, `Some(Some(folder))`.
+    pub folder_var: Option<Option<PathBuf>>,
 }
 
 /// Reads several terminals' processes in one pass over the OS's process table: slow enough to
@@ -445,10 +449,63 @@ pub fn inspect(terminals: &[Processes], known: &[Detect]) -> Vec<Inspection> {
             .collect();
         system.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), kind);
     }
-    terminals
+    let mut found: Vec<Inspection> = terminals
         .iter()
         .map(|p| inspect_one(&system, p, known))
-        .collect()
+        .collect();
+    // The found agents' variable, from their environments: one more read, of those processes only
+    // (on Windows the first one covers every process).
+    let wanted: Vec<(usize, Pid, &str)> = found
+        .iter()
+        .enumerate()
+        .filter_map(|(i, seen)| {
+            let var = known
+                .iter()
+                .find(|d| Some(&d.id) == seen.agent.as_ref())?
+                .var
+                .as_deref()?;
+            Some((i, Pid::from_u32(seen.pid?), var))
+        })
+        .collect();
+    if !wanted.is_empty() {
+        let pids: Vec<Pid> = wanted.iter().map(|(_, pid, _)| *pid).collect();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&pids),
+            ProcessRefreshKind::new().with_environ(UpdateKind::Always),
+        );
+        for (i, pid, var) in wanted {
+            found[i].folder_var = system
+                .process(pid)
+                .and_then(|process| folder_var(process, var));
+        }
+    }
+    found
+}
+
+/// `var` in `process`'s environment: see [`Inspection::folder_var`].
+fn folder_var(process: &sysinfo::Process, var: &str) -> Option<Option<PathBuf>> {
+    let environ = process.environ();
+    if environ.is_empty() {
+        return None;
+    }
+    // Windows doesn't tell `Path` from `PATH`.
+    let named = |entry: &str| {
+        entry.len() > var.len()
+            && entry.is_char_boundary(var.len())
+            && entry.as_bytes()[var.len()] == b'='
+            && if cfg!(windows) {
+                entry[..var.len()].eq_ignore_ascii_case(var)
+            } else {
+                &entry[..var.len()] == var
+            }
+    };
+    let value = environ
+        .iter()
+        .filter_map(|entry| entry.to_str())
+        .find(|entry| named(entry))
+        .map(|entry| &entry[var.len() + 1..])
+        .filter(|value| !value.is_empty());
+    Some(value.map(PathBuf::from))
 }
 
 fn inspect_one(system: &sysinfo::System, p: &Processes, known: &[Detect]) -> Inspection {
@@ -482,6 +539,7 @@ fn inspect_one(system: &sysinfo::System, p: &Processes, known: &[Detect]) -> Ins
             agent: Some(agent),
             pid: Some(pid.as_u32()),
             started: system.process(pid).map(sysinfo::Process::start_time),
+            folder_var: None,
         },
         None => Inspection {
             folder: shell(),
@@ -1589,6 +1647,59 @@ mod tests {
         assert_eq!(front(&idle, &[], None), None);
     }
 
+    /// An agent started with its folder variable set, and one without it, are found with each.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_found_agents_folder_variable_is_read() {
+        use std::os::unix::fs::PermissionsExt as _;
+        struct Child(std::process::Child);
+        impl Drop for Child {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("claude");
+        std::fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let known = [Detect {
+            id: "claude".into(),
+            names: vec!["claude".into()],
+            packages: Vec::new(),
+            var: Some("CLAUDE_CONFIG_DIR".into()),
+        }];
+        let start = |value: Option<&str>| {
+            let mut command = std::process::Command::new(&script);
+            match value {
+                Some(v) => command.env("CLAUDE_CONFIG_DIR", v),
+                None => command.env_remove("CLAUDE_CONFIG_DIR"),
+            };
+            Child(command.spawn().unwrap())
+        };
+        // The script is the agent once its shell has exec'd it: look until it is found.
+        let read = |child: &Child| {
+            let pid = child.0.id();
+            let p = Processes {
+                shell: Some(pid),
+                foreground: Some(pid),
+                reported: None,
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let seen = inspect(std::slice::from_ref(&p), &known).pop().unwrap();
+                if seen.agent.is_some() {
+                    return seen;
+                }
+                assert!(std::time::Instant::now() < deadline, "{seen:?}");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        };
+        let (with, without) = (start(Some("/x/acc")), start(None));
+        assert_eq!(read(&with).folder_var, Some(Some(PathBuf::from("/x/acc"))));
+        assert_eq!(read(&without).folder_var, Some(None));
+    }
+
     #[test]
     fn an_agent_whose_folder_the_os_wont_tell_is_in_its_shells() {
         use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -1605,6 +1716,7 @@ mod tests {
             id: "agent".into(),
             names: vec![name],
             packages: Vec::new(),
+            var: None,
         }];
         let reported = tempfile::tempdir().unwrap();
         let p = Processes {

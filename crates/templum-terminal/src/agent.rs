@@ -398,6 +398,8 @@ pub struct Detect {
     pub names: Vec<String>,
     /// Pieces of an npm package's path, in a `node` process's script argument.
     pub packages: Vec<String>,
+    /// The variable that names the agent's folder, read from its process when it has accounts.
+    pub var: Option<String>,
 }
 
 /// An agent Templum knows.
@@ -557,6 +559,7 @@ impl Agent {
             id: self.name().to_string(),
             names: owned(self.spec().names),
             packages: owned(self.spec().packages),
+            var: None,
         }
     }
 }
@@ -1050,6 +1053,7 @@ mod tests {
             id: "mine".into(),
             names: vec![program_name("~/bin/My-Agent --tui")],
             packages: Vec::new(),
+            var: None,
         });
         assert_eq!(
             agent_of("my-agent", &["my-agent"], &known),

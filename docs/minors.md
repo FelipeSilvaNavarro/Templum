@@ -1422,11 +1422,6 @@ Left by the third review of its fixes; line numbers are those of `development` a
 The known limits of [specs/accounts.md](specs/accounts.md#known-limits), and what kanban card 37's run couldn't check
 by hand (a second real login, macOS, Windows). Line numbers are those of `development` at 173017d.
 
-- [ ] **A shell that sets the agent's variable again runs the agent in that folder.** An account's block gets its
-  variable from Templum (`agent_vars`, `crates/templum/src/workspace/usage.rs:180`); an `export
-  CLAUDE_CONFIG_DIR=…` in the person's `.bashrc` replaces it, so `claude` there runs on that folder while the block
-  still names the account. Fix: read the agent process's environment in the snapshot (sysinfo's `environ`) and name
-  the block by the folder found.
 - [ ] **An agent that rewrites a shared file by a rename stops sharing it until the next start.** Templum notices a
   link the agent replaced only when the account starts (`apply`, `When::Starting`,
   `crates/templum-usage/src/accounts/folder.rs:246`): until then the two accounts' settings drift apart. Fix: also

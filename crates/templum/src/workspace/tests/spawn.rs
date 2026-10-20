@@ -1032,6 +1032,7 @@ fn stop_agent_ends_what_an_agent_that_quit_left_running(cx: &mut TestAppContext)
         id: "codex".into(),
         names: vec!["sh".into(), "cat".into()],
         packages: Vec::new(),
+        var: None,
     };
     let seen = templum_terminal::inspect(&[p], &[cat]).pop().unwrap();
     assert!(seen.started.is_some(), "{seen:?}");

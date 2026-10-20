@@ -257,8 +257,11 @@ impl AgentEntry {
                 id: self.id.clone(),
                 names: Vec::new(),
                 packages: Vec::new(),
+                var: None,
             },
         };
+        // An agent with accounts: its folder is read from its process, to name the block's account.
+        detect.var = templum_usage::accounts::kind(&self.id).map(|kind| kind.var.to_string());
         let program = program_name(&self.command);
         if !program.is_empty() && !detect.names.contains(&program) {
             detect.names.push(program);
@@ -606,6 +609,17 @@ pub(crate) fn in_block(found: Option<&str>, account: Option<&Home>) -> Option<St
         Some(home) if found == Some(home.agent.as_str()) => Some(home.id.clone()),
         _ => found.map(str::to_string),
     }
+}
+
+/// The account of `agent` whose folder is `folder` (a variable found in an agent's process),
+/// among `homes`: compared as `effective` writes a folder, by its components.
+pub(crate) fn account_of(agent: &str, folder: &Path, homes: &[Home]) -> Option<String> {
+    let state =
+        templum_usage::accounts::kind(agent)?.state_dir(&folder.components().collect::<PathBuf>());
+    homes
+        .iter()
+        .find(|h| h.agent == agent && h.state == state)
+        .map(|h| h.id.clone())
 }
 
 /// Each account's [`Home`].
@@ -1227,6 +1241,32 @@ mod tests {
         assert_eq!(AccountDraft::of(by(&list, "claudinho")).name, "");
         let list = agents("[agents]\nclaude2 = { of = \"claude\", name = \"Claude Code 2\" }\n");
         assert_eq!(AccountDraft::of(by(&list, "claude2")).name, "Claude Code 2");
+    }
+
+    #[test]
+    fn the_folder_found_names_the_account() {
+        let homes = [Home {
+            id: "claudinho".into(),
+            agent: "claude".into(),
+            state: PathBuf::from("/data/accounts/claudinho"),
+        }];
+        let of = |agent, folder| account_of(agent, Path::new(folder), &homes);
+        assert_eq!(
+            of("claude", "/data/accounts/claudinho/").as_deref(),
+            Some("claudinho")
+        );
+        assert_eq!(of("claude", "/home/me/x"), None);
+        assert_eq!(of("codex", "/data/accounts/claudinho"), None);
+    }
+
+    #[test]
+    fn an_agent_with_accounts_is_found_with_its_variable() {
+        let list = agents("[agents]\nmine = { name = \"Mine\", command = \"mine\" }\n");
+        assert_eq!(
+            by(&list, "claude").detect().var.as_deref(),
+            Some("CLAUDE_CONFIG_DIR")
+        );
+        assert_eq!(by(&list, "mine").detect().var, None);
     }
 
     #[test]

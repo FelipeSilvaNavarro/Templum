@@ -570,6 +570,7 @@ fn a_snapshot_tells_each_terminal_its_folder_and_agent(cx: &mut TestAppContext) 
                 pid: Some(42),
                 started: Some(1_700_000_000),
                 session: None,
+                folder_var: None,
             };
             ws.snapshot_done(
                 vec![(

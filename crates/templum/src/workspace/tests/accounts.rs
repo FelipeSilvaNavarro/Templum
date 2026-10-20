@@ -165,3 +165,41 @@ fn a_file_of_someone_else_is_no_accounts_command(cx: &mut TestAppContext) {
     assert!(!dirs.is_own("claudinho"));
     let _: &Path = dirs.commands.path();
 }
+
+#[gpui_kit::test]
+fn a_typed_account_makes_its_block_the_accounts(cx: &mut TestAppContext) {
+    let dirs = Dirs::new();
+    let (handle, ws) = dirs.open(cx);
+    save(handle, &ws, cx, "claudinho").unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| ws.apply_and_save(window, cx))
+    })
+    .unwrap();
+    let id = ws.read_with(cx, |ws, _| ws.space.terminals().next().unwrap().0);
+    let folder = dirs.data.path().join("accounts").join("claudinho");
+    let seen = |var: Option<Option<PathBuf>>| templum_terminal::Inspection {
+        agent: Some("claude".into()),
+        folder_var: var,
+        ..Default::default()
+    };
+    let account = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| ws.space.terminal(id).unwrap().account.clone())
+    };
+    // Typed by hand on the account's folder: its block.
+    super::agents::see(&ws, cx, id, seen(Some(Some(folder.clone()))));
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(id).unwrap();
+        assert_eq!(pane.account.as_deref(), Some("claudinho"));
+        assert_eq!(ws.agent_name(pane), Some("Claude Code (claudinho)"));
+        assert!(ws.account_in_use("claudinho").is_some());
+    });
+    // An environment that couldn't be read: the block keeps what it had.
+    super::agents::see(&ws, cx, id, seen(None));
+    assert_eq!(account(&ws, cx).as_deref(), Some("claudinho"));
+    // Unset, or another folder: the agent's own, no account's.
+    super::agents::see(&ws, cx, id, seen(Some(Some(PathBuf::from("/elsewhere")))));
+    assert_eq!(account(&ws, cx), None);
+    super::agents::see(&ws, cx, id, seen(Some(Some(folder))));
+    super::agents::see(&ws, cx, id, seen(Some(None)));
+    assert_eq!(account(&ws, cx), None);
+}

@@ -493,7 +493,7 @@ fn an_account_opens_with_its_folder_in_its_shell(cx: &mut TestAppContext) {
 }
 
 /// What a snapshot finds in an account's block: `agent`, as process `pid`.
-fn found(agent: Option<&str>, pid: Option<u32>) -> templum_terminal::Inspection {
+pub(super) fn found(agent: Option<&str>, pid: Option<u32>) -> templum_terminal::Inspection {
     templum_terminal::Inspection {
         agent: agent.map(str::to_string),
         pid,
@@ -502,7 +502,7 @@ fn found(agent: Option<&str>, pid: Option<u32>) -> templum_terminal::Inspection 
 }
 
 /// The snapshot sees `inspection` in the block `id`.
-fn see(
+pub(super) fn see(
     ws: &Entity<Workspace>,
     cx: &mut TestAppContext,
     id: BlockId,
