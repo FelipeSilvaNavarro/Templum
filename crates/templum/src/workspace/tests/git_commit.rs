@@ -1,5 +1,7 @@
 //! The Git block: committing, syncing with a remote, and failures.
 
+use gpui_kit::Focusable as _;
+
 use super::*;
 
 #[test]
@@ -147,6 +149,52 @@ fn a_typed_summary_wins_over_the_generic_one_and_a_deleted_file_is_named_so(
     assert_eq!(
         git_run(repo.path(), &["log", "-1", "--format=%s"]),
         "Drop a\n"
+    );
+}
+
+/// The form read the status up to 2 s ago: "Update a.txt" was made for one file, and an agent may
+/// have written another since. Committing both under that name would be a wrong message.
+#[gpui_kit::test]
+fn a_file_that_appeared_after_the_status_was_read_is_not_committed_under_the_one_files_name(
+    cx: &mut TestAppContext,
+) {
+    let repo = committed_repo();
+    std::fs::write(repo.path().join("a.txt"), "two\n").unwrap();
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    assert_eq!(empty_summary(&ws, cx), (true, "Update a.txt".to_string()));
+    // The read hasn't seen this one yet.
+    std::fs::write(repo.path().join("new.txt"), "n\n").unwrap();
+    let head = git_run(repo.path(), &["rev-parse", "HEAD"]);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("git-commit", cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["rev-parse", "HEAD"]),
+        head,
+        "nothing committed"
+    );
+    assert_eq!(notification_count(handle, cx), 1, "it says why");
+    // Both are staged now, the field is the plain one, and a message commits them.
+    assert_eq!(
+        empty_summary(&ws, cx),
+        (false, "Commit message".to_string())
+    );
+    let summary = git_of(&ws, cx, |g| g.summary.clone());
+    cx.update_window(handle, |_, window, cx| {
+        assert!(summary.read(cx).focus_handle(cx).is_focused(window));
+        summary.update(cx, |s, cx| s.set_value("Both", window, cx));
+        window.render_frame(cx);
+        window.click("git-commit", cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    assert_eq!(
+        git_run(repo.path(), &["show", "--name-only", "--format=%s", "HEAD"]),
+        "Both\n\na.txt\nnew.txt\n"
     );
 }
 

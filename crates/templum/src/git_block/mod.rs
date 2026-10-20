@@ -316,6 +316,15 @@ pub(crate) struct Git {
     _search: Subscription,
 }
 
+/// The summary, then a blank line and the description when there is one.
+pub(crate) fn join_message(summary: &str, description: &str) -> String {
+    if description.is_empty() {
+        summary.to_string()
+    } else {
+        format!("{summary}\n\n{description}")
+    }
+}
+
 impl Git {
     pub fn new(folder: PathBuf, tab: Tab, window: &mut Window, cx: &mut Context<Workspace>) -> Git {
         let summary = cx.new(|cx| InputState::new(window, cx).placeholder(COMMIT_MESSAGE));
@@ -481,17 +490,6 @@ impl Git {
             self.placeholder = text.clone();
             self.summary
                 .update(cx, |summary, cx| summary.set_placeholder(text, window, cx));
-        }
-    }
-
-    /// The summary, then a blank line and the description when there is one.
-    pub fn message(&self, cx: &App) -> String {
-        let summary = self.summary_text(cx);
-        let description = self.description.read(cx).value().trim().to_string();
-        if description.is_empty() {
-            summary
-        } else {
-            format!("{summary}\n\n{description}")
         }
     }
 

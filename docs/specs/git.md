@@ -222,6 +222,9 @@ parent), **a stash**, and **a comparison** of two branches.
     changed). The summary field's placeholder shows that sentence in place of "Commit message", so the person knows
     what will be used. With no files or two or more, while amending, and during a merge, rebase, cherry-pick or
     revert (which prepare their own message), a summary is required as before; a summary that is typed always wins.
+    The sentence is made from what is staged when the commit runs (after Commit all changes has staged), not from
+    the status the form last read: if that is no longer exactly one file (an agent wrote another in between), nothing
+    is committed, a notification says the files changed, and the summary gets the keyboard.
   - **Commit,** the whole column's width, filled with the theme's accent once committing is possible, quiet before.
     Its ▾: **Commit**, **Commit & Push** (a Publish when the branch has no upstream), and **Amend the last commit**
     (fills the fields with the last commit's message; while on, a strip says "Amending the last commit" with ✕).

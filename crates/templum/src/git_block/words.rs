@@ -155,6 +155,14 @@ pub(crate) fn generic_summary(entry: &Entry, staged: bool) -> Option<String> {
     })
 }
 
+/// `generic_summary` of the one file the index holds in `status`: None with no file or several.
+pub(crate) fn staged_summary(status: &Status) -> Option<String> {
+    match status.staged().as_slice() {
+        [entry] => generic_summary(entry, true),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
