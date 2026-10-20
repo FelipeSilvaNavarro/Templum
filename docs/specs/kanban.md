@@ -340,46 +340,53 @@ World units, each × the zoom `z` (as now: padding 10 × 8, gap 6, radius 8, the
 
 ### The open card
 
-A dialog at the window's scale (z = 1), **560 wide** (was 520), its body scrolling past the window's height (gpui-kit
-does: the header and the footer stay). Sizes in pixels.
+A dialog at the window's scale (z = 1), **600 wide**, in the Git popup's language: a block's own color (`ui.surface`) under
+hairlines, rounded 8, the theme's accent for what is lit. Its body scrolls past the window's height (gpui-kit does: the
+header and the footer stay). Sizes in pixels; every color comes from the theme.
 
-- **Header:** the dialog's title "Card #40"; its description "In {column} on {board}" (gpui-kit's muted line), read
-  each frame, so an agent's move shows.
-- **Body**, a column with a gap of 16 between these blocks:
-  1. **Title:** the single-line field (`card-title`), gpui-kit's default size. Enter closes the dialog (as now).
-  2. **Properties:** a column with a gap of 8; each row items centered, a gap of 12, at least 28 high, a label 84 wide
-     (text 12, `title_dim`), then its control:
+- **Header** (20 at the sides, a hairline under it): the card's number as a faint accent badge (`card-number`: the
+  kanban icon and "Card #40", 12 semibold, `ui.accent` on `ui.accent` at 16%, rounded 6), then "In {column} on {board}"
+  (12, `ui.title`, truncated), read each frame, so an agent's move shows.
+- **Body**, a column with a gap of 22 between these blocks:
+  1. **Title:** the single-line field (`card-title`), 15 high text in a 38 high field. Enter closes the dialog.
+  2. **Properties** (`card-properties`): a faint panel (`ui.card`, rounded 8, 12 sideways, 6 up and down); each row at
+     least 32 high, an icon (14, `title_dim`) and a label (12, `ui.title`) in 92, then its control:
      - **Assignee:** the dropdown button (gpui-kit `Button`, small, outline, with a caret; `card-assignee`) and, when
-       set, the ✕: 24 × 24, rounded 6, gpui-kit's close icon at 12 in `title_dim`, `ui.hover` under the pointer
-       (`unassign`).
-     - **Priority:** four chips with a gap of 6 (`priority-none`, `-low`, `-medium`, `-high`): 26 high, padding 10
-       sideways, rounded 6, text 12, a gap of 4 between the icon (12, in its color; None has none) and the word. The
-       current one: `ui.hover` fill, `ui.accent` border, text `ui.title`; the others: `ui.hairline` border, text
-       `ui.title_dim`, `ui.hover` fill under the pointer.
-     - **Labels:** the six toggles as now (40 × 22, rounded 6, gap 6, `label-{name}`).
-  3. **Description:** the section label (text 12, medium weight, `title_dim`), a gap of 6, the multi-line field
-     (5 rows), as now.
-  4. **Checklist:** a header row, the section label "Checklist" at the left and, with items, "2/5" at the right (text
-     12, `title_dim`); a gap of 6; with items, a progress bar 4 high, rounded, `ui.hover` behind and `ui.accent` for the
-     done part; then the item rows (each padding 4 up and down, gap 8, items at the top): the check box as a checklist
-     block draws it (14, rounded 3, a `title_dim` border; done: filled with `ui.accent` and a check at 10 in
-     `ui.surface`; `card-item-box-{item}`), the text at 13 (done: `title_dim`, struck through), and at the right a 16
-     × 16 ✕ (close icon 10, `title_dim`, rounded 4, `ui.hover` under the pointer, `card-item-delete-{item}`) shown
-     while the pointer is over its row; last, the single-line field with the placeholder "Add an item"
+       set, the ✕ (the Git popup's 24 × 24 icon button, tooltip "Give it to anyone", `unassign`).
+     - **Priority:** one strip (hairline border, rounded 8, 2 inside) of four segments (`priority-none`, `-low`,
+       `-medium`, `-high`): 24 high, padding 10, rounded 6, text 12, a gap of 5 between the icon (12, in its color;
+       None has none) and the word. The current one: `ui.accent` at 16% fill, `ui.accent` text, medium weight; the
+       others: `ui.title` text, `ui.hover` fill under the pointer.
+     - **Labels:** the six as round swatches (22, gap 8, `label-{name}`): a 2 ring of the label's ANSI color; the
+       card's own are filled with it and checked (the terminal's background color for the check). A tooltip says
+       "Toggle the red label".
+  3. **Description:** a section header (below), 8, the multi-line field (4 rows, placeholder "Add a description").
+  4. **Checklist:** the section header with "2/5" at the right when it has items; 8; a progress bar 4 high, rounded,
+     `ui.hover` behind and `ui.accent` for the done part; the item rows (padding 6 sideways and 5 up and down, rounded
+     6, `ui.hover` under the pointer, gap 10, items at the top): the Git popup's round box (16, filled with `ui.accent`
+     and a check in `ui.surface` when done; `card-item-box-{item}`), the text at 13 (done: `title_dim`, struck
+     through), and at the right an 18 × 18 ✕ (tooltip "Remove the item", `card-item-delete-{item}`) shown while the
+     pointer is over its row; last, the Git popup's one-line field with a `plus` before the placeholder "Add an item"
      (`card-item-field`).
-  5. **Comments:** a header row, "Comments" at the left and their number at the right when there are any; a gap of 6;
-     each comment, oldest first, a gap of 10 between them: its author and age (text 11, `title_dim`: "You · 3m ago"),
-     a gap of 2, its text at 13; then the comment field (2 rows, `comment-field`); a gap of 8; at the right, the small
-     gpui-kit button **Add comment** (`add-comment`).
-- **Footer** (gpui-kit's, under the body), one row spread across: at the left **Delete card** (`delete-card`), a
-  ghost button: no fill or border, gpui-kit's `trash` icon at 14 and the words at 13, both in the theme's red (ANSI 1),
-  28 high, padding 10, rounded 6, `ui.hover` under the pointer; it deletes the card and closes the dialog, as before
-  (Ctrl+Z brings it back). At the right **Done** (`card-done`), gpui-kit's primary button, which closes it. Esc closes
-  it too.
+  5. **Comments:** the section header with their number at the right; a gap of 10; the thread; the comment field.
+     - **The thread**, oldest first, a gap of 14: each comment is its author's round mark (26: the initial on the
+       theme's accent at 16% for the person's own, on ANSI magenta at 16% for an agent's or a block's), then the author
+       (12.5 semibold) and its age (11) over the text in a bubble (13, line height 1.5, rounded 8, 12 and 8 inside;
+       `ui.card`, and the accent at 10% for the person's own). With none: a dashed hairline box with "No comments
+       yet".
+     - **The comment field** (`comment-field` is its text): a box (hairline border, `ui.card`, rounded 8) holding the
+       2-row field (placeholder "Write a comment") and, at the bottom right, **Comment** (`add-comment`, `arrow-up`
+       icon, 26 high): the solid accent once something is typed, a faint `ui.hover` while the field is empty.
+  The **section header** is an icon (13, `title_dim`), the name (12, medium, `ui.title`) and what the section holds.
+- **Footer** (a hairline over it, 20 at the sides, 12 up and down), one row spread across: at the left **Delete card**
+  (`delete-card`), a ghost button: no fill, gpui-kit's `trash` icon at 14 and the words at 12.5, both in the theme's
+  red (ANSI 1), 30 high, rounded 8, red at 12% under the pointer; it deletes the card and closes the dialog, as before
+  (Ctrl+Z brings it back). At the right **Done** (`card-done`), the Git popup's solid accent button (30 high, rounded
+  8, `ui.surface` text), which closes it. Esc closes it too.
 
-**The button in the wrong place** was Delete card: a red word in the body, right-aligned just above Done, so it read as
-a second footer button stacked on the first. It moves to the footer's other end, away from Done. Add comment, a bare
-word under the comment field, becomes a real button.
+Version 2 first drew the dialog in gpui-kit's own colors (the canvas's color, a white primary button, a row of dim
+bare swatches, comments as bare lines under a bare field). The redesign changes no behavior: the same ids, the same
+undo steps.
 
 ### Agents' tools
 
