@@ -2,7 +2,9 @@
 
 - **Date:** 2026-10-18
 - **Status:** Implemented (kanban card 37, "Múltiplas contas do claude"):
-  [docs/plans/2026-10-18-agent-accounts.md](../plans/2026-10-18-agent-accounts.md)
+  [docs/plans/2026-10-18-agent-accounts.md](../plans/2026-10-18-agent-accounts.md). Accounts by name, each a command
+  in every shell, and the new dialog (kanban card 65, 2026-10-20): planned,
+  [docs/plans/2026-10-20-accounts-by-name.md](../plans/2026-10-20-accounts-by-name.md)
 - **Builds on:** [agents.md](agents.md) (the agents, Settings ▸ Agents, `[agents]`), [settings.md](settings.md),
   [usage.md](usage.md) (limits are an account's), [connections.md](connections.md) (`spawn_agent`, what is typed into
   an agent, agents typed in a terminal), [persistence.md](persistence.md#agents) and
@@ -23,6 +25,16 @@ its settings, its instructions, its skills, its plugins, its sessions. Every age
 folder that a variable of its environment moves, so an account is that agent run with its own folder, some of whose
 items are links to another account's. Its login is never one of them.
 
+Card 65, in English: "The Add an Account dialog is bad, a bit confusing, asking the user to pick a folder. What I
+wanted on this screen: the user wants to create the alias "claudinho", an alias for claude that opens another Claude
+account; then they could have "claudio", which opens another Claude account. Also check whether we have a claude2
+mock; I feel we do. The alias must work in every shell of the user's system, or a selector lists the shells and they
+choose where it works."
+
+So an account is made by **its name, which is also a command**: the person types `claudinho`, Templum makes the rest
+(its folder, its links, the command), and `claudinho` typed in any terminal of the computer, in any shell, opens Claude
+Code on that login. `claudio` is another. Nothing asks for a folder.
+
 **Success criteria**
 
 1. **Settings ▸ Agents ▸ Accounts** adds an account of any agent of [the table](#which-agents), edits what it shares,
@@ -34,6 +46,11 @@ items are links to another account's. Its login is never one of them.
 4. Templum never reads, links, moves, copies or deletes an agent's login (its credentials and its account state).
 5. Plan limits and their notifications are per account.
 6. All tests in [Testing](#testing) pass in CI on the 3 OS.
+7. **Add an account** asks for a name, and nothing else unless the person wants to choose what it shares; no folder.
+8. That name is a command in every shell of the person's computer, Templum's terminals included, where it also gets
+   Templum's server as a typed `claude` does; deleting the account removes it.
+9. An account made before card 65 keeps its folder, its name and its shares, and gets its command when its id can be
+   one ([Its name](#its-name)).
 
 ## Out of scope
 
@@ -44,14 +61,23 @@ items are links to another account's. Its login is never one of them.
   key; the person sets it in their own shell.
 - **A command, resume command, model list or commit-message command of an account's own:** it runs its agent's, as
   Settings ▸ Agents has them.
-- **Typing `claude2` in any terminal:** see [Typed in a terminal](#typed-in-a-terminal).
+- **Renaming an account:** its name is its id, its folder's name, its command, and what canvases, cards and
+  `spawn_agent` call it; a login on macOS is named by its folder's path. The person deletes it and adds it again,
+  and logs in again.
+- **Editing the person's shell startup files** (`.bashrc`, `.zshrc`, `config.fish`, the PowerShell profile) or
+  Windows' Path: one file on PATH reaches every shell; when its folder isn't on PATH, the dialog shows the line to add
+  ([Its command](#its-command)).
+- **The command in WSL** from a Templum on Windows: WSL is another system, with its own PATH and agents.
 - **Moving an account's content** when its folder changes, and **copying** an item from another account: Templum
   links or leaves alone; a copy is the person's to make.
 
 ## Words
 
 - **An account:** an entry of `[agents]` that is another folder of one of Templum's agents ("its agent"), with an id
-  (`claude2`) and a name ("Claude Code 2").
+  (`claudinho`; `claude2` for one made before card 65) and a title ("Claude Code (claudinho)", or the `name` set).
+- **Its command:** a small script named by the account's id in the commands folder, which runs its agent on its
+  folder ([Its command](#its-command)).
+- **The commands folder:** `~/.local/bin` (`%USERPROFILE%\.local\bin` on Windows).
 - **Its folder:** the folder its agent's variable names while it runs, `<data>/accounts/<id>` unless the person
   chose one.
 - **The agent's own folder:** where the agent keeps everything without Templum's account (its variable as Templum's
@@ -191,10 +217,11 @@ share = { settings = "claude3", instructions = "claude3", rules = "claude3", ski
   account: "that is Templum's folder for accounts: leave Folder empty"), nor another account's, in it or around it
   (claude3 on `~/w/skills` and claude2 on `~/w`). Folders are compared with their links followed, as far as they
   exist: a link to `~/.claude`, a case variant on macOS and Windows and a `\\?\` path are that folder.
-- The id of an account added in Settings is its agent's id and the first free number from 2: `claude2`, `claude3`,
-  `codex2`; a number whose `<data>/accounts/<id>` is still there (an old folder kept by a change of folder, with its
-  login) is taken. It never changes; the name does. One written by hand may be any free id (`work`), but not another
-  account's in other case (`Claude2` beside `claude2`: one folder on macOS and Windows).
+- The id of an account added in Settings is **the name the person types** (`claudinho`), checked as
+  [Its name](#its-name) says (card 37's dialog gave `claude2`, `claude3`: the agent's id and the first free number;
+  those accounts keep their ids). It never changes; the title does (`name`). One written by hand may be any free id
+  (`work`), but not another account's in other case (`Claude2` beside `claude2`: one folder on macOS and Windows).
+  A new account written by Settings has no `name`: its title is "Claude Code (claudinho)", which says its agent.
 - An account isn't one of Templum's agents: Settings ▸ Agents' **Reset all** leaves it, and its agent's ↺ too.
 
 ## Its folder and its items
@@ -267,16 +294,109 @@ the account still opens with what could be done.
   login is in the system's keychain (Claude Code on macOS, Copilot CLI everywhere), the question adds "Its login stays
   in the system's keychain: run /logout in it first to remove it."
 - **A folder the person chose** is kept: "Its folder ~/.claude-work stays."
+- **Its command** is deleted when it is Templum's own ([Its command](#its-command)): "Its command claudinho is
+  removed."
 - Its entry leaves `[agents]`; a card for it keeps the id (the person changes it), as a card for a closed block does.
 
 ### Changing its folder
 
-Saving an account with another folder is refused while deleting it would be (its blocks open, another account
-sharing from it), with the same words ending "change its folder". Then the account's choices are applied in the new
-folder, and **the old one stays**, whether Templum made it or the person chose it: it holds a login, which Templum
-never deletes on a change. The dialog says, under the folder: "Its old folder stays
-(~/.local/share/templum/accounts/claude2). Log in again: a login is its folder's." On macOS that is so even for the
-same files moved: the Keychain names a login by the folder's path.
+Since card 65 the dialog has no folder field, and its Save keeps `folder` as config.toml has it: a folder changes
+only in config.toml, by hand. The account's next start applies its choices in the new folder, and its command is
+written again with it. **The old folder stays**, whether Templum made it or the person chose it: it holds a login,
+which Templum never deletes on a change; log in again (on macOS even for the same files moved: the Keychain names a
+login by the folder's path). `save_account` still refuses another folder while deleting would be refused (its blocks
+open, another account sharing from it), with the same words ending "change its folder", for any caller that passes
+one.
+
+## Its name and its command
+
+Kanban card 65.
+
+### Its name
+
+The name is the account's id. The dialog checks it at each key, and `save_account` again; the first rule broken is
+said under the field:
+
+1. **A word a shell takes as a command:** a lowercase letter, then lowercase letters, digits, `-` and `_`, at most 32
+   in all: "Use lowercase letters, digits, - and _, starting with a letter". Lowercase because macOS and Windows don't
+   tell `Claudinho` from `claudinho`, so `Claude` would be the file `claude`.
+2. **Not one of Templum's agents** (any id `Agent::from_name` knows) **nor `templum`**: "claude is one of Templum's
+   agents", "templum is Templum's own command".
+3. **Not an id of `[agents]`**, in any case (config.toml's, with what Settings hasn't applied yet): "claudinho is
+   already an agent or an account in Templum".
+4. **Not a word of a shell:** a fixed list of the builtins and keywords of bash, zsh, fish and PowerShell (`cd`,
+   `exit`, `source`, `test`, `time`, `function`, `end`, `begin`, `set`, …): "cd is a word of your shell". A function
+   of that name in Templum's terminals would break the shell; a file would shadow the builtin in scripts.
+5. **Not a command on this computer:** a program of that name where Templum looks for agents (the PATH the person's
+   shell gets, Windows' registry Path, and the folders agents install into, `locate`), other than its own command:
+   "claudinho is already a command: /usr/bin/claudinho". On Windows any of PATHEXT's extensions counts.
+6. **Not a file of the commands folder** other than its own command (`claudinho`, and on Windows `claudinho.*`), on
+   PATH or not: the same words with its path.
+7. **Not a folder Templum still keeps** (`<data>/accounts/claudinho`, left by a change of folder in config.toml): the
+   account would open on that login, and deleting it would delete it: "Templum still keeps a folder for claudinho
+   (~/.local/share/templum/accounts/claudinho): choose another name".
+
+An account of config.toml (one made before card 65, or by hand) whose id breaks rule 1, 2, 4, 5 or 6 keeps working
+from the menu and `spawn_agent`, and gets no command; its row says why ("No command: test is a word of your shell").
+
+### Its command
+
+One file, in the commands folder, reaches every shell and program of the person: bash, zsh, fish, Nushell, PowerShell,
+cmd, a script, another terminal app. No list of shells to choose from, and no startup file edited.
+
+**Linux and macOS:** `~/.local/bin/claudinho`, mode 0755:
+
+```sh
+#!/bin/sh
+# templum-account claudinho /home/me/.local/share/templum
+# Made by Templum: opens Claude Code on its account claudinho (Settings ▸ Agents ▸ Accounts).
+# Deleted with the account; Templum writes it again when it changes.
+export CLAUDE_CONFIG_DIR='/home/me/.local/share/templum/accounts/claudinho'
+exec claude "$@"
+```
+
+**Windows:** in `%USERPROFILE%\.local\bin`, `claudinho.cmd` for cmd and PowerShell, and `claudinho`, the script above
+with the Windows folder, for Git Bash (as npm writes its commands):
+
+```bat
+@echo off
+rem templum-account claudinho C:\Users\me\AppData\Roaming\templum
+rem Made by Templum: opens Claude Code on its account claudinho (Settings > Agents > Accounts).
+rem Deleted with the account; Templum writes it again when it changes.
+setlocal
+set "CLAUDE_CONFIG_DIR=C:\Users\me\AppData\Roaming\templum\accounts\claudinho"
+claude %*
+exit /b %errorlevel%
+```
+
+- **What it runs:** its agent's program (the first word of the agent's command in effect, `AgentEntry::program`),
+  found on PATH when it runs, with the person's words, and the account's variable from [the table](#which-agents)
+  naming its folder (`AgentEntry::var`: Gemini CLI's names the folder that holds `.gemini/`). Not Templum's flags: it
+  is `claude` typed by hand on another login. In Templum's terminals a function adds Templum's
+  ([Typed in a terminal](#typed-in-a-terminal)). The folder is written in single quotes, a `'` as `'\''`; in the
+  `.cmd`, a `%` as `%%`.
+- **Templum's own:** a file of the commands folder is Templum's command for an account when its second line is the
+  marker `templum-account <id> <data>` (after `# ` or `rem `), naming that id and this Templum's data folder: an
+  installed Templum and a `--dev` one, or two data folders, keep theirs apart, and each sees the other's as a command
+  that is taken. Templum writes, rewrites and deletes only its own; any other file is never touched.
+- **When it is written:** at **Create** in the dialog; and each time the agents in effect are computed from
+  config.toml (Templum's start, config.toml changed): an account's missing command is made when its id passes
+  [Its name](#its-name) (rules 1, 2, 4, 5, 6), and one of Templum's own is written again when its text differs (the
+  agent's program or the account's folder changed). A file is written to `<name>.templum-new` in the same folder,
+  then renamed over the old one, so no shell ever runs half of one. The commands folder is made when missing.
+- **Deleted** with its account (Delete account), when it is Templum's own; on Windows both files. Nothing else
+  removes one: an account taken out of config.toml by hand keeps it ([Known limits](#known-limits)).
+- **A failure** (a read-only folder): one notification, "Couldn't make the command claudinho: <the OS's reason>";
+  the account is saved anyway and opens from the menu.
+- **Not on PATH:** when the commands folder isn't among the folders of the PATH the person's shell gets (on Linux and
+  macOS the shell's, read at start as `read_shell_path` does, else Templum's own; on Windows the registry's Path),
+  the dialog and the Accounts heading say so once, with what to add, and Templum's terminals still have the command
+  ([Typed in a terminal](#typed-in-a-terminal)):
+  - Linux, macOS: "~/.local/bin isn't on your PATH, so claudinho works only in Templum's terminals. To use it in the
+    others, add this line to your shell's startup file (~/.bashrc, ~/.zshrc): export PATH="$HOME/.local/bin:$PATH".
+    In fish: fish_add_path ~/.local/bin". The line is selectable text.
+  - Windows: "%USERPROFILE%\.local\bin isn't on your Path, so claudinho works only in Templum's terminals. Add it in
+    Edit environment variables for your account."
 
 ## Where an account shows up
 
@@ -285,7 +405,8 @@ same files moved: the Keychain names a login by the folder's path.
 - **AI agent ▸** lists it after Templum's agents and the person's own (accounts by id), by its name, installed when
   its agent is. The folder dialog is the same ("Open Claude Code 2").
 - **`spawn_agent`** takes its id (`agent: "claude2"`), its agent's `model` and `effort`, and a worktree, as for its
-  agent. The tool's `agent` description adds "or an account, like claude2".
+  agent. The tool's `agent` description adds "or an account's name (Settings ▸ Agents ▸ Accounts)" (it said "like
+  claude2" before card 65).
 - **Opened** (the menu, `spawn_agent`, Log in, a restore), its block's shell gets the account's variable in its
   environment (`CLAUDE_CONFIG_DIR=<its folder>`), with what its agent gets ([connections.md](connections.md)), and its
   agent's command is typed as for its agent: Templum's flags (`--settings`, `--mcp-config`, Codex's `-c`…) don't
@@ -335,12 +456,38 @@ account (`agent:claude2`) is taken only by a block whose agent is that account. 
 
 ### Typed in a terminal
 
-- `claude` typed in a plain terminal is the agent's own folder, as today (cards 42 and 44 unchanged).
+- `claudinho` typed in any terminal of the computer, Templum's or not, in any shell, runs [its command](#its-command):
+  its agent on its folder.
+- `claude` typed in a plain terminal is the agent's own folder, as before (cards 42 and 44 unchanged).
 - `claude` typed in an account's block is that account: the shell has its variable.
-- **`claude2` isn't a command** in Templum's terminals. Telling an agent typed by hand apart by its folder means
-  reading the agent process's environment on each OS (Templum knows a block's account because it set the variable),
-  and four shells' functions defined from a list; the menu, `spawn_agent` and the account's own block cover the card.
-  Added when someone asks: [Considered and left out](#considered-and-left-out).
+- **In Templum's terminals** `claudinho` also gets what a typed `claude` gets, Templum's server and hooks
+  ([connections.md](connections.md#agents-typed-in-a-terminal)), and works even with the commands folder off PATH:
+  - Each new terminal gets `TEMPLUM_ACCOUNTS`: a line per account whose id passes [Its name](#its-name)'s rule 1,
+    `<id>`, `<program>`, `<variable>` and `<folder>` separated by tabs, raw (not quoted for a shell). Always set,
+    empty with no account, so a Templum started from another's terminal doesn't pass that one's on (as
+    `TEMPLUM_CLAUDE_ARGS`). An account whose folder holds a tab or a line break is left out of it. Set whatever
+    `[connections] enabled` says: the switch reaches the words `claude` adds, not the account's folder.
+  - The [shell integration](shell-integration.md) (bash, zsh, fish, PowerShell) defines, when the shell starts, a
+    function per line, named by its id, unless the person has a function of that name (as for `claude`): it sets the
+    variable to the folder for that one command and runs the program by its name, so Templum's own `claude`
+    function, when the shell has one, puts Templum's words first; the person's words follow. The exit status is the
+    agent's. The variable isn't left in the shell afterwards (PowerShell sets it and puts the old value back).
+  - cmd, Nushell, `shell.integration` off, a shell started from the first one: no function; the command on PATH runs,
+    without Templum's server.
+- **The block is the account's** whatever started it: the 5-second snapshot reads, for the agent it finds in a block
+  and only for an agent with accounts, that agent's variable from its process's environment (sysinfo's `environ`, on
+  Linux, macOS and Windows; one more read of that one process, never of every process). Then:
+  - the variable names an account's folder (compared as `Account::folder` is written, components normalized): the
+    block becomes that account's (`Pane::account`), as if the menu had opened it: its title, its usage chip, cards
+    for it, `list_blocks`, its resume after a restart with the variable in its shell, and Delete waits for it;
+  - it names another folder or is unset: the block is no account's (the agent's own, or a folder of the person's);
+  - the environment can't be read (it comes back empty: another user's process, an elevated one on Windows): the
+    block keeps what it had.
+
+  So `CLAUDE_CONFIG_DIR=~/x claude` typed by hand is the account whose folder `~/x` is, and a `.bashrc` that sets the
+  variable again in an account's block makes the block the folder's it names. A block where `claudinho` ran stays the
+  account's after the agent quits, until another agent is found there: a restart gives its shell the variable, as for
+  a block the menu opened.
 
 ### Templum's server and hooks
 
@@ -363,43 +510,73 @@ run with the account's variable, so the message is written on that account's pla
 
 ## Settings ▸ Agents ▸ Accounts
 
-Under the agents' rows and **Add an agent**, a heading **Accounts** with the line "Another login of an agent, with its
-own folder: choose what it shares with the others." Accounts aren't among the agents' rows above it (nor in the
-welcome's Agents page).
+Under the agents' rows and **Add an agent**, a heading **Accounts** with the line "Another login of an agent, opened
+by its own command." Accounts aren't among the agents' rows above it (nor in the welcome's Agents page). Under it,
+once, the [not on PATH](#its-command) note when it applies and an account has a command.
 
-- **A row** per account, by id: its name; "Account of Claude Code · ~/.local/share/templum/accounts/claude2" (the
-  folder, home as `~`); a switch (the menu lists it); **Log in**; **Edit**.
-- **Add an account** opens the dialog, empty. No row and the button alone when there is none.
+- **A row** per account, by id: its title; "Claude Code · type claudinho in any terminal", or "Claude Code · no
+  command: <why>" ([Its name](#its-name)); a switch (the menu lists it); **Log in**; **Edit**.
+- **Add an account** opens the dialog. No row and the button alone when there is none.
 
 ### The dialog
 
-"Add an account" or "Edit Claude Code 2":
+In the language of the Git popup and the kanban card dialog ([kanban.md](kanban.md), its card dialog): a block's own
+color (`ui.surface`) under hairlines, rounded 8, the theme's accent for what is lit, **480 wide**, built with gpui-kit's
+dialog as the card dialog is (its header, body and footer; its OK and Cancel buttons not used). Sizes in pixels; every
+color from the theme. Esc and the ✕ close it without saving.
 
-1. **Agent:** a dropdown of the agents of [the table](#which-agents), installed first; fixed once the account exists
-   (shown as text).
-2. **Name:** prefilled with the agent's title and the id's number, "Claude Code 2". Under it, "Its id: claude2 (what
-   agents and the canvas file call it)".
-3. **Folder:** "Templum's folder for it (`<data>/accounts/claude2`)" or a path, with **Choose…** (the system's
-   folder picker, [agents.md](agents.md#opening-one)) and a field (`~` is home).
-4. **Share everything with:** a dropdown, "Choose…" then the agent ("Claude Code: its own folder") and its other
-   accounts; choosing one sets every item below to it. It changes nothing by itself afterwards.
-5. **The items**, one row each: its label and its path (`skills/`), and a dropdown: **Own**, the agent ("Claude Code:
-   its own folder"), then each other account of that agent. An item Windows can't share without Developer Mode says
-   so in place of the dropdown. A shared file whose source has none yet says "Shared once Claude Code writes one".
-6. Under the items, its agent's note when it has one (Claude Code's MCP servers, above), and "Its login is never
-   shared: log in to it with Log in."
-7. **Delete this account**, for one that exists ([Deleting](#deleting-an-account)).
+**Add an account:**
 
-**Save** checks what config.toml would (a cycle, a folder taken) and says it in a notification with the dialog left
-open; then writes the entry and applies the folder's choices. Saving an account that runs changes its folder at once:
-what its agent has open keeps working, and what it opens next follows the new choice.
+- **Header** (20 at the sides, a hairline under it): "Add an account" (14, semibold), and under it (12, `title_dim`)
+  "Another login of an agent, opened by its own command."
+- **Body**, a column with a gap of 18:
+  1. **Agent** (`account-agent`): the label (12, `ui.title`) and a dropdown of the agents of
+     [the table](#which-agents), installed first. Claude Code is chosen when it is installed, else the first
+     installed one, else Claude Code.
+  2. **Name** (`account-name`): the single-line field of the card dialog's title (15 text, 38 high), placeholder
+     "claudinho", focused when the dialog opens; it lowercases nothing by itself. Under it one line (12), updated at
+     each key: nothing while empty; the first [rule](#its-name) broken in the theme's red (ANSI 1); else, in
+     `title_dim` with the name in the accent: "Type claudinho in any terminal to open Claude Code on this account."
+  3. **Setup** (an agent with items; Crush has none): the label, then one strip of three segments in the look of the
+     card dialog's Priority strip (`account-setup-same`, `account-setup-fresh`, `account-setup-custom`):
+     **Same as Claude Code** (chosen first), **Fresh**, **Custom**; under it one line (12, `title_dim`):
+     - Same: "Everything but the login is your Claude Code's (~/.claude): settings, skills, plugins, sessions…". Every
+       item is shared with the agent's own folder, except, on Windows without Developer Mode, the files
+       (`files_share`): there the line adds "Files stay its own: Windows shares them only with Developer Mode."
+     - Fresh: "It starts empty: nothing shared with your Claude Code." No item shared.
+     - Custom: "Choose item by item." Under it, in a faint panel (`ui.card`, rounded 8, scrolling past 260), card
+       37's controls unchanged: **Share everything with** (`account-share-all`) and a row per item, Own or shared,
+       with "Linked by you to …", the Developer Mode words and "Shared once Claude Code writes one" as before. Custom
+       opens on the choices Same or Fresh last made.
+  4. **Notes** (11, `title_dim`), each when it applies: the [not on PATH](#its-command) note; a variable that wins over
+     every account's login (as before); the agent's note (Claude Code's MCP servers).
+- **Footer** (a hairline over it, 20 at the sides, 12 up and down): at the right **Create claudinho**
+  (`account-save`), the card dialog's solid accent button, its label following the name ("Create" while empty);
+  while the name is empty or breaks a rule it is faint (`ui.hover`, `title_dim` text) and does nothing. Enter in the
+  name field is the same as a click.
+
+**Create** saves the entry (`[agents.claudinho]` with `of` and `share`), applies the folder's choices, writes
+[its command](#its-command), closes the dialog and Settings, and opens [Log in](#log-in) for it. The account is in
+**AI agent ▸** at once. A problem `save_account` finds (one the dialog couldn't see: a config error) is a notification,
+the dialog left open.
+
+**Edit claudinho** (Edit on its row):
+
+- **Header:** the id as a faint accent badge (the card dialog's card number: 12 semibold, `ui.accent` on `ui.accent`
+  at 16%, rounded 6) and "Account of Claude Code" (12, `ui.title`).
+- **Body:** **Command**: "Type claudinho in any terminal (~/.local/bin/claudinho)" or "No command: <why>";
+  **Folder**: its folder as text (home as `~`), Templum's or the one chosen in an earlier Templum, with no field and
+  no **Choose…**; **Setup** opened on its shares (every item it can share shared with the agent: Same; none: Fresh;
+  otherwise Custom); the notes.
+- **Footer:** at the left **Delete account** (`delete-account`), the card dialog's red ghost button with the trash
+  icon ([Deleting an account](#deleting-an-account)); at the right **Save** (`account-save`), the solid accent button.
+  Save keeps `name` and `folder` as config.toml has them (a title that is the default one isn't written as `name`).
 
 ### Log in
 
 **Log in** opens a terminal block at the view's center, in the home folder, that is the account's (its variable), and
 types its agent's login command from [the table](#which-agents) and Enter. The person logs in there, and closes it or
-keeps it. A first start without a login asks to log in anyway: Log in is the short way to do it before opening the
-account in a project.
+keeps it. **Create** opens it for a new account; the row's **Log in** opens it again any time.
 
 ## Calls made for card 37
 
@@ -407,7 +584,8 @@ The person was away; each can be changed.
 
 1. **An account is an `[agents]` entry with `of`,** not a table of its own: it is in every list of agents at once (the
    menu, `spawn_agent`, cards, Generate, usage) with no second list to keep in step.
-2. **Its id is `claude2`**, the agent's id and a number, as the card writes it, fixed at creation; its name is free.
+2. **Its id is `claude2`**, the agent's id and a number, as the card writes it, fixed at creation; its name is free
+   (card 65: the id is the name the person types).
 3. **The folder is the account.** The variable moves everything an agent keeps, so an account is a folder and links,
    with no copy of the agent's settings in Templum.
 4. **Item by item, own or shared with one of the agent's folders**, and "share everything with" filling the rows;
@@ -418,7 +596,8 @@ The person was away; each can be changed.
    links, which an agent's rename breaks without anyone seeing.
 7. **The block is the account's**, through its shell's variable, saved with the block: Templum knows an account's
    session because it set its folder, on every OS, without reading another process's environment.
-8. **No `claude2` command in terminals** ([above](#typed-in-a-terminal)); `claude` in an account's block is it.
+8. **No `claude2` command in terminals** (replaced by card 65: every account is a command, [Its command](#its-command));
+   `claude` in an account's block is it.
 9. **"Any Claude Code" includes its accounts; a card for claude2 is claude2's only.**
 10. **Limits per account**, the relay naming its folder; the `/usage` probe only for accounts that ran this run.
 11. **Log in types the agent's own login command** in a block of the account; Templum never touches the login.
@@ -431,11 +610,51 @@ The person was away; each can be changed.
 15. **A folder change keeps the old folder:** it holds a login, never deleted except by deleting the account.
 16. **Limits follow the folder**, not the block, since a login is its folder's.
 
+## Calls made for card 65
+
+The person was away; each can be changed.
+
+1. **The name is the id and the command:** one word for what the person types in a terminal, what `spawn_agent` and
+   cards call it, and its folder's name.
+2. **A file on PATH, not aliases in startup files:** one file reaches every shell and program at once; startup files
+   are often links into a dotfiles repository, differ per shell, and would be four edits to undo. So no shell
+   selector: there is nothing to choose.
+3. **`~/.local/bin` on every OS** (under the user's profile on Windows): the user's commands folder of the XDG base
+   directories and systemd's file hierarchy, where Claude Code's own installer puts `claude` (so it is usually on PATH
+   already), pipx and uv theirs. A `.cmd` and a sh script on Windows, as npm does.
+4. **Templum's terminals define it as a function too**, from `TEMPLUM_ACCOUNTS`: a typed `claudinho` gets Templum's
+   server as a typed `claude` does, through the same function, and works with `~/.local/bin` off PATH.
+5. **A block's account follows the folder its agent runs on**, read from its process's environment, so a typed
+   `claudinho` is that account's block (title, resume, usage, Delete waiting for it). It also fixes the minor "A shell
+   that sets the agent's variable again runs the agent in that folder".
+6. **No rename:** delete and add again.
+7. **No folder to choose:** a new account is always on Templum's folder; a folder chosen in an earlier Templum stays,
+   shown as text, and changes only in config.toml.
+8. **Three setups instead of twelve dropdowns:** Same as the agent first (card 37's "claude2 the same as claude but on
+   another account"), Fresh, and Custom with card 37's controls unchanged.
+9. **Create opens Log in at once:** a new account has no login, and its agent would ask anyway.
+10. **The title stays "Claude Code (claudinho)"** when no `name` is set: it says the agent, and holds the name.
+11. **Lowercase names only**, for macOS and Windows, whose files ignore case.
+12. **The automatic `claude2` id is gone** (`new_account_id`): its "a folder still there" check is rule 7.
+
+**The "claude2 mock" the card asks about.** Checked on 2026-10-20: Templum makes no `claude2` account and keeps none
+outside tests; the person's config.toml has no account. `claude2` was the id card 37's dialog proposed
+(`new_account_id`), which goes; the example in `spawn_agent`'s `agent` description ("or an account, like claude2",
+`crates/templum-mcp/src/tools.rs`), which agents read and repeat, and which now names no account; and the tests'
+fixture account (`CLAUDE2` in `crates/templum/src/workspace/tests/agents.rs`, and the configs of `agents.rs`,
+`config.rs`, `session.rs` and `persistence.rs` tests), which stays: a config in a test's temporary data folder.
+
 ## Considered and left out
 
-- **`claude2` typed by hand** (above): a list of accounts in a variable, a function per account in bash, zsh, fish
-  and PowerShell, and the agent process's environment read by the snapshot (sysinfo's `environ`, on each OS) to tell
-  its folder. When someone asks: those three, and a block's account found by its process's variable first.
+- **Aliases or functions in each shell's startup file** (`.bashrc`, `.zshrc`, `config.fish`, the PowerShell profile),
+  in a marked block, with a list of shells to choose from: four syntaxes, files often managed by the person's
+  dotfiles, nothing for Nushell, cmd, scripts or a program that runs `claudinho`, and four edits to undo.
+- **The command in Templum's `<data>/bin`** (already first on PATH in Templum's terminals): no other terminal has it.
+- **A `templum account claudinho` launcher** in the command, which would apply the account's links and add Templum's
+  words in Rust: the command would break when Templum moves or is uninstalled, and `templum.exe` has no console on
+  Windows.
+- **Templum's words in the command itself** (it reads `TEMPLUM_CLAUDE_ARGS`): a fifth copy, in sh, of each agent's
+  rules for when to add them (Copilot CLI's and Pi's subcommands); the functions reuse the shells' own.
 - **A copy instead of a link** ("own, starting from claude's"): a copy of `projects/` can be gigabytes, and the
   person can copy one file by hand.
 - **`share = "claude3"` for every item at once:** one more form to parse; the dialog's "Share everything with" writes
@@ -448,6 +667,12 @@ The person was away; each can be changed.
 
 Each goes to [docs/minors.md](../minors.md) under **Agent accounts** with the code that has it.
 
+- A `.cmd` passes the person's words through cmd: a word with `"`, `%` or `^` may change, as with npm's commands.
+- The command is checked against the computer's programs only when Templum makes it: a program of the same name
+  installed later wins or loses by the order of PATH.
+- An account taken out of config.toml by hand keeps its command, which still opens its folder.
+- A block where `claudinho` ran stays the account's after the agent quits, until another agent is found there.
+- A command made while `~/.local/bin` isn't on PATH works in other terminals only once the person adds it.
 - A shell whose startup files set the agent's variable again runs the agent in that folder, not the account's.
 - An agent that rewrites a shared file by a rename stops sharing it; Templum notices only at the account's next start.
 - A card for a deleted account keeps its id until the person changes it.
@@ -471,6 +696,13 @@ Each goes to [docs/minors.md](../minors.md) under **Agent accounts** with the co
 | `templum/src/workspace/content.rs` | A card for an account |
 | `templum/src/settings/accounts.rs` (new) | The Accounts rows and dialog, Log in, Delete |
 | `templum-git/src/message.rs` | Generate runs with an account's variable |
+| `templum-usage/src/accounts/command.rs` (new, card 65) | Its command's text for each OS, whether a file is Templum's own, writing it (renamed into place, 0755) and removing it; the shells' words |
+| `templum/src/agents.rs` (card 65) | The name's rules (`name_problem`), the commands folder, `TEMPLUM_ACCOUNTS`'s lines, a block's account from the folder found; `new_account_id` removed |
+| `templum/src/workspace/preferences.rs` (card 65) | Create writes the command, Delete removes it; commands checked when the agents are computed |
+| `templum/src/settings/accounts.rs` (card 65) | The new dialog and rows |
+| `templum-terminal/src/terminal.rs`, `agent.rs` (card 65) | `Detect::var`; `Inspection` reads the found agent's variable; the PATH folders of the person's shell |
+| `templum-terminal/src/integration/*` (card 65) | A function per line of `TEMPLUM_ACCOUNTS` in bash, zsh, fish and PowerShell |
+| `templum/src/workspace/mod.rs` (`see`), `usage.rs` (`agent_env`) (card 65) | The block's account from what was found; `TEMPLUM_ACCOUNTS` |
 
 ## Testing
 
@@ -486,7 +718,8 @@ junction, a file without the privilege is refused with the copy above.
 
 **Unit (`templum`):** `[agents.claude2] of = "claude"` parses; `command` on an account, an unknown item, a target of
 another agent, a cycle, a taken folder, one in or around another's, any agent's own folder, ids equal but for case
-are errors; an account inherits its agent's command and resume, with the person's changes; ids `claude2`, `claude3`;
+are errors; an account inherits its agent's command and resume, with the person's changes; ids `claude2`, `claude3`
+(gone with card 65's typed name);
 accounts aren't detected as agents; its variable; a card for `claude2` is taken by a claude2 block only, one for
 `claude` by both.
 
@@ -500,6 +733,25 @@ and a folder with its links), keeps a chosen folder's own files where they are, 
 in (a block of the account, its login typed) and deletes one (the folder gone, the shared source left); deleting or
 moving an account with a block of it open (its shell alone too) is refused, and a block of a deleted account comes
 back plain.
+
+**Card 65.** Unit (`templum-usage`'s `command`): the sh and `.cmd` texts for a folder with a space, a `'` and a `%`;
+written 0755 in a temporary folder through a renamed file, and Templum's own; a file without the marker, or with
+another data folder's, never rewritten nor removed; written again only when its text differs; removing one leaves the
+others. Unit (`templum`): each rule of [Its name](#its-name) with its words (a program in a temporary PATH folder, a
+file in a temporary commands folder, a folder left in a temporary data folder); `AccountDraft::of` leaves a default
+title out of `name`; `TEMPLUM_ACCOUNTS`'s lines (a folder with a tab left out); the block's account from the folder
+found (an account's, another, none, unread). Unit (`templum-terminal`, Unix): a fake `claude` started with
+`CLAUDE_CONFIG_DIR` set is found with that folder. Shell integration (each shell when installed): `claudinho x` runs
+the fake `claude` with Templum's words, then `x`, and the folder in its variable; the shell doesn't keep the variable;
+the person's own `claudinho` function wins. Headless UI: Create with a name writes the entry, the folder's links and
+the command in a temporary commands folder, and opens Log in; a broken rule keeps Create faint with its words; Same
+shares every item, Fresh none; Edit opens on the setup; Delete removes the command; a typed `claudinho` found in a
+plain block makes it the account's; an account written by an older Templum (`folder`, `name = "Claude Code 2"`) is
+edited and saved with both kept. No test reads or writes the person's `~/.local/bin`, PATH or agents' folders.
+
+**Manual (card 65, Hyprland):** create `claudinho`, log in from the block Create opens; `claudinho` in a new Templum
+terminal (its block titled "Claude Code (claudinho)", its status dot moving), in another terminal app, and in fish;
+delete it and `claudinho` is gone. Not checkable here: macOS, Windows' cmd, PowerShell and Git Bash.
 
 **Manual (Hyprland, and macOS for the Keychain):** two Claude Code accounts logged in, each with its own limits;
 claude2 sharing claude's sessions resumes one of claude's with `/resume`; codex2 with its own login; a Windows
