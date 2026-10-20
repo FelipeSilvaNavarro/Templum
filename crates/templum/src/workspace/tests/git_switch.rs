@@ -63,6 +63,82 @@ fn the_switcher_finds_a_branch_and_enter_switches(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_switcher_creates_a_branch_from_a_name_no_branch_has(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let repo = two_branches();
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| window.click("branch", cx))
+        .unwrap();
+    settle(handle, cx);
+    // "fea" is in "feat": Enter takes that match and creates nothing.
+    cx.simulate_input(handle, "fea");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    settle(handle, cx);
+    git_of(&ws, cx, |g| {
+        assert_eq!(g.status.branch.as_deref(), Some("feat"));
+    });
+    assert_eq!(git_run(repo.path(), &["branch"]).lines().count(), 2);
+    // A name nobody has is the only row: Enter creates it and switches to it.
+    cx.update_window(handle, |_, window, cx| window.click("branch", cx))
+        .unwrap();
+    settle(handle, cx);
+    cx.simulate_input(handle, "brand-new");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    settle(handle, cx);
+    git_of(&ws, cx, |g| {
+        assert_eq!(g.status.branch.as_deref(), Some("brand-new"));
+    });
+    assert_eq!(git_run(repo.path(), &["branch"]).lines().count(), 3);
+    assert_eq!(
+        git_run(repo.path(), &["rev-parse", "brand-new"]),
+        git_run(repo.path(), &["rev-parse", "feat"]),
+        "made where HEAD was"
+    );
+}
+
+#[gpui_kit::test]
+fn a_new_branch_from_a_commit_lists_no_branches_and_starts_there(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let repo = two_branches();
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    let first = git_run(repo.path(), &["rev-parse", "main~0"])
+        .trim()
+        .to_string();
+    cx.update_window(handle, |_, window, cx| {
+        ws.update(cx, |ws, cx| {
+            ws.open_branch_dialog(Some(first.clone()), window, cx)
+        });
+        window.render_frame(cx);
+        assert!(window.has_active_dialog(cx), "opens at once");
+    })
+    .unwrap();
+    // "ma" would match main; from a commit there is nothing to switch to, only the creation.
+    cx.simulate_input(handle, "ma");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    settle(handle, cx);
+    git_of(&ws, cx, |g| {
+        assert_eq!(g.status.branch.as_deref(), Some("ma"))
+    });
+}
+
+#[gpui_kit::test]
 fn changes_left_on_a_branch_come_back_with_it(cx: &mut TestAppContext) {
     no_motion(cx);
     let repo = two_branches();
@@ -208,11 +284,14 @@ fn create_a_branch_here_keeps_the_commits_on_a_branch(cx: &mut TestAppContext) {
     git_run(repo.path(), &["checkout", "-q", "--detach", "feat"]);
     let (handle, ws) = open(cx);
     open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| window.click("git-branch-here", cx))
+        .unwrap();
+    // The branches are read first, then the dialog opens.
+    settle(handle, cx);
     cx.update_window(handle, |_, window, cx| {
-        window.click("git-branch-here", cx);
-        window.render_frame(cx);
         assert!(window.has_active_dialog(cx));
         window.input("rescue", cx);
+        window.render_frame(cx);
         window.press("enter", cx);
         window.render_frame(cx);
     })

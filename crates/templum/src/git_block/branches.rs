@@ -340,7 +340,7 @@ fn branch_column(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>)
                 .child(
                     button("git-new-branch", "New branch…", ui, z)
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.branch_from(None, window, cx)
+                            ws.open_branch_dialog(None, window, cx)
                         }))
                         .test_support(),
                 ),

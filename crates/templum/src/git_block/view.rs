@@ -178,7 +178,7 @@ fn branch_line(ws: &Workspace, git: &Git, cx: &mut Context<Workspace>) -> impl I
                 .child(div().truncate().child(branch))
                 .tooltip(|window, cx| Tooltip::new("Switch branch").build(window, cx))
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.open_branch_switcher(window, cx)
+                    ws.open_branch_dialog(None, window, cx)
                 }))
                 .test_support(),
         )
@@ -479,7 +479,7 @@ fn repo_body(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>) -> 
                 .child(
                     button("git-branch-here", "Create a branch here", ui, z)
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.branch_from(None, window, cx)
+                            ws.open_branch_dialog(None, window, cx)
                         }))
                         .test_support(),
                 )

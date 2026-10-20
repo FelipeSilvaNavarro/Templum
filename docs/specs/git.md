@@ -84,8 +84,13 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
   description, the left column folded, Split). An older file's Git block item becomes the workspace's Git (its
   folder, tab and commit message draft) and no block; items of kind `git` are never written again.
 - **Under the name,** dimmed, one line:
-  - **the current branch.** A click opens the **branch switcher**: a search field over the local branches, then
-    the remote ones; Enter switches (with [the switch flow](#switching-branches)); a last row **+ New branch…**.
+  - **the current branch.** A click opens the **branch dialog**, which switches and creates: a search field over
+    the local branches, then the remote ones, the current one checked; Enter or a click switches (with
+    [the switch flow](#switching-branches)). A name no branch has gets a last row **Create branch "name"**, which
+    makes the branch at HEAD and switches to it (git's own message when it refuses the name). The row comes last, so
+    Enter right after typing still takes the first match. **+ New branch…** (Branches tab), **Create a branch here**
+    (the old-version banner) and **New branch here…** (a commit's menu) open this same dialog; from a commit it
+    lists no branches (there is nothing to switch to from there) and creates at that commit.
   - **where it stands with the server:** "↑2 ↓1", "up to date", or "not published", with a tooltip in words
     ("2 commits of yours not pushed yet, 1 on the server you don't have").
   - the terminals working in the repository, while any: a click lists them.
@@ -123,7 +128,7 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
   The keyboard icon in the diff panel's header names them in its tooltip. They only act while the Git has the focus
   and no field does.
 - **Empty states** say it in words with a useful button: "Nothing changed since the last commit" (History, switch
-  branch), "No stashes", "No other branches" (+ New branch…).
+  branch), "No stashes", "No other branches" (+ New branch…, which opens the branch dialog).
 - **Zoom:** none; the popup keeps its scale whatever the canvas's zoom.
 
 ## 2. The diff panel
@@ -288,8 +293,9 @@ on it. A clone that wants credentials fails with **Run in a terminal**, as other
 - **Local** first: the current one marked; each with ↑↓ against its upstream and its last commit's subject and
   age (`BRANCH_FORMAT` gains `%(committerdate:unix)`; it has no date today). **Remote** in a folded group. A
   filter field.
-- **Click:** switch, with [the switch flow](#switching-branches). **+ New branch…** from the current one (and, in
-  History, from a chosen commit).
+- **Click:** switch, with [the switch flow](#switching-branches). **+ New branch…** opens the
+  [branch dialog](#1-layout-and-navigation) (and, in History, a commit's **New branch here…** opens it to create
+  at that commit).
 - **Right-click:** **Compare with `main`**, Merge into *current*…, Rename…, Delete…, Publish, Copy name.
 
 ### Worktrees an agent made

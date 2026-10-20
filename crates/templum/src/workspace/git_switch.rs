@@ -14,23 +14,51 @@ use crate::prompt::{self, Act, Choice};
 use super::{Extra, Workspace, notify_git_error, notify_with, show_notification};
 
 impl Workspace {
-    /// The branch pill: the branches read afresh, then the switcher.
-    pub(crate) fn open_branch_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The branch dialog, for switching and creating: the branches read afresh, then the dialog.
+    /// `from` is a commit a new branch starts at (None: HEAD); from a commit the dialog lists no
+    /// branches, so it opens at once.
+    pub(crate) fn open_branch_dialog(
+        &mut self,
+        from: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(repo) = self.space.git().and_then(|g| g.repo().cloned()) else {
             return;
         };
+        let dim = self.ui.title_dim;
+        if from.is_some() {
+            git_block::switcher::open(cx.entity(), self.here(), Vec::new(), from, dim, window, cx);
+            return;
+        }
         self.git_job(
             self.here(),
             move || repo.branches(),
-            |ws, at, branches, window, cx| {
+            move |ws, at, branches, window, cx| {
                 let Ok(branches) = branches else {
                     return;
                 };
                 if let Some(git) = ws.git_at(&at) {
                     git.branches = branches.clone();
                 }
-                git_block::switcher::open(cx.entity(), at, branches, window, cx);
+                git_block::switcher::open(cx.entity(), at, branches, None, dim, window, cx);
             },
+            window,
+            cx,
+        );
+    }
+
+    /// Creates the branch `name` at `from` (a commit; None: HEAD) and switches to it; git refuses
+    /// a name it doesn't accept in its own words.
+    pub(crate) fn create_branch(
+        &mut self,
+        name: String,
+        from: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.git_action(
+            move |repo| repo.new_branch(&name, from.as_deref()),
             window,
             cx,
         );

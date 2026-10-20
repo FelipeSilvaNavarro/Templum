@@ -1,86 +1,127 @@
-//! The branch switcher: the top bar's branch pill opens it. A search over the local branches,
-//! then the remote ones; Enter switches (through the question about changes); + New branch…
-//! at the foot. See docs/specs/git.md, section 1, Top bar.
+//! The branch dialog, one for switching and creating: the header's branch name, the Branches
+//! tab's New branch…, the old-version banner and a commit's New branch here… open it. A search
+//! over the local branches, then the remote ones; Enter switches (through the question about
+//! changes); a name no branch has offers to create it. See docs/specs/git.md, section 1, Header.
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::WindowExt as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandGroup, CommandItem, CommandState};
 use gpui_kit::prelude::*;
-use gpui_kit::{App, Entity, Window, px};
+use gpui_kit::{App, Entity, Hsla, Window, div, px};
 use templum_git::Branch;
 
 use crate::workspace::{GitAt, Workspace};
 
-/// Opens the switcher for the block `here` names: its answer acts there, whatever shows then.
+/// What Enter or a click on a row does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Pick {
+    Switch {
+        name: String,
+        remote: bool,
+        current: bool,
+    },
+    Create(String),
+}
+
+/// The dialog's rows for the text typed, in groups: the local branches whose name holds it, the
+/// remote ones, and last, so that Enter right after typing still takes the first match, creating
+/// a branch named as typed when no branch has that name.
+pub(crate) fn groups(branches: &[Branch], query: &str) -> Vec<(&'static str, Vec<Pick>)> {
+    let query = query.trim();
+    let needle = query.to_lowercase();
+    let listed = |remote: bool| -> Vec<Pick> {
+        branches
+            .iter()
+            .filter(|b| b.remote == remote && b.name.to_lowercase().contains(&needle))
+            .map(|b| Pick::Switch {
+                name: b.name.clone(),
+                remote,
+                current: b.current,
+            })
+            .collect()
+    };
+    let mut groups: Vec<_> = [("Local", listed(false)), ("Remote", listed(true))]
+        .into_iter()
+        .filter(|(_, picks)| !picks.is_empty())
+        .collect();
+    if !query.is_empty() && branches.iter().all(|b| b.name != query) {
+        groups.push(("", vec![Pick::Create(query.to_string())]));
+    }
+    groups
+}
+
+/// Opens the dialog for the Git `here` names: its answer acts there, whatever shows then. `from`
+/// is a commit a new branch starts at: the dialog only creates then (no branch to switch to
+/// from a commit); None lists `branches` and creates at HEAD.
 pub(crate) fn open(
     ws: Entity<Workspace>,
     here: GitAt,
     branches: Vec<Branch>,
+    from: Option<String>,
+    dim: Hsla,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let (local, remote): (Vec<Branch>, Vec<Branch>) = branches.into_iter().partition(|b| !b.remote);
     let state = cx.new(|cx| CommandState::new(window, cx));
     let palette = state.clone();
-    window.open_dialog(cx, move |dialog, _, _| {
-        let (ws_pick, ws_new) = (ws.clone(), ws.clone());
-        let (here_pick, here_new) = (here.clone(), here.clone());
-        let (local_names, remote_names): (Vec<String>, Vec<String>) = (
-            local.iter().map(|b| b.name.clone()).collect(),
-            remote.iter().map(|b| b.name.clone()).collect(),
-        );
-        // Both groups always: their sections stay 0 and 1, filtered or not.
-        dialog.title("Switch branch").w(px(420.0)).child(
-            Command::new(&palette)
-                .group(
-                    CommandGroup::new().label("Local").items(
-                        local
-                            .iter()
-                            .map(|b| CommandItem::new().label(b.name.clone()).checked(b.current)),
-                    ),
-                )
-                .group(
-                    CommandGroup::new().label("Remote").items(
-                        remote
-                            .iter()
-                            .map(|b| CommandItem::new().label(b.name.clone())),
-                    ),
-                )
-                .placeholder("Search branches")
-                .footer(move |_, _, _| {
-                    let (ws, here) = (ws_new.clone(), here_new.clone());
-                    Button::new("git-switcher-new")
-                        .label("+ New branch…")
-                        .ghost()
-                        .on_click(move |_, window, cx| {
-                            window.close_dialog(cx);
-                            let (ws, here) = (ws.clone(), here.clone());
-                            // The next dialog opens once this one has closed.
-                            window.defer(cx, move |window, cx| {
-                                ws.update(cx, |ws, cx| {
-                                    if ws.show_git(&here, window, cx) {
-                                        ws.branch_from(None, window, cx)
-                                    }
-                                })
-                            });
-                        })
-                })
-                .on_confirm(move |at, window, cx| {
-                    let (name, remote) = match at.section {
-                        0 => (local_names.get(at.row).cloned(), false),
-                        _ => (remote_names.get(at.row).cloned(), true),
-                    };
-                    let Some(name) = name else {
+    let (title, placeholder, nothing) = match &from {
+        Some(commit) => (
+            format!("New branch from {}", &commit[..commit.len().min(7)]),
+            "Name of the new branch",
+            "Type a name for the new branch",
+        ),
+        None => (
+            "Switch or create branch".to_string(),
+            "Search branches, or type a new name",
+            "No branches yet: type a name to create one",
+        ),
+    };
+    window.open_dialog(cx, move |dialog, _, cx| {
+        // The dialog is drawn on every frame: its rows follow the query.
+        let query = palette.read(cx).query(cx);
+        let groups = groups(&branches, &query);
+        let mut command = Command::new(&palette)
+            .filterable(false)
+            .placeholder(placeholder)
+            .empty(move |_, _, _| div().p(px(12.0)).text_color(dim).child(nothing));
+        for (label, picks) in &groups {
+            let items = picks.iter().map(|pick| match pick {
+                Pick::Switch { name, current, .. } => {
+                    CommandItem::new().label(name.clone()).checked(*current)
+                }
+                Pick::Create(name) => CommandItem::new()
+                    .label(format!("Create branch “{name}”"))
+                    .icon(IconName::GitBranchPlus),
+            });
+            let group = if label.is_empty() {
+                CommandGroup::new()
+            } else {
+                CommandGroup::new().label(*label)
+            };
+            command = command.group(group.items(items));
+        }
+        let picks: Vec<Vec<Pick>> = groups.into_iter().map(|(_, picks)| picks).collect();
+        let (ws, here, from) = (ws.clone(), here.clone(), from.clone());
+        dialog
+            .title(title.clone())
+            .w(px(420.0))
+            .child(command.on_confirm(move |at, window, cx| {
+                let Some(pick) = picks.get(at.section).and_then(|p| p.get(at.row)).cloned() else {
+                    return;
+                };
+                window.close_dialog(cx);
+                ws.update(cx, |ws, cx| {
+                    if !ws.show_git(&here, window, cx) {
                         return;
-                    };
-                    window.close_dialog(cx);
-                    ws_pick.update(cx, |ws, cx| {
-                        if ws.show_git(&here_pick, window, cx) {
+                    }
+                    match pick {
+                        Pick::Switch { name, remote, .. } => {
                             ws.switch_branch(name, remote, window, cx)
                         }
-                    });
-                }),
-        )
+                        Pick::Create(name) => ws.create_branch(name, from.clone(), window, cx),
+                    }
+                });
+            }))
     });
     state.update(cx, |state, cx| state.focus(window, cx));
 }
@@ -118,4 +159,109 @@ pub(crate) fn pick(
         )
     });
     state.update(cx, |state, cx| state.focus(window, cx));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn branch(name: &str, remote: bool, current: bool) -> Branch {
+        Branch {
+            name: name.to_string(),
+            remote,
+            current,
+            commit: String::new(),
+            upstream: None,
+            gone: false,
+            ahead: 0,
+            behind: 0,
+            subject: String::new(),
+            time: 0,
+        }
+    }
+
+    fn sample() -> Vec<Branch> {
+        vec![
+            branch("main", false, true),
+            branch("feature/one", false, false),
+            branch("origin/main", true, false),
+            branch("origin/feature/two", true, false),
+        ]
+    }
+
+    fn switch(name: &str, remote: bool, current: bool) -> Pick {
+        Pick::Switch {
+            name: name.to_string(),
+            remote,
+            current,
+        }
+    }
+
+    #[test]
+    fn no_text_lists_every_branch_and_offers_no_creation() {
+        let groups = groups(&sample(), "  ");
+        assert_eq!(
+            groups,
+            vec![
+                (
+                    "Local",
+                    vec![
+                        switch("main", false, true),
+                        switch("feature/one", false, false)
+                    ]
+                ),
+                (
+                    "Remote",
+                    vec![
+                        switch("origin/main", true, false),
+                        switch("origin/feature/two", true, false)
+                    ]
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn text_filters_both_lists_ignoring_case_and_offers_creation_last() {
+        let groups = groups(&sample(), " FEATURE ");
+        assert_eq!(
+            groups,
+            vec![
+                ("Local", vec![switch("feature/one", false, false)]),
+                ("Remote", vec![switch("origin/feature/two", true, false)]),
+                ("", vec![Pick::Create("FEATURE".to_string())]),
+            ],
+            "the matches come first, so Enter switches; the name, trimmed, is offered at the end"
+        );
+    }
+
+    #[test]
+    fn a_name_no_branch_holds_is_only_the_creation() {
+        assert_eq!(
+            groups(&sample(), "brand-new"),
+            vec![("", vec![Pick::Create("brand-new".to_string())])]
+        );
+    }
+
+    #[test]
+    fn an_existing_name_is_not_offered_again() {
+        for name in ["main", "origin/main"] {
+            let all = groups(&sample(), name);
+            assert!(
+                all.iter()
+                    .flat_map(|(_, p)| p)
+                    .all(|p| *p != Pick::Create(name.into())),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn with_no_branches_the_text_is_still_a_creation() {
+        assert_eq!(groups(&[], ""), Vec::new());
+        assert_eq!(
+            groups(&[], "x"),
+            vec![("", vec![Pick::Create("x".to_string())])]
+        );
+    }
 }

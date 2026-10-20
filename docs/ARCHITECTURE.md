@@ -150,7 +150,7 @@ A file holds one responsibility; a module that grows past a few hundred lines be
   History's, Stashes', a comparison's: `Git::diff()` picks the one on screen), so the 2-second read of the
   working changes never touches another tab's. `git_block/history.rs` draws History's left column: the commits
   with their graph, or the commit shown. `git_block/words.rs` holds the Git words' tooltips and the sentences the Git says;
-  `git_block/switcher.rs` the branch switcher.
+  `git_block/switcher.rs` the branch dialog (switch or create).
 - `chat/`: the Templum Agent's state on the workspace (`mod.rs`: `TemplumAgent`, the pill's keyboard, the
   approval's), the pill (`pill.rs`), the chat (`panel.rs`) and its rows (`rows.rs`), and the approval popup
   (`approval.rs`): window chrome over the canvas's bottom center, never scaled by the zoom
