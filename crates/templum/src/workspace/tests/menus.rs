@@ -144,6 +144,26 @@ fn the_toolbar_terminal_lists_the_shells_and_opens_the_one_chosen(cx: &mut TestA
     });
 }
 
+/// A list read before the login shell's PATH arrived is read again by the next menu.
+#[gpui_kit::test]
+fn a_menu_reads_an_early_shell_list_again(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        ws.shells = Vec::new();
+        ws.shells_early = true;
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("tool-terminal", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.shells, templum_terminal::available_shells());
+        assert!(!ws.shells_early);
+    });
+}
+
 #[gpui_kit::test]
 fn add_terminal_lists_the_shells_and_opens_the_one_chosen_where_clicked(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);

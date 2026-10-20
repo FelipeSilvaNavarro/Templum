@@ -116,6 +116,10 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The shells' list, read before the login shell's PATH arrived, is read again now.
+        if self.shells_early && !templum_terminal::shell_path_pending() {
+            self.load_shells();
+        }
         let ws = cx.entity();
         // Esc or a choice gives the keyboard back to what had it.
         let back = window

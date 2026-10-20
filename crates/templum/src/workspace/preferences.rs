@@ -779,6 +779,13 @@ impl Workspace {
     pub(crate) fn load_lists(&mut self, window: &mut Window) {
         self.themes = theme::load(self.config_dir.as_deref());
         self.fonts = settings::monospace_families(window);
+        self.load_shells();
+    }
+
+    /// The shells found and the default's name, read now (`shells_early` says whether the login
+    /// shell's PATH was still to come).
+    pub(crate) fn load_shells(&mut self) {
+        self.shells_early = templum_terminal::shell_path_pending();
         self.shells = templum_terminal::available_shells();
         self.default_shell = templum_terminal::default_shell_label();
     }

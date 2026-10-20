@@ -108,6 +108,11 @@ Labels stay as they are: Windows names (**Git Bash**, **PowerShell 7**, **Window
 The list and the default's name are read when Templum starts and, as before, when Settings or the welcome opens
 (`Workspace::shells`, `Workspace::default_shell`). Reading them costs a file read and a few `stat`s.
 
+The login shell's PATH is read on a thread that starts with Templum, and a list read before it arrives may lack the
+shells only it has (Homebrew's fish, when Templum starts from the Dock). Such a list (`Workspace::shells_early`) is
+read again by the first menu opened after the PATH arrives, and a restored terminal that names a shell the list lacks
+waits for the PATH (5 seconds at most, once) before it falls back: its block doesn't lose a shell for the sake of a race.
+
 ### The menus
 
 Both menus list the same items, built by one function:

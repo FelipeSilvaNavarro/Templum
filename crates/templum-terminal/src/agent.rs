@@ -729,11 +729,42 @@ static SHELL_PATH: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new(
 /// add. Once, when Templum starts.
 #[cfg(unix)]
 pub fn read_shell_path() {
+    SHELL_PATH_READ_STARTED.store(true, std::sync::atomic::Ordering::SeqCst);
     std::thread::spawn(|| {
         let path = std::env::var("SHELL").ok().and_then(|s| shell_path(&s));
         let _ = SHELL_PATH.set(path.iter().flat_map(std::env::split_paths).collect());
     });
 }
+
+/// Set when [`read_shell_path`] starts: what [`shell_path_pending`] and [`wait_for_shell_path`]
+/// go by, so nothing waits for a read that was never started (the tests, `--bench`).
+#[cfg(unix)]
+static SHELL_PATH_READ_STARTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the user's shell's PATH is still being read: what [`locate`] finds meanwhile may lack
+/// programs only that PATH has (Homebrew's, from the Dock).
+#[cfg(unix)]
+pub fn shell_path_pending() -> bool {
+    SHELL_PATH_READ_STARTED.load(std::sync::atomic::Ordering::SeqCst) && SHELL_PATH.get().is_none()
+}
+
+#[cfg(not(unix))]
+pub fn shell_path_pending() -> bool {
+    false
+}
+
+/// Waits until the user's shell's PATH is read: at most the read's own limit (5 s). At once when
+/// no read was started.
+#[cfg(unix)]
+pub fn wait_for_shell_path() {
+    if SHELL_PATH_READ_STARTED.load(std::sync::atomic::Ordering::SeqCst) {
+        SHELL_PATH.wait();
+    }
+}
+
+#[cfg(not(unix))]
+pub fn wait_for_shell_path() {}
 
 /// Printed before the PATH, to find it among what the shell's startup files print.
 #[cfg(unix)]

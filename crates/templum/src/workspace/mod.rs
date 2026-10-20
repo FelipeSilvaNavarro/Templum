@@ -1164,6 +1164,11 @@ pub struct Workspace {
     /// panel or the welcome opens.
     pub(crate) shells: Vec<templum_terminal::ShellOption>,
     pub(crate) default_shell: String,
+    /// `shells` was read before the login shell's PATH arrived (`read_shell_path` is a thread
+    /// started with Templum): it may lack the shells only that PATH has, Homebrew's fish from the
+    /// Dock. Read again by the first menu after it arrives, or by a restored terminal that names a
+    /// shell the list lacks, which waits for it.
+    pub(crate) shells_early: bool,
     /// What the user typed in the panel's text fields that can't apply yet (an unclosed quote),
     /// by the config key it is for.
     pub(crate) drafts: HashMap<&'static str, String>,
@@ -1543,6 +1548,9 @@ impl Workspace {
             _flush: flush,
             fonts: Vec::new(),
             // Read before `start_space` restores the canvas: its terminals look their shells up.
+            // Whether the login PATH is pending is asked first: one that arrives meanwhile only
+            // costs a second read.
+            shells_early: templum_terminal::shell_path_pending(),
             shells: templum_terminal::available_shells(),
             default_shell: templum_terminal::default_shell_label(),
             drafts: HashMap::new(),

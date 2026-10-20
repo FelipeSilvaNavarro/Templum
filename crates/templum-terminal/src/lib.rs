@@ -13,7 +13,10 @@ mod terminal;
 
 #[cfg(unix)]
 pub use agent::read_shell_path;
-pub use agent::{Agent, Detect, agent_of, installed, locate, path_var, program_name};
+pub use agent::{
+    Agent, Detect, agent_of, installed, locate, path_var, program_name, shell_path_pending,
+    wait_for_shell_path,
+};
 pub use alacritty_terminal::index::Side;
 pub use alacritty_terminal::vte::ansi::{CursorShape, CursorStyle, Rgb};
 pub use find::{Find, Toward};

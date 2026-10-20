@@ -898,3 +898,36 @@ fn a_restored_agents_line_follows_its_terminals_shell(cx: &mut TestAppContext) {
     let shown = screen_with(&ws, cx, id, "claude");
     assert!(!shown.contains("--settings"), "{shown}");
 }
+
+/// The list read at start can miss a shell only the login shell's PATH has (Homebrew's fish from
+/// the Dock): a saved terminal that names one waits for that PATH and gets its shell, instead of
+/// the default and the loss of its choice.
+#[gpui_kit::test]
+fn a_saved_shell_missing_from_an_early_list_is_looked_up_again(cx: &mut TestAppContext) {
+    let first = templum_terminal::available_shells()
+        .into_iter()
+        .next()
+        .expect("CI lists a shell");
+    let (handle, ws) = open(cx);
+    // The list as an early read left it.
+    ws.update(cx, |ws, _| {
+        ws.shells = Vec::new();
+        ws.shells_early = true;
+    });
+    let item: crate::session::Item = serde_json::from_value(serde_json::json!({
+        "kind": "terminal",
+        "rect": { "x": 0.0, "y": 900.0, "w": 700.0, "h": 450.0 },
+        "shell": first.label,
+    }))
+    .unwrap();
+    let id = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.add_saved(&item, window, cx))
+        })
+        .unwrap()
+        .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.terminal(id).unwrap().shell, Some(first));
+        assert!(!ws.shells_early, "read again");
+    });
+}
