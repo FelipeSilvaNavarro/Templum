@@ -163,4 +163,41 @@ if ($null -eq $Global:__TemplumPrompt) {
             else { __TemplumAgent pi $words '' '' $args }
         }
     }
+
+    # An account's command (docs/specs/accounts.md, "Typed in a terminal"): TEMPLUM_ACCOUNTS has a
+    # line per account, its id, program, variable and folder separated by tabs. Its function runs
+    # the program by its name, so the function above applies when there is one, with the variable
+    # set to the folder for that command only (put back as it was after); unless the person has a
+    # function of that name. Only the id, which is a lowercase word, is in the text that defines
+    # a function: the rest is read from the line when the command runs.
+    function Global:__TemplumAccount($id, $given) {
+        $line = @($env:TEMPLUM_ACCOUNTS -split "`r?`n" | Where-Object { $_.StartsWith("$id`t") })[0]
+        $fields = @("$line" -split "`t")
+        if ($fields.Count -lt 4 -or $fields[2] -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
+            $Host.UI.WriteErrorLine("${id}: The term '$id' is not recognized as a name of a " +
+                'cmdlet, function, script file, or executable program.')
+            $Global:__TemplumAgentExit = 1
+            return
+        }
+        $program, $var, $folder = $fields[1], $fields[2], $fields[3]
+        # PowerShell makes an array of an unquoted a,b: a program gets it as one word, a,b.
+        $given = @(foreach ($a in $given) { if ($a -is [array]) { $a -join ',' } else { $a } })
+        $old = (Get-Item "Env:$var" -ErrorAction Ignore).Value
+        Set-Item "Env:$var" $folder
+        try {
+            if ($MyInvocation.ExpectingInput) { $input | & $program @given }
+            else { & $program @given }
+        } finally {
+            if ($null -eq $old) { Remove-Item "Env:$var" -ErrorAction Ignore }
+            else { Set-Item "Env:$var" $old }
+        }
+        $Global:__TemplumAgentExit = $LASTEXITCODE
+    }
+    foreach ($line in ($env:TEMPLUM_ACCOUNTS -split "`r?`n")) {
+        $id = ($line -split "`t")[0]
+        if ($id -cnotmatch '^[a-z][a-z0-9_-]{0,31}$' -or (Test-Path "Function:\$id")) { continue }
+        $call = '{0} __TemplumAccount ''{1}'' $args'
+        Invoke-Expression ("function Global:$id { if (`$MyInvocation.ExpectingInput) { " +
+            ($call -f '$input |', $id) + " } else { " + ($call -f '', $id) + " } }")
+    }
 }

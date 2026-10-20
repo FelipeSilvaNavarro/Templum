@@ -124,4 +124,38 @@ if [[ -o interactive && -z ${__templum_installed-} ]]; then
             __templum_agent pi "$w" "" "" "$@"
         }
     fi
+
+    # An account's command (docs/specs/accounts.md, "Typed in a terminal"): TEMPLUM_ACCOUNTS has a
+    # line per account, its id, program, variable and folder separated by tabs. Its function runs
+    # the program by its name, so the function above applies when there is one, with the variable
+    # set to the folder for that command only; unless the person has a function of that name.
+    # Only the id, which is a lowercase word, is in the text `eval` reads: the rest is read from
+    # the line when the command runs. Patterns, not a regex: that is a module zsh may not find.
+    __templum_account() {
+        builtin local id="$1" line aid prog var folder
+        builtin shift
+        for line in "${(@f)${TEMPLUM_ACCOUNTS-}}"; do
+            IFS=$'\t' builtin read -r aid prog var folder <<< "$line"
+            [[ "$aid" == "$id" ]] && break
+            aid=
+        done
+        if [[ -z "$aid" ]]; then
+            builtin print -u2 "zsh: command not found: $id"
+            builtin return 127
+        fi
+        [[ -n "$var" && "$var" != *[^A-Za-z0-9_]* && "$var" != [0-9]* ]] || builtin return 1
+        builtin local -x "$var=$folder"
+        "$prog" "$@"
+    }
+    __templum_accounts() {
+        builtin local line id
+        for line in "${(@f)${TEMPLUM_ACCOUNTS-}}"; do
+            id=${line%%$'\t'*}
+            [[ "$id" == [a-z]* && "$id" != *[^a-z0-9_-]* && ${#id} -le 32 ]] || continue
+            (( $+functions[$id] )) && continue
+            builtin eval "function $id { __templum_account $id \"\$@\"; }"
+        done
+    }
+    __templum_accounts
+    builtin unfunction __templum_accounts
 fi

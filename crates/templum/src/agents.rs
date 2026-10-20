@@ -622,6 +622,24 @@ pub(crate) fn account_of(agent: &str, folder: &Path, homes: &[Home]) -> Option<S
         .map(|h| h.id.clone())
 }
 
+/// What `TEMPLUM_ACCOUNTS` holds (docs/specs/accounts.md, Typed in a terminal): a line per
+/// account, `id`, program, variable and folder separated by tabs, raw. Each shell defines a
+/// function per id, so an id that would break one (a word of the shell, one of Templum's own)
+/// and a folder with a tab or a line break are left out.
+pub(crate) fn accounts_env(agents: &[AgentEntry]) -> String {
+    agents
+        .iter()
+        .filter_map(|a| {
+            let (var, folder) = a.var()?;
+            let folder = folder.to_string_lossy();
+            let plain = !folder.contains(['\t', '\n', '\r']);
+            (plain && command_problem(&a.id, None, None, |_| None).is_none())
+                .then(|| format!("{}\t{}\t{var}\t{folder}", a.id, a.program()))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Each account's [`Home`].
 pub(crate) fn homes(agents: &[AgentEntry]) -> Vec<Home> {
     agents
@@ -1267,6 +1285,27 @@ mod tests {
             Some("CLAUDE_CONFIG_DIR")
         );
         assert_eq!(by(&list, "mine").detect().var, None);
+    }
+
+    #[test]
+    fn each_account_is_a_line_of_templum_accounts() {
+        let text = concat!(
+            "[agents]\n",
+            "claudinho = { of = \"claude\" }\n",
+            "Work = { of = \"codex\" }\n",
+            // A word of the shell would break it as a function.
+            "test = { of = \"claude\" }\n",
+            "tab = { of = \"claude\", folder = \"/with\\ttab\" }\n",
+        );
+        let folder = Path::new("/data").join("accounts").join("claudinho");
+        assert_eq!(
+            accounts_env(&agents(text)),
+            format!("claudinho\tclaude\tCLAUDE_CONFIG_DIR\t{}", folder.display())
+        );
+        assert_eq!(accounts_env(&agents("")), "");
+        let two =
+            agents("[agents]\nclaudinho = { of = \"claude\" }\ncodex2 = { of = \"codex\" }\n");
+        assert_eq!(accounts_env(&two).lines().count(), 2);
     }
 
     #[test]

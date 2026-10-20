@@ -240,8 +240,33 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
                 ("TEMPLUM_QWEN_ARGS".to_string(), String::new()),
                 ("TEMPLUM_QWEN_SETTINGS".to_string(), String::new()),
                 ("TEMPLUM_PI_ARGS".to_string(), String::new()),
+                ("TEMPLUM_ACCOUNTS".to_string(), String::new()),
                 ("TEMPLUM_HOOKED".to_string(), String::new()),
             ]
+        );
+    });
+}
+
+/// Every new terminal carries its accounts, for the shell to define a function each
+/// (docs/specs/accounts.md, Typed in a terminal); empty with none.
+#[gpui_kit::test]
+fn a_new_terminal_gets_the_accounts(cx: &mut TestAppContext) {
+    let data = tempfile::tempdir().unwrap();
+    let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let accounts = |ws: &Workspace| {
+        let env = ws.agent_env(None);
+        env.into_iter()
+            .find(|(k, _)| k == "TEMPLUM_ACCOUNTS")
+            .unwrap()
+            .1
+    };
+    ws.read_with(cx, |ws, _| assert_eq!(accounts(ws), ""));
+    super::agents::with_agents(&ws, cx, "[agents]\nclaudinho = { of = \"claude\" }\n");
+    ws.read_with(cx, |ws, _| {
+        assert!(
+            accounts(ws).starts_with("claudinho\tclaude\t"),
+            "{}",
+            accounts(ws)
         );
     });
 }

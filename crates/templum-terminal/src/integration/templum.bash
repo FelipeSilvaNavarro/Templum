@@ -138,4 +138,36 @@ if [[ -z "${__templum_installed-}" ]]; then
             __templum_agent pi "$w" "" "" "$@"
         }
     fi
+
+    # An account's command (docs/specs/accounts.md, "Typed in a terminal"): TEMPLUM_ACCOUNTS has a
+    # line per account, its id, program, variable and folder separated by tabs. Its function runs
+    # the program by its name, so the function above applies when there is one, with the variable
+    # set to the folder for that command only; unless the person has a function of that name.
+    # Only the id, which is a lowercase word, is in the text `eval` reads: the rest is read from
+    # the line when the command runs.
+    __templum_account() {
+        builtin local id="$1" aid prog var folder
+        builtin shift
+        while IFS=$'\t' builtin read -r aid prog var folder; do
+            [[ "$aid" == "$id" ]] && break
+            aid=
+        done <<< "${TEMPLUM_ACCOUNTS-}"
+        if [[ -z "$aid" ]]; then
+            builtin printf 'bash: %s: command not found\n' "$id" >&2
+            builtin return 127
+        fi
+        [[ "$var" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || builtin return 1
+        builtin local -x "$var=$folder"
+        "$prog" "$@"
+    }
+    __templum_accounts() {
+        builtin local id rest re='^[a-z][a-z0-9_-]{0,31}$'
+        while IFS=$'\t' builtin read -r id rest; do
+            [[ "$id" =~ $re ]] || continue
+            ! builtin declare -F -- "$id" > /dev/null || continue
+            builtin eval "function $id { __templum_account $id \"\$@\"; }"
+        done <<< "${TEMPLUM_ACCOUNTS-}"
+    }
+    __templum_accounts
+    builtin unset -f __templum_accounts
 fi

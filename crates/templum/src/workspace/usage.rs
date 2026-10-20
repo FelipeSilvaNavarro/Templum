@@ -174,6 +174,8 @@ impl Workspace {
                 "TEMPLUM_PI_ARGS",
                 words(data.and_then(|d| templum_usage::pi::args(d, windows))),
             ),
+            // A function per account in the shell, always set: empty with none.
+            ("TEMPLUM_ACCOUNTS", agents::accounts_env(&self.agents)),
             // An OpenCode or a Pi run here reports for its block, and sets it for what it starts.
             ("TEMPLUM_HOOKED", String::new()),
         ]

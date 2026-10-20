@@ -126,4 +126,41 @@ if status is-interactive; and not set -q __templum_installed
             __templum_agent pi "$w" '' '' $argv
         end
     end
+
+    # An account's command (docs/specs/accounts.md, "Typed in a terminal"): TEMPLUM_ACCOUNTS has a
+    # line per account, its id, program, variable and folder separated by tabs. Its function runs
+    # the program by its name, so the function above applies when there is one, with the variable
+    # set to the folder for that command only; unless the person has a function of that name.
+    # Only the id, which is a lowercase word, is in the text `eval` reads: the rest is read from
+    # the line when the command runs, and the program is escaped.
+    function __templum_account --argument-names id
+        set -e argv[1]
+        set -l found
+        for line in (string split \n -- "$TEMPLUM_ACCOUNTS")
+            set -l fields (string split \t -- $line)
+            if test "$fields[1]" = "$id"
+                set found $fields
+                break
+            end
+        end
+        if test (count $found) -lt 4
+            echo "fish: Unknown command: $id" >&2
+            return 127
+        end
+        string match -qr '^[A-Za-z_][A-Za-z0-9_]*$' -- $found[3]; or return 1
+        # Not in a block: `set -l` there would end with it.
+        set -lx $found[3] $found[4]
+        eval (string escape -- $found[2]) '$argv'
+    end
+    function __templum_accounts
+        for line in (string split \n -- "$TEMPLUM_ACCOUNTS")
+            set -l fields (string split \t -- $line)
+            set -q fields[1]; or continue
+            string match -qr '^[a-z][a-z0-9_-]{0,31}$' -- $fields[1]; or continue
+            functions -q -- $fields[1]; and continue
+            eval "function $fields[1]; __templum_account $fields[1] \$argv; end"
+        end
+    end
+    __templum_accounts
+    functions -e __templum_accounts
 end
