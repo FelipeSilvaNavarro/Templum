@@ -444,9 +444,10 @@ impl Git {
 
     /// What a commit of exactly one file says when the summary is left empty ("Update a.rs"; see
     /// `words::generic_summary`). None with no files or two or more (the file `commit_label`
-    /// counts), and on an Amend, whose files aren't listed.
+    /// counts), on an Amend, whose files aren't listed, and during a merge, rebase, cherry-pick or
+    /// revert, which prepare the message themselves.
     pub fn generic_summary(&self) -> Option<String> {
-        if self.amend {
+        if self.amend || self.operation.is_some() {
             return None;
         }
         let staged = !self.commit_all();

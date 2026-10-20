@@ -168,6 +168,32 @@ fn an_amend_still_needs_its_message(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn during_a_merge_the_prepared_message_is_not_replaced_by_the_generic_one(cx: &mut TestAppContext) {
+    let repo = committed_repo();
+    git_run(repo.path(), &["checkout", "-q", "-b", "feat"]);
+    std::fs::write(repo.path().join("b.txt"), "b\n").unwrap();
+    git_run(repo.path(), &["add", "b.txt"]);
+    git_run(repo.path(), &["commit", "-q", "-m", "b"]);
+    git_run(repo.path(), &["checkout", "-q", "main"]);
+    git_run(
+        repo.path(),
+        &["merge", "-q", "--no-ff", "--no-commit", "feat"],
+    );
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    git_of(&ws, cx, |g| {
+        assert!(g.operation.is_some(), "merging");
+        assert_eq!(g.status.staged().len(), 1, "one file, b.txt");
+        assert_eq!(g.generic_summary(), None);
+    });
+    // The merge's own message is what a commit uses; a sentence made up here would replace it.
+    assert_eq!(
+        empty_summary(&ws, cx),
+        (false, "Commit message".to_string())
+    );
+}
+
+#[gpui_kit::test]
 fn ctrl_enter_commits_with_the_description_and_amend_fills_the_fields(cx: &mut TestAppContext) {
     let repo = committed_repo();
     std::fs::write(repo.path().join("b.txt"), "b\n").unwrap();

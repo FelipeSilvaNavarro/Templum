@@ -209,7 +209,8 @@ parent), **a stash**, and **a comparison** of two branches.
     is empty, Commit works and commits as **"Update a.rs"**, **"Add a.rs"** (a new file) or **"Delete a.rs"**, by the
     file's name and what happens to it ("Rename a.rs to b.rs" for a rename). The summary field's placeholder shows
     that sentence in place of "Commit message", so the person knows what will be used. With no files or two or more,
-    and while amending, a summary is required as before; a summary that is typed always wins.
+    while amending, and during a merge, rebase, cherry-pick or revert (which prepare their own message), a summary is
+    required as before; a summary that is typed always wins.
   - **Commit,** the whole column's width, filled with the theme's accent once committing is possible, quiet before.
     Its ▾: **Commit**, **Commit & Push** (a Publish when the branch has no upstream), and **Amend the last commit**
     (fills the fields with the last commit's message; while on, a strip says "Amending the last commit" with ✕).
