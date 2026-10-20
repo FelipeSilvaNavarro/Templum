@@ -9,7 +9,7 @@
 
 <p align="center">
   <b>An infinite canvas for your terminals and your AI coding agents.</b><br>
-  <a href="#install">Install</a> · <a href="#quick-start">Quick start</a> · <a href="docs/guide.md">Guide</a> ·
+  <a href="#see-it-work">See it work</a> · <a href="#install">Install</a> · <a href="#quick-start">Quick start</a> · <a href="docs/guide.md">Guide</a> ·
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
@@ -40,6 +40,51 @@ each other and to the boards and notes they work from.
   Claude Code, Codex and most other agents on their latest conversation.
 - **Native and light.** Rust drawn on the GPU, no webview or Electron. macOS, Linux (Wayland and X11) and Windows.
   It follows your light or dark mode, takes any Alacritty theme, and updates itself.
+
+## See it work
+
+### Agents of different CLIs work together
+
+A Claude Code opens an Amp beside itself and talks to it. Whichever CLI they run, agents reach each other through
+Templum: they open one another, hand each other tasks and get the answers back.
+
+https://github.com/user-attachments/assets/4d05f6c8-1ff0-4c1a-9b3b-ce302632231e
+
+### An agent wired to a note, a checklist and a board
+
+Draw a wire (the cable in the toolbar) from an agent to a block, and the agent can use it: it reads the note and adds
+to it, ticks the checklist's items and adds new ones, and creates, moves and claims the board's cards. Here a Claude
+Code works with all three at once.
+
+https://github.com/user-attachments/assets/950bb59c-9abe-4028-bd13-c8561a8f18fb
+
+### The Templum Agent opens a team
+
+Ask the Templum Agent for a lead Claude Code and a few other agents (Amp, Codex and more), and it opens them on the
+canvas. The lead splits the work and hands each agent its part; a dot runs along the wire while a task is out.
+
+https://github.com/user-attachments/assets/d9dc5554-154f-4951-8be7-e11c805ed25b
+
+### Fill the window with a grid
+
+An agent and three terminals, selected and put in fullscreen, fill the window tiled side by side. Ctrl+Alt+arrows
+moves the keyboard between tiles, and Ctrl+Shift+Enter puts every block back where it was on the canvas.
+
+https://github.com/user-attachments/assets/325bb9ab-4feb-4a49-ab2a-3d0cf343dbde
+
+### A code editor on the canvas
+
+Ctrl+Shift+E opens a folder in an editor block: a file tree, tabs, syntax highlighting, search and replace, next to
+the agents working on the same code.
+
+https://github.com/user-attachments/assets/dbc8ff5f-f8fc-4b01-b0d1-fb0032f54e89
+
+### Themes, settings and workspaces
+
+The theme picker shows each theme on the whole window as you hover it. Settings apply as you change them. The
+workspaces screen has a card per project, and makes new ones.
+
+https://github.com/user-attachments/assets/ca179964-e74a-4a70-b458-4bc7cc08f062
 
 ## Install
 
