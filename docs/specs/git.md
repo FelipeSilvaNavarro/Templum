@@ -86,11 +86,15 @@ Risky actions say what they will do before doing it, in one plain sentence (see 
 - **Under the name,** dimmed, one line:
   - **the current branch.** A click opens the **branch dialog**, which switches and creates: a search field over
     the local branches, then the remote ones, the current one checked; Enter or a click switches (with
-    [the switch flow](#switching-branches)). A name no branch has gets a last row **Create branch "name"**, which
-    makes the branch at HEAD and switches to it (git's own message when it refuses the name). The row comes last, so
-    Enter right after typing still takes the first match. **+ New branch…** (Branches tab), **Create a branch here**
-    (the old-version banner) and **New branch here…** (a commit's menu) open this same dialog; from a commit it
-    lists no branches (there is nothing to switch to from there) and creates at that commit.
+    [the switch flow](#switching-branches)). A name no branch has gets a row **Create branch "name"**, which makes
+    the branch at HEAD and switches to it (git's own message when it refuses the name); a name that a remote branch
+    has, without its `origin/`, gets none (switching to that one makes the tracking branch). Opened from the branch
+    name, the row comes last, so Enter right after typing still takes the first match. **+ New branch…** (Branches
+    tab) and **Create a branch here** (the old-version banner) open the same dialog with the row **first**, so Enter
+    right after typing makes the name typed even when another branch holds it (`login` while `feature/login`
+    exists: from a detached HEAD a switch would leave its commits behind). **New branch here…** (a commit's menu)
+    opens it too; from a commit it lists no branches (there is nothing to switch to from there) and creates at that
+    commit.
   - **where it stands with the server:** "↑2 ↓1", "up to date", or "not published", with a tooltip in words
     ("2 commits of yours not pushed yet, 1 on the server you don't have").
   - the terminals working in the repository, while any: a click lists them.

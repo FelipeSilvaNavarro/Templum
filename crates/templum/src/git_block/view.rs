@@ -16,6 +16,7 @@ use super::branches::branches;
 use super::changes::changes;
 use super::history::history;
 use super::stashes::stashes;
+use super::switcher::Opened;
 use super::widgets::{centered, icon_button};
 use super::{FONT, Found, Git, Sync, Tab, words};
 use crate::editor::button;
@@ -178,7 +179,7 @@ fn branch_line(ws: &Workspace, git: &Git, cx: &mut Context<Workspace>) -> impl I
                 .child(div().truncate().child(branch))
                 .tooltip(|window, cx| Tooltip::new("Switch or create a branch").build(window, cx))
                 .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                    ws.open_branch_dialog(None, window, cx)
+                    ws.open_branch_dialog(Opened::Header, window, cx)
                 }))
                 .test_support(),
         )
@@ -479,7 +480,7 @@ fn repo_body(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>) -> 
                 .child(
                     button("git-branch-here", "Create a branch here", ui, z)
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.open_branch_dialog(None, window, cx)
+                            ws.open_branch_dialog(Opened::Create, window, cx)
                         }))
                         .test_support(),
                 )

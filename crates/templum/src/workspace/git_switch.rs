@@ -8,6 +8,7 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::{Context, Window};
 use templum_git::{Back, Status};
 
+use crate::git_block::switcher::{self, Opened};
 use crate::git_block::{self, words};
 use crate::prompt::{self, Act, Choice};
 
@@ -15,12 +16,11 @@ use super::{Extra, Workspace, notify_git_error, notify_with, show_notification};
 
 impl Workspace {
     /// The branch dialog, for switching and creating: the branches read afresh (git's own message
-    /// when it can't), then the dialog.
-    /// `from` is a commit a new branch starts at (None: HEAD); from a commit the dialog lists no
-    /// branches, so it opens at once.
+    /// when it can't), then the dialog. From a commit (`opened`) the dialog lists no branches, so it
+    /// opens at once.
     pub(crate) fn open_branch_dialog(
         &mut self,
-        from: Option<String>,
+        opened: Opened,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -28,8 +28,16 @@ impl Workspace {
             return;
         };
         let dim = self.ui.title_dim;
-        if from.is_some() {
-            git_block::switcher::open(cx.entity(), self.here(), Vec::new(), from, dim, window, cx);
+        if matches!(opened, Opened::Commit(_)) {
+            switcher::open(
+                cx.entity(),
+                self.here(),
+                Vec::new(),
+                opened,
+                dim,
+                window,
+                cx,
+            );
             return;
         }
         self.git_job(
@@ -47,7 +55,7 @@ impl Workspace {
                 if let Some(git) = ws.git_at(&at) {
                     git.branches = branches.clone();
                 }
-                git_block::switcher::open(cx.entity(), at, branches, None, dim, window, cx);
+                switcher::open(cx.entity(), at, branches, opened, dim, window, cx);
             },
             window,
             cx,

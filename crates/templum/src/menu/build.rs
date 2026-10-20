@@ -897,7 +897,13 @@ impl Items {
                     ws,
                     "New branch here…",
                     Some(IconName::GitBranchPlus),
-                    move |ws, window, cx| ws.open_branch_dialog(Some(branch.clone()), window, cx),
+                    move |ws, window, cx| {
+                        ws.open_branch_dialog(
+                            git_block::switcher::Opened::Commit(branch.clone()),
+                            window,
+                            cx,
+                        )
+                    },
                 ))
                 .item(item(
                     ws,

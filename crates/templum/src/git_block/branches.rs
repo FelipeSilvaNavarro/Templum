@@ -14,6 +14,7 @@ use gpui_kit::{
 };
 use templum_git::Branch;
 
+use super::switcher::Opened;
 use super::widgets::{centered, field, icon_button, small};
 use super::{Compare, FONT, Git, LISTS_W, ROW_H, diff_view, words};
 use crate::editor::button;
@@ -340,7 +341,7 @@ fn branch_column(ws: &Workspace, git: &Git, z: f32, cx: &mut Context<Workspace>)
                 .child(
                     button("git-new-branch", "New branch…", ui, z)
                         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| {
-                            ws.open_branch_dialog(None, window, cx)
+                            ws.open_branch_dialog(Opened::Create, window, cx)
                         }))
                         .test_support(),
                 ),

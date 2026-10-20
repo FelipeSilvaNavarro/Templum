@@ -4,6 +4,7 @@ use gpui_kit::Focusable as _;
 use gpui_kit::component::WindowExt as _;
 
 use super::*;
+use crate::git_block::switcher::Opened;
 
 /// main with a.txt, and feat (b.txt), on main.
 fn two_branches() -> tempfile::TempDir {
@@ -118,7 +119,7 @@ fn a_new_branch_from_a_commit_lists_no_branches_and_starts_there(cx: &mut TestAp
         .to_string();
     cx.update_window(handle, |_, window, cx| {
         ws.update(cx, |ws, cx| {
-            ws.open_branch_dialog(Some(first.clone()), window, cx)
+            ws.open_branch_dialog(Opened::Commit(first.clone()), window, cx)
         });
         window.render_frame(cx);
         assert!(window.has_active_dialog(cx), "opens at once");
@@ -302,6 +303,36 @@ fn create_a_branch_here_keeps_the_commits_on_a_branch(cx: &mut TestAppContext) {
     });
 }
 
+/// "fea" is in the existing "feat": from a create entry, Enter right after typing makes "fea".
+#[gpui_kit::test]
+fn a_create_entry_makes_the_name_typed_even_when_another_branch_holds_it(cx: &mut TestAppContext) {
+    no_motion(cx);
+    let repo = two_branches();
+    git_run(repo.path(), &["checkout", "-q", "--detach", "feat"]);
+    let (handle, ws) = open(cx);
+    open_git(handle, &ws, cx, repo.path());
+    cx.update_window(handle, |_, window, cx| window.click("git-branch-here", cx))
+        .unwrap();
+    settle(handle, cx);
+    cx.simulate_input(handle, "fea");
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle(handle, cx);
+    git_of(&ws, cx, |g| {
+        assert_eq!(g.status.branch.as_deref(), Some("fea"));
+    });
+    assert_eq!(
+        git_run(repo.path(), &["rev-parse", "fea"]),
+        git_run(repo.path(), &["rev-parse", "feat"]),
+        "made where HEAD was, not a switch to feat"
+    );
+    assert_eq!(git_run(repo.path(), &["branch"]).lines().count(), 3);
+}
+
 #[gpui_kit::test]
 fn branches_that_cannot_be_read_say_so_and_the_dialog_stays_closed(cx: &mut TestAppContext) {
     no_motion(cx);
@@ -310,7 +341,9 @@ fn branches_that_cannot_be_read_say_so_and_the_dialog_stays_closed(cx: &mut Test
     open_git(handle, &ws, cx, repo.path());
     std::fs::remove_dir_all(repo.path().join(".git")).unwrap();
     cx.update_window(handle, |_, window, cx| {
-        ws.update(cx, |ws, cx| ws.open_branch_dialog(None, window, cx));
+        ws.update(cx, |ws, cx| {
+            ws.open_branch_dialog(Opened::Header, window, cx)
+        });
     })
     .unwrap();
     settle(handle, cx);

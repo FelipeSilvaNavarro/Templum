@@ -10,7 +10,22 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, Entity, Hsla, Window, div, px};
 use templum_git::Branch;
 
+use super::words;
 use crate::workspace::{GitAt, Workspace};
+
+/// What opened the dialog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Opened {
+    /// The header's branch name: the matches come first, so Enter switches.
+    Header,
+    /// New branch… and the old-version banner's Create a branch here: the creation comes first, so
+    /// Enter creates the name typed, whatever branch holds it (a switch from a detached HEAD would
+    /// leave its commits behind).
+    Create,
+    /// A commit's New branch here…: no branch to switch to from there, only the creation, at that
+    /// commit (a hash).
+    Commit(String),
+}
 
 /// What Enter or a click on a row does.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,9 +39,14 @@ pub(crate) enum Pick {
 }
 
 /// The dialog's rows for the text typed, in groups: the local branches whose name holds it, the
-/// remote ones, and last, so that Enter right after typing still takes the first match, creating
-/// a branch named as typed when no branch has that name.
-pub(crate) fn groups(branches: &[Branch], query: &str) -> Vec<(&'static str, Vec<Pick>)> {
+/// remote ones, and the creation of a branch named as typed unless a branch already has that name
+/// (a remote's, `origin/` aside, switches to a tracking branch). The creation comes last, so that
+/// Enter right after typing takes the first match, or first with `create_first`.
+pub(crate) fn groups(
+    branches: &[Branch],
+    query: &str,
+    create_first: bool,
+) -> Vec<(&'static str, Vec<Pick>)> {
     let query = query.trim();
     let needle = query.to_lowercase();
     let listed = |remote: bool| -> Vec<Pick> {
@@ -44,24 +64,37 @@ pub(crate) fn groups(branches: &[Branch], query: &str) -> Vec<(&'static str, Vec
         .into_iter()
         .filter(|(_, picks)| !picks.is_empty())
         .collect();
-    if !query.is_empty() && branches.iter().all(|b| b.name != query) {
-        groups.push(("", vec![Pick::Create(query.to_string())]));
+    let taken = branches
+        .iter()
+        .any(|b| b.name == query || (b.remote && words::local_name(&b.name) == query));
+    if !query.is_empty() && !taken {
+        let create = ("", vec![Pick::Create(query.to_string())]);
+        if create_first {
+            groups.insert(0, create);
+        } else {
+            groups.push(create);
+        }
     }
     groups
 }
 
-/// Opens the dialog for the Git `here` names: its answer acts there, whatever shows then. `from`
-/// is a commit a new branch starts at: the dialog only creates then (no branch to switch to
-/// from a commit); None lists `branches` and creates at HEAD.
+/// Opens the dialog for the Git `here` names: its answer acts there, whatever shows then. From a
+/// commit (`opened`) the dialog only creates, at that commit; else it lists `branches` and creates
+/// at HEAD.
 pub(crate) fn open(
     ws: Entity<Workspace>,
     here: GitAt,
     branches: Vec<Branch>,
-    from: Option<String>,
+    opened: Opened,
     dim: Hsla,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let create_first = opened != Opened::Header;
+    let from = match opened {
+        Opened::Commit(commit) => Some(commit),
+        Opened::Header | Opened::Create => None,
+    };
     let state = cx.new(|cx| CommandState::new(window, cx));
     let palette = state.clone();
     let (title, placeholder, nothing) = match &from {
@@ -79,7 +112,7 @@ pub(crate) fn open(
     window.open_dialog(cx, move |dialog, _, cx| {
         // The dialog is drawn on every frame: its rows follow the query.
         let query = palette.read(cx).query(cx);
-        let groups = groups(&branches, &query);
+        let groups = groups(&branches, &query, create_first);
         let mut command = Command::new(&palette)
             .filterable(false)
             .placeholder(placeholder)
@@ -199,7 +232,7 @@ mod tests {
 
     #[test]
     fn no_text_lists_every_branch_and_offers_no_creation() {
-        let groups = groups(&sample(), "  ");
+        let groups = groups(&sample(), "  ", false);
         assert_eq!(
             groups,
             vec![
@@ -223,7 +256,7 @@ mod tests {
 
     #[test]
     fn text_filters_both_lists_ignoring_case_and_offers_creation_last() {
-        let groups = groups(&sample(), " FEATURE ");
+        let groups = groups(&sample(), " FEATURE ", false);
         assert_eq!(
             groups,
             vec![
@@ -238,7 +271,7 @@ mod tests {
     #[test]
     fn a_name_no_branch_holds_is_only_the_creation() {
         assert_eq!(
-            groups(&sample(), "brand-new"),
+            groups(&sample(), "brand-new", false),
             vec![("", vec![Pick::Create("brand-new".to_string())])]
         );
     }
@@ -246,7 +279,7 @@ mod tests {
     #[test]
     fn an_existing_name_is_not_offered_again() {
         for name in ["main", "origin/main"] {
-            let all = groups(&sample(), name);
+            let all = groups(&sample(), name, false);
             assert!(
                 all.iter()
                     .flat_map(|(_, p)| p)
@@ -258,10 +291,61 @@ mod tests {
 
     #[test]
     fn with_no_branches_the_text_is_still_a_creation() {
-        assert_eq!(groups(&[], ""), Vec::new());
+        assert_eq!(groups(&[], "", false), Vec::new());
         assert_eq!(
-            groups(&[], "x"),
+            groups(&[], "x", false),
             vec![("", vec![Pick::Create("x".to_string())])]
+        );
+    }
+
+    #[test]
+    fn from_a_create_entry_the_creation_comes_first_so_enter_creates() {
+        // "login" is held by feature/login: Enter on the first row must still make "login".
+        let branches = [
+            branch("main", false, true),
+            branch("feature/login", false, false),
+        ];
+        assert_eq!(
+            groups(&branches, "login", true),
+            vec![
+                ("", vec![Pick::Create("login".to_string())]),
+                ("Local", vec![switch("feature/login", false, false)]),
+            ]
+        );
+        // From the header the same text keeps the matches first.
+        assert_eq!(
+            groups(&branches, "login", false)[0].0,
+            "Local",
+            "the matches first"
+        );
+        // Nothing typed, nothing to create; an existing name is never offered again.
+        assert_eq!(groups(&branches, "", true).len(), 1);
+        assert!(
+            groups(&branches, "main", true)
+                .iter()
+                .flat_map(|(_, p)| p)
+                .all(|p| !matches!(p, Pick::Create(_)))
+        );
+    }
+
+    #[test]
+    fn a_remote_branch_of_that_name_is_not_offered_as_a_creation() {
+        // Switching to origin/main makes the tracking branch main: no second way to make it.
+        let branches = [
+            branch("dev", false, true),
+            branch("origin/login", true, false),
+        ];
+        for create_first in [false, true] {
+            let all = groups(&branches, "login", create_first);
+            assert_eq!(
+                all,
+                vec![("Remote", vec![switch("origin/login", true, false)])]
+            );
+        }
+        // Another remote's name that only holds the text is still a new name.
+        assert_eq!(
+            groups(&branches, "logi", false).last(),
+            Some(&("", vec![Pick::Create("logi".to_string())]))
         );
     }
 }
