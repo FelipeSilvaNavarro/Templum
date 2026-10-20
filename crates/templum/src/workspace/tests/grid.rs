@@ -737,9 +737,14 @@ fn the_grids_menus_add_blocks(cx: &mut TestAppContext) {
     press(handle, TOGGLE, cx);
     let half = rect_of(&ws, cx, kanban);
     let count = |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.canvas.blocks().len());
-    // All boards…, —, AI agent ▸, Add ▸: Terminal.
+    // All boards…, —, AI agent ▸, Add ▸: Terminal ▸ Default.
     let before = count(cx);
     pick(handle, cx, kanban, 3, Some(0));
+    cx.update_window(handle, |_, window, cx| {
+        click_innermost_menu_item(window, cx, 0);
+        window.render_frame(cx);
+    })
+    .unwrap();
     let terminal = added_since(&ws, cx, before)[0];
     let r = rect_of(&ws, cx, terminal);
     assert!(

@@ -563,7 +563,7 @@ fn go_to_waiting_visits_each_waiting_terminal_then_says_none(cx: &mut TestAppCon
         .update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
                 let home = ws.space.id.clone();
-                ws.add_terminal_at(Point::new(900.0, 0.0), window, cx);
+                ws.open_shell(None, Some(Point::new(900.0, 0.0)), window, cx);
                 let finished = ws.space.canvas.top().unwrap();
                 ws.space.terminal_mut(finished).unwrap().alert =
                     Some(Alert::Finished(templum_terminal::Outcome {
@@ -572,7 +572,7 @@ fn go_to_waiting_visits_each_waiting_terminal_then_says_none(cx: &mut TestAppCon
                     }));
                 ws.space.terminal_mut(first).unwrap().alert = Some(Alert::Attention(None));
                 ws.new_space(window, cx);
-                ws.add_terminal_at(Point::new(0.0, 0.0), window, cx);
+                ws.open_shell(None, Some(Point::new(0.0, 0.0)), window, cx);
                 let there = ws.space.canvas.top().unwrap();
                 ws.space.terminal_mut(there).unwrap().alert =
                     Some(Alert::Attention(Some("Allow?".into())));

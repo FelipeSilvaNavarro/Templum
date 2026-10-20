@@ -1,6 +1,7 @@
 //! The title bar, the toolbar and the canvas menus.
 
 use super::*;
+use templum_terminal::ShellOption;
 
 #[gpui_kit::test]
 fn title_bar_buttons_reset_zoom_and_open_terminals(cx: &mut TestAppContext) {
@@ -12,6 +13,9 @@ fn title_bar_buttons_reset_zoom_and_open_terminals(cx: &mut TestAppContext) {
         window.click("zoom-level", cx);
         window.render_frame(cx);
         window.click("tool-terminal", cx);
+        window.render_frame(cx);
+        // The shells' menu: Default.
+        window.within("popup-menu").click(0usize, cx);
     })
     .unwrap();
     ws.read_with(cx, |ws, _| {
@@ -33,6 +37,12 @@ fn the_toolbar_adds_blocks_and_the_title_bar_lost_its_add_buttons(cx: &mut TestA
         assert!(window.try_find("new-kanban").is_none());
         window.click("tool-terminal", cx);
         window.render_frame(cx);
+        window.within("popup-menu").click(0usize, cx);
+    })
+    .unwrap();
+    // The choice closes the menu once the update ends; the next clicks reach the toolbar.
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
         window.click("tool-note", cx);
         window.render_frame(cx);
         window.click("tool-kanban", cx);
@@ -52,6 +62,150 @@ fn the_toolbar_adds_blocks_and_the_title_bar_lost_its_add_buttons(cx: &mut TestA
             crate::workspace::Tool::Select,
             "block tools don't stay on"
         );
+    });
+}
+
+/// A made-up list (docs/specs/shells.md, The menus): a shell named as the default, left out, then
+/// one that runs the tests' quiet program. The menus show Default (zsh), —, Quiet.
+fn made_up_shells(ws: &Entity<Workspace>, cx: &mut TestAppContext) -> ShellOption {
+    let (program, args) = quiet();
+    let quiet_shell = ShellOption {
+        label: "Quiet".into(),
+        program,
+        args,
+    };
+    ws.update(cx, |ws, _| {
+        ws.config.shell.program = None;
+        ws.default_shell = "zsh".into();
+        ws.shells = vec![
+            ShellOption {
+                label: "zsh".into(),
+                program: "/nonexistent/zsh".into(),
+                args: vec![],
+            },
+            quiet_shell.clone(),
+        ];
+    });
+    quiet_shell
+}
+
+#[gpui_kit::test]
+fn the_toolbar_terminal_lists_the_shells_and_opens_the_one_chosen(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let quiet_shell = made_up_shells(&ws, cx);
+    let terminals =
+        |cx: &mut TestAppContext| ws.read_with(cx, |ws, _| ws.space.terminals().count());
+    let before = terminals(cx);
+    let open_menu = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tool-terminal", cx);
+            window.render_frame(cx);
+        })
+        .unwrap()
+    };
+    // Esc closes it: no terminal opens.
+    open_menu(cx);
+    assert!(
+        ws.read_with(cx, |ws, _| ws.menu.is_some()),
+        "the menu opens"
+    );
+    cx.update_window(handle, |_, window, cx| {
+        window.press("escape", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    assert!(ws.read_with(cx, |ws, _| ws.menu.is_none()));
+    assert_eq!(terminals(cx), before);
+    // Default (zsh), —, Quiet: the third item is the shell.
+    open_menu(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.within("popup-menu").click(2usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.terminals().count(), before + 1);
+        let top = ws.space.canvas.top().unwrap();
+        assert_eq!(ws.space.terminal(top).unwrap().shell, Some(quiet_shell));
+        assert!(ws.menu.is_none(), "a choice closes it");
+    });
+    // Default: a terminal with no shell of its own.
+    open_menu(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.within("popup-menu").click(0usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.terminals().count(), before + 2);
+        let top = ws.space.canvas.top().unwrap();
+        assert_eq!(ws.space.terminal(top).unwrap().shell, None);
+    });
+}
+
+#[gpui_kit::test]
+fn add_terminal_lists_the_shells_and_opens_the_one_chosen_where_clicked(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let quiet_shell = made_up_shells(&ws, cx);
+    let world = cx
+        .update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let o = ws.read(cx).origin;
+            let at = (f32::from(o.x) + 20.0, f32::from(o.y) + 600.0);
+            right_click(window, cx, at);
+            window.render_frame(cx);
+            let ws = ws.read(cx);
+            ws.space
+                .canvas
+                .camera
+                .to_world(ws.local(point(px(at.0), px(at.1))))
+        })
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        // AI agent ▸, Add ▸ Terminal ▸ (Default, —, Quiet).
+        window.within("popup-menu").click(1usize, cx);
+        window.render_frame(cx);
+        window
+            .within("submenu")
+            .within("popup-menu")
+            .click(0usize, cx);
+        window.render_frame(cx);
+        click_innermost_menu_item(window, cx, 2);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        let top = ws.space.canvas.top().unwrap();
+        assert_eq!(ws.space.canvas.get(top).unwrap().rect.origin(), world);
+        assert_eq!(ws.space.terminal(top).unwrap().shell, Some(quiet_shell));
+        assert!(ws.menu.is_none(), "a choice closes it");
+    });
+}
+
+#[gpui_kit::test]
+fn default_names_the_shell_new_terminals_run(cx: &mut TestAppContext) {
+    let (_, ws) = open(cx);
+    ws.update(cx, |ws, _| {
+        ws.default_shell = "zsh".into();
+        ws.shells = vec![ShellOption {
+            label: "PowerShell 7".into(),
+            program: "C:/pwsh/pwsh.exe".into(),
+            args: vec!["-NoLogo".into()],
+        }];
+        ws.config.shell.program = None;
+        assert_eq!(ws.default_shell_name(), "zsh");
+        ws.config.shell.program = Some("C:/pwsh/pwsh.exe".into());
+        ws.config.shell.args = vec!["-NoLogo".into()];
+        assert_eq!(ws.default_shell_name(), "PowerShell 7");
+        ws.config.shell.args.clear();
+        assert_eq!(
+            ws.default_shell_name(),
+            "pwsh",
+            "other arguments: its file name"
+        );
+        ws.config.shell.program = Some("/opt/fish/bin/fish".into());
+        assert_eq!(ws.default_shell_name(), "fish");
     });
 }
 
@@ -90,7 +244,7 @@ fn the_canvas_menu_adds_blocks_where_it_was_opened(cx: &mut TestAppContext) {
             })
             .unwrap();
         cx.update_window(handle, |_, window, cx| {
-            // AI agent ▸, Add ▸ Terminal or Kanban board.
+            // AI agent ▸, Add ▸ Terminal ▸ Default, or Kanban board.
             window.within("popup-menu").click(1usize, cx);
             window.render_frame(cx);
             window
@@ -98,6 +252,10 @@ fn the_canvas_menu_adds_blocks_where_it_was_opened(cx: &mut TestAppContext) {
                 .within("popup-menu")
                 .click(item, cx);
             window.render_frame(cx);
+            if item == 0 {
+                click_innermost_menu_item(window, cx, 0);
+                window.render_frame(cx);
+            }
         })
         .unwrap();
         ws.read_with(cx, |ws, _| {
@@ -268,7 +426,7 @@ fn send_to_lists_the_terminals_running_an_agent_first(cx: &mut TestAppContext) {
     let second = cx
         .update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
-                ws.add_terminal_at(Point::new(900.0, 0.0), window, cx);
+                ws.open_shell(None, Some(Point::new(900.0, 0.0)), window, cx);
                 let id = ws.space.canvas.top().unwrap();
                 ws.space.terminal_mut(id).unwrap().seen.agent = Some("claude".into());
                 id

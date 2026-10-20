@@ -74,7 +74,7 @@ workspace's blocks left on the canvas), then **Flip the split** (a tile with a n
 | File | Change |
 |---|---|
 | `menu.rs` (new) | `Target` (what was right-clicked), `Workspace::open_menu`, each target's items, and drawing the open menu |
-| `workspace.rs` | The open menu; the canvas's right-click; `add_terminal_at` and `add_kanban_at` |
+| `workspace.rs` | The open menu; the canvas's right-click; `open_shell` and `add_kanban_at` |
 | `block.rs`, `kanban.rs`, `sidebar.rs` | Each right-clickable element opens its target's menu and stops the event, so the innermost menu wins |
 
 The menu itself is gpui-kit's `PopupMenu`, drawn the way its `context_menu` draws it.

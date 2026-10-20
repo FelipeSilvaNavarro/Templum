@@ -178,6 +178,28 @@ fn right_click(window: &mut Window, cx: &mut gpui_kit::App, at: (f32, f32)) {
     );
 }
 
+/// Clicks item `index` of the innermost open menu. A submenu inside a submenu has the ids of the
+/// one above it (`submenu`, `popup-menu`), which `within` can't tell apart; the registered
+/// elements can: the innermost menu is the one under the most `popup-menu`s.
+fn click_innermost_menu_item(window: &mut Window, cx: &mut gpui_kit::App, index: usize) {
+    use gpui_kit::ElementId;
+    let menu = ElementId::from("popup-menu");
+    let shots = gpui_kit::base::test_support::snapshots(window);
+    let depth = |path: &[ElementId]| path.iter().filter(|id| **id == menu).count();
+    let deepest = shots
+        .iter()
+        .map(|s| s.path())
+        .max_by_key(|p| depth(p))
+        .unwrap();
+    let scope = &deepest[..=deepest.iter().rposition(|id| *id == menu).unwrap()];
+    let item = shots
+        .iter()
+        .find(|s| s.path().starts_with(scope) && s.path().last() == Some(&ElementId::from(index)))
+        .unwrap_or_else(|| panic!("no item {index} in the innermost menu {scope:?}"));
+    let center = item.bounds().center();
+    click(window, cx, (f32::from(center.x), f32::from(center.y)), 1);
+}
+
 /// Holds or lets go of the hand key (Alt).
 fn hold_alt(window: &mut Window, cx: &mut gpui_kit::App, held: bool) {
     window.dispatch_event(

@@ -497,7 +497,7 @@ fn closing_a_busy_terminal_asks_first(cx: &mut TestAppContext) {
         assert!(ws.read(cx).space.terminal(id).is_none(), "closed");
         // An idle one: no question.
         ws.update(cx, |ws, cx| {
-            ws.add_terminal_at(Point::new(0.0, 0.0), window, cx);
+            ws.open_shell(None, Some(Point::new(0.0, 0.0)), window, cx);
             let idle = ws.space.canvas.top().unwrap();
             ws.close(idle, window, cx);
             assert!(ws.space.terminal(idle).is_none());

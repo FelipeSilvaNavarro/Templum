@@ -502,6 +502,10 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 - [ ] **The tabs wrap to three rows.** Since Canvas joined, the twelve pills (`Section::ALL`,
   `crates/templum/src/settings/mod.rs`) don't fit in two rows of the 480 px panel: a third row holds the last one or
   two, and every section starts lower. Fix: tighter pills (less padding) or one row that scrolls sideways.
+- [ ] **A shell installed while Templum runs isn't in the shells' menus yet.** `Workspace::shells` is read at start
+  and when Settings or the welcome opens (`load_lists`, `crates/templum/src/workspace/preferences.rs`); until then the
+  toolbar's Terminal and Add ▸ Terminal ▸ show the older list. Fix: read it again when one of those menus opens, with
+  a seam that keeps the tests' made-up list.
 
 ## GPUI engine (gpui-fast)
 

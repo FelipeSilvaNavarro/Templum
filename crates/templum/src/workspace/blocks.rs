@@ -302,16 +302,6 @@ impl Workspace {
         cx.notify();
     }
 
-    /// A terminal of the default size, its top-left corner at `at` (world units).
-    pub(crate) fn add_terminal_at(
-        &mut self,
-        at: Point,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_shell(None, Some(at), window, cx);
-    }
-
     /// A terminal running `shell` (None: the default) in the start folder, its top-left corner at
     /// `at` (world units) with the default size, else where a new terminal goes. The block keeps
     /// the shell (docs/specs/shells.md, The block keeps its shell).
@@ -332,6 +322,26 @@ impl Workspace {
         };
         let folder = self.start_dir(window, cx);
         self.spawn_block_with(rect, folder, Vec::new(), shell, window, cx);
+    }
+
+    /// What **Default** names in the shells' menus, the shell Ctrl+Shift+T opens: with a program
+    /// set in Settings, the label of the shell found with that program and those arguments, else
+    /// the program's file name (a path may hold spaces: the stem, not `program_name`); without
+    /// one, the system's default.
+    pub(crate) fn default_shell_name(&self) -> String {
+        let shell = &self.config.shell;
+        let Some(program) = &shell.program else {
+            return self.default_shell.clone();
+        };
+        self.shells
+            .iter()
+            .find(|s| s.program == *program && s.args == shell.args)
+            .map(|s| s.label.clone())
+            .unwrap_or_else(|| {
+                Path::new(program)
+                    .file_stem()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+            })
     }
 
     /// A terminal in `folder`, its top-left corner at `at`, with the agent `agent`'s command (an

@@ -16,6 +16,7 @@ use gpui_kit::{
 };
 use templum_canvas::{BlockId, Point, Wire};
 use templum_git::{Branch, Commit, Entry};
+use templum_terminal::ShellOption;
 
 use crate::git_block;
 use crate::workspace::{Body, Workspace};
@@ -33,6 +34,8 @@ pub(crate) enum Target {
     },
     /// The AI agents alone (the toolbar): the chosen one opens at this world point.
     Agents(Point),
+    /// The shells alone (the toolbar's Terminal): the chosen one opens where a new terminal goes.
+    Shells,
     Column {
         board: u64,
         column: u64,
@@ -158,6 +161,19 @@ impl Workspace {
         self.open_menu(Target::Block { id, group }, at, window, cx);
     }
 
+    /// The shells the menus list (docs/specs/shells.md, The menus): Default's name, and the
+    /// others, without the one that name is already.
+    fn shells_for_menu(&self) -> Shells {
+        let default = self.default_shell_name();
+        let others = self
+            .shells
+            .iter()
+            .filter(|s| s.label != default)
+            .cloned()
+            .collect();
+        Shells { default, others }
+    }
+
     /// The agents the menus list, and whether each one's program was found.
     fn agents_for_menu(&self) -> Vec<(AgentEntry, bool)> {
         self.agents
@@ -197,6 +213,7 @@ impl Workspace {
                     grid.area.y + grid.area.h / 2.0,
                 )),
                 agents: self.agents_for_menu(),
+                shells: self.shells_for_menu(),
                 flip: grid.tiles.ids().len() > 1 && grid.homes.contains_key(&block),
                 others: self
                     .space
@@ -229,7 +246,9 @@ impl Workspace {
             Target::Canvas(at) => Items::Canvas {
                 at,
                 agents: self.agents_for_menu(),
+                shells: self.shells_for_menu(),
             },
+            Target::Shells => Items::Shells(self.shells_for_menu()),
             Target::Agents(at) => Items::Agents {
                 at,
                 agents: self.agents_for_menu(),
@@ -516,7 +535,15 @@ enum Tail {
         others: Vec<(BlockId, SharedString)>,
         at: Point,
         agents: Vec<(AgentEntry, bool)>,
+        shells: Shells,
     },
+}
+
+/// What the shells' menus list: **Default (*name*)**, then the shells found other than it.
+#[derive(Clone)]
+struct Shells {
+    default: String,
+    others: Vec<ShellOption>,
 }
 
 /// A target's menu, with what it shows read from the workspace.
@@ -541,7 +568,9 @@ enum Items {
         at: Point,
         /// Each agent the menu lists, and whether its program was found.
         agents: Vec<(AgentEntry, bool)>,
+        shells: Shells,
     },
+    Shells(Shells),
     Agents {
         at: Point,
         agents: Vec<(AgentEntry, bool)>,

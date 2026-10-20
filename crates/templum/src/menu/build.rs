@@ -11,7 +11,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{App, ClipboardItem, Context, Entity, SharedString, Window, px};
 use templum_canvas::{BlockId, Point, Wire};
 
-use super::{Items, SendTo, Tail};
+use super::{Items, SendTo, Shells, Tail};
 use crate::board::Label;
 use crate::git_block;
 use crate::kanban;
@@ -32,13 +32,14 @@ fn item(
         .on_click(move |_, window, cx| ws.update(cx, |ws, cx| act(ws, window, cx)))
 }
 
-/// Adding blocks, the canvas menu's and a tile's: AI agent ▸ and Add ▸ (Terminal, Kanban board,
+/// Adding blocks, the canvas menu's and a tile's: AI agent ▸ and Add ▸ (Terminal ▸, Kanban board,
 /// Note, Checklist, Editor), their top-left corner at `at` on the canvas. In grid mode they take half of
 /// the focused tile.
 fn adding(
     ws: &Entity<Workspace>,
     menu: PopupMenu,
     agents: Vec<(AgentEntry, bool)>,
+    shells: Shells,
     at: Point,
     window: &mut Window,
     cx: &mut Context<PopupMenu>,
@@ -56,14 +57,17 @@ fn adding(
         "Add",
         window,
         cx,
-        move |menu, _, _| {
+        move |menu, window, cx| {
             let ws = &add;
-            menu.item(item(
-                ws,
+            let shells = shells.clone();
+            let terminal = ws.clone();
+            menu.submenu_with_icon(
+                Some(Icon::new(IconName::SquareTerminal)),
                 "Terminal",
-                Some(IconName::SquareTerminal),
-                move |ws, window, cx| ws.add_terminal_at(at, window, cx),
-            ))
+                window,
+                cx,
+                move |menu, _, _| shell_items(&terminal, menu, shells.clone(), Some(at)),
+            )
             .item(item(
                 ws,
                 "Kanban board",
@@ -90,6 +94,33 @@ fn adding(
             ))
         },
     )
+}
+
+/// **Default (*name*)**, then each other shell found by its label (docs/specs/shells.md, The
+/// menus): the chosen one opens a terminal at `at` (None: where a new terminal goes).
+fn shell_items(
+    ws: &Entity<Workspace>,
+    menu: PopupMenu,
+    shells: Shells,
+    at: Option<Point>,
+) -> PopupMenu {
+    let Shells { default, others } = shells;
+    // Macs list eight shells.
+    let menu = menu.scrollable(true).max_h(px(420.0)).item(item(
+        ws,
+        format!("Default ({default})"),
+        Some(IconName::SquareTerminal),
+        move |ws, window, cx| ws.open_shell(None, at, window, cx),
+    ));
+    if others.is_empty() {
+        return menu;
+    }
+    others.into_iter().fold(menu.separator(), |menu, shell| {
+        let label = SharedString::from(shell.label.clone());
+        menu.item(item(ws, label, None, move |ws, window, cx| {
+            ws.open_shell(Some(shell.clone()), at, window, cx)
+        }))
+    })
 }
 
 /// The agents, installed first; the others are greyed out (Settings ▸ Agents says how to install
@@ -302,10 +333,11 @@ impl Items {
                         others,
                         at,
                         agents,
+                        shells,
                     } => {
                         let bring = ws.clone();
                         // New blocks take half of this tile: it has the focus.
-                        adding(ws, menu, agents, at, window, cx)
+                        adding(ws, menu, agents, shells, at, window, cx)
                             .when(!others.is_empty(), |menu| {
                                 menu.submenu("From the canvas", window, cx, move |menu, _, _| {
                                     others.iter().fold(menu, |menu, (id, title)| {
@@ -367,7 +399,7 @@ impl Items {
                     move |ws, window, cx| ws.close(block, window, cx),
                 ))
             }
-            Items::Canvas { at, agents } => {
+            Items::Canvas { at, agents, shells } => {
                 let notes = item(
                     ws,
                     "Notes…",
@@ -380,7 +412,7 @@ impl Items {
                     Some(IconName::ListChecks),
                     |_, window, cx| crate::checklist::open_checklists(None, window, cx),
                 );
-                adding(ws, menu, agents, at, window, cx)
+                adding(ws, menu, agents, shells, at, window, cx)
                     .item(notes)
                     .item(checklists)
             }
@@ -438,6 +470,7 @@ impl Items {
                 ))
             }
             Items::Agents { at, agents } => agent_items(ws, menu, agents, at),
+            Items::Shells(shells) => shell_items(ws, menu, shells, None),
             Items::Tree {
                 block,
                 folder,
