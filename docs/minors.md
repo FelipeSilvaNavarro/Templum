@@ -205,6 +205,13 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   script and runs it at once while another test thread forks, which holds the file's write descriptor open (ETXTBSY).
   A person sees nothing; a contributor may see CI fail once. Fix: write the script, `sync_all` it and drop the
   handle, then retry the spawn once on `ErrorKind::ExecutableFileBusy`, or create the script before any thread starts.
+- [ ] **`stop_agent_ends_what_an_agent_that_quit_left_running` fails when the machine is busy.**
+  (`crates/templum/src/workspace/tests/spawn.rs:1099`, "its job wrote its file", seen at 4748d5b in a full
+  `cargo test --workspace`, 84 s; it passed alone three times.) The job left running is
+  `sleep 3 && touch f` and the test has to stop it before that, after a 1.5 s sleep of its own, so a loaded machine
+  that delays `stop_agent` lets the job write its file. A person sees nothing; a contributor may see CI fail once.
+  Fix: a longer job (`sleep 10`, the final wait to match) so the stop has seconds to spare, or have the job loop
+  until a "stopped" file exists and fail the test if it ever ends by itself.
 
 ## Release and benches
 
