@@ -1616,6 +1616,12 @@ db2baa3.
   follows Settings ▸ Shell, so when that is WSL the account's block runs WSL's agent on WSL's login, not the account.
   Fix: pass the variable through `WSLENV` with `/p` (and check from Linux that the account folder's links resolve), or
   open an account in the system's default shell when Settings ▸ Shell is WSL.
+- [ ] **An account set to WSL says "no shell" on stderr though WSL is installed.** `Workspace::shell_for`
+  (`crates/templum/src/workspace/blocks.rs`) prints `templum: no shell "WSL" for <account>: the default one opens` for a
+  hand-written `shell = "WSL"` on an account, whose real reason is that an account never runs in WSL
+  (`agent_shell` filters it out). Only a person reading stderr sees it; the account opens in the default shell as
+  intended. Fix: in `shell_for`, when the label is among `self.shells` and the entry is an account, print that
+  reason instead.
 
 ## Templum Agent
 

@@ -418,9 +418,11 @@ impl Workspace {
         }
     }
 
-    /// `agent_shell`'s shell, for an agent about to open: a label that finds none says so on
-    /// stderr, as a restored terminal's does (no notification; the label stays in the file).
-    fn shell_for(&self, entry: &AgentEntry) -> Option<ShellOption> {
+    /// `agent_shell`'s shell, for an agent about to open (the list read again if it was early): a
+    /// label that finds none says so on stderr, as a restored terminal's does (no notification;
+    /// the label stays in the file).
+    fn shell_for(&mut self, entry: &AgentEntry) -> Option<ShellOption> {
+        self.reload_early_shells();
         let shell = self.agent_shell(entry).cloned();
         if shell.is_none()
             && let Some(label) = &entry.shell

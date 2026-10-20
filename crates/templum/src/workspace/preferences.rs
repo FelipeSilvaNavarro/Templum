@@ -849,6 +849,14 @@ impl Workspace {
         self.load_shells();
     }
 
+    /// `load_shells` again when the list was read before the login shell's PATH arrived and it
+    /// has arrived since: a shell only that PATH has (Homebrew's fish, from the Dock) is there now.
+    pub(crate) fn reload_early_shells(&mut self) {
+        if self.shells_early && !templum_terminal::shell_path_pending() {
+            self.load_shells();
+        }
+    }
+
     /// The shells found and the default's name, read now (`shells_early` says whether the login
     /// shell's PATH was still to come).
     pub(crate) fn load_shells(&mut self) {

@@ -267,9 +267,11 @@ pub(crate) fn agent_dialog(
         let choices = shell_choices(&default_shell, &shells, false, current.as_deref());
         // The note while the agent runs in WSL: its own shell is, or it follows Settings ▸ Shell.
         let in_wsl = match &current {
+            // A label not found opens the default.
             Some(label) => shells
                 .iter()
-                .any(|s| s.label == *label && is_shell(&s.program, "wsl")),
+                .find(|s| s.label == *label)
+                .map_or(default_wsl, |s| is_shell(&s.program, "wsl")),
             None => default_wsl,
         };
         let pick = {

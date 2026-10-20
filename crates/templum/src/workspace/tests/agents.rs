@@ -718,6 +718,125 @@ fn the_agent_dialog_sets_its_shell_and_the_switch_keeps_it(cx: &mut TestAppConte
     ws.read_with(cx, |ws, _| {
         assert_eq!(ws.config.agents["claude"].shell, None, "Default: no key");
     });
+    // A label this computer lacks opens the default, WSL when Settings ▸ Shell is: the note says so.
+    with_agents(&ws, cx, "[agents.claude]\nshell = \"PowerShell 7\"\n");
+    ws.update(cx, |ws, _| {
+        ws.config.shell.program = Some("C:/Windows/System32/wsl.exe".into());
+    });
+    edit(cx);
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        let note = window
+            .within("dialog")
+            .try_find("agent-shell-wsl")
+            .is_some();
+        assert!(note, "the agent opens in the default, which is WSL");
+    })
+    .unwrap();
+}
+
+/// A shell list read before the login shell's PATH arrived is read again when an agent opens: the
+/// shell it is set to may be one only that PATH has (a menu or Settings may never have been
+/// opened). It runs the machine's own list, so the shell is one every machine lists; a machine
+/// whose list lacks it skips the check.
+#[gpui_kit::test]
+fn an_agent_reads_an_early_shell_list_again(cx: &mut TestAppContext) {
+    let label = if cfg!(windows) {
+        "Command Prompt"
+    } else {
+        "sh"
+    };
+    if !templum_terminal::available_shells()
+        .iter()
+        .any(|s| s.label == label)
+    {
+        eprintln!("skipped: this computer lists no {label}");
+        return;
+    }
+    let folder = tempfile::tempdir().unwrap();
+    let (handle, ws) = open(cx);
+    with_agents(&ws, cx, &format!("[agents.claude]\nshell = \"{label}\"\n"));
+    ws.update(cx, |ws, _| {
+        // Not the real agent in the machine's shell.
+        ws.agents
+            .iter_mut()
+            .find(|a| a.id == "claude")
+            .unwrap()
+            .command = "cat".into();
+        ws.shells = Vec::new();
+        ws.shells_early = true;
+    });
+    let id = launch(handle, &ws, cx, "claude", folder.path());
+    ws.read_with(cx, |ws, _| {
+        let shell = ws.space.terminal(id).unwrap().shell.as_ref();
+        assert_eq!(shell.map(|s| s.label.as_str()), Some(label));
+        assert!(!ws.shells_early);
+    });
+}
+
+/// OpenCode's and Kilo Code's server variable is judged by the shell the block runs: none in WSL,
+/// for a block Templum opens and for one restored, pasted or undone (`add_saved`) with its own
+/// saved shell. Both shells list the variables they were given.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_opencode_in_wsl_gets_no_server_variable(cx: &mut TestAppContext) {
+    use std::os::unix::fs::PermissionsExt as _;
+    use templum_terminal::ShellOption;
+    let (data, folder, bin) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let script = "#!/bin/sh\nenv | grep -E '^(OPENCODE|KILO)_CONFIG_CONTENT=' | cut -c1-40\n\
+                  echo env-listed\nexec cat\n";
+    let (plain, wsl) = (bin.path().join("plain"), bin.path().join("wsl"));
+    for path in [&plain, &wsl] {
+        std::fs::write(path, script).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let (handle, ws) = open_as(
+        cx,
+        Some((plain.display().to_string(), vec![])),
+        None,
+        Some(data.path().to_path_buf()),
+    );
+    ws.update(cx, |ws, _| {
+        ws.shells = vec![ShellOption {
+            label: "WSL".into(),
+            program: wsl.display().to_string(),
+            args: vec![],
+        }]
+    });
+    with_agents(&ws, cx, "[agents.opencode]\nshell = \"WSL\"\n");
+    // Kilo Code, in the default shell, is the control: the variable is given there.
+    let kilo = launch(handle, &ws, cx, "kilo", folder.path());
+    let given = super::bus::screen_with(&ws, cx, kilo, "env-listed");
+    assert!(given.contains("KILO_CONFIG_CONTENT="), "{given}");
+    let opened = launch(handle, &ws, cx, "opencode", folder.path());
+    let shown = super::bus::screen_with(&ws, cx, opened, "env-listed");
+    assert!(!shown.contains("OPENCODE_CONFIG_CONTENT"), "{shown}");
+    // A block saved with the shell: restored, it is judged by that one, not the setting now.
+    let restore = |shell: Option<&str>, cx: &mut TestAppContext| {
+        let item: crate::session::Item = serde_json::from_value(serde_json::json!({
+            "kind": "terminal",
+            "rect": { "x": 0.0, "y": 900.0, "w": 700.0, "h": 450.0 },
+            "folder": folder.path(),
+            "agent": "opencode",
+            "shell": shell,
+        }))
+        .unwrap();
+        cx.update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.add_saved(&item, window, cx))
+        })
+        .unwrap()
+        .expect("a block")
+    };
+    let saved = restore(Some("WSL"), cx);
+    let shown = super::bus::screen_with(&ws, cx, saved, "env-listed");
+    assert!(!shown.contains("OPENCODE_CONFIG_CONTENT"), "{shown}");
+    let plain = restore(None, cx);
+    let given = super::bus::screen_with(&ws, cx, plain, "env-listed");
+    assert!(given.contains("OPENCODE_CONFIG_CONTENT="), "{given}");
 }
 
 #[cfg(unix)]
