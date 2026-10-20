@@ -375,6 +375,82 @@ fn the_reason_an_agent_has_no_tools_is_the_first_that_fits(cx: &mut TestAppConte
     );
 }
 
+/// A subagent that handed a task of its own and whose turn ends is waiting for that one, as card
+/// 30 asks: its turn's end doesn't end its own task. Its `reply`, or the end of a turn with nothing
+/// handed out any more, does (docs/specs/agent-protocol.md, 4).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_subagent_waiting_on_its_own_task_isnt_done(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let third = another_agent(handle, &ws, cx, theirs);
+    asker(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let (helper, other) = me(&ws, cx, third);
+    let handed = |ws: &Entity<Workspace>, cx: &mut TestAppContext, id| {
+        ws.read_with(cx, |ws, _| {
+            ws.space.terminal(id).unwrap().handed.as_ref().map(|h| h.id)
+        })
+    };
+    // Mine hands theirs t1, which takes it and hands the third t2.
+    call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "delegate",
+        json!({ "block": them, "task": "go" }),
+    );
+    screen_with(&ws, cx, theirs, "go");
+    enter(cx);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    call(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        "delegate",
+        json!({ "block": other, "task": "look" }),
+    );
+    screen_with(&ws, cx, third, "look");
+    enter(cx);
+    event(handle, &ws, cx, &helper, json!({ "event": "submitted" }));
+    // Its turn ends while it waits for t2: t1 is not over, and mine is told nothing.
+    let waiting = json!({ "event": "stopped", "message": "Waiting for the third." });
+    event(handle, &ws, cx, &worker, waiting);
+    after(cx, 1000);
+    assert_eq!(handed(&ws, cx, theirs), Some(1));
+    assert!(notices(&ws, cx).is_empty(), "{:?}", notices(&ws, cx));
+    let shown = ws.read_with(cx, |ws, _| ws.space.terminal(mine).unwrap().screen());
+    assert!(!shown.contains("[task t1 from "), "{shown}");
+    // The third ends t2: theirs hears so (queued, it was typed into a moment ago).
+    event(
+        handle,
+        &ws,
+        cx,
+        &helper,
+        json!({ "event": "stopped", "message": "Found it." }),
+    );
+    after(cx, 1000);
+    assert_eq!(handed(&ws, cx, third), None);
+    let told = notices(&ws, cx);
+    assert!(
+        told.len() == 1 && told[0].0 == worker && told[0].1.starts_with("[task t2 from "),
+        "{told:?}"
+    );
+    // Nothing is handed out any more: its next turn's end ends t1, once.
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let line = json!({ "event": "stopped", "message": "Line 42." });
+    event(handle, &ws, cx, &worker, line);
+    after(cx, 1000);
+    assert_eq!(handed(&ws, cx, theirs), None);
+    let shown = screen_with(&ws, cx, mine, "Line 42.");
+    assert!(
+        shown.contains("[task t1 from ") && shown.contains(": done in "),
+        "{shown}"
+    );
+}
+
 #[gpui_kit::test]
 fn delegate_refuses_what_it_mustnt_type_into(cx: &mut TestAppContext) {
     let (handle, ws, mine, theirs) = two_agents(cx);

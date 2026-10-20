@@ -1000,6 +1000,17 @@ impl Workspace {
         }
     }
 
+    /// Some pane, in any workspace, holds a task the agent in `terminal` handed over (`delegate`,
+    /// or a spawn's prompt), also past its timeout: that agent waits for it
+    /// (docs/specs/agent-protocol.md, 4).
+    pub(super) fn hands_out(&self, terminal: &str) -> bool {
+        self.spaces().any(|space| {
+            space
+                .terminals()
+                .any(|(_, pane)| pane.handed.as_ref().is_some_and(|h| h.by == terminal))
+        })
+    }
+
     /// The agent in the terminal `terminal` ended its turn, or its session: the task it was on is
     /// no longer handed over, and the calls waiting on it get `reply`; the agent that handed the
     /// task over hears so, typed, when no call of its waits for it (docs/specs/connections.md,
