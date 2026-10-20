@@ -5,6 +5,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+pub mod command;
 mod folder;
 
 pub use folder::*;
