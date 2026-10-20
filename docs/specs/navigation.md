@@ -30,6 +30,13 @@ While a block (or a selection) is held by its title, the wheel, or two fingers o
 mouse's wheel and Ctrl+wheel included, and the block stays under the pointer: it can be carried farther than the
 window shows without letting go.
 
+Bringing the pointer near the canvas's edge pans it too, the way the selection rectangle (Shift+drag) does: the
+same rule (`templum_canvas::edge_scroll`: a 40 px zone, faster the nearer the edge, full speed at it or past it,
+in screen pixels, so the zoom doesn't change it). The canvas keeps going while the pointer rests there, the block
+or every selected block stays under the pointer, and it stops when the button is let go or the pointer leaves the
+zone. A press on a title near the edge that doesn't move past a click pans nothing. In grid mode the tiles don't
+move freely, so nothing pans.
+
 ## The middle button
 
 A drag with the middle mouse button pans the canvas anywhere, over blocks too, with no key held. Terminals don't

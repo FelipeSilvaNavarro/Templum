@@ -10,7 +10,8 @@ use gpui_kit::{
     ScrollWheelEvent, UTF16Selection, Window, px,
 };
 use templum_canvas::{
-    BlockId, Direction, Drawing, Edges, Gesture, Point, Rect, STRING_PX, chrome, constrain,
+    BlockId, Direction, Drawing, Edges, Gesture, Point, Rect, STRING_PX, Size, chrome, constrain,
+    edge_scroll,
 };
 use templum_terminal::{Button, KeyInput, MouseInput, MouseKind, SelectionKind, Side, Target};
 
@@ -133,7 +134,7 @@ impl Workspace {
             return;
         }
         let p = self.local(pos);
-        self.drag = Gesture::move_block(&self.space.canvas, id, p).map(Drag::Canvas);
+        self.drag = Gesture::move_block(&self.space.canvas, id, p).map(|g| Drag::held(g, p));
         self.placing(&[id]);
     }
 
@@ -152,10 +153,15 @@ impl Workspace {
     /// to trade places.
     pub(crate) fn moving(&self, id: BlockId) -> bool {
         match &self.drag {
-            Some(Drag::Canvas(Gesture::Move { id: moved, .. }) | Drag::Swap { id: moved, .. }) => {
-                *moved == id
-            }
-            Some(Drag::Canvas(Gesture::MoveGroup { ids, .. })) => ids.contains(&id),
+            Some(Drag::Held {
+                gesture: Gesture::Move { id: moved, .. },
+                ..
+            }) => *moved == id,
+            Some(Drag::Swap { id: moved, .. }) => *moved == id,
+            Some(Drag::Held {
+                gesture: Gesture::MoveGroup { ids, .. },
+                ..
+            }) => ids.contains(&id),
             _ => false,
         }
     }
@@ -190,6 +196,12 @@ impl Workspace {
                 if let Some((id, rect)) = update.resized {
                     self.fit_terminal(id, rect);
                 }
+            }
+            Some(Drag::Held {
+                gesture, pointer, ..
+            }) => {
+                *pointer = p;
+                self.space.guides = gesture.update(&mut self.space.canvas, p).guides;
             }
             Some(Drag::Select(id)) => {
                 let id = *id;
@@ -280,6 +292,59 @@ impl Workspace {
             None => return,
         }
         cx.notify();
+    }
+
+    /// Every frame of a rectangle or a held block being dragged: with the pointer near the
+    /// canvas's edge, the camera goes that way (`edge_scroll`) and the drag follows it (the
+    /// rectangle grows, the block stays under the pointer). True while it goes: the next frame is
+    /// asked for.
+    pub(super) fn drag_edge(&mut self, viewport: Size, now: Instant) -> bool {
+        let zoom = self.space.canvas.camera.zoom();
+        let (pointer, dragged, scrolled) = match &mut self.drag {
+            Some(Drag::Marquee {
+                from,
+                to,
+                pointer,
+                scrolled,
+                ..
+            }) => (
+                *pointer,
+                (to.x - from.x).abs().max((to.y - from.y).abs()) * zoom,
+                scrolled,
+            ),
+            Some(Drag::Held {
+                from,
+                pointer,
+                scrolled,
+                ..
+            }) => (
+                *pointer,
+                (pointer.x - from.x).abs().max((pointer.y - from.y).abs()),
+                scrolled,
+            ),
+            _ => return false,
+        };
+        let v = edge_scroll(pointer, viewport);
+        // A press near the edge isn't a drag yet.
+        if v == Point::default() || dragged < CLICK_SLOP {
+            *scrolled = None;
+            return false;
+        }
+        // From the last frame that moved it; a stalled frame doesn't jump.
+        let dt = scrolled.map_or(0.0, |at| now.duration_since(at).as_secs_f32().min(0.05));
+        *scrolled = Some(now);
+        self.space.pristine = false;
+        self.space
+            .canvas
+            .camera
+            .pan_by(Point::new(-v.x * dt, -v.y * dt));
+        match &mut self.drag {
+            Some(Drag::Held { gesture, .. }) => {
+                self.space.guides = gesture.update(&mut self.space.canvas, pointer).guides;
+            }
+            _ => self.marquee_to(pointer),
+        }
+        true
     }
 
     /// The terminal cell under a window position: (row, col, side), clamped by the terminal.
@@ -900,12 +965,7 @@ impl Workspace {
         self.space.pristine = false;
         // A block held by its title: the wheel moves the canvas under it, a mouse's too, and the
         // block stays under the pointer.
-        if matches!(
-            self.drag,
-            Some(Drag::Canvas(
-                Gesture::Move { .. } | Gesture::MoveGroup { .. }
-            ))
-        ) {
+        if matches!(self.drag, Some(Drag::Held { .. })) {
             let d = e.delta.pixel_delta(px(self.cell.size.h));
             self.pan_by(Point::new(f32::from(d.x), f32::from(d.y)));
             self.drag_to(e.position, e.modifiers.shift, cx);

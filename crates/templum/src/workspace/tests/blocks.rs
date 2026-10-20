@@ -217,6 +217,148 @@ fn the_wheel_moves_the_canvas_under_a_held_block_which_stays_under_the_pointer(
     assert_eq!(after.0, before.0, "the block stayed under the pointer");
 }
 
+/// The kanban of `three_blocks`, pressed at its title as the camera shows it now; the pointer then
+/// goes to `to` (a canvas point), the button still down.
+fn hold_kanban(
+    handle: AnyWindowHandle,
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+    kanban: BlockId,
+    to: (f32, f32),
+) {
+    let title = ws.read_with(cx, |ws, _| {
+        let r = ws.space.canvas.get(kanban).unwrap().rect;
+        ws.space
+            .canvas
+            .camera
+            .to_screen(Point::new(r.x + r.w / 2.0, r.y + chrome::TITLE_H / 2.0))
+    });
+    let (from, to) = (at(ws, cx, (title.x, title.y)), at(ws, cx, to));
+    let event = |p: (f32, f32)| point(px(p.0), px(p.1));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: event(from),
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            PlatformInput::MouseMove(gpui_kit::MouseMoveEvent {
+                position: event(to),
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Modifiers::default(),
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_block_held_near_the_edge_moves_the_canvas_and_stays_under_the_pointer(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws) = open(cx);
+    let (kanban, ..) = three_blocks(handle, &ws, cx);
+    // Zoomed out: the canvas goes by screen pixels, whatever the zoom.
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.camera = Camera::at(Point::new(0.0, 0.0), 0.5);
+    });
+    let vp = cx
+        .update_window(handle, |_, window, cx| ws.read(cx).viewport(window))
+        .unwrap();
+    let edge = (vp.w - 2.0, 100.0);
+    hold_kanban(handle, &ws, cx, kanban, edge);
+    let screen = |ws: &Workspace| {
+        let r = ws.space.canvas.get(kanban).unwrap().rect;
+        ws.space.canvas.camera.to_screen(Point::new(r.x, r.y))
+    };
+    let (held, rect, origin) = ws.read_with(cx, |ws, _| {
+        (
+            screen(ws),
+            ws.space.canvas.get(kanban).unwrap().rect,
+            ws.space.canvas.camera.origin.x,
+        )
+    });
+    // The pointer stays still at the edge: frames keep moving the canvas.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin.x) < origin + 20.0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the canvas never moved"
+        );
+        frame(handle, cx);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let (now, moved) = ws.read_with(cx, |ws, _| {
+        (screen(ws), ws.space.canvas.get(kanban).unwrap().rect)
+    });
+    assert!((now.x - held.x).abs() < 0.01 && (now.y - held.y).abs() < 0.01);
+    assert!(moved.x > rect.x, "the block went with the canvas");
+    assert_eq!(ws.read_with(cx, |ws, _| ws.space.canvas.camera.zoom()), 0.5);
+    // Let go: the canvas stops, the block where it was dropped.
+    let up = at(&ws, cx, edge);
+    cx.update_window(handle, |_, window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseUp(MouseUpEvent {
+                button: MouseButton::Left,
+                position: point(px(up.0), px(up.1)),
+                modifiers: Modifiers::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    let stopped = ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin);
+    frame(handle, cx);
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    frame(handle, cx);
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin),
+        stopped
+    );
+}
+
+#[gpui_kit::test]
+fn a_press_on_a_title_near_the_edge_leaves_the_canvas_still(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let (kanban, ..) = three_blocks(handle, &ws, cx);
+    // Its title reaches into the left edge's zone.
+    ws.update(cx, |ws, _| {
+        ws.space.canvas.get_mut(kanban).unwrap().rect = Rect::new(-100.0, 40.0, 220.0, 200.0);
+    });
+    let press = at(&ws, cx, (10.0, 40.0 + chrome::TITLE_H / 2.0));
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                button: MouseButton::Left,
+                position: point(px(press.0), px(press.1)),
+                modifiers: Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+    })
+    .unwrap();
+    assert!(ws.read_with(cx, |ws, _| ws.moving(kanban)), "held");
+    for _ in 0..3 {
+        frame(handle, cx);
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        ws.read_with(cx, |ws, _| ws.space.canvas.camera.origin),
+        Point::new(0.0, 0.0)
+    );
+}
+
 #[gpui_kit::test]
 fn a_dragged_block_snaps_to_a_neighbour_and_shows_a_guide_until_release(cx: &mut TestAppContext) {
     let (handle, ws) = open(cx);

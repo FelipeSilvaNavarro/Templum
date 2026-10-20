@@ -502,6 +502,15 @@ impl Body {
 
 enum Drag {
     Canvas(Gesture),
+    /// A block, or every selected block, held by its title (`gesture` is a `Move` or `MoveGroup`):
+    /// pressed at `from`, the pointer now at `pointer` (canvas points). Near the canvas's edge,
+    /// once it is past a click, the camera moves, since when the last frame moved it (`scrolled`).
+    Held {
+        gesture: Gesture,
+        from: Point,
+        pointer: Point,
+        scrolled: Option<Instant>,
+    },
     /// Selecting text in a block's terminal.
     Select(BlockId),
     /// A press the program in a terminal heard (it asked for the mouse): its moves, at another
@@ -549,6 +558,18 @@ enum Drag {
         from: BlockId,
         to: Point,
     },
+}
+
+impl Drag {
+    /// A title pressed at the canvas point `at`.
+    fn held(gesture: Gesture, at: Point) -> Self {
+        Drag::Held {
+            gesture,
+            from: at,
+            pointer: at,
+            scrolled: None,
+        }
+    }
 }
 
 /// A workspace in grid mode (docs/specs/grid.md): some of its blocks tiled over its area, at
