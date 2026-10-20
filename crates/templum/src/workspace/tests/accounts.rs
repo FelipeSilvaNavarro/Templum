@@ -2,7 +2,7 @@
 //! Its name and its command). Every test points the commands folder and the agents' own folders
 //! at temporary ones: none reaches the person's `~/.local/bin` or `~/.claude`.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::*;
 use crate::agents::{AccountDraft, COMMANDS, OWN_FOLDERS};
@@ -163,7 +163,6 @@ fn a_file_of_someone_else_is_no_accounts_command(cx: &mut TestAppContext) {
     });
     assert!(ws.read_with(cx, |ws, _| ws.commands["claudinho"].is_err()));
     assert!(!dirs.is_own("claudinho"));
-    let _: &Path = dirs.commands.path();
 }
 
 #[gpui_kit::test]

@@ -531,6 +531,7 @@ pub(crate) fn make_command(
         .iter()
         .find(|a| a.id == account.kind.agent)
         .map_or(account.kind.agent, |a| a.title.as_str());
+    let home = std::env::home_dir();
     let command = command::Command {
         id,
         title,
@@ -538,6 +539,7 @@ pub(crate) fn make_command(
         var: account.kind.var,
         folder: &account.folder,
         data,
+        home: home.as_deref(),
     };
     match command::write(&dir, &command) {
         Ok(_) => (
@@ -1293,7 +1295,7 @@ mod tests {
             p("claudio").as_deref(),
             Some("claudio is already an agent or an account in Templum")
         );
-        for word in ["cd", "source", "end", "test"] {
+        for word in ["cd", "source", "end", "test", "coproc"] {
             assert_eq!(p(word), Some(format!("{word} is a word of your shell")));
         }
     }
@@ -1328,6 +1330,7 @@ mod tests {
             var: "CLAUDE_CONFIG_DIR",
             folder,
             data,
+            home: None,
         };
         write(commands, &of("claudio", Path::new("/x"))).unwrap();
         assert!(

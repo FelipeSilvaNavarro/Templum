@@ -1079,6 +1079,27 @@ mod tests {
             typed_pi(&term, &home, "unset TEMPLUM_PI_ARGS");
         }
 
+        /// A `}` is only a brace in command position when the person's .zshenv sets
+        /// `ignore_close_braces` or `ignore_braces`: ours has none outside it, so the whole file
+        /// still parses and the account is a command.
+        #[test]
+        fn zsh_with_ignore_braces_still_has_the_accounts() {
+            for option in ["ignore_close_braces", "ignore_braces"] {
+                let home = Home::new();
+                home.write(".zshrc", format!("cd '{}'\n", home.start()));
+                let modules = std::env::var("MODULE_PATH")
+                    .map(|m| format!("module_path=('{m}')\n"))
+                    .unwrap_or_default();
+                home.write(".zshenv", format!("{modules}setopt {option}\n"));
+                let path = home.fake_agents();
+                let accounts = home.accounts();
+                let Some(term) = home.spawn_with("zsh", &[], &with_agents(&path, &accounts)) else {
+                    return;
+                };
+                typed_account(&term, &home);
+            }
+        }
+
         /// The person's alias and function, read before Templum defines its own (bash) or after
         /// (zsh's .zshrc): the alias adds its words after Templum's; the function runs instead.
         fn keeps_the_persons_alias_and_function(program: &str, file: &str) {

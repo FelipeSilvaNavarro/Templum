@@ -1520,10 +1520,18 @@ db2baa3.
 - [ ] **A `.cmd` passes the person's words through cmd.** On Windows, `claudinho.cmd` ends in `claude %*`
   (`files`, `crates/templum-usage/src/accounts/command.rs:157`): a word with `"`, `%` or `^` may reach the agent
   changed, as with npm's commands. Fix: have the `.cmd` call a PowerShell script that passes its arguments through.
-- [ ] **The command is checked against the computer's programs only when Templum makes it.** `make_command`
-  (`crates/templum/src/agents.rs:515`) refuses an id that is already a program when it writes the command; one
-  installed later with the same name wins or loses by the order of the PATH, and nothing says so. Fix: look again at
-  each start and say on the row that the command is shadowed.
+- [ ] **A folder outside home with non-ASCII letters is garbled in the `.cmd`.** `in_cmd`
+  (`crates/templum-usage/src/accounts/command.rs:161`) writes only the home prefix as `%USERPROFILE%`; the rest of the
+  `.cmd` is UTF-8, which cmd reads in the console's code page (850, 437), so a folder chosen as `D:\Contas\João` (and
+  an absolute program path with such letters, in the `.cmd`'s last line) reaches `CLAUDE_CONFIG_DIR` as `JoÃ£o`: a
+  different folder, with no login. What a person sees: the account asks to log in again when run from cmd or
+  PowerShell. Fix: write `chcp 65001 >nul` before the `set` (and the program's line) and the code page back after.
+- [ ] **A program installed later with the account's name is told only at the next start.** `make_command`
+  (`crates/templum/src/agents.rs:515`) looks for the id as a program at each start and each change of the agents
+  (`sync_commands`), and then the row says "No command: claudinho is already a command: …"; until then nothing says
+  so. Templum's own file stays in the commands folder and the account stays in `TEMPLUM_ACCOUNTS` (`accounts_env`
+  looks for no programs), so its function still runs in Templum's terminals; in any other, the order of the PATH
+  decides. Fix: look again when the PATH changes, and remove the file or say on the row that it is shadowed.
 - [ ] **An account taken out of config.toml by hand keeps its command.** `sync_commands`
   (`crates/templum/src/workspace/preferences.rs:149`) only writes: the file, which still opens the account's folder,
   stays in `~/.local/bin` until the person deletes it. Fix: at start, remove the commands that carry this data
@@ -1549,7 +1557,10 @@ db2baa3.
 - [ ] **`SHELL_WORDS` misses builtins whose function would break a shell.** `crates/templum-usage/src/accounts/command.rs:9`:
   a function named `compopt` replaces the builtin bash-completion calls at each Tab; fish's `path`, `math`, `random`,
   `abbr`, `argparse`, `commandline`, `set_color` and zsh's `zparseopts`, `zformat`, `vared`, `float`, `nocorrect` do
-  the same, or fail to define and print an error at each shell start. Fix: add them to the list.
+  the same, or fail to define and print an error at each shell start. On Windows, PowerShell's aliases (`start`, `h`,
+  `r`, `gc`, …) win over the function, and cmd's builtins (`start`, `dir`, `path`, `title`, `color`, `copy`, …) over
+  the `.cmd`, so `claudinho` named so runs something else. Fix: add them to the list (the Windows ones only on
+  Windows: `copy` or `r` are fine names elsewhere).
 - [ ] **A Windows device name is a valid account name.** `aux`, `con`, `nul`, `prn`, `com1`–`com9`, `lpt1`–`lpt9` pass
   every rule (`name_problem`, `crates/templum/src/agents.rs:476`), but Windows can't make `accounts\aux` or `aux.cmd`.
   Fix: refuse them with their own words, on every OS.
@@ -1576,10 +1587,14 @@ db2baa3.
   Templum terminal is covered by the shell tests (bash, zsh, fish and PowerShell in a PTY). Not seen: the block
   titled "Claude Code (claudinho)" with its status dot moving, with a real Claude Code. Fix: do the spec's "Manual
   (card 65)" once.
-- [ ] **Not checked: macOS, Windows' cmd, PowerShell and Git Bash, and bash 3.2.** The commands, the functions in
-  bash 3.2 (macOS's), the agent's environment read through sysinfo on macOS and Windows, and `cargo check` of the
-  `templum` crate for Windows (its C dependencies need MSVC's `lib.exe`, missing here) are left to CI and to a run on
-  those systems. Fix: run `claudinho` in each by hand.
+- [ ] **Not checked: bash 3.2, Windows' cmd and Git Bash, and the agent's environment on macOS and Windows.** zsh,
+  fish and PowerShell were run in the PTY tests, and `cargo clippy -p templum -p templum-usage -p templum-terminal
+  --all-targets --target x86_64-pc-windows-msvc -- -D warnings` passes (with a stand-in C compiler: the C dependencies
+  need MSVC's `lib.exe`, missing here). Not run: the functions in bash 3.2 (macOS's), the `.cmd` in cmd and the
+  command in Git Bash, and the read of an agent's folder variable through sysinfo on macOS and Windows:
+  `a_found_agents_folder_variable_is_read` (`crates/templum-terminal/src/terminal.rs:1651`) starts a `#!/bin/sh`
+  script, so it runs on Linux only and CI never covers the other two. Fix: run `claudinho` in each by hand, and make
+  the test start a copy of `/bin/sleep` named `claude` on macOS and a copy of a Windows program on Windows.
 
 ## Templum Agent
 

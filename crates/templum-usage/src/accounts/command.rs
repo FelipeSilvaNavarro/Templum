@@ -24,6 +24,7 @@ pub const SHELL_WORDS: &[&str] = &[
     "complete",
     "contains",
     "continue",
+    "coproc",
     "count",
     "data",
     "declare",
@@ -137,6 +138,8 @@ pub struct Command<'a> {
     pub folder: &'a Path,
     /// Templum's data folder: two Templums keep their commands apart by it.
     pub data: &'a Path,
+    /// The person's home folder, which a `.cmd` names by `%USERPROFILE%` (see `in_cmd`).
+    pub home: Option<&'a Path>,
 }
 
 fn names(id: &str, windows: bool) -> Vec<String> {
@@ -150,6 +153,23 @@ fn names(id: &str, windows: bool) -> Vec<String> {
 fn word(s: &str) -> bool {
     s.chars()
         .all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c))
+}
+
+/// `folder` as a `.cmd` has it in `set`: `%` doubled, and the home folder written as
+/// `%USERPROFILE%`. Not the letters: cmd reads a batch file in the console's code page (850, 437),
+/// where the UTF-8 of `João` is garbage, and every account made in Templum's data folder is under
+/// home. Strings, not `Path`s: `C:\Users\João` is no path on Linux, where this is tested.
+fn in_cmd(folder: &Path, home: Option<&Path>) -> String {
+    let folder = folder.display().to_string();
+    let escape = |s: &str| s.replace('%', "%%");
+    let home = home.map(|h| h.display().to_string());
+    let home = home.as_deref().map(|h| h.trim_end_matches(['\\', '/']));
+    match home.and_then(|h| folder.strip_prefix(h).filter(|_| !h.is_empty())) {
+        Some(rest) if rest.is_empty() || rest.starts_with(['\\', '/']) => {
+            format!("%USERPROFILE%{}", escape(rest))
+        }
+        _ => escape(&folder),
+    }
 }
 
 /// Each file of the command, by name, with its text: a script for sh (and Git Bash on Windows),
@@ -184,7 +204,7 @@ pub fn files(c: &Command, windows: bool) -> Vec<(String, String)> {
             "@echo off\r\nrem {marker}\r\nrem {}\r\nrem Deleted with the account; Templum writes it again when it changes.\r\nsetlocal\r\nset \"{}={}\"\r\n{program} %*\r\nexit /b %errorlevel%\r\n",
             made(">"),
             c.var,
-            c.folder.display().to_string().replace('%', "%%"),
+            in_cmd(c.folder, c.home),
         );
         files.push((format!("{}.cmd", c.id), cmd));
     }
@@ -283,6 +303,7 @@ mod tests {
             var: "CLAUDE_CONFIG_DIR",
             folder,
             data,
+            home: None,
         }
     }
 
@@ -307,6 +328,53 @@ mod tests {
             rem Deleted with the account; Templum writes it again when it changes.\r\n\
             setlocal\r\nset \"CLAUDE_CONFIG_DIR=/d/it's 100%%/accounts/claudinho\"\r\nclaude %*\r\nexit /b %errorlevel%\r\n";
         assert_eq!(windows[1], ("claudinho.cmd".to_string(), cmd.to_string()));
+    }
+
+    /// cmd reads a batch file in the console's code page: the home folder, whose name may have
+    /// letters UTF-8 writes in two bytes, is the variable, and a `%` after it is doubled.
+    #[test]
+    fn a_cmd_names_the_home_folder_by_its_variable() {
+        let data = Path::new(r"C:\Users\João\AppData\Roaming\templum");
+        let set = |folder: &str, home: Option<&str>| {
+            let c = Command {
+                home: home.map(Path::new),
+                ..claudinho(Path::new(folder), data)
+            };
+            let cmd = &files(&c, true)[1].1;
+            let line = cmd.lines().find(|l| l.starts_with("set ")).unwrap();
+            line.to_string()
+        };
+        let folder = r"C:\Users\João\AppData\Roaming\templum\accounts\claudinho";
+        let want =
+            r#"set "CLAUDE_CONFIG_DIR=%USERPROFILE%\AppData\Roaming\templum\accounts\claudinho""#;
+        assert_eq!(set(folder, Some(r"C:\Users\João")), want);
+        // A home with a trailing separator is the same home.
+        assert_eq!(set(folder, Some(r"C:\Users\João\")), want);
+        // The `%` of the rest is doubled; the variable's is not.
+        assert_eq!(
+            set(r"C:\Users\João\100%", Some(r"C:\Users\João")),
+            r#"set "CLAUDE_CONFIG_DIR=%USERPROFILE%\100%%""#
+        );
+        // Another folder that only starts with the same letters isn't under home.
+        assert_eq!(
+            set(r"C:\Users\João2\x", Some(r"C:\Users\João")),
+            r#"set "CLAUDE_CONFIG_DIR=C:\Users\João2\x""#
+        );
+        // Outside home, or with no home: the folder as it is.
+        assert_eq!(
+            set(r"D:\Contas\a", Some(r"C:\Users\João")),
+            r#"set "CLAUDE_CONFIG_DIR=D:\Contas\a""#
+        );
+        assert_eq!(
+            set(r"C:\Users\João\x", None),
+            r#"set "CLAUDE_CONFIG_DIR=C:\Users\João\x""#
+        );
+        // The script for sh keeps the whole path.
+        let c = Command {
+            home: Some(Path::new(r"C:\Users\João")),
+            ..claudinho(Path::new(folder), data)
+        };
+        assert!(files(&c, true)[0].1.contains(&format!("='{folder}'\n")));
     }
 
     #[test]

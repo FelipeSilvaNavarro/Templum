@@ -146,7 +146,7 @@ if [[ -o interactive && -z ${__templum_installed-} ]]; then
         [[ -n "$var" && "$var" != *[^A-Za-z0-9_]* && "$var" != [0-9]* ]] || builtin return 1
         # An account deleted since this terminal started has no folder: its command on the PATH,
         # which went with it. Templum makes the folder of every account at each start.
-        [[ -d "$folder" ]] || { command "$id" "$@"; builtin return }
+        [[ -d "$folder" ]] || { command "$id" "$@"; builtin return; }
         builtin local -x "$var=$folder"
         "$prog" "$@"
     }

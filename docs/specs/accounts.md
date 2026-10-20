@@ -329,7 +329,8 @@ said under the field:
    of that name in Templum's terminals would break the shell; a file would shadow the builtin in scripts.
 5. **Not a command on this computer:** a program of that name where Templum looks for agents (the PATH the person's
    shell gets, Windows' registry Path, and the folders agents install into, `locate`), other than its own command:
-   "claudinho is already a command: /usr/bin/claudinho". On Windows any of PATHEXT's extensions counts.
+   "claudinho is already a command: /usr/bin/claudinho". On Windows `.exe`, `.cmd`, `.bat` and `.ps1` count, as for
+   agents; the other extensions of PATHEXT (`.com`, `.vbs`, …) are not looked for.
 6. **Not a file of the commands folder** other than its own command (`claudinho`, and on Windows `claudinho.*`), on
    PATH or not: the same words with its path.
 7. **Not a folder Templum still keeps** (`<data>/accounts/claudinho`, left by a change of folder in config.toml): the
@@ -374,7 +375,8 @@ exit /b %errorlevel%
   naming its folder (`AgentEntry::var`: Gemini CLI's names the folder that holds `.gemini/`). Not Templum's flags: it
   is `claude` typed by hand on another login. In Templum's terminals a function adds Templum's
   ([Typed in a terminal](#typed-in-a-terminal)). The folder is written in single quotes, a `'` as `'\''`; in the
-  `.cmd`, a `%` as `%%`.
+  `.cmd`, a `%` as `%%` and the home folder as `%USERPROFILE%`, since cmd reads a batch file in the console's code
+  page, not in UTF-8.
 - **Templum's own:** a file of the commands folder is Templum's command for an account when its second line is the
   marker `templum-account <id> <data>` (after `# ` or `rem `), naming that id and this Templum's data folder: an
   installed Templum and a `--dev` one, or two data folders, keep theirs apart, and each sees the other's as a command
@@ -670,8 +672,10 @@ fixture account (`CLAUDE2` in `crates/templum/src/workspace/tests/agents.rs`, an
 Each goes to [docs/minors.md](../minors.md) under **Agent accounts** with the code that has it.
 
 - A `.cmd` passes the person's words through cmd: a word with `"`, `%` or `^` may change, as with npm's commands.
-- The command is checked against the computer's programs only when Templum makes it: a program of the same name
-  installed later wins or loses by the order of PATH.
+- A program of the same name installed later is told only at the next start of Templum (or change of the agents),
+  when the account's row says "No command: claudinho is already a command: …". Until then nothing says so; after it
+  Templum's own file stays, and the account stays in `TEMPLUM_ACCOUNTS`, so its function still runs in Templum's
+  terminals. In any other terminal the order of PATH decides.
 - An account taken out of config.toml by hand keeps its command, which still opens its folder.
 - A block where `claudinho` ran stays the account's after the agent quits, until another agent is found there.
 - A command made while `~/.local/bin` isn't on PATH works in other terminals only once the person adds it.
@@ -735,7 +739,7 @@ in (a block of the account, its login typed) and deletes one (the folder gone, t
 moving an account with a block of it open (its shell alone too) is refused, and a block of a deleted account comes
 back plain.
 
-**Card 65.** Unit (`templum-usage`'s `command`): the sh and `.cmd` texts for a folder with a space, a `'` and a `%`;
+**Card 65.** Unit (`templum-usage`'s `command`): the sh and `.cmd` texts for a folder with a space, a `'` and a `%`, and the `.cmd`'s home folder as `%USERPROFILE%`;
 written 0755 in a temporary folder through a renamed file, and Templum's own; a file without the marker, or with
 another data folder's, never rewritten nor removed; written again only when its text differs; removing one leaves the
 others. Unit (`templum`): each rule of [Its name](#its-name) with its words (a program in a temporary PATH folder, a
