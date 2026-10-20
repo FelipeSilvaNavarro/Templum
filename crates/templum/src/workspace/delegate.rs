@@ -762,6 +762,14 @@ impl Workspace {
         }
         let worker = pane.term.id().to_string();
         let usage = pane.usage.clone();
+        // A task for an agent without Templum's tools says why, and what else ends it.
+        let no_tools = (mine.is_none() && !self.has_tools(&worker)).then(|| {
+            format!(
+                " {block} has no Templum tools ({}): it can still answer with `templum reply -` \
+                 in its shell; else its turn's end or its screen going still ends the task.",
+                self.no_tools_why(pane)
+            )
+        });
         let id = mine.unwrap_or_else(|| {
             self.next_task += 1;
             self.next_task
@@ -810,7 +818,10 @@ impl Workspace {
         } else {
             Outcome::Now(Reply::ok(match mine {
                 Some(_) => format!("Typed into {block} as a change to task t{id}."),
-                None => format!("Handed to {block} as task t{id}."),
+                None => format!(
+                    "Handed to {block} as task t{id}.{}",
+                    no_tools.unwrap_or_default()
+                ),
             }))
         }
     }

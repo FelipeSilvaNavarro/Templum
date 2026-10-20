@@ -165,6 +165,10 @@ impl Workspace {
             Incoming::Request { id, method, params } => {
                 let answer = match method.as_str() {
                     "initialize" => {
+                        // An agent's Templum server started: its terminal has Templum's tools.
+                        if hello.client == "mcp" && !off {
+                            self.tool_conns.insert(conn, hello.terminal.clone());
+                        }
                         let instructions = if off {
                             OFF_INSTRUCTIONS.to_string()
                         } else {
@@ -630,9 +634,78 @@ impl Workspace {
                     "not connected"
                 };
                 let state = agent_state(space, b.id);
-                format!("{uid}  {kind}  {title}{folder}  {tie}{state}")
+                let tools = match space.terminal(b.id) {
+                    Some(pane) if pane.seen.agent.is_some() && !self.has_tools(pane.term.id()) => {
+                        ", no Templum tools"
+                    }
+                    _ => "",
+                };
+                format!("{uid}  {kind}  {title}{folder}  {tie}{state}{tools}")
             })
             .collect()
+    }
+
+    /// The agent in `terminal` has Templum's tools: its MCP client said `initialize` and is still
+    /// connected (docs/specs/agent-protocol.md, 8).
+    pub(super) fn has_tools(&self, terminal: &str) -> bool {
+        self.tool_conns.values().any(|t| t == terminal)
+    }
+
+    /// Why the agent of `pane` has no Templum tools, the first reason that fits, as its master is
+    /// told (docs/specs/agent-protocol.md, 8).
+    pub(super) fn no_tools_why(&self, pane: &Pane) -> String {
+        use templum_terminal::Agent;
+        let name = pane.seen.agent.as_deref().unwrap_or_default();
+        let agent = Agent::from_name(name);
+        if !self.config.connections.enabled {
+            return "connections are off (Settings ▸ Connections ▸ Agents in Templum)".into();
+        }
+        if self.shell_is(pane.shell.as_ref().map(|s| s.program.as_str()), "wsl") {
+            return "it runs in WSL, where Templum can't give it its server".into();
+        }
+        match agent {
+            Some(Agent::GEMINI) => {
+                // An account's extensions are its folder's.
+                let dir = match pane
+                    .account
+                    .as_ref()
+                    .and_then(|id| self.agents.iter().find(|a| &a.id == id))
+                    .and_then(|a| a.account.as_ref())
+                {
+                    Some(a) => Some(a.kind.state_dir(&a.folder)),
+                    None => self
+                        .data_dir
+                        .as_deref()
+                        .and_then(|data| crate::agents::dirs(data).gemini),
+                };
+                if dir.is_some_and(|dir| templum_usage::gemini::installed(&dir)) {
+                    "Gemini CLI starts no server in a folder it doesn't trust".into()
+                } else {
+                    "Templum's Gemini CLI extension isn't installed (Settings ▸ Connections ▸ \
+                     Gemini CLI ▸ Install)"
+                        .into()
+                }
+            }
+            Some(Agent::PI) => "Pi has MCP only from 0.99".into(),
+            Some(
+                agent @ (Agent::CLAUDE
+                | Agent::CODEX
+                | Agent::COPILOT
+                | Agent::OPENCODE
+                | Agent::KILO
+                | Agent::QWEN),
+            ) => format!(
+                "its server hasn't connected: it is still starting, its start failed, or it was \
+                 started without Templum's words (command {}, a shell without Templum's \
+                 integration)",
+                agent.command()
+            ),
+            _ => format!(
+                "Templum can't give {} its server for one session: add `templum mcp` to its own \
+                 MCP servers (Settings ▸ Connections ▸ Other agents)",
+                agent.map_or(name, |a| a.title())
+            ),
+        }
     }
 
     /// What `initialize` tells the agent in `terminal` about itself.

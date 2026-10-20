@@ -253,7 +253,7 @@ impl Workspace {
     /// A terminal running `shell` (a program; None: new terminals' default) runs the shell named
     /// `name` (its program's file name, in any case: `PowerShell.exe` is `powershell`): the
     /// terminal's own, else the configured one, else the system's default.
-    fn shell_is(&self, shell: Option<&str>, name: &str) -> bool {
+    pub(super) fn shell_is(&self, shell: Option<&str>, name: &str) -> bool {
         let program = shell.map(str::to_string).or_else(|| {
             self.config
                 .shell

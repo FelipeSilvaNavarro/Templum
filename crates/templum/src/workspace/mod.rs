@@ -1281,6 +1281,10 @@ pub struct Workspace {
     pub(crate) last_chime: Option<std::time::Instant>,
     /// The last task's id.
     pub(crate) next_task: u64,
+    /// The MCP connections of the agents' Templum servers (`templum mcp`, which said `initialize`
+    /// while connections were on), by connection: the terminal each one is in. A terminal in it
+    /// has Templum's tools (docs/specs/agent-protocol.md, 8).
+    pub(crate) tool_conns: HashMap<u64, String>,
     /// What tasks' agents did, waiting to be typed into the agents that handed them over, oldest
     /// first (`delegate.rs`).
     pub(crate) notices: Vec<delegate::Notice>,
@@ -1637,6 +1641,7 @@ impl Workspace {
             next_wait: 0,
             last_chime: None,
             next_task: 0,
+            tool_conns: HashMap::new(),
             templum_agent: Default::default(),
             notices: Vec::new(),
             schedules: Vec::new(),

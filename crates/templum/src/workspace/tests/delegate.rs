@@ -6,7 +6,7 @@ use std::time::Instant;
 use serde_json::json;
 use templum_canvas::Wire;
 
-use super::bus::{after, answered, call, call_later, event, me, screen_with};
+use super::bus::{after, answered, call, call_later, event, has_server, me, screen_with};
 #[cfg(unix)]
 use super::bus::{bus_note, result_of, screen_until};
 use super::*;
@@ -181,7 +181,8 @@ fn done_task(
 fn delegate_types_the_header_the_task_and_enter(cx: &mut TestAppContext) {
     let (handle, ws, mine, theirs) = two_agents(cx);
     let (terminal, uid) = me(&ws, cx, mine);
-    let (_, them) = me(&ws, cx, theirs);
+    let (worker, them) = me(&ws, cx, theirs);
+    has_server(handle, &ws, cx, &worker, 7);
     let task = json!({ "block": them, "task": "fix the tests\nthen push" });
     let (failed, text) = call(handle, &ws, cx, &terminal, "delegate", task);
     assert_eq!(
@@ -272,6 +273,108 @@ fn a_task_and_its_change_say_how_to_answer(cx: &mut TestAppContext) {
     call(handle, &ws, cx, &terminal, "delegate", task);
     screen_with(&ws, cx, theirs, "do it, then answer the task with reply.");
     screen_with(&ws, cx, theirs, "When task t1 is done");
+}
+
+/// An agent whose MCP client never said `initialize` has no Templum tools: the master is told why,
+/// and what else ends the task (docs/specs/agent-protocol.md, 8).
+#[gpui_kit::test]
+fn delegate_says_why_an_agent_has_no_tools(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let hand = |cx: &mut TestAppContext| {
+        // The task before it is over.
+        ws.update(cx, |ws, _| {
+            ws.space.terminal_mut(theirs).unwrap().handed = None
+        });
+        call(
+            handle,
+            &ws,
+            cx,
+            &terminal,
+            "delegate",
+            json!({ "block": them, "task": "go" }),
+        )
+    };
+    let (failed, text) = hand(cx);
+    assert!(!failed, "{text}");
+    assert!(
+        text.starts_with(&format!(
+            "Handed to {them} as task t1. {them} has no Templum tools (its server hasn't connected: "
+        )) && text.ends_with(
+            "): it can still answer with `templum reply -` in its shell; else its turn's end or \
+             its screen going still ends the task."
+        ),
+        "{text}"
+    );
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(theirs).unwrap().seen.agent = Some("amp".into())
+    });
+    let (_, text) = hand(cx);
+    assert!(
+        text.contains(
+            "(Templum can't give Amp its server for one session: add `templum mcp` to its own MCP \
+             servers (Settings ▸ Connections ▸ Other agents)):"
+        ),
+        "{text}"
+    );
+    has_server(handle, &ws, cx, &worker, 7);
+    let (failed, text) = hand(cx);
+    assert_eq!(
+        (failed, text.as_str()),
+        (false, format!("Handed to {them} as task t3.").as_str())
+    );
+}
+
+/// The first reason that fits (docs/specs/agent-protocol.md, 8).
+#[gpui_kit::test]
+fn the_reason_an_agent_has_no_tools_is_the_first_that_fits(cx: &mut TestAppContext) {
+    let (_, ws, _, theirs) = two_agents(cx);
+    let data = tempfile::tempdir().unwrap();
+    let own = tempfile::tempdir().unwrap();
+    crate::agents::OWN_FOLDERS.set(Some(own.path().to_path_buf()));
+    ws.update(cx, |ws, _| ws.data_dir = Some(data.path().to_path_buf()));
+    let why = |cx: &mut TestAppContext, agent: &str| {
+        ws.update(cx, |ws, _| {
+            ws.space.terminal_mut(theirs).unwrap().seen.agent = Some(agent.into())
+        });
+        ws.read_with(cx, |ws, _| {
+            ws.no_tools_why(ws.space.terminal(theirs).unwrap())
+        })
+    };
+    assert!(
+        why(cx, "claude").starts_with("its server hasn't connected: it is still starting"),
+        "{}",
+        why(cx, "claude")
+    );
+    assert_eq!(why(cx, "pi"), "Pi has MCP only from 0.99",);
+    assert_eq!(
+        why(cx, "gemini"),
+        "Templum's Gemini CLI extension isn't installed (Settings ▸ Connections ▸ Gemini CLI ▸ Install)"
+    );
+    // Installed, Gemini CLI still starts no server in a folder it doesn't trust.
+    let gemini = crate::agents::dirs(data.path()).gemini.unwrap();
+    std::fs::create_dir_all(gemini.join("extensions").join("templum")).unwrap();
+    assert_eq!(
+        why(cx, "gemini"),
+        "Gemini CLI starts no server in a folder it doesn't trust"
+    );
+    ws.update(cx, |ws, _| {
+        ws.space.terminal_mut(theirs).unwrap().shell = Some(templum_terminal::ShellOption {
+            label: "WSL".into(),
+            program: "C:/Windows/System32/wsl.exe".into(),
+            args: Vec::new(),
+        })
+    });
+    assert_eq!(
+        why(cx, "claude"),
+        "it runs in WSL, where Templum can't give it its server"
+    );
+    ws.update(cx, |ws, _| ws.config.connections.enabled = false);
+    assert_eq!(
+        why(cx, "claude"),
+        "connections are off (Settings ▸ Connections ▸ Agents in Templum)"
+    );
 }
 
 #[gpui_kit::test]

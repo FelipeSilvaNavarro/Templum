@@ -2796,7 +2796,8 @@ fn waiting_for_its_person_is_told_once(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn delegate_hands_a_task_under_the_templum_agents_line(cx: &mut TestAppContext) {
     let (handle, ws, _, theirs) = super::delegate::two_agents(cx);
-    let (_, them) = me(&ws, cx, theirs);
+    let (worker, them) = me(&ws, cx, theirs);
+    super::bus::has_server(handle, &ws, cx, &worker, 7);
     // The person's agent runs it as its mode lets it: the person allows it first.
     let answers = control_later(
         handle,

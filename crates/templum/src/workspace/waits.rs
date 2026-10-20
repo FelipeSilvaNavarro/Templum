@@ -302,6 +302,7 @@ impl Workspace {
     /// The connection `conn` ended (its agent quit, its command exited): what it waited for has
     /// no one to answer.
     pub(super) fn closed(&mut self, conn: u64, cx: &mut Context<Self>) {
+        self.tool_conns.remove(&conn);
         let gone: Vec<Wait> = self.waits.extract_if(.., |w| w.conn == conn).collect();
         for wait in &gone {
             self.unwatch(wait);
