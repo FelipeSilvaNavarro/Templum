@@ -155,8 +155,8 @@ impl Workspace {
 
     /// A saved terminal `saved`, just started as the terminal `id`: who opened it, and, when
     /// `resume`, its agent (one Templum knows) typed back with its session when it was found, and
-    /// its model and effort when it can type them safely (a hand-edited file may hold others).
-    /// The shell reads it once it is ready.
+    /// its model and effort when it can type them safely (a hand-edited file may hold others),
+    /// worded for the shell the block runs. The shell reads it once it is ready.
     fn restore_terminal(
         &mut self,
         id: BlockId,
@@ -207,9 +207,16 @@ impl Workspace {
             .as_ref()
             .and_then(|r| self.config.roles.get(r)?.args.clone());
         let args = agent.launch_args_with(model, effort, words.as_deref());
+        // For the shell the block runs, not the default's.
+        let shell = self
+            .space
+            .terminal(id)
+            .and_then(|p| p.shell.as_ref())
+            .map(|s| s.program.as_str());
         let line = format!(
             "{}\r",
-            self.typed(
+            self.typed_in(
+                shell,
                 Some(agent),
                 &format!("{command}{}", args.as_deref().unwrap_or(""))
             )

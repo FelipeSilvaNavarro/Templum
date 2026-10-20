@@ -612,8 +612,9 @@ impl Workspace {
                     // terminals: an empty one names none.
                     _ => vec![("TEMPLUM_BUS".to_string(), String::new())],
                 };
-                // For a `claude` or `codex` typed there, always (empty: not that Templum's either).
-                env.extend(self.agent_env());
+                // For a `claude` or `codex` typed there, always (empty: not that Templum's either),
+                // by the terminal's own shell.
+                env.extend(self.agent_env(shell.as_ref().map(|s| s.program.as_str())));
                 env.extend(vars);
                 env
             },

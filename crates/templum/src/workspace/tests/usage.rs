@@ -152,7 +152,7 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
     let (_, ws) = open_in(cx, None, Some(data.clone()));
     ws.update(cx, |ws, _| {
         let word = |ws: &Workspace, key: &str| {
-            let env = ws.agent_env();
+            let env = ws.agent_env(None);
             env.into_iter().find(|(k, _)| k == key).unwrap().1
         };
         let p = |name: &str| {
@@ -230,7 +230,7 @@ fn new_terminals_carry_what_templum_types_after_claude_and_codex(cx: &mut TestAp
     let (_, bare) = open_in(cx, None, None);
     bare.update(cx, |ws, _| {
         assert_eq!(
-            ws.agent_env(),
+            ws.agent_env(None),
             [
                 ("TEMPLUM_CLAUDE_ARGS".to_string(), String::new()),
                 ("TEMPLUM_CODEX_ARGS".to_string(), String::new()),
@@ -703,10 +703,40 @@ fn blocks_templum_opens_get_their_agents_variable(cx: &mut TestAppContext) {
         assert_eq!(ws.agent_vars(opencode.as_ref(), &unset), []);
         // Every terminal gets an empty `TEMPLUM_HOOKED`: not a Templum's it was started from.
         let hooked = ws
-            .agent_env()
+            .agent_env(None)
             .into_iter()
             .find(|(k, _)| k == "TEMPLUM_HOOKED");
         assert_eq!(hooked, Some(("TEMPLUM_HOOKED".to_string(), String::new())));
+    });
+}
+
+/// The words for agents typed in a terminal follow its own shell, not the default
+/// (docs/specs/shells.md, Agents typed in a chosen shell).
+#[gpui_kit::test]
+fn a_terminals_agent_words_follow_its_own_shell(cx: &mut TestAppContext) {
+    let parent = tempfile::tempdir().unwrap();
+    let data = parent.path().join("Templum Data");
+    std::fs::create_dir(&data).unwrap();
+    let (_, ws) = open_in(cx, None, Some(data));
+    ws.update(cx, |ws, _| {
+        let word = |ws: &Workspace, shell: Option<&str>, key: &str| {
+            ws.agent_env(shell)
+                .into_iter()
+                .find(|(k, _)| k == key)
+                .unwrap()
+                .1
+        };
+        ws.config.shell.program = None;
+        assert_ne!(word(ws, None, "TEMPLUM_CLAUDE_ARGS"), "");
+        // Forward slashes: a file name on every OS.
+        let wsl = "C:/Windows/System32/wsl.exe";
+        assert_eq!(word(ws, Some(wsl), "TEMPLUM_CLAUDE_ARGS"), "");
+        #[cfg(unix)]
+        {
+            ws.config.shell.program = Some("powershell".into());
+            assert_eq!(word(ws, None, "TEMPLUM_CODEX_ARGS"), "");
+            assert_ne!(word(ws, Some("/bin/bash"), "TEMPLUM_CODEX_ARGS"), "");
+        }
     });
 }
 

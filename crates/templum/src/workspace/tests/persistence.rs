@@ -867,3 +867,34 @@ fn a_canvas_files_terminal_starts_its_shell(cx: &mut TestAppContext) {
         assert_eq!(ws.space.terminal(blocks[0].id).unwrap().shell, Some(first));
     });
 }
+
+/// A restored agent's resume line is typed for its terminal's shell: none of Templum's words in WSL.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_restored_agents_line_follows_its_terminals_shell(cx: &mut TestAppContext) {
+    use super::bus::screen_with;
+    use templum_terminal::ShellOption;
+    let (data, folder, bin) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    // A shell named `wsl` that only echoes what is typed.
+    let wsl = bin.path().join("wsl");
+    std::os::unix::fs::symlink(templum_terminal::locate("cat").unwrap(), &wsl).unwrap();
+    let (handle, ws) = open_as(cx, Some(quiet()), None, Some(data.path().to_path_buf()));
+    ws.update(cx, |ws, _| {
+        ws.shells = vec![ShellOption {
+            label: "WSL".into(),
+            program: wsl.display().to_string(),
+            args: vec![],
+        }]
+    });
+    let mut item = saved_terminal(folder.path(), Some("claude"), None, None);
+    if let crate::session::Item::Terminal(t) = &mut item {
+        t.shell = Some("WSL".into());
+    }
+    let id = restore(handle, &ws, cx, &item);
+    let shown = screen_with(&ws, cx, id, "claude");
+    assert!(!shown.contains("--settings"), "{shown}");
+}
