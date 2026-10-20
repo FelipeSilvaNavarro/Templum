@@ -139,6 +139,25 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Block `id`'s menu at `at`: the right-click's, and the header's ⋯. The block is focused
+    /// first so its menu acts on it (copy, paste); the selection it is in goes along (Fullscreen
+    /// takes it), read before focusing drops it.
+    pub(crate) fn open_block_menu(
+        &mut self,
+        id: BlockId,
+        at: PixelPoint<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let group = if self.space.selected.contains(&id) {
+            self.space.selected.clone()
+        } else {
+            Vec::new()
+        };
+        self.focus_block(id, window, cx);
+        self.open_menu(Target::Block { id, group }, at, window, cx);
+    }
+
     /// The agents the menus list, and whether each one's program was found.
     fn agents_for_menu(&self) -> Vec<(AgentEntry, bool)> {
         self.agents

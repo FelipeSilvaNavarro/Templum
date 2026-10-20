@@ -23,7 +23,6 @@ use crate::editor;
 use crate::git_block;
 use crate::grid::{self, hsla};
 use crate::kanban;
-use crate::menu::Target;
 use crate::motion::{self, Look};
 use crate::note;
 use crate::workspace::{AgentState, Body, FindBar, Pane, Workspace};
@@ -309,9 +308,9 @@ pub(crate) fn render(
             .flex()
             .items_center()
             .justify_center()
-            // Clear of the fullscreen and close buttons on the right (and of a terminal's chip
+            // Clear of the ⋯, fullscreen and close buttons on the right (and of a terminal's chip
             // on the left), and centered.
-            .px(px(if chip.is_some() { 120.0 } else { 52.0 } * z))
+            .px(px(if chip.is_some() { 120.0 } else { 76.0 } * z))
             .gap(px(6.0 * z))
             .overflow_hidden()
             .gap(px(4.0 * z))
@@ -416,6 +415,32 @@ pub(crate) fn render(
         // The block isn't focused by this press: that would drop the selection going full screen.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(cx.listener(move |ws, _: &ClickEvent, window, cx| ws.fullscreen(id, window, cx)))
+        .test_support();
+
+    // Beside those: the block's right-click menu, for whoever doesn't know it is there.
+    let more = div()
+        .id(("more", n))
+        .absolute()
+        .top(px(4.0 * z))
+        .right(px(52.0 * z))
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(px(20.0 * z))
+        .rounded(px(5.0 * z))
+        .cursor_pointer()
+        .hover(move |s| s.bg(ui.hover))
+        .child(
+            Icon::new(IconName::Ellipsis)
+                .size(px(12.0 * z))
+                .text_color(ui.title),
+        )
+        .tooltip(|window, cx| Tooltip::new("More").build(window, cx))
+        // Pressing it doesn't focus the block: that would drop the selection its menu carries.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(move |ws, e: &ClickEvent, window, cx| {
+            ws.open_block_menu(id, e.position(), window, cx)
+        }))
         .test_support();
 
     // A kanban block's button to every board, on the left of its header (over the title: no move).
@@ -534,7 +559,8 @@ pub(crate) fn render(
         .children(all_checklists)
         .children(tree_toggle)
         .when(hovered, |el| {
-            el.child(fade_in(fullscreen, ("fullscreen-fade", n)))
+            el.child(fade_in(more, ("more-fade", n)))
+                .child(fade_in(fullscreen, ("fullscreen-fade", n)))
                 .child(fade_in(close, ("close-fade", n)))
         });
 
@@ -719,19 +745,11 @@ pub(crate) fn render(
                         cx.stop_propagation();
                     }),
                 )
-                // Its menu acts on it: it is focused first (copy, paste). The selection it is in
-                // goes along (Fullscreen takes it), read before focusing drops it.
+                // Its menu, which the header's ⋯ opens too.
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |ws, e: &MouseDownEvent, window, cx| {
-                        let group = if ws.space.selected.contains(&id) {
-                            ws.space.selected.clone()
-                        } else {
-                            Vec::new()
-                        };
-                        ws.focus_block(id, window, cx);
-                        let target = Target::Block { id, group };
-                        ws.open_menu(target, e.position, window, cx);
+                        ws.open_block_menu(id, e.position, window, cx);
                         cx.stop_propagation();
                     }),
                 )

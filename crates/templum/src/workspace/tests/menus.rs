@@ -220,6 +220,35 @@ fn the_innermost_menu_opens_and_acts_on_what_was_clicked(cx: &mut TestAppContext
     .unwrap();
 }
 
+/// The header's ⋯ opens the menu the right-click opens, for whoever doesn't know the right-click.
+#[gpui_kit::test]
+fn the_headers_more_button_opens_the_blocks_menu(cx: &mut TestAppContext) {
+    let (handle, ws) = open(cx);
+    let terminal = first_id(&ws, cx);
+    let n = terminal.0 as usize;
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        assert!(
+            window.try_find(("more", n)).is_none(),
+            "hidden until hovered"
+        );
+        window.hover(("block", n), cx);
+        window.render_frame(cx);
+        window.click(("more", n), cx);
+        window.render_frame(cx);
+        assert!(ws.read(cx).menu.is_some(), "the menu opened");
+        // Copy, Paste, —, Fullscreen, Move to workspace ▸, Close terminal: the terminal's, as
+        // the right-click's (no Connect to ▸ with no other block).
+        window.within("popup-menu").click(5usize, cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.terminal(terminal).is_none(), "the terminal closed");
+        assert!(ws.menu.is_none(), "a choice closes it");
+    });
+}
+
 #[test]
 fn a_terminals_label_names_its_agent_title_and_folder_once() {
     use crate::workspace::blocks::label;
