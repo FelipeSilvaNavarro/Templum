@@ -1003,14 +1003,24 @@ impl Workspace {
     }
 
     /// Some pane, in any workspace, holds a task the agent in `terminal` handed over (`delegate`,
-    /// or a spawn's prompt), also past its timeout: that agent waits for it
-    /// (docs/specs/agent-protocol.md, 4).
-    pub(super) fn hands_out(&self, terminal: &str) -> bool {
+    /// or a spawn's prompt) since `since`, when its own task was handed to it, also past the
+    /// timeout of that one: the agent waits for it. One handed before its own task isn't what
+    /// this task waits for (docs/specs/agent-protocol.md, 4).
+    pub(super) fn hands_out(&self, terminal: &str, since: Instant) -> bool {
         self.spaces().any(|space| {
-            space
-                .terminals()
-                .any(|(_, pane)| pane.handed.as_ref().is_some_and(|h| h.by == terminal))
+            space.terminals().any(|(_, pane)| {
+                pane.handed
+                    .as_ref()
+                    .is_some_and(|h| h.by == terminal && h.since >= since)
+            })
         })
+    }
+
+    /// The agent in `terminal` is on a task and waits for one it handed out for it.
+    pub(super) fn waits_on_its_own(&self, terminal: &str) -> bool {
+        self.pane(terminal)
+            .and_then(|p| p.handed.as_ref())
+            .is_some_and(|h| self.hands_out(terminal, h.since))
     }
 
     /// The agent in the terminal `terminal` ended its turn, or its session: the task it was on is
@@ -1051,15 +1061,12 @@ impl Workspace {
     /// while it is on a task: it may be done without replying, stopped, or asking its person. The
     /// task stays open (its `reply` still ends it) and its master is told once: a call of its
     /// waiting for the task gets an error, else a notice is typed as a dialog's is. Other agents'
-    /// calls waiting for its turn get `still_screen`: for them its turn ended. Nothing while it
-    /// waits for a task of its own (docs/specs/agent-protocol.md, 5).
+    /// calls waiting for its turn get `still_screen`: for them its turn ended
+    /// (docs/specs/agent-protocol.md, 5).
     pub(super) fn went_quiet(&mut self, terminal: &str, cx: &mut Context<Self>) {
         let Some(handed) = self.pane(terminal).and_then(|p| p.handed.as_ref()) else {
             return;
         };
-        if self.hands_out(terminal) {
-            return;
-        }
         let (id, by, told) = (handed.id, handed.by.clone(), handed.quiet);
         let (asked, others): (Vec<u64>, Vec<u64>) = {
             let turn = |w: &&super::waits::Wait| matches!(&w.what, Waiting::Turn { of, .. } if of == terminal);

@@ -454,6 +454,81 @@ fn a_subagent_waiting_on_its_own_task_isnt_done(cx: &mut TestAppContext) {
     );
 }
 
+/// What a subagent handed out before its task came isn't what its task waits for: its turn's end
+/// still answers it (the anti-goal of docs/specs/agent-protocol.md: a Claude Code that works today
+/// works no worse).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_task_handed_out_before_its_own_doesnt_keep_it_open(cx: &mut TestAppContext) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let third = another_agent(handle, &ws, cx, theirs);
+    asker(&ws, cx, mine);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let (_, other) = me(&ws, cx, third);
+    // Theirs handed the third a task long ago, which nobody ended.
+    call(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        "delegate",
+        json!({ "block": other, "task": "look" }),
+    );
+    // Then mine hands theirs one, which theirs answers with its turn's end.
+    call(
+        handle,
+        &ws,
+        cx,
+        &terminal,
+        "delegate",
+        json!({ "block": them, "task": "go" }),
+    );
+    screen_with(&ws, cx, theirs, "go");
+    enter(cx);
+    event(handle, &ws, cx, &worker, json!({ "event": "submitted" }));
+    let done = json!({ "event": "stopped", "message": "Done." });
+    event(handle, &ws, cx, &worker, done);
+    after(cx, 1000);
+    let shown = screen_with(&ws, cx, mine, "Done.");
+    assert!(shown.contains("[task t2 from "), "{shown}");
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.terminal(theirs).unwrap().handed.is_none())
+    });
+}
+
+/// An agent without Templum's tools that waits on a task of its own (it ran `templum delegate`
+/// from its shell) isn't ended by its still screen either (docs/specs/agent-protocol.md, 4).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_agent_without_tools_waiting_on_its_own_task_isnt_ended_by_its_screen(
+    cx: &mut TestAppContext,
+) {
+    let (handle, ws, mine, theirs) = two_agents(cx);
+    let third = another_agent(handle, &ws, cx, theirs);
+    let (terminal, _) = me(&ws, cx, mine);
+    let (worker, them) = me(&ws, cx, theirs);
+    let (_, other) = me(&ws, cx, third);
+    let task = json!({ "block": them, "task": "go", "wait": true });
+    let delegated = call_later(handle, &ws, cx, &terminal, 1, "delegate", task);
+    call(
+        handle,
+        &ws,
+        cx,
+        &worker,
+        "delegate",
+        json!({ "block": other, "task": "look" }),
+    );
+    ticks(&ws, cx, theirs, 0, 4);
+    for _ in 0..5 {
+        after(cx, 1000);
+    }
+    assert!(delegated.try_recv().is_err(), "no answer");
+    ws.read_with(cx, |ws, _| {
+        assert!(ws.space.terminal(theirs).unwrap().handed.is_some())
+    });
+}
+
 #[gpui_kit::test]
 fn delegate_refuses_what_it_mustnt_type_into(cx: &mut TestAppContext) {
     let (handle, ws, mine, theirs) = two_agents(cx);
@@ -2665,12 +2740,28 @@ fn a_quiet_agent_is_told_once_to_a_master_not_waiting(cx: &mut TestAppContext) {
         mine,
         "hasn't answered: its screen is still] Its screen is in the pasted text.",
     );
-    // At work again and still again: mine was typed into a moment ago, so a second notice
-    // would wait in the queue. There is none.
+    // At work again and still again: no second notice, typed or waiting in the queue.
+    let quiet = |ws: &Entity<Workspace>, cx: &mut TestAppContext| {
+        ws.read_with(cx, |ws, _| {
+            let shown = ws.space.terminal(mine).unwrap().screen().replace('\n', "");
+            shown
+                .matches("hasn't answered: its screen is still]")
+                .count()
+        })
+    };
+    // `cat` shows it twice: as it is typed, and printed once its Enter went.
+    enter(cx);
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    while quiet(&ws, cx) < 2 {
+        assert!(Instant::now() < deadline, "the first one was typed");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let typed = quiet(&ws, cx);
     ticks(&ws, cx, theirs, 4, 4);
     for _ in 0..5 {
         after(cx, 1000);
     }
+    assert_eq!(quiet(&ws, cx), typed, "told once");
     assert!(notices(&ws, cx).is_empty(), "{:?}", notices(&ws, cx));
     // Its reply ends the task: one notice, the end.
     let reply = json!({ "text": "Line 42." });

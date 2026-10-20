@@ -247,7 +247,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         use templum_mcp::AgentEvent;
-        let hands_out = self.hands_out(terminal);
+        let hands_out = self.waits_on_its_own(terminal);
         let Some(pane) = self.pane_mut(terminal) else {
             return;
         };
@@ -304,7 +304,7 @@ impl Workspace {
                 // next turn's end is its own.
                 if let Some(handed) = pane.handed.as_mut().filter(|h| !h.taken || h.behind) {
                     handed.behind = false;
-                } else if hands_out && pane.handed.is_some() {
+                } else if hands_out {
                     // It handed a task of its own over and waits for it, as card 30 asks: this
                     // turn's end isn't its answer. Its `reply`, or the end of a turn with nothing
                     // handed out any more, is.
