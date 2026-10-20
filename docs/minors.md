@@ -1439,6 +1439,12 @@ Left by ask_user v2 (kanban card 34, `docs/specs/ask-user.md`).
   B's own task, and its master gets B's last words ("…I handed it to C; waiting.") as the answer. Rare with Claude
   Code. Fix: in `hands_out`, keep counting a sub-task whose end or quiet notice to B is queued, or was typed during
   B's current turn, until B's next `Submitted` or `Working` event after it.
+- [ ] **A `reply` that a quiet subagent's waiting call takes doesn't start its wait over.** Left by the fourth review
+  of card 69 (`reply_to`, `crates/templum/src/workspace/delegate.rs:891-908`): when the quiet C (no hooks) is itself in
+  `wait_for_idle(B)` on its master, B's `reply` to C answers that call; nothing is typed into C, so `asker_wrote` isn't
+  called and `quiet` stays true. B's turn ending with "waiting for C" then ends B's own task, and its master gets B's
+  interim words as the answer. Rare: C has no hooks, waits on its own master, and is still during that call. Fix: call
+  `asker_wrote(&asker, from)` in the waits branch too, and drop the spec's "not one that a waiting call takes".
 
 ## Placing new blocks
 
