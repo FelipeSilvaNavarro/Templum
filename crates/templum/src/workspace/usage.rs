@@ -73,11 +73,6 @@ impl Workspace {
         })
     }
 
-    /// `typed` in a terminal running the default shell.
-    pub(super) fn typed(&self, agent: Option<&AgentEntry>, command: &str) -> String {
-        self.typed_in(None, agent, command)
-    }
-
     /// `command` as typed to start `agent` in a terminal running `shell` (a program; None: the
     /// default shell; docs/specs/connections.md, What Templum types into each agent): the Claude
     /// Code Templum opens gets its settings file (the status line of the plan's limits, and the
@@ -129,7 +124,7 @@ impl Workspace {
 
     /// What a new terminal's environment gets for the agents a person types there
     /// (docs/specs/connections.md, Agents typed in a terminal; Typed by hand: the shells): the
-    /// words `typed` would append after each, unquoted, one per line, for the terminal's own
+    /// words `typed_in` would append after each, unquoted, one per line, for the terminal's own
     /// `shell` (a program; None: the default). Each always, empty when there is nothing to give,
     /// so a Templum started from another's terminal doesn't pass that one's on.
     pub(super) fn agent_env(&self, shell: Option<&str>) -> Vec<(String, String)> {
@@ -187,11 +182,13 @@ impl Workspace {
     /// The variables the shell of a block Templum opens for `agent` gets: an account's folder
     /// first, whatever Templum's environment has (docs/specs/accounts.md); then
     /// (docs/specs/connections.md, OpenCode and Kilo Code) its server and plugin, for an agent
-    /// that takes them only from its environment, as `typed` says, none where `set(name)` says
-    /// the person's environment already has a non-empty one, which wins.
+    /// that takes them only from its environment, as `typed_in` says, none where `set(name)` says
+    /// the person's environment already has a non-empty one, which wins. `shell`: the program the
+    /// block runs, as `typed_in`'s (None: the default shell); none of the server's under WSL.
     pub(super) fn agent_vars(
         &self,
         agent: Option<&AgentEntry>,
+        shell: Option<&str>,
         set: &dyn Fn(&str) -> bool,
     ) -> Vec<(String, String)> {
         let account = agent
@@ -199,7 +196,7 @@ impl Workspace {
             .map(|(name, folder)| (name.to_string(), folder.to_string_lossy().into_owned()));
         account
             .into_iter()
-            .chain(self.server_vars(agent, set))
+            .chain(self.server_vars(agent, shell, set))
             .collect()
     }
 
@@ -207,6 +204,7 @@ impl Workspace {
     fn server_vars(
         &self,
         agent: Option<&AgentEntry>,
+        shell: Option<&str>,
         set: &dyn Fn(&str) -> bool,
     ) -> Vec<(String, String)> {
         let builtin = agent.and_then(|a| a.builtin);
@@ -216,7 +214,7 @@ impl Workspace {
             Some(Agent::QWEN) => "QWEN_CODE_SYSTEM_SETTINGS_PATH",
             _ => return Vec::new(),
         };
-        let Some(gives) = self.gives(None).filter(|g| g.connected && g.on_path) else {
+        let Some(gives) = self.gives(shell).filter(|g| g.connected && g.on_path) else {
             return Vec::new();
         };
         if set(name) {
@@ -233,7 +231,7 @@ impl Workspace {
     }
 
     /// What Templum gives the agents it opens or a person types in a terminal running `shell`
-    /// (None: the default), as `typed` says; None without a data folder or a program, or under
+    /// (None: the default), as `typed_in` says; None without a data folder or a program, or under
     /// WSL, where Templum's paths aren't the shell's.
     fn gives(&self, shell: Option<&str>) -> Option<Gives> {
         let (Some(data), Some(exe), false) =
@@ -263,11 +261,7 @@ impl Workspace {
                 .clone()
                 .or_else(|| templum_terminal::default_shell().map(|s| s.program))
         });
-        program.is_some_and(|p| {
-            std::path::Path::new(&p)
-                .file_stem()
-                .is_some_and(|s| s.eq_ignore_ascii_case(name))
-        })
+        program.is_some_and(|p| templum_terminal::is_shell(&p, name))
     }
 
     /// Reads, in the background, what the agents in every workspace's terminals wrote, from the

@@ -283,13 +283,15 @@ impl Workspace {
                 if let Some(account) = &account {
                     self.prepare_account(account, window, cx);
                 }
-                let mut vars = self.agent_vars(agent.as_ref(), &super::usage::in_env);
+                // The block's own shell, as it was saved: not the agent's setting now.
+                let shell = t.shell.as_deref().and_then(|l| self.found_shell(l));
+                let program = shell.as_ref().map(|s| s.program.as_str());
+                let mut vars = self.agent_vars(agent.as_ref(), program, &super::usage::in_env);
                 if let Some((name, folder)) = account.as_ref().and_then(AgentEntry::var)
                     && !vars.iter().any(|(k, _)| k == name)
                 {
                     vars.insert(0, (name.to_string(), folder.to_string_lossy().into_owned()));
                 }
-                let shell = t.shell.as_deref().and_then(|l| self.found_shell(l));
                 let id = self.spawn_block_with(rect, folder, vars, shell, window, cx)?;
                 self.restore_terminal(id, t, in_its_folder, cx);
                 Some(id)

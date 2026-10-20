@@ -371,6 +371,33 @@ impl Workspace {
         Some(id)
     }
 
+    /// The shell the agent `entry` opens in (docs/specs/shells.md, A shell for each agent): the
+    /// one its `shell` label names among the shells found here. None for no label, a label not
+    /// found (another computer's file, a shell uninstalled), and WSL for an account, which would
+    /// lose its folder there: the default shell opens. Prints nothing: Settings asks every frame.
+    pub(crate) fn agent_shell(&self, entry: &AgentEntry) -> Option<&ShellOption> {
+        let label = entry.shell.as_deref()?;
+        self.shells
+            .iter()
+            .find(|s| s.label == label)
+            .filter(|s| entry.account.is_none() || !templum_terminal::is_shell(&s.program, "wsl"))
+    }
+
+    /// `agent_shell`'s shell, for an agent about to open: a label that finds none says so on
+    /// stderr, as a restored terminal's does (no notification; the label stays in the file).
+    fn shell_for(&self, entry: &AgentEntry) -> Option<ShellOption> {
+        let shell = self.agent_shell(entry).cloned();
+        if shell.is_none()
+            && let Some(label) = &entry.shell
+        {
+            eprintln!(
+                "templum: no shell {label:?} for {}: the default one opens",
+                entry.title
+            );
+        }
+        shell
+    }
+
     /// A terminal at `rect` in `folder` with `command` (None: the agent `entry`'s start command)
     /// typed into its shell, `args` after it (`launch_args`: a model and an effort) and before
     /// what Templum adds. It is focused on the canvas; the keyboard stays
@@ -389,15 +416,27 @@ impl Workspace {
         if let Some(entry) = entry {
             self.prepare_account(entry, window, cx);
         }
-        let vars = self.agent_vars(entry, &super::usage::in_env);
-        let id = self.spawn_block_with(rect, Some(folder.to_path_buf()), vars, None, window, cx)?;
+        let shell = entry.and_then(|a| self.shell_for(a));
+        let program = shell.as_ref().map(|s| s.program.as_str());
+        let vars = self.agent_vars(entry, program, &super::usage::in_env);
+        let id = self.spawn_block_with(
+            rect,
+            Some(folder.to_path_buf()),
+            vars,
+            shell.clone(),
+            window,
+            cx,
+        )?;
         let command = command
             .map(str::to_string)
             .or_else(|| entry.map(|a| a.start_command(&uuid::Uuid::new_v4().to_string())))
             .unwrap_or_default()
             + args;
         // The shell reads it once it is ready.
-        let line = format!("{}\r", self.typed(entry, &command));
+        let line = format!(
+            "{}\r",
+            self.typed_in(shell.as_ref().map(|s| s.program.as_str()), entry, &command)
+        );
         // Known at once (Shift+Enter, closing), not at the next snapshot.
         let agent = entry.map(|a| a.id.clone());
         let title = entry.map_or_else(
@@ -430,9 +469,11 @@ impl Workspace {
             .cloned()?;
         let kind = entry.account.as_ref()?.kind;
         self.prepare_account(&entry, window, cx);
-        let vars = self.agent_vars(Some(&entry), &super::usage::in_env);
+        let shell = self.shell_for(&entry);
+        let program = shell.as_ref().map(|s| s.program.as_str());
+        let vars = self.agent_vars(Some(&entry), program, &super::usage::in_env);
         let rect = self.new_terminal_rect(window, cx);
-        let block = self.spawn_block_with(rect, std::env::home_dir(), vars, None, window, cx)?;
+        let block = self.spawn_block_with(rect, std::env::home_dir(), vars, shell, window, cx)?;
         let pane = self.space.terminal_mut(block)?;
         // The shell reads it once it is ready.
         pane.term

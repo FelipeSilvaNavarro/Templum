@@ -79,6 +79,14 @@ pub fn default_shell_label() -> String {
     }
 }
 
+/// Whether `program`, a path or a name, runs the shell called `name`: its file stem, in any case
+/// (`C:/Windows/System32/wsl.exe` is `wsl`, `PowerShell.exe` is `powershell`).
+pub fn is_shell(program: &str, name: &str) -> bool {
+    Path::new(program)
+        .file_stem()
+        .is_some_and(|s| s.eq_ignore_ascii_case(name))
+}
+
 /// Where Windows keeps programs, from its environment.
 #[derive(Default)]
 struct WindowsEnv {
@@ -200,6 +208,14 @@ mod tests {
 
     fn labels(shells: &[ShellOption]) -> Vec<&str> {
         shells.iter().map(|s| s.label.as_str()).collect()
+    }
+
+    #[test]
+    fn is_shell_names_a_program_by_its_file_stem() {
+        assert!(is_shell("C:/Windows/System32/wsl.exe", "wsl"));
+        assert!(is_shell("PowerShell.exe", "powershell"));
+        assert!(is_shell("/opt/My Shells/fish", "fish"));
+        assert!(!is_shell("/usr/bin/wslu", "wsl"));
     }
 
     #[test]

@@ -466,6 +466,140 @@ pub(super) fn launch(
     .expect("a block")
 }
 
+/// Made-up shells (docs/specs/shells.md, A shell for each agent): Quiet runs the tests' quiet
+/// program; WSL is a path that never runs. Returns Quiet. `pub(super)`: `tests/spawn.rs` uses it
+/// too.
+pub(super) fn agent_shells(
+    ws: &Entity<Workspace>,
+    cx: &mut TestAppContext,
+) -> templum_terminal::ShellOption {
+    use templum_terminal::ShellOption;
+    let (program, args) = quiet();
+    let quiet_shell = ShellOption {
+        label: "Quiet".into(),
+        program,
+        args,
+    };
+    let wsl = ShellOption {
+        label: "WSL".into(),
+        program: "C:/Windows/System32/wsl.exe".into(),
+        args: vec![],
+    };
+    ws.update(cx, |ws, _| ws.shells = vec![quiet_shell.clone(), wsl]);
+    quiet_shell
+}
+
+#[gpui_kit::test]
+fn an_agent_opens_in_its_own_shell_and_its_block_keeps_it(cx: &mut TestAppContext) {
+    let folder = tempfile::tempdir().unwrap();
+    let (handle, ws) = open(cx);
+    let quiet_shell = agent_shells(&ws, cx);
+    with_agents(
+        &ws,
+        cx,
+        "[agents.claude]\nshell = \"Quiet\"\n[agents.codex]\nshell = \"PowerShell 7\"\n",
+    );
+    let claude = launch(handle, &ws, cx, "claude", folder.path());
+    let codex = launch(handle, &ws, cx, "codex", folder.path());
+    let gemini = launch(handle, &ws, cx, "gemini", folder.path());
+    let rect = templum_canvas::Rect::new(0.0, 0.0, 700.0, 450.0);
+    let saved = ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(claude).unwrap();
+        assert_eq!(pane.shell, Some(quiet_shell.clone()));
+        let item = pane.item(rect, String::new());
+        assert_eq!(item.shell.as_deref(), Some("Quiet"));
+        let lost = ws.space.terminal(codex).unwrap();
+        assert_eq!(lost.shell, None, "a label not found here: the default");
+        assert_eq!(ws.space.terminal(gemini).unwrap().shell, None);
+        item
+    });
+    // The setting is gone by the time the block comes back: it runs its own saved shell.
+    with_agents(&ws, cx, "");
+    let back = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| {
+                ws.add_saved(&crate::session::Item::Terminal(saved), window, cx)
+            })
+        })
+        .unwrap()
+        .expect("a block");
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.terminal(back).unwrap().shell, Some(quiet_shell));
+    });
+}
+
+#[gpui_kit::test]
+fn an_account_never_opens_in_wsl(cx: &mut TestAppContext) {
+    let (data, folder) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let quiet_shell = agent_shells(&ws, cx);
+    with_agents(
+        &ws,
+        cx,
+        &format!(
+            "{CLAUDE2}shell = \"WSL\"\n[agents.claude3]\nof = \"claude\"\nshell = \"Quiet\"\n"
+        ),
+    );
+    ws.read_with(cx, |ws, _| {
+        let claude2 = ws.agents.iter().find(|a| a.id == "claude2").unwrap();
+        assert_eq!(
+            claude2.shell.as_deref(),
+            Some("WSL"),
+            "in the file as written"
+        );
+        assert_eq!(ws.agent_shell(claude2), None, "never WSL for an account");
+    });
+    let claude2 = launch(handle, &ws, cx, "claude2", folder.path());
+    let claude3 = launch(handle, &ws, cx, "claude3", folder.path());
+    ws.read_with(cx, |ws, _| {
+        let pane = ws.space.terminal(claude2).unwrap();
+        assert_eq!(
+            (pane.shell.as_ref(), pane.account.as_deref()),
+            (None, Some("claude2"))
+        );
+        assert_eq!(
+            ws.space.terminal(claude3).unwrap().shell,
+            Some(quiet_shell.clone())
+        );
+    });
+    let login = cx
+        .update_window(handle, |_, window, cx| {
+            ws.update(cx, |ws, cx| ws.log_in("claude3", window, cx))
+        })
+        .unwrap()
+        .expect("a block");
+    ws.read_with(cx, |ws, _| {
+        assert_eq!(ws.space.terminal(login).unwrap().shell, Some(quiet_shell));
+    });
+}
+
+/// None of Templum's words cross into WSL (docs/specs/shells.md, What works in WSL).
+#[cfg(unix)]
+#[gpui_kit::test]
+fn an_agent_set_to_wsl_gets_none_of_templums_words(cx: &mut TestAppContext) {
+    use templum_terminal::ShellOption;
+    let (data, folder, bin) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    // A shell named `wsl` that only echoes what is typed.
+    let wsl = bin.path().join("wsl");
+    std::os::unix::fs::symlink(templum_terminal::locate("cat").unwrap(), &wsl).unwrap();
+    let (handle, ws) = open_as(cx, Some(quiet()), None, Some(data.path().to_path_buf()));
+    ws.update(cx, |ws, _| {
+        ws.shells = vec![ShellOption {
+            label: "WSL".into(),
+            program: wsl.display().to_string(),
+            args: vec![],
+        }]
+    });
+    with_agents(&ws, cx, "[agents.claude]\nshell = \"WSL\"\n");
+    let id = launch(handle, &ws, cx, "claude", folder.path());
+    let shown = super::bus::screen_with(&ws, cx, id, "claude");
+    assert!(!shown.contains("--settings"), "{shown}");
+}
+
 #[cfg(unix)]
 #[gpui_kit::test]
 fn an_account_opens_with_its_folder_in_its_shell(cx: &mut TestAppContext) {
