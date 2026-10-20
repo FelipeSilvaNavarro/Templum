@@ -365,7 +365,7 @@ rem templum-account claudinho C:\Users\me\AppData\Roaming\templum
 rem Made by Templum: opens Claude Code on its account claudinho (Settings > Agents > Accounts).
 rem Deleted with the account; Templum writes it again when it changes.
 setlocal
-set "CLAUDE_CONFIG_DIR=C:\Users\me\AppData\Roaming\templum\accounts\claudinho"
+set "CLAUDE_CONFIG_DIR=%USERPROFILE%\AppData\Roaming\templum\accounts\claudinho"
 claude %*
 exit /b %errorlevel%
 ```
