@@ -927,7 +927,7 @@ fn procs(
 
 /// The session each process has open, in order, from the agents' files.
 fn session_ids(procs: &[templum_usage::Proc], data: &Path) -> Vec<Option<String>> {
-    let dirs = templum_usage::Dirs::of(data);
+    let dirs = crate::agents::dirs(data);
     templum_usage::session_ids(procs, &dirs, crate::notes::now())
 }
 

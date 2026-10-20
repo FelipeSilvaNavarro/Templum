@@ -281,14 +281,12 @@ impl Workspace {
             }
         }
         let homes = agents::usage_homes(&self.agents);
+        let dirs = agents::dirs(&data);
         // The next read replaces this one: a slow disk never piles reads up.
         self._usage = cx.spawn_in(window, async move |ws, cx| {
             let read = cx
                 .background_executor()
-                .spawn(async move {
-                    let dirs = templum_usage::Dirs::of(&data);
-                    templum_usage::read(&procs, &dirs, &homes, notes::now())
-                })
+                .spawn(async move { templum_usage::read(&procs, &dirs, &homes, notes::now()) })
                 .await;
             ws.update_in(cx, |ws, window, cx| ws.usage_done(keys, read, window, cx))
                 .ok();
@@ -537,7 +535,7 @@ impl Workspace {
         // An account's extensions are its folder's, or the folder it shares them with.
         let dir = match &entry.account {
             Some(a) => Some(a.kind.state_dir(&a.folder)),
-            None => templum_usage::Dirs::of(data).gemini,
+            None => agents::dirs(data).gemini,
         };
         if dir.is_some_and(|dir| templum_usage::gemini::installed(&dir)) {
             return;

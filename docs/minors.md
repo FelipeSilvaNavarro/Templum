@@ -164,13 +164,6 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Tests
 
-- [ ] **Two tests read the person's own `~/.claude` and fail on a machine that has one.**
-  `agents::a_saved_agent_is_resumed_in_its_block` and `persistence::two_blocks_one_folder_two_accounts_resume_their_own`
-  (`crates/templum/src/workspace/tests/`) restore an agent whose session `aaa-1` the restore checks with
-  `templum_usage::session_kept` on `Dirs::of(data)` (`crates/templum/src/workspace/persist.rs`), which reads the real
-  `CLAUDE_CONFIG_DIR` or `~/.claude`: the session isn't there, so a plain `claude` is typed and the test fails. CI has
-  no `~/.claude`, so it is green there; both pass with `CLAUDE_CONFIG_DIR=/nonexistent-claude`. Fix: point the tests'
-  `Dirs` at a temporary folder.
 - [ ] **Three tests don't check the words they are about.** `discard_all_with_a_filter_on_takes_only_the_rows_shown`
   (`crates/templum/src/workspace/tests/git_layout.rs`) doesn't check the count in the question;
   `a_hunk_that_changed_since_it_was_read_is_refused` (`tests/git_hunks.rs`) checks the notification count, not "The

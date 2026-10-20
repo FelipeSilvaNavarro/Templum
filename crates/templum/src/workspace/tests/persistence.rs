@@ -672,8 +672,13 @@ fn restore(
 #[gpui_kit::test]
 fn two_blocks_one_folder_two_accounts_resume_their_own(cx: &mut TestAppContext) {
     use super::bus::screen_with;
+    let _own = super::agents::claude_keeping(&["a"]);
     let data = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();
+    // Each keeps its session in its own folder: the account's is `b`.
+    let account_folder = data.path().join("accounts").join("claude2");
+    std::fs::create_dir_all(account_folder.join("projects/-app")).unwrap();
+    std::fs::write(account_folder.join("projects/-app/b.jsonl"), "{}").unwrap();
     let (handle, ws) = open_as(
         cx,
         Some(telling_its_folder()),
@@ -689,7 +694,6 @@ fn two_blocks_one_folder_two_accounts_resume_their_own(cx: &mut TestAppContext) 
     );
     let item = saved_terminal(folder.path(), Some("claude2"), Some("b"), Some("claude2"));
     let account = restore(handle, &ws, cx, &item);
-    let account_folder = data.path().join("accounts").join("claude2");
     screen_with(&ws, cx, account, "claude --resume b");
     screen_with(
         &ws,

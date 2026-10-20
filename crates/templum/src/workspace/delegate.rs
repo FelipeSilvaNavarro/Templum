@@ -983,9 +983,9 @@ impl Workspace {
             cx.background_executor().timer(SPENT_AFTER).await;
             let read = match (data, proc) {
                 (Some(data), Some(proc)) => {
+                    let dirs = crate::agents::dirs(&data);
                     cx.background_executor()
                         .spawn(async move {
-                            let dirs = templum_usage::Dirs::of(&data);
                             templum_usage::read(&[proc], &dirs, &[], crate::notes::now())
                                 .0
                                 .pop()

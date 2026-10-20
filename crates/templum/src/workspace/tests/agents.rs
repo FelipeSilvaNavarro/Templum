@@ -71,10 +71,24 @@ fn the_agents_tab_resets_ours_and_deletes_yours(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// Claude Code's own folder for a test, with the sessions `ids` kept in it (the restore resumes
+/// only those): the test never reaches the person's `~/.claude`.
+pub(super) fn claude_keeping(ids: &[&str]) -> tempfile::TempDir {
+    let own = tempfile::tempdir().unwrap();
+    crate::agents::OWN_FOLDERS.set(Some(own.path().to_path_buf()));
+    let project = own.path().join("claude/projects/-app");
+    std::fs::create_dir_all(&project).unwrap();
+    for id in ids {
+        std::fs::write(project.join(format!("{id}.jsonl")), "{}").unwrap();
+    }
+    own
+}
+
 #[gpui_kit::test]
 fn a_saved_agent_is_resumed_in_its_block(cx: &mut TestAppContext) {
     use std::time::{Duration, Instant};
     use templum_terminal::Snapshot;
+    let _own = claude_keeping(&["aaa-1", "bbb-2", "ccc-3"]);
     let data = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();
     let folder = folder.path().display().to_string().replace('\\', "\\\\");
@@ -281,6 +295,29 @@ fn an_agent_opens_in_its_folder_and_the_folder_becomes_recent(cx: &mut TestAppCo
         assert!(Instant::now() < deadline, "not typed: {shown:?}");
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Claude Code exits with "No conversation found" on a session it deleted: the restore starts it
+/// plain, never resumes that one.
+#[cfg(unix)]
+#[gpui_kit::test]
+fn a_saved_agent_whose_session_is_gone_starts_plain(cx: &mut TestAppContext) {
+    let _own = claude_keeping(&["other-1"]);
+    let data = tempfile::tempdir().unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    write_canvas(
+        data.path(),
+        &format!(
+            r#"{{"version":1,"camera":{{"x":0,"y":0,"zoom":1}},"items":[
+                  {{"kind":"terminal","rect":{{"x":0,"y":0,"w":700,"h":450}},"folder":"{}","agent":"claude","session":"gone-1"}}]}}"#,
+            folder.path().display()
+        ),
+    );
+    let (_, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
+    let id = first_id(&ws, cx);
+    // `cat` echoes the line as it is typed, then prints it: twice on the screen.
+    let shown = super::bus::screen_until(&ws, cx, id, |s| s.matches("claude").count() >= 2);
+    assert!(!shown.contains("--resume"), "{shown}");
 }
 
 #[gpui_kit::test]

@@ -45,7 +45,7 @@ pub(super) fn start(
         }
     };
     let env = terminal_env(&bus, data);
-    if let Some(gemini) = templum_usage::Dirs::of(data).gemini {
+    if let Some(gemini) = crate::agents::dirs(data).gemini {
         templum_usage::gemini::refresh(data, &gemini, cfg!(windows));
     }
     let task = cx.spawn_in(window, async move |ws, cx| {

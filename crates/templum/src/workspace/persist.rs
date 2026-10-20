@@ -194,7 +194,7 @@ impl Workspace {
                     Some(a) => (a.kind.agent, Some(a.kind.state_dir(&a.folder))),
                     None => (agent.id.as_str(), None),
                 };
-                let dirs = templum_usage::Dirs::of(data);
+                let dirs = crate::agents::dirs(data);
                 templum_usage::session_kept(of, id, &dirs, home.as_deref())
             }
             _ => true,

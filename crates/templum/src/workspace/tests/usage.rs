@@ -639,8 +639,6 @@ fn a_gemini_cli_without_the_extension_is_told_once(cx: &mut TestAppContext) {
     let data = tempfile::tempdir().unwrap();
     let folder = tempfile::tempdir().unwrap();
     let (handle, ws) = open_in(cx, None, Some(data.path().to_path_buf()));
-    let installed = std::env::home_dir()
-        .is_some_and(|home| templum_usage::gemini::installed(&home.join(".gemini")));
     let open = |id: &str, cx: &mut TestAppContext| {
         cx.update_window(handle, |_, window, cx| {
             ws.update(cx, |ws, cx| {
@@ -674,10 +672,9 @@ fn a_gemini_cli_without_the_extension_is_told_once(cx: &mut TestAppContext) {
     assert_eq!(notification_count(handle, cx), before, "off");
     ws.update(cx, |ws, _| ws.config.connections.enabled = true);
     open("gemini", cx);
-    let told = usize::from(!installed);
-    assert_eq!(notification_count(handle, cx), before + told, "once");
+    assert_eq!(notification_count(handle, cx), before + 1, "once");
     open("gemini", cx);
-    assert_eq!(notification_count(handle, cx), before + told, "not twice");
+    assert_eq!(notification_count(handle, cx), before + 1, "not twice");
 }
 
 /// The OpenCode and Kilo Code Templum opens get their variable in their shell's environment,

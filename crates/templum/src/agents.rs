@@ -90,6 +90,23 @@ fn own_state_in(
     kind.own_folder(var, home).map(|f| kind.state_dir(&f))
 }
 
+/// Where the agents keep their files, and the relay its own, for the data folder `data`. Tests
+/// get the agents' `<OWN_FOLDERS>/<agent>` (as `own_state` does), never the person's `~/.claude`.
+pub(crate) fn dirs(data: &Path) -> templum_usage::Dirs {
+    #[cfg(test)]
+    let own = |agent| templum_usage::accounts::kind(agent).and_then(|k| own_state(k, &[]));
+    #[cfg(test)]
+    return templum_usage::Dirs {
+        relay: templum_usage::relay_dir(data),
+        claude: own("claude"),
+        codex: own("codex"),
+        qwen: None,
+        gemini: own("gemini"),
+    };
+    #[cfg(not(test))]
+    templum_usage::Dirs::of(data)
+}
+
 #[cfg(test)]
 thread_local! {
     /// Where a test's agents keep their own folders; None: they have none.

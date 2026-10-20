@@ -125,7 +125,7 @@ pub(super) fn rows(
 fn gemini_row(ws: &Workspace, entity: &Entity<Workspace>, data: &Path) -> Row {
     let ui = ws.ui;
     let running = matches!(ws.gemini_job, Some(TryIt::Running(_)));
-    let installed = templum_usage::Dirs::of(data)
+    let installed = crate::agents::dirs(data)
         .gemini
         .is_some_and(|dir| templum_usage::gemini::installed(&dir));
     let e = entity.clone();
