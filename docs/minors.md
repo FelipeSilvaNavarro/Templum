@@ -164,6 +164,13 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
 
 ## Tests
 
+- [ ] **Two tests read the person's own `~/.claude` and fail on a machine that has one.**
+  `agents::a_saved_agent_is_resumed_in_its_block` and `persistence::two_blocks_one_folder_two_accounts_resume_their_own`
+  (`crates/templum/src/workspace/tests/`) restore an agent whose session `aaa-1` the restore checks with
+  `templum_usage::session_kept` on `Dirs::of(data)` (`crates/templum/src/workspace/persist.rs`), which reads the real
+  `CLAUDE_CONFIG_DIR` or `~/.claude`: the session isn't there, so a plain `claude` is typed and the test fails. CI has
+  no `~/.claude`, so it is green there; both pass with `CLAUDE_CONFIG_DIR=/nonexistent-claude`. Fix: point the tests'
+  `Dirs` at a temporary folder.
 - [ ] **Three tests don't check the words they are about.** `discard_all_with_a_filter_on_takes_only_the_rows_shown`
   (`crates/templum/src/workspace/tests/git_layout.rs`) doesn't check the count in the question;
   `a_hunk_that_changed_since_it_was_read_is_refused` (`tests/git_hunks.rs`) checks the notification count, not "The
@@ -528,6 +535,17 @@ From batches 3 and 4 (line numbers of `development` at 5046612).
   and when Settings or the welcome opens (`load_lists`, `crates/templum/src/workspace/preferences.rs`); until then the
   toolbar's Terminal and Add ▸ Terminal ▸ show the older list. Fix: read it again when one of those menus opens, with
   a seam that keeps the tests' made-up list.
+- [ ] **No test covers how Settings ▸ Agents' rows are wired to an agent's shell.** `agent_row`
+  (`crates/templum/src/settings/agents.rs:27-31`) and the account row (`settings/accounts.rs:163-167`) are only
+  unit-tested through `description` and `with_shell`: if `agent_row` went back to `templum_terminal::installed(…)`, a
+  WSL agent Windows lacks would read "Yours · not found …" again and no test would fail. Fix: in
+  `an_agent_that_runs_in_wsl_counts_as_installed`, open Settings ▸ Agents and check the row reads
+  "Yours · templum-no-such-agent · in WSL".
+- [ ] **The agent dialog's WSL note repeats `Workspace::in_wsl`.** The note under the Shell list
+  (`crates/templum/src/settings/agents.rs:267-274`) decides WSL on its own, beside `in_wsl`
+  (`crates/templum/src/workspace/blocks.rs:389-394`): if one changes (how a label not found falls back), the note says
+  WSL while the agent opens elsewhere, or the other way round. Fix: one `Workspace` helper taking a label and whether
+  the entry is an account, called by both.
 
 ## GPUI engine (gpui-fast)
 
