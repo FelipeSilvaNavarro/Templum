@@ -126,6 +126,7 @@ impl Workspace {
             return;
         };
         git.amend = on;
+        git.point_placeholder(window, cx);
         cx.notify();
         let (summary, description) = (git.summary.clone(), git.description.clone());
         if !on {

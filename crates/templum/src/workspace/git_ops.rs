@@ -369,6 +369,7 @@ impl Workspace {
                         git.operation = read.operation;
                         git.author = read.author;
                         git.error = None;
+                        git.point_placeholder(window, cx);
                     }
                     Err(e) => git.error = Some(e.to_string()),
                 }

@@ -11,8 +11,8 @@ use std::time::Duration;
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    App, Context, ElementId, Entity, EntityId, FocusHandle, ScrollHandle, Subscription,
-    UniformListScrollHandle, Window,
+    App, Context, ElementId, Entity, EntityId, FocusHandle, ScrollHandle, SharedString,
+    Subscription, UniformListScrollHandle, Window,
 };
 use templum_canvas::Size;
 use templum_git::{Branch, Commit, CommitFile, Entry, GitError, Operation, Repo, Stash, Status};
@@ -55,6 +55,8 @@ pub(crate) const PAGE: usize = 200;
 pub(crate) const MAX_LANES: usize = 6;
 /// A lane's width, world units.
 pub(crate) const LANE_W: f32 = 12.0;
+/// The summary field's placeholder while no message is generated.
+const COMMIT_MESSAGE: &str = "Commit message";
 /// Past this many characters a summary is longer than `git log --oneline` shows well.
 pub(crate) const SUMMARY_MAX: usize = 72;
 
@@ -248,6 +250,9 @@ pub(crate) struct Git {
     /// The row whose diff is shown.
     pub selected: Option<(List, String)>,
     pub summary: Entity<InputState>,
+    /// The summary's placeholder as last set (the field can't be asked): "Commit message", or the
+    /// message an empty summary commits as.
+    pub placeholder: SharedString,
     pub description: Entity<TextareaState>,
     /// Commit replaces the last commit; the fields were filled with its message.
     pub amend: bool,
@@ -313,7 +318,7 @@ pub(crate) struct Git {
 
 impl Git {
     pub fn new(folder: PathBuf, tab: Tab, window: &mut Window, cx: &mut Context<Workspace>) -> Git {
-        let summary = cx.new(|cx| InputState::new(window, cx).placeholder("Commit message"));
+        let summary = cx.new(|cx| InputState::new(window, cx).placeholder(COMMIT_MESSAGE));
         let description = cx.new(|cx| {
             TextareaState::new(window, cx)
                 .rows(3)
@@ -399,6 +404,7 @@ impl Git {
                 .with_hint("Click a stash to see its changes"),
             selected: None,
             summary,
+            placeholder: COMMIT_MESSAGE.into(),
             description,
             amend: false,
             _enter,
@@ -436,9 +442,50 @@ impl Git {
         }
     }
 
+    /// What a commit of exactly one file says when the summary is left empty ("Update a.rs"; see
+    /// `words::generic_summary`). None with no files or two or more (the file `commit_label`
+    /// counts), and on an Amend, whose files aren't listed.
+    pub fn generic_summary(&self) -> Option<String> {
+        if self.amend {
+            return None;
+        }
+        let staged = !self.commit_all();
+        let entries = if staged {
+            self.status.staged()
+        } else {
+            self.status.unstaged()
+        };
+        match entries.as_slice() {
+            [entry] => words::generic_summary(entry, staged),
+            _ => None,
+        }
+    }
+
+    /// The summary as the commit will carry it: what was typed, else the generic one.
+    fn summary_text(&self, cx: &App) -> String {
+        let typed = self.summary.read(cx).value().trim().to_string();
+        if typed.is_empty() {
+            self.generic_summary().unwrap_or_default()
+        } else {
+            typed
+        }
+    }
+
+    /// The summary field's placeholder says what an empty summary will commit as.
+    pub fn point_placeholder(&mut self, window: &mut Window, cx: &mut App) {
+        let text: SharedString = self
+            .generic_summary()
+            .map_or(COMMIT_MESSAGE.into(), Into::into);
+        if text != self.placeholder {
+            self.placeholder = text.clone();
+            self.summary
+                .update(cx, |summary, cx| summary.set_placeholder(text, window, cx));
+        }
+    }
+
     /// The summary, then a blank line and the description when there is one.
     pub fn message(&self, cx: &App) -> String {
-        let summary = self.summary.read(cx).value().trim().to_string();
+        let summary = self.summary_text(cx);
         let description = self.description.read(cx).value().trim().to_string();
         if description.is_empty() {
             summary
@@ -522,11 +569,12 @@ impl Git {
         self.summary_len(cx) > SUMMARY_MAX
     }
 
-    /// Commit is possible: something staged (or every change, see `commit_all`), a summary, an
-    /// author, nothing running. With Amend, nothing staged is fine (the message alone changes).
+    /// Commit is possible: something staged (or every change, see `commit_all`), a summary (one
+    /// file needs none, see `generic_summary`), an author, nothing running. With Amend, nothing
+    /// staged is fine (the message alone changes).
     pub fn can_commit(&self, cx: &App) -> bool {
         (self.amend || !self.status.staged().is_empty() || self.commit_all())
-            && !self.summary.read(cx).value().trim().is_empty()
+            && !self.summary_text(cx).is_empty()
             && self.author.is_some()
             && self.acting == 0
     }
